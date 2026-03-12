@@ -12,12 +12,13 @@ Minimal Rust implementation of a WebSocket-based Shadowsocks relay inspired by `
 - Supports per-user Linux `fwmark` on outbound TCP and UDP sockets.
 - Supports IPv4 and IPv6 target addresses, listeners and client URL generation.
 - Accepts WebSocket over HTTP/1.1 and WebSocket over HTTP/2 via RFC 8441 extended CONNECT.
+- Accepts WebSocket over HTTP/3 via RFC 9220 extended CONNECT on an optional QUIC listener.
 - Identifies the user automatically by the key that successfully decrypts the first stream chunk or UDP packet.
 
 ## What it does not do
 
 - No management API.
-- No TLS termination.
+- No built-in TLS termination for the HTTP/1.1 / HTTP/2 listener.
 - No SIP003 plugin negotiation.
 - `fwmark` requires Linux and the privileges needed for `SO_MARK`.
 
@@ -41,6 +42,8 @@ CLI flags and environment variables still work and override values from the file
 For IPv6 listeners, use normal socket notation like `listen = "[::]:3000"` in `config.toml`.
 For Outline access key generation with an IPv6 public endpoint, set `public_host` with brackets, for example `"[2001:db8::10]:443"`.
 For RFC 8441 in production, your TLS terminator or reverse proxy must preserve HTTP/2 extended CONNECT instead of downgrading WebSocket traffic to plain HTTP/1.1.
+For RFC 9220, configure `h3_cert_path` and `h3_key_path`; the server will start a QUIC listener on `h3_listen` or, if omitted, on the same host:port as `listen`.
+HTTP/3 always requires TLS and UDP reachability on that port.
 
 For single-user mode, either use `password = "..."` in `config.toml` or the legacy flag:
 
@@ -51,6 +54,9 @@ cargo run -- --password change-me
 Environment variables are also supported:
 
 - `OUTLINE_SS_LISTEN`
+- `OUTLINE_SS_H3_LISTEN`
+- `OUTLINE_SS_H3_CERT_PATH`
+- `OUTLINE_SS_H3_KEY_PATH`
 - `OUTLINE_SS_WS_PATH`
 - `OUTLINE_SS_UDP_WS_PATH`
 - `OUTLINE_SS_METHOD`
@@ -64,6 +70,7 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
 A ready-to-edit TOML config is available in [config.toml](/Users/mmalykhin/Documents/outline-ss-rust/config.toml).
+An env-based example is available in [.env.example](/Users/mmalykhin/Documents/outline-ss-rust/.env.example).
 
 Per-user `fwmark` is configured in `config.toml` inside each `[[users]]` block:
 

@@ -2,6 +2,13 @@
 listen = "0.0.0.0:3000"
 # IPv6 example:
 # listen = "[::]:3000"
+
+# Optional HTTP/3 / QUIC listener for RFC 9220.
+# If omitted, H3 uses the same socket address as `listen`.
+# h3_listen = "0.0.0.0:3000"
+# h3_cert_path = "./cert.pem"
+# h3_key_path = "./key.pem"
+
 ws_path = "/tcp"
 udp_ws_path = "/udp"
 

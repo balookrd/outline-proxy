@@ -197,6 +197,9 @@ mod tests {
     fn sample_config() -> Config {
         Config {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000),
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
             ws_path: "/tcp".into(),
             udp_ws_path: "/udp".into(),
             public_host: Some("vpn.example.com".into()),
