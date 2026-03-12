@@ -35,3 +35,4 @@ tokio-tungstenite = "0.28"
 
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
+sockudo-ws = { path = "vendor/sockudo-ws" }

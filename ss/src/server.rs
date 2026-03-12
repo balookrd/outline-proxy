@@ -669,6 +669,7 @@ fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
             || message.contains("Broken pipe")
             || message.contains("connection closed before message completed")
             || message.contains("Sending after closing is not allowed")
+            || message.contains("peer closed connection without sending TLS close_notify")
             || message.contains("ApplicationClose: H3_NO_ERROR")
             || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
     })
@@ -888,7 +889,8 @@ async fn serve_tls_listener(
 
             let io = TokioIo::new(tls_stream);
             let service = TowerToHyperService::new(app);
-            let builder = HyperBuilder::new(TokioExecutor::new());
+            let mut builder = HyperBuilder::new(TokioExecutor::new());
+            builder.http2().enable_connect_protocol();
 
             if let Err(error) = builder.serve_connection_with_upgrades(io, service).await {
                 if !is_benign_tls_serve_error(error.as_ref()) {
