@@ -7,7 +7,8 @@ use axum::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    routing::get,
+    http::{Method, Version},
+    routing::any,
 };
 use futures_util::{SinkExt, StreamExt};
 use tokio::{
@@ -35,24 +36,8 @@ struct AppState {
 
 pub async fn run(config: Config) -> Result<()> {
     let config = Arc::new(config);
-    let users: Arc<[UserKey]> = Arc::from(
-        config
-            .user_entries()?
-            .into_iter()
-            .map(|entry| UserKey::new(config.method, entry.id, &entry.password, entry.fwmark))
-            .collect::<Result<Vec<_>, _>>()?
-            .into_boxed_slice(),
-    );
-    let tcp_route: &'static str = Box::leak(config.ws_path.clone().into_boxed_str());
-    let udp_route: &'static str = Box::leak(config.udp_ws_path.clone().into_boxed_str());
-
-    let app = Router::new()
-        .route(tcp_route, get(tcp_websocket_upgrade))
-        .route(udp_route, get(udp_websocket_upgrade))
-        .with_state(AppState {
-            config: config.clone(),
-            users: users.clone(),
-        });
+    let users = build_users(&config)?;
+    let app = build_app(config.clone(), users.clone());
 
     let listener = TcpListener::bind(config.listen)
         .await
@@ -66,15 +51,16 @@ pub async fn run(config: Config) -> Result<()> {
         "websocket shadowsocks server listening",
     );
 
-    axum::serve(listener, app)
-        .await
-        .context("server exited unexpectedly")
+    serve_listener(listener, app).await
 }
 
 async fn tcp_websocket_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    method: Method,
+    version: Version,
 ) -> axum::response::Response {
+    info!(?method, ?version, path = %state.config.ws_path, "incoming tcp websocket upgrade");
     ws.on_upgrade(move |socket| async move {
         if let Err(error) =
             handle_tcp_connection(socket, state.config.clone(), state.users.clone()).await
@@ -91,7 +77,10 @@ async fn tcp_websocket_upgrade(
 async fn udp_websocket_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    method: Method,
+    version: Version,
 ) -> axum::response::Response {
+    info!(?method, ?version, path = %state.config.udp_ws_path, "incoming udp websocket upgrade");
     ws.on_upgrade(move |socket| async move {
         if let Err(error) =
             handle_udp_connection(socket, state.config.clone(), state.users.clone()).await
@@ -447,20 +436,62 @@ fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
             || message.contains("Connection reset by peer")
             || message.contains("Broken pipe")
             || message.contains("connection closed before message completed")
+            || message.contains("Sending after closing is not allowed")
     })
+}
+
+fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
+    Ok(Arc::from(
+        config
+            .user_entries()?
+            .into_iter()
+            .map(|entry| UserKey::new(config.method, entry.id, &entry.password, entry.fwmark))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
+fn build_app(config: Arc<Config>, users: Arc<[UserKey]>) -> Router {
+    let tcp_route: &'static str = Box::leak(config.ws_path.clone().into_boxed_str());
+    let udp_route: &'static str = Box::leak(config.udp_ws_path.clone().into_boxed_str());
+
+    Router::new()
+        // HTTP/1.1 WebSocket uses GET, while RFC 8441 over HTTP/2 uses CONNECT.
+        .route(tcp_route, any(tcp_websocket_upgrade))
+        .route(udp_route, any(udp_websocket_upgrade))
+        .with_state(AppState { config, users })
+}
+
+async fn serve_listener(listener: TcpListener, app: Router) -> Result<()> {
+    axum::serve(listener, app)
+        .await
+        .context("server exited unexpectedly")
 }
 
 #[cfg(test)]
 mod tests {
-    use std::net::{Ipv6Addr, SocketAddr};
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+        sync::Arc,
+    };
 
     use anyhow::Result;
+    use axum::http::{Method, Request, StatusCode, Version, header};
+    use bytes::Bytes;
+    use http_body_util::Empty;
+    use hyper::ext::Protocol;
+    use hyper_util::{
+        client::legacy::Client,
+        rt::{TokioExecutor, TokioIo},
+    };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, UdpSocket},
     };
+    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
 
-    use super::{connect_tcp_target, relay_udp_payload};
+    use super::{build_app, build_users, connect_tcp_target, relay_udp_payload, serve_listener};
+    use crate::config::{CipherKind, Config, UserEntry};
     use crate::protocol::TargetAddr;
 
     #[tokio::test]
@@ -518,10 +549,66 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let config = sample_config(addr);
+        let app = build_app(Arc::new(config.clone()), build_users(&config)?);
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build_http::<Empty<Bytes>>();
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("http://{addr}/tcp"))
+            .version(Version::HTTP_2)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(Protocol::from_static("websocket"))
+            .body(Empty::<Bytes>::new())?;
+
+        let mut response = client.request(req).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), Version::HTTP_2);
+
+        let upgraded = hyper::upgrade::on(&mut response).await?;
+        let upgraded = TokioIo::new(upgraded);
+        let mut socket =
+            WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
+        socket.close(None).await?;
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
     fn ipv6_unavailable(error: &std::io::Error) -> bool {
         matches!(
             error.kind(),
             std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
         )
+    }
+
+    fn sample_config(listen: SocketAddr) -> Config {
+        Config {
+            listen,
+            ws_path: "/tcp".into(),
+            udp_ws_path: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            print_access_keys: false,
+            password: None,
+            fwmark: None,
+            users: vec![UserEntry {
+                id: "bob".into(),
+                password: "secret-b".into(),
+                fwmark: None,
+            }],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
     }
 }
