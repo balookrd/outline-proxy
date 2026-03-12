@@ -297,7 +297,7 @@ cargo run --release -- \
 Production-ready `/metrics` теперь включает:
 
 - build/startup info
-- active sessions, request rate и session duration histogram
+- active sessions, request rate, session duration histogram и rolling session p95 gauge
 - payload bytes и UDP datagrams
 - uplink selection, runtime failures и failovers
 - probe runs и probe latency histogram
@@ -339,6 +339,7 @@ scrape_configs:
 - [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
 - [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
 - основной dashboard организован по секциям `Overview`, `SOCKS5`, `Uplink`, `Probes`, `TUN`
+- панель `Session Latency p95` строится по in-process rolling metric `outline_ws_rust_session_recent_p95_seconds`, а не по Grafana-side `histogram_quantile`, чтобы не пустеть на разрежённом или шумном трафике
 - dashboard включает отдельные панели `Penalty Score` и `Effective Latency` для degraded-but-not-yet-unhealthy uplink
 - Uplink секция также показывает `Raw RTT vs EWMA RTT` и `Weighted Uplink Score`, чтобы было видно, как selector принимает решение
 - `Health Probe Error Ratio` считает только боевые health probes (`ws/http/dns`) и намеренно исключает `standby_ws`
