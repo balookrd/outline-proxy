@@ -13,6 +13,9 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: SocketAddr,
+    pub h3_listen: Option<SocketAddr>,
+    pub h3_cert_path: Option<PathBuf>,
+    pub h3_key_path: Option<PathBuf>,
     pub ws_path: String,
     pub udp_ws_path: String,
     pub public_host: Option<String>,
@@ -40,6 +43,9 @@ impl Config {
                 .listen
                 .or(file.listen)
                 .unwrap_or_else(default_listen_addr),
+            h3_listen: args.h3_listen.or(file.h3_listen),
+            h3_cert_path: args.h3_cert_path.or(file.h3_cert_path),
+            h3_key_path: args.h3_key_path.or(file.h3_key_path),
             ws_path: args
                 .ws_path
                 .or(file.ws_path)
@@ -103,8 +109,25 @@ impl Config {
         if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
             bail!("public_scheme must be either \"ws\" or \"wss\"");
         }
+        match (&self.h3_cert_path, &self.h3_key_path) {
+            (Some(_), Some(_)) => {}
+            (None, None) => {
+                if self.h3_listen.is_some() {
+                    bail!("h3_listen requires both h3_cert_path and h3_key_path");
+                }
+            }
+            _ => bail!("h3_cert_path and h3_key_path must be configured together"),
+        }
         self.user_entries()?;
         Ok(())
+    }
+
+    pub fn h3_enabled(&self) -> bool {
+        self.h3_cert_path.is_some() && self.h3_key_path.is_some()
+    }
+
+    pub fn effective_h3_listen(&self) -> Option<SocketAddr> {
+        self.h3_enabled().then_some(self.h3_listen.unwrap_or(self.listen))
     }
 }
 
@@ -120,6 +143,15 @@ struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_LISTEN")]
     listen: Option<SocketAddr>,
+
+    #[arg(long, env = "OUTLINE_SS_H3_LISTEN")]
+    h3_listen: Option<SocketAddr>,
+
+    #[arg(long, env = "OUTLINE_SS_H3_CERT_PATH")]
+    h3_cert_path: Option<PathBuf>,
+
+    #[arg(long, env = "OUTLINE_SS_H3_KEY_PATH")]
+    h3_key_path: Option<PathBuf>,
 
     #[arg(long = "ws-path", env = "OUTLINE_SS_WS_PATH")]
     ws_path: Option<String>,
@@ -167,6 +199,9 @@ struct ConfigArgs {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct FileConfig {
     listen: Option<SocketAddr>,
+    h3_listen: Option<SocketAddr>,
+    h3_cert_path: Option<PathBuf>,
+    h3_key_path: Option<PathBuf>,
     ws_path: Option<String>,
     udp_ws_path: Option<String>,
     public_host: Option<String>,
