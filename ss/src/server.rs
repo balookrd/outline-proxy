@@ -1,4 +1,4 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, path::Path, sync::{Arc, OnceLock}};
 
 use anyhow::{Context, Result, anyhow};
 use axum::{
@@ -11,6 +11,11 @@ use axum::{
     routing::any,
 };
 use futures_util::{SinkExt, StreamExt};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder as HyperBuilder,
+    service::TowerToHyperService,
+};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sockudo_ws::{
     Config as H3WebSocketConfig, ExtendedConnectRequest as H3ExtendedConnectRequest,
@@ -23,6 +28,7 @@ use tokio::{
     sync::mpsc,
     time::{Duration, timeout},
 };
+use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -41,6 +47,7 @@ struct AppState {
 }
 
 pub async fn run(config: Config) -> Result<()> {
+    ensure_rustls_provider_installed();
     let config = Arc::new(config);
     let users = build_users(&config)?;
     let app = build_app(config.clone(), users.clone());
@@ -54,6 +61,7 @@ pub async fn run(config: Config) -> Result<()> {
     };
     info!(
         listen = %config.listen,
+        tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
         tcp_ws_path = %config.ws_path,
         udp_ws_path = %config.udp_ws_path,
@@ -64,12 +72,12 @@ pub async fn run(config: Config) -> Result<()> {
 
     if let Some(h3_server) = h3_server {
         tokio::try_join!(
-            serve_listener(listener, app),
+            serve_tcp_listener(listener, app, config.as_ref()),
             serve_h3_server(h3_server, config.clone(), users.clone())
         )?;
         Ok(())
     } else {
-        serve_listener(listener, app).await
+        serve_tcp_listener(listener, app, config.as_ref()).await
     }
 }
 
@@ -707,6 +715,15 @@ async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transpor
         .context("failed to bind HTTP/3 WebSocket server")
 }
 
+async fn serve_tcp_listener(listener: TcpListener, app: Router, config: &Config) -> Result<()> {
+    if config.tcp_tls_enabled() {
+        let acceptor = build_tcp_tls_acceptor(config)?;
+        serve_tls_listener(listener, app, acceptor).await
+    } else {
+        serve_listener(listener, app).await
+    }
+}
+
 async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
     config: Arc<Config>,
@@ -770,15 +787,51 @@ fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
         .as_deref()
         .ok_or_else(|| anyhow!("missing h3_key_path"))?;
 
+    load_server_tls_config(cert_path, key_path, &[b"h3".as_slice()])
+        .context("failed to build HTTP/3 TLS config")
+}
+
+fn build_tcp_tls_acceptor(config: &Config) -> Result<TlsAcceptor> {
+    let cert_path = config
+        .tls_cert_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing tls_cert_path"))?;
+    let key_path = config
+        .tls_key_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing tls_key_path"))?;
+
+    let tls_config = load_server_tls_config(
+        cert_path,
+        key_path,
+        &[b"h2".as_slice(), b"http/1.1".as_slice()],
+    )
+    .context("failed to build TCP TLS config")?;
+
+    Ok(TlsAcceptor::from(Arc::new(tls_config)))
+}
+
+fn load_server_tls_config(
+    cert_path: &Path,
+    key_path: &Path,
+    alpn_protocols: &[&[u8]],
+) -> Result<rustls::ServerConfig> {
+    ensure_rustls_provider_installed();
     let certs = load_cert_chain(cert_path)?;
     let key = load_private_key(key_path)?;
 
     let mut tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .context("failed to build HTTP/3 TLS config")?;
-    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+        .with_single_cert(certs, key)?;
+    tls_config.alpn_protocols = alpn_protocols.iter().map(|alpn| alpn.to_vec()).collect();
     Ok(tls_config)
+}
+
+fn ensure_rustls_provider_installed() {
+    static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+    RUSTLS_PROVIDER.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
 }
 
 fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
@@ -809,6 +862,48 @@ async fn serve_listener(listener: TcpListener, app: Router) -> Result<()> {
     axum::serve(listener, app)
         .await
         .context("server exited unexpectedly")
+}
+
+async fn serve_tls_listener(
+    listener: TcpListener,
+    app: Router,
+    acceptor: TlsAcceptor,
+) -> Result<()> {
+    loop {
+        let (stream, peer_addr) = listener
+            .accept()
+            .await
+            .context("failed to accept TLS tcp connection")?;
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+
+        tokio::spawn(async move {
+            let tls_stream = match acceptor.accept(stream).await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    warn!(?error, %peer_addr, "tls handshake failed");
+                    return;
+                }
+            };
+
+            let io = TokioIo::new(tls_stream);
+            let service = TowerToHyperService::new(app);
+            let builder = HyperBuilder::new(TokioExecutor::new());
+
+            if let Err(error) = builder.serve_connection_with_upgrades(io, service).await {
+                if !is_benign_tls_serve_error(error.as_ref()) {
+                    warn!(?error, %peer_addr, "tls http server connection terminated with error");
+                }
+            }
+        });
+    }
+}
+
+fn is_benign_tls_serve_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+    let message = error.to_string();
+    message.contains("connection closed")
+        || message.contains("closed before message completed")
+        || message.contains("canceled")
 }
 
 #[cfg(test)]
@@ -1002,6 +1097,8 @@ mod tests {
     fn sample_config(listen: SocketAddr) -> Config {
         Config {
             listen,
+            tls_cert_path: None,
+            tls_key_path: None,
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
@@ -1023,6 +1120,7 @@ mod tests {
     }
 
     fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {
+        super::ensure_rustls_provider_installed();
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let cert_der = CertificateDer::from(cert.cert.der().to_vec());
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
@@ -1037,6 +1135,7 @@ mod tests {
     }
 
     fn test_h3_client_config(cert_der: CertificateDer<'static>) -> Result<quinn::ClientConfig> {
+        super::ensure_rustls_provider_installed();
         let mut roots = rustls::RootCertStore::empty();
         roots.add(cert_der)?;
 

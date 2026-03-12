@@ -197,6 +197,8 @@ mod tests {
     fn sample_config() -> Config {
         Config {
             listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000),
+            tls_cert_path: None,
+            tls_key_path: None,
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
