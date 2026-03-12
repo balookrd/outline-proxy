@@ -313,7 +313,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, command) (rate(outline_ws_rust_requests_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, command) (rate(outline_ws_rust_requests_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{command}}",
           "refId": "A"
         }
@@ -353,7 +353,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]) * 8)",
+          "expr": "sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[$__rate_interval]) * 8)",
           "legendFormat": "{{instance}} {{protocol}} {{direction}}",
           "refId": "A"
         }
@@ -446,12 +446,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{transport}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (instance, from_uplink, to_uplink) (rate(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, from_uplink, to_uplink) (rate(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{from_uplink}} -> {{to_uplink}}",
           "refId": "B"
         }
@@ -772,7 +772,7 @@
       },
       "targets": [
         {
-          "expr": "avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{instance=~\"$instance\"}[5m]) / rate(outline_ws_rust_probe_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "expr": "avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(outline_ws_rust_probe_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{transport}} {{probe}}",
           "refId": "A"
         }
@@ -812,7 +812,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\"}[15m])), 1e-9)",
+          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\"}[$__rate_interval])), 1e-9)",
           "legendFormat": "{{instance}} {{uplink}} {{transport}}",
           "refId": "A"
         }
@@ -852,7 +852,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\"}[15m])), 1e-9)",
+          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\"}[$__rate_interval])), 1e-9)",
           "legendFormat": "{{instance}} {{uplink}} {{transport}}",
           "refId": "A"
         }
@@ -892,12 +892,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, transport, outcome) (rate(outline_ws_rust_warm_standby_acquire_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, uplink, transport, outcome) (rate(outline_ws_rust_warm_standby_acquire_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{transport}} {{outcome}}",
           "refId": "A"
         },
         {
-          "expr": "sum by (instance, uplink, transport, result) (rate(outline_ws_rust_warm_standby_refill_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, uplink, transport, result) (rate(outline_ws_rust_warm_standby_refill_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{transport}} refill {{result}}",
           "refId": "B"
         }
@@ -1000,7 +1000,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"idle_timeout|evicted\"}[5m]))",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"idle_timeout|evicted\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -1040,7 +1040,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"read_error|send_error\"}[5m]))",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"read_error|send_error\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -1080,7 +1080,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, direction, ip_family, outcome) (rate(outline_ws_rust_tun_packets_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, direction, ip_family, outcome) (rate(outline_ws_rust_tun_packets_total{instance=~\"$instance\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{direction}} {{ip_family}} {{outcome}}",
           "refId": "A"
         }
