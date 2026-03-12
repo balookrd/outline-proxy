@@ -277,10 +277,12 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let uplinks = load_uplinks(outline, args)?;
     let probe = load_probe_config(outline)?;
     let load_balancing = load_balancing_config(outline)?;
-    let status = args
-        .status_listen
-        .or_else(|| status_section.and_then(|s| s.listen))
-        .map(|listen| StatusConfig { listen });
+    let status = status_section.map(|section| StatusConfig {
+        listen: args
+            .status_listen
+            .or(section.listen)
+            .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9090))),
+    });
     let tun = load_tun_config(tun_section, args)?;
 
     Ok(AppConfig {
@@ -477,27 +479,23 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
 }
 
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
+    let Some(tun) = tun else {
+        return Ok(None);
+    };
     let path = args
         .tun_path
         .clone()
-        .or_else(|| tun.and_then(|section| section.path.clone()));
+        .or_else(|| tun.path.clone());
     let name = args
         .tun_name
         .clone()
-        .or_else(|| tun.and_then(|section| section.name.clone()));
+        .or_else(|| tun.name.clone());
     let mtu = args
         .tun_mtu
-        .or_else(|| tun.and_then(|section| section.mtu))
+        .or(tun.mtu)
         .unwrap_or(1500);
-    let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
-    let idle_timeout = Duration::from_secs(
-        tun.and_then(|section| section.idle_timeout_secs)
-            .unwrap_or(300),
-    );
-
-    if path.is_none() && name.is_none() {
-        return Ok(None);
-    }
+    let max_flows = tun.max_flows.unwrap_or(4096);
+    let idle_timeout = Duration::from_secs(tun.idle_timeout_secs.unwrap_or(300));
 
     let path =
         path.ok_or_else(|| anyhow!("missing tun.path: set it in config.toml or pass --tun-path"))?;
@@ -512,7 +510,7 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("tun idle_timeout_secs must be at least 5");
     }
 
-    let tcp_section = tun.and_then(|section| section.tcp.as_ref());
+    let tcp_section = tun.tcp.as_ref();
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
             tcp_section
@@ -814,6 +812,56 @@ mod tests {
             65_536
         );
         assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);
+    }
+
+    #[tokio::test]
+    async fn load_config_does_not_enable_tun_without_tun_section() {
+        let path = std::env::temp_dir().join("outline-ws-rust-no-tun-section.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [outline]
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from([
+            "test",
+            "--tun-path",
+            "/dev/net/tun",
+            "--tun-name",
+            "tun0",
+            "--tun-mtu",
+            "1500",
+        ]);
+        let config = load_config(&path, &args).await.unwrap();
+        assert!(config.tun.is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_does_not_enable_status_without_status_section() {
+        let path = std::env::temp_dir().join("outline-ws-rust-no-status-section.toml");
+        std::fs::write(
+            &path,
+            r#"
+            [outline]
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test", "--status-listen", "[::1]:9090"]);
+        let config = load_config(&path, &args).await.unwrap();
+        assert!(config.status.is_none());
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

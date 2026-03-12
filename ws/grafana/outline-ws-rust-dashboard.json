@@ -143,7 +143,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -170,12 +170,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance) (rate(outline_ws_rust_requests_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance) (increase(outline_ws_rust_requests_total{instance=~\"$instance\"}[$__range]))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "Request Rate",
+      "title": "Requests (Selected Range)",
       "type": "stat"
     },
     {
@@ -188,7 +188,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "bps"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -215,12 +215,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]) * 8)",
+          "expr": "sum by (instance) (increase(outline_ws_rust_bytes_total{instance=~\"$instance\"}[$__range]))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "Payload Throughput",
+      "title": "Payload (Selected Range)",
       "type": "stat"
     },
     {
@@ -233,7 +233,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "reqps"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -260,12 +260,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance) (rate(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance) (increase(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[$__range]))",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
       ],
-      "title": "Failover Rate",
+      "title": "Failovers (Selected Range)",
       "type": "stat"
     },
     {
