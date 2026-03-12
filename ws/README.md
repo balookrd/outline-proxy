@@ -179,6 +179,15 @@ name = "tun0"
 mtu = 1500
 max_flows = 4096
 idle_timeout_secs = 300
+
+[tun.tcp]
+connect_timeout_secs = 10
+handshake_timeout_secs = 15
+half_close_timeout_secs = 60
+max_pending_server_bytes = 1048576
+max_buffered_client_segments = 4096
+max_buffered_client_bytes = 262144
+max_retransmits = 12
 ```
 
 CLI override:
@@ -202,9 +211,11 @@ cargo run --release -- \
 - `tun_tcp` поднимает stateful userspace TCP relay: принимает `SYN`, создаёт uplink TCP tunnel, отвечает `SYN-ACK`, проксирует payload и закрывает flow через `FIN`/`RST`
 - для `client -> upstream` path есть overlap trimming, out-of-order buffering, receive-window enforcement и SACK-aware ACK path
 - для `upstream -> client` path есть send-window tracking, zero-window persist/backoff, deferred `FIN`, adaptive `RTO`, базовый congestion control (`cwnd`/`ssthresh`) и SACK-aware retransmit выбора дырки
+- `tun_tcp` ограничивает память и длительность проблемных flow: отдельные `connect_timeout`, `handshake_timeout`, `half_close_timeout`, caps на `max_pending_server_bytes`, `max_buffered_client_segments`, `max_buffered_client_bytes` и `max_retransmits`
 - при ошибке установки uplink или runtime write/read ошибке `tun_tcp` возвращает `RST`, чтобы клиентский стек не зависал
+- при локальном backpressure/reassembly overflow или retransmit budget exhaustion `tun_tcp` тоже завершает flow через `RST`, вместо тихого зависания
 - IPv4 fragments и IPv6 extension-header paths сейчас не поддержаны
-- текущие ограничения `tun_tcp`: нет полноценного Reno/NewReno recovery, нет congestion avoidance уровня production TCP stack, нет SACK scoreboard уровня kernel TCP и нет поддержки IPv4 fragments / IPv6 extension headers
+- текущие ограничения `tun_tcp`: нет полноценного Reno/NewReno recovery, нет SACK scoreboard уровня kernel TCP и нет поддержки IPv4 fragments / IPv6 extension headers
 
 На Linux для attach к существующему persistent TUN нужны:
 

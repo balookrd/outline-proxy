@@ -13,7 +13,7 @@ pub mod uplink;
 use anyhow::{Context, Result, anyhow};
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::{Args, load_config};
 use crate::metrics::init as init_metrics;
@@ -67,8 +67,23 @@ pub async fn run(args: Args) -> Result<()> {
         let uplinks = uplinks.clone();
         tokio::spawn(async move {
             if let Err(error) = proxy::handle_client(stream, peer, config, uplinks).await {
-                warn!(%peer, error = %format!("{error:#}"), "connection failed");
+                if is_expected_client_disconnect(&error) {
+                    debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
+                } else {
+                    warn!(%peer, error = %format!("{error:#}"), "connection failed");
+                }
             }
         });
     }
+}
+
+fn is_expected_client_disconnect(error: &anyhow::Error) -> bool {
+    let lower = format!("{error:#}").to_lowercase();
+    let client_side = lower.contains("client read failed") || lower.contains("client write failed");
+    let disconnect = lower.contains("connection reset by peer")
+        || lower.contains("broken pipe")
+        || lower.contains("os error 104")
+        || lower.contains("os error 54")
+        || lower.contains("os error 32");
+    client_side && disconnect
 }

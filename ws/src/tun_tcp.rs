@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
 use tokio::sync::Mutex;
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
+use crate::config::TunTcpConfig;
 use crate::metrics;
 use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 use crate::tun::SharedTunWriter;
@@ -49,6 +50,7 @@ struct TunTcpEngineInner {
     next_flow_id: AtomicU64,
     max_flows: usize,
     idle_timeout: Duration,
+    tcp: TunTcpConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -92,6 +94,7 @@ struct TcpFlowState {
     server_seq: u32,
     last_client_ack: u32,
     duplicate_ack_count: u8,
+    receive_window_capacity: usize,
     smoothed_rtt: Option<Duration>,
     rttvar: Duration,
     retransmission_timeout: Duration,
@@ -114,6 +117,7 @@ struct TcpFlowState {
     reported_retransmission_timeout_us: u64,
     reported_smoothed_rtt_us: u64,
     created_at: Instant,
+    status_since: Instant,
     last_seen: Instant,
 }
 
@@ -180,6 +184,7 @@ impl TunTcpEngine {
         uplinks: UplinkManager,
         max_flows: usize,
         idle_timeout: Duration,
+        tcp: TunTcpConfig,
     ) -> Self {
         let engine = Self {
             inner: Arc::new(TunTcpEngineInner {
@@ -189,6 +194,7 @@ impl TunTcpEngine {
                 next_flow_id: AtomicU64::new(1),
                 max_flows,
                 idle_timeout,
+                tcp,
             }),
         };
         engine.spawn_cleanup_loop();
@@ -233,6 +239,51 @@ impl TunTcpEngine {
         self.inner.flows.lock().await.get(key).cloned()
     }
 
+    async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
+        let flow = self.inner.flows.lock().await.remove(key);
+        let Some(flow) = flow else {
+            return;
+        };
+
+        let (flow_id, uplink_name, duration, upstream_writer, rst_packet) = {
+            let mut state = flow.lock().await;
+            let rst_packet = if matches!(state.status, TcpFlowStatus::Closed) {
+                None
+            } else {
+                build_flow_packet(
+                    &state,
+                    state.server_seq,
+                    state.client_next_seq,
+                    TCP_FLAG_RST | TCP_FLAG_ACK,
+                    &[],
+                )
+                .ok()
+            };
+            state.status = TcpFlowStatus::Closed;
+            clear_flow_metrics(&mut state);
+            (
+                state.id,
+                state.uplink_name.clone(),
+                state.created_at.elapsed(),
+                Arc::clone(&state.upstream_writer),
+                rst_packet,
+            )
+        };
+
+        if let Some(packet) = rst_packet {
+            let _ = self.inner.writer.write_packet(&packet).await;
+            metrics::record_tun_packet(
+                "upstream_to_tun",
+                ip_family_from_version(key.version),
+                "tcp_rst",
+            );
+        }
+        close_upstream_writer(upstream_writer).await;
+        metrics::record_tun_flow_closed(&uplink_name, reason, duration);
+        metrics::record_tun_tcp_event(&uplink_name, reason);
+        debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
+    }
+
     async fn handle_new_flow(&self, key: TcpFlowKey, packet: ParsedTcpPacket) -> Result<()> {
         if (packet.flags & TCP_FLAG_SYN) == 0 || (packet.flags & TCP_FLAG_ACK) != 0 {
             let reset = build_reset_response(&packet)?;
@@ -246,15 +297,26 @@ impl TunTcpEngine {
         }
 
         let target = ip_to_target(key.remote_ip, key.remote_port);
-        let (candidate, upstream_writer, upstream_reader) = match select_tcp_candidate_and_connect(
-            &self.inner.uplinks,
-            &target,
+        let (candidate, upstream_writer, upstream_reader) = match timeout(
+            self.inner.tcp.connect_timeout,
+            select_tcp_candidate_and_connect(&self.inner.uplinks, &target),
         )
         .await
         {
-            Ok(connected) => connected,
-            Err(error) => {
+            Ok(Ok(connected)) => connected,
+            Ok(Err(error)) => {
                 warn!(remote = %target, error = %format!("{error:#}"), "failed to establish TUN TCP upstream");
+                let reset = build_reset_response(&packet)?;
+                self.inner.writer.write_packet(&reset).await?;
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_from_version(packet.version),
+                    "tcp_rst",
+                );
+                return Ok(());
+            }
+            Err(_) => {
+                warn!(remote = %target, timeout_secs = self.inner.tcp.connect_timeout.as_secs(), "timed out establishing TUN TCP upstream");
                 let reset = build_reset_response(&packet)?;
                 self.inner.writer.write_packet(&reset).await?;
                 metrics::record_tun_packet(
@@ -268,6 +330,7 @@ impl TunTcpEngine {
 
         let server_isn = rand::random::<u32>();
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
+        let now = Instant::now();
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
@@ -290,6 +353,7 @@ impl TunTcpEngine {
             server_seq: server_isn.wrapping_add(1),
             last_client_ack: packet.sequence_number.wrapping_add(1),
             duplicate_ack_count: 0,
+            receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
             retransmission_timeout: TCP_INITIAL_RTO,
@@ -311,8 +375,9 @@ impl TunTcpEngine {
             reported_slow_start_threshold: 0,
             reported_retransmission_timeout_us: 0,
             reported_smoothed_rtt_us: 0,
-            created_at: Instant::now(),
-            last_seen: Instant::now(),
+            created_at: now,
+            status_since: now,
+            last_seen: now,
         }));
 
         self.insert_flow(key.clone(), Arc::clone(&state)).await?;
@@ -342,7 +407,7 @@ impl TunTcpEngine {
     async fn insert_flow(&self, key: TcpFlowKey, flow: Arc<Mutex<TcpFlowState>>) -> Result<()> {
         if self.inner.flows.lock().await.len() >= self.inner.max_flows {
             if let Some(evicted_key) = self.oldest_flow_key().await {
-                self.close_flow(&evicted_key, "evicted").await;
+                self.abort_flow_with_rst(&evicted_key, "evicted").await;
             } else {
                 bail!("TUN TCP flow table limit reached and no flow could be evicted");
             }
@@ -394,7 +459,7 @@ impl TunTcpEngine {
                 && packet.acknowledgement_number == state.server_seq
                 && packet.sequence_number == state.client_next_seq
             {
-                state.status = TcpFlowStatus::Established;
+                set_flow_status(&mut state, TcpFlowStatus::Established);
             } else {
                 let syn_ack = build_flow_syn_ack_packet(
                     &state,
@@ -435,6 +500,13 @@ impl TunTcpEngine {
             note_congestion_event(&mut state, false);
             metrics::record_tun_tcp_event(&state.uplink_name, "fast_retransmit");
             if let Some(packet) = retransmit_oldest_unacked_packet(&mut state)? {
+                if retransmit_budget_exhausted(&state, &self.inner.tcp) {
+                    let key = state.key.clone();
+                    drop(state);
+                    self.abort_flow_with_rst(&key, "retransmit_budget_exhausted")
+                        .await;
+                    return Ok(());
+                }
                 sync_flow_metrics(&mut state);
                 drop(state);
                 self.inner.writer.write_packet(&packet).await?;
@@ -462,6 +534,13 @@ impl TunTcpEngine {
 
         if seq_gt(packet.sequence_number, state.client_next_seq) {
             queue_future_segment_with_recv_window(&mut state, &packet);
+            if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
+                let key = state.key.clone();
+                drop(state);
+                self.abort_flow_with_rst(&key, "client_reassembly_limit")
+                    .await;
+                return Ok(());
+            }
             sync_flow_metrics(&mut state);
             let ack = build_flow_ack_packet(
                 &state,
@@ -554,20 +633,7 @@ impl TunTcpEngine {
                     .uplinks
                     .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
                     .await;
-                let rst = build_response_packet(
-                    packet.version,
-                    key.remote_ip,
-                    key.client_ip,
-                    key.remote_port,
-                    key.client_port,
-                    seq_number,
-                    ack_number,
-                    TCP_FLAG_RST | TCP_FLAG_ACK,
-                    &[],
-                )?;
-                self.inner.writer.write_packet(&rst).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst");
-                self.close_flow(&key, "send_error").await;
+                self.abort_flow_with_rst(&key, "send_error").await;
                 return Ok(());
             }
             metrics::add_bytes("tcp", "client_to_upstream", pending_payload.len());
@@ -606,11 +672,14 @@ impl TunTcpEngine {
             let should_close = {
                 let mut state = flow.lock().await;
                 let should_close = state.status == TcpFlowStatus::ServerClosed;
-                state.status = if should_close {
-                    TcpFlowStatus::Closed
-                } else {
-                    TcpFlowStatus::ClientClosed
-                };
+                set_flow_status(
+                    &mut state,
+                    if should_close {
+                        TcpFlowStatus::Closed
+                    } else {
+                        TcpFlowStatus::ClientClosed
+                    },
+                );
                 sync_flow_metrics(&mut state);
                 should_close
             };
@@ -637,17 +706,28 @@ impl TunTcpEngine {
                         if chunk.is_empty() {
                             continue;
                         }
-                        let (flush, ip_family) = {
+                        let (flush, ip_family, backlog_exceeded) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
                             }
                             state.last_seen = Instant::now();
                             state.pending_server_data.push_back(chunk.clone());
+                            let backlog_exceeded =
+                                exceeds_server_backlog_limit(&state, &engine.inner.tcp);
                             let flush = flush_server_output(&mut state);
                             sync_flow_metrics(&mut state);
-                            (flush, ip_family_from_version(key.version))
+                            (flush, ip_family_from_version(key.version), backlog_exceeded)
                         };
+
+                        if backlog_exceeded {
+                            let uplink_name = key_uplink_name(&flow).await;
+                            warn!(uplink = %uplink_name, "closing TUN TCP flow after server backlog limit");
+                            engine
+                                .abort_flow_with_rst(&key, "server_backlog_limit")
+                                .await;
+                            return;
+                        }
 
                         match flush {
                             Ok(flush) => {
@@ -825,7 +905,7 @@ impl TunTcpEngine {
         if let Some(flow) = flow {
             let (flow_id, uplink_name, duration, upstream_writer) = {
                 let mut state = flow.lock().await;
-                state.status = TcpFlowStatus::Closed;
+                set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
                 (
                     state.id,
@@ -852,13 +932,41 @@ impl TunTcpEngine {
         };
         let mut expired = Vec::new();
         for (key, flow) in flows {
-            if flow.lock().await.last_seen <= cutoff {
+            let state = flow.lock().await;
+            let handshake_expired = state.status == TcpFlowStatus::SynReceived
+                && state.status_since.elapsed() >= self.inner.tcp.handshake_timeout;
+            let half_close_expired = matches!(
+                state.status,
+                TcpFlowStatus::ClientClosed | TcpFlowStatus::ServerClosed
+            ) && state.status_since.elapsed()
+                >= self.inner.tcp.half_close_timeout;
+            let idle_expired = state.last_seen <= cutoff;
+            drop(state);
+            if handshake_expired || half_close_expired || idle_expired {
                 expired.push(key);
             }
         }
 
         for key in expired {
-            self.close_flow(&key, "idle_timeout").await;
+            let reason = if let Some(flow) = self.lookup_flow(&key).await {
+                let state = flow.lock().await;
+                if state.status == TcpFlowStatus::SynReceived
+                    && state.status_since.elapsed() >= self.inner.tcp.handshake_timeout
+                {
+                    "handshake_timeout"
+                } else if matches!(
+                    state.status,
+                    TcpFlowStatus::ClientClosed | TcpFlowStatus::ServerClosed
+                ) && state.status_since.elapsed() >= self.inner.tcp.half_close_timeout
+                {
+                    "half_close_timeout"
+                } else {
+                    "idle_timeout"
+                }
+            } else {
+                continue;
+            };
+            self.abort_flow_with_rst(&key, reason).await;
         }
 
         let flows = {
@@ -892,11 +1000,21 @@ impl TunTcpEngine {
                 Ok(packet) => packet,
                 Err(error) => {
                     warn!(error = %format!("{error:#}"), "failed to build retransmitted TUN TCP packet");
-                    self.close_flow(&key, "retransmit_build_error").await;
+                    self.abort_flow_with_rst(&key, "retransmit_build_error")
+                        .await;
                     continue;
                 }
             };
             if let Some((packet, outcome)) = packet {
+                if let Some(flow) = self.lookup_flow(&key).await {
+                    let state = flow.lock().await;
+                    if retransmit_budget_exhausted(&state, &self.inner.tcp) {
+                        drop(state);
+                        self.abort_flow_with_rst(&key, "retransmit_budget_exhausted")
+                            .await;
+                        continue;
+                    }
+                }
                 let ip_family = ip_family_from_version(key.version);
                 if let Err(error) = self.inner.writer.write_packet(&packet).await {
                     warn!(error = %format!("{error:#}"), "failed to retransmit TUN TCP packet");
@@ -1551,7 +1669,7 @@ fn ack_options(state: &TcpFlowState) -> Vec<u8> {
 
 fn advertised_receive_window(state: &TcpFlowState) -> u16 {
     let buffered_bytes = buffered_client_bytes(state);
-    let available = TCP_SERVER_RECV_WINDOW_CAPACITY.saturating_sub(buffered_bytes);
+    let available = state.receive_window_capacity.saturating_sub(buffered_bytes);
     let scaled = available >> TCP_SERVER_WINDOW_SCALE;
     scaled.min(u16::MAX as usize) as u16
 }
@@ -1597,6 +1715,13 @@ fn buffered_client_bytes(state: &TcpFlowState) -> usize {
         .sum()
 }
 
+fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
+    if state.status != status {
+        state.status = status;
+        state.status_since = Instant::now();
+    }
+}
+
 fn reset_zero_window_persist(state: &mut TcpFlowState) {
     state.zero_window_probe_backoff = TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL;
     state.next_zero_window_probe_at = None;
@@ -1604,7 +1729,9 @@ fn reset_zero_window_persist(state: &mut TcpFlowState) {
 
 fn receive_window_end(state: &TcpFlowState) -> u32 {
     state.client_next_seq.wrapping_add(
-        TCP_SERVER_RECV_WINDOW_CAPACITY.saturating_sub(buffered_client_bytes(state)) as u32,
+        state
+            .receive_window_capacity
+            .saturating_sub(buffered_client_bytes(state)) as u32,
     )
 }
 
@@ -1695,6 +1822,22 @@ fn queue_future_segment_with_recv_window(state: &mut TcpFlowState, packet: &Pars
         return;
     };
     queue_future_segment(&mut state.pending_client_segments, &trimmed);
+}
+
+fn exceeds_client_reassembly_limits(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
+    state.pending_client_segments.len() > config.max_buffered_client_segments
+        || buffered_client_bytes(state) > config.max_buffered_client_bytes
+}
+
+fn exceeds_server_backlog_limit(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
+    pending_server_bytes(state) > config.max_pending_server_bytes
+}
+
+fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
+    state
+        .unacked_server_segments
+        .iter()
+        .any(|segment| segment.retransmits >= config.max_retransmits)
 }
 
 fn drain_ready_buffered_segments(
@@ -2054,11 +2197,14 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     let sequence_number = state.server_seq;
     state.server_seq = state.server_seq.wrapping_add(1);
     state.server_fin_pending = false;
-    state.status = if state.status == TcpFlowStatus::ClientClosed {
-        TcpFlowStatus::Closed
-    } else {
-        TcpFlowStatus::ServerClosed
-    };
+    set_flow_status(
+        state,
+        if state.status == TcpFlowStatus::ClientClosed {
+            TcpFlowStatus::Closed
+        } else {
+            TcpFlowStatus::ServerClosed
+        },
+    );
     state.unacked_server_segments.push_back(ServerSegment {
         sequence_number,
         acknowledgement_number: state.client_next_seq,
@@ -2362,7 +2508,9 @@ mod tests {
         build_reset_response, drain_ready_buffered_segments, normalize_client_segment,
         queue_future_segment,
     };
-    use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
+    use crate::config::{
+        LoadBalancingConfig, ProbeConfig, TunTcpConfig, UplinkConfig, WsProbeConfig,
+    };
     use crate::transport::{AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter};
     use crate::tun::SharedTunWriter;
     use crate::types::{CipherKind, TargetAddr, WsTransportMode};
@@ -2394,7 +2542,13 @@ mod tests {
         let upstream = TestTcpUpstream::start().await;
         let manager = build_test_manager(upstream.url()).await;
         let (writer, mut capture) = TunCapture::new().await;
-        let engine = super::TunTcpEngine::new(writer, manager, 128, Duration::from_secs(60));
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
 
         let client_ip = Ipv4Addr::new(10, 0, 0, 2);
         let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
@@ -2483,7 +2637,13 @@ mod tests {
         let upstream = TestTcpUpstream::start().await;
         let manager = build_test_manager(upstream.url()).await;
         let (writer, mut capture) = TunCapture::new().await;
-        let engine = super::TunTcpEngine::new(writer, manager, 128, Duration::from_secs(60));
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
 
         let client_ip = Ipv4Addr::new(10, 0, 0, 2);
         let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
@@ -2574,7 +2734,13 @@ mod tests {
         let upstream = TestTcpUpstream::start().await;
         let manager = build_test_manager(upstream.url()).await;
         let (writer, mut capture) = TunCapture::new().await;
-        let engine = super::TunTcpEngine::new(writer, manager, 128, Duration::from_secs(60));
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
 
         let client_ip = Ipv4Addr::new(10, 0, 0, 2);
         let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
@@ -2644,7 +2810,13 @@ mod tests {
         let upstream = TestTcpUpstream::start().await;
         let manager = build_test_manager(upstream.url()).await;
         let (writer, mut capture) = TunCapture::new().await;
-        let engine = super::TunTcpEngine::new(writer, manager, 128, Duration::from_secs(60));
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
 
         let client_ip = Ipv4Addr::new(10, 0, 0, 2);
         let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
@@ -3225,6 +3397,40 @@ mod tests {
         assert_eq!(state.retransmission_timeout, Duration::from_millis(1600));
     }
 
+    #[tokio::test]
+    async fn reassembly_limits_trigger_for_segment_and_byte_pressure() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.pending_client_segments = vec![
+            super::BufferedClientSegment {
+                sequence_number: 150,
+                flags: TCP_FLAG_ACK,
+                payload: vec![1; 32],
+            },
+            super::BufferedClientSegment {
+                sequence_number: 182,
+                flags: TCP_FLAG_ACK,
+                payload: vec![2; 32],
+            },
+        ];
+        let config = TunTcpConfig {
+            max_buffered_client_segments: 1,
+            max_buffered_client_bytes: 48,
+            ..test_tun_tcp_config()
+        };
+        assert!(super::exceeds_client_reassembly_limits(&state, &config));
+    }
+
+    #[tokio::test]
+    async fn server_backlog_limit_detects_pending_bytes() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.pending_server_data = VecDeque::from([vec![1; 128], vec![2; 128]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            ..test_tun_tcp_config()
+        };
+        assert!(super::exceeds_server_backlog_limit(&state, &config));
+    }
+
     async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
         UplinkManager::new(
             vec![UplinkConfig {
@@ -3258,6 +3464,18 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    fn test_tun_tcp_config() -> TunTcpConfig {
+        TunTcpConfig {
+            connect_timeout: Duration::from_secs(5),
+            handshake_timeout: Duration::from_secs(5),
+            half_close_timeout: Duration::from_secs(15),
+            max_pending_server_bytes: 1_048_576,
+            max_buffered_client_segments: 4096,
+            max_buffered_client_bytes: 262_144,
+            max_retransmits: 12,
+        }
     }
 
     fn build_client_packet(
@@ -3358,6 +3576,7 @@ mod tests {
             server_seq: 1000,
             last_client_ack: 1000,
             duplicate_ack_count: 0,
+            receive_window_capacity: 262_144,
             smoothed_rtt: None,
             rttvar: super::TCP_INITIAL_RTO / 2,
             retransmission_timeout: super::TCP_INITIAL_RTO,
@@ -3380,6 +3599,7 @@ mod tests {
             reported_retransmission_timeout_us: 0,
             reported_smoothed_rtt_us: 0,
             created_at: Instant::now(),
+            status_since: Instant::now(),
             last_seen: Instant::now(),
         }
     }

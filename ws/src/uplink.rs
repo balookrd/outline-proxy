@@ -594,12 +594,21 @@ impl UplinkManager {
             match result {
                 Ok(()) => alive.push_back(ws),
                 Err(error) => {
-                    warn!(
-                        uplink = %uplink.name,
-                        transport = ?transport,
-                        error = %format!("{error:#}"),
-                        "dropping stale warm-standby websocket"
-                    );
+                    if is_expected_standby_probe_failure(&error) {
+                        debug!(
+                            uplink = %uplink.name,
+                            transport = ?transport,
+                            error = %format!("{error:#}"),
+                            "dropping stale warm-standby websocket"
+                        );
+                    } else {
+                        warn!(
+                            uplink = %uplink.name,
+                            transport = ?transport,
+                            error = %format!("{error:#}"),
+                            "dropping stale warm-standby websocket"
+                        );
+                    }
                 }
             }
         }
@@ -979,6 +988,17 @@ async fn ping_idle_websocket(ws_stream: &mut AnyWsStream) -> Result<()> {
             Message::Frame(_) => continue,
         }
     }
+}
+
+fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
+    let lower = format!("{error:#}").to_lowercase();
+    lower.contains("websocket probe received close frame")
+        || lower.contains("websocket probe stream closed before pong")
+        || lower.contains("connection reset by peer")
+        || lower.contains("broken pipe")
+        || lower.contains("os error 104")
+        || lower.contains("os error 54")
+        || lower.contains("os error 32")
 }
 
 async fn run_http_probe(
