@@ -393,7 +393,7 @@
       },
       "targets": [
         {
-          "expr": "histogram_quantile(0.95, sum by (instance, le, protocol) (rate(outline_ws_rust_session_duration_seconds_bucket{instance=~\"$instance\",result=\"success\"}[5m])))",
+          "expr": "outline_ws_rust_session_recent_p95_seconds{instance=~\"$instance\"}",
           "legendFormat": "{{instance}} {{protocol}} p95",
           "refId": "A"
         }

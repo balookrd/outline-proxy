@@ -4,11 +4,15 @@ use prometheus::{
     Encoder, Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec,
     Opts, Registry, TextEncoder,
 };
+use std::collections::{HashMap, VecDeque};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::uplink::UplinkManagerSnapshot;
 
 static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
+const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
+const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 
 struct Metrics {
     registry: Registry,
@@ -17,6 +21,8 @@ struct Metrics {
     socks_requests_total: IntCounterVec,
     sessions_active: IntGaugeVec,
     session_duration_seconds: HistogramVec,
+    session_recent_p95_seconds: GaugeVec,
+    session_recent_samples: IntGaugeVec,
     bytes_total: IntCounterVec,
     udp_datagrams_total: IntCounterVec,
     uplink_selected_total: IntCounterVec,
@@ -55,11 +61,17 @@ struct Metrics {
     uplink_standby_ready: IntGaugeVec,
     sticky_routes_total: IntGauge,
     sticky_routes_by_uplink: IntGaugeVec,
+    session_recent_windows: Mutex<HashMap<&'static str, RecentSessionWindow>>,
 }
 
 pub struct SessionTracker {
     protocol: &'static str,
     started_at: Instant,
+}
+
+#[derive(Default)]
+struct RecentSessionWindow {
+    samples: VecDeque<(Instant, f64)>,
 }
 
 impl Metrics {
@@ -106,6 +118,22 @@ impl Metrics {
             &["protocol", "result"],
         )
         .expect("session_duration_seconds metric");
+        let session_recent_p95_seconds = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_session_recent_p95_seconds",
+                "Rolling p95 of completed proxy session durations by protocol.",
+            ),
+            &["protocol"],
+        )
+        .expect("session_recent_p95_seconds metric");
+        let session_recent_samples = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_session_recent_samples",
+                "Number of completed proxy sessions tracked in the rolling latency window.",
+            ),
+            &["protocol"],
+        )
+        .expect("session_recent_samples metric");
         let bytes_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_bytes_total",
@@ -422,6 +450,12 @@ impl Metrics {
             .register(Box::new(session_duration_seconds.clone()))
             .expect("register session_duration_seconds");
         registry
+            .register(Box::new(session_recent_p95_seconds.clone()))
+            .expect("register session_recent_p95_seconds");
+        registry
+            .register(Box::new(session_recent_samples.clone()))
+            .expect("register session_recent_samples");
+        registry
             .register(Box::new(bytes_total.clone()))
             .expect("register bytes_total");
         registry
@@ -553,6 +587,8 @@ impl Metrics {
             socks_requests_total,
             sessions_active,
             session_duration_seconds,
+            session_recent_p95_seconds,
+            session_recent_samples,
             bytes_total,
             udp_datagrams_total,
             uplink_selected_total,
@@ -591,7 +627,29 @@ impl Metrics {
             uplink_standby_ready,
             sticky_routes_total,
             sticky_routes_by_uplink,
+            session_recent_windows: Mutex::new(HashMap::new()),
         }
+    }
+
+    fn record_session_sample(&self, protocol: &'static str, duration_seconds: f64) {
+        let now = Instant::now();
+        let mut windows = self
+            .session_recent_windows
+            .lock()
+            .expect("session_recent_windows lock poisoned");
+        let window = windows.entry(protocol).or_default();
+        window.samples.push_back((now, duration_seconds));
+        prune_session_window(window, now);
+        while window.samples.len() > SESSION_RECENT_MAX_SAMPLES {
+            window.samples.pop_front();
+        }
+
+        self.session_recent_samples
+            .with_label_values(&[protocol])
+            .set(i64::try_from(window.samples.len()).unwrap_or(i64::MAX));
+        self.session_recent_p95_seconds
+            .with_label_values(&[protocol])
+            .set(session_window_p95(window));
     }
 
     fn update_snapshot_metrics(&self, snapshot: &UplinkManagerSnapshot) {
@@ -708,6 +766,16 @@ pub fn init() {
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
     let _ = METRICS.start_time_seconds.get();
+    for protocol in ["tcp", "udp"] {
+        METRICS
+            .session_recent_p95_seconds
+            .with_label_values(&[protocol])
+            .set(0.0);
+        METRICS
+            .session_recent_samples
+            .with_label_values(&[protocol])
+            .set(0);
+    }
 }
 
 pub fn record_request(command: &'static str) {
@@ -727,6 +795,7 @@ pub fn track_session(protocol: &'static str) -> SessionTracker {
 
 impl SessionTracker {
     pub fn finish(self, success: bool) {
+        let elapsed = self.started_at.elapsed().as_secs_f64();
         METRICS
             .sessions_active
             .with_label_values(&[self.protocol])
@@ -734,7 +803,8 @@ impl SessionTracker {
         METRICS
             .session_duration_seconds
             .with_label_values(&[self.protocol, if success { "success" } else { "error" }])
-            .observe(self.started_at.elapsed().as_secs_f64());
+            .observe(elapsed);
+        METRICS.record_session_sample(self.protocol, elapsed);
     }
 }
 
@@ -948,4 +1018,63 @@ pub fn render_prometheus(snapshot: &UplinkManagerSnapshot) -> Result<String> {
         .encode(&metric_families, &mut buffer)
         .context("failed to encode prometheus metrics")?;
     String::from_utf8(buffer).context("failed to encode metrics output as UTF-8")
+}
+
+fn prune_session_window(window: &mut RecentSessionWindow, now: Instant) {
+    while let Some((recorded_at, _)) = window.samples.front() {
+        if now.duration_since(*recorded_at) <= SESSION_RECENT_WINDOW {
+            break;
+        }
+        window.samples.pop_front();
+    }
+}
+
+fn session_window_p95(window: &RecentSessionWindow) -> f64 {
+    if window.samples.is_empty() {
+        return 0.0;
+    }
+
+    let mut values: Vec<f64> = window.samples.iter().map(|(_, value)| *value).collect();
+    values.sort_by(f64::total_cmp);
+    let rank = ((values.len() as f64) * 0.95).ceil() as usize;
+    values[rank.saturating_sub(1).min(values.len() - 1)]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::uplink::UplinkManagerSnapshot;
+
+    fn empty_snapshot() -> UplinkManagerSnapshot {
+        UplinkManagerSnapshot {
+            generated_at_unix_ms: 0,
+            uplinks: Vec::new(),
+            sticky_routes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn render_prometheus_exports_session_histogram_and_recent_p95() {
+        init();
+        let session = track_session("tcp");
+        session.finish(true);
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains("outline_ws_rust_session_duration_seconds_bucket"));
+        assert!(rendered.contains("outline_ws_rust_session_recent_p95_seconds"));
+        assert!(rendered.contains("outline_ws_rust_session_recent_samples"));
+        assert!(rendered.contains("protocol=\"tcp\""));
+        assert!(rendered.contains("result=\"success\""));
+    }
+
+    #[test]
+    fn session_window_p95_uses_nearest_rank() {
+        let mut window = RecentSessionWindow::default();
+        let now = Instant::now();
+        for value in [0.1, 0.2, 0.3, 0.4, 0.9] {
+            window.samples.push_back((now, value));
+        }
+
+        assert_eq!(session_window_p95(&window), 0.9);
+    }
 }
