@@ -22,204 +22,17 @@
   "links": [],
   "panels": [
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "pps"
-        },
-        "overrides": []
-      },
+      "collapsed": false,
       "gridPos": {
-        "h": 8,
-        "w": 12,
+        "h": 1,
+        "w": 24,
         "x": 0,
         "y": 0
       },
-      "id": 1,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[5m]))",
-          "legendFormat": "{{instance}} {{uplink}} {{event}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP Retransmits",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "pps"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[5m]))",
-          "legendFormat": "{{instance}} {{uplink}} {{event}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP Window And FIN Events",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 8
-      },
-      "id": 3,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP In-Flight Segments",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 8
-      },
-      "id": 4,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP In-Flight Bytes",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 8
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP Pending Server Bytes",
-      "type": "timeseries"
+      "id": 101,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
     },
     {
       "datasource": {
@@ -239,87 +52,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 16
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP Buffered Client Segments",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 16
-      },
-      "id": 7,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
-          "refId": "A"
-        }
-      ],
-      "title": "TUN TCP Zero-Window Flows",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 24
+        "y": 1
       },
       "id": 8,
       "options": {
@@ -338,52 +71,7 @@
           "refId": "A"
         }
       ],
-      "title": "TUN TCP Active Flows",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "bytes"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 24
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} cwnd",
-          "refId": "A"
-        },
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} ssthresh",
-          "refId": "B"
-        }
-      ],
-      "title": "TUN TCP Congestion Window",
+      "title": "Active TCP Flows",
       "type": "timeseries"
     },
     {
@@ -402,9 +90,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 24
+        "w": 12,
+        "x": 12,
+        "y": 1
       },
       "id": 10,
       "options": {
@@ -428,7 +116,371 @@
           "refId": "B"
         }
       ],
-      "title": "TUN TCP RTT And RTO",
+      "title": "RTT and Retransmit Timeout",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "id": 102,
+      "panels": [],
+      "title": "Recovery",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "id": 1,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[5m]))",
+          "legendFormat": "{{instance}} {{uplink}} {{event}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Retransmits",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[5m]))",
+          "legendFormat": "{{instance}} {{uplink}} {{event}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Window Pressure and FIN Lifecycle",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "id": 103,
+      "panels": [],
+      "title": "Flow State",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 19
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "In-Flight Segments",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 19
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "In-Flight Bytes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 19
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Pending Server Bytes",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 104,
+      "panels": [],
+      "title": "Windowing",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Buffered Client Segments",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Zero-Window Flows",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 44
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} cwnd",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} ssthresh",
+          "refId": "B"
+        }
+      ],
+      "title": "Congestion Window and SSThresh",
       "type": "timeseries"
     }
   ],
@@ -469,7 +521,7 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(up{job=\"outline-ws-rust\"}, instance)",
+        "definition": "label_values(outline_ws_rust_build_info, instance)",
         "hide": 0,
         "includeAll": true,
         "label": "Instance",
@@ -477,7 +529,7 @@
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(up{job=\"outline-ws-rust\"}, instance)",
+          "query": "label_values(outline_ws_rust_build_info, instance)",
           "refId": "Prometheus-instance-Variable-Query"
         },
         "refresh": 2,

@@ -22,6 +22,7 @@ use crate::uplink::{TransportKind, UplinkManager};
 struct ActiveUdpTransport {
     index: usize,
     uplink_name: String,
+    uplink_weight: f64,
     transport: Arc<UdpWsTransport>,
 }
 
@@ -78,7 +79,12 @@ async fn handle_tcp_connect(
             )
         })?;
         metrics::record_uplink_selected("tcp", &candidate.uplink.name);
-        info!(uplink = %candidate.uplink.name, target = %target, "selected TCP uplink");
+        info!(
+            uplink = %candidate.uplink.name,
+            weight = candidate.uplink.weight,
+            target = %target,
+            "selected TCP uplink"
+        );
         let (writer, reader) = connected;
 
         let bound_addr = socket_addr_to_target(client.local_addr()?);
@@ -148,9 +154,16 @@ async fn handle_udp_associate(
             .context("failed to read UDP relay address")?;
 
         let active_transport = Arc::new(Mutex::new(select_udp_transport(&uplinks, None).await?));
-        let initial_uplink_name = active_transport.lock().await.uplink_name.clone();
+        let (initial_uplink_name, initial_weight) = {
+            let active = active_transport.lock().await;
+            (active.uplink_name.clone(), active.uplink_weight)
+        };
         metrics::record_uplink_selected("udp", &initial_uplink_name);
-        info!(uplink = %initial_uplink_name, "selected UDP uplink");
+        info!(
+            uplink = %initial_uplink_name,
+            weight = initial_weight,
+            "selected UDP uplink"
+        );
         let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
 
         send_reply(
@@ -300,6 +313,7 @@ async fn select_udp_transport(
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
                     uplink_name: candidate.uplink.name.clone(),
+                    uplink_weight: candidate.uplink.weight,
                     transport: Arc::new(transport),
                 });
             }
@@ -341,6 +355,7 @@ async fn failover_udp_transport(
     *active = ActiveUdpTransport {
         index: replacement.index,
         uplink_name: replacement.uplink_name.clone(),
+        uplink_weight: replacement.uplink_weight,
         transport: Arc::clone(&replacement.transport),
     };
     Ok(replacement)

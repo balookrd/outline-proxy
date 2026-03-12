@@ -73,6 +73,7 @@ pub struct UplinkConfig {
     pub udp_ws_mode: WsTransportMode,
     pub cipher: CipherKind,
     pub password: String,
+    pub weight: f64,
     pub fwmark: Option<u32>,
 }
 
@@ -111,6 +112,7 @@ pub struct LoadBalancingConfig {
     pub failure_cooldown: Duration,
     pub warm_standby_tcp: usize,
     pub warm_standby_udp: usize,
+    pub rtt_ewma_alpha: f64,
     pub failure_penalty: Duration,
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,
@@ -204,6 +206,7 @@ struct UplinkSection {
     udp_ws_mode: Option<WsTransportMode>,
     method: Option<CipherKind>,
     password: Option<String>,
+    weight: Option<f64>,
     fwmark: Option<u32>,
 }
 
@@ -242,6 +245,7 @@ struct LoadBalancingSection {
     failure_cooldown_secs: Option<u64>,
     warm_standby_tcp: Option<usize>,
     warm_standby_udp: Option<usize>,
+    rtt_ewma_alpha: Option<f64>,
     failure_penalty_ms: Option<u64>,
     failure_penalty_max_ms: Option<u64>,
     failure_penalty_halflife_secs: Option<u64>,
@@ -272,7 +276,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
 
     let uplinks = load_uplinks(outline, args)?;
     let probe = load_probe_config(outline)?;
-    let load_balancing = load_balancing_config(outline);
+    let load_balancing = load_balancing_config(outline)?;
     let status = args
         .status_listen
         .or_else(|| status_section.and_then(|s| s.listen))
@@ -337,6 +341,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
             args.password
                 .clone()
                 .or_else(|| outline.and_then(|o| o.password.clone())),
+            Some(1.0),
             args.fwmark.or_else(|| outline.and_then(|o| o.fwmark)),
         )?]);
     }
@@ -355,6 +360,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
                 uplink.udp_ws_mode,
                 uplink.method,
                 uplink.password.clone(),
+                uplink.weight,
                 uplink.fwmark,
             )?);
         }
@@ -372,6 +378,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         outline.and_then(|o| o.udp_ws_mode),
         outline.and_then(|o| o.method),
         outline.and_then(|o| o.password.clone()),
+        Some(1.0),
         outline.and_then(|o| o.fwmark),
     )?])
 }
@@ -384,8 +391,13 @@ fn build_uplink(
     udp_ws_mode: Option<WsTransportMode>,
     cipher: Option<CipherKind>,
     password: Option<String>,
+    weight: Option<f64>,
     fwmark: Option<u32>,
 ) -> Result<UplinkConfig> {
+    let weight = weight.unwrap_or(1.0);
+    if !weight.is_finite() || weight <= 0.0 {
+        bail!("uplink weight must be a finite positive number");
+    }
     Ok(UplinkConfig {
         name,
         tcp_ws_url: tcp_ws_url.ok_or_else(|| {
@@ -397,6 +409,7 @@ fn build_uplink(
         cipher: cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305),
         password: password
             .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?,
+        weight,
         fwmark,
     })
 }
@@ -435,9 +448,13 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
     })
 }
 
-fn load_balancing_config(outline: Option<&OutlineSection>) -> LoadBalancingConfig {
+fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalancingConfig> {
     let lb = outline.and_then(|o| o.load_balancing.as_ref());
-    LoadBalancingConfig {
+    let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
+    if !rtt_ewma_alpha.is_finite() || !(0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
+        bail!("outline.load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
+    }
+    Ok(LoadBalancingConfig {
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
         failure_cooldown: Duration::from_secs(
@@ -445,6 +462,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> LoadBalancingConfi
         ),
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),
+        rtt_ewma_alpha,
         failure_penalty: Duration::from_millis(
             lb.and_then(|l| l.failure_penalty_ms).unwrap_or(500),
         ),
@@ -455,7 +473,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> LoadBalancingConfi
             lb.and_then(|l| l.failure_penalty_halflife_secs)
                 .unwrap_or(60),
         ),
-    }
+    })
 }
 
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
@@ -621,6 +639,7 @@ mod tests {
             [outline.load_balancing]
             warm_standby_tcp = 1
             warm_standby_udp = 1
+            rtt_ewma_alpha = 0.4
             failure_penalty_ms = 750
             failure_penalty_max_ms = 20000
             failure_penalty_halflife_secs = 45
@@ -629,6 +648,7 @@ mod tests {
             name = "primary"
             tcp_ws_url = "wss://primary.example.com/secret/tcp"
             tcp_ws_mode = "h3"
+            weight = 1.5
             fwmark = 100
             udp_ws_url = "wss://primary.example.com/secret/udp"
             udp_ws_mode = "h3"
@@ -649,12 +669,14 @@ mod tests {
         let uplinks = outline.uplinks.unwrap();
         assert_eq!(uplinks.len(), 2);
         assert_eq!(uplinks[0].fwmark, Some(100));
+        assert_eq!(uplinks[0].weight, Some(1.5));
         let probe = outline.probe.unwrap();
         assert_eq!(probe.max_concurrent, Some(3));
         assert_eq!(probe.max_dials, Some(1));
         let lb = outline.load_balancing.unwrap();
         assert_eq!(lb.warm_standby_tcp, Some(1));
         assert_eq!(lb.warm_standby_udp, Some(1));
+        assert_eq!(lb.rtt_ewma_alpha, Some(0.4));
         assert_eq!(lb.failure_penalty_ms, Some(750));
         assert_eq!(lb.failure_penalty_max_ms, Some(20000));
         assert_eq!(lb.failure_penalty_halflife_secs, Some(45));

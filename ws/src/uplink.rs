@@ -44,6 +44,8 @@ struct UplinkStatus {
     udp_healthy: Option<bool>,
     tcp_latency: Option<Duration>,
     udp_latency: Option<Duration>,
+    tcp_rtt_ewma: Option<Duration>,
+    udp_rtt_ewma: Option<Duration>,
     tcp_penalty: PenaltyState,
     udp_penalty: PenaltyState,
     last_error: Option<String>,
@@ -89,14 +91,19 @@ pub struct UplinkManagerSnapshot {
 pub struct UplinkSnapshot {
     pub index: usize,
     pub name: String,
+    pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,
     pub tcp_latency_ms: Option<u128>,
     pub udp_latency_ms: Option<u128>,
+    pub tcp_rtt_ewma_ms: Option<u128>,
+    pub udp_rtt_ewma_ms: Option<u128>,
     pub tcp_penalty_ms: Option<u128>,
     pub udp_penalty_ms: Option<u128>,
     pub tcp_effective_latency_ms: Option<u128>,
     pub udp_effective_latency_ms: Option<u128>,
+    pub tcp_score_ms: Option<u128>,
+    pub udp_score_ms: Option<u128>,
     pub cooldown_tcp_ms: Option<u128>,
     pub cooldown_udp_ms: Option<u128>,
     pub last_checked_ago_ms: Option<u128>,
@@ -120,6 +127,8 @@ impl Default for UplinkStatus {
             udp_healthy: None,
             tcp_latency: None,
             udp_latency: None,
+            tcp_rtt_ewma: None,
+            udp_rtt_ewma: None,
             tcp_penalty: PenaltyState::default(),
             udp_penalty: PenaltyState::default(),
             last_error: None,
@@ -224,17 +233,36 @@ impl UplinkManager {
                 effective_latency(status, TransportKind::Tcp, now, &self.inner.load_balancing);
             let udp_effective_latency =
                 effective_latency(status, TransportKind::Udp, now, &self.inner.load_balancing);
+            let tcp_score = score_latency(
+                status,
+                uplink.weight,
+                TransportKind::Tcp,
+                now,
+                &self.inner.load_balancing,
+            );
+            let udp_score = score_latency(
+                status,
+                uplink.weight,
+                TransportKind::Udp,
+                now,
+                &self.inner.load_balancing,
+            );
             uplinks.push(UplinkSnapshot {
                 index,
                 name: uplink.name.clone(),
+                weight: uplink.weight,
                 tcp_healthy: status.tcp_healthy,
                 udp_healthy: status.udp_healthy,
                 tcp_latency_ms: status.tcp_latency.map(|v| v.as_millis()),
                 udp_latency_ms: status.udp_latency.map(|v| v.as_millis()),
+                tcp_rtt_ewma_ms: status.tcp_rtt_ewma.map(|v| v.as_millis()),
+                udp_rtt_ewma_ms: status.udp_rtt_ewma.map(|v| v.as_millis()),
                 tcp_penalty_ms: duration_to_millis_option(tcp_penalty),
                 udp_penalty_ms: duration_to_millis_option(udp_penalty),
                 tcp_effective_latency_ms: duration_to_millis_option(tcp_effective_latency),
                 udp_effective_latency_ms: duration_to_millis_option(udp_effective_latency),
+                tcp_score_ms: duration_to_millis_option(tcp_score),
+                udp_score_ms: duration_to_millis_option(udp_score),
                 cooldown_tcp_ms: status
                     .cooldown_until_tcp
                     .and_then(|until| until.checked_duration_since(now))
@@ -399,8 +427,9 @@ impl UplinkManager {
                 index,
                 uplink: Arc::clone(uplink),
                 healthy: effective_health(&statuses[index], transport, now),
-                latency: effective_latency(
+                score: score_latency(
                     &statuses[index],
+                    uplink.weight,
                     transport,
                     now,
                     &self.inner.load_balancing,
@@ -417,9 +446,9 @@ impl UplinkManager {
                 .cmp(&rightless_bool(right.healthy))
                 .reverse()
                 .then_with(|| {
-                    left.latency
+                    left.score
                         .unwrap_or(Duration::MAX)
-                        .cmp(&right.latency.unwrap_or(Duration::MAX))
+                        .cmp(&right.score.unwrap_or(Duration::MAX))
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -654,23 +683,25 @@ impl UplinkManager {
             .unwrap_or(sticky);
         let transport = transport_from_key(routing_key);
         let now = Instant::now();
-        let sticky_latency = effective_latency(
+        let sticky_score = score_latency(
             &statuses[sticky.index],
+            self.inner.uplinks[sticky.index].weight,
             transport,
             now,
             &self.inner.load_balancing,
         );
-        let fastest_latency = effective_latency(
+        let fastest_score = score_latency(
             &statuses[fastest.index],
+            self.inner.uplinks[fastest.index].weight,
             transport,
             now,
             &self.inner.load_balancing,
         );
 
-        let should_switch = match (sticky_latency, fastest_latency) {
-            (Some(sticky_latency), Some(fastest_latency)) => {
+        let should_switch = match (sticky_score, fastest_score) {
+            (Some(sticky_score), Some(fastest_score)) => {
                 sticky.index != fastest.index
-                    && sticky_latency > fastest_latency + self.inner.load_balancing.hysteresis
+                    && sticky_score > fastest_score + self.inner.load_balancing.hysteresis
             }
             _ => false,
         };
@@ -737,7 +768,7 @@ impl UplinkManager {
             let mut refill_udp = false;
             match outcome {
                 Ok(result) => {
-                    {
+                    let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
                         let now = Instant::now();
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
@@ -746,6 +777,16 @@ impl UplinkManager {
                         status.udp_healthy = Some(result.udp_ok);
                         status.tcp_latency = result.tcp_latency;
                         status.udp_latency = result.udp_latency;
+                        update_rtt_ewma(
+                            &mut status.tcp_rtt_ewma,
+                            result.tcp_latency,
+                            self.inner.load_balancing.rtt_ewma_alpha,
+                        );
+                        update_rtt_ewma(
+                            &mut status.udp_rtt_ewma,
+                            result.udp_latency,
+                            self.inner.load_balancing.rtt_ewma_alpha,
+                        );
                         if !result.tcp_ok {
                             add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
                         }
@@ -755,13 +796,25 @@ impl UplinkManager {
                         status.cooldown_until_tcp = None;
                         status.cooldown_until_udp = None;
                         status.last_error = None;
-                    }
+                        (
+                            status
+                                .tcp_rtt_ewma
+                                .map(|v| v.as_millis() as u64)
+                                .unwrap_or_default(),
+                            status
+                                .udp_rtt_ewma
+                                .map(|v| v.as_millis() as u64)
+                                .unwrap_or_default(),
+                        )
+                    };
                     debug!(
                         uplink = %uplink.name,
                         tcp_healthy = result.tcp_ok,
                         udp_healthy = result.udp_ok,
                         tcp_latency_ms = result.tcp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
                         udp_latency_ms = result.udp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                        tcp_rtt_ewma_ms,
+                        udp_rtt_ewma_ms,
                         "uplink probe succeeded"
                     );
                     refill_tcp = result.tcp_ok;
@@ -810,7 +863,7 @@ struct CandidateState {
     index: usize,
     uplink: Arc<UplinkConfig>,
     healthy: bool,
-    latency: Option<Duration>,
+    score: Option<Duration>,
 }
 
 struct StandbyPool {
@@ -1229,10 +1282,7 @@ fn effective_latency(
     now: Instant,
     config: &LoadBalancingConfig,
 ) -> Option<Duration> {
-    let base = match transport {
-        TransportKind::Tcp => status.tcp_latency,
-        TransportKind::Udp => status.udp_latency,
-    };
+    let base = scoring_base_latency(status, transport);
     let penalty = current_penalty(
         match transport {
             TransportKind::Tcp => &status.tcp_penalty,
@@ -1247,6 +1297,37 @@ fn effective_latency(
         (None, Some(penalty)) => Some(penalty),
         (None, None) => None,
     }
+}
+
+fn scoring_base_latency(status: &UplinkStatus, transport: TransportKind) -> Option<Duration> {
+    match transport {
+        TransportKind::Tcp => status.tcp_rtt_ewma.or(status.tcp_latency),
+        TransportKind::Udp => status.udp_rtt_ewma.or(status.udp_latency),
+    }
+}
+
+fn score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    transport: TransportKind,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> Option<Duration> {
+    let effective = effective_latency(status, transport, now, config)?;
+    let weight = weight.max(0.000_001);
+    Some(Duration::from_secs_f64(effective.as_secs_f64() / weight))
+}
+
+fn update_rtt_ewma(current: &mut Option<Duration>, sample: Option<Duration>, alpha: f64) {
+    let Some(sample) = sample else {
+        return;
+    };
+    *current = Some(match *current {
+        Some(existing) => Duration::from_secs_f64(
+            existing.as_secs_f64() * (1.0 - alpha) + sample.as_secs_f64() * alpha,
+        ),
+        None => sample,
+    });
 }
 
 fn current_penalty(
@@ -1311,6 +1392,7 @@ pub fn log_uplink_summary(manager: &UplinkManager) {
         failure_cooldown_secs = manager.inner.load_balancing.failure_cooldown.as_secs(),
         warm_standby_tcp = manager.inner.load_balancing.warm_standby_tcp,
         warm_standby_udp = manager.inner.load_balancing.warm_standby_udp,
+        rtt_ewma_alpha = manager.inner.load_balancing.rtt_ewma_alpha,
         failure_penalty_ms = manager.inner.load_balancing.failure_penalty.as_millis() as u64,
         failure_penalty_max_ms =
             manager.inner.load_balancing.failure_penalty_max.as_millis() as u64,
@@ -1321,4 +1403,55 @@ pub fn log_uplink_summary(manager: &UplinkManager) {
             .as_secs(),
         "uplink manager initialized"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{
+        PenaltyState, TransportKind, UplinkStatus, effective_latency, score_latency,
+        update_rtt_ewma,
+    };
+    use crate::config::LoadBalancingConfig;
+    use tokio::time::Instant;
+
+    fn lb() -> LoadBalancingConfig {
+        LoadBalancingConfig {
+            sticky_ttl: Duration::from_secs(300),
+            hysteresis: Duration::from_millis(50),
+            failure_cooldown: Duration::from_secs(10),
+            warm_standby_tcp: 0,
+            warm_standby_udp: 0,
+            rtt_ewma_alpha: 0.25,
+            failure_penalty: Duration::from_millis(500),
+            failure_penalty_max: Duration::from_secs(30),
+            failure_penalty_halflife: Duration::from_secs(60),
+        }
+    }
+
+    #[test]
+    fn rtt_ewma_smooths_new_samples() {
+        let mut current = Some(Duration::from_millis(100));
+        update_rtt_ewma(&mut current, Some(Duration::from_millis(300)), 0.25);
+        assert_eq!(current, Some(Duration::from_millis(150)));
+    }
+
+    #[test]
+    fn weighted_score_prefers_higher_weight_for_same_latency() {
+        let now = Instant::now();
+        let status = UplinkStatus {
+            tcp_latency: Some(Duration::from_millis(100)),
+            tcp_rtt_ewma: Some(Duration::from_millis(100)),
+            tcp_penalty: PenaltyState::default(),
+            ..UplinkStatus::default()
+        };
+        let light = score_latency(&status, 1.0, TransportKind::Tcp, now, &lb()).unwrap();
+        let heavy = score_latency(&status, 2.0, TransportKind::Tcp, now, &lb()).unwrap();
+        assert!(heavy < light);
+        assert_eq!(
+            effective_latency(&status, TransportKind::Tcp, now, &lb()),
+            Some(Duration::from_millis(100))
+        );
+    }
 }
