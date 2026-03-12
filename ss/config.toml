@@ -1,0 +1,32 @@
+# IPv4 example:
+listen = "0.0.0.0:3000"
+# IPv6 example:
+# listen = "[::]:3000"
+ws_path = "/tcp"
+udp_ws_path = "/udp"
+
+# Used for generated Outline access keys.
+# For IPv6 hosts, use brackets:
+# public_host = "[2001:db8::10]:443"
+public_host = "vpn.example.com"
+public_scheme = "wss"
+access_key_url_base = "https://keys.example.com/outline"
+
+# Set to true to print Outline YAML configs and ssconf:// URLs, then exit.
+print_access_keys = false
+
+method = "chacha20-ietf-poly1305"
+
+[[users]]
+id = "alice"
+password = "change-me"
+fwmark = 1001
+
+[[users]]
+id = "bob"
+password = "another-secret"
+fwmark = 1002
+
+# Single-user fallback instead of [[users]]:
+# password = "change-me"
+# fwmark = 1001
