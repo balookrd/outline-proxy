@@ -164,7 +164,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[5m]))",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -204,7 +204,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[5m]))",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[$__rate_interval]))",
           "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
