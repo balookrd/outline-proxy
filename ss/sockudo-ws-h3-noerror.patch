@@ -1,0 +1,61 @@
+diff --git a/src/server.rs b/src/server.rs
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -626,7 +626,9 @@
+ 
+             tokio::spawn(async move {
+                 if let Err(e) = handle_http3_connection(incoming, handler, config).await {
+-                    eprintln!("HTTP/3 connection error: {}", e);
++                    if !is_normal_h3_shutdown(&e) {
++                        eprintln!("HTTP/3 connection error: {}", e);
++                    }
+                 }
+             });
+         }
+@@ -664,7 +666,9 @@
+                 if let Err(e) =
+                     handle_http3_connection_filtered(incoming, filter, handler, config).await
+                 {
+-                    eprintln!("HTTP/3 connection error: {}", e);
++                    if !is_normal_h3_shutdown(&e) {
++                        eprintln!("HTTP/3 connection error: {}", e);
++                    }
+                 }
+             });
+         }
+@@ -724,7 +728,9 @@
+             }
+             Ok(None) => break,
+             Err(e) => {
+-                eprintln!("HTTP/3 accept error: {}", e);
++                if !is_normal_h3_shutdown(&e) {
++                    eprintln!("HTTP/3 accept error: {}", e);
++                }
+                 break;
+             }
+         }
+@@ -778,7 +784,9 @@
+             }
+             Ok(None) => break,
+             Err(e) => {
+-                eprintln!("HTTP/3 accept error: {}", e);
++                if !is_normal_h3_shutdown(&e) {
++                    eprintln!("HTTP/3 accept error: {}", e);
++                }
+                 break;
+             }
+         }
+@@ -842,6 +850,13 @@
+ }
+ 
+ #[cfg(feature = "http3")]
++fn is_normal_h3_shutdown(error: &dyn std::error::Error) -> bool {
++    let message = error.to_string();
++    message.contains("ApplicationClose: H3_NO_ERROR")
++        || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
++}
++
++#[cfg(feature = "http3")]
+ async fn handle_http3_request_filtered<F, Fut, Filter>(
+     request: http::Request<()>,
+     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
