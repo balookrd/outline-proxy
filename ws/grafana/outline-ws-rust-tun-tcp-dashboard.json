@@ -53,8 +53,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[5m]))",
-          "legendFormat": "{{uplink}} {{event}}",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[5m]))",
+          "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
       ],
@@ -93,8 +93,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[5m]))",
-          "legendFormat": "{{uplink}} {{event}}",
+          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[5m]))",
+          "legendFormat": "{{instance}} {{uplink}} {{event}}",
           "refId": "A"
         }
       ],
@@ -133,8 +133,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -173,8 +173,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -213,8 +213,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -253,8 +253,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -293,8 +293,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -333,8 +333,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"})",
-          "legendFormat": "{{uplink}}",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"})",
+          "legendFormat": "{{instance}} {{uplink}}",
           "refId": "A"
         }
       ],
@@ -373,13 +373,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{uplink}} cwnd",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} cwnd",
           "refId": "A"
         },
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{uplink}} ssthresh",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} ssthresh",
           "refId": "B"
         }
       ],
@@ -418,13 +418,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{instance=~\"$instance\"}) / clamp_min(sum by (uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{uplink}} srtt",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} srtt",
           "refId": "A"
         },
         {
-          "expr": "sum by (uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{instance=~\"$instance\"}) / clamp_min(sum by (uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{uplink}} rto",
+          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
+          "legendFormat": "{{instance}} {{uplink}} rto",
           "refId": "B"
         }
       ],

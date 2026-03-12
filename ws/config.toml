@@ -15,6 +15,15 @@ listen = "[::1]:9090"
 # max_flows = 4096
 # idle_timeout_secs = 300
 
+# [tun.tcp]
+# connect_timeout_secs = 10
+# handshake_timeout_secs = 15
+# half_close_timeout_secs = 60
+# max_pending_server_bytes = 1048576
+# max_buffered_client_segments = 4096
+# max_buffered_client_bytes = 262144
+# max_retransmits = 12
+
 [outline.probe]
 interval_secs = 30
 timeout_secs = 10

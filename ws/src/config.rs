@@ -128,6 +128,18 @@ pub struct TunConfig {
     pub mtu: usize,
     pub max_flows: usize,
     pub idle_timeout: Duration,
+    pub tcp: TunTcpConfig,
+}
+
+#[derive(Debug, Clone)]
+pub struct TunTcpConfig {
+    pub connect_timeout: Duration,
+    pub handshake_timeout: Duration,
+    pub half_close_timeout: Duration,
+    pub max_pending_server_bytes: usize,
+    pub max_buffered_client_segments: usize,
+    pub max_buffered_client_bytes: usize,
+    pub max_retransmits: u32,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +181,18 @@ struct TunSection {
     mtu: Option<usize>,
     max_flows: Option<usize>,
     idle_timeout_secs: Option<u64>,
+    tcp: Option<TunTcpSection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TunTcpSection {
+    connect_timeout_secs: Option<u64>,
+    handshake_timeout_secs: Option<u64>,
+    half_close_timeout_secs: Option<u64>,
+    max_pending_server_bytes: Option<usize>,
+    max_buffered_client_segments: Option<usize>,
+    max_buffered_client_bytes: Option<usize>,
+    max_retransmits: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -470,6 +494,61 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("tun idle_timeout_secs must be at least 5");
     }
 
+    let tcp_section = tun.and_then(|section| section.tcp.as_ref());
+    let tcp = TunTcpConfig {
+        connect_timeout: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.connect_timeout_secs)
+                .unwrap_or(10),
+        ),
+        handshake_timeout: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.handshake_timeout_secs)
+                .unwrap_or(15),
+        ),
+        half_close_timeout: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.half_close_timeout_secs)
+                .unwrap_or(60),
+        ),
+        max_pending_server_bytes: tcp_section
+            .and_then(|section| section.max_pending_server_bytes)
+            .unwrap_or(1_048_576),
+        max_buffered_client_segments: tcp_section
+            .and_then(|section| section.max_buffered_client_segments)
+            .unwrap_or(4096),
+        max_buffered_client_bytes: tcp_section
+            .and_then(|section| section.max_buffered_client_bytes)
+            .unwrap_or(262_144),
+        max_retransmits: tcp_section
+            .and_then(|section| section.max_retransmits)
+            .unwrap_or(12),
+    };
+    if tcp.connect_timeout < Duration::from_secs(1) {
+        bail!("tun.tcp.connect_timeout_secs must be at least 1");
+    }
+    if tcp.handshake_timeout < Duration::from_secs(1) {
+        bail!("tun.tcp.handshake_timeout_secs must be at least 1");
+    }
+    if tcp.half_close_timeout < Duration::from_secs(1) {
+        bail!("tun.tcp.half_close_timeout_secs must be at least 1");
+    }
+    if tcp.max_pending_server_bytes < 16_384 {
+        bail!("tun.tcp.max_pending_server_bytes must be at least 16384");
+    }
+    if tcp.max_buffered_client_segments == 0 {
+        bail!("tun.tcp.max_buffered_client_segments must be greater than zero");
+    }
+    if tcp.max_buffered_client_bytes < 16_384 {
+        bail!("tun.tcp.max_buffered_client_bytes must be at least 16384");
+    }
+    if tcp.max_buffered_client_bytes > 262_144 {
+        bail!("tun.tcp.max_buffered_client_bytes must be at most 262144");
+    }
+    if tcp.max_retransmits == 0 {
+        bail!("tun.tcp.max_retransmits must be greater than zero");
+    }
+
     #[cfg(target_os = "linux")]
     if name.is_none() {
         bail!("missing tun.name: Linux TUN attach requires --tun-name or [tun].name");
@@ -481,6 +560,7 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         mtu,
         max_flows,
         idle_timeout,
+        tcp,
     }))
 }
 
@@ -589,6 +669,15 @@ mod tests {
             mtu = 1500
             max_flows = 2048
             idle_timeout_secs = 120
+
+            [tun.tcp]
+            connect_timeout_secs = 8
+            handshake_timeout_secs = 12
+            half_close_timeout_secs = 45
+            max_pending_server_bytes = 524288
+            max_buffered_client_segments = 1024
+            max_buffered_client_bytes = 131072
+            max_retransmits = 9
         "#;
         let parsed: ConfigFile = toml::from_str(cfg).unwrap();
         let tun = parsed.tun.unwrap();
@@ -597,6 +686,14 @@ mod tests {
         assert_eq!(tun.mtu, Some(1500));
         assert_eq!(tun.max_flows, Some(2048));
         assert_eq!(tun.idle_timeout_secs, Some(120));
+        let tcp = tun.tcp.unwrap();
+        assert_eq!(tcp.connect_timeout_secs, Some(8));
+        assert_eq!(tcp.handshake_timeout_secs, Some(12));
+        assert_eq!(tcp.half_close_timeout_secs, Some(45));
+        assert_eq!(tcp.max_pending_server_bytes, Some(524288));
+        assert_eq!(tcp.max_buffered_client_segments, Some(1024));
+        assert_eq!(tcp.max_buffered_client_bytes, Some(131072));
+        assert_eq!(tcp.max_retransmits, Some(9));
     }
 
     #[tokio::test]
@@ -640,6 +737,15 @@ mod tests {
             mtu = 1500
             max_flows = 512
             idle_timeout_secs = 60
+
+            [tun.tcp]
+            connect_timeout_secs = 7
+            handshake_timeout_secs = 9
+            half_close_timeout_secs = 30
+            max_pending_server_bytes = 262144
+            max_buffered_client_segments = 2048
+            max_buffered_client_bytes = 65536
+            max_retransmits = 6
             "#,
         )
         .unwrap();
@@ -656,6 +762,36 @@ mod tests {
             config.tun.as_ref().unwrap().idle_timeout,
             Duration::from_secs(60)
         );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.connect_timeout,
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.handshake_timeout,
+            Duration::from_secs(9)
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.half_close_timeout,
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.max_pending_server_bytes,
+            262_144
+        );
+        assert_eq!(
+            config
+                .tun
+                .as_ref()
+                .unwrap()
+                .tcp
+                .max_buffered_client_segments,
+            2048
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.max_buffered_client_bytes,
+            65_536
+        );
+        assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);
     }
 
     #[tokio::test]

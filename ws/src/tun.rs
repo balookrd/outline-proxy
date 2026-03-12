@@ -93,7 +93,13 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let flow_ids = Arc::new(AtomicU64::new(1));
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
-    let tcp_engine = TunTcpEngine::new(writer.clone(), uplinks.clone(), max_flows, idle_timeout);
+    let tcp_engine = TunTcpEngine::new(
+        writer.clone(),
+        uplinks.clone(),
+        max_flows,
+        idle_timeout,
+        config.tcp.clone(),
+    );
     metrics::set_tun_config(max_flows, idle_timeout);
     spawn_flow_cleanup_loop(Arc::clone(&flows), idle_timeout);
 
