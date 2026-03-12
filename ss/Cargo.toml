@@ -11,6 +11,8 @@ clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
+hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 libc = "0.2"
 md-5 = "0.10"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
@@ -21,14 +23,13 @@ serde = { version = "1.0", features = ["derive"] }
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["full"] }
+tokio-rustls = "0.26"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
-hyper = { version = "1.8", features = ["client", "http2"] }
-hyper-util = { version = "0.1", features = ["client", "client-legacy", "http2", "tokio"] }
 rcgen = "0.14"
 tokio-tungstenite = "0.28"
 
