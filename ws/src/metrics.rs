@@ -46,8 +46,11 @@ struct Metrics {
     tun_tcp_smoothed_rtt_seconds: GaugeVec,
     uplink_health: GaugeVec,
     uplink_latency_seconds: GaugeVec,
+    uplink_rtt_ewma_seconds: GaugeVec,
     uplink_penalty_seconds: GaugeVec,
     uplink_effective_latency_seconds: GaugeVec,
+    uplink_score_seconds: GaugeVec,
+    uplink_weight: GaugeVec,
     uplink_cooldown_seconds: GaugeVec,
     uplink_standby_ready: IntGaugeVec,
     sticky_routes_total: IntGauge,
@@ -333,6 +336,14 @@ impl Metrics {
             &["transport", "uplink"],
         )
         .expect("uplink_latency_seconds metric");
+        let uplink_rtt_ewma_seconds = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_rtt_ewma_seconds",
+                "EWMA RTT latency used as the probe baseline.",
+            ),
+            &["transport", "uplink"],
+        )
+        .expect("uplink_rtt_ewma_seconds metric");
         let uplink_penalty_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_uplink_penalty_seconds",
@@ -349,6 +360,22 @@ impl Metrics {
             &["transport", "uplink"],
         )
         .expect("uplink_effective_latency_seconds metric");
+        let uplink_score_seconds = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_score_seconds",
+                "Final weighted uplink selection score.",
+            ),
+            &["transport", "uplink"],
+        )
+        .expect("uplink_score_seconds metric");
+        let uplink_weight = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_weight",
+                "Configured static weight for each uplink.",
+            ),
+            &["uplink"],
+        )
+        .expect("uplink_weight metric");
         let uplink_cooldown_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_uplink_cooldown_seconds",
@@ -482,11 +509,20 @@ impl Metrics {
             .register(Box::new(uplink_latency_seconds.clone()))
             .expect("register uplink_latency_seconds");
         registry
+            .register(Box::new(uplink_rtt_ewma_seconds.clone()))
+            .expect("register uplink_rtt_ewma_seconds");
+        registry
             .register(Box::new(uplink_penalty_seconds.clone()))
             .expect("register uplink_penalty_seconds");
         registry
             .register(Box::new(uplink_effective_latency_seconds.clone()))
             .expect("register uplink_effective_latency_seconds");
+        registry
+            .register(Box::new(uplink_score_seconds.clone()))
+            .expect("register uplink_score_seconds");
+        registry
+            .register(Box::new(uplink_weight.clone()))
+            .expect("register uplink_weight");
         registry
             .register(Box::new(uplink_cooldown_seconds.clone()))
             .expect("register uplink_cooldown_seconds");
@@ -546,8 +582,11 @@ impl Metrics {
             tun_tcp_smoothed_rtt_seconds,
             uplink_health,
             uplink_latency_seconds,
+            uplink_rtt_ewma_seconds,
             uplink_penalty_seconds,
             uplink_effective_latency_seconds,
+            uplink_score_seconds,
+            uplink_weight,
             uplink_cooldown_seconds,
             uplink_standby_ready,
             sticky_routes_total,
@@ -558,8 +597,11 @@ impl Metrics {
     fn update_snapshot_metrics(&self, snapshot: &UplinkManagerSnapshot) {
         self.uplink_health.reset();
         self.uplink_latency_seconds.reset();
+        self.uplink_rtt_ewma_seconds.reset();
         self.uplink_penalty_seconds.reset();
         self.uplink_effective_latency_seconds.reset();
+        self.uplink_score_seconds.reset();
+        self.uplink_weight.reset();
         self.uplink_cooldown_seconds.reset();
         self.uplink_standby_ready.reset();
         self.sticky_routes_by_uplink.reset();
@@ -567,6 +609,9 @@ impl Metrics {
             .set(i64::try_from(snapshot.sticky_routes.len()).unwrap_or(i64::MAX));
 
         for uplink in &snapshot.uplinks {
+            self.uplink_weight
+                .with_label_values(&[&uplink.name])
+                .set(uplink.weight);
             self.uplink_health
                 .with_label_values(&["tcp", &uplink.name])
                 .set(bool_to_f64(uplink.tcp_healthy));
@@ -581,6 +626,16 @@ impl Metrics {
             }
             if let Some(latency_ms) = uplink.udp_latency_ms {
                 self.uplink_latency_seconds
+                    .with_label_values(&["udp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            if let Some(latency_ms) = uplink.tcp_rtt_ewma_ms {
+                self.uplink_rtt_ewma_seconds
+                    .with_label_values(&["tcp", &uplink.name])
+                    .set(latency_ms as f64 / 1000.0);
+            }
+            if let Some(latency_ms) = uplink.udp_rtt_ewma_ms {
+                self.uplink_rtt_ewma_seconds
                     .with_label_values(&["udp", &uplink.name])
                     .set(latency_ms as f64 / 1000.0);
             }
@@ -603,6 +658,16 @@ impl Metrics {
                 self.uplink_effective_latency_seconds
                     .with_label_values(&["udp", &uplink.name])
                     .set(latency_ms as f64 / 1000.0);
+            }
+            if let Some(score_ms) = uplink.tcp_score_ms {
+                self.uplink_score_seconds
+                    .with_label_values(&["tcp", &uplink.name])
+                    .set(score_ms as f64 / 1000.0);
+            }
+            if let Some(score_ms) = uplink.udp_score_ms {
+                self.uplink_score_seconds
+                    .with_label_values(&["udp", &uplink.name])
+                    .set(score_ms as f64 / 1000.0);
             }
             if let Some(cooldown_ms) = uplink.cooldown_tcp_ms {
                 self.uplink_cooldown_seconds

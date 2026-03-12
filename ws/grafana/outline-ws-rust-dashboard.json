@@ -63,6 +63,19 @@
   "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 101,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
+    },
+    {
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -93,7 +106,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 1
       },
       "id": 1,
       "options": {
@@ -138,7 +151,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 1
       },
       "id": 2,
       "options": {
@@ -162,7 +175,7 @@
           "refId": "A"
         }
       ],
-      "title": "Requests Rate",
+      "title": "Request Rate",
       "type": "stat"
     },
     {
@@ -175,7 +188,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "Bps"
+          "unit": "bps"
         },
         "overrides": []
       },
@@ -183,7 +196,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 1
       },
       "id": 3,
       "options": {
@@ -202,7 +215,7 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]) * 8)",
           "legendFormat": "{{instance}}",
           "refId": "A"
         }
@@ -228,7 +241,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 1
       },
       "id": 4,
       "options": {
@@ -252,8 +265,21 @@
           "refId": "A"
         }
       ],
-      "title": "Failovers Rate",
+      "title": "Failover Rate",
       "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
+      "id": 102,
+      "panels": [],
+      "title": "SOCKS5",
+      "type": "row"
     },
     {
       "datasource": {
@@ -273,7 +299,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 6
       },
       "id": 5,
       "options": {
@@ -292,7 +318,7 @@
           "refId": "A"
         }
       ],
-      "title": "SOCKS5 Requests by Command",
+      "title": "Requests by Command",
       "type": "timeseries"
     },
     {
@@ -305,7 +331,7 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "Bps"
+          "unit": "bps"
         },
         "overrides": []
       },
@@ -313,7 +339,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 6
       },
       "id": 6,
       "options": {
@@ -327,12 +353,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]))",
+          "expr": "sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[5m]) * 8)",
           "legendFormat": "{{instance}} {{protocol}} {{direction}}",
           "refId": "A"
         }
       ],
-      "title": "Payload Throughput by Protocol",
+      "title": "Protocol Throughput",
       "type": "timeseries"
     },
     {
@@ -351,9 +377,9 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 12
+        "y": 14
       },
       "id": 7,
       "options": {
@@ -372,8 +398,21 @@
           "refId": "A"
         }
       ],
-      "title": "Session Duration p95",
+      "title": "Session Latency p95",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 103,
+      "panels": [],
+      "title": "Uplink",
+      "type": "row"
     },
     {
       "datasource": {
@@ -392,8 +431,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 12
+        "x": 0,
+        "y": 23
       },
       "id": 8,
       "options": {
@@ -417,7 +456,7 @@
           "refId": "B"
         }
       ],
-      "title": "Runtime Failures and Failovers",
+      "title": "Failures and Failovers",
       "type": "timeseries"
     },
     {
@@ -437,128 +476,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 0,
-        "y": 20
-      },
-      "id": 9,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{instance=~\"$instance\"}[5m]) / rate(outline_ws_rust_probe_duration_seconds_count{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{instance}} {{uplink}} {{transport}} {{probe}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Average Probe Duration",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
         "x": 12,
-        "y": 20
-      },
-      "id": 10,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\"}[15m])), 1e-9)",
-          "legendFormat": "{{instance}} {{uplink}} {{transport}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Probe Error Ratio",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "percentunit"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 32
-      },
-      "id": 19,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\"}[15m])), 1e-9)",
-          "legendFormat": "{{instance}} {{uplink}} {{transport}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Standby Validation Error Ratio",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "unit": "s"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 28
+        "y": 23
       },
       "id": 13,
       "options": {
@@ -577,7 +496,7 @@
           "refId": "A"
         }
       ],
-      "title": "Failure Penalty",
+      "title": "Penalty Score",
       "type": "timeseries"
     },
     {
@@ -597,8 +516,8 @@
       "gridPos": {
         "h": 8,
         "w": 12,
-        "x": 12,
-        "y": 28
+        "x": 0,
+        "y": 31
       },
       "id": 14,
       "options": {
@@ -627,7 +546,7 @@
           "refId": "C"
         }
       ],
-      "title": "Effective Latency Inflation",
+      "title": "Effective Latency",
       "type": "timeseries"
     },
     {
@@ -664,8 +583,8 @@
       "gridPos": {
         "h": 10,
         "w": 12,
-        "x": 0,
-        "y": 36
+        "x": 12,
+        "y": 31
       },
       "id": 11,
       "options": {
@@ -707,7 +626,7 @@
           "refId": "E"
         }
       ],
-      "title": "Uplink Health Snapshot",
+      "title": "Uplink Health Table",
       "transformations": [
         {
           "id": "seriesToColumns",
@@ -728,15 +647,238 @@
           "color": {
             "mode": "palette-classic"
           },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "outline_ws_rust_uplink_latency_seconds{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}} raw",
+          "refId": "A"
+        },
+        {
+          "expr": "outline_ws_rust_uplink_rtt_ewma_seconds{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}} ewma",
+          "refId": "B"
+        }
+      ],
+      "title": "Raw RTT vs EWMA RTT",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "outline_ws_rust_uplink_score_seconds{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}} score",
+          "refId": "A"
+        },
+        {
+          "expr": "outline_ws_rust_uplink_weight{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{uplink}} weight",
+          "refId": "B"
+        }
+      ],
+      "title": "Weighted Uplink Score",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "id": 104,
+      "panels": [],
+      "title": "Probes",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 58
+      },
+      "id": 9,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{instance=~\"$instance\"}[5m]) / rate(outline_ws_rust_probe_duration_seconds_count{instance=~\"$instance\"}[5m]))",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}} {{probe}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Probe Latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 58
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\"}[15m])), 1e-9)",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Health Probe Error Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 66
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[15m])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\"}[15m])), 1e-9)",
+          "legendFormat": "{{instance}} {{uplink}} {{transport}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Standby Probe Error Ratio",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
           "unit": "short"
         },
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
+        "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 66
       },
       "id": 12,
       "options": {
@@ -760,8 +902,21 @@
           "refId": "B"
         }
       ],
-      "title": "Warm-Standby Efficiency",
+      "title": "Warm Standby Efficiency",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "id": 105,
+      "panels": [],
+      "title": "TUN",
+      "type": "row"
     },
     {
       "datasource": {
@@ -781,7 +936,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 46
+        "y": 75
       },
       "id": 15,
       "options": {
@@ -810,7 +965,7 @@
           "refId": "C"
         }
       ],
-      "title": "TUN Flow Pressure",
+      "title": "Flow Pressure",
       "type": "timeseries"
     },
     {
@@ -831,7 +986,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 46
+        "y": 75
       },
       "id": 16,
       "options": {
@@ -850,7 +1005,7 @@
           "refId": "A"
         }
       ],
-      "title": "TUN Idle Timeout and Evictions",
+      "title": "Idle Timeouts and Evictions",
       "type": "timeseries"
     },
     {
@@ -871,7 +1026,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 54
+        "y": 83
       },
       "id": 17,
       "options": {
@@ -890,7 +1045,7 @@
           "refId": "A"
         }
       ],
-      "title": "TUN Read and Send Errors",
+      "title": "Read and Send Errors",
       "type": "timeseries"
     },
     {
@@ -911,7 +1066,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 54
+        "y": 83
       },
       "id": 18,
       "options": {
@@ -930,7 +1085,7 @@
           "refId": "A"
         }
       ],
-      "title": "TUN Packet Outcomes",
+      "title": "Packet Outcomes",
       "type": "timeseries"
     }
   ],

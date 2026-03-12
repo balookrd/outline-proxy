@@ -78,6 +78,7 @@ warm_standby_udp = 1
 sticky_ttl_secs = 300
 hysteresis_ms = 50
 failure_cooldown_secs = 10
+rtt_ewma_alpha = 0.3
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
@@ -85,6 +86,7 @@ failure_penalty_halflife_secs = 60
 [[outline.uplinks]]
 name = "primary"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
+weight = 1.0
 tcp_ws_mode = "h3"
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
@@ -94,6 +96,7 @@ password = "Secret0"
 [[outline.uplinks]]
 name = "backup"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
+weight = 0.8
 tcp_ws_mode = "h2"
 udp_ws_url = "wss://backup.example.com/SECRET/udp"
 udp_ws_mode = "h2"
@@ -131,10 +134,12 @@ password = "Secret0"
 - `max_dials` ограничивает только probe websocket dials и изолирует их от пользовательского и warm-standby path
 - для TCP probe используется реальный HTTP-запрос через `websocket-stream`
 - для UDP probe используется реальный DNS-запрос через `websocket-packet`
-- healthy uplink сортируются fastest-first по последней измеренной latency
+- healthy uplink сортируются fastest-first по weighted score, а не по одному последнему RTT
+- baseline RTT для ranking считается через `RTT EWMA`, который сглаживает probe latency по `rtt_ewma_alpha`
 - `warm_standby_tcp` и `warm_standby_udp` держат заранее открытые idle WebSocket-соединения на каждый uplink
 - standby-соединение забирается первым, а пул пополняется в фоне
 - failure penalty model добавляет штраф к latency после probe/runtime ошибок и плавно уменьшает его по `failure_penalty_halflife_secs`
+- итоговый score считается как `effective_latency / weight`, поэтому `weight > 1.0` даёт uplink приоритет, а `weight < 1.0` делает его менее предпочтительным
 - sticky routing закрепляет target за выбранным uplink на `sticky_ttl_secs`
 - hysteresis не даёт переключаться на другой uplink, если он быстрее меньше чем на `hysteresis_ms`
 - runtime failover сразу помечает упавший uplink unhealthy на `failure_cooldown_secs`
@@ -286,7 +291,7 @@ cargo run --release -- \
 
 - `/status` — JSON snapshot по uplink, latency, cooldown и sticky routes
 - `/status` также показывает `standby_tcp_ready` и `standby_udp_ready`
-- `/status` также показывает `tcp_penalty_ms` / `udp_penalty_ms` и effective latency
+- `/status` также показывает `weight`, raw RTT, `tcp_rtt_ewma_ms` / `udp_rtt_ewma_ms`, penalty, effective latency и итоговый score
 - `/metrics` — Prometheus text format
 
 Production-ready `/metrics` теперь включает:
@@ -298,6 +303,7 @@ Production-ready `/metrics` теперь включает:
 - probe runs и probe latency histogram
 - warm-standby hit/miss и refill success/error
 - текущие uplink gauges: health, raw latency, failure penalty, effective latency, cooldown, standby size и sticky routes
+- uplink selector gauges: static weight, RTT EWMA и final score
 - TUN/tun2udp metrics: active flows, flow create/close reasons, flow lifetime histogram и packet outcomes
 - TUN/tun2tcp metrics: retransmit/zero-window/deferred-fin events, active TCP flows, in-flight server segments/bytes, pending server backlog, buffered client segments, zero-window flow count, congestion window, slow-start threshold, smoothed RTT и retransmission timeout
 - `tun2tcp` gauges по `cwnd`, `ssthresh`, `SRTT` и `RTO` экспортируются как aggregated per-uplink значения; в Grafana для них показываются средние по активным TCP flows
@@ -332,9 +338,13 @@ scrape_configs:
 
 - [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
 - [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
-- dashboard включает отдельные панели `Failure Penalty` и `Effective Latency Inflation` для degraded-but-not-yet-unhealthy uplink
-- dashboard включает отдельные TUN panels: `TUN Flow Pressure`, `TUN Idle Timeout and Evictions`, `TUN Read and Send Errors`, `TUN Packet Outcomes`
-- отдельный `tun2tcp` dashboard включает панели `TUN TCP Retransmits`, `TUN TCP Window And FIN Events`, `TUN TCP In-Flight Segments`, `TUN TCP In-Flight Bytes`, `TUN TCP Pending Server Bytes`, `TUN TCP Buffered Client Segments`, `TUN TCP Zero-Window Flows`, `TUN TCP Active Flows`, `TUN TCP Congestion Window`, `TUN TCP RTT And RTO`
+- основной dashboard организован по секциям `Overview`, `SOCKS5`, `Uplink`, `Probes`, `TUN`
+- dashboard включает отдельные панели `Penalty Score` и `Effective Latency` для degraded-but-not-yet-unhealthy uplink
+- Uplink секция также показывает `Raw RTT vs EWMA RTT` и `Weighted Uplink Score`, чтобы было видно, как selector принимает решение
+- `Health Probe Error Ratio` считает только боевые health probes (`ws/http/dns`) и намеренно исключает `standby_ws`
+- maintenance-ошибки проверки idle warm-standby websocket вынесены в отдельную панель `Standby Probe Error Ratio`, чтобы standby churn не маскировал реальное здоровье uplink
+- TUN секция включает панели `Flow Pressure`, `Idle Timeouts and Evictions`, `Read and Send Errors`, `Packet Outcomes`
+- отдельный `tun2tcp` dashboard включает панели `Active TCP Flows`, `RTT and Retransmit Timeout`, `Retransmits`, `Window Pressure and FIN Lifecycle`, `In-Flight Segments`, `In-Flight Bytes`, `Pending Server Bytes`, `Buffered Client Segments`, `Zero-Window Flows`, `Congestion Window and SSThresh`
 
 Готовые Prometheus alert rules:
 

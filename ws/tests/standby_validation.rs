@@ -72,6 +72,7 @@ async fn build_manager(
             udp_ws_mode: WsTransportMode::Http1,
             cipher: CipherKind::Chacha20IetfPoly1305,
             password: "Secret0".to_string(),
+            weight: 1.0,
             fwmark: None,
         }],
         ProbeConfig {
@@ -89,6 +90,7 @@ async fn build_manager(
             failure_cooldown: Duration::from_secs(10),
             warm_standby_tcp,
             warm_standby_udp,
+            rtt_ewma_alpha: 0.3,
             failure_penalty: Duration::from_millis(500),
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),

@@ -47,6 +47,7 @@ warm_standby_udp = 1
 sticky_ttl_secs = 300
 hysteresis_ms = 50
 failure_cooldown_secs = 10
+rtt_ewma_alpha = 0.3
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
@@ -54,6 +55,7 @@ failure_penalty_halflife_secs = 60
 [[outline.uplinks]]
 name = "primary"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
+weight = 1.0
 # requested mode; runtime fallback order is h3 -> h2 -> http1
 tcp_ws_mode = "h3"
 # Linux only, requires CAP_NET_ADMIN if set
@@ -66,6 +68,7 @@ password = "Secret0"
 [[outline.uplinks]]
 name = "backup"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
+weight = 0.8
 # requested mode; runtime fallback order is h2 -> http1
 tcp_ws_mode = "h2"
 udp_ws_url = "wss://backup.example.com/SECRET/udp"
