@@ -11,6 +11,7 @@ Minimal Rust implementation of a WebSocket-based Shadowsocks relay inspired by `
 - Supports multiple users with different Shadowsocks keys.
 - Supports per-user Linux `fwmark` on outbound TCP and UDP sockets.
 - Supports IPv4 and IPv6 target addresses, listeners and client URL generation.
+- Accepts WebSocket over HTTP/1.1 and WebSocket over HTTP/2 via RFC 8441 extended CONNECT.
 - Identifies the user automatically by the key that successfully decrypts the first stream chunk or UDP packet.
 
 ## What it does not do
@@ -39,6 +40,7 @@ CLI flags and environment variables still work and override values from the file
 
 For IPv6 listeners, use normal socket notation like `listen = "[::]:3000"` in `config.toml`.
 For Outline access key generation with an IPv6 public endpoint, set `public_host` with brackets, for example `"[2001:db8::10]:443"`.
+For RFC 8441 in production, your TLS terminator or reverse proxy must preserve HTTP/2 extended CONNECT instead of downgrading WebSocket traffic to plain HTTP/1.1.
 
 For single-user mode, either use `password = "..."` in `config.toml` or the legacy flag:
 
