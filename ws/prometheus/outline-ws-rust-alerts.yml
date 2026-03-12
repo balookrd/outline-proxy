@@ -1,0 +1,177 @@
+groups:
+  - name: outline-ws-rust
+    interval: 30s
+    rules:
+      - alert: Socks5OutlineWsStatusEndpointDown
+        expr: up{job="outline-ws-rust"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: outline-ws-rust metrics endpoint is down
+          description: Prometheus cannot scrape the status/metrics endpoint for 2 minutes.
+
+      - alert: Socks5OutlineWsAllTcpUplinksUnhealthy
+        expr: sum by (instance) (outline_ws_rust_uplink_health{transport="tcp",job="outline-ws-rust"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: All TCP uplinks are unhealthy
+          description: No healthy TCP uplink is available on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsAllUdpUplinksUnhealthy
+        expr: sum by (instance) (outline_ws_rust_uplink_health{transport="udp",job="outline-ws-rust"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: All UDP uplinks are unhealthy
+          description: No healthy UDP uplink is available on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsHighFailoverRate
+        expr: sum by (instance) (rate(outline_ws_rust_uplink_failovers_total{job="outline-ws-rust"}[5m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Elevated uplink failover rate
+          description: Runtime failovers are happening continuously on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsProbeErrors
+        expr: |
+          (
+            sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job="outline-ws-rust",result="error"}[15m]))
+            /
+            clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job="outline-ws-rust"}[15m])), 0.001)
+          ) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Probe error ratio is high
+          description: Probe error ratio for uplink {{ $labels.uplink }} / {{ $labels.transport }} is above 20%.
+
+      - alert: Socks5OutlineWsWarmStandbyDepleted
+        expr: outline_ws_rust_uplink_standby_ready{job="outline-ws-rust"} == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Warm-standby pool is empty
+          description: No prewarmed standby websocket is available for uplink {{ $labels.uplink }} / {{ $labels.transport }}.
+
+      - alert: Socks5OutlineWsPenaltySaturation
+        expr: |
+          (
+            outline_ws_rust_uplink_penalty_seconds{job="outline-ws-rust"}
+            /
+            clamp_min(outline_ws_rust_uplink_effective_latency_seconds{job="outline-ws-rust"}, 0.001)
+          ) > 0.6
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Uplink is heavily penalized
+          description: Failure penalty dominates effective latency for uplink {{ $labels.uplink }} / {{ $labels.transport }}.
+
+      - alert: Socks5OutlineWsEffectiveLatencyInflation
+        expr: |
+          (
+            outline_ws_rust_uplink_effective_latency_seconds{job="outline-ws-rust"}
+            /
+            clamp_min(outline_ws_rust_uplink_latency_seconds{job="outline-ws-rust"}, 0.001)
+          ) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Effective latency is inflated by recent failures
+          description: Effective latency is more than 2x raw probe latency for uplink {{ $labels.uplink }} / {{ $labels.transport }}.
+
+      - alert: Socks5OutlineWsTunFlowPressureHigh
+        expr: |
+          (
+            sum by (instance) (outline_ws_rust_tun_flows_active{job="outline-ws-rust"})
+            /
+            clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{job="outline-ws-rust"}), 1)
+          ) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN flow table pressure is high
+          description: Active TUN UDP flows are above 80% of configured capacity on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunFlowEvictions
+        expr: sum by (instance) (rate(outline_ws_rust_tun_flows_total{job="outline-ws-rust",event="evicted"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN flow table is evicting live flows
+          description: TUN UDP flow evictions are happening continuously on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunIdleTimeoutBurst
+        expr: sum by (instance) (rate(outline_ws_rust_tun_flows_total{job="outline-ws-rust",event="idle_timeout"}[15m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN idle timeouts are elevated
+          description: TUN UDP flows are timing out at an elevated rate on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunReadOrSendErrors
+        expr: sum by (instance) (rate(outline_ws_rust_tun_flows_total{job="outline-ws-rust",event=~"read_error|send_error"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN UDP flows are failing during runtime I/O
+          description: TUN UDP flow read/send errors are being observed on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunTcpRetransmitRateHigh
+        expr: |
+          sum by (instance) (
+            rate(outline_ws_rust_tun_tcp_events_total{job="outline-ws-rust",event=~"fast_retransmit|timeout_retransmit"}[10m])
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN TCP retransmit rate is elevated
+          description: The tun2tcp state machine is retransmitting at an elevated rate on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunTcpZeroWindowStalls
+        expr: |
+          max by (instance) (outline_ws_rust_tun_tcp_zero_window_flows{job="outline-ws-rust"}) > 0
+          and
+          sum by (instance) (
+            rate(outline_ws_rust_tun_tcp_events_total{job="outline-ws-rust",event="window_stall"}[10m])
+          ) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN TCP flows are stalled on zero-sized receive windows
+          description: One or more tun2tcp flows are stalled because the client advertise zero window on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunTcpBufferedClientBacklog
+        expr: |
+          max by (instance) (sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{job="outline-ws-rust"})) > 64
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN TCP client-side reassembly backlog is high
+          description: Buffered out-of-order tun2tcp client segments exceed the expected steady-state level on {{ $labels.instance }}.
+
+      - alert: Socks5OutlineWsTunTcpPendingServerBacklog
+        expr: |
+          max by (instance) (sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{job="outline-ws-rust"})) > 262144
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUN TCP server-side pending backlog is high
+          description: Pending server-to-client tun2tcp bytes exceed 256 KiB on {{ $labels.instance }}.

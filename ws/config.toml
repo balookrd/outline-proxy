@@ -1,0 +1,65 @@
+[socks5]
+listen = "[::]:1080"
+
+[status]
+listen = "[::1]:9090"
+
+[tun]
+# Existing TUN device path. Creation, IP addresses and routes stay outside the app.
+# Linux example:
+# path = "/dev/net/tun"
+# name = "tun0"
+# macOS / BSD example:
+# path = "/dev/tun0"
+# mtu = 1500
+# max_flows = 4096
+# idle_timeout_secs = 300
+
+[outline.probe]
+interval_secs = 30
+timeout_secs = 10
+max_concurrent = 4
+max_dials = 2
+
+[outline.probe.ws]
+enabled = true
+
+[outline.probe.http]
+url = "http://example.com/"
+
+[outline.probe.dns]
+server = "1.1.1.1"
+port = 53
+name = "example.com"
+
+[outline.load_balancing]
+warm_standby_tcp = 1
+warm_standby_udp = 1
+sticky_ttl_secs = 300
+hysteresis_ms = 50
+failure_cooldown_secs = 10
+failure_penalty_ms = 500
+failure_penalty_max_ms = 30000
+failure_penalty_halflife_secs = 60
+
+[[outline.uplinks]]
+name = "primary"
+tcp_ws_url = "wss://example.com/SECRET/tcp"
+# requested mode; runtime fallback order is h3 -> h2 -> http1
+tcp_ws_mode = "h3"
+# Linux only, requires CAP_NET_ADMIN if set
+# fwmark = 100
+udp_ws_url = "wss://example.com/SECRET/udp"
+udp_ws_mode = "h3"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+
+[[outline.uplinks]]
+name = "backup"
+tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
+# requested mode; runtime fallback order is h2 -> http1
+tcp_ws_mode = "h2"
+udp_ws_url = "wss://backup.example.com/SECRET/udp"
+udp_ws_mode = "h2"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"

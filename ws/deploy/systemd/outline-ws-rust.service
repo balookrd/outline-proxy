@@ -1,0 +1,51 @@
+[Unit]
+Description=SOCKS5 to Outline-over-WebSocket proxy
+Documentation=https://github.com/Jigsaw-Code/outline-ss-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=RUST_LOG=info
+ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config.toml
+Restart=on-failure
+RestartSec=3s
+
+# If OUTLINE_FWMARK is configured, keep CAP_NET_ADMIN. Otherwise these two
+# lines can be removed.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+NoNewPrivileges=true
+DynamicUser=true
+StateDirectory=outline-ws-rust
+LogsDirectory=outline-ws-rust
+RuntimeDirectory=outline-ws-rust
+WorkingDirectory=/var/lib/outline-ws-rust
+UMask=0077
+
+PrivateTmp=true
+# TUN support needs access to /dev/net/tun on the host.
+PrivateDevices=false
+PrivateUsers=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/outline-ws-rust /var/log/outline-ws-rust
+
+[Install]
+WantedBy=multi-user.target
