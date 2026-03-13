@@ -290,6 +290,7 @@ password = "Secret0"
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
+- `memory_trim_interval_secs` defaults to `60` and keeps periodic `malloc_trim(0)` enabled on Linux/glibc to return free pages to the OS after traffic spikes. Set it to `0` to disable periodic trimming.
 
 ### Useful CLI and env overrides
 
@@ -302,6 +303,7 @@ password = "Secret0"
 - `--method` / `SHADOWSOCKS_METHOD`
 - `--password` / `SHADOWSOCKS_PASSWORD`
 - `--metrics-listen` / `METRICS_LISTEN`
+- `--memory-trim-interval-secs` / `MEMORY_TRIM_INTERVAL_SECS`
 - `--tun-path` / `TUN_PATH`
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
@@ -474,12 +476,21 @@ On Linux, the process memory sampler updates:
 
 - `outline_ws_rust_process_resident_memory_bytes`
 - `outline_ws_rust_process_heap_memory_bytes`
+- `outline_ws_rust_process_open_fds`
+- `outline_ws_rust_process_malloc_trim_total{reason,result}`
+- `outline_ws_rust_process_malloc_trim_last_released_bytes{kind="rss|heap"}`
 
 On Linux with glibc, opportunistic allocator trimming also emits a dedicated log entry:
 
 - `malloc_trim invoked`
 
+On Linux, the process also emits a periodic descriptor inventory log:
+
+- `process fd snapshot`
+
 The log includes RSS and heap before and after trimming so you can verify whether allocator trimming is actually returning memory on your host.
+The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
+The main dashboard also includes `Open FDs`, `malloc_trim Released Bytes`, and `malloc_trim Invocations (Selected Range)` so you can compare descriptor pressure and trim activity with RSS and heap without switching to `journalctl`.
 
 Dashboards:
 
@@ -489,17 +500,22 @@ Dashboards:
 The main dashboard is grouped into:
 
 - Overview
-- SOCKS5
-- Uplink
-- Probes
+- Traffic
+- Latency
+- Health & Routing
+- Memory & Reclaim
+- Probes & Standby
 - TUN
 
 The `tun2tcp` dashboard is grouped into:
 
 - Overview
-- Recovery
-- Flow State
-- Windowing
+- Recovery & Loss
+- Backlog & Flow State
+- Timing & Window Control
+
+Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
+Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
 
 Alert rules:
 

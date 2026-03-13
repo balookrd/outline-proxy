@@ -315,34 +315,130 @@ impl UplinkManager {
         self.ordered_candidates(TransportKind::Udp, target).await
     }
 
+    pub async fn runtime_failure_debug_state(
+        &self,
+        index: usize,
+        transport: TransportKind,
+    ) -> (Option<u128>, Option<u128>) {
+        let now = Instant::now();
+        let statuses = self.inner.statuses.read().await;
+        let Some(status) = statuses.get(index) else {
+            return (None, None);
+        };
+
+        match transport {
+            TransportKind::Tcp => (
+                status
+                    .cooldown_until_tcp
+                    .map(|deadline| deadline.saturating_duration_since(now).as_millis()),
+                current_penalty(&status.tcp_penalty, now, &self.inner.load_balancing)
+                    .map(|value| value.as_millis()),
+            ),
+            TransportKind::Udp => (
+                status
+                    .cooldown_until_udp
+                    .map(|deadline| deadline.saturating_duration_since(now).as_millis()),
+                current_penalty(&status.udp_penalty, now, &self.inner.load_balancing)
+                    .map(|value| value.as_millis()),
+            ),
+        }
+    }
+
+    pub async fn tcp_cooldown_debug_summary(&self) -> Vec<String> {
+        let now = Instant::now();
+        let statuses = self.inner.statuses.read().await;
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .map(|(index, uplink)| {
+                let status = &statuses[index];
+                let cooldown_ms = status
+                    .cooldown_until_tcp
+                    .map(|deadline| deadline.saturating_duration_since(now).as_millis())
+                    .unwrap_or(0);
+                let penalty_ms = current_penalty(
+                    &status.tcp_penalty,
+                    now,
+                    &self.inner.load_balancing,
+                )
+                .map(|value| value.as_millis())
+                .unwrap_or(0);
+                format!(
+                    "{}#{}(healthy={:?},cooldown_ms={},penalty_ms={},last_error={})",
+                    uplink.name,
+                    index,
+                    status.tcp_healthy,
+                    cooldown_ms,
+                    penalty_ms,
+                    status.last_error.as_deref().unwrap_or("-")
+                )
+            })
+            .collect()
+    }
+
     pub async fn report_runtime_failure(
         &self,
         index: usize,
         transport: TransportKind,
         error: &anyhow::Error,
     ) {
-        {
-            let mut statuses = self.inner.statuses.write().await;
+        let (uplink_name, cooldown_until, penalty_ms) = {
             let now = Instant::now();
+            let mut statuses = self.inner.statuses.write().await;
             let status = &mut statuses[index];
             status.last_error = Some(format!("{error:#}"));
-            let uplink_name = self.inner.uplinks[index].name.as_str();
+            let uplink_name = self.inner.uplinks[index].name.clone();
             match transport {
                 TransportKind::Tcp => {
                     add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
                     status.tcp_healthy = Some(false);
                     status.cooldown_until_tcp =
                         Some(now + self.inner.load_balancing.failure_cooldown);
-                    metrics::record_runtime_failure("tcp", uplink_name);
+                    metrics::record_runtime_failure("tcp", &uplink_name);
+                    (
+                        uplink_name,
+                        status.cooldown_until_tcp,
+                        current_penalty(
+                            &status.tcp_penalty,
+                            now,
+                            &self.inner.load_balancing,
+                        )
+                        .map(|value| value.as_millis()),
+                    )
                 }
                 TransportKind::Udp => {
                     add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
                     status.udp_healthy = Some(false);
                     status.cooldown_until_udp =
                         Some(now + self.inner.load_balancing.failure_cooldown);
-                    metrics::record_runtime_failure("udp", uplink_name);
+                    metrics::record_runtime_failure("udp", &uplink_name);
+                    (
+                        uplink_name,
+                        status.cooldown_until_udp,
+                        current_penalty(
+                            &status.udp_penalty,
+                            now,
+                            &self.inner.load_balancing,
+                        )
+                        .map(|value| value.as_millis()),
+                    )
                 }
             }
+        };
+
+        let cooldown_ms = cooldown_until
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_millis());
+        {
+            warn!(
+                uplink = %uplink_name,
+                uplink_index = index,
+                transport = ?transport,
+                cooldown_ms,
+                penalty_ms,
+                error = %format!("{error:#}"),
+                "runtime uplink failure recorded"
+            );
         }
         self.clear_standby(index, transport).await;
     }
@@ -424,6 +520,7 @@ impl UplinkManager {
                 TransportKind::Tcp => true,
                 TransportKind::Udp => uplink.udp_ws_url.is_some(),
             })
+            .filter(|(index, _)| !cooldown_active(&statuses[*index], transport, now))
             .map(|(index, uplink)| CandidateState {
                 index,
                 uplink: Arc::clone(uplink),
@@ -1278,12 +1375,19 @@ fn effective_health(status: &UplinkStatus, transport: TransportKind, now: Instan
     match transport {
         TransportKind::Tcp => {
             status.tcp_healthy == Some(true)
-                && status.cooldown_until_tcp.is_none_or(|until| until <= now)
+                && !cooldown_active(status, transport, now)
         }
         TransportKind::Udp => {
             status.udp_healthy == Some(true)
-                && status.cooldown_until_udp.is_none_or(|until| until <= now)
+                && !cooldown_active(status, transport, now)
         }
+    }
+}
+
+fn cooldown_active(status: &UplinkStatus, transport: TransportKind, now: Instant) -> bool {
+    match transport {
+        TransportKind::Tcp => status.cooldown_until_tcp.is_some_and(|until| until > now),
+        TransportKind::Udp => status.cooldown_until_udp.is_some_and(|until| until > now),
     }
 }
 

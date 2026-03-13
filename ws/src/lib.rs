@@ -16,7 +16,7 @@ use rustls::crypto::ring;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
-use crate::config::{Args, load_config};
+use crate::config::{AppConfig, Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
@@ -34,6 +34,10 @@ pub async fn run(args: Args) -> Result<()> {
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
+    run_with_config(config).await
+}
+
+pub async fn run_with_config(config: AppConfig) -> Result<()> {
     let uplinks = UplinkManager::new(
         config.uplinks.clone(),
         config.probe.clone(),

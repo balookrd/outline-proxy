@@ -46,7 +46,23 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -66,8 +82,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} active tcp flows",
           "refId": "A"
         }
       ],
@@ -84,9 +100,25 @@
           "color": {
             "mode": "palette-classic"
           },
-          "unit": "s"
+          "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -94,7 +126,7 @@
         "x": 12,
         "y": 1
       },
-      "id": 10,
+      "id": 9,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -106,17 +138,12 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} srtt",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_tun_tcp_async_connects_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} async connects",
           "refId": "A"
-        },
-        {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} rto",
-          "refId": "B"
         }
       ],
-      "title": "RTT and Retransmit Timeout",
+      "title": "Async Upstream Connects",
       "type": "timeseries"
     },
     {
@@ -129,7 +156,7 @@
       },
       "id": 102,
       "panels": [],
-      "title": "Recovery",
+      "title": "Recovery & Loss",
       "type": "row"
     },
     {
@@ -144,7 +171,38 @@
           },
           "unit": "pps"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* fast_retransmit$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* timeout_retransmit$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -164,8 +222,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}} {{uplink}} {{event}}",
+          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
           "refId": "A"
         }
       ],
@@ -184,7 +242,169 @@
           },
           "unit": "pps"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* connected$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#299C46",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* cancelled$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* failed$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* timeout$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* discarded_closed_flow$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, result) (rate(outline_ws_rust_tun_tcp_async_connects_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Async Connect Outcomes",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "pps"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* window_stall$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* zero_window_probe$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FADE2A",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* deferred_fin_sent$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -204,8 +424,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}} {{uplink}} {{event}}",
+          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
           "refId": "A"
         }
       ],
@@ -222,7 +442,7 @@
       },
       "id": 103,
       "panels": [],
-      "title": "Flow State",
+      "title": "Backlog & Flow State",
       "type": "row"
     },
     {
@@ -237,7 +457,23 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -257,8 +493,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} inflight segments",
           "refId": "A"
         }
       ],
@@ -277,7 +513,23 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#33A02C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -297,8 +549,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} inflight bytes",
           "refId": "A"
         }
       ],
@@ -317,7 +569,23 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -337,26 +605,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} pending server bytes",
           "refId": "A"
         }
       ],
       "title": "Pending Server Bytes",
       "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 35
-      },
-      "id": 104,
-      "panels": [],
-      "title": "Windowing",
-      "type": "row"
     },
     {
       "datasource": {
@@ -370,13 +625,29 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#6ED0E0",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
-        "y": 36
+        "y": 27
       },
       "id": 6,
       "options": {
@@ -390,12 +661,101 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} buffered client segments",
           "refId": "A"
         }
       ],
       "title": "Buffered Client Segments",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "id": 104,
+      "panels": [],
+      "title": "Timing & Window Control",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* srtt$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#1F78C1",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* rto$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "id": 10,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} srtt",
+          "refId": "A"
+        },
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} rto",
+          "refId": "B"
+        }
+      ],
+      "title": "RTT and Retransmit Timeout",
       "type": "timeseries"
     },
     {
@@ -410,7 +770,23 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FADE2A",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -430,8 +806,8 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})",
-          "legendFormat": "{{instance}} {{uplink}}",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} zero-window flows",
           "refId": "A"
         }
       ],
@@ -450,7 +826,38 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* cwnd$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#33A02C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* ssthresh$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -470,13 +877,13 @@
       },
       "targets": [
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} cwnd",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} cwnd",
           "refId": "A"
         },
         {
-          "expr": "sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)",
-          "legendFormat": "{{instance}} {{uplink}} ssthresh",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} ssthresh",
           "refId": "B"
         }
       ],

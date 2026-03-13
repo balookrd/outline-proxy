@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
@@ -48,6 +48,7 @@ struct TunTcpEngineInner {
     writer: SharedTunWriter,
     uplinks: UplinkManager,
     flows: Mutex<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
+    pending_connects: Mutex<HashSet<TcpFlowKey>>,
     next_flow_id: AtomicU64,
     max_flows: usize,
     idle_timeout: Duration,
@@ -83,7 +84,8 @@ struct TcpFlowState {
     key: TcpFlowKey,
     uplink_index: usize,
     uplink_name: String,
-    upstream_writer: Arc<Mutex<TcpShadowsocksWriter>>,
+    upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
+    close_signal: watch::Sender<bool>,
     status: TcpFlowStatus,
     client_next_seq: u32,
     client_window_scale: u8,
@@ -102,6 +104,7 @@ struct TcpFlowState {
     congestion_window: usize,
     slow_start_threshold: usize,
     pending_server_data: VecDeque<Vec<u8>>,
+    pending_client_data: VecDeque<Vec<u8>>,
     unacked_server_segments: VecDeque<ServerSegment>,
     pending_client_segments: Vec<BufferedClientSegment>,
     server_fin_pending: bool,
@@ -192,6 +195,7 @@ impl TunTcpEngine {
                 writer,
                 uplinks,
                 flows: Mutex::new(HashMap::new()),
+                pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: AtomicU64::new(1),
                 max_flows,
                 idle_timeout,
@@ -246,7 +250,7 @@ impl TunTcpEngine {
             return;
         };
 
-        let (flow_id, uplink_name, duration, upstream_writer, rst_packet) = {
+        let (flow_id, uplink_name, duration, upstream_writer, close_signal, rst_packet) = {
             let mut state = flow.lock().await;
             let rst_packet = if matches!(state.status, TcpFlowStatus::Closed) {
                 None
@@ -266,11 +270,13 @@ impl TunTcpEngine {
                 state.id,
                 state.uplink_name.clone(),
                 state.created_at.elapsed(),
-                Arc::clone(&state.upstream_writer),
+                state.upstream_writer.clone(),
+                state.close_signal.clone(),
                 rst_packet,
             )
         };
 
+        let _ = close_signal.send(true);
         if let Some(packet) = rst_packet {
             let _ = self.inner.writer.write_packet(&packet).await;
             metrics::record_tun_packet(
@@ -297,47 +303,23 @@ impl TunTcpEngine {
             return Ok(());
         }
 
-        let target = ip_to_target(key.remote_ip, key.remote_port);
-        let (candidate, upstream_writer, upstream_reader) = match timeout(
-            self.inner.tcp.connect_timeout,
-            select_tcp_candidate_and_connect(&self.inner.uplinks, &target),
-        )
-        .await
-        {
-            Ok(Ok(connected)) => connected,
-            Ok(Err(error)) => {
-                warn!(remote = %target, error = %format!("{error:#}"), "failed to establish TUN TCP upstream");
-                let reset = build_reset_response(&packet)?;
-                self.inner.writer.write_packet(&reset).await?;
-                metrics::record_tun_packet(
-                    "upstream_to_tun",
-                    ip_family_from_version(packet.version),
-                    "tcp_rst",
-                );
-                return Ok(());
-            }
-            Err(_) => {
-                warn!(remote = %target, timeout_secs = self.inner.tcp.connect_timeout.as_secs(), "timed out establishing TUN TCP upstream");
-                let reset = build_reset_response(&packet)?;
-                self.inner.writer.write_packet(&reset).await?;
-                metrics::record_tun_packet(
-                    "upstream_to_tun",
-                    ip_family_from_version(packet.version),
-                    "tcp_rst",
-                );
-                return Ok(());
-            }
-        };
+        if !self.begin_pending_connect(key.clone()).await {
+            debug!(remote = %ip_to_target(key.remote_ip, key.remote_port), "ignoring duplicate SYN while TUN TCP connect is already in progress");
+            return Ok(());
+        }
 
+        let target = ip_to_target(key.remote_ip, key.remote_port);
         let server_isn = rand::random::<u32>();
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
+        let (close_signal, close_rx) = watch::channel(false);
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
-            uplink_index: candidate.index,
-            uplink_name: candidate.uplink.name.clone(),
-            upstream_writer: Arc::new(Mutex::new(upstream_writer)),
+            uplink_index: usize::MAX,
+            uplink_name: "connecting".to_string(),
+            upstream_writer: None,
+            close_signal,
             status: TcpFlowStatus::SynReceived,
             client_next_seq: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
@@ -361,6 +343,7 @@ impl TunTcpEngine {
             congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
             pending_server_data: VecDeque::new(),
+            pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
             pending_client_segments: Vec::new(),
             server_fin_pending: false,
@@ -381,8 +364,11 @@ impl TunTcpEngine {
             last_seen: now,
         }));
 
-        self.insert_flow(key.clone(), Arc::clone(&state)).await?;
-        self.spawn_upstream_reader(key.clone(), state.clone(), upstream_reader);
+        if let Err(error) = self.insert_flow(key.clone(), Arc::clone(&state)).await {
+            self.finish_pending_connect(&key).await;
+            return Err(error);
+        }
+        self.finish_pending_connect(&key).await;
 
         let syn_ack = {
             let mut state = state.lock().await;
@@ -395,14 +381,24 @@ impl TunTcpEngine {
             ip_family_from_version(packet.version),
             "tcp_synack",
         );
-        metrics::record_uplink_selected("tcp", &candidate.uplink.name);
-        info!(
+        self.spawn_upstream_connect(
+            key,
+            target,
             flow_id,
-            uplink = %candidate.uplink.name,
-            remote = %target,
-            "created TUN TCP flow"
+            state,
+            close_rx,
+            ip_family_from_version(packet.version),
         );
         Ok(())
+    }
+
+    async fn begin_pending_connect(&self, key: TcpFlowKey) -> bool {
+        let mut guard = self.inner.pending_connects.lock().await;
+        guard.insert(key)
+    }
+
+    async fn finish_pending_connect(&self, key: &TcpFlowKey) {
+        self.inner.pending_connects.lock().await.remove(key);
     }
 
     async fn insert_flow(&self, key: TcpFlowKey, flow: Arc<Mutex<TcpFlowState>>) -> Result<()> {
@@ -426,6 +422,119 @@ impl TunTcpEngine {
         metrics::record_tun_tcp_event(&uplink_name, "flow_created");
 
         Ok(())
+    }
+
+    fn spawn_upstream_connect(
+        &self,
+        key: TcpFlowKey,
+        target: TargetAddr,
+        flow_id: u64,
+        flow: Arc<Mutex<TcpFlowState>>,
+        mut close_rx: watch::Receiver<bool>,
+        ip_family: &'static str,
+    ) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            struct AsyncConnectActiveGuard;
+            impl Drop for AsyncConnectActiveGuard {
+                fn drop(&mut self) {
+                    metrics::add_tun_tcp_async_connects_active(-1);
+                }
+            }
+
+            metrics::add_tun_tcp_async_connects_active(1);
+            metrics::record_tun_tcp_async_connect("started");
+            let _active_guard = AsyncConnectActiveGuard;
+
+            let connected = tokio::select! {
+                _ = close_rx.changed() => {
+                    if *close_rx.borrow() {
+                        metrics::record_tun_tcp_async_connect("cancelled");
+                        debug!(flow_id, remote = %target, "cancelled pending async TUN TCP upstream connect");
+                        return;
+                    }
+                    metrics::record_tun_tcp_async_connect("cancelled");
+                    return;
+                }
+                result = timeout(
+                    engine.inner.tcp.connect_timeout,
+                    select_tcp_candidate_and_connect(&engine.inner.uplinks, &target),
+                ) => result,
+            };
+
+            let (candidate, upstream_writer, upstream_reader) = match connected {
+                Ok(Ok(connected)) => connected,
+                Ok(Err(error)) => {
+                    metrics::record_tun_tcp_async_connect("failed");
+                    warn!(flow_id, remote = %target, error = %format!("{error:#}"), "failed to establish async TUN TCP upstream");
+                    engine.abort_flow_with_rst(&key, "connect_failed").await;
+                    return;
+                }
+                Err(_) => {
+                    metrics::record_tun_tcp_async_connect("timeout");
+                    warn!(flow_id, remote = %target, timeout_secs = engine.inner.tcp.connect_timeout.as_secs(), "timed out establishing async TUN TCP upstream");
+                    engine.abort_flow_with_rst(&key, "connect_timeout").await;
+                    return;
+                }
+            };
+
+            let upstream_writer = Arc::new(Mutex::new(upstream_writer));
+            let (pending_payloads, should_close_client_half) = {
+                let mut state = flow.lock().await;
+                if matches!(state.status, TcpFlowStatus::Closed) {
+                    metrics::record_tun_tcp_async_connect("discarded_closed_flow");
+                    drop(state);
+                    close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
+                    return;
+                }
+                clear_flow_metrics(&mut state);
+                state.uplink_index = candidate.index;
+                state.uplink_name = candidate.uplink.name.clone();
+                state.upstream_writer = Some(Arc::clone(&upstream_writer));
+                let pending_payloads = state.pending_client_data.drain(..).collect::<Vec<_>>();
+                let should_close_client_half = matches!(state.status, TcpFlowStatus::ClientClosed);
+                sync_flow_metrics(&mut state);
+                (pending_payloads, should_close_client_half)
+            };
+            metrics::record_tun_tcp_async_connect("connected");
+
+            engine.spawn_upstream_reader(
+                key.clone(),
+                flow.clone(),
+                upstream_reader,
+                close_rx.clone(),
+            );
+
+            for payload in pending_payloads {
+                let send_result = {
+                    let mut writer = upstream_writer.lock().await;
+                    writer.send_chunk(&payload).await
+                };
+                if let Err(error) = send_result {
+                    engine
+                        .inner
+                        .uplinks
+                        .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
+                        .await;
+                    engine.abort_flow_with_rst(&key, "send_error").await;
+                    return;
+                }
+                metrics::add_bytes("tcp", "client_to_upstream", payload.len());
+            }
+
+            if should_close_client_half {
+                close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
+            }
+
+            metrics::record_uplink_selected("tcp", &candidate.uplink.name);
+            info!(
+                flow_id,
+                uplink = %candidate.uplink.name,
+                remote = %target,
+                ip_family,
+                "created TUN TCP flow"
+            );
+        });
     }
 
     async fn handle_existing_flow(
@@ -576,7 +685,7 @@ impl TunTcpEngine {
         let seq_number = state.server_seq;
         let key = state.key.clone();
         let uplink_index = state.uplink_index;
-        let upstream_writer = Arc::clone(&state.upstream_writer);
+        let upstream_writer = state.upstream_writer.clone();
         if !packet.payload.is_empty()
             || (packet.flags & TCP_FLAG_FIN) != 0
             || seq_lt(packet.sequence_number, state.client_next_seq)
@@ -625,19 +734,25 @@ impl TunTcpEngine {
         drop(state);
 
         if !pending_payload.is_empty() {
-            let send_result = {
-                let mut upstream_writer = upstream_writer.lock().await;
-                upstream_writer.send_chunk(&pending_payload).await
-            };
-            if let Err(error) = send_result {
-                self.inner
-                    .uplinks
-                    .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
-                    .await;
-                self.abort_flow_with_rst(&key, "send_error").await;
-                return Ok(());
+            if let Some(upstream_writer) = upstream_writer.clone() {
+                let send_result = {
+                    let mut upstream_writer = upstream_writer.lock().await;
+                    upstream_writer.send_chunk(&pending_payload).await
+                };
+                if let Err(error) = send_result {
+                    self.inner
+                        .uplinks
+                        .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
+                        .await;
+                    self.abort_flow_with_rst(&key, "send_error").await;
+                    return Ok(());
+                }
+                metrics::add_bytes("tcp", "client_to_upstream", pending_payload.len());
+            } else if let Some(flow) = self.lookup_flow(&key).await {
+                let mut state = flow.lock().await;
+                state.pending_client_data.push_back(pending_payload.clone());
+                sync_flow_metrics(&mut state);
             }
-            metrics::add_bytes("tcp", "client_to_upstream", pending_payload.len());
             should_send_ack = true;
         }
 
@@ -698,11 +813,22 @@ impl TunTcpEngine {
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
         mut upstream_reader: TcpShadowsocksReader,
+        mut close_rx: watch::Receiver<bool>,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                match upstream_reader.read_chunk().await {
+                let read_result = tokio::select! {
+                    _ = close_rx.changed() => {
+                        if *close_rx.borrow() {
+                            debug!("upstream TCP flow reader cancelled");
+                            return;
+                        }
+                        continue;
+                    }
+                    result = upstream_reader.read_chunk() => result,
+                };
+                match read_result {
                     Ok(chunk) => {
                         if chunk.is_empty() {
                             continue;
@@ -723,7 +849,32 @@ impl TunTcpEngine {
 
                         if backlog_exceeded {
                             let uplink_name = key_uplink_name(&flow).await;
-                            warn!(uplink = %uplink_name, "closing TUN TCP flow after server backlog limit");
+                            let uplink_index = {
+                                let state = flow.lock().await;
+                                state.uplink_index
+                            };
+                            let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
+                            engine
+                                .inner
+                                .uplinks
+                                .report_runtime_failure(
+                                    uplink_index,
+                                    TransportKind::Tcp,
+                                    &error,
+                                )
+                                .await;
+                            let (cooldown_ms, penalty_ms) = engine
+                                .inner
+                                .uplinks
+                                .runtime_failure_debug_state(uplink_index, TransportKind::Tcp)
+                                .await;
+                            warn!(
+                                uplink = %uplink_name,
+                                uplink_index,
+                                cooldown_ms,
+                                penalty_ms,
+                                "closing TUN TCP flow after server backlog limit"
+                            );
                             engine
                                 .abort_flow_with_rst(&key, "server_backlog_limit")
                                 .await;
@@ -904,7 +1055,7 @@ impl TunTcpEngine {
     async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
         let flow = self.inner.flows.lock().await.remove(key);
         if let Some(flow) = flow {
-            let (flow_id, uplink_name, duration, upstream_writer) = {
+            let (flow_id, uplink_name, duration, upstream_writer, close_signal) = {
                 let mut state = flow.lock().await;
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
@@ -912,9 +1063,11 @@ impl TunTcpEngine {
                     state.id,
                     state.uplink_name.clone(),
                     state.created_at.elapsed(),
-                    Arc::clone(&state.upstream_writer),
+                    state.upstream_writer.clone(),
+                    state.close_signal.clone(),
                 )
             };
+            let _ = close_signal.send(true);
             close_upstream_writer(upstream_writer).await;
             metrics::record_tun_flow_closed(&uplink_name, reason, duration);
             metrics::record_tun_tcp_event(&uplink_name, reason);
@@ -1062,7 +1215,10 @@ impl TunTcpEngine {
     }
 }
 
-async fn close_upstream_writer(upstream_writer: Arc<Mutex<TcpShadowsocksWriter>>) {
+async fn close_upstream_writer(upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>) {
+    let Some(upstream_writer) = upstream_writer else {
+        return;
+    };
     let mut upstream_writer = upstream_writer.lock().await;
     let _ = upstream_writer.close().await;
 }
@@ -1075,16 +1231,42 @@ async fn select_tcp_candidate_and_connect(
     uplinks: &UplinkManager,
     target: &TargetAddr,
 ) -> Result<(UplinkCandidate, TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    let candidates = uplinks.tcp_candidates(target).await;
+    if candidates.is_empty() {
+        let cooldowns = uplinks.tcp_cooldown_debug_summary().await;
+        warn!(
+            remote = %target,
+            tcp_uplinks = cooldowns.join("; "),
+            "dropping TUN TCP flow because all TCP uplinks are in cooldown or unavailable"
+        );
+        return Err(anyhow!(
+            "all TCP uplinks are in cooldown or unavailable for TUN flow"
+        ));
+    }
+
     let mut last_error = None;
-    for candidate in uplinks.tcp_candidates(target).await {
+    let mut failed_uplink = None::<String>;
+    for candidate in candidates {
         match connect_tcp_uplink(uplinks, &candidate, target).await {
             Ok((writer, reader)) => {
+                if let Some(from_uplink) = failed_uplink.take() {
+                    metrics::record_failover("tcp", &from_uplink, &candidate.uplink.name);
+                    info!(
+                        from_uplink,
+                        to_uplink = %candidate.uplink.name,
+                        remote = %target,
+                        "runtime TCP failover activated for TUN flow"
+                    );
+                }
                 return Ok((candidate, writer, reader));
             }
             Err(error) => {
                 uplinks
                     .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
                     .await;
+                if failed_uplink.is_none() {
+                    failed_uplink = Some(candidate.uplink.name.clone());
+                }
                 last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
             }
         }
@@ -1716,7 +1898,8 @@ fn buffered_client_bytes(state: &TcpFlowState) -> usize {
         .pending_client_segments
         .iter()
         .map(|segment| segment.payload.len())
-        .sum()
+        .sum::<usize>()
+        + state.pending_client_data.iter().map(Vec::len).sum::<usize>()
 }
 
 fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
@@ -2167,6 +2350,9 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
 }
 
 fn flush_server_output(state: &mut TcpFlowState) -> Result<ServerFlush> {
+    if state.status == TcpFlowStatus::SynReceived {
+        return Ok(ServerFlush::default());
+    }
     let data_packets = flush_server_data(state)?;
     let window_stalled = send_window_remaining(state) == 0 && !state.pending_server_data.is_empty();
     let fin_packet = maybe_emit_server_fin(state)?;
@@ -2338,7 +2524,7 @@ fn sync_flow_metrics(state: &mut TcpFlowState) {
     let inflight_segments = state.unacked_server_segments.len();
     let inflight_bytes = bytes_in_flight(&state.unacked_server_segments);
     let pending_server_bytes = pending_server_bytes(state);
-    let buffered_client_segments = state.pending_client_segments.len();
+    let buffered_client_segments = state.pending_client_segments.len() + state.pending_client_data.len();
     let zero_window = state.client_window == 0 && pending_server_bytes > 0;
     let congestion_window = state.congestion_window;
     let slow_start_threshold = state.slow_start_threshold;
@@ -3555,6 +3741,7 @@ mod tests {
         let (sink, _stream) = ws.split();
         let cipher = CipherKind::Chacha20IetfPoly1305;
         let master_key = cipher.derive_master_key("Secret0");
+        let (close_signal, _close_rx) = tokio::sync::watch::channel(false);
         super::TcpFlowState {
             id: 1,
             key: super::TcpFlowKey {
@@ -3566,11 +3753,12 @@ mod tests {
             },
             uplink_index: 0,
             uplink_name: "test".to_string(),
-            upstream_writer: Arc::new(Mutex::new(
+            upstream_writer: Some(Arc::new(Mutex::new(
                 TcpShadowsocksWriter::connect(sink, cipher, &master_key)
                     .await
                     .unwrap(),
-            )),
+            ))),
+            close_signal,
             status: super::TcpFlowStatus::Established,
             client_next_seq: 100,
             client_window_scale: 0,
@@ -3589,6 +3777,7 @@ mod tests {
             congestion_window: super::MAX_SERVER_SEGMENT_PAYLOAD * super::TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
             pending_server_data: VecDeque::new(),
+            pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
             pending_client_segments: Vec::new(),
             server_fin_pending: false,
