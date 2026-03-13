@@ -149,7 +149,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
-| `memory_trim_interval_secs` | On Linux with glibc, periodically calls `malloc_trim(0)` to return freed memory to the OS; `0` disables it |
+| `memory_trim_interval_secs` | On Linux with glibc, periodically calls `malloc_trim(0)` to return freed memory to the OS; default is `60`, `0` disables it |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `public_host` | Public host used for generated Outline access keys |
