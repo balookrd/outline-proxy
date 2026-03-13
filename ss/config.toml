@@ -18,6 +18,9 @@ listen = "0.0.0.0:3000"
 # metrics_listen = "127.0.0.1:9090"
 metrics_path = "/metrics"
 client_active_ttl_secs = 300
+# On Linux with glibc, periodically returns free allocator pages to the OS after traffic spikes.
+# Set to 0 to disable.
+memory_trim_interval_secs = 60
 
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"

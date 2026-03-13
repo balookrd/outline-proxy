@@ -51,6 +51,19 @@ use crate::{
     protocol::{TargetAddr, parse_target_addr},
 };
 
+const H3_WEBSOCKET_IDLE_TIMEOUT_SECS: u32 = 180;
+const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
+const H3_QUIC_KEEP_ALIVE_SECS: u64 = 15;
+const H3_STREAM_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
+const H3_CONNECTION_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
+const H3_SEND_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
+const H3_MAX_CONCURRENT_BIDI_STREAMS: u32 = 4_096;
+const H3_MAX_CONCURRENT_UNI_STREAMS: u32 = 1_024;
+const H3_WRITE_BUFFER_BYTES: usize = 256 * 1024;
+const H3_MAX_BACKPRESSURE_BYTES: usize = 8 * 1024 * 1024;
+const H3_UDP_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
+
 #[derive(Clone)]
 struct AppState {
     users: Arc<[UserKey]>,
@@ -1266,10 +1279,87 @@ async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transpor
         .effective_h3_listen()
         .ok_or_else(|| anyhow!("h3 server requested without tls configuration"))?;
     let tls_config = load_h3_tls_config(config)?;
-    let ws_config = H3WebSocketConfig::default();
-    H3WebSocketServer::<H3Transport>::bind(listen, tls_config, ws_config)
-        .await
-        .context("failed to bind HTTP/3 WebSocket server")
+    let ws_config = build_h3_ws_config();
+    let server_config = build_h3_quinn_server_config(tls_config)?;
+    let socket = bind_h3_udp_socket(listen)?;
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(server_config),
+        socket,
+        Arc::new(quinn::TokioRuntime),
+    )
+    .context("failed to create HTTP/3 QUIC endpoint")?;
+    Ok(H3WebSocketServer::<H3Transport>::from_endpoint(
+        endpoint, ws_config,
+    ))
+}
+
+fn build_h3_ws_config() -> H3WebSocketConfig {
+    H3WebSocketConfig::builder()
+        .idle_timeout(H3_WEBSOCKET_IDLE_TIMEOUT_SECS)
+        .ping_interval(H3_QUIC_KEEP_ALIVE_SECS as u32)
+        .max_backpressure(H3_MAX_BACKPRESSURE_BYTES)
+        .write_buffer_size(H3_WRITE_BUFFER_BYTES)
+        .http3_idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS * 1_000)
+        .http3_stream_window_size(H3_STREAM_WINDOW_BYTES)
+        .http3_enable_connect_protocol(true)
+        .http3_max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
+        .build()
+}
+
+fn build_h3_quinn_server_config(tls_config: rustls::ServerConfig) -> Result<quinn::ServerConfig> {
+    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
+        .map_err(|_| anyhow!("invalid HTTP/3 TLS config"))?;
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+    server_config.transport_config(Arc::new(build_h3_transport_config()?));
+    Ok(server_config)
+}
+
+fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .max_concurrent_bidi_streams(quinn::VarInt::from_u32(H3_MAX_CONCURRENT_BIDI_STREAMS))
+        .max_concurrent_uni_streams(quinn::VarInt::from_u32(H3_MAX_CONCURRENT_UNI_STREAMS))
+        .max_idle_timeout(Some(
+            Duration::from_secs(H3_QUIC_IDLE_TIMEOUT_SECS)
+                .try_into()
+                .context("invalid HTTP/3 idle timeout")?,
+        ))
+        .keep_alive_interval(Some(Duration::from_secs(H3_QUIC_KEEP_ALIVE_SECS)))
+        .stream_receive_window(quinn::VarInt::from_u32(H3_STREAM_WINDOW_BYTES as u32))
+        .receive_window(quinn::VarInt::from_u32(H3_CONNECTION_WINDOW_BYTES as u32))
+        .send_window(H3_SEND_WINDOW_BYTES)
+        .datagram_receive_buffer_size(Some(H3_CONNECTION_WINDOW_BYTES as usize))
+        .datagram_send_buffer_size(H3_CONNECTION_WINDOW_BYTES as usize);
+    Ok(transport)
+}
+
+fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocket> {
+    let domain = if listen.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
+    let socket = socket2::Socket::new(
+        domain,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )
+    .context("failed to create HTTP/3 UDP socket")?;
+    socket
+        .set_recv_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
+        .context("failed to set HTTP/3 UDP receive buffer")?;
+    socket
+        .set_send_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
+        .context("failed to set HTTP/3 UDP send buffer")?;
+    socket
+        .bind(&socket2::SockAddr::from(listen))
+        .with_context(|| format!("failed to bind HTTP/3 UDP socket {listen}"))?;
+    let socket: std::net::UdpSocket = socket.into();
+    socket
+        .set_nonblocking(true)
+        .context("failed to set HTTP/3 UDP socket nonblocking mode")?;
+    Ok(socket)
 }
 
 async fn serve_tcp_listener(listener: TcpListener, app: Router, config: &Config) -> Result<()> {
@@ -1711,6 +1801,7 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             public_host: None,

@@ -21,6 +21,7 @@ pub struct Config {
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub client_active_ttl_secs: u64,
+    pub memory_trim_interval_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub public_host: Option<String>,
@@ -62,6 +63,10 @@ impl Config {
                 .client_active_ttl_secs
                 .or(file.client_active_ttl_secs)
                 .unwrap_or(300),
+            memory_trim_interval_secs: args
+                .memory_trim_interval_secs
+                .or(file.memory_trim_interval_secs)
+                .unwrap_or(60),
             ws_path_tcp: args
                 .ws_path_tcp
                 .or(file.ws_path_tcp)
@@ -221,6 +226,9 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
     client_active_ttl_secs: Option<u64>,
 
+    #[arg(long, env = "OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS")]
+    memory_trim_interval_secs: Option<u64>,
+
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     ws_path_tcp: Option<String>,
 
@@ -276,6 +284,7 @@ struct FileConfig {
     metrics_listen: Option<SocketAddr>,
     metrics_path: Option<String>,
     client_active_ttl_secs: Option<u64>,
+    memory_trim_interval_secs: Option<u64>,
     #[serde(default)]
     ws_path_tcp: Option<String>,
     #[serde(default)]

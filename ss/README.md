@@ -149,6 +149,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
+| `memory_trim_interval_secs` | On Linux with glibc, periodically calls `malloc_trim(0)` to return freed memory to the OS; `0` disables it |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `public_host` | Public host used for generated Outline access keys |
@@ -182,6 +183,7 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_H3_KEY_PATH`
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
+- `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
 - `OUTLINE_SS_PUBLIC_HOST`
@@ -200,6 +202,8 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
 Per-user `method`, `fwmark`, `ws_path_tcp`, and `ws_path_udp` are configured in TOML rather than inside `OUTLINE_SS_USERS`.
+
+`memory_trim_interval_secs` is a process-level setting rather than a per-user setting. It is most useful on Linux systems using glibc, where a long-running proxy can keep a high RSS after peak traffic even though the memory is already free inside the allocator.
 
 ## Deployment Modes
 
@@ -303,6 +307,9 @@ The metrics set includes:
 - Per-user UDP payload throughput
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
+- Process RSS / virtual memory gauges
+- glibc heap allocated / free gauges where available
+- Allocator trim counters and last trim before/after RSS gauges
 - Build and configuration info
 
 ### Grafana
