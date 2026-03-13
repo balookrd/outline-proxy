@@ -2247,21 +2247,16 @@
       "targets": [
         {
           "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_flows_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} active tun flows",
+          "legendFormat": "{{instance_short}} {{uplink}} active udp flows",
           "refId": "A"
         },
         {
           "expr": "label_replace((max by (instance) (outline_ws_rust_tun_max_flows{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} tun max flows",
+          "legendFormat": "{{instance_short}} udp max flows",
           "refId": "B"
-        },
-        {
-          "expr": "label_replace((sum by (instance) (outline_ws_rust_tun_flows_active{instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} tun flow pressure ratio",
-          "refId": "C"
         }
       ],
-      "title": "Flow Pressure",
+      "title": "Active UDP Flows",
       "type": "timeseries"
     },
     {
@@ -2272,42 +2267,29 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "thresholds"
           },
-          "unit": "ops"
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.5
+              },
+              {
+                "color": "red",
+                "value": 0.8
+              }
+            ]
+          },
+          "unit": "percentunit"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* idle_timeout$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#EAB839",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* evicted$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#C15C17",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -2317,23 +2299,28 @@
       },
       "id": 16,
       "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "bottom"
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi"
-        }
+        "textMode": "auto"
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"idle_timeout|evicted\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
+          "expr": "label_replace((sum by (instance) (outline_ws_rust_tun_flows_active{instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} udp flow pressure ratio",
           "refId": "A"
         }
       ],
-      "title": "Idle Timeouts and Evictions",
-      "type": "timeseries"
+      "title": "UDP Flow Pressure Ratio",
+      "type": "stat"
     },
     {
       "datasource": {
@@ -2382,11 +2369,56 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 12,
+        "w": 24,
         "x": 0,
         "y": 99
       },
       "id": 17,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=\"created\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} created",
+          "refId": "A"
+        },
+        {
+          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"idle_timeout|evicted|read_error|send_error|closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} closed",
+          "refId": "B"
+        }
+      ],
+      "title": "UDP Flow Lifecycle",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 107
+      },
+      "id": 18,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -2418,15 +2450,61 @@
           },
           "unit": "ops"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* all_uplinks_failed$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* transport_error$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FF9830",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* connect_failed$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2CC0C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 99
+        "y": 107
       },
-      "id": 18,
+      "id": 37,
       "options": {
         "legend": {
           "displayMode": "table",
@@ -2510,9 +2588,9 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 107
+        "y": 115
       },
-      "id": 37,
+      "id": 38,
       "options": {
         "legend": {
           "displayMode": "table",
