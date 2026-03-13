@@ -40,10 +40,58 @@ use crate::crypto::{
 use crate::types::{CipherKind, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type H2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
+type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
 type H3OpenStreams = <h3_quinn::Connection as h3::quic::Connection<Bytes>>::OpenStreams;
 type H3SendRequestHandle = H3SendRequest<H3OpenStreams, Bytes>;
+
+pin_project! {
+    struct H2WsStream {
+        #[pin]
+        inner: RawH2WsStream,
+        driver_task: AbortOnDrop,
+    }
+}
+
+impl Stream for H2WsStream {
+    type Item = Result<Message, WsError>;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.project().inner.poll_next(cx)
+    }
+}
+
+impl Sink<Message> for H2WsStream {
+    type Error = WsError;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.project().inner.poll_ready(cx)
+    }
+
+    fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
+        self.project().inner.start_send(item)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.project().inner.poll_flush(cx)
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.project().inner.poll_close(cx)
+    }
+}
 
 pin_project! {
     struct H3WsStream {
@@ -494,7 +542,7 @@ async fn connect_websocket_h2(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStr
         .await
         .context("HTTP/2 handshake failed")?;
 
-    tokio::spawn(async move {
+    let driver_task = tokio::spawn(async move {
         if let Err(err) = conn.await {
             error!("h2 connection error: {err}");
         }
@@ -522,7 +570,12 @@ async fn connect_websocket_h2(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStr
         .await
         .context("failed to upgrade HTTP/2 websocket stream")?;
     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
-    Ok(AnyWsStream::H2 { inner: ws })
+    Ok(AnyWsStream::H2 {
+        inner: H2WsStream {
+            inner: ws,
+            driver_task: AbortOnDrop(driver_task),
+        },
+    })
 }
 
 async fn connect_websocket_h3(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStream> {

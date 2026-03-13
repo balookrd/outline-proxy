@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
-use crate::memory::sample_process_memory;
+use crate::memory::{ProcessFdSnapshot, sample_process_memory};
 use crate::uplink::UplinkManagerSnapshot;
 
 static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
@@ -37,6 +37,10 @@ struct Metrics {
     metrics_http_requests_total: IntCounterVec,
     process_resident_memory_bytes: Gauge,
     process_heap_memory_bytes: Gauge,
+    process_open_fds: Gauge,
+    process_fd_by_type: GaugeVec,
+    process_malloc_trim_total: IntCounterVec,
+    process_malloc_trim_last_released_bytes: GaugeVec,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,
@@ -44,6 +48,8 @@ struct Metrics {
     tun_max_flows: IntGauge,
     tun_idle_timeout_seconds: Gauge,
     tun_tcp_events_total: IntCounterVec,
+    tun_tcp_async_connects_total: IntCounterVec,
+    tun_tcp_async_connects_active: IntGauge,
     tun_tcp_flows_active: IntGaugeVec,
     tun_tcp_inflight_segments: IntGaugeVec,
     tun_tcp_inflight_bytes: IntGaugeVec,
@@ -231,6 +237,35 @@ impl Metrics {
             "Current heap usage of the process in bytes.",
         ))
         .expect("process_heap_memory_bytes metric");
+        let process_open_fds = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_open_fds",
+            "Current number of open file descriptors used by the process.",
+        ))
+        .expect("process_open_fds metric");
+        let process_fd_by_type = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_fd_by_type",
+                "Current number of open file descriptors by descriptor type.",
+            ),
+            &["kind"],
+        )
+        .expect("process_fd_by_type metric");
+        let process_malloc_trim_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_process_malloc_trim_total",
+                "malloc_trim invocations by reason and result.",
+            ),
+            &["reason", "result"],
+        )
+        .expect("process_malloc_trim_total metric");
+        let process_malloc_trim_last_released_bytes = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_malloc_trim_last_released_bytes",
+                "Last observed bytes released by malloc_trim for each memory kind.",
+            ),
+            &["kind"],
+        )
+        .expect("process_malloc_trim_last_released_bytes metric");
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -282,6 +317,19 @@ impl Metrics {
             &["uplink", "event"],
         )
         .expect("tun_tcp_events_total metric");
+        let tun_tcp_async_connects_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_tcp_async_connects_total",
+                "Async upstream connect attempts for TUN TCP flows by result.",
+            ),
+            &["result"],
+        )
+        .expect("tun_tcp_async_connects_total metric");
+        let tun_tcp_async_connects_active = IntGauge::with_opts(Opts::new(
+            "outline_ws_rust_tun_tcp_async_connects_active",
+            "Currently active async upstream connect attempts for TUN TCP flows.",
+        ))
+        .expect("tun_tcp_async_connects_active metric");
         let tun_tcp_flows_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_flows_active",
@@ -506,6 +554,18 @@ impl Metrics {
             .register(Box::new(process_heap_memory_bytes.clone()))
             .expect("register process_heap_memory_bytes");
         registry
+            .register(Box::new(process_open_fds.clone()))
+            .expect("register process_open_fds");
+        registry
+            .register(Box::new(process_fd_by_type.clone()))
+            .expect("register process_fd_by_type");
+        registry
+            .register(Box::new(process_malloc_trim_total.clone()))
+            .expect("register process_malloc_trim_total");
+        registry
+            .register(Box::new(process_malloc_trim_last_released_bytes.clone()))
+            .expect("register process_malloc_trim_last_released_bytes");
+        registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
         registry
@@ -526,6 +586,12 @@ impl Metrics {
         registry
             .register(Box::new(tun_tcp_events_total.clone()))
             .expect("register tun_tcp_events_total");
+        registry
+            .register(Box::new(tun_tcp_async_connects_total.clone()))
+            .expect("register tun_tcp_async_connects_total");
+        registry
+            .register(Box::new(tun_tcp_async_connects_active.clone()))
+            .expect("register tun_tcp_async_connects_active");
         registry
             .register(Box::new(tun_tcp_flows_active.clone()))
             .expect("register tun_tcp_flows_active");
@@ -621,6 +687,10 @@ impl Metrics {
             metrics_http_requests_total,
             process_resident_memory_bytes,
             process_heap_memory_bytes,
+            process_open_fds,
+            process_fd_by_type,
+            process_malloc_trim_total,
+            process_malloc_trim_last_released_bytes,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,
@@ -628,6 +698,8 @@ impl Metrics {
             tun_max_flows,
             tun_idle_timeout_seconds,
             tun_tcp_events_total,
+            tun_tcp_async_connects_total,
+            tun_tcp_async_connects_active,
             tun_tcp_flows_active,
             tun_tcp_inflight_segments,
             tun_tcp_inflight_bytes,
@@ -787,9 +859,33 @@ pub fn init() {
     let _ = METRICS
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
-        let _ = METRICS.start_time_seconds.get();
-    METRICS.process_resident_memory_bytes.set(0.0);
-    METRICS.process_heap_memory_bytes.set(0.0);
+    let _ = METRICS.start_time_seconds.get();
+    let initial_sample = sample_process_memory();
+    update_process_memory(
+        initial_sample.rss_bytes,
+        initial_sample.heap_bytes,
+        initial_sample.open_fds,
+        initial_sample.fd_snapshot,
+    );
+    for kind in ["socket", "pipe", "anon_inode", "regular_file", "other"] {
+        METRICS.process_fd_by_type.with_label_values(&[kind]).set(0.0);
+    }
+    for (reason, result) in [
+        ("opportunistic", "success"),
+        ("opportunistic", "noop"),
+        ("periodic", "success"),
+        ("periodic", "noop"),
+    ] {
+        let _ = METRICS
+            .process_malloc_trim_total
+            .with_label_values(&[reason, result]);
+    }
+    for kind in ["rss", "heap"] {
+        METRICS
+            .process_malloc_trim_last_released_bytes
+            .with_label_values(&[kind])
+            .set(0.0);
+    }
     for command in ["connect", "udp_associate"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
@@ -804,25 +900,95 @@ pub fn init() {
             .with_label_values(&[protocol])
             .set(0);
     }
+    for result in [
+        "started",
+        "connected",
+        "cancelled",
+        "failed",
+        "timeout",
+        "discarded_closed_flow",
+    ] {
+        let _ = METRICS
+            .tun_tcp_async_connects_total
+            .with_label_values(&[result]);
+    }
+    METRICS.tun_tcp_async_connects_active.set(0);
 }
 
 pub fn spawn_process_metrics_sampler() {
     tokio::spawn(async move {
+        let mut sample_count: u64 = 0;
         loop {
             let sample = sample_process_memory();
-            update_process_memory(sample.rss_bytes, sample.heap_bytes);
+            update_process_memory(
+                sample.rss_bytes,
+                sample.heap_bytes,
+                sample.open_fds,
+                sample.fd_snapshot,
+            );
+            sample_count = sample_count.saturating_add(1);
+            if sample_count % 4 == 0 {
+                crate::memory::log_process_fd_snapshot();
+            }
             sleep(Duration::from_secs(15)).await;
         }
     });
 }
 
-pub fn update_process_memory(rss_bytes: Option<u64>, heap_bytes: Option<u64>) {
+pub fn update_process_memory(
+    rss_bytes: Option<u64>,
+    heap_bytes: Option<u64>,
+    open_fds: Option<u64>,
+    fd_snapshot: Option<ProcessFdSnapshot>,
+) {
     METRICS
         .process_resident_memory_bytes
         .set(rss_bytes.unwrap_or(0) as f64);
     METRICS
         .process_heap_memory_bytes
         .set(heap_bytes.unwrap_or(0) as f64);
+    METRICS.process_open_fds.set(open_fds.unwrap_or(0) as f64);
+    let snapshot = fd_snapshot.unwrap_or_default();
+    METRICS
+        .process_fd_by_type
+        .with_label_values(&["socket"])
+        .set(snapshot.sockets as f64);
+    METRICS
+        .process_fd_by_type
+        .with_label_values(&["pipe"])
+        .set(snapshot.pipes as f64);
+    METRICS
+        .process_fd_by_type
+        .with_label_values(&["anon_inode"])
+        .set(snapshot.anon_inodes as f64);
+    METRICS
+        .process_fd_by_type
+        .with_label_values(&["regular_file"])
+        .set(snapshot.regular_files as f64);
+    METRICS
+        .process_fd_by_type
+        .with_label_values(&["other"])
+        .set(snapshot.other as f64);
+}
+
+pub fn record_malloc_trim(
+    reason: &'static str,
+    trimmed: bool,
+    rss_released_bytes: Option<u64>,
+    heap_released_bytes: Option<u64>,
+) {
+    METRICS
+        .process_malloc_trim_total
+        .with_label_values(&[reason, if trimmed { "success" } else { "noop" }])
+        .inc();
+    METRICS
+        .process_malloc_trim_last_released_bytes
+        .with_label_values(&["rss"])
+        .set(rss_released_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_released_bytes
+        .with_label_values(&["heap"])
+        .set(heap_released_bytes.unwrap_or(0) as f64);
 }
 
 pub fn record_request(command: &'static str) {
@@ -985,6 +1151,17 @@ pub fn record_tun_tcp_event(uplink: &str, event: &'static str) {
         .inc();
 }
 
+pub fn record_tun_tcp_async_connect(result: &'static str) {
+    METRICS
+        .tun_tcp_async_connects_total
+        .with_label_values(&[result])
+        .inc();
+}
+
+pub fn add_tun_tcp_async_connects_active(delta: i64) {
+    METRICS.tun_tcp_async_connects_active.add(delta);
+}
+
 pub fn add_tun_tcp_flows_active(uplink: &str, delta: i64) {
     METRICS
         .tun_tcp_flows_active
@@ -1111,6 +1288,45 @@ mod tests {
         assert!(rendered.contains("outline_ws_rust_session_recent_samples"));
         assert!(rendered.contains("protocol=\"tcp\""));
         assert!(rendered.contains("result=\"success\""));
+    }
+
+    #[test]
+    fn render_prometheus_exports_process_memory_metrics() {
+        init();
+        update_process_memory(
+            Some(1234),
+            Some(5678),
+            Some(42),
+            Some(ProcessFdSnapshot {
+                total: 42,
+                sockets: 20,
+                pipes: 10,
+                anon_inodes: 5,
+                regular_files: 6,
+                other: 1,
+            }),
+        );
+        record_malloc_trim("periodic", true, Some(1024), Some(2048));
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
+        assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
+        assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_total{reason=\"periodic\",result=\"success\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"rss\"} 1024"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"heap\"} 2048"
+        ));
     }
 
     #[test]
