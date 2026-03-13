@@ -13,6 +13,63 @@ use crate::config::Config;
 const TCP_CONNECT_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
+static ALLOCATOR_TRIM_RUNS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static ALLOCATOR_TRIM_ERRORS_TOTAL: AtomicU64 = AtomicU64::new(0);
+static ALLOCATOR_TRIM_LAST_RUN_SECONDS: AtomicI64 = AtomicI64::new(0);
+static ALLOCATOR_TRIM_LAST_RSS_BEFORE_BYTES: AtomicI64 = AtomicI64::new(0);
+static ALLOCATOR_TRIM_LAST_RSS_AFTER_BYTES: AtomicI64 = AtomicI64::new(0);
+static ALLOCATOR_TRIM_LAST_RSS_RELEASED_BYTES: AtomicI64 = AtomicI64::new(0);
+static ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_BEFORE_BYTES: AtomicI64 = AtomicI64::new(0);
+static ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_AFTER_BYTES: AtomicI64 = AtomicI64::new(0);
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProcessMemorySnapshot {
+    pub resident_memory_bytes: u64,
+    pub virtual_memory_bytes: u64,
+    pub heap_allocated_bytes: Option<u64>,
+    pub heap_free_bytes: Option<u64>,
+}
+
+#[cfg_attr(not(all(target_os = "linux", target_env = "gnu")), allow(dead_code))]
+pub fn record_allocator_trim_run(
+    before: Option<ProcessMemorySnapshot>,
+    after: Option<ProcessMemorySnapshot>,
+    release_event: bool,
+) {
+    ALLOCATOR_TRIM_RUNS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    if release_event {
+        ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL.fetch_add(1, Ordering::Relaxed);
+    }
+    ALLOCATOR_TRIM_LAST_RUN_SECONDS.store(unix_timestamp_seconds(), Ordering::Relaxed);
+
+    let rss_before = before.map(|snapshot| snapshot.resident_memory_bytes).unwrap_or(0);
+    let rss_after = after.map(|snapshot| snapshot.resident_memory_bytes).unwrap_or(0);
+    let released = rss_before.saturating_sub(rss_after);
+    ALLOCATOR_TRIM_LAST_RSS_BEFORE_BYTES.store(rss_before as i64, Ordering::Relaxed);
+    ALLOCATOR_TRIM_LAST_RSS_AFTER_BYTES.store(rss_after as i64, Ordering::Relaxed);
+    ALLOCATOR_TRIM_LAST_RSS_RELEASED_BYTES.store(released as i64, Ordering::Relaxed);
+    ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_BEFORE_BYTES.store(
+        before
+            .and_then(|snapshot| snapshot.heap_allocated_bytes)
+            .unwrap_or(0) as i64,
+        Ordering::Relaxed,
+    );
+    ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_AFTER_BYTES.store(
+        after.and_then(|snapshot| snapshot.heap_allocated_bytes)
+            .unwrap_or(0) as i64,
+        Ordering::Relaxed,
+    );
+}
+
+#[cfg_attr(not(all(target_os = "linux", target_env = "gnu")), allow(dead_code))]
+pub fn record_allocator_trim_error() {
+    ALLOCATOR_TRIM_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
+    process_memory_snapshot_impl()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Transport {
@@ -307,6 +364,193 @@ impl Metrics {
             out,
             "outline_ss_metrics_scrapes_total {}",
             self.scrapes_total.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        if let Some(snapshot) = process_memory_snapshot() {
+            write_help(
+                &mut out,
+                "outline_ss_process_resident_memory_bytes",
+                "Resident set size of the outline-ss-rust process.",
+            );
+            write_type(&mut out, "outline_ss_process_resident_memory_bytes", "gauge");
+            writeln!(
+                out,
+                "outline_ss_process_resident_memory_bytes {}",
+                snapshot.resident_memory_bytes
+            )
+            .ok();
+
+            write_help(
+                &mut out,
+                "outline_ss_process_virtual_memory_bytes",
+                "Virtual memory size of the outline-ss-rust process.",
+            );
+            write_type(&mut out, "outline_ss_process_virtual_memory_bytes", "gauge");
+            writeln!(
+                out,
+                "outline_ss_process_virtual_memory_bytes {}",
+                snapshot.virtual_memory_bytes
+            )
+            .ok();
+
+            if let Some(heap_allocated_bytes) = snapshot.heap_allocated_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_heap_allocated_bytes",
+                    "Bytes currently allocated from the glibc heap arenas.",
+                );
+                write_type(&mut out, "outline_ss_process_heap_allocated_bytes", "gauge");
+                writeln!(
+                    out,
+                    "outline_ss_process_heap_allocated_bytes {}",
+                    heap_allocated_bytes
+                )
+                .ok();
+            }
+
+            if let Some(heap_free_bytes) = snapshot.heap_free_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_heap_free_bytes",
+                    "Bytes currently free inside the glibc heap arenas.",
+                );
+                write_type(&mut out, "outline_ss_process_heap_free_bytes", "gauge");
+                writeln!(
+                    out,
+                    "outline_ss_process_heap_free_bytes {}",
+                    heap_free_bytes
+                )
+                .ok();
+            }
+        }
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_runs_total",
+            "Total allocator trim attempts.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_runs_total", "counter");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_runs_total {}",
+            ALLOCATOR_TRIM_RUNS_TOTAL.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_release_events_total",
+            "Allocator trim attempts that observed memory release.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_release_events_total", "counter");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_release_events_total {}",
+            ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_errors_total",
+            "Allocator trim task errors.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_errors_total", "counter");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_errors_total {}",
+            ALLOCATOR_TRIM_ERRORS_TOTAL.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_run_seconds",
+            "Unix timestamp of the most recent allocator trim attempt.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_last_run_seconds", "gauge");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_run_seconds {}",
+            ALLOCATOR_TRIM_LAST_RUN_SECONDS.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_before_bytes",
+            "RSS measured immediately before the most recent allocator trim.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_last_rss_before_bytes", "gauge");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_rss_before_bytes {}",
+            ALLOCATOR_TRIM_LAST_RSS_BEFORE_BYTES.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_after_bytes",
+            "RSS measured immediately after the most recent allocator trim.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_last_rss_after_bytes", "gauge");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_rss_after_bytes {}",
+            ALLOCATOR_TRIM_LAST_RSS_AFTER_BYTES.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_released_bytes",
+            "RSS delta released by the most recent allocator trim.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_released_bytes",
+            "gauge",
+        );
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_rss_released_bytes {}",
+            ALLOCATOR_TRIM_LAST_RSS_RELEASED_BYTES.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_heap_allocated_before_bytes",
+            "Heap-allocated bytes measured before the most recent allocator trim.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_heap_allocated_before_bytes",
+            "gauge",
+        );
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_heap_allocated_before_bytes {}",
+            ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_BEFORE_BYTES.load(Ordering::Relaxed)
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_last_heap_allocated_after_bytes",
+            "Heap-allocated bytes measured after the most recent allocator trim.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_heap_allocated_after_bytes",
+            "gauge",
+        );
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_last_heap_allocated_after_bytes {}",
+            ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_AFTER_BYTES.load(Ordering::Relaxed)
         )
         .ok();
 
@@ -1039,11 +1283,54 @@ fn escape_label_value(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
+#[cfg(target_os = "linux")]
+fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let resident_memory_bytes = proc_status_value_bytes(&status, "VmRSS:")?;
+    let virtual_memory_bytes = proc_status_value_bytes(&status, "VmSize:")?;
+    let (heap_allocated_bytes, heap_free_bytes) = glibc_heap_snapshot();
+    Some(ProcessMemorySnapshot {
+        resident_memory_bytes,
+        virtual_memory_bytes,
+        heap_allocated_bytes,
+        heap_free_bytes,
+    })
+}
+
+#[cfg(not(target_os = "linux"))]
+fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?.trim();
+        let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+        Some(kib * 1024)
+    })
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
+    // mallinfo2 exposes glibc arena usage, which is a good approximation of allocator heap state.
+    let info = unsafe { libc::mallinfo2() };
+    (
+        Some(info.uordblks as u64),
+        Some(info.fordblks as u64),
+    )
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "gnu")))]
+fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
+    (None, None)
+}
+
 #[cfg(test)]
 mod tests {
     use crate::config::Config;
 
-    use super::{DisconnectReason, Metrics, Protocol, Transport};
+    use super::{DisconnectReason, Metrics, Protocol, Transport, record_allocator_trim_run};
 
     #[test]
     fn renders_prometheus_metrics() {
@@ -1057,6 +1344,7 @@ mod tests {
             metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
             metrics_path: "/metrics".to_owned(),
             client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
             public_host: None,
@@ -1076,6 +1364,7 @@ mod tests {
         metrics.record_tcp_payload_bytes("default", Protocol::Http2, "client_to_target", 32);
         metrics.record_udp_payload_bytes("default", Protocol::Http2, "target_to_client", 16);
         metrics.record_client_session("default", Protocol::Http2, Transport::Udp);
+        record_allocator_trim_run(None, None, false);
         session.finish(DisconnectReason::Normal);
 
         let rendered = metrics.render_prometheus();
@@ -1088,6 +1377,9 @@ mod tests {
         assert!(rendered.contains("outline_ss_client_last_seen_seconds"));
         assert!(rendered.contains("outline_ss_client_active"));
         assert!(rendered.contains("outline_ss_client_up"));
+        assert!(rendered.contains("outline_ss_allocator_trim_runs_total"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
     }
 }

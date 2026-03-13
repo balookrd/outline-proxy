@@ -212,6 +212,7 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             public_host: Some("vpn.example.com".into()),

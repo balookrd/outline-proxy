@@ -20,6 +20,7 @@ ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }
+socket2 = "0.5"
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["full"] }

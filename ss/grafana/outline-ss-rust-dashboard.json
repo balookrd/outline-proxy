@@ -306,7 +306,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -397,7 +397,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -488,7 +488,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -579,7 +579,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -608,7 +608,7 @@
               }
             ]
           },
-          "unit": "Bps"
+          "unit": "bps"
         },
         "overrides": []
       },
@@ -634,7 +634,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
+          "expr": "sum by (user, direction) (rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m])) * 8",
           "legendFormat": "{{user}} {{direction}}",
           "range": true,
           "refId": "A"
@@ -670,7 +670,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -761,7 +761,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -860,7 +860,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -889,7 +889,7 @@
               }
             ]
           },
-          "unit": "Bps"
+          "unit": "bps"
         },
         "overrides": []
       },
@@ -915,7 +915,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_udp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
+          "expr": "sum by (user, direction) (rate(outline_ss_udp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m])) * 8",
           "legendFormat": "{{user}} {{direction}}",
           "range": true,
           "refId": "A"
@@ -951,7 +951,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -1042,7 +1042,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -1071,13 +1071,13 @@
               }
             ]
           },
-          "unit": "Bps"
+          "unit": "bps"
         },
         "overrides": []
       },
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 36
       },
@@ -1097,13 +1097,104 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, transport, direction) (rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
-          "legendFormat": "{{user}} {{transport}} {{direction}}",
+          "expr": "sum by (user, direction) (rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"tcp\"}[5m])) * 8",
+          "legendFormat": "{{user}} {{direction}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Client Traffic Across TCP and UDP",
+      "title": "Client TCP Traffic",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0
+              }
+            ]
+          },
+          "unit": "bps"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      },
+      "id": 19,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (user, direction) (rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"udp\"}[5m])) * 8",
+          "legendFormat": "{{user}} {{direction}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Client UDP Traffic",
       "type": "timeseries"
     },
     {
@@ -1198,7 +1289,7 @@
             },
             "insertNulls": false,
             "lineInterpolation": "linear",
-            "lineWidth": 2,
+            "lineWidth": 1,
             "pointSize": 4,
             "scaleDistribution": {
               "type": "linear"
@@ -1504,6 +1595,396 @@
       ],
       "title": "Recently Active Clients",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
+      "id": 20,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "RSS",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "virtual",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Process Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
+      "id": 21,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_process_heap_allocated_bytes{instance=~\"$instance\"}",
+          "legendFormat": "heap allocated",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_process_heap_free_bytes{instance=~\"$instance\"}",
+          "legendFormat": "heap free",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "Allocator Heap State",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "id": 22,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "rate(outline_ss_allocator_trim_runs_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "trim runs",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(outline_ss_allocator_trim_release_events_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "release events",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "rate(outline_ss_allocator_trim_errors_total{instance=~\"$instance\"}[5m])",
+          "legendFormat": "trim errors",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Allocator Trim Activity",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "id": 23,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_allocator_trim_last_rss_before_bytes{instance=~\"$instance\"}",
+          "legendFormat": "rss before",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_allocator_trim_last_rss_after_bytes{instance=~\"$instance\"}",
+          "legendFormat": "rss after",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "outline_ss_allocator_trim_last_rss_released_bytes{instance=~\"$instance\"}",
+          "legendFormat": "rss released",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "Allocator Trim Effect",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
