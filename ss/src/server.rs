@@ -1,6 +1,7 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
     fs,
+    net::SocketAddr,
     path::Path,
     sync::{
         Arc, OnceLock,
@@ -20,7 +21,7 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{SinkExt, StreamExt, stream::FuturesUnordered};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder as HyperBuilder,
@@ -63,11 +64,20 @@ const H3_WRITE_BUFFER_BYTES: usize = 256 * 1024;
 const H3_MAX_BACKPRESSURE_BYTES: usize = 8 * 1024 * 1024;
 const H3_UDP_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
+const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
+const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
 #[derive(Clone)]
 struct AppState {
-    users: Arc<[UserKey]>,
+    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
+}
+
+#[derive(Clone)]
+struct TransportRoute {
+    users: Arc<[UserKey]>,
+    candidate_users: Arc<[String]>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -75,7 +85,9 @@ pub async fn run(config: Config) -> Result<()> {
     let config = Arc::new(config);
     let metrics = Metrics::new(config.as_ref());
     let users = build_users(&config)?;
-    let app = build_app(users.clone(), metrics.clone());
+    let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
+    let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+    let app = build_app(tcp_routes.clone(), udp_routes.clone(), metrics.clone());
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind {}", config.listen))?;
@@ -94,8 +106,8 @@ pub async fn run(config: Config) -> Result<()> {
     } else {
         None
     };
-    let tcp_paths = transport_paths(users.as_ref(), Transport::Tcp);
-    let udp_paths = transport_paths(users.as_ref(), Transport::Udp);
+    let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
+    let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let user_routes = describe_user_routes(users.as_ref());
     info!(
         listen = %config.listen,
@@ -118,7 +130,7 @@ pub async fn run(config: Config) -> Result<()> {
             let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
             tokio::try_join!(
                 serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, users.clone(), metrics.clone()),
+                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone()),
                 serve_metrics_listener(metrics_listener, metrics_app)
             )?;
             Ok(())
@@ -126,7 +138,7 @@ pub async fn run(config: Config) -> Result<()> {
         (Some(h3_server), None) => {
             tokio::try_join!(
                 serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, users.clone(), metrics.clone())
+                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone())
             )?;
             Ok(())
         }
@@ -151,20 +163,23 @@ async fn tcp_websocket_upgrade(
 ) -> axum::response::Response {
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let users = users_for_transport_path(state.users.as_ref(), Transport::Tcp, &path);
-    let candidate_users = describe_users(users.as_ref());
-    info!(?method, ?version, path = %path, candidates = ?candidate_users, "incoming tcp websocket upgrade");
+    let route = state
+        .tcp_routes
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(empty_transport_route);
+    debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_tcp_connection(
             socket,
-            users,
+            route.users,
             state.metrics.clone(),
             protocol,
             path.clone(),
-            candidate_users.clone(),
+            route.candidate_users,
         )
         .await
         {
@@ -203,20 +218,23 @@ async fn udp_websocket_upgrade(
 ) -> axum::response::Response {
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let users = users_for_transport_path(state.users.as_ref(), Transport::Udp, &path);
-    let candidate_users = describe_users(users.as_ref());
-    info!(?method, ?version, path = %path, candidates = ?candidate_users, "incoming udp websocket upgrade");
+    let route = state
+        .udp_routes
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(empty_transport_route);
+    debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let session = state
         .metrics
         .open_websocket_session(Transport::Udp, protocol);
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_udp_connection(
             socket,
-            users,
+            route.users,
             state.metrics.clone(),
             protocol,
             path.clone(),
-            candidate_users.clone(),
+            route.candidate_users,
         )
         .await
         {
@@ -251,7 +269,7 @@ async fn handle_tcp_connection(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
@@ -441,7 +459,7 @@ async fn handle_udp_connection(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
@@ -525,7 +543,7 @@ async fn handle_tcp_h3_connection(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
@@ -709,7 +727,7 @@ async fn handle_udp_h3_connection(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
@@ -847,7 +865,7 @@ async fn handle_udp_datagram(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -944,7 +962,7 @@ async fn handle_udp_h3_datagram(
     outbound_tx: mpsc::Sender<H3Message>,
     metrics: Arc<Metrics>,
     path: String,
-    candidate_users: Vec<String>,
+    candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -1077,19 +1095,98 @@ async fn relay_udp_payload(
     Ok(responses)
 }
 
-async fn resolve_target(target: &TargetAddr) -> Result<std::net::SocketAddr> {
+async fn resolve_target(target: &TargetAddr) -> Result<SocketAddr> {
+    resolve_target_addrs(target).await?.into_iter().next().ok_or_else(|| {
+        anyhow!("dns lookup returned no records for {}", target.display_host_port())
+    })
+}
+
+async fn resolve_target_addrs(target: &TargetAddr) -> Result<Vec<SocketAddr>> {
     match target {
-        TargetAddr::Socket(addr) => Ok(*addr),
-        TargetAddr::Domain(host, port) => lookup_host((host.as_str(), *port))
-            .await
-            .with_context(|| format!("dns lookup failed for {host}:{port}"))?
-            .next()
-            .ok_or_else(|| anyhow!("dns lookup returned no records for {host}:{port}")),
+        TargetAddr::Socket(addr) => Ok(vec![*addr]),
+        TargetAddr::Domain(host, port) => {
+            let addrs = lookup_host((host.as_str(), *port))
+                .await
+                .with_context(|| format!("dns lookup failed for {host}:{port}"))?
+                .collect::<Vec<_>>();
+            if addrs.is_empty() {
+                return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
+            }
+            Ok(addrs)
+        }
     }
 }
 
 async fn connect_tcp_target(target: &TargetAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    let resolved = resolve_target(target).await?;
+    let resolved = order_tcp_connect_addrs(resolve_target_addrs(target).await?);
+    connect_tcp_addrs(&resolved, fwmark)
+        .await
+        .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
+}
+
+fn order_tcp_connect_addrs(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let prefer_ipv6 = addrs.first().is_some_and(SocketAddr::is_ipv6);
+    let mut seen = HashSet::with_capacity(addrs.len());
+    let mut ipv4 = VecDeque::new();
+    let mut ipv6 = VecDeque::new();
+
+    for addr in addrs {
+        if !seen.insert(addr) {
+            continue;
+        }
+        if addr.is_ipv6() {
+            ipv6.push_back(addr);
+        } else {
+            ipv4.push_back(addr);
+        }
+    }
+
+    let (primary, secondary) = if prefer_ipv6 {
+        (&mut ipv6, &mut ipv4)
+    } else {
+        (&mut ipv4, &mut ipv6)
+    };
+    let mut ordered = Vec::with_capacity(primary.len() + secondary.len());
+    while let Some(addr) = primary.pop_front() {
+        ordered.push(addr);
+        if let Some(fallback_addr) = secondary.pop_front() {
+            ordered.push(fallback_addr);
+        }
+    }
+    ordered.extend(secondary.drain(..));
+    ordered
+}
+
+async fn connect_tcp_addrs(addrs: &[SocketAddr], fwmark: Option<u32>) -> Result<TcpStream> {
+    let mut attempts = FuturesUnordered::new();
+    for (index, addr) in addrs.iter().copied().enumerate() {
+        attempts.push(async move {
+            if index > 0 {
+                tokio::time::sleep(Duration::from_millis(
+                    TCP_HAPPY_EYEBALLS_DELAY_MS * index as u64,
+                ))
+                .await;
+            }
+            let result = connect_tcp_addr(addr, fwmark).await;
+            (addr, result)
+        });
+    }
+
+    let mut last_error = None;
+    while let Some((addr, result)) = attempts.next().await {
+        match result {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some((addr, error)),
+        }
+    }
+
+    match last_error {
+        Some((addr, error)) => Err(error).with_context(|| format!("all tcp connect attempts failed; last address {addr}")),
+        None => Err(anyhow!("no socket addresses available for tcp connect")),
+    }
+}
+
+async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
     let socket = if resolved.is_ipv4() {
         TcpSocket::new_v4()
     } else {
@@ -1100,10 +1197,14 @@ async fn connect_tcp_target(target: &TargetAddr, fwmark: Option<u32>) -> Result<
     apply_fwmark_if_needed(&socket, fwmark)
         .with_context(|| format!("failed to apply fwmark {fwmark:?} to tcp socket"))?;
 
-    socket
-        .connect(resolved)
-        .await
-        .with_context(|| format!("tcp connect failed for {resolved}"))
+    match timeout(Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS), socket.connect(resolved)).await {
+        Ok(Ok(stream)) => Ok(stream),
+        Ok(Err(error)) => Err(error).with_context(|| format!("tcp connect failed for {resolved}")),
+        Err(_) => Err(anyhow!(
+            "tcp connect timed out after {}s for {resolved}",
+            TCP_CONNECT_TIMEOUT_SECS
+        )),
+    }
 }
 
 #[cfg(unix)]
@@ -1183,31 +1284,41 @@ fn is_normal_h3_shutdown(error: &anyhow::Error) -> bool {
     })
 }
 
-fn transport_paths(users: &[UserKey], transport: Transport) -> BTreeSet<String> {
-    users.iter()
-        .map(|user| match transport {
-            Transport::Tcp => user.ws_path_tcp().to_owned(),
-            Transport::Udp => user.ws_path_udp().to_owned(),
+fn empty_transport_route() -> TransportRoute {
+    TransportRoute {
+        users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+        candidate_users: Arc::from(Vec::<String>::new().into_boxed_slice()),
+    }
+}
+
+fn build_transport_route_map(
+    users: &[UserKey],
+    transport: Transport,
+) -> BTreeMap<String, TransportRoute> {
+    let mut grouped = BTreeMap::<String, Vec<UserKey>>::new();
+    for user in users {
+        let path = match transport {
+            Transport::Tcp => user.ws_path_tcp(),
+            Transport::Udp => user.ws_path_udp(),
+        };
+        grouped.entry(path.to_owned()).or_default().push(user.clone());
+    }
+
+    grouped
+        .into_iter()
+        .map(|(path, path_users)| {
+            let candidate_users = path_users
+                .iter()
+                .map(|user| format!("{}:{}", user.id(), user.cipher().as_str()))
+                .collect::<Vec<_>>();
+            (
+                path,
+                TransportRoute {
+                    users: Arc::from(path_users.into_boxed_slice()),
+                    candidate_users: Arc::from(candidate_users.into_boxed_slice()),
+                },
+            )
         })
-        .collect()
-}
-
-fn users_for_transport_path(users: &[UserKey], transport: Transport, path: &str) -> Arc<[UserKey]> {
-    Arc::from(
-        users.iter()
-            .filter(|user| match transport {
-                Transport::Tcp => user.ws_path_tcp() == path,
-                Transport::Udp => user.ws_path_udp() == path,
-            })
-            .cloned()
-            .collect::<Vec<_>>()
-            .into_boxed_slice(),
-    )
-}
-
-fn describe_users(users: &[UserKey]) -> Vec<String> {
-    users.iter()
-        .map(|user| format!("{}:{}", user.id(), user.cipher().as_str()))
         .collect()
 }
 
@@ -1248,21 +1359,26 @@ fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
     ))
 }
 
-fn build_app(users: Arc<[UserKey]>, metrics: Arc<Metrics>) -> Router {
+fn build_app(
+    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    metrics: Arc<Metrics>,
+) -> Router {
     let state = AppState {
-        users: users.clone(),
+        tcp_routes: tcp_routes.clone(),
+        udp_routes: udp_routes.clone(),
         metrics,
     };
     let mut router = Router::new();
 
-    for path in transport_paths(users.as_ref(), Transport::Tcp) {
-        let route: &'static str = Box::leak(path.into_boxed_str());
+    for path in tcp_routes.keys() {
+        let route: &'static str = Box::leak(path.clone().into_boxed_str());
         // HTTP/1.1 WebSocket uses GET, while RFC 8441 over HTTP/2 uses CONNECT.
         router = router.route(route, any(tcp_websocket_upgrade));
     }
 
-    for path in transport_paths(users.as_ref(), Transport::Udp) {
-        let route: &'static str = Box::leak(path.into_boxed_str());
+    for path in udp_routes.keys() {
+        let route: &'static str = Box::leak(path.clone().into_boxed_str());
         router = router.route(route, any(udp_websocket_upgrade));
     }
 
@@ -1373,11 +1489,12 @@ async fn serve_tcp_listener(listener: TcpListener, app: Router, config: &Config)
 
 async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
-    users: Arc<[UserKey]>,
+    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
 ) -> Result<()> {
-    let tcp_paths = transport_paths(users.as_ref(), Transport::Tcp);
-    let udp_paths = transport_paths(users.as_ref(), Transport::Udp);
+    let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
+    let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let allowed_tcp = tcp_paths.clone();
     let allowed_udp = udp_paths.clone();
 
@@ -1387,24 +1504,26 @@ async fn serve_h3_server(
                 allowed_tcp.contains(req.path.as_str()) || allowed_udp.contains(req.path.as_str())
             },
             move |socket, req| {
-                let users = users.clone();
+                let tcp_routes = tcp_routes.clone();
+                let udp_routes = udp_routes.clone();
                 let metrics = metrics.clone();
                 let tcp_paths = tcp_paths.clone();
                 let udp_paths = udp_paths.clone();
                 async move {
                     if tcp_paths.contains(req.path.as_str()) {
-                        let path_users =
-                            users_for_transport_path(users.as_ref(), Transport::Tcp, &req.path);
-                        let candidate_users = describe_users(path_users.as_ref());
-                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?candidate_users, "incoming tcp websocket upgrade");
+                        let route = tcp_routes
+                            .get(&req.path)
+                            .cloned()
+                            .unwrap_or_else(empty_transport_route);
+                        debug!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
                         let session = metrics
                             .open_websocket_session(Transport::Tcp, Protocol::Http3);
                         let outcome = match handle_tcp_h3_connection(
                             socket,
-                            path_users,
+                            route.users,
                             metrics.clone(),
                             req.path.clone(),
-                            candidate_users,
+                            route.candidate_users,
                         )
                         .await
                         {
@@ -1424,18 +1543,19 @@ async fn serve_h3_server(
                         };
                         session.finish(outcome);
                     } else if udp_paths.contains(req.path.as_str()) {
-                        let path_users =
-                            users_for_transport_path(users.as_ref(), Transport::Udp, &req.path);
-                        let candidate_users = describe_users(path_users.as_ref());
-                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?candidate_users, "incoming udp websocket upgrade");
+                        let route = udp_routes
+                            .get(&req.path)
+                            .cloned()
+                            .unwrap_or_else(empty_transport_route);
+                        debug!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
                         let session = metrics
                             .open_websocket_session(Transport::Udp, Protocol::Http3);
                         let outcome = match handle_udp_h3_connection(
                             socket,
-                            path_users,
+                            route.users,
                             metrics.clone(),
                             req.path.clone(),
-                            candidate_users,
+                            route.candidate_users,
                         )
                         .await
                         {
@@ -1630,11 +1750,12 @@ mod tests {
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
 
     use super::{
-        build_app, build_users, connect_tcp_target, relay_udp_payload, serve_h3_server,
+        build_app, build_transport_route_map, build_users, connect_tcp_addrs,
+        connect_tcp_target, order_tcp_connect_addrs, relay_udp_payload, serve_h3_server,
         serve_listener,
     };
     use crate::config::{CipherKind, Config, UserEntry};
-    use crate::metrics::Metrics;
+    use crate::metrics::{Metrics, Transport};
     use crate::protocol::TargetAddr;
 
     #[tokio::test]
@@ -1656,6 +1777,54 @@ mod tests {
 
         let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
         let mut client = connect_tcp_target(&target, None).await?;
+        client.write_all(b"ping").await?;
+
+        let mut reply = [0_u8; 4];
+        client.read_exact(&mut reply).await?;
+
+        assert_eq!(&reply, b"pong");
+        assert_eq!(server.await??, *b"ping");
+        Ok(())
+    }
+
+    #[test]
+    fn tcp_connect_order_interleaves_ipv4_and_ipv6() {
+        let ordered = order_tcp_connect_addrs(vec![
+            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
+            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),
+            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
+            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
+            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
+        ]);
+
+        assert_eq!(
+            ordered,
+            vec![
+                SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
+                SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
+                SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),
+                SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_connect_tries_next_resolved_address() -> Result<()> {
+        let blocked_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let blocked_addr = blocked_listener.local_addr()?;
+        drop(blocked_listener);
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await?;
+            let mut buf = [0_u8; 4];
+            stream.read_exact(&mut buf).await?;
+            stream.write_all(b"pong").await?;
+            Result::<_, anyhow::Error>::Ok(buf)
+        });
+
+        let mut client = connect_tcp_addrs(&[blocked_addr, addr], None).await?;
         client.write_all(b"ping").await?;
 
         let mut reply = [0_u8; 4];
@@ -1698,7 +1867,12 @@ mod tests {
         let addr = listener.local_addr()?;
 
         let config = sample_config(addr);
-        let app = build_app(build_users(&config)?, Metrics::new(&config));
+        let users = build_users(&config)?;
+        let app = build_app(
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+        );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
         let client = Client::builder(TokioExecutor::new())
@@ -1742,9 +1916,11 @@ mod tests {
 
         let config = sample_config(addr);
         let users = build_users(&config)?;
+        let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
+        let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
         let metrics = Metrics::new(&config);
         let server = tokio::spawn(async move {
-            serve_h3_server(server, users, metrics).await
+            serve_h3_server(server, tcp_routes, udp_routes, metrics).await
         });
 
         let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;

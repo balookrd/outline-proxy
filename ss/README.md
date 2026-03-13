@@ -308,8 +308,9 @@ The metrics set includes:
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
 - Process RSS / virtual memory gauges
-- glibc heap allocated / free gauges where available
+- Heap allocated / free gauges: exact allocator metrics on Linux+glibc, approximate `/proc/self/smaps`-based heap mapping metrics on other Linux targets
 - Allocator trim counters and last trim before/after RSS gauges
+- Allocator support gauges so dashboards can distinguish unsupported features from real zero values
 - Build and configuration info
 
 ### Grafana
