@@ -269,12 +269,106 @@
       "type": "stat"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "outline_ws_rust_process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} rss",
+          "refId": "A"
+        },
+        {
+          "expr": "outline_ws_rust_process_heap_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} heap",
+          "refId": "B"
+        }
+      ],
+      "title": "Process Memory",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "bytes"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 27,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max_over_time(outline_ws_rust_process_resident_memory_bytes{instance=~\"$instance\"}[$__rate_interval]) - outline_ws_rust_process_resident_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} rss below recent peak",
+          "refId": "A"
+        },
+        {
+          "expr": "max_over_time(outline_ws_rust_process_heap_memory_bytes{instance=~\"$instance\"}[$__rate_interval]) - outline_ws_rust_process_heap_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} heap below recent peak",
+          "refId": "B"
+        }
+      ],
+      "title": "Memory Reclaim vs Recent Peak",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 5
+        "y": 13
       },
       "id": 102,
       "panels": [],
@@ -299,7 +393,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 6
+        "y": 14
       },
       "id": 5,
       "options": {
@@ -339,7 +433,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 6
+        "y": 14
       },
       "id": 6,
       "options": {
@@ -379,7 +473,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 22
       },
       "id": 7,
       "options": {
@@ -407,7 +501,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 22
+        "y": 30
       },
       "id": 103,
       "panels": [],
@@ -432,7 +526,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 23
+        "y": 31
       },
       "id": 8,
       "options": {
@@ -477,7 +571,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 23
+        "y": 31
       },
       "id": 13,
       "options": {
@@ -517,7 +611,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 31
+        "y": 39
       },
       "id": 14,
       "options": {
@@ -584,7 +678,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 31
+        "y": 39
       },
       "id": 11,
       "options": {
@@ -655,7 +749,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 41
+        "y": 49
       },
       "id": 20,
       "options": {
@@ -700,7 +794,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 41
+        "y": 49
       },
       "id": 21,
       "options": {
@@ -733,7 +827,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 65
       },
       "id": 104,
       "panels": [],
@@ -758,7 +852,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 66
       },
       "id": 9,
       "options": {
@@ -798,7 +892,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 66
       },
       "id": 10,
       "options": {
@@ -838,7 +932,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 66
+        "y": 74
       },
       "id": 19,
       "options": {
@@ -878,7 +972,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 66
+        "y": 74
       },
       "id": 12,
       "options": {
@@ -911,7 +1005,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 74
+        "y": 82
       },
       "id": 105,
       "panels": [],
@@ -936,7 +1030,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 75
+        "y": 83
       },
       "id": 15,
       "options": {
@@ -986,7 +1080,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 75
+        "y": 83
       },
       "id": 16,
       "options": {
@@ -1026,7 +1120,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 83
+        "y": 91
       },
       "id": 17,
       "options": {
@@ -1066,7 +1160,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 83
+        "y": 91
       },
       "id": 18,
       "options": {

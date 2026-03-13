@@ -2,6 +2,7 @@ pub mod config;
 pub mod crypto;
 pub mod metrics;
 pub mod metrics_http;
+pub mod memory;
 pub mod proxy;
 pub mod socks5;
 pub mod transport;
@@ -16,7 +17,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
 use crate::config::{Args, load_config};
-use crate::metrics::init as init_metrics;
+use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
 
@@ -31,6 +32,7 @@ pub fn init_rustls_crypto_provider() -> Result<()> {
 
 pub async fn run(args: Args) -> Result<()> {
     init_metrics();
+    spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
     let uplinks = UplinkManager::new(
         config.uplinks.clone(),

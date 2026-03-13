@@ -11,6 +11,7 @@ use tokio::time::{sleep, timeout};
 use tracing::{debug, info, warn};
 
 use crate::config::TunTcpConfig;
+use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
 use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 use crate::tun::SharedTunWriter;
@@ -1033,6 +1034,9 @@ impl TunTcpEngine {
                 }
             }
         }
+
+        let mut guard = self.inner.flows.lock().await;
+        maybe_shrink_hash_map(&mut guard);
     }
 
     async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {

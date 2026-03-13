@@ -13,6 +13,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::config::TunConfig;
+use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
 use crate::transport::UdpWsTransport;
 use crate::tun_tcp::TunTcpEngine;
@@ -793,6 +794,7 @@ async fn cleanup_idle_flows(flows: &FlowTable, idle_timeout: Duration) {
             );
         }
     }
+    maybe_shrink_hash_map(&mut guard);
 }
 
 #[cfg(target_os = "linux")]
