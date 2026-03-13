@@ -3,30 +3,30 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
-use crate::config::StatusConfig;
-use crate::metrics::{record_status_request, render_prometheus};
+use crate::config::MetricsConfig;
+use crate::metrics::{record_metrics_http_request, render_prometheus};
 use crate::uplink::UplinkManager;
 
-pub fn spawn_status_server(config: StatusConfig, uplinks: UplinkManager) {
+pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkManager) {
     tokio::spawn(async move {
-        if let Err(error) = run_status_server(config, uplinks).await {
-            warn!(error = %format!("{error:#}"), "status server stopped");
+        if let Err(error) = run_metrics_server(config, uplinks).await {
+            warn!(error = %format!("{error:#}"), "metrics server stopped");
         }
     });
 }
 
-async fn run_status_server(config: StatusConfig, uplinks: UplinkManager) -> Result<()> {
+async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkManager) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
-        .with_context(|| format!("failed to bind status listener {}", config.listen))?;
-    info!(listen = %config.listen, "status server started");
+        .with_context(|| format!("failed to bind metrics listener {}", config.listen))?;
+    info!(listen = %config.listen, "metrics server started");
 
     loop {
-        let (stream, peer) = listener.accept().await.context("status accept failed")?;
+        let (stream, peer) = listener.accept().await.context("metrics accept failed")?;
         let uplinks = uplinks.clone();
         tokio::spawn(async move {
             if let Err(error) = handle_connection(stream, uplinks).await {
-                warn!(%peer, error = %format!("{error:#}"), "status request failed");
+                warn!(%peer, error = %format!("{error:#}"), "metrics request failed");
             }
         });
     }
@@ -37,7 +37,7 @@ async fn handle_connection(mut stream: TcpStream, uplinks: UplinkManager) -> Res
     let read = stream
         .read(&mut buf)
         .await
-        .context("failed to read status request")?;
+        .context("failed to read metrics request")?;
     if read == 0 {
         return Ok(());
     }
@@ -47,13 +47,6 @@ async fn handle_connection(mut stream: TcpStream, uplinks: UplinkManager) -> Res
     let path = first_line.split_whitespace().nth(1).unwrap_or("/");
 
     match path {
-        "/status" => {
-            let snapshot = uplinks.snapshot().await;
-            let body =
-                serde_json::to_vec_pretty(&snapshot).context("failed to encode status json")?;
-            write_response(&mut stream, 200, "application/json; charset=utf-8", &body).await?;
-            record_status_request("/status", 200);
-        }
         "/metrics" => {
             let snapshot = uplinks.snapshot().await;
             let body = render_prometheus(&snapshot)?;
@@ -64,7 +57,7 @@ async fn handle_connection(mut stream: TcpStream, uplinks: UplinkManager) -> Res
                 body.as_bytes(),
             )
             .await?;
-            record_status_request("/metrics", 200);
+            record_metrics_http_request("/metrics", 200);
         }
         _ => {
             write_response(
@@ -74,7 +67,7 @@ async fn handle_connection(mut stream: TcpStream, uplinks: UplinkManager) -> Res
                 b"not found\n",
             )
             .await?;
-            record_status_request(path, 404);
+            record_metrics_http_request(path, 404);
         }
     }
 
@@ -99,10 +92,10 @@ async fn write_response(
     stream
         .write_all(headers.as_bytes())
         .await
-        .context("failed to write status headers")?;
+        .context("failed to write metrics headers")?;
     stream
         .write_all(body)
         .await
-        .context("failed to write status body")?;
+        .context("failed to write metrics body")?;
     Ok(())
 }
