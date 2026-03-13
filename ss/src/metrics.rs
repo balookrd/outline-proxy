@@ -367,6 +367,32 @@ impl Metrics {
         )
         .ok();
 
+        write_help(
+            &mut out,
+            "outline_ss_allocator_heap_metrics_supported",
+            "Allocator heap metrics mode: 0=unsupported, 1=exact allocator metrics, 2=approximate /proc-based metrics.",
+        );
+        write_type(&mut out, "outline_ss_allocator_heap_metrics_supported", "gauge");
+        writeln!(
+            out,
+            "outline_ss_allocator_heap_metrics_supported {}",
+            allocator_heap_metrics_support_level()
+        )
+        .ok();
+
+        write_help(
+            &mut out,
+            "outline_ss_allocator_trim_supported",
+            "Whether periodic allocator trimming is supported on this build/runtime.",
+        );
+        write_type(&mut out, "outline_ss_allocator_trim_supported", "gauge");
+        writeln!(
+            out,
+            "outline_ss_allocator_trim_supported {}",
+            if allocator_trim_supported() { 1 } else { 0 }
+        )
+        .ok();
+
         if let Some(snapshot) = process_memory_snapshot() {
             write_help(
                 &mut out,
@@ -1283,6 +1309,20 @@ fn escape_label_value(value: &str) -> String {
         .replace('"', "\\\"")
 }
 
+const fn allocator_heap_metrics_support_level() -> i64 {
+    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+        1
+    } else if cfg!(all(target_os = "linux", not(target_env = "gnu"))) {
+        2
+    } else {
+        0
+    }
+}
+
+const fn allocator_trim_supported() -> bool {
+    cfg!(all(target_os = "linux", target_env = "gnu"))
+}
+
 #[cfg(target_os = "linux")]
 fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
@@ -1323,7 +1363,60 @@ fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
 
 #[cfg(all(target_os = "linux", not(target_env = "gnu")))]
 fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
-    (None, None)
+    procfs_heap_snapshot()
+}
+
+#[cfg(target_os = "linux")]
+fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
+    let smaps = match std::fs::read_to_string("/proc/self/smaps") {
+        Ok(smaps) => smaps,
+        Err(_) => return (None, None),
+    };
+
+    let mut heap_size_kib = 0_u64;
+    let mut heap_rss_kib = 0_u64;
+    let mut in_heap_region = false;
+
+    for line in smaps.lines() {
+        if is_smaps_mapping_header(line) {
+            in_heap_region = line.ends_with("[heap]");
+            continue;
+        }
+        if !in_heap_region {
+            continue;
+        }
+
+        if let Some(value_kib) = smaps_value_kib(line, "Size:") {
+            heap_size_kib = heap_size_kib.saturating_add(value_kib);
+        } else if let Some(value_kib) = smaps_value_kib(line, "Rss:") {
+            heap_rss_kib = heap_rss_kib.saturating_add(value_kib);
+        }
+    }
+
+    if heap_size_kib == 0 && heap_rss_kib == 0 {
+        return (None, None);
+    }
+
+    let heap_mapped_bytes = heap_size_kib.saturating_mul(1024);
+    let heap_resident_bytes = heap_rss_kib.saturating_mul(1024);
+    (
+        Some(heap_resident_bytes),
+        Some(heap_mapped_bytes.saturating_sub(heap_resident_bytes)),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn is_smaps_mapping_header(line: &str) -> bool {
+    line.split_once('-')
+        .and_then(|(start, _)| start.chars().next())
+        .is_some_and(|ch| ch.is_ascii_hexdigit())
+}
+
+#[cfg(target_os = "linux")]
+fn smaps_value_kib(line: &str, key: &str) -> Option<u64> {
+    let rest = line.strip_prefix(key)?.trim();
+    let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+    Some(kib)
 }
 
 #[cfg(test)]

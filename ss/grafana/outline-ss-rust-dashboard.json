@@ -31,7 +31,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -59,7 +60,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 0
+        "y": 1
       },
       "id": 1,
       "options": {
@@ -96,7 +97,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -124,7 +126,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 0
+        "y": 1
       },
       "id": 2,
       "options": {
@@ -161,7 +163,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -185,7 +188,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 0
+        "y": 1
       },
       "id": 3,
       "options": {
@@ -222,7 +225,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -250,7 +254,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 0
+        "y": 1
       },
       "id": 4,
       "options": {
@@ -287,7 +291,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -343,7 +348,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 4
+        "y": 5
       },
       "id": 5,
       "options": {
@@ -361,8 +366,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (transport, protocol) (rate(outline_ss_websocket_upgrades_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{transport}}/{{protocol}}",
+          "expr": "sum by (short_instance, transport, protocol) (label_replace(rate(outline_ss_websocket_upgrades_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} websocket upgrades {{transport}} {{protocol}}",
           "range": true,
           "refId": "A"
         }
@@ -378,7 +383,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -428,13 +434,59 @@
           },
           "unit": "reqps"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* normal$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* client_disconnect$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#FFB357",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* error$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 4
+        "y": 5
       },
       "id": 6,
       "options": {
@@ -452,8 +504,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (transport, protocol, reason) (rate(outline_ss_websocket_disconnects_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{transport}}/{{protocol}} {{reason}}",
+          "expr": "sum by (short_instance, transport, protocol, reason) (label_replace(rate(outline_ss_websocket_disconnects_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} websocket disconnects {{transport}} {{protocol}} {{reason}}",
           "range": true,
           "refId": "A"
         }
@@ -469,7 +521,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -525,7 +578,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 12
+        "y": 14
       },
       "id": 7,
       "options": {
@@ -543,8 +596,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, user, protocol) (rate(outline_ss_tcp_upstream_connect_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\"}[5m])))",
-          "legendFormat": "{{user}}/{{protocol}} p95",
+          "expr": "histogram_quantile(0.95, sum by (le, short_instance, user, protocol) (label_replace(rate(outline_ss_tcp_upstream_connect_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")))",
+          "legendFormat": "{{short_instance}} {{user}} tcp connect p95 {{protocol}}",
           "range": true,
           "refId": "A"
         }
@@ -560,7 +613,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -616,7 +670,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 12
+        "y": 14
       },
       "id": 8,
       "options": {
@@ -634,8 +688,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m])) * 8",
-          "legendFormat": "{{user}} {{direction}}",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "legendFormat": "{{short_instance}} {{user}} tcp payload {{direction}}",
           "range": true,
           "refId": "A"
         }
@@ -651,7 +705,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -701,13 +756,44 @@
           },
           "unit": "reqps"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* success$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* (timeout|error)$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 20
+        "y": 22
       },
       "id": 9,
       "options": {
@@ -725,8 +811,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, protocol, result) (rate(outline_ss_udp_requests_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
-          "legendFormat": "{{user}}/{{protocol}} {{result}}",
+          "expr": "sum by (short_instance, user, protocol, result) (label_replace(rate(outline_ss_udp_requests_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{user}} udp requests {{protocol}} {{result}}",
           "range": true,
           "refId": "A"
         }
@@ -742,7 +828,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#FFB357",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -798,7 +885,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 20
+        "y": 22
       },
       "id": 10,
       "options": {
@@ -816,7 +903,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, user, protocol, result) (rate(outline_ss_udp_relay_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\",result!=\"success\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, short_instance, user, protocol, result) (label_replace(rate(outline_ss_udp_relay_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\",result!=\"success\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")))",
           "hide": true,
           "legendFormat": "unused",
           "range": true,
@@ -824,8 +911,8 @@
         },
         {
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (le, user, protocol) (rate(outline_ss_udp_relay_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\",result=\"success\"}[5m])))",
-          "legendFormat": "{{user}}/{{protocol}} p95",
+          "expr": "histogram_quantile(0.95, sum by (le, short_instance, user, protocol) (label_replace(rate(outline_ss_udp_relay_duration_seconds_bucket{instance=~\"$instance\",user=~\"$user\",result=\"success\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")))",
+          "legendFormat": "{{short_instance}} {{user}} udp relay p95 {{protocol}}",
           "range": true,
           "refId": "B"
         }
@@ -841,7 +928,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -897,7 +985,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 28
+        "y": 30
       },
       "id": 11,
       "options": {
@@ -915,8 +1003,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_udp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m])) * 8",
-          "legendFormat": "{{user}} {{direction}}",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_udp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "legendFormat": "{{short_instance}} {{user}} udp payload {{direction}}",
           "range": true,
           "refId": "A"
         }
@@ -932,7 +1020,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -988,7 +1077,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 28
+        "y": 30
       },
       "id": 12,
       "options": {
@@ -1006,8 +1095,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, protocol) (rate(outline_ss_udp_response_datagrams_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
-          "legendFormat": "{{user}}/{{protocol}}",
+          "expr": "sum by (short_instance, user, protocol) (label_replace(rate(outline_ss_udp_response_datagrams_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{user}} udp responses {{protocol}}",
           "range": true,
           "refId": "A"
         }
@@ -1023,7 +1112,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1079,7 +1169,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 36
+        "y": 39
       },
       "id": 13,
       "options": {
@@ -1097,8 +1187,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"tcp\"}[5m])) * 8",
-          "legendFormat": "{{user}} {{direction}}",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"tcp\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "legendFormat": "{{short_instance}} {{user}} client tcp {{direction}}",
           "range": true,
           "refId": "A"
         }
@@ -1114,7 +1204,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#5794F2",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1170,7 +1261,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 36
+        "y": 39
       },
       "id": 19,
       "options": {
@@ -1188,8 +1279,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, direction) (rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"udp\"}[5m])) * 8",
-          "legendFormat": "{{user}} {{direction}}",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"udp\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "legendFormat": "{{short_instance}} {{user}} client udp {{direction}}",
           "range": true,
           "refId": "A"
         }
@@ -1205,7 +1296,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -1233,7 +1325,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 44
+        "y": 47
       },
       "id": 16,
       "options": {
@@ -1270,7 +1362,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1326,7 +1419,7 @@
         "h": 8,
         "w": 18,
         "x": 6,
-        "y": 44
+        "y": 47
       },
       "id": 14,
       "options": {
@@ -1344,8 +1437,8 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (user, transport, protocol) (rate(outline_ss_client_sessions_total{instance=~\"$instance\",user=~\"$user\"}[5m]))",
-          "legendFormat": "{{user}} {{transport}} {{protocol}}",
+          "expr": "sum by (short_instance, user, transport, protocol) (label_replace(rate(outline_ss_client_sessions_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{user}} client sessions {{transport}} {{protocol}}",
           "range": true,
           "refId": "A"
         }
@@ -1361,7 +1454,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "custom": {
             "align": "auto",
@@ -1408,7 +1502,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 52
+        "y": 55
       },
       "id": 17,
       "options": {
@@ -1478,7 +1572,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 52
+        "y": 55
       },
       "id": 15,
       "options": {
@@ -1521,7 +1615,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "thresholds"
+            "fixedColor": "#73BF69",
+            "mode": "fixed"
           },
           "mappings": [],
           "thresholds": {
@@ -1549,7 +1644,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 60
+        "y": 63
       },
       "id": 18,
       "options": {
@@ -1632,7 +1727,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 64
+        "y": 68
       },
       "id": 24,
       "options": {
@@ -1697,7 +1792,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 64
+        "y": 68
       },
       "id": 25,
       "options": {
@@ -1758,7 +1853,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 64
+        "y": 68
       },
       "id": 26,
       "options": {
@@ -1797,17 +1892,45 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "#E24D42",
+                  "index": 0,
+                  "text": "unsupported"
+                },
+                "1": {
+                  "color": "#73BF69",
+                  "index": 1,
+                  "text": "exact"
+                },
+                "2": {
+                  "color": "#FFB357",
+                  "index": 2,
+                  "text": "approximate"
+                }
+              },
+              "type": "value"
+            }
+          ],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "green",
+                "color": "#E24D42",
                 "value": null
+              },
+              {
+                "color": "#73BF69",
+                "value": 1
+              },
+              {
+                "color": "#FFB357",
+                "value": 2
               }
             ]
-          },
-          "unit": "bytes"
+          }
         },
         "overrides": []
       },
@@ -1815,7 +1938,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 64
+        "y": 68
       },
       "id": 27,
       "options": {
@@ -1835,13 +1958,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_process_heap_free_bytes{instance=~\"$instance\"}",
-          "legendFormat": "heap free",
+          "expr": "outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"}",
+          "legendFormat": "heap metrics mode",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Heap Free",
+      "title": "Allocator Heap Mode",
       "type": "stat"
     },
     {
@@ -1852,7 +1975,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#FFB357",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1898,13 +2022,29 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "virtual"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 68
+        "y": 72
       },
       "id": 20,
       "options": {
@@ -1922,15 +2062,15 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_process_resident_memory_bytes{instance=~\"$instance\"}",
-          "legendFormat": "RSS",
+          "expr": "label_replace(outline_ss_process_resident_memory_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} process rss",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"}",
-          "legendFormat": "virtual",
+          "expr": "label_replace(outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} process virtual",
           "range": true,
           "refId": "B"
         }
@@ -1946,7 +2086,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#FFB357",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -1992,13 +2133,29 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* heap free$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 68
+        "y": 72
       },
       "id": 21,
       "options": {
@@ -2016,15 +2173,15 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_process_heap_allocated_bytes{instance=~\"$instance\"}",
-          "legendFormat": "heap allocated",
+          "expr": "label_replace((outline_ss_process_heap_allocated_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} heap allocated",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "outline_ss_process_heap_free_bytes{instance=~\"$instance\"}",
-          "legendFormat": "heap free",
+          "expr": "label_replace((outline_ss_process_heap_free_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} heap free",
           "range": true,
           "refId": "B"
         }
@@ -2040,7 +2197,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#FFB357",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -2086,13 +2244,44 @@
           },
           "unit": "ops"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "release events"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "trim errors"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#E24D42",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 76
+        "y": 80
       },
       "id": 22,
       "options": {
@@ -2110,22 +2299,22 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "rate(outline_ss_allocator_trim_runs_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "trim runs",
+          "expr": "label_replace((rate(outline_ss_allocator_trim_runs_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim runs",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "rate(outline_ss_allocator_trim_release_events_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "release events",
+          "expr": "label_replace((rate(outline_ss_allocator_trim_release_events_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim release events",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "rate(outline_ss_allocator_trim_errors_total{instance=~\"$instance\"}[5m])",
-          "legendFormat": "trim errors",
+          "expr": "label_replace((rate(outline_ss_allocator_trim_errors_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim errors",
           "range": true,
           "refId": "C"
         }
@@ -2141,7 +2330,8 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "fixedColor": "#FFB357",
+            "mode": "fixed"
           },
           "custom": {
             "axisBorderShow": false,
@@ -2187,13 +2377,44 @@
           },
           "unit": "bytes"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* trim rss after$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* trim rss released$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#73BF69",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 76
+        "y": 80
       },
       "id": 23,
       "options": {
@@ -2211,28 +2432,80 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_trim_last_rss_before_bytes{instance=~\"$instance\"}",
-          "legendFormat": "rss before",
+          "expr": "label_replace((outline_ss_allocator_trim_last_rss_before_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim rss before",
           "range": true,
           "refId": "A"
         },
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_trim_last_rss_after_bytes{instance=~\"$instance\"}",
-          "legendFormat": "rss after",
+          "expr": "label_replace((outline_ss_allocator_trim_last_rss_after_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim rss after",
           "range": true,
           "refId": "B"
         },
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_trim_last_rss_released_bytes{instance=~\"$instance\"}",
-          "legendFormat": "rss released",
+          "expr": "label_replace((outline_ss_allocator_trim_last_rss_released_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
+          "legendFormat": "{{short_instance}} trim rss released",
           "range": true,
           "refId": "C"
         }
       ],
       "title": "Allocator Trim Effect",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 28,
+      "panels": [],
+      "title": "Overview",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
+      "id": 29,
+      "panels": [],
+      "title": "Transport",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 30,
+      "panels": [],
+      "title": "Clients",
+      "type": "row"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 67
+      },
+      "id": 31,
+      "panels": [],
+      "title": "Memory & Allocator",
+      "type": "row"
     }
   ],
   "refresh": "30s",
