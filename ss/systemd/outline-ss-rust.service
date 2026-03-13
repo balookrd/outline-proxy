@@ -1,0 +1,59 @@
+[Unit]
+Description=outline-ss-rust Shadowsocks WebSocket relay
+Documentation=https://github.com/Jigsaw-Code/outline-ss-server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=outline-ss-rust
+Group=outline-ss-rust
+WorkingDirectory=/var/lib/outline-ss-rust
+ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.toml
+Restart=on-failure
+RestartSec=3
+
+# Keep logs in journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=outline-ss-rust
+Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
+
+# Needed for low ports and per-user fwmark.
+# If you only use high ports and do not configure fwmark, you can remove both.
+AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+NoNewPrivileges=true
+
+# Reasonable production limits.
+LimitNOFILE=1048576
+TasksMax=infinity
+
+# Sandboxing that still allows outbound networking, TLS cert reads and QUIC.
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Read-only access to config and certificates.
+ReadOnlyPaths=/etc/outline-ss-rust
+
+# Writable runtime state if the deployment wants to use it later.
+StateDirectory=outline-ss-rust
+RuntimeDirectory=outline-ss-rust
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

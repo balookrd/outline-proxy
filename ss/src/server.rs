@@ -1,13 +1,23 @@
-use std::{fs, path::Path, sync::{Arc, OnceLock}};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::Path,
+    sync::{
+        Arc, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Router,
     extract::{
+        OriginalUri,
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::{Method, Version},
+    http::{Method, StatusCode, Version},
+    response::IntoResponse,
     routing::any,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -35,105 +45,214 @@ use crate::{
     config::Config,
     crypto::{
         AeadStreamDecryptor, AeadStreamEncryptor, MAX_CHUNK_SIZE, UserKey, decrypt_udp_packet,
-        encrypt_udp_packet,
+        diagnose_stream_handshake, diagnose_udp_packet, encrypt_udp_packet,
     },
+    metrics::{DisconnectReason, Metrics, Protocol, Transport},
     protocol::{TargetAddr, parse_target_addr},
 };
 
 #[derive(Clone)]
 struct AppState {
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
 }
 
 pub async fn run(config: Config) -> Result<()> {
     ensure_rustls_provider_installed();
     let config = Arc::new(config);
+    let metrics = Metrics::new(config.as_ref());
     let users = build_users(&config)?;
-    let app = build_app(config.clone(), users.clone());
+    let app = build_app(users.clone(), metrics.clone());
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind {}", config.listen))?;
+    let metrics_listener = if config.metrics_enabled() {
+        let metrics_listen = config.metrics_listen.expect("metrics listen must exist");
+        Some(
+            TcpListener::bind(metrics_listen)
+                .await
+                .with_context(|| format!("failed to bind metrics listener {}", metrics_listen))?,
+        )
+    } else {
+        None
+    };
     let h3_server = if config.h3_enabled() {
         Some(build_h3_server(config.as_ref()).await?)
     } else {
         None
     };
+    let tcp_paths = transport_paths(users.as_ref(), Transport::Tcp);
+    let udp_paths = transport_paths(users.as_ref(), Transport::Udp);
+    let user_routes = describe_user_routes(users.as_ref());
     info!(
         listen = %config.listen,
         tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
-        tcp_ws_path = %config.ws_path,
-        udp_ws_path = %config.udp_ws_path,
+        metrics_listen = ?config.metrics_listen,
+        metrics_path = %config.metrics_path,
+        default_tcp_ws_path = %config.ws_path_tcp,
+        default_udp_ws_path = %config.ws_path_udp,
+        tcp_ws_paths = ?tcp_paths,
+        udp_ws_paths = ?udp_paths,
+        user_routes = ?user_routes,
         method = ?config.method,
         users = users.len(),
         "websocket shadowsocks server listening",
     );
 
-    if let Some(h3_server) = h3_server {
-        tokio::try_join!(
-            serve_tcp_listener(listener, app, config.as_ref()),
-            serve_h3_server(h3_server, config.clone(), users.clone())
-        )?;
-        Ok(())
-    } else {
-        serve_tcp_listener(listener, app, config.as_ref()).await
+    match (h3_server, metrics_listener) {
+        (Some(h3_server), Some(metrics_listener)) => {
+            let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
+            tokio::try_join!(
+                serve_tcp_listener(listener, app, config.as_ref()),
+                serve_h3_server(h3_server, users.clone(), metrics.clone()),
+                serve_metrics_listener(metrics_listener, metrics_app)
+            )?;
+            Ok(())
+        }
+        (Some(h3_server), None) => {
+            tokio::try_join!(
+                serve_tcp_listener(listener, app, config.as_ref()),
+                serve_h3_server(h3_server, users.clone(), metrics.clone())
+            )?;
+            Ok(())
+        }
+        (None, Some(metrics_listener)) => {
+            let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
+            tokio::try_join!(
+                serve_tcp_listener(listener, app, config.as_ref()),
+                serve_metrics_listener(metrics_listener, metrics_app)
+            )?;
+            Ok(())
+        }
+        (None, None) => serve_tcp_listener(listener, app, config.as_ref()).await,
     }
 }
 
 async fn tcp_websocket_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
 ) -> axum::response::Response {
-    info!(?method, ?version, path = %state.config.ws_path, "incoming tcp websocket upgrade");
+    let protocol = protocol_from_http_version(version);
+    let path = uri.path().to_owned();
+    let users = users_for_transport_path(state.users.as_ref(), Transport::Tcp, &path);
+    let candidate_users = describe_users(users.as_ref());
+    info!(?method, ?version, path = %path, candidates = ?candidate_users, "incoming tcp websocket upgrade");
+    let session = state
+        .metrics
+        .open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
-        if let Err(error) =
-            handle_tcp_connection(socket, state.config.clone(), state.users.clone()).await
+        let outcome = match handle_tcp_connection(
+            socket,
+            users,
+            state.metrics.clone(),
+            protocol,
+            path.clone(),
+            candidate_users.clone(),
+        )
+        .await
         {
-            if is_normal_h3_shutdown(&error) {
-                debug!(?error, "tcp websocket connection closed normally");
-            } else if is_benign_ws_disconnect(&error) {
-                debug!(?error, "tcp websocket connection closed abruptly");
-            } else {
-                warn!(?error, "tcp websocket connection terminated with error");
+            Ok(()) => DisconnectReason::Normal,
+            Err(error) => {
+                if is_normal_h3_shutdown(&error) {
+                    debug!(?error, "tcp websocket connection closed normally");
+                    DisconnectReason::Normal
+                } else if is_benign_ws_disconnect(&error) {
+                    debug!(?error, "tcp websocket connection closed abruptly");
+                    DisconnectReason::ClientDisconnect
+                } else {
+                    warn!(?error, "tcp websocket connection terminated with error");
+                    DisconnectReason::Error
+                }
             }
-        }
+        };
+        session.finish(outcome);
     })
+}
+
+async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
+    (
+        StatusCode::OK,
+        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        metrics.render_prometheus(),
+    )
 }
 
 async fn udp_websocket_upgrade(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
 ) -> axum::response::Response {
-    info!(?method, ?version, path = %state.config.udp_ws_path, "incoming udp websocket upgrade");
+    let protocol = protocol_from_http_version(version);
+    let path = uri.path().to_owned();
+    let users = users_for_transport_path(state.users.as_ref(), Transport::Udp, &path);
+    let candidate_users = describe_users(users.as_ref());
+    info!(?method, ?version, path = %path, candidates = ?candidate_users, "incoming udp websocket upgrade");
+    let session = state
+        .metrics
+        .open_websocket_session(Transport::Udp, protocol);
     ws.on_upgrade(move |socket| async move {
-        if let Err(error) =
-            handle_udp_connection(socket, state.config.clone(), state.users.clone()).await
+        let outcome = match handle_udp_connection(
+            socket,
+            users,
+            state.metrics.clone(),
+            protocol,
+            path.clone(),
+            candidate_users.clone(),
+        )
+        .await
         {
-            if is_normal_h3_shutdown(&error) {
-                debug!(?error, "udp websocket connection closed normally");
-            } else if is_benign_ws_disconnect(&error) {
-                debug!(?error, "udp websocket connection closed abruptly");
-            } else {
-                warn!(?error, "udp websocket connection terminated with error");
+            Ok(()) => DisconnectReason::Normal,
+            Err(error) => {
+                if is_normal_h3_shutdown(&error) {
+                    debug!(?error, "udp websocket connection closed normally");
+                    DisconnectReason::Normal
+                } else if is_benign_ws_disconnect(&error) {
+                    debug!(?error, "udp websocket connection closed abruptly");
+                    DisconnectReason::ClientDisconnect
+                } else {
+                    warn!(?error, "udp websocket connection terminated with error");
+                    DisconnectReason::Error
+                }
             }
-        }
+        };
+        session.finish(outcome);
     })
+}
+
+fn protocol_from_http_version(version: Version) -> Protocol {
+    match version {
+        Version::HTTP_2 => Protocol::Http2,
+        _ => Protocol::Http1,
+    }
 }
 
 async fn handle_tcp_connection(
     socket: WebSocket,
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: String,
+    candidate_users: Vec<String>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
+    let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
+            if let Message::Binary(data) = &message {
+                writer_metrics.record_websocket_binary_frame(
+                    Transport::Tcp,
+                    protocol,
+                    "out",
+                    data.len(),
+                );
+            }
             ws_sender
                 .send(message)
                 .await
@@ -141,16 +260,44 @@ async fn handle_tcp_connection(
         }
         Ok::<(), anyhow::Error>(())
     });
-    let mut decryptor = AeadStreamDecryptor::new(config.method, users);
+    let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::new();
     let mut upstream_writer = None;
     let mut upstream_to_client = None;
+    let mut authenticated_user = None;
+    let mut upstream_guard = None;
 
     while let Some(message) = ws_receiver.next().await {
         match message.context("websocket receive failure")? {
             Message::Binary(data) => {
+                metrics.record_websocket_binary_frame(
+                    Transport::Tcp,
+                    protocol,
+                    "in",
+                    data.len(),
+                );
                 decryptor.push(&data);
-                let plaintext_chunks = decryptor.pull_plaintext()?;
+                let plaintext_chunks = decryptor.pull_plaintext().map_err(|error| {
+                    if error.to_string().contains("no configured key matched the incoming data") {
+                        debug!(
+                            path = %path,
+                            candidates = ?candidate_users,
+                            buffered = decryptor.buffered_data().len(),
+                            attempts = ?diagnose_stream_handshake(
+                                users.as_ref(),
+                                decryptor.buffered_data()
+                            ),
+                            "tcp authentication failed for all path candidates"
+                        );
+                        anyhow!(
+                            "no configured key matched the incoming data on tcp path {} candidates={:?}",
+                            path,
+                            candidate_users
+                        )
+                    } else {
+                        anyhow!(error)
+                    }
+                })?;
                 for chunk in plaintext_chunks {
                     plaintext_buffer.extend_from_slice(&chunk);
                 }
@@ -162,29 +309,76 @@ async fn handle_tcp_connection(
                     let Some(user) = decryptor.user().cloned() else {
                         continue;
                     };
+                    debug!(
+                        user = user.id(),
+                        cipher = user.cipher().as_str(),
+                        path = %path,
+                        "tcp shadowsocks user authenticated"
+                    );
                     let target_display = target.display_host_port();
-                    let stream = connect_tcp_target(&target, user.fwmark())
-                        .await
-                        .with_context(|| format!("failed to connect to {target_display}"))?;
+                    let connect_started = std::time::Instant::now();
+                    let stream = match connect_tcp_target(&target, user.fwmark()).await {
+                        Ok(stream) => {
+                            metrics.record_tcp_connect(
+                                user.id(),
+                                protocol,
+                                "success",
+                                connect_started.elapsed().as_secs_f64(),
+                            );
+                            stream
+                        }
+                        Err(error) => {
+                            metrics.record_tcp_connect(
+                                user.id(),
+                                protocol,
+                                "error",
+                                connect_started.elapsed().as_secs_f64(),
+                            );
+                            return Err(error)
+                                .with_context(|| format!("failed to connect to {target_display}"));
+                        }
+                    };
                     info!(
                         user = user.id(),
                         fwmark = ?user.fwmark(),
+                        path = %path,
                         target = %target_display,
                         "tcp upstream connected"
                     );
 
                     let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor = AeadStreamEncryptor::new(config.method, &user)?;
+                    let mut encryptor = AeadStreamEncryptor::new(&user)?;
                     let tx = outbound_tx.clone();
+                    let relay_metrics = metrics.clone();
+                    let user_id = user.id().to_owned();
                     upstream_to_client = Some(tokio::spawn(async move {
-                        relay_upstream_to_client(upstream_reader, tx, &mut encryptor).await
+                        relay_upstream_to_client(
+                            upstream_reader,
+                            tx,
+                            &mut encryptor,
+                            relay_metrics,
+                            protocol,
+                            user_id,
+                        )
+                        .await
                     }));
+                    metrics.record_tcp_authenticated_session(user.id(), protocol);
+                    upstream_guard = Some(metrics.open_tcp_upstream_connection(user.id(), protocol));
+                    authenticated_user = Some(user);
                     upstream_writer = Some(writer);
                     plaintext_buffer.drain(..consumed);
                 }
 
                 if let Some(writer) = &mut upstream_writer {
                     if !plaintext_buffer.is_empty() {
+                        if let Some(user) = &authenticated_user {
+                            metrics.record_tcp_payload_bytes(
+                                user.id(),
+                                protocol,
+                                "client_to_target",
+                                plaintext_buffer.len(),
+                            );
+                        }
                         writer
                             .write_all(&plaintext_buffer)
                             .await
@@ -217,6 +411,10 @@ async fn handle_tcp_connection(
             .context("tcp upstream relay task join failed")??;
     }
 
+    if let Some(guard) = upstream_guard {
+        guard.finish();
+    }
+
     drop(outbound_tx);
     writer_task
         .await
@@ -226,13 +424,26 @@ async fn handle_tcp_connection(
 
 async fn handle_udp_connection(
     socket: WebSocket,
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: String,
+    candidate_users: Vec<String>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
+    let udp_session_recorded = Arc::new(AtomicBool::new(false));
+    let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
+            if let Message::Binary(data) = &message {
+                writer_metrics.record_websocket_binary_frame(
+                    Transport::Udp,
+                    protocol,
+                    "out",
+                    data.len(),
+                );
+            }
             ws_sender
                 .send(message)
                 .await
@@ -244,11 +455,31 @@ async fn handle_udp_connection(
     while let Some(message) = ws_receiver.next().await {
         match message.context("websocket receive failure")? {
             Message::Binary(data) => {
+                metrics.record_websocket_binary_frame(
+                    Transport::Udp,
+                    protocol,
+                    "in",
+                    data.len(),
+                );
                 let tx = outbound_tx.clone();
                 let users = users.clone();
-                let method = config.method;
+                let metrics = metrics.clone();
+                let path = path.clone();
+                let candidate_users = candidate_users.clone();
+                let udp_session_recorded = udp_session_recorded.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_udp_datagram(method, users, data.to_vec(), tx).await
+                    if let Err(error) =
+                        handle_udp_datagram(
+                            users,
+                            data.to_vec(),
+                            tx,
+                            metrics,
+                            protocol,
+                            path,
+                            candidate_users,
+                            udp_session_recorded,
+                        )
+                            .await
                     {
                         warn!(?error, "udp datagram relay failed");
                     }
@@ -278,13 +509,24 @@ async fn handle_udp_connection(
 
 async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    path: String,
+    candidate_users: Vec<String>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
+    let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
+            if let H3Message::Binary(data) = &message {
+                writer_metrics.record_websocket_binary_frame(
+                    Transport::Tcp,
+                    Protocol::Http3,
+                    "out",
+                    data.len(),
+                );
+            }
             ws_writer
                 .send(message)
                 .await
@@ -293,16 +535,44 @@ async fn handle_tcp_h3_connection(
         let _ = ws_writer.close(1000, "").await;
         Ok::<(), anyhow::Error>(())
     });
-    let mut decryptor = AeadStreamDecryptor::new(config.method, users);
+    let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::new();
     let mut upstream_writer = None;
     let mut upstream_to_client = None;
+    let mut authenticated_user = None;
+    let mut upstream_guard = None;
 
     while let Some(message) = ws_reader.next().await {
         match message.context("websocket receive failure")? {
             H3Message::Binary(data) => {
+                metrics.record_websocket_binary_frame(
+                    Transport::Tcp,
+                    Protocol::Http3,
+                    "in",
+                    data.len(),
+                );
                 decryptor.push(&data);
-                let plaintext_chunks = decryptor.pull_plaintext()?;
+                let plaintext_chunks = decryptor.pull_plaintext().map_err(|error| {
+                    if error.to_string().contains("no configured key matched the incoming data") {
+                        debug!(
+                            path = %path,
+                            candidates = ?candidate_users,
+                            buffered = decryptor.buffered_data().len(),
+                            attempts = ?diagnose_stream_handshake(
+                                users.as_ref(),
+                                decryptor.buffered_data()
+                            ),
+                            "tcp authentication failed for all path candidates"
+                        );
+                        anyhow!(
+                            "no configured key matched the incoming data on tcp path {} candidates={:?}",
+                            path,
+                            candidate_users
+                        )
+                    } else {
+                        anyhow!(error)
+                    }
+                })?;
                 for chunk in plaintext_chunks {
                     plaintext_buffer.extend_from_slice(&chunk);
                 }
@@ -314,29 +584,76 @@ async fn handle_tcp_h3_connection(
                     let Some(user) = decryptor.user().cloned() else {
                         continue;
                     };
+                    debug!(
+                        user = user.id(),
+                        cipher = user.cipher().as_str(),
+                        path = %path,
+                        "tcp shadowsocks user authenticated"
+                    );
                     let target_display = target.display_host_port();
-                    let stream = connect_tcp_target(&target, user.fwmark())
-                        .await
-                        .with_context(|| format!("failed to connect to {target_display}"))?;
+                    let connect_started = std::time::Instant::now();
+                    let stream = match connect_tcp_target(&target, user.fwmark()).await {
+                        Ok(stream) => {
+                            metrics.record_tcp_connect(
+                                user.id(),
+                                Protocol::Http3,
+                                "success",
+                                connect_started.elapsed().as_secs_f64(),
+                            );
+                            stream
+                        }
+                        Err(error) => {
+                            metrics.record_tcp_connect(
+                                user.id(),
+                                Protocol::Http3,
+                                "error",
+                                connect_started.elapsed().as_secs_f64(),
+                            );
+                            return Err(error)
+                                .with_context(|| format!("failed to connect to {target_display}"));
+                        }
+                    };
                     info!(
                         user = user.id(),
                         fwmark = ?user.fwmark(),
+                        path = %path,
                         target = %target_display,
                         "tcp upstream connected"
                     );
 
                     let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor = AeadStreamEncryptor::new(config.method, &user)?;
+                    let mut encryptor = AeadStreamEncryptor::new(&user)?;
                     let tx = outbound_tx.clone();
+                    let relay_metrics = metrics.clone();
+                    let user_id = user.id().to_owned();
                     upstream_to_client = Some(tokio::spawn(async move {
-                        relay_upstream_to_h3_client(upstream_reader, tx, &mut encryptor).await
+                        relay_upstream_to_h3_client(
+                            upstream_reader,
+                            tx,
+                            &mut encryptor,
+                            relay_metrics,
+                            user_id,
+                        )
+                        .await
                     }));
+                    metrics.record_tcp_authenticated_session(user.id(), Protocol::Http3);
+                    upstream_guard =
+                        Some(metrics.open_tcp_upstream_connection(user.id(), Protocol::Http3));
+                    authenticated_user = Some(user);
                     upstream_writer = Some(writer);
                     plaintext_buffer.drain(..consumed);
                 }
 
                 if let Some(writer) = &mut upstream_writer {
                     if !plaintext_buffer.is_empty() {
+                        if let Some(user) = &authenticated_user {
+                            metrics.record_tcp_payload_bytes(
+                                user.id(),
+                                Protocol::Http3,
+                                "client_to_target",
+                                plaintext_buffer.len(),
+                            );
+                        }
                         writer
                             .write_all(&plaintext_buffer)
                             .await
@@ -363,6 +680,10 @@ async fn handle_tcp_h3_connection(
             .context("tcp upstream relay task join failed")??;
     }
 
+    if let Some(guard) = upstream_guard {
+        guard.finish();
+    }
+
     drop(outbound_tx);
     writer_task
         .await
@@ -372,13 +693,25 @@ async fn handle_tcp_h3_connection(
 
 async fn handle_udp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    path: String,
+    candidate_users: Vec<String>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
+    let udp_session_recorded = Arc::new(AtomicBool::new(false));
+    let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
+            if let H3Message::Binary(data) = &message {
+                writer_metrics.record_websocket_binary_frame(
+                    Transport::Udp,
+                    Protocol::Http3,
+                    "out",
+                    data.len(),
+                );
+            }
             ws_writer
                 .send(message)
                 .await
@@ -391,11 +724,29 @@ async fn handle_udp_h3_connection(
     while let Some(message) = ws_reader.next().await {
         match message.context("websocket receive failure")? {
             H3Message::Binary(data) => {
+                metrics.record_websocket_binary_frame(
+                    Transport::Udp,
+                    Protocol::Http3,
+                    "in",
+                    data.len(),
+                );
                 let tx = outbound_tx.clone();
                 let users = users.clone();
-                let method = config.method;
+                let metrics = metrics.clone();
+                let path = path.clone();
+                let candidate_users = candidate_users.clone();
+                let udp_session_recorded = udp_session_recorded.clone();
                 tokio::spawn(async move {
-                    if let Err(error) = handle_udp_h3_datagram(method, users, data.to_vec(), tx).await
+                    if let Err(error) = handle_udp_h3_datagram(
+                        users,
+                        data.to_vec(),
+                        tx,
+                        metrics,
+                        path,
+                        candidate_users,
+                        udp_session_recorded,
+                    )
+                    .await
                     {
                         warn!(?error, "udp datagram relay failed");
                     }
@@ -421,6 +772,9 @@ async fn relay_upstream_to_client(
     mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
     outbound_tx: mpsc::Sender<Message>,
     encryptor: &mut AeadStreamEncryptor,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    user_id: String,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
     loop {
@@ -432,6 +786,7 @@ async fn relay_upstream_to_client(
             break;
         }
 
+        metrics.record_tcp_payload_bytes(&user_id, protocol, "target_to_client", read);
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
         outbound_tx
             .send(Message::Binary(ciphertext.into()))
@@ -447,6 +802,8 @@ async fn relay_upstream_to_h3_client(
     mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
     outbound_tx: mpsc::Sender<H3Message>,
     encryptor: &mut AeadStreamEncryptor,
+    metrics: Arc<Metrics>,
+    user_id: String,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
     loop {
@@ -458,6 +815,7 @@ async fn relay_upstream_to_h3_client(
             break;
         }
 
+        metrics.record_tcp_payload_bytes(&user_id, Protocol::Http3, "target_to_client", read);
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
         outbound_tx
             .send(H3Message::Binary(ciphertext.into()))
@@ -470,29 +828,94 @@ async fn relay_upstream_to_h3_client(
 }
 
 async fn handle_udp_datagram(
-    method: crate::config::CipherKind,
     users: Arc<[UserKey]>,
     data: Vec<u8>,
     outbound_tx: mpsc::Sender<Message>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: String,
+    candidate_users: Vec<String>,
+    udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
-    let packet = decrypt_udp_packet(method, users.as_ref(), &data)?;
+    let started_at = std::time::Instant::now();
+    let packet = decrypt_udp_packet(users.as_ref(), &data).map_err(|error| {
+        if error.to_string().contains("no configured key matched the incoming data") {
+            debug!(
+                path = %path,
+                candidates = ?candidate_users,
+                attempts = ?diagnose_udp_packet(users.as_ref(), &data),
+                "udp authentication failed for all path candidates"
+            );
+            anyhow!(
+                "no configured key matched the incoming udp data on path {} candidates={:?}",
+                path,
+                candidate_users
+            )
+        } else {
+            anyhow!(error)
+        }
+    })?;
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
+    if !udp_session_recorded.swap(true, Ordering::Relaxed) {
+        metrics.record_client_session(packet.user.id(), protocol, Transport::Udp);
+    } else {
+        metrics.record_client_last_seen(packet.user.id());
+    }
+    debug!(
+        user = packet.user.id(),
+        cipher = packet.user.cipher().as_str(),
+        path = %path,
+        "udp shadowsocks user authenticated"
+    );
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
+        path = %path,
         target = %target_display,
         "udp datagram relay"
     );
 
-    let responses = relay_udp_payload(&target, payload, packet.user.fwmark()).await?;
+    metrics.record_udp_payload_bytes(
+        packet.user.id(),
+        protocol,
+        "client_to_target",
+        payload.len(),
+    );
+    let responses = match relay_udp_payload(&target, payload, packet.user.fwmark()).await {
+        Ok(responses) => responses,
+        Err(error) => {
+            metrics.record_udp_request(
+                packet.user.id(),
+                protocol,
+                "error",
+                started_at.elapsed().as_secs_f64(),
+            );
+            return Err(error);
+        }
+    };
+    for (_, response_payload) in &responses {
+        metrics.record_udp_payload_bytes(
+            packet.user.id(),
+            protocol,
+            "target_to_client",
+            response_payload.len(),
+        );
+    }
+    metrics.record_udp_response_datagrams(packet.user.id(), protocol, responses.len());
+    metrics.record_udp_request(
+        packet.user.id(),
+        protocol,
+        if responses.is_empty() { "timeout" } else { "success" },
+        started_at.elapsed().as_secs_f64(),
+    );
     for (source, response_payload) in responses {
         let mut plaintext = TargetAddr::Socket(source).encode()?;
         plaintext.extend_from_slice(&response_payload);
-        let ciphertext = encrypt_udp_packet(method, &packet.user, &plaintext)?;
+        let ciphertext = encrypt_udp_packet(&packet.user, &plaintext)?;
         outbound_tx
             .send(Message::Binary(ciphertext.into()))
             .await
@@ -503,29 +926,93 @@ async fn handle_udp_datagram(
 }
 
 async fn handle_udp_h3_datagram(
-    method: crate::config::CipherKind,
     users: Arc<[UserKey]>,
     data: Vec<u8>,
     outbound_tx: mpsc::Sender<H3Message>,
+    metrics: Arc<Metrics>,
+    path: String,
+    candidate_users: Vec<String>,
+    udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
-    let packet = decrypt_udp_packet(method, users.as_ref(), &data)?;
+    let started_at = std::time::Instant::now();
+    let packet = decrypt_udp_packet(users.as_ref(), &data).map_err(|error| {
+        if error.to_string().contains("no configured key matched the incoming data") {
+            debug!(
+                path = %path,
+                candidates = ?candidate_users,
+                attempts = ?diagnose_udp_packet(users.as_ref(), &data),
+                "udp authentication failed for all path candidates"
+            );
+            anyhow!(
+                "no configured key matched the incoming udp data on path {} candidates={:?}",
+                path,
+                candidate_users
+            )
+        } else {
+            anyhow!(error)
+        }
+    })?;
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
+    if !udp_session_recorded.swap(true, Ordering::Relaxed) {
+        metrics.record_client_session(packet.user.id(), Protocol::Http3, Transport::Udp);
+    } else {
+        metrics.record_client_last_seen(packet.user.id());
+    }
+    debug!(
+        user = packet.user.id(),
+        cipher = packet.user.cipher().as_str(),
+        path = %path,
+        "udp shadowsocks user authenticated"
+    );
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
+        path = %path,
         target = %target_display,
         "udp datagram relay"
     );
 
-    let responses = relay_udp_payload(&target, payload, packet.user.fwmark()).await?;
+    metrics.record_udp_payload_bytes(
+        packet.user.id(),
+        Protocol::Http3,
+        "client_to_target",
+        payload.len(),
+    );
+    let responses = match relay_udp_payload(&target, payload, packet.user.fwmark()).await {
+        Ok(responses) => responses,
+        Err(error) => {
+            metrics.record_udp_request(
+                packet.user.id(),
+                Protocol::Http3,
+                "error",
+                started_at.elapsed().as_secs_f64(),
+            );
+            return Err(error);
+        }
+    };
+    for (_, response_payload) in &responses {
+        metrics.record_udp_payload_bytes(
+            packet.user.id(),
+            Protocol::Http3,
+            "target_to_client",
+            response_payload.len(),
+        );
+    }
+    metrics.record_udp_response_datagrams(packet.user.id(), Protocol::Http3, responses.len());
+    metrics.record_udp_request(
+        packet.user.id(),
+        Protocol::Http3,
+        if responses.is_empty() { "timeout" } else { "success" },
+        started_at.elapsed().as_secs_f64(),
+    );
     for (source, response_payload) in responses {
         let mut plaintext = TargetAddr::Socket(source).encode()?;
         plaintext.extend_from_slice(&response_payload);
-        let ciphertext = encrypt_udp_packet(method, &packet.user, &plaintext)?;
+        let ciphertext = encrypt_udp_packet(&packet.user, &plaintext)?;
         outbound_tx
             .send(H3Message::Binary(ciphertext.into()))
             .await
@@ -683,26 +1170,95 @@ fn is_normal_h3_shutdown(error: &anyhow::Error) -> bool {
     })
 }
 
+fn transport_paths(users: &[UserKey], transport: Transport) -> BTreeSet<String> {
+    users.iter()
+        .map(|user| match transport {
+            Transport::Tcp => user.ws_path_tcp().to_owned(),
+            Transport::Udp => user.ws_path_udp().to_owned(),
+        })
+        .collect()
+}
+
+fn users_for_transport_path(users: &[UserKey], transport: Transport, path: &str) -> Arc<[UserKey]> {
+    Arc::from(
+        users.iter()
+            .filter(|user| match transport {
+                Transport::Tcp => user.ws_path_tcp() == path,
+                Transport::Udp => user.ws_path_udp() == path,
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
+}
+
+fn describe_users(users: &[UserKey]) -> Vec<String> {
+    users.iter()
+        .map(|user| format!("{}:{}", user.id(), user.cipher().as_str()))
+        .collect()
+}
+
+fn describe_user_routes(users: &[UserKey]) -> Vec<String> {
+    users.iter()
+        .map(|user| {
+            format!(
+                "{}:{} tcp={} udp={}",
+                user.id(),
+                user.cipher().as_str(),
+                user.ws_path_tcp(),
+                user.ws_path_udp()
+            )
+        })
+        .collect()
+}
+
 fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
     Ok(Arc::from(
         config
             .user_entries()?
             .into_iter()
-            .map(|entry| UserKey::new(config.method, entry.id, &entry.password, entry.fwmark))
+            .map(|entry| {
+                let method = entry.effective_method(config.method);
+                let ws_path_tcp = entry.effective_ws_path_tcp(&config.ws_path_tcp).to_owned();
+                let ws_path_udp = entry.effective_ws_path_udp(&config.ws_path_udp).to_owned();
+                UserKey::new(
+                    entry.id,
+                    &entry.password,
+                    entry.fwmark,
+                    method,
+                    ws_path_tcp,
+                    ws_path_udp,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),
     ))
 }
 
-fn build_app(config: Arc<Config>, users: Arc<[UserKey]>) -> Router {
-    let tcp_route: &'static str = Box::leak(config.ws_path.clone().into_boxed_str());
-    let udp_route: &'static str = Box::leak(config.udp_ws_path.clone().into_boxed_str());
+fn build_app(users: Arc<[UserKey]>, metrics: Arc<Metrics>) -> Router {
+    let state = AppState {
+        users: users.clone(),
+        metrics,
+    };
+    let mut router = Router::new();
 
-    Router::new()
+    for path in transport_paths(users.as_ref(), Transport::Tcp) {
+        let route: &'static str = Box::leak(path.into_boxed_str());
         // HTTP/1.1 WebSocket uses GET, while RFC 8441 over HTTP/2 uses CONNECT.
-        .route(tcp_route, any(tcp_websocket_upgrade))
-        .route(udp_route, any(udp_websocket_upgrade))
-        .with_state(AppState { config, users })
+        router = router.route(route, any(tcp_websocket_upgrade));
+    }
+
+    for path in transport_paths(users.as_ref(), Transport::Udp) {
+        let route: &'static str = Box::leak(path.into_boxed_str());
+        router = router.route(route, any(udp_websocket_upgrade));
+    }
+
+    router.with_state(state)
+}
+
+fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
+    let route: &'static str = Box::leak(metrics_path.into_boxed_str());
+    Router::new().route(route, any(metrics_handler)).with_state(metrics)
 }
 
 async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transport>> {
@@ -727,49 +1283,87 @@ async fn serve_tcp_listener(listener: TcpListener, app: Router, config: &Config)
 
 async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
-    config: Arc<Config>,
     users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
 ) -> Result<()> {
-    let tcp_path = config.ws_path.clone();
-    let udp_path = config.udp_ws_path.clone();
-    let allowed_tcp = tcp_path.clone();
-    let allowed_udp = udp_path.clone();
+    let tcp_paths = transport_paths(users.as_ref(), Transport::Tcp);
+    let udp_paths = transport_paths(users.as_ref(), Transport::Udp);
+    let allowed_tcp = tcp_paths.clone();
+    let allowed_udp = udp_paths.clone();
 
     server
         .serve_with_filter(
-            move |req: &H3ExtendedConnectRequest| req.path == allowed_tcp || req.path == allowed_udp,
+            move |req: &H3ExtendedConnectRequest| {
+                allowed_tcp.contains(req.path.as_str()) || allowed_udp.contains(req.path.as_str())
+            },
             move |socket, req| {
-                let config = config.clone();
                 let users = users.clone();
-                let tcp_path = tcp_path.clone();
-                let udp_path = udp_path.clone();
+                let metrics = metrics.clone();
+                let tcp_paths = tcp_paths.clone();
+                let udp_paths = udp_paths.clone();
                 async move {
-                    if req.path == tcp_path {
-                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, "incoming tcp websocket upgrade");
-                        if let Err(error) =
-                            handle_tcp_h3_connection(socket, config.clone(), users.clone()).await
+                    if tcp_paths.contains(req.path.as_str()) {
+                        let path_users =
+                            users_for_transport_path(users.as_ref(), Transport::Tcp, &req.path);
+                        let candidate_users = describe_users(path_users.as_ref());
+                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?candidate_users, "incoming tcp websocket upgrade");
+                        let session = metrics
+                            .open_websocket_session(Transport::Tcp, Protocol::Http3);
+                        let outcome = match handle_tcp_h3_connection(
+                            socket,
+                            path_users,
+                            metrics.clone(),
+                            req.path.clone(),
+                            candidate_users,
+                        )
+                        .await
                         {
-                            if is_normal_h3_shutdown(&error) {
-                                debug!(?error, "tcp websocket connection closed normally");
-                            } else if is_benign_ws_disconnect(&error) {
-                                debug!(?error, "tcp websocket connection closed abruptly");
-                            } else {
-                                warn!(?error, "tcp websocket connection terminated with error");
+                            Ok(()) => DisconnectReason::Normal,
+                            Err(error) => {
+                                if is_normal_h3_shutdown(&error) {
+                                    debug!(?error, "tcp websocket connection closed normally");
+                                    DisconnectReason::Normal
+                                } else if is_benign_ws_disconnect(&error) {
+                                    debug!(?error, "tcp websocket connection closed abruptly");
+                                    DisconnectReason::ClientDisconnect
+                                } else {
+                                    warn!(?error, "tcp websocket connection terminated with error");
+                                    DisconnectReason::Error
+                                }
                             }
-                        }
-                    } else if req.path == udp_path {
-                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, "incoming udp websocket upgrade");
-                        if let Err(error) =
-                            handle_udp_h3_connection(socket, config.clone(), users.clone()).await
+                        };
+                        session.finish(outcome);
+                    } else if udp_paths.contains(req.path.as_str()) {
+                        let path_users =
+                            users_for_transport_path(users.as_ref(), Transport::Udp, &req.path);
+                        let candidate_users = describe_users(path_users.as_ref());
+                        info!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?candidate_users, "incoming udp websocket upgrade");
+                        let session = metrics
+                            .open_websocket_session(Transport::Udp, Protocol::Http3);
+                        let outcome = match handle_udp_h3_connection(
+                            socket,
+                            path_users,
+                            metrics.clone(),
+                            req.path.clone(),
+                            candidate_users,
+                        )
+                        .await
                         {
-                            if is_normal_h3_shutdown(&error) {
-                                debug!(?error, "udp websocket connection closed normally");
-                            } else if is_benign_ws_disconnect(&error) {
-                                debug!(?error, "udp websocket connection closed abruptly");
-                            } else {
-                                warn!(?error, "udp websocket connection terminated with error");
+                            Ok(()) => DisconnectReason::Normal,
+                            Err(error) => {
+                                if is_normal_h3_shutdown(&error) {
+                                    debug!(?error, "udp websocket connection closed normally");
+                                    DisconnectReason::Normal
+                                } else if is_benign_ws_disconnect(&error) {
+                                    debug!(?error, "udp websocket connection closed abruptly");
+                                    DisconnectReason::ClientDisconnect
+                                } else {
+                                    warn!(?error, "udp websocket connection terminated with error");
+                                    DisconnectReason::Error
+                                }
                             }
-                        }
+                        };
+                        session.finish(outcome);
                     }
                 }
             },
@@ -865,6 +1459,12 @@ async fn serve_listener(listener: TcpListener, app: Router) -> Result<()> {
         .context("server exited unexpectedly")
 }
 
+async fn serve_metrics_listener(listener: TcpListener, app: Router) -> Result<()> {
+    axum::serve(listener, app)
+        .await
+        .context("metrics server exited unexpectedly")
+}
+
 async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
@@ -944,6 +1544,7 @@ mod tests {
         serve_listener,
     };
     use crate::config::{CipherKind, Config, UserEntry};
+    use crate::metrics::Metrics;
     use crate::protocol::TargetAddr;
 
     #[tokio::test]
@@ -1007,7 +1608,7 @@ mod tests {
         let addr = listener.local_addr()?;
 
         let config = sample_config(addr);
-        let app = build_app(Arc::new(config.clone()), build_users(&config)?);
+        let app = build_app(build_users(&config)?, Metrics::new(&config));
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
         let client = Client::builder(TokioExecutor::new())
@@ -1051,7 +1652,10 @@ mod tests {
 
         let config = sample_config(addr);
         let users = build_users(&config)?;
-        let server = tokio::spawn(async move { serve_h3_server(server, Arc::new(config), users).await });
+        let metrics = Metrics::new(&config);
+        let server = tokio::spawn(async move {
+            serve_h3_server(server, users, metrics).await
+        });
 
         let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
         endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
@@ -1104,8 +1708,11 @@ mod tests {
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
-            ws_path: "/tcp".into(),
-            udp_ws_path: "/udp".into(),
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            client_active_ttl_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,
@@ -1116,6 +1723,9 @@ mod tests {
                 id: "bob".into(),
                 password: "secret-b".into(),
                 fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
             }],
             method: CipherKind::Chacha20IetfPoly1305,
         }

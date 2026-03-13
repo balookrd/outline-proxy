@@ -22,12 +22,9 @@ pub fn build_access_key_artifacts(config: &Config) -> Result<Vec<AccessKeyArtifa
         bail!("--public-scheme must be either ws or wss");
     }
 
-    let tcp_url = websocket_url(&config.public_scheme, public_host, &config.ws_path);
-    let udp_url = websocket_url(&config.public_scheme, public_host, &config.udp_ws_path);
-
     users
         .into_iter()
-        .map(|user| build_user_artifact(config, &user, &tcp_url, &udp_url))
+        .map(|user| build_user_artifact(config, &user, public_host))
         .collect()
 }
 
@@ -61,8 +58,7 @@ pub fn render_access_key_report(artifacts: &[AccessKeyArtifact]) -> String {
 fn build_user_artifact(
     config: &Config,
     user: &UserEntry,
-    tcp_url: &str,
-    udp_url: &str,
+    public_host: &str,
 ) -> Result<AccessKeyArtifact> {
     let config_filename = format!("{}.yaml", sanitize_filename(&user.id));
     let config_url = config
@@ -74,13 +70,24 @@ fn build_user_artifact(
         .as_deref()
         .map(dynamic_access_key_url)
         .transpose()?;
+    let method = user.effective_method(config.method);
+    let tcp_url = websocket_url(
+        &config.public_scheme,
+        public_host,
+        user.effective_ws_path_tcp(&config.ws_path_tcp),
+    );
+    let udp_url = websocket_url(
+        &config.public_scheme,
+        public_host,
+        user.effective_ws_path_udp(&config.ws_path_udp),
+    );
 
     Ok(AccessKeyArtifact {
         user_id: user.id.clone(),
         config_filename,
         config_url,
         access_key_url,
-        yaml: render_outline_yaml(config.method.as_str(), &user.password, tcp_url, udp_url),
+        yaml: render_outline_yaml(method.as_str(), &user.password, &tcp_url, &udp_url),
     })
 }
 
@@ -202,8 +209,11 @@ mod tests {
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
-            ws_path: "/tcp".into(),
-            udp_ws_path: "/udp".into(),
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            client_active_ttl_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
             public_host: Some("vpn.example.com".into()),
             public_scheme: "wss".into(),
             access_key_url_base: Some("https://keys.example.com/outline".into()),
@@ -215,11 +225,17 @@ mod tests {
                     id: "alice".into(),
                     password: "secret-a".into(),
                     fwmark: Some(1001),
+                    method: Some(CipherKind::Aes256Gcm),
+                    ws_path_tcp: Some("/alice/tcp".into()),
+                    ws_path_udp: Some("/alice/udp".into()),
                 },
                 UserEntry {
                     id: "bob".into(),
                     password: "secret-b".into(),
                     fwmark: Some(1002),
+                    method: None,
+                    ws_path_tcp: None,
+                    ws_path_udp: None,
                 },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
@@ -238,13 +254,15 @@ mod tests {
         assert!(
             artifacts[0]
                 .yaml
-                .contains("url: \"wss://vpn.example.com/tcp\"")
+                .contains("url: \"wss://vpn.example.com/alice/tcp\"")
         );
         assert!(
             artifacts[0]
                 .yaml
-                .contains("url: \"wss://vpn.example.com/udp\"")
+                .contains("url: \"wss://vpn.example.com/alice/udp\"")
         );
+        assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
+        assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
     }
 
     #[test]

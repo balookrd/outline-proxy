@@ -1,6 +1,7 @@
 mod access_key;
 mod config;
 mod crypto;
+mod metrics;
 mod protocol;
 mod server;
 
