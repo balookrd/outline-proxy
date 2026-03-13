@@ -459,6 +459,7 @@ scrape_configs:
 Metrics include:
 
 - build and startup info
+- process resident memory and heap usage gauges
 - SOCKS5 requests and active sessions
 - session duration histogram
 - rolling session p95 gauge
@@ -468,6 +469,17 @@ Metrics include:
 - warm-standby acquire and refill outcomes
 - TUN flow and packet metrics
 - `tun2tcp` retransmit, backlog, window, RTT, and RTO metrics
+
+On Linux, the process memory sampler updates:
+
+- `outline_ws_rust_process_resident_memory_bytes`
+- `outline_ws_rust_process_heap_memory_bytes`
+
+On Linux with glibc, opportunistic allocator trimming also emits a dedicated log entry:
+
+- `malloc_trim invoked`
+
+The log includes RSS and heap before and after trimming so you can verify whether allocator trimming is actually returning memory on your host.
 
 Dashboards:
 

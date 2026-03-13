@@ -7,7 +7,9 @@ use prometheus::{
 use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::time::sleep;
 
+use crate::memory::sample_process_memory;
 use crate::uplink::UplinkManagerSnapshot;
 
 static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
@@ -33,6 +35,8 @@ struct Metrics {
     warm_standby_acquire_total: IntCounterVec,
     warm_standby_refill_total: IntCounterVec,
     metrics_http_requests_total: IntCounterVec,
+    process_resident_memory_bytes: Gauge,
+    process_heap_memory_bytes: Gauge,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,
@@ -217,6 +221,16 @@ impl Metrics {
             &["path", "status"],
         )
         .expect("metrics_http_requests_total metric");
+        let process_resident_memory_bytes = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_resident_memory_bytes",
+            "Current resident set size of the process in bytes.",
+        ))
+        .expect("process_resident_memory_bytes metric");
+        let process_heap_memory_bytes = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_heap_memory_bytes",
+            "Current heap usage of the process in bytes.",
+        ))
+        .expect("process_heap_memory_bytes metric");
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -486,6 +500,12 @@ impl Metrics {
             .register(Box::new(metrics_http_requests_total.clone()))
             .expect("register metrics_http_requests_total");
         registry
+            .register(Box::new(process_resident_memory_bytes.clone()))
+            .expect("register process_resident_memory_bytes");
+        registry
+            .register(Box::new(process_heap_memory_bytes.clone()))
+            .expect("register process_heap_memory_bytes");
+        registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
         registry
@@ -599,6 +619,8 @@ impl Metrics {
             warm_standby_acquire_total,
             warm_standby_refill_total,
             metrics_http_requests_total,
+            process_resident_memory_bytes,
+            process_heap_memory_bytes,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,
@@ -765,7 +787,9 @@ pub fn init() {
     let _ = METRICS
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
-    let _ = METRICS.start_time_seconds.get();
+        let _ = METRICS.start_time_seconds.get();
+    METRICS.process_resident_memory_bytes.set(0.0);
+    METRICS.process_heap_memory_bytes.set(0.0);
     for command in ["connect", "udp_associate"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
@@ -780,6 +804,25 @@ pub fn init() {
             .with_label_values(&[protocol])
             .set(0);
     }
+}
+
+pub fn spawn_process_metrics_sampler() {
+    tokio::spawn(async move {
+        loop {
+            let sample = sample_process_memory();
+            update_process_memory(sample.rss_bytes, sample.heap_bytes);
+            sleep(Duration::from_secs(15)).await;
+        }
+    });
+}
+
+pub fn update_process_memory(rss_bytes: Option<u64>, heap_bytes: Option<u64>) {
+    METRICS
+        .process_resident_memory_bytes
+        .set(rss_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_heap_memory_bytes
+        .set(heap_bytes.unwrap_or(0) as f64);
 }
 
 pub fn record_request(command: &'static str) {

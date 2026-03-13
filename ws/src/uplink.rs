@@ -14,6 +14,7 @@ use tracing::{debug, info, warn};
 use crate::config::{
     DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, ProbeConfig, UplinkConfig,
 };
+use crate::memory::{maybe_shrink_hash_map, maybe_shrink_vecdeque};
 use crate::metrics;
 use crate::transport::{
     AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, connect_websocket,
@@ -647,13 +648,22 @@ impl UplinkManager {
             TransportKind::Udp => pool.udp.lock().await,
         };
         guard.extend(alive);
+        maybe_shrink_vecdeque(&mut guard);
     }
 
     async fn clear_standby(&self, index: usize, transport: TransportKind) {
         let pool = &self.inner.standby_pools[index];
         match transport {
-            TransportKind::Tcp => pool.tcp.lock().await.clear(),
-            TransportKind::Udp => pool.udp.lock().await.clear(),
+            TransportKind::Tcp => {
+                let mut guard = pool.tcp.lock().await;
+                guard.clear();
+                maybe_shrink_vecdeque(&mut guard);
+            }
+            TransportKind::Udp => {
+                let mut guard = pool.udp.lock().await;
+                guard.clear();
+                maybe_shrink_vecdeque(&mut guard);
+            }
         }
     }
 
@@ -732,6 +742,7 @@ impl UplinkManager {
         let now = Instant::now();
         let mut sticky = self.inner.sticky_routes.write().await;
         sticky.retain(|_, route| route.expires_at > now);
+        maybe_shrink_hash_map(&mut sticky);
     }
 
     async fn probe_all(&self) {

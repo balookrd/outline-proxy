@@ -52,7 +52,15 @@ pin_project! {
         endpoint: quinn::Endpoint,
         connection: quinn::Connection,
         send_request: H3SendRequestHandle,
-        driver_task: JoinHandle<()>,
+        driver_task: AbortOnDrop,
+    }
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 
@@ -642,7 +650,7 @@ async fn connect_h3_quic(
         endpoint,
         connection: connection_handle,
         send_request,
-        driver_task,
+        driver_task: AbortOnDrop(driver_task),
     })
 }
 
