@@ -1,78 +1,255 @@
 # outline-ws-rust
 
-Локальный SOCKS5-прокси на Rust, который:
+`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3.
 
-- принимает TCP `CONNECT` и пересылает трафик на `outline-ss-server` через `websocket-stream`
-- принимает SOCKS5 `UDP ASSOCIATE` и пересылает UDP через `websocket-packet`
-- умеет читать пакеты из уже созданного TUN-устройства и пересылать UDP через `websocket-packet`
-- содержит начальный stateful TCP-over-TUN path поверх Outline TCP uplink
+It supports:
 
-Сейчас реализовано:
+- SOCKS5 `CONNECT`
+- SOCKS5 `UDP ASSOCIATE`
+- multi-uplink failover and load balancing
+- WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
+- Prometheus metrics and packaged Grafana dashboards
+- existing TUN device integration for `tun2udp`
+- stateful `tun2tcp` relay with production-oriented guardrails
 
-- SOCKS5 без аутентификации
+## Overview
+
+At a high level, the process does five jobs:
+
+1. Accepts local SOCKS5 and optional TUN traffic.
+2. Selects the best available uplink using health probes, EWMA RTT scoring, sticky routing, hysteresis, penalties, and warm standby.
+3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback.
+4. Encrypts payloads using Shadowsocks AEAD before sending them upstream.
+5. Exposes Prometheus metrics for runtime, uplink, probe, TUN, and `tun2tcp` behavior.
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph LocalHost["Local host"]
+        C["SOCKS5 clients"]
+        T["Existing TUN device"]
+        P["outline-ws-rust"]
+        M["/metrics endpoint"]
+        C --> P
+        T --> P
+        P --> M
+    end
+
+    subgraph Runtime["Proxy runtime"]
+        S["SOCKS5 TCP + UDP handlers"]
+        U["Uplink manager"]
+        LB["Scoring and routing
+EWMA RTT + weight + penalty
+sticky + hysteresis"]
+        WS["Transport connectors
+HTTP/1.1 / HTTP/2 / HTTP/3"]
+        SS["Shadowsocks AEAD"]
+        TT["TUN engines
+tun2udp + tun2tcp"]
+    end
+
+    P --> S
+    P --> TT
+    S --> U
+    TT --> U
+    U --> LB
+    LB --> WS
+    WS --> SS
+
+    subgraph Upstream["Outline upstream"]
+        O1["outline-over-ws uplink A"]
+        O2["outline-over-ws uplink B"]
+    end
+
+    SS --> O1
+    SS --> O2
+
+    subgraph Observability["Observability"]
+        PR["Prometheus"]
+        GD["Grafana dashboards"]
+        AL["Alert rules"]
+    end
+
+    M --> PR
+    PR --> GD
+    PR --> AL
+```
+
+## Supported Features
+
+### SOCKS5
+
+- No-auth SOCKS5
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
-- Shadowsocks AEAD: `chacha20-ietf-poly1305`, `aes-128-gcm`, `aes-256-gcm`
-- Подключение к `ws://` и `wss://` endpoint'ам Outline WebSocket transport
-- Режимы WebSocket transport: HTTP/1.1 upgrade, RFC 8441 WebSocket over HTTP/2 и RFC 9220 WebSocket over HTTP/3/QUIC
-- Конфигурация через `config.toml` с override через CLI/env
-- Автоматический fallback transport-режимов: `h3 -> h2 -> http1`, `h2 -> http1`
-- Несколько uplink с background health probes и ordered failover
-- Fastest-first load balancing, sticky routing и hysteresis
-- Warm-standby WebSocket connections для TCP и UDP uplink
-- Existing TUN device mode для UDP traffic
-- начальный stateful TCP-over-TUN path
+- SOCKS5 UDP fragmentation reassembly on inbound client traffic
+- IPv4, IPv6, and domain-name targets
 
-Не реализовано:
+### Outline transports
 
-- Username/password auth
-- Shadowsocks 2022
-- production-grade TCP relay через TUN
+- `ws://` and `wss://`
+- HTTP/1.1 Upgrade
+- RFC 8441 WebSocket over HTTP/2
+- RFC 9220 WebSocket over HTTP/3 / QUIC
+- transport fallback:
+  - `h3 -> h2 -> http1`
+  - `h2 -> http1`
 
-## Сборка
+### Encryption
+
+- `chacha20-ietf-poly1305`
+- `aes-128-gcm`
+- `aes-256-gcm`
+
+### Uplink management
+
+- multiple uplinks
+- fastest-first selection
+- per-uplink static `weight`
+- RTT EWMA scoring
+- failure penalty model with decay
+- sticky routing with TTL
+- hysteresis to avoid unnecessary churn
+- runtime failover
+- warm-standby WebSocket pools for TCP and UDP
+
+### Health probing
+
+- WebSocket ping/pong probes
+- real HTTP probes over `websocket-stream`
+- real DNS probes over `websocket-packet`
+- probe concurrency limits
+- separate probe dial isolation
+
+### TUN
+
+- existing TUN device integration only
+- `tun2udp` with flow lifecycle management
+- stateful `tun2tcp` relay with retransmit, zero-window persist/backoff, SACK-aware receive/send behavior, adaptive RTO, and bounded buffering
+
+### Operations
+
+- Prometheus metrics
+- packaged Grafana dashboards
+- packaged Prometheus alert rules
+- hardened systemd unit
+- Linux `fwmark` / `SO_MARK`
+- IPv6-capable listeners, upstreams, probes, and SOCKS5 targets
+
+## Current Limits
+
+The project is intentionally practical, but there are still boundaries:
+
+- SOCKS5 username/password auth is not implemented.
+- Shadowsocks 2022 is not implemented.
+- `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
+- IPv4 fragments and IPv6 extension-header paths on TUN traffic are not supported.
+- HTTP probe supports `http://` today, not `https://`.
+- TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
+
+## Repository Layout
+
+- [`config.toml`](/Users/mmalykhin/Documents/Playground/config.toml) - example configuration
+- [`systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/systemd/outline-ws-rust.service) - hardened systemd unit
+- [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json) - main operational dashboard
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
+- [`prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
+- [`PATCHES.md`](/Users/mmalykhin/Documents/Playground/PATCHES.md) - local vendored patch inventory
+
+## Build
+
+Standard build:
 
 ```bash
 cargo build --release
 ```
 
-## Конфиг
+Example static-ish Linux build with musl:
 
-По умолчанию приложение читает [`config.toml`](/Users/mmalykhin/Documents/Playground/config.toml):
+```bash
+cargo zigbuild --release --target x86_64-unknown-linux-musl
+```
+
+## Quick Start
+
+Minimal local run using `config.toml`:
+
+```bash
+cargo run --release
+```
+
+Example one-shot CLI override:
+
+```bash
+cargo run --release -- \
+  --listen [::]:1080 \
+  --tcp-ws-url wss://example.com/SECRET/tcp \
+  --tcp-ws-mode h3 \
+  --udp-ws-url wss://example.com/SECRET/udp \
+  --udp-ws-mode h3 \
+  --method chacha20-ietf-poly1305 \
+  --password 'Secret0'
+```
+
+Example client settings:
+
+- SOCKS5 host: `::1` or `127.0.0.1`
+- SOCKS5 port: `1080`
+
+For `listen = "[::]:1080"`, many systems create a dual-stack listener. If your platform does not map IPv4 to IPv6 sockets, bind an additional IPv4 listener instead.
+
+## Configuration
+
+By default the process reads [`config.toml`](/Users/mmalykhin/Documents/Playground/config.toml).
+
+Example:
 
 ```toml
 [socks5]
 listen = "[::]:1080"
 
-[status]
+[metrics]
 listen = "[::1]:9090"
 
 [tun]
-# Existing TUN device path. Provisioning stays on the OS side.
-# Linux:
+# Existing TUN device path. Creation, IP addresses and routes stay outside the app.
+# Linux example:
 # path = "/dev/net/tun"
 # name = "tun0"
-# macOS / BSD:
+# macOS / BSD example:
 # path = "/dev/tun0"
 # mtu = 1500
+# max_flows = 4096
+# idle_timeout_secs = 300
 
-[outline.probe]
+# [tun.tcp]
+# connect_timeout_secs = 10
+# handshake_timeout_secs = 15
+# half_close_timeout_secs = 60
+# max_pending_server_bytes = 1048576
+# max_buffered_client_segments = 4096
+# max_buffered_client_bytes = 262144
+# max_retransmits = 12
+
+[probe]
 interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
 
-[outline.probe.ws]
+[probe.ws]
 enabled = true
 
-[outline.probe.http]
+[probe.http]
 url = "http://example.com/"
 
-[outline.probe.dns]
+[probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
 
-[outline.load_balancing]
+[load_balancing]
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300
@@ -83,17 +260,18 @@ failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 
-[[outline.uplinks]]
+[[uplinks]]
 name = "primary"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_ws_mode = "h3"
+# fwmark = 100
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-[[outline.uplinks]]
+[[uplinks]]
 name = "backup"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
@@ -104,236 +282,170 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 ```
 
-`tcp_ws_mode` и `udp_ws_mode` принимают `http1`, `h2` или `h3`. Старый single-uplink формат `[outline] tcp_ws_url=...` тоже всё ещё поддержан. CLI-флаги `--tcp-ws-url`, `--udp-ws-url`, `--method`, `--password` по-прежнему работают и создают один runtime uplink поверх файла.
+### Key config behavior
 
-Рекомендация:
+- `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3`.
+- The canonical config format is `probe`, `load_balancing`, and `uplinks` without the `outline.` prefix.
+- The legacy `[outline]` format is still accepted for backward compatibility, and remains the least confusing way to express a single-uplink shorthand TOML config.
+- CLI flags and environment variables can override file settings.
+- `--metrics-listen` can enable metrics even if `[metrics]` is not present.
+- `--tun-path` can enable TUN even if `[tun]` is not present.
 
-- оставляй `http1` как fallback по умолчанию
-- включай `h2` только если upstream действительно поддерживает RFC 8441 Extended CONNECT для WebSocket
-- включай `h3` только если upstream действительно поддерживает RFC 9220 поверх QUIC и до него открыт UDP
-- если `h2` не поднимается, сначала переключись обратно на `http1`, затем проверяй поддержку RFC 8441 на балансировщике или origin-сервере
-- если `h3` не поднимается, сначала проверь, что endpoint доступен по `wss://`, сервер advertises ALPN `h3`, а UDP/QUIC не режется на пути
+### Useful CLI and env overrides
 
-Если выбран `h3`, клиент сначала пробует RFC 9220, затем автоматически откатывается на `h2`, а затем на обычный HTTP/1.1 upgrade. Если выбран `h2`, при неудаче клиент автоматически откатывается на HTTP/1.1.
+- `--config` / `PROXY_CONFIG`
+- `--listen` / `SOCKS5_LISTEN`
+- `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
+- `--tcp-ws-mode` / `OUTLINE_TCP_WS_MODE`
+- `--udp-ws-url` / `OUTLINE_UDP_WS_URL`
+- `--udp-ws-mode` / `OUTLINE_UDP_WS_MODE`
+- `--method` / `SHADOWSOCKS_METHOD`
+- `--password` / `SHADOWSOCKS_PASSWORD`
+- `--metrics-listen` / `METRICS_LISTEN`
+- `--tun-path` / `TUN_PATH`
+- `--tun-name` / `TUN_NAME`
+- `--tun-mtu` / `TUN_MTU`
+- `--fwmark` / `OUTLINE_FWMARK`
 
-## Несколько uplink и probes
+## Transport Modes
 
-Каждый uplink имеет собственные:
+### HTTP/1.1
 
-- `tcp_ws_url` / `tcp_ws_mode`
-- `udp_ws_url` / `udp_ws_mode`
-- `method`
-- `password`
-- опциональный `fwmark` для Linux policy routing
+Use when you want the most compatible baseline behavior.
 
-Логика выбора такая:
+### HTTP/2
 
-- базовый probe делает `WebSocket Ping -> Pong` на каждом `tcp_ws_url` и `udp_ws_url`
-- background probe периодически проверяет каждый uplink
-- `max_concurrent` ограничивает число одновременно исполняемых probe-задач
-- `max_dials` ограничивает только probe websocket dials и изолирует их от пользовательского и warm-standby path
-- для TCP probe используется реальный HTTP-запрос через `websocket-stream`
-- для UDP probe используется реальный DNS-запрос через `websocket-packet`
-- healthy uplink сортируются fastest-first по weighted score, а не по одному последнему RTT
-- baseline RTT для ranking считается через `RTT EWMA`, который сглаживает probe latency по `rtt_ewma_alpha`
-- `warm_standby_tcp` и `warm_standby_udp` держат заранее открытые idle WebSocket-соединения на каждый uplink
-- standby-соединение забирается первым, а пул пополняется в фоне
-- failure penalty model добавляет штраф к latency после probe/runtime ошибок и плавно уменьшает его по `failure_penalty_halflife_secs`
-- итоговый score считается как `effective_latency / weight`, поэтому `weight > 1.0` даёт uplink приоритет, а `weight < 1.0` делает его менее предпочтительным
-- sticky routing закрепляет target за выбранным uplink на `sticky_ttl_secs`
-- hysteresis не даёт переключаться на другой uplink, если он быстрее меньше чем на `hysteresis_ms`
-- runtime failover сразу помечает упавший uplink unhealthy на `failure_cooldown_secs`
-- при пользовательском запросе прокси сначала выбирает лучший healthy uplink
-- если выбранный uplink не поднимается, запрос автоматически пробует следующий uplink по порядку
-- для UDP runtime failover делает мгновенное переключение на следующий uplink при `send/read` ошибке
+Use when the upstream supports RFC 8441 Extended CONNECT for WebSockets.
 
-Текущее ограничение probes:
+### HTTP/3
 
-- probes вообще не запускаются, если секция `[outline.probe]` не настроена явно
-- секция `[outline.probe]` сама по себе ничего не включает: должен быть явно настроен хотя бы один из `ws`, `http` или `dns`
-- `ws` probe включается только через `[outline.probe.ws]` и проверяет только сам WebSocket transport, не прикладной маршрут Shadowsocks
-- HTTP probe сейчас поддерживает только `http://` URL, не `https://`
-- DNS probe требует `udp_ws_url`
+Use when the upstream supports RFC 9220 and QUIC/UDP is available end to end.
 
-Замечание по runtime failover:
+Recommended operator stance:
 
-- UDP переключается прозрачно в рамках живой association
-- TCP можно безопасно переключать только до начала полезного обмена; уже установленный TCP tunnel нельзя бесшовно мигрировать на другой uplink без переподключения на стороне клиента
+- prefer `http1` as a conservative baseline
+- enable `h2` only when the reverse proxy and origin are known-good for RFC 8441
+- enable `h3` only when QUIC is explicitly supported and reachable
+
+Runtime fallback behavior:
+
+- requested `h3` tries `h3`, then `h2`, then `http1`
+- requested `h2` tries `h2`, then `http1`
+
+## Uplink Selection and Runtime Behavior
+
+Each uplink has its own:
+
+- TCP URL and mode
+- UDP URL and mode
+- cipher and password
+- optional Linux `fwmark`
+- optional relative routing preference via `weight`
+
+Selection pipeline:
+
+1. Health probes update the latest raw RTT and EWMA RTT.
+2. Runtime and probe failures add a decaying failure penalty.
+3. Effective latency is derived from EWMA RTT plus current penalty.
+4. Final score is `effective_latency / weight`.
+5. Sticky routing and hysteresis reduce avoidable switches.
+6. Warm-standby pools reduce connection setup latency.
+
+Runtime failover:
+
+- UDP can switch uplinks within an active association after runtime send/read failure.
+- TCP can fail over before a usable tunnel is established.
+- Established TCP tunnels are not live-migrated.
+
+## Health Probes
+
+Available probe types:
+
+- `ws`: transport-level ping/pong validation
+- `http`: real HTTP request over `websocket-stream`
+- `dns`: real DNS exchange over `websocket-packet`
+
+Probe execution controls:
+
+- `max_concurrent`: total concurrent probe tasks
+- `max_dials`: dedicated cap for probe dial attempts
+
+Probe activation rules:
+
+- probes do not start unless probe settings are explicitly configured
+- `[probe]` alone does not enable any check
+- at least one of `[probe.ws]`, `[probe.http]`, or `[probe.dns]` must be present
 
 ## IPv6
 
-Поддерживаются:
+Supported:
 
-- SOCKS5 target address `ATYP=IPv6`
-- uplink URL с IPv6 literal, например `wss://[2001:db8::10]/SECRET/tcp`
-- `h2` и `h3` transport к IPv6 upstream
-- HTTP/DNS probes к IPv6 target/server
-- IPv6 listen/bind, например `listen = "[::1]:1080"` или `listen = "[::]:1080"`
-- IPv6 UDP packets from TUN mode
+- SOCKS5 IPv6 targets
+- IPv6 literal upstream URLs such as `wss://[2001:db8::10]/SECRET/tcp`
+- IPv6 probes
+- IPv6 listeners
+- IPv6 UDP packets in TUN mode
+- IPv6 upstream transport for `h2` and `h3`
 
-## TUN
+## TUN Mode
 
-Приложение умеет работать с уже существующим TUN-устройством. Создание интерфейса, назначение адресов и настройка маршрутов остаются на стороне ОС.
+The process attaches only to an already existing TUN device. Interface creation, addresses, routing, and policy routing stay outside the app.
 
-Пример конфига:
+### tun2udp
 
-```toml
-[tun]
-path = "/dev/net/tun"
-name = "tun0"
-mtu = 1500
-max_flows = 4096
-idle_timeout_secs = 300
+Capabilities:
 
-[tun.tcp]
-connect_timeout_secs = 10
-handshake_timeout_secs = 15
-half_close_timeout_secs = 60
-max_pending_server_bytes = 1048576
-max_buffered_client_segments = 4096
-max_buffered_client_bytes = 262144
-max_retransmits = 12
-```
+- IPv4 and IPv6 UDP packet forwarding
+- per-flow uplink transport
+- flow idle cleanup
+- bounded flow count
+- oldest-flow eviction on overflow
+- flow metrics and packet outcome metrics
 
-CLI override:
+### tun2tcp
 
-```bash
-cargo run --release -- \
-  --config ./config.toml \
-  --tun-path /dev/net/tun \
-  --tun-name tun0 \
-  --tun-mtu 1500
-```
+Capabilities:
 
-Важно:
+- stateful userspace TCP relay over Outline TCP uplinks
+- SYN / SYN-ACK / FIN / RST handling
+- out-of-order buffering
+- receive-window enforcement
+- SACK-aware receive/send logic
+- adaptive RTO
+- zero-window persist/backoff
+- bounded buffering and retransmit budgets
+- flow termination on timeout, overflow, or relay failure
 
-- TUN runtime запускается только если в `config.toml` присутствует секция `[tun]`
-- `--tun-path`, `--tun-name` и `--tun-mtu` только переопределяют уже существующую секцию `[tun]`, но сами по себе TUN не включают
-
-Текущее поведение TUN path:
-
-- поддерживаются IPv4 и IPv6 UDP пакеты
-- для каждого UDP flow поднимается отдельный uplink transport с тем же runtime failover, что и у обычного UDP path
-- ответы с uplink инкапсулируются обратно в IPv4/IPv6 UDP packets и пишутся в TUN
-- idle flow автоматически очищаются по `idle_timeout_secs`
-- число одновременно живых UDP flow ограничивается `max_flows`; при переполнении вытесняется самый старый flow
-- TCP packets идут в отдельный `tun_tcp` path
-- `tun_tcp` поднимает stateful userspace TCP relay: принимает `SYN`, создаёт uplink TCP tunnel, отвечает `SYN-ACK`, проксирует payload и закрывает flow через `FIN`/`RST`
-- для `client -> upstream` path есть overlap trimming, out-of-order buffering, receive-window enforcement и SACK-aware ACK path
-- для `upstream -> client` path есть send-window tracking, zero-window persist/backoff, deferred `FIN`, adaptive `RTO`, базовый congestion control (`cwnd`/`ssthresh`) и SACK-aware retransmit выбора дырки
-- `tun_tcp` ограничивает память и длительность проблемных flow: отдельные `connect_timeout`, `handshake_timeout`, `half_close_timeout`, caps на `max_pending_server_bytes`, `max_buffered_client_segments`, `max_buffered_client_bytes` и `max_retransmits`
-- при ошибке установки uplink или runtime write/read ошибке `tun_tcp` возвращает `RST`, чтобы клиентский стек не зависал
-- при локальном backpressure/reassembly overflow или retransmit budget exhaustion `tun_tcp` тоже завершает flow через `RST`, вместо тихого зависания
-- IPv4 fragments и IPv6 extension-header paths сейчас не поддержаны
-- текущие ограничения `tun_tcp`: нет полноценного Reno/NewReno recovery, нет SACK scoreboard уровня kernel TCP и нет поддержки IPv4 fragments / IPv6 extension headers
-
-На Linux для attach к существующему persistent TUN нужны:
-
-- `path = "/dev/net/tun"`
-- `name = "tun0"` или другое имя интерфейса
-
-На системах с device node style TUN достаточно пути вроде `/dev/tun0`.
+This is intended for real operations, but it is still not equivalent to a kernel TCP stack.
 
 ## Linux fwmark
 
-Для outbound uplink sockets можно указать `fwmark` на уровне uplink:
+Per-uplink `fwmark` applies `SO_MARK` to outbound sockets:
 
-```toml
-[[outline.uplinks]]
-name = "primary"
-tcp_ws_url = "wss://example.com/SECRET/tcp"
-udp_ws_url = "wss://example.com/SECRET/udp"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
-fwmark = 100
-```
+- HTTP/1.1 WebSocket TCP sockets
+- HTTP/2 WebSocket TCP sockets
+- HTTP/3 QUIC UDP sockets
+- probe dials
+- warm-standby connections
 
-Это применяет `SO_MARK` к:
+Requirements:
 
-- HTTP/1.1 websocket TCP socket
-- HTTP/2 websocket TCP socket
-- HTTP/3 QUIC UDP socket
-- probe и warm-standby соединениям этого uplink
+- Linux only
+- `CAP_NET_ADMIN`
 
-Ограничения:
+## Metrics and Dashboards
 
-- работает только на Linux
-- требует `CAP_NET_ADMIN`
-- если `fwmark` задан не на Linux, процесс вернёт ошибку при попытке установить uplink connection
+If metrics are enabled, the process serves:
 
-## Запуск
+- `/metrics` - Prometheus text exposition
 
-Через конфиг:
+Example:
 
 ```bash
-cargo run --release
-```
-
-С override:
-
-```bash
-cargo run --release -- \
-  --config ./config.toml \
-  --listen [::]:1080 \
-  --tcp-ws-url wss://example.com/SECRET/tcp \
-  --tcp-ws-mode h3 \
-  --udp-ws-url wss://example.com/SECRET/udp \
-  --udp-ws-mode h3 \
-  --method chacha20-ietf-poly1305 \
-  --password 'Secret0'
-```
-
-Пример настройки клиента:
-
-- SOCKS5 host: `::1` или `127.0.0.1`
-- SOCKS5 port: `1080`
-
-Для шаблона `listen = "[::]:1080"` ОС обычно создаёт dual-stack listener. Если на твоей системе IPv4 не маппится в IPv6 socket, укажи отдельный IPv4 bind, например `127.0.0.1:1080`.
-
-## Status и Metrics
-
-Если настроена секция `[status]`, proxy поднимает лёгкий HTTP endpoint:
-
-- `/status` — JSON snapshot по uplink, latency, cooldown и sticky routes
-- `/status` также показывает `standby_tcp_ready` и `standby_udp_ready`
-- `/status` также показывает `weight`, raw RTT, `tcp_rtt_ewma_ms` / `udp_rtt_ewma_ms`, penalty, effective latency и итоговый score
-- `/metrics` — Prometheus text format
-
-Production-ready `/metrics` теперь включает:
-
-- build/startup info
-- active sessions, request rate, session duration histogram и rolling session p95 gauge
-- payload bytes и UDP datagrams
-- uplink selection, runtime failures и failovers
-- probe runs и probe latency histogram
-- warm-standby hit/miss и refill success/error
-- текущие uplink gauges: health, raw latency, failure penalty, effective latency, cooldown, standby size и sticky routes
-- uplink selector gauges: static weight, RTT EWMA и final score
-- TUN/tun2udp metrics: active flows, flow create/close reasons, flow lifetime histogram и packet outcomes
-- TUN/tun2tcp metrics: retransmit/zero-window/deferred-fin events, active TCP flows, in-flight server segments/bytes, pending server backlog, buffered client segments, zero-window flow count, congestion window, slow-start threshold, smoothed RTT и retransmission timeout
-- `tun2tcp` gauges по `cwnd`, `ssthresh`, `SRTT` и `RTO` экспортируются как aggregated per-uplink значения; в Grafana для них показываются средние по активным TCP flows
-- idle warm-standby websocket тоже валидируются ping/pong, пока не выданы в работу
-
-Пример:
-
-```toml
-[status]
-listen = "[::1]:9090"
-```
-
-Важно:
-
-- status endpoint запускается только если в `config.toml` присутствует секция `[status]`
-- `--status-listen` только переопределяет уже существующую секцию `[status]`, но сам по себе endpoint не включает
-
-Проверка:
-
-```bash
-curl http://[::1]:9090/status
 curl http://[::1]:9090/metrics
 ```
 
-Пример Prometheus scrape config:
+Prometheus example:
 
 ```yaml
 scrape_configs:
@@ -344,80 +456,71 @@ scrape_configs:
           - "[::1]:9090"
 ```
 
-Готовый Grafana dashboard:
+Metrics include:
 
-- [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
-- [`/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
-- основной dashboard организован по секциям `Overview`, `SOCKS5`, `Uplink`, `Probes`, `TUN`
-- панель `Session Latency p95` строится по in-process rolling metric `outline_ws_rust_session_recent_p95_seconds`, а не по Grafana-side `histogram_quantile`, чтобы не пустеть на разрежённом или шумном трафике
-- dashboard включает отдельные панели `Penalty Score` и `Effective Latency` для degraded-but-not-yet-unhealthy uplink
-- Uplink секция также показывает `Raw RTT vs EWMA RTT` и `Weighted Uplink Score`, чтобы было видно, как selector принимает решение
-- `Health Probe Error Ratio` считает только боевые health probes (`ws/http/dns`) и намеренно исключает `standby_ws`
-- maintenance-ошибки проверки idle warm-standby websocket вынесены в отдельную панель `Standby Probe Error Ratio`, чтобы standby churn не маскировал реальное здоровье uplink
-- TUN секция включает панели `Flow Pressure`, `Idle Timeouts and Evictions`, `Read and Send Errors`, `Packet Outcomes`
-- отдельный `tun2tcp` dashboard включает панели `Active TCP Flows`, `RTT and Retransmit Timeout`, `Retransmits`, `Window Pressure and FIN Lifecycle`, `In-Flight Segments`, `In-Flight Bytes`, `Pending Server Bytes`, `Buffered Client Segments`, `Zero-Window Flows`, `Congestion Window and SSThresh`
+- build and startup info
+- SOCKS5 requests and active sessions
+- session duration histogram
+- rolling session p95 gauge
+- payload bytes and UDP datagrams
+- uplink health, latency, EWMA RTT, penalties, score, cooldown, standby readiness
+- probe results and latency
+- warm-standby acquire and refill outcomes
+- TUN flow and packet metrics
+- `tun2tcp` retransmit, backlog, window, RTT, and RTO metrics
 
-Готовые Prometheus alert rules:
+Dashboards:
 
-- [`/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml)
-- rules включают `Socks5OutlineWsPenaltySaturation` и `Socks5OutlineWsEffectiveLatencyInflation`
-- rules включают TUN alerts: `Socks5OutlineWsTunFlowPressureHigh`, `Socks5OutlineWsTunFlowEvictions`, `Socks5OutlineWsTunIdleTimeoutBurst`, `Socks5OutlineWsTunReadOrSendErrors`
-- rules включают `tun2tcp` alerts: `Socks5OutlineWsTunTcpRetransmitRateHigh`, `Socks5OutlineWsTunTcpZeroWindowStalls`, `Socks5OutlineWsTunTcpBufferedClientBacklog`, `Socks5OutlineWsTunTcpPendingServerBacklog`
+- [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
 
-## Systemd
+The main dashboard is grouped into:
 
-Готовый unit с hardening:
+- Overview
+- SOCKS5
+- Uplink
+- Probes
+- TUN
 
-- [`/Users/mmalykhin/Documents/Playground/deploy/systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/deploy/systemd/outline-ws-rust.service)
+The `tun2tcp` dashboard is grouped into:
 
-Если используешь `fwmark`, оставь в unit:
+- Overview
+- Recovery
+- Flow State
+- Windowing
 
-- `AmbientCapabilities=CAP_NET_ADMIN`
-- `CapabilityBoundingSet=CAP_NET_ADMIN`
+Alert rules:
 
-Если используешь TUN через systemd:
+- [`prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml)
 
-- не включай `PrivateDevices=true`, иначе сервис может не видеть `/dev/net/tun`
-- для текущего unit это уже выставлено как `PrivateDevices=false`
-- на хосте должен существовать `/dev/net/tun`
+## Systemd Deployment
 
-Если `fwmark` не используешь, эти capability можно убрать.
+The repository includes a hardened unit:
 
-Пример сервера Outline:
+- [`systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/systemd/outline-ws-rust.service)
 
-```yaml
-web:
-  servers:
-    - id: my_web_server
-      listen:
-        - "0.0.0.0:8000"
+Key operational notes:
 
-services:
-  - listeners:
-      - type: websocket-stream
-        web_server: my_web_server
-        path: "/SECRET/tcp"
-      - type: websocket-packet
-        web_server: my_web_server
-        path: "/SECRET/udp"
-    keys:
-      - id: user-0
-        cipher: chacha20-ietf-poly1305
-        secret: Secret0
+- `PrivateDevices=false` is required for host TUN access.
+- Keep `AmbientCapabilities=CAP_NET_ADMIN` and `CapabilityBoundingSet=CAP_NET_ADMIN` when using `fwmark`.
+- `RUST_LOG=info` is already set in the unit.
+
+Typical deployment layout:
+
+- binary: `/usr/local/bin/outline-ws-rust`
+- config: `/etc/outline-ws-rust/config.toml`
+- working state: `/var/lib/outline-ws-rust`
+
+## Testing
+
+Useful local checks:
+
+```bash
+cargo check
+cargo test
 ```
 
-Источники по протоколу:
-
-- [Outline ss-server](https://github.com/Jigsaw-Code/outline-ss-server)
-- [Shadowsocks AEAD spec](https://shadowsocks.org/doc/aead.html)
-- [RFC 8441 WebSocket over HTTP/2 transport model](https://datatracker.ietf.org/doc/html/rfc8441)
-- [RFC 9220 Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
-
-Замечание по `websocket-packet`: отдельной публичной спецификации формата сообщения у Outline я не нашёл, поэтому реализация построена на их packet-oriented transport model: один UDP datagram передаётся как один бинарный WebSocket frame с Shadowsocks UDP AEAD payload внутри.
-
-## Проверка `h2`
-
-Для ручной проверки реального `ws-over-h2` добавлен отдельный integration test, который запускается только через env:
+Manual real-upstream integration tests exist for HTTP/2 and HTTP/3:
 
 ```bash
 RUN_REAL_SERVER_H2=1 \
@@ -427,22 +530,6 @@ SHADOWSOCKS_PASSWORD='Secret0' \
 cargo test --test real_server_h2 -- --nocapture
 ```
 
-Этот тестовый файл содержит два сценария:
-
-- TCP `CONNECT` через реальный `h2` upstream
-- UDP `ASSOCIATE` через реальный `h2` upstream с DNS-запросом наружу
-
-Дополнительно можно переопределить:
-
-- `SHADOWSOCKS_METHOD` (`chacha20-ietf-poly1305` по умолчанию)
-- `H2_TEST_TARGET_HOST` (`example.com` по умолчанию)
-- `H2_TEST_TARGET_PORT` (`80` по умолчанию)
-- `H2_TEST_DNS_SERVER` (`1.1.1.1` по умолчанию)
-- `H2_TEST_DNS_PORT` (`53` по умолчанию)
-- `H2_TEST_DNS_NAME` (`example.com` по умолчанию)
-
-Для ручной проверки реального `ws-over-h3` добавлен отдельный integration test:
-
 ```bash
 RUN_REAL_SERVER_H3=1 \
 OUTLINE_TCP_WS_URL='wss://example.com/SECRET/tcp' \
@@ -451,13 +538,23 @@ SHADOWSOCKS_PASSWORD='Secret0' \
 cargo test --test real_server_h3 -- --nocapture
 ```
 
-Дополнительно можно переопределить:
+There is also a dedicated warm-standby integration test:
 
-- `SHADOWSOCKS_METHOD` (`chacha20-ietf-poly1305` по умолчанию)
-- `H3_TEST_TARGET_HOST` (`example.com` по умолчанию)
-- `H3_TEST_TARGET_PORT` (`80` по умолчанию)
-- `H3_TEST_DNS_SERVER` (`1.1.1.1` по умолчанию)
-- `H3_TEST_DNS_PORT` (`53` по умолчанию)
-- `H3_TEST_DNS_NAME` (`example.com` по умолчанию)
+```bash
+cargo test --test standby_validation -- --nocapture
+```
 
-`ws-over-h3` проверен против реального upstream: ручные integration tests `real_server_h3` проходят и для TCP `CONNECT`, и для UDP `ASSOCIATE`.
+## Protocol References
+
+- [Outline `outline-ss-server`](https://github.com/Jigsaw-Code/outline-ss-server)
+- [Shadowsocks AEAD specification](https://shadowsocks.org/doc/aead.html)
+- [RFC 8441: Bootstrapping WebSockets with HTTP/2](https://datatracker.ietf.org/doc/html/rfc8441)
+- [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
+
+## Local Patch Tracking
+
+Vendored dependency patches are tracked in:
+
+- [`PATCHES.md`](/Users/mmalykhin/Documents/Playground/PATCHES.md)
+
+This is the source of truth for local deviations from upstream crates, including the vendored `h3` patch used for RFC 9220 support.

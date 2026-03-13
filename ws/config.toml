@@ -1,7 +1,7 @@
 [socks5]
 listen = "[::]:1080"
 
-[status]
+[metrics]
 listen = "[::1]:9090"
 
 [tun]
@@ -24,24 +24,24 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
-[outline.probe]
+[probe]
 interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
 
-[outline.probe.ws]
+[probe.ws]
 enabled = true
 
-[outline.probe.http]
+[probe.http]
 url = "http://example.com/"
 
-[outline.probe.dns]
+[probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
 
-[outline.load_balancing]
+[load_balancing]
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300
@@ -52,7 +52,7 @@ failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 
-[[outline.uplinks]]
+[[uplinks]]
 name = "primary"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
@@ -65,7 +65,7 @@ udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-[[outline.uplinks]]
+[[uplinks]]
 name = "backup"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8

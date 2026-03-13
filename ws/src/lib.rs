@@ -1,9 +1,9 @@
 pub mod config;
 pub mod crypto;
 pub mod metrics;
+pub mod metrics_http;
 pub mod proxy;
 pub mod socks5;
-pub mod status;
 pub mod transport;
 pub mod tun;
 pub mod tun_tcp;
@@ -17,7 +17,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{Args, load_config};
 use crate::metrics::init as init_metrics;
-use crate::status::spawn_status_server;
+use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
 
 pub fn init_rustls_crypto_provider() -> Result<()> {
@@ -57,8 +57,8 @@ pub async fn run(args: Args) -> Result<()> {
         "proxy started"
     );
     log_uplink_summary(&uplinks);
-    if let Some(status) = config.status.clone() {
-        spawn_status_server(status, uplinks.clone());
+    if let Some(metrics) = config.metrics.clone() {
+        spawn_metrics_server(metrics, uplinks.clone());
     }
 
     loop {

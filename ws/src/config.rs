@@ -41,8 +41,8 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_FWMARK")]
     pub fwmark: Option<u32>,
 
-    #[arg(long, env = "STATUS_LISTEN")]
-    pub status_listen: Option<SocketAddr>,
+    #[arg(long, env = "METRICS_LISTEN")]
+    pub metrics_listen: Option<SocketAddr>,
 
     #[arg(long, env = "TUN_PATH")]
     pub tun_path: Option<PathBuf>,
@@ -60,7 +60,7 @@ pub struct AppConfig {
     pub uplinks: Vec<UplinkConfig>,
     pub probe: ProbeConfig,
     pub load_balancing: LoadBalancingConfig,
-    pub status: Option<StatusConfig>,
+    pub metrics: Option<MetricsConfig>,
     pub tun: Option<TunConfig>,
 }
 
@@ -119,7 +119,7 @@ pub struct LoadBalancingConfig {
 }
 
 #[derive(Debug, Clone)]
-pub struct StatusConfig {
+pub struct MetricsConfig {
     pub listen: SocketAddr,
 }
 
@@ -147,8 +147,18 @@ pub struct TunTcpConfig {
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     socks5: Option<Socks5Section>,
+    tcp_ws_url: Option<Url>,
+    tcp_ws_mode: Option<WsTransportMode>,
+    udp_ws_url: Option<Url>,
+    udp_ws_mode: Option<WsTransportMode>,
+    method: Option<CipherKind>,
+    password: Option<String>,
+    fwmark: Option<u32>,
+    uplinks: Option<Vec<UplinkSection>>,
+    probe: Option<ProbeSection>,
+    load_balancing: Option<LoadBalancingSection>,
     outline: Option<OutlineSection>,
-    status: Option<StatusSection>,
+    metrics: Option<MetricsSection>,
     tun: Option<TunSection>,
 }
 
@@ -157,7 +167,7 @@ struct Socks5Section {
     listen: Option<SocketAddr>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct OutlineSection {
     tcp_ws_url: Option<Url>,
     tcp_ws_mode: Option<WsTransportMode>,
@@ -172,7 +182,7 @@ struct OutlineSection {
 }
 
 #[derive(Debug, Deserialize)]
-struct StatusSection {
+struct MetricsSection {
     listen: Option<SocketAddr>,
 }
 
@@ -210,7 +220,7 @@ struct UplinkSection {
     fwmark: Option<u32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct ProbeSection {
     interval_secs: Option<u64>,
     timeout_secs: Option<u64>,
@@ -221,24 +231,24 @@ struct ProbeSection {
     dns: Option<DnsProbeSection>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct WsProbeSection {
     enabled: Option<bool>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct HttpProbeSection {
     url: Url,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct DnsProbeSection {
     server: String,
     port: Option<u16>,
     name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct LoadBalancingSection {
     sticky_ttl_secs: Option<u64>,
     hysteresis_ms: Option<u64>,
@@ -265,8 +275,8 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     };
 
     let socks5 = file.as_ref().and_then(|f| f.socks5.as_ref());
-    let outline = file.as_ref().and_then(|f| f.outline.as_ref());
-    let status_section = file.as_ref().and_then(|f| f.status.as_ref());
+    let outline = file.as_ref().and_then(resolve_outline_section);
+    let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
 
     let listen = args
@@ -274,15 +284,13 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .or_else(|| socks5.and_then(|s| s.listen))
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 1080)));
 
-    let uplinks = load_uplinks(outline, args)?;
-    let probe = load_probe_config(outline)?;
-    let load_balancing = load_balancing_config(outline)?;
-    let status = status_section.map(|section| StatusConfig {
-        listen: args
-            .status_listen
-            .or(section.listen)
-            .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 9090))),
-    });
+    let uplinks = load_uplinks(outline.as_ref(), args)?;
+    let probe = load_probe_config(outline.as_ref())?;
+    let load_balancing = load_balancing_config(outline.as_ref())?;
+    let metrics = args
+        .metrics_listen
+        .or_else(|| metrics_section.and_then(|section| section.listen))
+        .map(|listen| MetricsConfig { listen });
     let tun = load_tun_config(tun_section, args)?;
 
     Ok(AppConfig {
@@ -290,9 +298,51 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         uplinks,
         probe,
         load_balancing,
-        status,
+        metrics,
         tun,
     })
+}
+
+fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
+    let top_level_present = file.tcp_ws_url.is_some()
+        || file.tcp_ws_mode.is_some()
+        || file.udp_ws_url.is_some()
+        || file.udp_ws_mode.is_some()
+        || file.method.is_some()
+        || file.password.is_some()
+        || file.fwmark.is_some()
+        || file.uplinks.is_some()
+        || file.probe.is_some()
+        || file.load_balancing.is_some();
+
+    match (top_level_present, file.outline.clone()) {
+        (false, None) => None,
+        (false, Some(legacy)) => Some(legacy),
+        (true, None) => Some(OutlineSection {
+            tcp_ws_url: file.tcp_ws_url.clone(),
+            tcp_ws_mode: file.tcp_ws_mode,
+            udp_ws_url: file.udp_ws_url.clone(),
+            udp_ws_mode: file.udp_ws_mode,
+            method: file.method,
+            password: file.password.clone(),
+            fwmark: file.fwmark,
+            uplinks: file.uplinks.clone(),
+            probe: file.probe.clone(),
+            load_balancing: file.load_balancing.clone(),
+        }),
+        (true, Some(legacy)) => Some(OutlineSection {
+            tcp_ws_url: file.tcp_ws_url.clone().or(legacy.tcp_ws_url),
+            tcp_ws_mode: file.tcp_ws_mode.or(legacy.tcp_ws_mode),
+            udp_ws_url: file.udp_ws_url.clone().or(legacy.udp_ws_url),
+            udp_ws_mode: file.udp_ws_mode.or(legacy.udp_ws_mode),
+            method: file.method.or(legacy.method),
+            password: file.password.clone().or(legacy.password),
+            fwmark: file.fwmark.or(legacy.fwmark),
+            uplinks: file.uplinks.clone().or(legacy.uplinks),
+            probe: file.probe.clone().or(legacy.probe),
+            load_balancing: file.load_balancing.clone().or(legacy.load_balancing),
+        }),
+    }
 }
 
 impl ProbeConfig {
@@ -367,7 +417,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
             )?);
         }
         if resolved.is_empty() {
-            bail!("outline.uplinks is present but empty");
+            bail!("uplinks is present but empty");
         }
         return Ok(resolved);
     }
@@ -454,7 +504,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
     let lb = outline.and_then(|o| o.load_balancing.as_ref());
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
     if !rtt_ewma_alpha.is_finite() || !(0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
-        bail!("outline.load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
+        bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
     }
     Ok(LoadBalancingConfig {
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
@@ -479,23 +529,27 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
 }
 
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
-    let Some(tun) = tun else {
-        return Ok(None);
-    };
     let path = args
         .tun_path
         .clone()
-        .or_else(|| tun.path.clone());
+        .or_else(|| tun.and_then(|section| section.path.clone()));
     let name = args
         .tun_name
         .clone()
-        .or_else(|| tun.name.clone());
+        .or_else(|| tun.and_then(|section| section.name.clone()));
     let mtu = args
         .tun_mtu
-        .or(tun.mtu)
+        .or_else(|| tun.and_then(|section| section.mtu))
         .unwrap_or(1500);
-    let max_flows = tun.max_flows.unwrap_or(4096);
-    let idle_timeout = Duration::from_secs(tun.idle_timeout_secs.unwrap_or(300));
+    let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
+    let idle_timeout = Duration::from_secs(
+        tun.and_then(|section| section.idle_timeout_secs)
+            .unwrap_or(300),
+    );
+
+    if path.is_none() && name.is_none() {
+        return Ok(None);
+    }
 
     let path =
         path.ok_or_else(|| anyhow!("missing tun.path: set it in config.toml or pass --tun-path"))?;
@@ -510,7 +564,7 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("tun idle_timeout_secs must be at least 5");
     }
 
-    let tcp_section = tun.tcp.as_ref();
+    let tcp_section = tun.and_then(|section| section.tcp.as_ref());
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
             tcp_section
@@ -588,7 +642,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{ConfigFile, load_config};
+    use super::{ConfigFile, load_config, resolve_outline_section};
 
     #[test]
     fn config_deserializes() {
@@ -596,7 +650,6 @@ mod tests {
             [socks5]
             listen = "127.0.0.1:1080"
 
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             tcp_ws_mode = "h2"
             udp_ws_url = "wss://example.com/secret/udp"
@@ -617,24 +670,24 @@ mod tests {
             [socks5]
             listen = "127.0.0.1:1080"
 
-            [outline.probe]
+            [probe]
             interval_secs = 15
             timeout_secs = 5
             max_concurrent = 3
             max_dials = 1
 
-            [outline.probe.ws]
+            [probe.ws]
             enabled = true
 
-            [outline.probe.http]
+            [probe.http]
             url = "http://example.com/"
 
-            [outline.probe.dns]
+            [probe.dns]
             server = "1.1.1.1"
             port = 53
             name = "example.com"
 
-            [outline.load_balancing]
+            [load_balancing]
             warm_standby_tcp = 1
             warm_standby_udp = 1
             rtt_ewma_alpha = 0.4
@@ -642,7 +695,7 @@ mod tests {
             failure_penalty_max_ms = 20000
             failure_penalty_halflife_secs = 45
 
-            [[outline.uplinks]]
+            [[uplinks]]
             name = "primary"
             tcp_ws_url = "wss://primary.example.com/secret/tcp"
             tcp_ws_mode = "h3"
@@ -653,7 +706,7 @@ mod tests {
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
 
-            [[outline.uplinks]]
+            [[uplinks]]
             name = "backup"
             tcp_ws_url = "wss://backup.example.com/secret/tcp"
             tcp_ws_mode = "h2"
@@ -663,7 +716,7 @@ mod tests {
             password = "Secret1"
         "#;
         let parsed: ConfigFile = toml::from_str(cfg).unwrap();
-        let outline = parsed.outline.unwrap();
+        let outline = resolve_outline_section(&parsed).unwrap();
         let uplinks = outline.uplinks.unwrap();
         assert_eq!(uplinks.len(), 2);
         assert_eq!(uplinks[0].fwmark, Some(100));
@@ -722,14 +775,13 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-            [socks5]
-            listen = "127.0.0.1:1080"
-
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             tcp_ws_mode = "h2"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
             "#,
         )
         .unwrap();
@@ -747,7 +799,6 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
@@ -815,12 +866,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_config_does_not_enable_tun_without_tun_section() {
+    async fn load_config_enables_tun_from_cli_without_tun_section() {
         let path = std::env::temp_dir().join("outline-ws-rust-no-tun-section.toml");
         std::fs::write(
             &path,
             r#"
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
@@ -838,18 +888,22 @@ mod tests {
             "1500",
         ]);
         let config = load_config(&path, &args).await.unwrap();
-        assert!(config.tun.is_none());
+        assert_eq!(
+            config.tun.as_ref().unwrap().path,
+            PathBuf::from("/dev/net/tun")
+        );
+        assert_eq!(config.tun.as_ref().unwrap().name.as_deref(), Some("tun0"));
+        assert_eq!(config.tun.as_ref().unwrap().mtu, 1500);
 
         let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
-    async fn load_config_does_not_enable_status_without_status_section() {
-        let path = std::env::temp_dir().join("outline-ws-rust-no-status-section.toml");
+    async fn load_config_enables_metrics_from_cli_without_metrics_section() {
+        let path = std::env::temp_dir().join("outline-ws-rust-no-metrics-section.toml");
         std::fs::write(
             &path,
             r#"
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
@@ -857,9 +911,12 @@ mod tests {
         )
         .unwrap();
 
-        let args = super::Args::parse_from(["test", "--status-listen", "[::1]:9090"]);
+        let args = super::Args::parse_from(["test", "--metrics-listen", "[::1]:9090"]);
         let config = load_config(&path, &args).await.unwrap();
-        assert!(config.status.is_none());
+        assert_eq!(
+            config.metrics.as_ref().unwrap().listen,
+            "[::1]:9090".parse().unwrap()
+        );
 
         let _ = std::fs::remove_file(path);
     }
@@ -870,16 +927,15 @@ mod tests {
         std::fs::write(
             &path,
             r#"
-            [socks5]
-            listen = "127.0.0.1:1080"
-
-            [outline]
             tcp_ws_url = "wss://example.com/secret/tcp"
             tcp_ws_mode = "h2"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
 
-            [outline.probe]
+            [socks5]
+            listen = "127.0.0.1:1080"
+
+            [probe]
             interval_secs = 15
             timeout_secs = 5
             "#,

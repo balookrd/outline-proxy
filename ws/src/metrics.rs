@@ -32,7 +32,7 @@ struct Metrics {
     probe_duration_seconds: HistogramVec,
     warm_standby_acquire_total: IntCounterVec,
     warm_standby_refill_total: IntCounterVec,
-    status_requests_total: IntCounterVec,
+    metrics_http_requests_total: IntCounterVec,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,
@@ -209,14 +209,14 @@ impl Metrics {
             &["transport", "uplink", "result"],
         )
         .expect("warm_standby_refill_total metric");
-        let status_requests_total = IntCounterVec::new(
+        let metrics_http_requests_total = IntCounterVec::new(
             Opts::new(
-                "outline_ws_rust_status_requests_total",
-                "HTTP requests served by the built-in status endpoint.",
+                "outline_ws_rust_metrics_http_requests_total",
+                "HTTP requests served by the built-in metrics endpoint.",
             ),
             &["path", "status"],
         )
-        .expect("status_requests_total metric");
+        .expect("metrics_http_requests_total metric");
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -483,8 +483,8 @@ impl Metrics {
             .register(Box::new(warm_standby_refill_total.clone()))
             .expect("register warm_standby_refill_total");
         registry
-            .register(Box::new(status_requests_total.clone()))
-            .expect("register status_requests_total");
+            .register(Box::new(metrics_http_requests_total.clone()))
+            .expect("register metrics_http_requests_total");
         registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
@@ -598,7 +598,7 @@ impl Metrics {
             probe_duration_seconds,
             warm_standby_acquire_total,
             warm_standby_refill_total,
-            status_requests_total,
+            metrics_http_requests_total,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,
@@ -766,7 +766,11 @@ pub fn init() {
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
     let _ = METRICS.start_time_seconds.get();
+    for command in ["connect", "udp_associate"] {
+        let _ = METRICS.socks_requests_total.with_label_values(&[command]);
+    }
     for protocol in ["tcp", "udp"] {
+        let _ = METRICS.sessions_active.with_label_values(&[protocol]);
         METRICS
             .session_recent_p95_seconds
             .with_label_values(&[protocol])
@@ -879,9 +883,8 @@ pub fn record_warm_standby_refill(transport: &'static str, uplink: &str, success
         .inc();
 }
 
-pub fn record_status_request(path: &str, status: u16) {
+pub fn record_metrics_http_request(path: &str, status: u16) {
     let path = match path {
-        "/status" => "/status",
         "/metrics" => "/metrics",
         _ => "other",
     };
@@ -891,7 +894,7 @@ pub fn record_status_request(path: &str, status: u16) {
         _ => "500",
     };
     METRICS
-        .status_requests_total
+        .metrics_http_requests_total
         .with_label_values(&[path, status])
         .inc();
 }
@@ -1065,6 +1068,19 @@ mod tests {
         assert!(rendered.contains("outline_ws_rust_session_recent_samples"));
         assert!(rendered.contains("protocol=\"tcp\""));
         assert!(rendered.contains("result=\"success\""));
+    }
+
+    #[test]
+    fn init_exports_zero_value_request_and_session_series() {
+        init();
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains("outline_ws_rust_requests_total{command=\"connect\"} 0"));
+        assert!(rendered.contains(
+            "outline_ws_rust_requests_total{command=\"udp_associate\"} 0"
+        ));
+        assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
+        assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
     }
 
     #[test]
