@@ -177,7 +177,23 @@ async fn tun_read_loop(
                         continue;
                     }
                 };
-                forward_udp_packet(parsed, &writer, &uplinks, &flows, &flow_ids, max_flows).await?;
+                if let Err(error) =
+                    forward_udp_packet(parsed, &writer, &uplinks, &flows, &flow_ids, max_flows)
+                        .await
+                {
+                    metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(version_nibble),
+                        "udp_error",
+                    );
+                    warn!(
+                        error = %format!("{error:#}"),
+                        packet_len = read,
+                        "failed to forward UDP packet from TUN"
+                    );
+                    continue;
+                }
             }
             PacketDisposition::Tcp => {
                 metrics::record_tun_packet(
@@ -287,6 +303,22 @@ async fn forward_udp_packet(
     Ok(())
 }
 
+fn classify_tun_udp_forward_error(error: &anyhow::Error) -> &'static str {
+    let text = format!("{error:#}");
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("all udp uplinks failed") {
+        "all_uplinks_failed"
+    } else if lower.contains("failed to send udp websocket frame")
+        || lower.contains("websocket read failed")
+    {
+        "transport_error"
+    } else if lower.contains("failed to connect to") {
+        "connect_failed"
+    } else {
+        "other"
+    }
+}
+
 async fn create_udp_flow(
     key: UdpFlowKey,
     writer: SharedTunWriter,
@@ -310,6 +342,7 @@ async fn create_udp_flow(
         last_seen: now,
     };
 
+    let mut evicted_transport = None;
     {
         let mut guard = flows.lock().await;
         if let Some(existing) = guard.get_mut(&key) {
@@ -335,12 +368,22 @@ async fn create_udp_flow(
                         max_flows,
                         "evicted oldest TUN UDP flow due to flow table limit"
                     );
+                    evicted_transport = Some(evicted.transport);
                 }
             } else {
                 bail!("TUN flow table limit reached and no flow could be evicted");
             }
         }
         guard.insert(key.clone(), state);
+    }
+
+    if let Some(transport) = evicted_transport {
+        if let Err(error) = transport.close().await {
+            debug!(
+                error = %format!("{error:#}"),
+                "failed to close evicted TUN UDP transport"
+            );
+        }
     }
 
     metrics::record_uplink_selected("udp", &candidate.uplink.name);
@@ -376,7 +419,10 @@ async fn select_udp_candidate_and_connect(
 ) -> Result<(UplinkCandidate, UdpWsTransport)> {
     let mut last_error = None;
     for candidate in uplinks.udp_candidates(Some(remote_target)).await {
-        match uplinks.acquire_udp_standby_or_connect(&candidate).await {
+        match uplinks
+            .acquire_udp_standby_or_connect(&candidate, "tun_udp")
+            .await
+        {
             Ok(transport) => {
                 return Ok((candidate, transport));
             }
@@ -764,13 +810,27 @@ async fn close_flow_if_current(
     flow_id: u64,
     reason: &'static str,
 ) {
-    let mut guard = flows.lock().await;
-    if guard.get(key).map(|flow| flow.id) == Some(flow_id) {
-        if let Some(flow) = guard.remove(key) {
-            metrics::record_tun_flow_closed(
-                &flow.uplink_name,
+    let removed = {
+        let mut guard = flows.lock().await;
+        if guard.get(key).map(|flow| flow.id) == Some(flow_id) {
+            guard.remove(key)
+        } else {
+            None
+        }
+    };
+
+    if let Some(flow) = removed {
+        metrics::record_tun_flow_closed(
+            &flow.uplink_name,
+            reason,
+            Instant::now().saturating_duration_since(flow.created_at),
+        );
+        if let Err(error) = flow.transport.close().await {
+            debug!(
+                flow_id,
                 reason,
-                Instant::now().saturating_duration_since(flow.created_at),
+                error = %format!("{error:#}"),
+                "failed to close TUN UDP transport"
             );
         }
     }
@@ -778,23 +838,39 @@ async fn close_flow_if_current(
 
 async fn cleanup_idle_flows(flows: &FlowTable, idle_timeout: Duration) {
     let now = Instant::now();
-    let mut guard = flows.lock().await;
-    let expired: Vec<UdpFlowKey> = guard
-        .iter()
-        .filter_map(|(key, flow)| {
-            (now.saturating_duration_since(flow.last_seen) >= idle_timeout).then(|| key.clone())
-        })
-        .collect();
-    for key in expired {
-        if let Some(flow) = guard.remove(&key) {
-            metrics::record_tun_flow_closed(
-                &flow.uplink_name,
-                "idle_timeout",
-                now.saturating_duration_since(flow.created_at),
+    let expired = {
+        let mut guard = flows.lock().await;
+        let expired_keys: Vec<UdpFlowKey> = guard
+            .iter()
+            .filter_map(|(key, flow)| {
+                (now.saturating_duration_since(flow.last_seen) >= idle_timeout).then(|| key.clone())
+            })
+            .collect();
+
+        let mut removed = Vec::with_capacity(expired_keys.len());
+        for key in expired_keys {
+            if let Some(flow) = guard.remove(&key) {
+                removed.push(flow);
+            }
+        }
+        maybe_shrink_hash_map(&mut guard);
+        removed
+    };
+
+    for flow in expired {
+        metrics::record_tun_flow_closed(
+            &flow.uplink_name,
+            "idle_timeout",
+            now.saturating_duration_since(flow.created_at),
+        );
+        if let Err(error) = flow.transport.close().await {
+            debug!(
+                flow_id = flow.id,
+                error = %format!("{error:#}"),
+                "failed to close idle TUN UDP transport"
             );
         }
     }
-    maybe_shrink_hash_map(&mut guard);
 }
 
 #[cfg(target_os = "linux")]

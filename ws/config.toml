@@ -46,6 +46,8 @@ port = 53
 name = "example.com"
 
 [load_balancing]
+mode = "active_active"          # "active_active" or "active_passive"
+routing_scope = "per_flow"      # "per_flow", "per_uplink", or "global"
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300

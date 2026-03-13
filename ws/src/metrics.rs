@@ -29,6 +29,7 @@ struct Metrics {
     udp_datagrams_total: IntCounterVec,
     uplink_selected_total: IntCounterVec,
     uplink_runtime_failures_total: IntCounterVec,
+    uplink_runtime_failures_suppressed_total: IntCounterVec,
     uplink_failovers_total: IntCounterVec,
     probe_runs_total: IntCounterVec,
     probe_duration_seconds: HistogramVec,
@@ -39,12 +40,17 @@ struct Metrics {
     process_heap_memory_bytes: Gauge,
     process_open_fds: Gauge,
     process_fd_by_type: GaugeVec,
+    transport_connects_total: IntCounterVec,
+    transport_connects_active: IntGaugeVec,
+    upstream_transports_total: IntCounterVec,
+    upstream_transports_active: IntGaugeVec,
     process_malloc_trim_total: IntCounterVec,
     process_malloc_trim_last_released_bytes: GaugeVec,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,
     tun_flows_active: IntGaugeVec,
+    tun_udp_forward_errors_total: IntCounterVec,
     tun_max_flows: IntGauge,
     tun_idle_timeout_seconds: Gauge,
     tun_tcp_events_total: IntCounterVec,
@@ -176,6 +182,14 @@ impl Metrics {
             &["transport", "uplink"],
         )
         .expect("uplink_runtime_failures_total metric");
+        let uplink_runtime_failures_suppressed_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_runtime_failures_suppressed_total",
+                "Runtime failures observed while the uplink was already in cooldown.",
+            ),
+            &["transport", "uplink"],
+        )
+        .expect("uplink_runtime_failures_suppressed_total metric");
         let uplink_failovers_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_uplink_failovers_total",
@@ -250,6 +264,38 @@ impl Metrics {
             &["kind"],
         )
         .expect("process_fd_by_type metric");
+        let transport_connects_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_transport_connects_total",
+                "Transport websocket connect attempts by source, mode and result.",
+            ),
+            &["source", "mode", "result"],
+        )
+        .expect("transport_connects_total metric");
+        let transport_connects_active = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_transport_connects_active",
+                "Currently active transport websocket connect attempts by source and mode.",
+            ),
+            &["source", "mode"],
+        )
+        .expect("transport_connects_active metric");
+        let upstream_transports_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_upstream_transports_total",
+                "Established upstream websocket transports by source, protocol and result.",
+            ),
+            &["source", "protocol", "result"],
+        )
+        .expect("upstream_transports_total metric");
+        let upstream_transports_active = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_upstream_transports_active",
+                "Currently active established upstream websocket transports by source and protocol.",
+            ),
+            &["source", "protocol"],
+        )
+        .expect("upstream_transports_active metric");
         let process_malloc_trim_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_process_malloc_trim_total",
@@ -299,6 +345,14 @@ impl Metrics {
             &["uplink"],
         )
         .expect("tun_flows_active metric");
+        let tun_udp_forward_errors_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_udp_forward_errors_total",
+                "UDP forwarding errors on the TUN path by reason.",
+            ),
+            &["reason"],
+        )
+        .expect("tun_udp_forward_errors_total metric");
         let tun_max_flows = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_max_flows",
             "Configured maximum number of TUN UDP flows.",
@@ -530,6 +584,9 @@ impl Metrics {
             .register(Box::new(uplink_runtime_failures_total.clone()))
             .expect("register uplink_runtime_failures_total");
         registry
+            .register(Box::new(uplink_runtime_failures_suppressed_total.clone()))
+            .expect("register uplink_runtime_failures_suppressed_total");
+        registry
             .register(Box::new(uplink_failovers_total.clone()))
             .expect("register uplink_failovers_total");
         registry
@@ -560,6 +617,18 @@ impl Metrics {
             .register(Box::new(process_fd_by_type.clone()))
             .expect("register process_fd_by_type");
         registry
+            .register(Box::new(transport_connects_total.clone()))
+            .expect("register transport_connects_total");
+        registry
+            .register(Box::new(transport_connects_active.clone()))
+            .expect("register transport_connects_active");
+        registry
+            .register(Box::new(upstream_transports_total.clone()))
+            .expect("register upstream_transports_total");
+        registry
+            .register(Box::new(upstream_transports_active.clone()))
+            .expect("register upstream_transports_active");
+        registry
             .register(Box::new(process_malloc_trim_total.clone()))
             .expect("register process_malloc_trim_total");
         registry
@@ -577,6 +646,9 @@ impl Metrics {
         registry
             .register(Box::new(tun_flows_active.clone()))
             .expect("register tun_flows_active");
+        registry
+            .register(Box::new(tun_udp_forward_errors_total.clone()))
+            .expect("register tun_udp_forward_errors_total");
         registry
             .register(Box::new(tun_max_flows.clone()))
             .expect("register tun_max_flows");
@@ -679,6 +751,7 @@ impl Metrics {
             udp_datagrams_total,
             uplink_selected_total,
             uplink_runtime_failures_total,
+            uplink_runtime_failures_suppressed_total,
             uplink_failovers_total,
             probe_runs_total,
             probe_duration_seconds,
@@ -689,12 +762,17 @@ impl Metrics {
             process_heap_memory_bytes,
             process_open_fds,
             process_fd_by_type,
+            transport_connects_total,
+            transport_connects_active,
+            upstream_transports_total,
+            upstream_transports_active,
             process_malloc_trim_total,
             process_malloc_trim_last_released_bytes,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,
             tun_flows_active,
+            tun_udp_forward_errors_total,
             tun_max_flows,
             tun_idle_timeout_seconds,
             tun_tcp_events_total,
@@ -870,6 +948,50 @@ pub fn init() {
     for kind in ["socket", "pipe", "anon_inode", "regular_file", "other"] {
         METRICS.process_fd_by_type.with_label_values(&[kind]).set(0.0);
     }
+    for source in [
+        "direct",
+        "socks_tcp",
+        "socks_udp",
+        "tun_udp",
+        "tun_tcp",
+        "standby_tcp",
+        "standby_udp",
+        "probe_ws",
+        "probe_http",
+        "probe_dns",
+    ] {
+        for mode in ["http1", "h2", "h3"] {
+            METRICS
+                .transport_connects_active
+                .with_label_values(&[source, mode])
+                .set(0);
+            for result in ["started", "success", "error"] {
+                let _ = METRICS
+                    .transport_connects_total
+                    .with_label_values(&[source, mode, result]);
+            }
+        }
+    }
+    for source in [
+        "socks_tcp",
+        "socks_udp",
+        "tun_tcp",
+        "tun_udp",
+        "probe_http",
+        "probe_dns",
+    ] {
+        for protocol in ["tcp", "udp"] {
+            METRICS
+                .upstream_transports_active
+                .with_label_values(&[source, protocol])
+                .set(0);
+            for result in ["opened", "closed"] {
+                let _ = METRICS
+                    .upstream_transports_total
+                    .with_label_values(&[source, protocol, result]);
+            }
+        }
+    }
     for (reason, result) in [
         ("opportunistic", "success"),
         ("opportunistic", "noop"),
@@ -913,6 +1035,16 @@ pub fn init() {
             .with_label_values(&[result]);
     }
     METRICS.tun_tcp_async_connects_active.set(0);
+    for reason in [
+        "all_uplinks_failed",
+        "transport_error",
+        "connect_failed",
+        "other",
+    ] {
+        let _ = METRICS
+            .tun_udp_forward_errors_total
+            .with_label_values(&[reason]);
+    }
 }
 
 pub fn spawn_process_metrics_sampler() {
@@ -991,6 +1123,42 @@ pub fn record_malloc_trim(
         .set(heap_released_bytes.unwrap_or(0) as f64);
 }
 
+pub fn record_transport_connect(source: &'static str, mode: &'static str, result: &'static str) {
+    METRICS
+        .transport_connects_total
+        .with_label_values(&[source, mode, result])
+        .inc();
+}
+
+pub fn add_transport_connects_active(source: &'static str, mode: &'static str, delta: i64) {
+    METRICS
+        .transport_connects_active
+        .with_label_values(&[source, mode])
+        .add(delta);
+}
+
+pub fn record_upstream_transport(
+    source: &'static str,
+    protocol: &'static str,
+    result: &'static str,
+) {
+    METRICS
+        .upstream_transports_total
+        .with_label_values(&[source, protocol, result])
+        .inc();
+}
+
+pub fn add_upstream_transports_active(
+    source: &'static str,
+    protocol: &'static str,
+    delta: i64,
+) {
+    METRICS
+        .upstream_transports_active
+        .with_label_values(&[source, protocol])
+        .add(delta);
+}
+
 pub fn record_request(command: &'static str) {
     METRICS
         .socks_requests_total
@@ -1045,6 +1213,13 @@ pub fn record_uplink_selected(transport: &'static str, uplink: &str) {
 pub fn record_runtime_failure(transport: &'static str, uplink: &str) {
     METRICS
         .uplink_runtime_failures_total
+        .with_label_values(&[transport, uplink])
+        .inc();
+}
+
+pub fn record_runtime_failure_suppressed(transport: &'static str, uplink: &str) {
+    METRICS
+        .uplink_runtime_failures_suppressed_total
         .with_label_values(&[transport, uplink])
         .inc();
 }
@@ -1133,6 +1308,13 @@ pub fn record_tun_flow_closed(uplink: &str, reason: &'static str, duration: Dura
         .with_label_values(&[reason, uplink])
         .observe(duration.as_secs_f64());
     METRICS.tun_flows_active.with_label_values(&[uplink]).dec();
+}
+
+pub fn record_tun_udp_forward_error(reason: &'static str) {
+    METRICS
+        .tun_udp_forward_errors_total
+        .with_label_values(&[reason])
+        .inc();
 }
 
 pub fn set_tun_config(max_flows: usize, idle_timeout: Duration) {
@@ -1326,6 +1508,61 @@ mod tests {
         ));
         assert!(rendered.contains(
             "outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"heap\"} 2048"
+        ));
+    }
+
+    #[test]
+    fn render_prometheus_exports_transport_connect_metrics() {
+        init();
+        add_transport_connects_active("tun_tcp", "h2", 2);
+        record_transport_connect("tun_tcp", "h2", "started");
+        record_transport_connect("tun_tcp", "h2", "success");
+        record_transport_connect("probe_http", "h3", "error");
+        record_runtime_failure_suppressed("udp", "primary");
+        add_upstream_transports_active("tun_tcp", "tcp", 1);
+        record_upstream_transport("tun_tcp", "tcp", "opened");
+        record_upstream_transport("tun_tcp", "tcp", "closed");
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains(
+            "outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"} 2"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"success\",source=\"tun_tcp\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_uplink_runtime_failures_suppressed_total{transport=\"udp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_upstream_transports_total{protocol=\"tcp\",result=\"opened\",source=\"tun_tcp\"} 1"
+        ));
+    }
+
+    #[test]
+    fn init_exports_zero_value_tun_udp_forward_error_series() {
+        init();
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0"
         ));
     }
 

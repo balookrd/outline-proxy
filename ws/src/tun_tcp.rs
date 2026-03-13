@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 use crate::config::TunTcpConfig;
 use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
-use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
+use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard};
 use crate::tun::SharedTunWriter;
 use crate::types::TargetAddr;
 use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
@@ -1283,13 +1283,18 @@ async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
-    let ws_stream = uplinks.acquire_tcp_standby_or_connect(candidate).await?;
+    let ws_stream = uplinks
+        .acquire_tcp_standby_or_connect(candidate, "tun_tcp")
+        .await?;
     let (ws_sink, ws_stream) = ws_stream.split();
 
     let uplink = &candidate.uplink;
     let master_key = uplink.cipher.derive_master_key(&uplink.password);
-    let mut writer = TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key).await?;
-    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key);
+    let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
+    let mut writer =
+        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
+            .await?;
+    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -3644,6 +3649,8 @@ mod tests {
                 dns: None,
             },
             LoadBalancingConfig {
+                mode: crate::config::LoadBalancingMode::ActiveActive,
+                routing_scope: crate::config::RoutingScope::PerFlow,
                 sticky_ttl: Duration::from_secs(300),
                 hysteresis: Duration::from_millis(50),
                 failure_cooldown: Duration::from_secs(10),
@@ -3754,7 +3761,12 @@ mod tests {
             uplink_index: 0,
             uplink_name: "test".to_string(),
             upstream_writer: Some(Arc::new(Mutex::new(
-                TcpShadowsocksWriter::connect(sink, cipher, &master_key)
+                TcpShadowsocksWriter::connect(
+                    sink,
+                    cipher,
+                    &master_key,
+                    super::UpstreamTransportGuard::new("test", "tcp"),
+                )
                     .await
                     .unwrap(),
             ))),
@@ -3940,8 +3952,11 @@ mod tests {
         let (sink, stream) = ws.split();
         let cipher = CipherKind::Chacha20IetfPoly1305;
         let master_key = cipher.derive_master_key("Secret0");
-        let mut writer = TcpShadowsocksWriter::connect(sink, cipher, &master_key).await?;
-        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key);
+        let lifetime = super::UpstreamTransportGuard::new("test", "tcp");
+        let mut writer =
+            TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime))
+                .await?;
+        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime);
 
         target_tx.send(reader.read_chunk().await?).unwrap();
 
