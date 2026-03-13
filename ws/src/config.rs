@@ -111,6 +111,8 @@ pub struct DnsProbeConfig {
 
 #[derive(Debug, Clone)]
 pub struct LoadBalancingConfig {
+    pub mode: LoadBalancingMode,
+    pub routing_scope: RoutingScope,
     pub sticky_ttl: Duration,
     pub hysteresis: Duration,
     pub failure_cooldown: Duration,
@@ -120,6 +122,21 @@ pub struct LoadBalancingConfig {
     pub failure_penalty: Duration,
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadBalancingMode {
+    ActiveActive,
+    ActivePassive,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingScope {
+    PerFlow,
+    PerUplink,
+    Global,
 }
 
 #[derive(Debug, Clone)]
@@ -255,6 +272,8 @@ struct DnsProbeSection {
 
 #[derive(Debug, Deserialize, Clone)]
 struct LoadBalancingSection {
+    mode: Option<LoadBalancingMode>,
+    routing_scope: Option<RoutingScope>,
     sticky_ttl_secs: Option<u64>,
     hysteresis_ms: Option<u64>,
     failure_cooldown_secs: Option<u64>,
@@ -514,6 +533,12 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
     }
     Ok(LoadBalancingConfig {
+        mode: lb
+            .and_then(|l| l.mode)
+            .unwrap_or(LoadBalancingMode::ActiveActive),
+        routing_scope: lb
+            .and_then(|l| l.routing_scope)
+            .unwrap_or(RoutingScope::PerFlow),
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
         failure_cooldown: Duration::from_secs(
@@ -661,7 +686,9 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{ConfigFile, load_config, resolve_outline_section};
+    use super::{
+        ConfigFile, LoadBalancingMode, RoutingScope, load_config, resolve_outline_section,
+    };
 
     #[test]
     fn config_deserializes() {
@@ -707,6 +734,8 @@ mod tests {
             name = "example.com"
 
             [load_balancing]
+            mode = "active_passive"
+            routing_scope = "per_uplink"
             warm_standby_tcp = 1
             warm_standby_udp = 1
             rtt_ewma_alpha = 0.4
@@ -744,12 +773,35 @@ mod tests {
         assert_eq!(probe.max_concurrent, Some(3));
         assert_eq!(probe.max_dials, Some(1));
         let lb = outline.load_balancing.unwrap();
+        assert_eq!(lb.mode, Some(LoadBalancingMode::ActivePassive));
+        assert_eq!(lb.routing_scope, Some(RoutingScope::PerUplink));
         assert_eq!(lb.warm_standby_tcp, Some(1));
         assert_eq!(lb.warm_standby_udp, Some(1));
         assert_eq!(lb.rtt_ewma_alpha, Some(0.4));
         assert_eq!(lb.failure_penalty_ms, Some(750));
         assert_eq!(lb.failure_penalty_max_ms, Some(20000));
         assert_eq!(lb.failure_penalty_halflife_secs, Some(45));
+    }
+
+    #[test]
+    fn config_deserializes_global_routing_scope() {
+        let cfg = r#"
+            [load_balancing]
+            mode = "active_passive"
+            routing_scope = "global"
+
+            [[uplinks]]
+            name = "primary"
+            tcp_ws_url = "wss://primary.example.com/secret/tcp"
+            tcp_ws_mode = "h2"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+        "#;
+        let parsed: ConfigFile = toml::from_str(cfg).unwrap();
+        let outline = resolve_outline_section(&parsed).unwrap();
+        let lb = outline.load_balancing.unwrap();
+        assert_eq!(lb.mode, Some(LoadBalancingMode::ActivePassive));
+        assert_eq!(lb.routing_scope, Some(RoutingScope::Global));
     }
 
     #[test]

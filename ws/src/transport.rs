@@ -37,6 +37,10 @@ use crate::crypto::{
     SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, derive_subkey,
     encrypt, encrypt_udp_packet, increment_nonce,
 };
+use crate::metrics::{
+    add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
+    record_upstream_transport,
+};
 use crate::types::{CipherKind, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -109,6 +113,60 @@ struct AbortOnDrop(JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+struct TransportConnectGuard {
+    source: &'static str,
+    mode: &'static str,
+    finished: bool,
+}
+
+impl TransportConnectGuard {
+    fn new(source: &'static str, mode: &'static str) -> Self {
+        add_transport_connects_active(source, mode, 1);
+        record_transport_connect(source, mode, "started");
+        Self {
+            source,
+            mode,
+            finished: false,
+        }
+    }
+
+    fn finish(&mut self, result: &'static str) {
+        if !self.finished {
+            self.finished = true;
+            record_transport_connect(self.source, self.mode, result);
+        }
+    }
+}
+
+impl Drop for TransportConnectGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            record_transport_connect(self.source, self.mode, "error");
+        }
+        add_transport_connects_active(self.source, self.mode, -1);
+    }
+}
+
+pub(crate) struct UpstreamTransportGuard {
+    source: &'static str,
+    protocol: &'static str,
+}
+
+impl UpstreamTransportGuard {
+    pub(crate) fn new(source: &'static str, protocol: &'static str) -> Arc<Self> {
+        add_upstream_transports_active(source, protocol, 1);
+        record_upstream_transport(source, protocol, "opened");
+        Arc::new(Self { source, protocol })
+    }
+}
+
+impl Drop for UpstreamTransportGuard {
+    fn drop(&mut self) {
+        record_upstream_transport(self.source, self.protocol, "closed");
+        add_upstream_transports_active(self.source, self.protocol, -1);
     }
 }
 
@@ -241,6 +299,7 @@ pub struct TcpShadowsocksWriter {
     key: Vec<u8>,
     nonce: [u8; 12],
     pending_salt: Option<Vec<u8>>,
+    _lifetime: Arc<UpstreamTransportGuard>,
 }
 
 pub struct TcpShadowsocksReader {
@@ -250,6 +309,7 @@ pub struct TcpShadowsocksReader {
     key: Option<Vec<u8>>,
     nonce: [u8; 12],
     buffer: Vec<u8>,
+    _lifetime: Arc<UpstreamTransportGuard>,
 }
 
 pub struct UdpWsTransport {
@@ -257,6 +317,7 @@ pub struct UdpWsTransport {
     stream: Mutex<WsStream>,
     cipher: CipherKind,
     master_key: Vec<u8>,
+    _lifetime: Arc<UpstreamTransportGuard>,
 }
 
 pub async fn connect_websocket(
@@ -264,13 +325,22 @@ pub async fn connect_websocket(
     mode: WsTransportMode,
     fwmark: Option<u32>,
 ) -> Result<AnyWsStream> {
+    connect_websocket_with_source(url, mode, fwmark, "direct").await
+}
+
+pub async fn connect_websocket_with_source(
+    url: &Url,
+    mode: WsTransportMode,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<AnyWsStream> {
     match mode {
         WsTransportMode::Http1 => {
-            let ws_stream = connect_websocket_http1(url, fwmark).await?;
+            let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             Ok(AnyWsStream::Http1 { inner: ws_stream })
         }
-        WsTransportMode::H2 => match connect_websocket_h2(url, fwmark).await {
+        WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 Ok(stream)
@@ -282,12 +352,12 @@ pub async fn connect_websocket(
                     fallback = "http1",
                     "h2 websocket connect failed, falling back"
                 );
-                let ws_stream = connect_websocket_http1(url, fwmark).await?;
+                let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(AnyWsStream::Http1 { inner: ws_stream })
             }
         },
-        WsTransportMode::H3 => match connect_websocket_h3(url, fwmark).await {
+        WsTransportMode::H3 => match connect_websocket_h3(url, fwmark, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 Ok(stream)
@@ -299,7 +369,7 @@ pub async fn connect_websocket(
                     fallback = "h2",
                     "h3 websocket connect failed, falling back"
                 );
-                match connect_websocket_h2(url, fwmark).await {
+                match connect_websocket_h2(url, fwmark, source).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         Ok(stream)
@@ -311,7 +381,7 @@ pub async fn connect_websocket(
                             fallback = "http1",
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
-                        let ws_stream = connect_websocket_http1(url, fwmark).await?;
+                        let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(AnyWsStream::Http1 { inner: ws_stream })
                     }
@@ -322,7 +392,12 @@ pub async fn connect_websocket(
 }
 
 impl TcpShadowsocksWriter {
-    pub async fn connect(sink: WsSink, cipher: CipherKind, master_key: &[u8]) -> Result<Self> {
+    pub(crate) async fn connect(
+        sink: WsSink,
+        cipher: CipherKind,
+        master_key: &[u8],
+        lifetime: Arc<UpstreamTransportGuard>,
+    ) -> Result<Self> {
         let mut salt = vec![0u8; cipher.salt_len()];
         rand::thread_rng().fill_bytes(&mut salt);
 
@@ -332,6 +407,7 @@ impl TcpShadowsocksWriter {
             key: derive_subkey(cipher, master_key, &salt)?,
             nonce: [0u8; 12],
             pending_salt: Some(salt),
+            _lifetime: lifetime,
         })
     }
 
@@ -371,7 +447,12 @@ impl TcpShadowsocksWriter {
 }
 
 impl TcpShadowsocksReader {
-    pub fn new(stream: WsStream, cipher: CipherKind, master_key: &[u8]) -> Self {
+    pub(crate) fn new(
+        stream: WsStream,
+        cipher: CipherKind,
+        master_key: &[u8],
+        lifetime: Arc<UpstreamTransportGuard>,
+    ) -> Self {
         Self {
             stream,
             cipher,
@@ -379,6 +460,7 @@ impl TcpShadowsocksReader {
             key: None,
             nonce: [0u8; 12],
             buffer: Vec::new(),
+            _lifetime: lifetime,
         }
     }
 
@@ -435,13 +517,19 @@ impl TcpShadowsocksReader {
 }
 
 impl UdpWsTransport {
-    pub fn from_websocket(ws_stream: AnyWsStream, cipher: CipherKind, password: &str) -> Self {
+    pub(crate) fn from_websocket(
+        ws_stream: AnyWsStream,
+        cipher: CipherKind,
+        password: &str,
+        source: &'static str,
+    ) -> Self {
         let (sink, stream) = ws_stream.split();
         Self {
             sink: Mutex::new(sink),
             stream: Mutex::new(stream),
             cipher,
             master_key: cipher.derive_master_key(password),
+            _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
 
@@ -451,11 +539,12 @@ impl UdpWsTransport {
         cipher: CipherKind,
         password: &str,
         fwmark: Option<u32>,
+        source: &'static str,
     ) -> Result<Self> {
-        let ws_stream = connect_websocket(url, mode, fwmark)
+        let ws_stream = connect_websocket_with_source(url, mode, fwmark, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
-        Ok(Self::from_websocket(ws_stream, cipher, password))
+        Ok(Self::from_websocket(ws_stream, cipher, password, source))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
@@ -494,7 +583,12 @@ impl UdpWsTransport {
     }
 }
 
-async fn connect_websocket_http1(url: &Url, fwmark: Option<u32>) -> Result<H1WsStream> {
+async fn connect_websocket_http1(
+    url: &Url,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<H1WsStream> {
+    let mut connect_guard = TransportConnectGuard::new(source, "http1");
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
@@ -510,10 +604,16 @@ async fn connect_websocket_http1(url: &Url, fwmark: Option<u32>) -> Result<H1WsS
     let (ws_stream, _) = client_async_tls(url.as_str(), tcp)
         .await
         .context("HTTP/1 websocket handshake failed")?;
+    connect_guard.finish("success");
     Ok(ws_stream)
 }
 
-async fn connect_websocket_h2(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStream> {
+async fn connect_websocket_h2(
+    url: &Url,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<AnyWsStream> {
+    let mut connect_guard = TransportConnectGuard::new(source, "h2");
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
@@ -542,11 +642,11 @@ async fn connect_websocket_h2(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStr
         .await
         .context("HTTP/2 handshake failed")?;
 
-    let driver_task = tokio::spawn(async move {
+    let driver_task = AbortOnDrop(tokio::spawn(async move {
         if let Err(err) = conn.await {
             error!("h2 connection error: {err}");
         }
-    });
+    }));
 
     let req: Request<Empty<Bytes>> = Request::builder()
         .method(Method::CONNECT)
@@ -570,15 +670,20 @@ async fn connect_websocket_h2(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStr
         .await
         .context("failed to upgrade HTTP/2 websocket stream")?;
     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
+    connect_guard.finish("success");
     Ok(AnyWsStream::H2 {
         inner: H2WsStream {
             inner: ws,
-            driver_task: AbortOnDrop(driver_task),
+            driver_task,
         },
     })
 }
 
-async fn connect_websocket_h3(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStream> {
+async fn connect_websocket_h3(
+    url: &Url,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<AnyWsStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
     }
@@ -609,7 +714,7 @@ async fn connect_websocket_h3(url: &Url, fwmark: Option<u32>) -> Result<AnyWsStr
     let path = websocket_path(url);
     let mut last_error = None;
     for server_addr in server_addrs {
-        match connect_h3_quic(server_addr, host, &path, &tls_config, fwmark).await {
+        match connect_h3_quic(server_addr, host, &path, &tls_config, fwmark, source).await {
             Ok(ws) => return Ok(AnyWsStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
@@ -627,7 +732,9 @@ async fn connect_h3_quic(
     path: &str,
     tls_config: &ClientConfig,
     fwmark: Option<u32>,
+    source: &'static str,
 ) -> Result<H3WsStream> {
+    let mut connect_guard = TransportConnectGuard::new(source, "h3");
     let bind_addr = bind_addr_for(server_addr);
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config.clone())
         .map_err(|_| anyhow!("invalid TLS config for QUIC client"))?;
@@ -655,7 +762,7 @@ async fn connect_h3_quic(
         .await
         .context("HTTP/3 handshake failed")?;
 
-    let driver_task = tokio::spawn(async move {
+    let driver_task = AbortOnDrop(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         let err_text = err.to_string();
         if is_expected_h3_close(&err_text) {
@@ -663,7 +770,7 @@ async fn connect_h3_quic(
         } else {
             error!("h3 connection error: {err_text}");
         }
-    });
+    }));
 
     let request: Request<()> = Request::builder()
         .method(Method::CONNECT)
@@ -694,6 +801,7 @@ async fn connect_h3_quic(
     }
 
     let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
+    connect_guard.finish("success");
     Ok(H3WsStream {
         inner: SockudoWebSocketStream::from_raw(
             h3_stream,
@@ -703,7 +811,7 @@ async fn connect_h3_quic(
         endpoint,
         connection: connection_handle,
         send_request,
-        driver_task: AbortOnDrop(driver_task),
+        driver_task,
     })
 }
 

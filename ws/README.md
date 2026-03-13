@@ -106,6 +106,13 @@ tun2udp + tun2tcp"]
 
 - multiple uplinks
 - fastest-first selection
+- selection mode:
+  - `active_active`: new flows can use different uplinks based on score, stickiness, and failover
+  - `active_passive`: keep the current selected uplink until it becomes unhealthy or enters cooldown
+- routing scope:
+  - `per_flow`: decisions are made independently per routing key / target
+  - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`)
+  - `global`: one shared sticky uplink is used for new user traffic across both `tcp` and `udp` whenever possible; health and scoring are still evaluated for the current transport so a UDP outage does not automatically block TCP
 - per-uplink static `weight`
 - RTT EWMA scoring
 - failure penalty model with decay
@@ -250,6 +257,8 @@ port = 53
 name = "example.com"
 
 [load_balancing]
+mode = "active_active"
+routing_scope = "per_flow"
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300
@@ -352,6 +361,12 @@ Selection pipeline:
 4. Final score is `effective_latency / weight`.
 5. Sticky routing and hysteresis reduce avoidable switches.
 6. Warm-standby pools reduce connection setup latency.
+
+Routing scope behavior:
+
+- `per_flow`: different targets can choose different uplinks
+- `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks
+- `global`: one selected uplink is shared across all traffic until failover or explicit reselection
 
 Runtime failover:
 
@@ -490,7 +505,10 @@ On Linux, the process also emits a periodic descriptor inventory log:
 
 The log includes RSS and heap before and after trimming so you can verify whether allocator trimming is actually returning memory on your host.
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-The main dashboard also includes `Open FDs`, `malloc_trim Released Bytes`, and `malloc_trim Invocations (Selected Range)` so you can compare descriptor pressure and trim activity with RSS and heap without switching to `journalctl`.
+The main dashboard also includes `Open FDs`, `Socket FD Share`, `FD Types`, `Transport Connects Active by Source`, `Transport Connect Outcomes by Source`, `Upstream Transports Active by Source`, `Upstream Transport Lifecycles by Source`, `malloc_trim Calls (Selected Range)`, `malloc_trim Released Bytes`, and `UDP Forward Errors` so you can compare descriptor pressure, handshake churn, established upstream transport lifetime, TUN-side UDP forwarding failures, and trim activity with RSS and heap without switching to `journalctl`.
+
+When runtime failure storms are suppressed because an uplink is already in cooldown, `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` and the `Suppressed Runtime Failures` panel show how much duplicate failure churn was intentionally ignored.
+When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` and the `UDP Forward Errors` panel break that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
 
 Dashboards:
 

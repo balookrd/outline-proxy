@@ -15,7 +15,9 @@ use crate::socks5::{
     SOCKS_STATUS_SUCCESS, SocksRequest, UdpFragmentReassembler, build_udp_packet, negotiate,
     parse_udp_request, send_reply,
 };
-use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport};
+use crate::transport::{
+    TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
+};
 use crate::types::{TargetAddr, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
@@ -287,13 +289,18 @@ async fn connect_tcp_uplink(
     candidate: &crate::uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
-    let ws_stream = uplinks.acquire_tcp_standby_or_connect(candidate).await?;
+    let ws_stream = uplinks
+        .acquire_tcp_standby_or_connect(candidate, "socks_tcp")
+        .await?;
     let (ws_sink, ws_stream) = ws_stream.split();
 
     let uplink = &candidate.uplink;
     let master_key = uplink.cipher.derive_master_key(&uplink.password);
-    let mut writer = TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key).await?;
-    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key);
+    let lifetime = UpstreamTransportGuard::new("socks_tcp", "tcp");
+    let mut writer =
+        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
+            .await?;
+    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -308,7 +315,10 @@ async fn select_udp_transport(
 ) -> Result<ActiveUdpTransport> {
     let mut last_error = None;
     for candidate in uplinks.udp_candidates(target).await {
-        match uplinks.acquire_udp_standby_or_connect(&candidate).await {
+        match uplinks
+            .acquire_udp_standby_or_connect(&candidate, "socks_udp")
+            .await
+        {
             Ok(transport) => {
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,

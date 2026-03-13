@@ -85,6 +85,8 @@ async fn build_manager(
             dns: None,
         },
         LoadBalancingConfig {
+            mode: outline_ws_rust::config::LoadBalancingMode::ActiveActive,
+            routing_scope: outline_ws_rust::config::RoutingScope::PerFlow,
             sticky_ttl: Duration::from_secs(300),
             hysteresis: Duration::from_millis(50),
             failure_cooldown: Duration::from_secs(10),
