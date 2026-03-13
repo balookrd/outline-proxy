@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{HashSet, BTreeSet},
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -18,8 +18,11 @@ pub struct Config {
     pub h3_listen: Option<SocketAddr>,
     pub h3_cert_path: Option<PathBuf>,
     pub h3_key_path: Option<PathBuf>,
-    pub ws_path: String,
-    pub udp_ws_path: String,
+    pub metrics_listen: Option<SocketAddr>,
+    pub metrics_path: String,
+    pub client_active_ttl_secs: u64,
+    pub ws_path_tcp: String,
+    pub ws_path_udp: String,
     pub public_host: Option<String>,
     pub public_scheme: String,
     pub access_key_url_base: Option<String>,
@@ -50,13 +53,22 @@ impl Config {
             h3_listen: args.h3_listen.or(file.h3_listen),
             h3_cert_path: args.h3_cert_path.or(file.h3_cert_path),
             h3_key_path: args.h3_key_path.or(file.h3_key_path),
-            ws_path: args
-                .ws_path
-                .or(file.ws_path)
+            metrics_listen: args.metrics_listen.or(file.metrics_listen),
+            metrics_path: args
+                .metrics_path
+                .or(file.metrics_path)
+                .unwrap_or_else(|| "/metrics".to_owned()),
+            client_active_ttl_secs: args
+                .client_active_ttl_secs
+                .or(file.client_active_ttl_secs)
+                .unwrap_or(300),
+            ws_path_tcp: args
+                .ws_path_tcp
+                .or(file.ws_path_tcp)
                 .unwrap_or_else(|| "/tcp".to_owned()),
-            udp_ws_path: args
-                .udp_ws_path
-                .or(file.udp_ws_path)
+            ws_path_udp: args
+                .ws_path_udp
+                .or(file.ws_path_udp)
                 .unwrap_or_else(|| "/udp".to_owned()),
             public_host: args.public_host.or(file.public_host),
             public_scheme: args
@@ -92,6 +104,9 @@ impl Config {
                 id: "default".to_owned(),
                 password: password.clone(),
                 fwmark: self.fwmark,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
             });
         }
 
@@ -126,7 +141,29 @@ impl Config {
             }
             _ => bail!("h3_cert_path and h3_key_path must be configured together"),
         }
-        self.user_entries()?;
+        if !self.metrics_path.starts_with('/') {
+            bail!("metrics_path must start with '/'");
+        }
+        let users = self.user_entries()?;
+        let mut tcp_paths = BTreeSet::new();
+        let mut udp_paths = BTreeSet::new();
+        for user in users {
+            if let Some(path) = user.ws_path_tcp.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} ws_path_tcp must start with '/'", user.id);
+            }
+            if let Some(path) = user.ws_path_udp.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} ws_path_udp must start with '/'", user.id);
+            }
+            tcp_paths.insert(user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned());
+            udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
+        }
+        if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
+            bail!("tcp and udp websocket paths must be distinct, conflict on {}", conflict);
+        }
         Ok(())
     }
 
@@ -136,6 +173,10 @@ impl Config {
 
     pub fn tcp_tls_enabled(&self) -> bool {
         self.tls_cert_path.is_some() && self.tls_key_path.is_some()
+    }
+
+    pub fn metrics_enabled(&self) -> bool {
+        self.metrics_listen.is_some()
     }
 
     pub fn effective_h3_listen(&self) -> Option<SocketAddr> {
@@ -171,11 +212,20 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_H3_KEY_PATH")]
     h3_key_path: Option<PathBuf>,
 
-    #[arg(long = "ws-path", env = "OUTLINE_SS_WS_PATH")]
-    ws_path: Option<String>,
+    #[arg(long, env = "OUTLINE_SS_METRICS_LISTEN")]
+    metrics_listen: Option<SocketAddr>,
 
-    #[arg(long, env = "OUTLINE_SS_UDP_WS_PATH")]
-    udp_ws_path: Option<String>,
+    #[arg(long, env = "OUTLINE_SS_METRICS_PATH")]
+    metrics_path: Option<String>,
+
+    #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
+    client_active_ttl_secs: Option<u64>,
+
+    #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
+    ws_path_tcp: Option<String>,
+
+    #[arg(long = "ws-path-udp", visible_alias = "udp-ws-path", env = "OUTLINE_SS_WS_PATH_UDP")]
+    ws_path_udp: Option<String>,
 
     #[arg(long, env = "OUTLINE_SS_PUBLIC_HOST")]
     public_host: Option<String>,
@@ -215,6 +265,7 @@ struct ConfigArgs {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FileConfig {
     listen: Option<SocketAddr>,
     tls_cert_path: Option<PathBuf>,
@@ -222,8 +273,13 @@ struct FileConfig {
     h3_listen: Option<SocketAddr>,
     h3_cert_path: Option<PathBuf>,
     h3_key_path: Option<PathBuf>,
-    ws_path: Option<String>,
-    udp_ws_path: Option<String>,
+    metrics_listen: Option<SocketAddr>,
+    metrics_path: Option<String>,
+    client_active_ttl_secs: Option<u64>,
+    #[serde(default)]
+    ws_path_tcp: Option<String>,
+    #[serde(default)]
+    ws_path_udp: Option<String>,
     public_host: Option<String>,
     public_scheme: Option<String>,
     access_key_url_base: Option<String>,
@@ -264,11 +320,32 @@ impl CipherKind {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub id: String,
     pub password: String,
     #[serde(default)]
     pub fwmark: Option<u32>,
+    #[serde(default)]
+    pub method: Option<CipherKind>,
+    #[serde(default)]
+    pub ws_path_tcp: Option<String>,
+    #[serde(default)]
+    pub ws_path_udp: Option<String>,
+}
+
+impl UserEntry {
+    pub fn effective_method(&self, default: CipherKind) -> CipherKind {
+        self.method.unwrap_or(default)
+    }
+
+    pub fn effective_ws_path_tcp<'a>(&'a self, default: &'a str) -> &'a str {
+        self.ws_path_tcp.as_deref().unwrap_or(default)
+    }
+
+    pub fn effective_ws_path_udp<'a>(&'a self, default: &'a str) -> &'a str {
+        self.ws_path_udp.as_deref().unwrap_or(default)
+    }
 }
 
 #[derive(Debug, Error)]
@@ -297,6 +374,9 @@ fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
         id: id.to_owned(),
         password: password.to_owned(),
         fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
     })
 }
 
@@ -316,4 +396,55 @@ fn default_listen_addr() -> SocketAddr {
     "0.0.0.0:3000"
         .parse()
         .expect("hardcoded listen address should parse")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileConfig;
+
+    #[test]
+    fn parses_new_ws_path_keys() {
+        let config: FileConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:3000"
+ws_path_tcp = "/custom-tcp"
+ws_path_udp = "/custom-udp"
+
+[[users]]
+id = "alice"
+password = "secret"
+ws_path_tcp = "/alice-tcp"
+ws_path_udp = "/alice-udp"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.ws_path_tcp.as_deref(), Some("/custom-tcp"));
+        assert_eq!(config.ws_path_udp.as_deref(), Some("/custom-udp"));
+        let users = config.users.unwrap();
+        assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
+        assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
+    }
+
+    #[test]
+    fn rejects_legacy_ws_path_keys() {
+        let error = toml::from_str::<FileConfig>(
+            r#"
+listen = "0.0.0.0:3000"
+ws_path = "/legacy-tcp"
+udp_ws_path = "/legacy-udp"
+
+[[users]]
+id = "alice"
+password = "secret"
+ws_path = "/alice-legacy-tcp"
+udp_ws_path = "/alice-legacy-udp"
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unknown field"));
+        assert!(error.contains("ws_path"));
+    }
 }

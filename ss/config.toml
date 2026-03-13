@@ -14,8 +14,13 @@ listen = "0.0.0.0:3000"
 # h3_cert_path = "./cert.pem"
 # h3_key_path = "./key.pem"
 
-ws_path = "/tcp"
-udp_ws_path = "/udp"
+# Optional Prometheus listener. Prefer binding this to loopback or a private network.
+# metrics_listen = "127.0.0.1:9090"
+metrics_path = "/metrics"
+client_active_ttl_secs = 300
+
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
 
 # Used for generated Outline access keys.
 # For IPv6 hosts, use brackets:
@@ -33,6 +38,9 @@ method = "chacha20-ietf-poly1305"
 id = "alice"
 password = "change-me"
 fwmark = 1001
+method = "aes-256-gcm"
+ws_path_tcp = "/alice/tcp"
+ws_path_udp = "/alice/udp"
 
 [[users]]
 id = "bob"

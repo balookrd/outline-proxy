@@ -45,8 +45,11 @@ impl From<ring::error::Unspecified> for CryptoError {
 #[derive(Clone)]
 pub struct UserKey {
     id: Arc<str>,
+    cipher: CipherKind,
     master_key: Vec<u8>,
     fwmark: Option<u32>,
+    ws_path_tcp: Arc<str>,
+    ws_path_udp: Arc<str>,
 }
 
 impl fmt::Debug for UserKey {
@@ -57,15 +60,20 @@ impl fmt::Debug for UserKey {
 
 impl UserKey {
     pub fn new(
-        cipher: CipherKind,
         id: impl Into<String>,
         password: &str,
         fwmark: Option<u32>,
+        cipher: CipherKind,
+        ws_path_tcp: impl Into<String>,
+        ws_path_udp: impl Into<String>,
     ) -> Result<Self, CryptoError> {
         Ok(Self {
             id: Arc::from(id.into()),
+            cipher,
             master_key: bytes_to_key(password.as_bytes(), cipher.key_len())?,
             fwmark,
+            ws_path_tcp: Arc::from(ws_path_tcp.into()),
+            ws_path_udp: Arc::from(ws_path_udp.into()),
         })
     }
 
@@ -76,10 +84,21 @@ impl UserKey {
     pub fn fwmark(&self) -> Option<u32> {
         self.fwmark
     }
+
+    pub fn cipher(&self) -> CipherKind {
+        self.cipher
+    }
+
+    pub fn ws_path_tcp(&self) -> &str {
+        &self.ws_path_tcp
+    }
+
+    pub fn ws_path_udp(&self) -> &str {
+        &self.ws_path_udp
+    }
 }
 
 pub struct AeadStreamDecryptor {
-    cipher: CipherKind,
     users: Arc<[UserKey]>,
     buffer: BytesMut,
     active_user: Option<UserKey>,
@@ -91,7 +110,6 @@ pub struct AeadStreamDecryptor {
 impl fmt::Debug for AeadStreamDecryptor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AeadStreamDecryptor")
-            .field("cipher", &self.cipher)
             .field("buffer_len", &self.buffer.len())
             .field("active_user", &self.active_user.as_ref().map(UserKey::id))
             .field("has_key", &self.key.is_some())
@@ -102,9 +120,8 @@ impl fmt::Debug for AeadStreamDecryptor {
 }
 
 impl AeadStreamDecryptor {
-    pub fn new(cipher: CipherKind, users: Arc<[UserKey]>) -> Self {
+    pub fn new(users: Arc<[UserKey]>) -> Self {
         Self {
-            cipher,
             users,
             buffer: BytesMut::new(),
             active_user: None,
@@ -120,6 +137,10 @@ impl AeadStreamDecryptor {
 
     pub fn user(&self) -> Option<&UserKey> {
         self.active_user.as_ref()
+    }
+
+    pub fn buffered_data(&self) -> &[u8] {
+        &self.buffer
     }
 
     pub fn pull_plaintext(&mut self) -> Result<Vec<Vec<u8>>, CryptoError> {
@@ -173,17 +194,16 @@ impl AeadStreamDecryptor {
             return Ok(());
         }
 
-        let salt_len = self.cipher.salt_len();
-        if self.buffer.len() < salt_len + 2 + TAG_LEN {
-            return Ok(());
-        }
-
-        let salt = &self.buffer[..salt_len];
-        let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
-
         for user in self.users.iter() {
-            let session_key = derive_subkey(self.cipher, &user.master_key, salt)?;
-            let algorithm = cipher_algorithm(self.cipher);
+            let salt_len = user.cipher.salt_len();
+            if self.buffer.len() < salt_len + 2 + TAG_LEN {
+                continue;
+            }
+
+            let salt = &self.buffer[..salt_len];
+            let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
+            let session_key = derive_subkey(user.cipher, &user.master_key, salt)?;
+            let algorithm = cipher_algorithm(user.cipher);
             let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
             let less_safe = LessSafeKey::new(key);
 
@@ -225,13 +245,13 @@ impl fmt::Debug for AeadStreamEncryptor {
 }
 
 impl AeadStreamEncryptor {
-    pub fn new(cipher: CipherKind, user: &UserKey) -> Result<Self, CryptoError> {
-        let mut salt = vec![0_u8; cipher.salt_len()];
+    pub fn new(user: &UserKey) -> Result<Self, CryptoError> {
+        let mut salt = vec![0_u8; user.cipher.salt_len()];
         SystemRandom::new()
             .fill(&mut salt)
             .map_err(|_| CryptoError::Random)?;
-        let session_key = derive_subkey(cipher, &user.master_key, &salt)?;
-        let algorithm = cipher_algorithm(cipher);
+        let session_key = derive_subkey(user.cipher, &user.master_key, &salt)?;
+        let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
 
         Ok(Self {
@@ -286,19 +306,27 @@ pub struct UdpPacket {
 }
 
 pub fn decrypt_udp_packet(
-    cipher: CipherKind,
     users: &[UserKey],
     packet: &[u8],
 ) -> Result<UdpPacket, CryptoError> {
-    let salt_len = cipher.salt_len();
-    if packet.len() < salt_len + TAG_LEN {
+    if users
+        .iter()
+        .map(|user| user.cipher.salt_len() + TAG_LEN)
+        .min()
+        .is_some_and(|min_len| packet.len() < min_len)
+    {
         return Err(CryptoError::PacketTooShort);
     }
 
-    let (salt, ciphertext) = packet.split_at(salt_len);
     for user in users {
-        let session_key = derive_subkey(cipher, &user.master_key, salt)?;
-        let algorithm = cipher_algorithm(cipher);
+        let salt_len = user.cipher.salt_len();
+        if packet.len() < salt_len + TAG_LEN {
+            continue;
+        }
+
+        let (salt, ciphertext) = packet.split_at(salt_len);
+        let session_key = derive_subkey(user.cipher, &user.master_key, salt)?;
+        let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
         let less_safe = LessSafeKey::new(key);
         let mut candidate = ciphertext.to_vec();
@@ -315,18 +343,14 @@ pub fn decrypt_udp_packet(
     Err(CryptoError::UnknownUser)
 }
 
-pub fn encrypt_udp_packet(
-    cipher: CipherKind,
-    user: &UserKey,
-    plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
-    let mut salt = vec![0_u8; cipher.salt_len()];
+pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let mut salt = vec![0_u8; user.cipher.salt_len()];
     SystemRandom::new()
         .fill(&mut salt)
         .map_err(|_| CryptoError::Random)?;
 
-    let session_key = derive_subkey(cipher, &user.master_key, &salt)?;
-    let algorithm = cipher_algorithm(cipher);
+    let session_key = derive_subkey(user.cipher, &user.master_key, &salt)?;
+    let algorithm = cipher_algorithm(user.cipher);
     let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
     let less_safe = LessSafeKey::new(key);
 
@@ -337,6 +361,131 @@ pub fn encrypt_udp_packet(
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(&ciphertext);
     Ok(output)
+}
+
+pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String> {
+    users.iter()
+        .map(|user| {
+            let salt_len = user.cipher.salt_len();
+            if buffer.len() < salt_len {
+                return format!(
+                    "{}:{} insufficient_data(buffer={}, need_salt={})",
+                    user.id(),
+                    user.cipher.as_str(),
+                    buffer.len(),
+                    salt_len
+                );
+            }
+            if buffer.len() < salt_len + 2 + TAG_LEN {
+                return format!(
+                    "{}:{} insufficient_data(buffer={}, need_header={})",
+                    user.id(),
+                    user.cipher.as_str(),
+                    buffer.len(),
+                    salt_len + 2 + TAG_LEN
+                );
+            }
+
+            let salt = &buffer[..salt_len];
+            let encrypted_len = &buffer[salt_len..salt_len + 2 + TAG_LEN];
+            let session_key = match derive_subkey(user.cipher, &user.master_key, salt) {
+                Ok(key) => key,
+                Err(error) => {
+                    return format!(
+                        "{}:{} subkey_error({})",
+                        user.id(),
+                        user.cipher.as_str(),
+                        error
+                    );
+                }
+            };
+            let algorithm = cipher_algorithm(user.cipher);
+            let key = match UnboundKey::new(algorithm, &session_key) {
+                Ok(key) => key,
+                Err(_) => {
+                    return format!("{}:{} key_init_failed", user.id(), user.cipher.as_str());
+                }
+            };
+            let less_safe = LessSafeKey::new(key);
+            let mut candidate = encrypted_len.to_vec();
+            match less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+                Ok(plaintext_len) if plaintext_len.len() == 2 => {
+                    let chunk_len =
+                        u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
+                    if chunk_len <= MAX_CHUNK_SIZE {
+                        format!(
+                            "{}:{} header_ok(chunk_len={})",
+                            user.id(),
+                            user.cipher.as_str(),
+                            chunk_len
+                        )
+                    } else {
+                        format!(
+                            "{}:{} invalid_chunk_len({})",
+                            user.id(),
+                            user.cipher.as_str(),
+                            chunk_len
+                        )
+                    }
+                }
+                Ok(plaintext_len) => format!(
+                    "{}:{} invalid_header_len({})",
+                    user.id(),
+                    user.cipher.as_str(),
+                    plaintext_len.len()
+                ),
+                Err(_) => format!("{}:{} auth_failed", user.id(), user.cipher.as_str()),
+            }
+        })
+        .collect()
+}
+
+pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
+    users.iter()
+        .map(|user| {
+            let salt_len = user.cipher.salt_len();
+            if packet.len() < salt_len + TAG_LEN {
+                return format!(
+                    "{}:{} insufficient_data(packet={}, need={})",
+                    user.id(),
+                    user.cipher.as_str(),
+                    packet.len(),
+                    salt_len + TAG_LEN
+                );
+            }
+
+            let (salt, ciphertext) = packet.split_at(salt_len);
+            let session_key = match derive_subkey(user.cipher, &user.master_key, salt) {
+                Ok(key) => key,
+                Err(error) => {
+                    return format!(
+                        "{}:{} subkey_error({})",
+                        user.id(),
+                        user.cipher.as_str(),
+                        error
+                    );
+                }
+            };
+            let algorithm = cipher_algorithm(user.cipher);
+            let key = match UnboundKey::new(algorithm, &session_key) {
+                Ok(key) => key,
+                Err(_) => {
+                    return format!("{}:{} key_init_failed", user.id(), user.cipher.as_str());
+                }
+            };
+            let less_safe = LessSafeKey::new(key);
+            let mut candidate = ciphertext.to_vec();
+            match less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+                Ok(plaintext) => format!(
+                    "{}:{} packet_ok(payload_len={})",
+                    user.id(),
+                    user.cipher.as_str(),
+                    plaintext.len()
+                ),
+                Err(_) => format!("{}:{} auth_failed", user.id(), user.cipher.as_str()),
+            }
+        })
+        .collect()
 }
 
 fn bytes_to_key(password: &[u8], key_len: usize) -> Result<Vec<u8>, CryptoError> {
@@ -425,8 +574,8 @@ mod tests {
     fn users(cipher: CipherKind) -> Arc<[UserKey]> {
         Arc::from(
             vec![
-                UserKey::new(cipher, "alice", "secret-a", Some(1001)).unwrap(),
-                UserKey::new(cipher, "bob", "secret-b", Some(1002)).unwrap(),
+                UserKey::new("alice", "secret-a", Some(1001), cipher, "/tcp", "/udp").unwrap(),
+                UserKey::new("bob", "secret-b", Some(1002), cipher, "/tcp", "/udp").unwrap(),
             ]
             .into_boxed_slice(),
         )
@@ -435,12 +584,10 @@ mod tests {
     #[test]
     fn roundtrip_chacha20_stream() {
         let users = users(CipherKind::Chacha20IetfPoly1305);
-        let mut encryptor =
-            AeadStreamEncryptor::new(CipherKind::Chacha20IetfPoly1305, &users[1]).unwrap();
+        let mut encryptor = AeadStreamEncryptor::new(&users[1]).unwrap();
         let ciphertext = encryptor.encrypt_chunk(b"hello over websocket").unwrap();
 
-        let mut decryptor =
-            AeadStreamDecryptor::new(CipherKind::Chacha20IetfPoly1305, users.clone());
+        let mut decryptor = AeadStreamDecryptor::new(users.clone());
         decryptor.push(&ciphertext);
         let plaintext = decryptor.pull_plaintext().unwrap();
 
@@ -451,10 +598,10 @@ mod tests {
     #[test]
     fn decryptor_handles_fragmented_frames() {
         let users = users(CipherKind::Aes256Gcm);
-        let mut encryptor = AeadStreamEncryptor::new(CipherKind::Aes256Gcm, &users[0]).unwrap();
+        let mut encryptor = AeadStreamEncryptor::new(&users[0]).unwrap();
         let ciphertext = encryptor.encrypt_chunk(b"fragmented").unwrap();
 
-        let mut decryptor = AeadStreamDecryptor::new(CipherKind::Aes256Gcm, users);
+        let mut decryptor = AeadStreamDecryptor::new(users);
         for chunk in ciphertext.chunks(3) {
             decryptor.push(chunk);
         }
@@ -467,12 +614,46 @@ mod tests {
     #[test]
     fn roundtrip_udp_packet() {
         let users = users(CipherKind::Aes256Gcm);
-        let ciphertext =
-            encrypt_udp_packet(CipherKind::Aes256Gcm, &users[1], b"udp payload").unwrap();
-        let packet =
-            decrypt_udp_packet(CipherKind::Aes256Gcm, users.as_ref(), &ciphertext).unwrap();
+        let ciphertext = encrypt_udp_packet(&users[1], b"udp payload").unwrap();
+        let packet = decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
 
         assert_eq!(packet.user.id(), "bob");
         assert_eq!(packet.payload, b"udp payload");
+    }
+
+    #[test]
+    fn decryptor_matches_user_with_different_cipher() {
+        let users: Arc<[UserKey]> = Arc::from(
+            vec![
+                UserKey::new(
+                    "alice",
+                    "secret-a",
+                    Some(1001),
+                    CipherKind::Aes256Gcm,
+                    "/alice",
+                    "/alice-udp",
+                )
+                .unwrap(),
+                UserKey::new(
+                    "bob",
+                    "secret-b",
+                    Some(1002),
+                    CipherKind::Chacha20IetfPoly1305,
+                    "/bob",
+                    "/bob-udp",
+                )
+                .unwrap(),
+            ]
+            .into_boxed_slice(),
+        );
+        let mut encryptor = AeadStreamEncryptor::new(&users[1]).unwrap();
+        let ciphertext = encryptor.encrypt_chunk(b"mixed cipher").unwrap();
+
+        let mut decryptor = AeadStreamDecryptor::new(users);
+        decryptor.push(&ciphertext);
+        let plaintext = decryptor.pull_plaintext().unwrap();
+
+        assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
+        assert_eq!(plaintext, vec![b"mixed cipher".to_vec()]);
     }
 }
