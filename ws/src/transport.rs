@@ -184,6 +184,7 @@ pub struct TcpShadowsocksWriter {
     cipher: CipherKind,
     key: Vec<u8>,
     nonce: [u8; 12],
+    pending_salt: Option<Vec<u8>>,
 }
 
 pub struct TcpShadowsocksReader {
@@ -265,18 +266,16 @@ pub async fn connect_websocket(
 }
 
 impl TcpShadowsocksWriter {
-    pub async fn connect(mut sink: WsSink, cipher: CipherKind, master_key: &[u8]) -> Result<Self> {
+    pub async fn connect(sink: WsSink, cipher: CipherKind, master_key: &[u8]) -> Result<Self> {
         let mut salt = vec![0u8; cipher.salt_len()];
         rand::thread_rng().fill_bytes(&mut salt);
-        sink.send(Message::Binary(salt.clone().into()))
-            .await
-            .context("failed to send salt")?;
 
         Ok(Self {
             sink: Mutex::new(sink),
             cipher,
             key: derive_subkey(cipher, master_key, &salt)?,
             nonce: [0u8; 12],
+            pending_salt: Some(salt),
         })
     }
 
@@ -292,7 +291,12 @@ impl TcpShadowsocksWriter {
         let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
         increment_nonce(&mut self.nonce);
 
-        let mut frame = Vec::with_capacity(encrypted_len.len() + encrypted_payload.len());
+        let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
+        let mut frame =
+            Vec::with_capacity(pending_salt_len + encrypted_len.len() + encrypted_payload.len());
+        if let Some(salt) = self.pending_salt.take() {
+            frame.extend_from_slice(&salt);
+        }
         frame.extend_from_slice(&encrypted_len);
         frame.extend_from_slice(&encrypted_payload);
 
