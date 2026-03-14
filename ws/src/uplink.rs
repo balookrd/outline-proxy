@@ -36,6 +36,9 @@ struct UplinkManagerInner {
     probe: ProbeConfig,
     load_balancing: LoadBalancingConfig,
     statuses: RwLock<Vec<UplinkStatus>>,
+    global_active_uplink: RwLock<Option<usize>>,
+    tcp_active_uplink: RwLock<Option<usize>>,
+    udp_active_uplink: RwLock<Option<usize>>,
     sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     standby_pools: Vec<StandbyPool>,
     probe_execution_limit: Arc<Semaphore>,
@@ -87,6 +90,9 @@ type RoutingKey = String;
 #[derive(Debug, Clone, Serialize)]
 pub struct UplinkManagerSnapshot {
     pub generated_at_unix_ms: u128,
+    pub load_balancing_mode: String,
+    pub routing_scope: String,
+    pub global_active_uplink: Option<String>,
     pub uplinks: Vec<UplinkSnapshot>,
     pub sticky_routes: Vec<StickyRouteSnapshot>,
 }
@@ -173,6 +179,9 @@ impl UplinkManager {
                 probe,
                 load_balancing,
                 statuses: RwLock::new(vec![UplinkStatus::default(); count]),
+                global_active_uplink: RwLock::new(None),
+                tcp_active_uplink: RwLock::new(None),
+                udp_active_uplink: RwLock::new(None),
                 sticky_routes: RwLock::new(HashMap::new()),
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),
                 probe_execution_limit: Arc::new(Semaphore::new(probe_max_concurrent)),
@@ -225,6 +234,7 @@ impl UplinkManager {
         let now = Instant::now();
         let statuses = self.inner.statuses.read().await.clone();
         let sticky = self.inner.sticky_routes.read().await.clone();
+        let global_active_index = *self.inner.global_active_uplink.read().await;
 
         let mut uplinks = Vec::with_capacity(self.inner.uplinks.len());
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
@@ -284,6 +294,10 @@ impl UplinkManager {
             });
         }
 
+        let global_active_uplink = global_active_index
+            .and_then(|index| self.inner.uplinks.get(index))
+            .map(|uplink| uplink.name.clone());
+
         let sticky_routes = sticky
             .into_iter()
             .filter_map(|(key, route)| {
@@ -304,18 +318,73 @@ impl UplinkManager {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis(),
+            load_balancing_mode: load_balancing_mode_name(self.inner.load_balancing.mode).to_string(),
+            routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
+            global_active_uplink,
             uplinks,
             sticky_routes,
         }
     }
 
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
+        if self.strict_active_uplink_for(TransportKind::Tcp) {
+            return self.strict_transport_candidates(TransportKind::Tcp, Some(target)).await;
+        }
         self.ordered_candidates(TransportKind::Tcp, Some(target))
             .await
     }
 
     pub async fn udp_candidates(&self, target: Option<&TargetAddr>) -> Vec<UplinkCandidate> {
+        if self.strict_active_uplink_for(TransportKind::Udp) {
+            return self.strict_transport_candidates(TransportKind::Udp, target).await;
+        }
         self.ordered_candidates(TransportKind::Udp, target).await
+    }
+
+    pub fn strict_global_active_uplink(&self) -> bool {
+        self.inner.load_balancing.mode == LoadBalancingMode::ActivePassive
+            && self.inner.load_balancing.routing_scope == RoutingScope::Global
+    }
+
+    pub fn strict_per_uplink_active_uplink(&self) -> bool {
+        self.inner.load_balancing.mode == LoadBalancingMode::ActivePassive
+            && self.inner.load_balancing.routing_scope == RoutingScope::PerUplink
+    }
+
+    pub fn strict_active_uplink_for(&self, _transport: TransportKind) -> bool {
+        self.strict_global_active_uplink() || self.strict_per_uplink_active_uplink()
+    }
+
+    pub async fn confirm_selected_uplink(
+        &self,
+        transport: TransportKind,
+        target: Option<&TargetAddr>,
+        uplink_index: usize,
+    ) {
+        let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
+        self.set_active_uplink_index_for_transport(transport, uplink_index)
+            .await;
+        self.store_sticky_route(routing_key, uplink_index).await;
+    }
+
+    pub async fn global_active_uplink_index(&self) -> Option<usize> {
+        if !self.strict_global_active_uplink() {
+            return None;
+        }
+        *self.inner.global_active_uplink.read().await
+    }
+
+    pub async fn active_uplink_index_for_transport(&self, transport: TransportKind) -> Option<usize> {
+        if self.strict_global_active_uplink() {
+            return *self.inner.global_active_uplink.read().await;
+        }
+        if self.strict_per_uplink_active_uplink() {
+            return match transport {
+                TransportKind::Tcp => *self.inner.tcp_active_uplink.read().await,
+                TransportKind::Udp => *self.inner.udp_active_uplink.read().await,
+            };
+        }
+        None
     }
 
     pub async fn runtime_failure_debug_state(
@@ -609,6 +678,114 @@ impl UplinkManager {
             .collect()
     }
 
+    async fn strict_transport_candidates(
+        &self,
+        transport: TransportKind,
+        _target: Option<&TargetAddr>,
+    ) -> Vec<UplinkCandidate> {
+        self.prune_sticky_routes().await;
+        let statuses = self.inner.statuses.read().await.clone();
+        let now = Instant::now();
+        let mut candidates = self
+            .inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(_, uplink)| {
+                supports_transport_for_scope(
+                    uplink,
+                    transport,
+                    self.inner.load_balancing.routing_scope,
+                )
+            })
+            .map(|(index, uplink)| CandidateState {
+                index,
+                uplink: Arc::clone(uplink),
+                healthy: selection_health(
+                    &statuses[index],
+                    transport,
+                    now,
+                    self.inner.load_balancing.routing_scope,
+                ),
+                score: selection_score(
+                    &statuses[index],
+                    uplink.weight,
+                    transport,
+                    now,
+                    &self.inner.load_balancing,
+                    self.inner.load_balancing.routing_scope,
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        candidates.sort_by(|left, right| {
+            rightless_bool(left.healthy)
+                .cmp(&rightless_bool(right.healthy))
+                .reverse()
+                .then_with(|| {
+                    left.score
+                        .unwrap_or(Duration::MAX)
+                        .cmp(&right.score.unwrap_or(Duration::MAX))
+                })
+                .then_with(|| left.index.cmp(&right.index))
+        });
+
+        if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
+            if let Some(candidate) = candidates.iter().find(|candidate| candidate.index == active_index)
+            {
+                let gate_transport =
+                    strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
+                if !cooldown_active(&statuses[active_index], gate_transport, now) {
+                    self.store_sticky_route(
+                        strict_route_key(transport, self.inner.load_balancing.routing_scope),
+                        active_index,
+                    )
+                    .await;
+                    return vec![UplinkCandidate {
+                        index: candidate.index,
+                        uplink: Arc::clone(&candidate.uplink),
+                    }];
+                }
+            }
+        }
+
+        let selected = candidates[0].index;
+        self.set_active_uplink_index_for_transport(transport, selected)
+            .await;
+        self.store_sticky_route(
+            strict_route_key(transport, self.inner.load_balancing.routing_scope),
+            selected,
+        )
+        .await;
+        vec![UplinkCandidate {
+            index: selected,
+            uplink: Arc::clone(&candidates[0].uplink),
+        }]
+    }
+
+    async fn set_active_uplink_index_for_transport(
+        &self,
+        transport: TransportKind,
+        uplink_index: usize,
+    ) {
+        if self.strict_global_active_uplink() {
+            *self.inner.global_active_uplink.write().await = Some(uplink_index);
+        } else if self.strict_per_uplink_active_uplink() {
+            match transport {
+                TransportKind::Tcp => {
+                    *self.inner.tcp_active_uplink.write().await = Some(uplink_index);
+                }
+                TransportKind::Udp => {
+                    *self.inner.udp_active_uplink.write().await = Some(uplink_index);
+                }
+            }
+        }
+    }
+
     async fn refill_all_standby(&self) {
         for index in 0..self.inner.uplinks.len() {
             self.maintain_pool(index, TransportKind::Tcp).await;
@@ -879,10 +1056,14 @@ impl UplinkManager {
     async fn store_sticky_route(&self, routing_key: RoutingKey, uplink_index: usize) {
         let mut sticky = self.inner.sticky_routes.write().await;
         sticky.insert(
-            routing_key,
+            routing_key.clone(),
             StickyRoute {
                 uplink_index,
-                expires_at: Instant::now() + self.inner.load_balancing.sticky_ttl,
+                expires_at: if self.strict_pinned_route_key(&routing_key) {
+                    Instant::now() + Duration::from_secs(365 * 24 * 60 * 60)
+                } else {
+                    Instant::now() + self.inner.load_balancing.sticky_ttl
+                },
             },
         );
     }
@@ -890,8 +1071,24 @@ impl UplinkManager {
     async fn prune_sticky_routes(&self) {
         let now = Instant::now();
         let mut sticky = self.inner.sticky_routes.write().await;
-        sticky.retain(|_, route| route.expires_at > now);
+        sticky.retain(|key, route| {
+            if self.strict_pinned_route_key(key) {
+                return true;
+            }
+            route.expires_at > now
+        });
         maybe_shrink_hash_map(&mut sticky);
+    }
+
+    fn strict_pinned_route_key(&self, key: &str) -> bool {
+        match self.inner.load_balancing.routing_scope {
+            RoutingScope::Global => self.strict_global_active_uplink() && key == "global",
+            RoutingScope::PerUplink => {
+                self.strict_per_uplink_active_uplink()
+                    && (key == "Tcp:global" || key == "Udp:global")
+            }
+            RoutingScope::PerFlow => false,
+        }
     }
 
     async fn probe_all(&self) {
@@ -1469,8 +1666,15 @@ fn selection_health(
     scope: RoutingScope,
 ) -> bool {
     match scope {
-        RoutingScope::Global => effective_health(status, transport, now),
+        RoutingScope::Global => effective_health(status, TransportKind::Tcp, now),
         _ => effective_health(status, transport, now),
+    }
+}
+
+fn strict_gate_transport(scope: RoutingScope, transport: TransportKind) -> TransportKind {
+    match scope {
+        RoutingScope::Global => TransportKind::Tcp,
+        RoutingScope::PerUplink | RoutingScope::PerFlow => transport,
     }
 }
 
@@ -1532,8 +1736,29 @@ fn selection_score(
     scope: RoutingScope,
 ) -> Option<Duration> {
     match scope {
-        RoutingScope::Global => score_latency(status, weight, transport, now, config),
+        RoutingScope::Global => global_score_latency(status, weight, now, config),
         _ => score_latency(status, weight, transport, now, config),
+    }
+}
+
+fn global_score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    now: Instant,
+    config: &LoadBalancingConfig,
+) -> Option<Duration> {
+    let tcp_score = score_latency(status, weight, TransportKind::Tcp, now, config);
+    let udp_score = score_latency(status, weight, TransportKind::Udp, now, config);
+
+    match (tcp_score, udp_score) {
+        // Global routing should primarily follow TCP quality.
+        // UDP only acts as a weak tie-breaker and should not dominate selection.
+        (Some(tcp), Some(udp)) => Some(Duration::from_secs_f64(
+            tcp.as_secs_f64() + udp.as_secs_f64() * 0.05,
+        )),
+        (Some(tcp), None) => Some(tcp),
+        (None, Some(udp)) => Some(udp),
+        (None, None) => None,
     }
 }
 
@@ -1594,6 +1819,29 @@ fn routing_key(
         _ if matches!(scope, RoutingScope::PerUplink) => format!("{transport:?}:global"),
         Some(target) => format!("{transport:?}:{target}"),
         None => format!("{transport:?}:default"),
+    }
+}
+
+fn strict_route_key(transport: TransportKind, scope: RoutingScope) -> RoutingKey {
+    match scope {
+        RoutingScope::Global => "global".to_string(),
+        RoutingScope::PerUplink => format!("{transport:?}:global"),
+        RoutingScope::PerFlow => format!("{transport:?}:default"),
+    }
+}
+
+fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
+    match mode {
+        LoadBalancingMode::ActiveActive => "active_active",
+        LoadBalancingMode::ActivePassive => "active_passive",
+    }
+}
+
+fn routing_scope_name(scope: RoutingScope) -> &'static str {
+    match scope {
+        RoutingScope::PerFlow => "per_flow",
+        RoutingScope::PerUplink => "per_uplink",
+        RoutingScope::Global => "global",
     }
 }
 
@@ -1787,6 +2035,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn per_uplink_scope_does_not_expire_with_sticky_ttl() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::PerUplink;
+        config.sticky_ttl = Duration::ZERO;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 60).await;
+        set_tcp_status(&manager, 1, true, 10).await;
+        set_udp_status(&manager, 0, true, 10).await;
+        set_udp_status(&manager, 1, true, 60).await;
+
+        let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
+        let udp_target = TargetAddr::IpV4("1.1.1.1".parse().unwrap(), 53);
+
+        let first_tcp = manager.tcp_candidates(&tcp_target).await;
+        let first_udp = manager.udp_candidates(Some(&udp_target)).await;
+        assert_eq!(first_tcp[0].uplink.name, "backup");
+        assert_eq!(first_udp[0].uplink.name, "primary");
+
+        set_tcp_status(&manager, 0, true, 1).await;
+        set_tcp_status(&manager, 1, true, 100).await;
+        set_udp_status(&manager, 0, true, 100).await;
+        set_udp_status(&manager, 1, true, 1).await;
+
+        let second_tcp = manager.tcp_candidates(&tcp_target).await;
+        let second_udp = manager.udp_candidates(Some(&udp_target)).await;
+        assert_eq!(second_tcp[0].uplink.name, "backup");
+        assert_eq!(second_udp[0].uplink.name, "primary");
+        assert_eq!(
+            manager
+                .active_uplink_index_for_transport(TransportKind::Tcp)
+                .await,
+            Some(1)
+        );
+        assert_eq!(
+            manager
+                .active_uplink_index_for_transport(TransportKind::Udp)
+                .await,
+            Some(0)
+        );
+    }
+
+    #[tokio::test]
     async fn global_scope_shares_selected_uplink_across_tcp_and_udp() {
         let mut config = lb();
         config.mode = LoadBalancingMode::ActivePassive;
@@ -1839,6 +2139,142 @@ mod tests {
         let tcp_candidates = manager.tcp_candidates(&tcp_target).await;
         assert!(!tcp_candidates.is_empty());
         assert_eq!(tcp_candidates[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
+    async fn global_scope_prioritizes_tcp_quality_over_udp_quality() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 60).await;
+        set_udp_status(&manager, 0, true, 200).await;
+        set_udp_status(&manager, 1, true, 10).await;
+
+        let udp_target = TargetAddr::IpV4("1.1.1.1".parse().unwrap(), 53);
+        let udp_candidates = manager.udp_candidates(Some(&udp_target)).await;
+        assert_eq!(udp_candidates[0].uplink.name, "primary");
+
+        let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
+        let tcp_candidates = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(tcp_candidates[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
+    async fn global_scope_keeps_udp_on_tcp_selected_uplink() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 60).await;
+        set_udp_status(&manager, 0, false, 500).await;
+        set_udp_status(&manager, 1, true, 10).await;
+
+        let udp_target = TargetAddr::IpV4("1.1.1.1".parse().unwrap(), 53);
+        let udp_candidates = manager.udp_candidates(Some(&udp_target)).await;
+        assert_eq!(udp_candidates[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
+    async fn global_scope_keeps_current_active_uplink_until_cooldown() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 60).await;
+
+        let target = TargetAddr::Domain("example.com".to_string(), 443);
+        let first = manager.tcp_candidates(&target).await;
+        assert_eq!(first[0].uplink.name, "primary");
+
+        set_tcp_status(&manager, 0, false, 20).await;
+        set_tcp_status(&manager, 1, true, 5).await;
+
+        let second = manager.tcp_candidates(&target).await;
+        assert_eq!(second[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
+    async fn global_scope_does_not_expire_with_sticky_ttl() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        config.sticky_ttl = Duration::ZERO;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 50).await;
+        set_tcp_status(&manager, 1, true, 10).await;
+        let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
+        let first = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(first[0].uplink.name, "backup");
+
+        set_tcp_status(&manager, 0, true, 1).await;
+        set_tcp_status(&manager, 1, true, 100).await;
+        let second = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(second[0].uplink.name, "backup");
+        assert_eq!(manager.global_active_uplink_index().await, Some(1));
+    }
+
+    #[tokio::test]
+    async fn confirm_selected_uplink_updates_global_sticky_route() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
+        manager
+            .confirm_selected_uplink(TransportKind::Tcp, Some(&tcp_target), 1)
+            .await;
+
+        let snapshot = manager.snapshot().await;
+        assert_eq!(snapshot.global_active_uplink.as_deref(), Some("backup"));
     }
 
     #[tokio::test]

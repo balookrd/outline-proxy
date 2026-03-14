@@ -59,18 +59,39 @@ async fn handle_tcp_connect(
     let result = async {
         let mut last_error = None;
         let mut selected = None;
-        for candidate in uplinks.tcp_candidates(&target).await {
-            match connect_tcp_uplink(&uplinks, &candidate, &target).await {
-                Ok(connected) => {
-                    selected = Some((candidate, connected));
-                    break;
+        let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
+        let mut tried_indexes = std::collections::HashSet::new();
+        loop {
+            let candidates = uplinks.tcp_candidates(&target).await;
+            let iter = if strict_transport {
+                candidates.into_iter().take(1).collect::<Vec<_>>()
+            } else {
+                candidates
+            };
+            if iter.is_empty() {
+                break;
+            }
+            let mut progressed = false;
+            for candidate in iter {
+                if strict_transport && !tried_indexes.insert(candidate.index) {
+                    continue;
                 }
-                Err(error) => {
-                    uplinks
-                        .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
-                        .await;
-                    last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+                progressed = true;
+                match connect_tcp_uplink(&uplinks, &candidate, &target).await {
+                    Ok(connected) => {
+                        selected = Some((candidate, connected));
+                        break;
+                    }
+                    Err(error) => {
+                        uplinks
+                            .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
+                            .await;
+                        last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+                    }
                 }
+            }
+            if selected.is_some() || !strict_transport || !progressed {
+                break;
             }
         }
 
@@ -80,23 +101,37 @@ async fn handle_tcp_connect(
                 last_error.unwrap_or_else(|| "no uplinks available".to_string())
             )
         })?;
-        metrics::record_uplink_selected("tcp", &candidate.uplink.name);
+        let selected_uplink_name = candidate.uplink.name.clone();
+        uplinks
+            .confirm_selected_uplink(TransportKind::Tcp, Some(&target), candidate.index)
+            .await;
+        metrics::record_uplink_selected("tcp", &selected_uplink_name);
         info!(
-            uplink = %candidate.uplink.name,
+            uplink = %selected_uplink_name,
             weight = candidate.uplink.weight,
             target = %target,
             "selected TCP uplink"
         );
+        let selected_index = candidate.index;
         let (writer, reader) = connected;
 
         let bound_addr = socket_addr_to_target(client.local_addr()?);
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
 
         let (mut client_read, mut client_write) = client.into_split();
+        let uplink_uplink_name = selected_uplink_name.clone();
         let uplink = async {
             let mut writer = writer;
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             loop {
+                if strict_transport
+                    && uplinks
+                        .active_uplink_index_for_transport(TransportKind::Tcp)
+                        .await
+                        .is_some_and(|active| active != selected_index)
+                {
+                    return Err(anyhow!("active uplink switched for SOCKS TCP session"));
+                }
                 let read = client_read
                     .read(&mut buf)
                     .await
@@ -105,20 +140,34 @@ async fn handle_tcp_connect(
                     writer.close().await?;
                     break;
                 }
-                metrics::add_bytes("tcp", "client_to_upstream", read);
+                metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
                 writer.send_chunk(&buf[..read]).await?;
             }
             Ok::<(), anyhow::Error>(())
         };
 
+        let downlink_uplink_name = selected_uplink_name.clone();
         let downlink = async {
             let mut reader = reader;
             loop {
+                if strict_transport
+                    && uplinks
+                        .active_uplink_index_for_transport(TransportKind::Tcp)
+                        .await
+                        .is_some_and(|active| active != selected_index)
+                {
+                    return Err(anyhow!("active uplink switched for SOCKS TCP session"));
+                }
                 let chunk = reader.read_chunk().await?;
                 if chunk.is_empty() {
                     continue;
                 }
-                metrics::add_bytes("tcp", "upstream_to_client", chunk.len());
+                metrics::add_bytes(
+                    "tcp",
+                    "upstream_to_client",
+                    &downlink_uplink_name,
+                    chunk.len(),
+                );
                 client_write
                     .write_all(&chunk)
                     .await
@@ -196,12 +245,15 @@ async fn handle_udp_associate(
 
                 let mut payload = packet.target.to_wire_bytes()?;
                 payload.extend_from_slice(&packet.payload);
-                metrics::add_udp_datagram("client_to_upstream");
-                metrics::add_bytes("udp", "client_to_upstream", payload.len());
-
-                let transport = {
+                reconcile_global_udp_transport(
+                    &uplinks_uplink,
+                    &active_transport_uplink,
+                    Some(&packet.target),
+                )
+                .await?;
+                let (transport, uplink_name) = {
                     let active = active_transport_uplink.lock().await;
-                    Arc::clone(&active.transport)
+                    (Arc::clone(&active.transport), active.uplink_name.clone())
                 };
                 if let Err(error) = transport.send_packet(&payload).await {
                     let replacement = failover_udp_transport(
@@ -212,6 +264,16 @@ async fn handle_udp_associate(
                     )
                     .await?;
                     replacement.transport.send_packet(&payload).await?;
+                    metrics::add_udp_datagram("client_to_upstream", &replacement.uplink_name);
+                    metrics::add_bytes(
+                        "udp",
+                        "client_to_upstream",
+                        &replacement.uplink_name,
+                        payload.len(),
+                    );
+                } else {
+                    metrics::add_udp_datagram("client_to_upstream", &uplink_name);
+                    metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
                 }
             }
         };
@@ -222,6 +284,12 @@ async fn handle_udp_associate(
         let uplinks_downlink = uplinks.clone();
         let downlink = async move {
             loop {
+                reconcile_global_udp_transport(
+                    &uplinks_downlink,
+                    &active_transport_downlink,
+                    None,
+                )
+                .await?;
                 let active = {
                     let active = active_transport_downlink.lock().await;
                     (
@@ -240,7 +308,24 @@ async fn handle_udp_associate(
                             error,
                         )
                         .await?;
-                        replacement.transport.read_packet().await?
+                        let payload = replacement.transport.read_packet().await?;
+                        metrics::add_udp_datagram("upstream_to_client", &replacement.uplink_name);
+                        metrics::add_bytes(
+                            "udp",
+                            "upstream_to_client",
+                            &replacement.uplink_name,
+                            payload.len(),
+                        );
+                        let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
+                        let client_addr = client_udp_addr_downlink.lock().await.ok_or_else(|| {
+                            anyhow!("received UDP response before client sent any packet")
+                        })?;
+                        let packet = build_udp_packet(&target, &payload[consumed..])?;
+                        socket_downlink
+                            .send_to(&packet, client_addr)
+                            .await
+                            .context("UDP relay send failed")?;
+                        continue;
                     }
                 };
                 let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
@@ -248,8 +333,8 @@ async fn handle_udp_associate(
                     anyhow!("received UDP response before client sent any packet")
                 })?;
                 let packet = build_udp_packet(&target, &payload[consumed..])?;
-                metrics::add_udp_datagram("upstream_to_client");
-                metrics::add_bytes("udp", "upstream_to_client", payload.len());
+                metrics::add_udp_datagram("upstream_to_client", &active.1);
+                metrics::add_bytes("udp", "upstream_to_client", &active.1, payload.len());
                 socket_downlink
                     .send_to(&packet, client_addr)
                     .await
@@ -314,12 +399,22 @@ async fn select_udp_transport(
     target: Option<&TargetAddr>,
 ) -> Result<ActiveUdpTransport> {
     let mut last_error = None;
-    for candidate in uplinks.udp_candidates(target).await {
+    let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Udp);
+    let candidates = uplinks.udp_candidates(target).await;
+    let iter = if strict_transport {
+        candidates.into_iter().take(1).collect::<Vec<_>>()
+    } else {
+        candidates
+    };
+    for candidate in iter {
         match uplinks
             .acquire_udp_standby_or_connect(&candidate, "socks_udp")
             .await
         {
             Ok(transport) => {
+                uplinks
+                    .confirm_selected_uplink(TransportKind::Udp, target, candidate.index)
+                    .await;
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
                     uplink_name: candidate.uplink.name.clone(),
@@ -369,4 +464,34 @@ async fn failover_udp_transport(
         transport: Arc::clone(&replacement.transport),
     };
     Ok(replacement)
+}
+
+async fn reconcile_global_udp_transport(
+    uplinks: &UplinkManager,
+    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    target: Option<&TargetAddr>,
+) -> Result<()> {
+    if !uplinks.strict_active_uplink_for(TransportKind::Udp) {
+        return Ok(());
+    }
+
+    let current_active = uplinks
+        .active_uplink_index_for_transport(TransportKind::Udp)
+        .await;
+    let selected = active_transport.lock().await.index;
+    if current_active == Some(selected) || current_active.is_none() {
+        return Ok(());
+    }
+
+    let replacement = select_udp_transport(uplinks, target).await?;
+    let mut active = active_transport.lock().await;
+    metrics::record_failover("udp", &active.uplink_name, &replacement.uplink_name);
+    metrics::record_uplink_selected("udp", &replacement.uplink_name);
+    *active = ActiveUdpTransport {
+        index: replacement.index,
+        uplink_name: replacement.uplink_name.clone(),
+        uplink_weight: replacement.uplink_weight,
+        transport: Arc::clone(&replacement.transport),
+    };
+    Ok(())
 }

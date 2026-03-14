@@ -16,9 +16,15 @@ static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
 const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 
+#[cfg(feature = "allocator-jemalloc")]
+const ACTIVE_ALLOCATOR: &str = "jemalloc";
+#[cfg(not(feature = "allocator-jemalloc"))]
+const ACTIVE_ALLOCATOR: &str = "system";
+
 struct Metrics {
     registry: Registry,
     build_info: IntGaugeVec,
+    allocator_info: IntGaugeVec,
     start_time_seconds: Gauge,
     socks_requests_total: IntCounterVec,
     sessions_active: IntGaugeVec,
@@ -37,7 +43,11 @@ struct Metrics {
     warm_standby_refill_total: IntCounterVec,
     metrics_http_requests_total: IntCounterVec,
     process_resident_memory_bytes: Gauge,
+    process_virtual_memory_bytes: Gauge,
     process_heap_memory_bytes: Gauge,
+    process_heap_allocated_bytes: Gauge,
+    process_heap_free_bytes: Gauge,
+    process_heap_mode_info: IntGaugeVec,
     process_open_fds: Gauge,
     process_fd_by_type: GaugeVec,
     transport_connects_total: IntCounterVec,
@@ -45,11 +55,14 @@ struct Metrics {
     upstream_transports_total: IntCounterVec,
     upstream_transports_active: IntGaugeVec,
     process_malloc_trim_total: IntCounterVec,
+    process_malloc_trim_errors_total: IntCounterVec,
     process_malloc_trim_last_released_bytes: GaugeVec,
+    process_malloc_trim_last_bytes: GaugeVec,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,
     tun_flows_active: IntGaugeVec,
+    tun_icmp_local_replies_total: IntCounterVec,
     tun_udp_forward_errors_total: IntCounterVec,
     tun_max_flows: IntGauge,
     tun_idle_timeout_seconds: Gauge,
@@ -75,6 +88,9 @@ struct Metrics {
     uplink_weight: GaugeVec,
     uplink_cooldown_seconds: GaugeVec,
     uplink_standby_ready: IntGaugeVec,
+    selection_mode_info: IntGaugeVec,
+    routing_scope_info: IntGaugeVec,
+    global_active_uplink_info: IntGaugeVec,
     sticky_routes_total: IntGauge,
     sticky_routes_by_uplink: IntGaugeVec,
     session_recent_windows: Mutex<HashMap<&'static str, RecentSessionWindow>>,
@@ -102,6 +118,14 @@ impl Metrics {
             &["version"],
         )
         .expect("build_info metric");
+        let allocator_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_allocator_info",
+                "Allocator info for outline-ws-rust.",
+            ),
+            &["allocator"],
+        )
+        .expect("allocator_info metric");
         let start_time_seconds = Gauge::with_opts(Opts::new(
             "outline_ws_rust_start_time_seconds",
             "Process start time in unix seconds.",
@@ -153,17 +177,17 @@ impl Metrics {
         let bytes_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_bytes_total",
-                "Application payload bytes transferred.",
+                "Application payload bytes transferred by protocol, direction and uplink.",
             ),
-            &["protocol", "direction"],
+            &["protocol", "direction", "uplink"],
         )
         .expect("bytes_total metric");
         let udp_datagrams_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_udp_datagrams_total",
-                "UDP datagrams forwarded by direction.",
+                "UDP datagrams forwarded by direction and uplink.",
             ),
-            &["direction"],
+            &["direction", "uplink"],
         )
         .expect("udp_datagrams_total metric");
         let uplink_selected_total = IntCounterVec::new(
@@ -246,11 +270,34 @@ impl Metrics {
             "Current resident set size of the process in bytes.",
         ))
         .expect("process_resident_memory_bytes metric");
+        let process_virtual_memory_bytes = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_virtual_memory_bytes",
+            "Current virtual memory size of the process in bytes.",
+        ))
+        .expect("process_virtual_memory_bytes metric");
         let process_heap_memory_bytes = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_heap_memory_bytes",
             "Current heap usage of the process in bytes.",
         ))
         .expect("process_heap_memory_bytes metric");
+        let process_heap_allocated_bytes = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_heap_allocated_bytes",
+            "Current allocator-reported allocated heap bytes.",
+        ))
+        .expect("process_heap_allocated_bytes metric");
+        let process_heap_free_bytes = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_heap_free_bytes",
+            "Current allocator-reported free heap bytes.",
+        ))
+        .expect("process_heap_free_bytes metric");
+        let process_heap_mode_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_heap_mode_info",
+                "Allocator heap sampling mode for the current process.",
+            ),
+            &["mode"],
+        )
+        .expect("process_heap_mode_info metric");
         let process_open_fds = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_open_fds",
             "Current number of open file descriptors used by the process.",
@@ -304,6 +351,14 @@ impl Metrics {
             &["reason", "result"],
         )
         .expect("process_malloc_trim_total metric");
+        let process_malloc_trim_errors_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_process_malloc_trim_errors_total",
+                "malloc_trim errors by reason.",
+            ),
+            &["reason"],
+        )
+        .expect("process_malloc_trim_errors_total metric");
         let process_malloc_trim_last_released_bytes = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_process_malloc_trim_last_released_bytes",
@@ -312,6 +367,14 @@ impl Metrics {
             &["kind"],
         )
         .expect("process_malloc_trim_last_released_bytes metric");
+        let process_malloc_trim_last_bytes = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_malloc_trim_last_bytes",
+                "Last observed malloc_trim values by memory kind and stage.",
+            ),
+            &["kind", "stage"],
+        )
+        .expect("process_malloc_trim_last_bytes metric");
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -345,6 +408,14 @@ impl Metrics {
             &["uplink"],
         )
         .expect("tun_flows_active metric");
+        let tun_icmp_local_replies_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_icmp_local_replies_total",
+                "Local ICMP echo replies generated on the TUN path by IP family.",
+            ),
+            &["ip_family"],
+        )
+        .expect("tun_icmp_local_replies_total metric");
         let tun_udp_forward_errors_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_udp_forward_errors_total",
@@ -536,6 +607,30 @@ impl Metrics {
             &["transport", "uplink"],
         )
         .expect("uplink_standby_ready metric");
+        let selection_mode_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_selection_mode_info",
+                "Configured load-balancing selection mode.",
+            ),
+            &["mode"],
+        )
+        .expect("selection_mode_info metric");
+        let routing_scope_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_routing_scope_info",
+                "Configured routing scope.",
+            ),
+            &["scope"],
+        )
+        .expect("routing_scope_info metric");
+        let global_active_uplink_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_global_active_uplink_info",
+                "Currently selected active uplink for global routing scope.",
+            ),
+            &["uplink"],
+        )
+        .expect("global_active_uplink_info metric");
         let sticky_routes_total = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_sticky_routes_total",
             "Current number of sticky routes.",
@@ -553,6 +648,9 @@ impl Metrics {
         registry
             .register(Box::new(build_info.clone()))
             .expect("register build_info");
+        registry
+            .register(Box::new(allocator_info.clone()))
+            .expect("register allocator_info");
         registry
             .register(Box::new(start_time_seconds.clone()))
             .expect("register start_time_seconds");
@@ -608,8 +706,20 @@ impl Metrics {
             .register(Box::new(process_resident_memory_bytes.clone()))
             .expect("register process_resident_memory_bytes");
         registry
+            .register(Box::new(process_virtual_memory_bytes.clone()))
+            .expect("register process_virtual_memory_bytes");
+        registry
             .register(Box::new(process_heap_memory_bytes.clone()))
             .expect("register process_heap_memory_bytes");
+        registry
+            .register(Box::new(process_heap_allocated_bytes.clone()))
+            .expect("register process_heap_allocated_bytes");
+        registry
+            .register(Box::new(process_heap_free_bytes.clone()))
+            .expect("register process_heap_free_bytes");
+        registry
+            .register(Box::new(process_heap_mode_info.clone()))
+            .expect("register process_heap_mode_info");
         registry
             .register(Box::new(process_open_fds.clone()))
             .expect("register process_open_fds");
@@ -632,8 +742,14 @@ impl Metrics {
             .register(Box::new(process_malloc_trim_total.clone()))
             .expect("register process_malloc_trim_total");
         registry
+            .register(Box::new(process_malloc_trim_errors_total.clone()))
+            .expect("register process_malloc_trim_errors_total");
+        registry
             .register(Box::new(process_malloc_trim_last_released_bytes.clone()))
             .expect("register process_malloc_trim_last_released_bytes");
+        registry
+            .register(Box::new(process_malloc_trim_last_bytes.clone()))
+            .expect("register process_malloc_trim_last_bytes");
         registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
@@ -646,6 +762,9 @@ impl Metrics {
         registry
             .register(Box::new(tun_flows_active.clone()))
             .expect("register tun_flows_active");
+        registry
+            .register(Box::new(tun_icmp_local_replies_total.clone()))
+            .expect("register tun_icmp_local_replies_total");
         registry
             .register(Box::new(tun_udp_forward_errors_total.clone()))
             .expect("register tun_udp_forward_errors_total");
@@ -722,6 +841,15 @@ impl Metrics {
             .register(Box::new(uplink_standby_ready.clone()))
             .expect("register uplink_standby_ready");
         registry
+            .register(Box::new(selection_mode_info.clone()))
+            .expect("register selection_mode_info");
+        registry
+            .register(Box::new(routing_scope_info.clone()))
+            .expect("register routing_scope_info");
+        registry
+            .register(Box::new(global_active_uplink_info.clone()))
+            .expect("register global_active_uplink_info");
+        registry
             .register(Box::new(sticky_routes_total.clone()))
             .expect("register sticky_routes_total");
         registry
@@ -731,6 +859,7 @@ impl Metrics {
         build_info
             .with_label_values(&[env!("CARGO_PKG_VERSION")])
             .set(1);
+        allocator_info.with_label_values(&[ACTIVE_ALLOCATOR]).set(1);
         start_time_seconds.set(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -741,6 +870,7 @@ impl Metrics {
         Self {
             registry,
             build_info,
+            allocator_info,
             start_time_seconds,
             socks_requests_total,
             sessions_active,
@@ -759,7 +889,11 @@ impl Metrics {
             warm_standby_refill_total,
             metrics_http_requests_total,
             process_resident_memory_bytes,
+            process_virtual_memory_bytes,
             process_heap_memory_bytes,
+            process_heap_allocated_bytes,
+            process_heap_free_bytes,
+            process_heap_mode_info,
             process_open_fds,
             process_fd_by_type,
             transport_connects_total,
@@ -767,11 +901,14 @@ impl Metrics {
             upstream_transports_total,
             upstream_transports_active,
             process_malloc_trim_total,
+            process_malloc_trim_errors_total,
             process_malloc_trim_last_released_bytes,
+            process_malloc_trim_last_bytes,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,
             tun_flows_active,
+            tun_icmp_local_replies_total,
             tun_udp_forward_errors_total,
             tun_max_flows,
             tun_idle_timeout_seconds,
@@ -797,6 +934,9 @@ impl Metrics {
             uplink_weight,
             uplink_cooldown_seconds,
             uplink_standby_ready,
+            selection_mode_info,
+            routing_scope_info,
+            global_active_uplink_info,
             sticky_routes_total,
             sticky_routes_by_uplink,
             session_recent_windows: Mutex::new(HashMap::new()),
@@ -837,8 +977,23 @@ impl Metrics {
         self.sticky_routes_by_uplink.reset();
         self.sticky_routes_total
             .set(i64::try_from(snapshot.sticky_routes.len()).unwrap_or(i64::MAX));
+        for mode in ["active_active", "active_passive"] {
+            self.selection_mode_info.with_label_values(&[mode]).set(0);
+        }
+        self.selection_mode_info
+            .with_label_values(&[&snapshot.load_balancing_mode])
+            .set(1);
+        for scope in ["per_flow", "per_uplink", "global"] {
+            self.routing_scope_info.with_label_values(&[scope]).set(0);
+        }
+        self.routing_scope_info
+            .with_label_values(&[&snapshot.routing_scope])
+            .set(1);
 
         for uplink in &snapshot.uplinks {
+            self.global_active_uplink_info
+                .with_label_values(&[&uplink.name])
+                .set(0);
             self.uplink_weight
                 .with_label_values(&[&uplink.name])
                 .set(uplink.weight);
@@ -917,6 +1072,11 @@ impl Metrics {
                 .with_label_values(&["udp", &uplink.name])
                 .set(i64::try_from(uplink.standby_udp_ready).unwrap_or(i64::MAX));
         }
+        if let Some(global_active_uplink) = &snapshot.global_active_uplink {
+            self.global_active_uplink_info
+                .with_label_values(&[global_active_uplink])
+                .set(1);
+        }
 
         for sticky in &snapshot.sticky_routes {
             self.sticky_routes_by_uplink
@@ -937,11 +1097,16 @@ pub fn init() {
     let _ = METRICS
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
+    let _ = METRICS.allocator_info.with_label_values(&[ACTIVE_ALLOCATOR]);
     let _ = METRICS.start_time_seconds.get();
     let initial_sample = sample_process_memory();
     update_process_memory(
         initial_sample.rss_bytes,
+        initial_sample.virtual_bytes,
         initial_sample.heap_bytes,
+        initial_sample.heap_allocated_bytes,
+        initial_sample.heap_free_bytes,
+        initial_sample.heap_mode,
         initial_sample.open_fds,
         initial_sample.fd_snapshot,
     );
@@ -1001,12 +1166,21 @@ pub fn init() {
         let _ = METRICS
             .process_malloc_trim_total
             .with_label_values(&[reason, result]);
+        let _ = METRICS
+            .process_malloc_trim_errors_total
+            .with_label_values(&[reason]);
     }
     for kind in ["rss", "heap"] {
         METRICS
             .process_malloc_trim_last_released_bytes
             .with_label_values(&[kind])
             .set(0.0);
+        for stage in ["before", "after", "released"] {
+            METRICS
+                .process_malloc_trim_last_bytes
+                .with_label_values(&[kind, stage])
+                .set(0.0);
+        }
     }
     for command in ["connect", "udp_associate"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
@@ -1021,6 +1195,12 @@ pub fn init() {
             .session_recent_samples
             .with_label_values(&[protocol])
             .set(0);
+    }
+    for mode in ["active_active", "active_passive"] {
+        METRICS.selection_mode_info.with_label_values(&[mode]).set(0);
+    }
+    for scope in ["per_flow", "per_uplink", "global"] {
+        METRICS.routing_scope_info.with_label_values(&[scope]).set(0);
     }
     for result in [
         "started",
@@ -1045,6 +1225,11 @@ pub fn init() {
             .tun_udp_forward_errors_total
             .with_label_values(&[reason]);
     }
+    for ip_family in ["ipv4", "ipv6"] {
+        let _ = METRICS
+            .tun_icmp_local_replies_total
+            .with_label_values(&[ip_family]);
+    }
 }
 
 pub fn spawn_process_metrics_sampler() {
@@ -1054,7 +1239,11 @@ pub fn spawn_process_metrics_sampler() {
             let sample = sample_process_memory();
             update_process_memory(
                 sample.rss_bytes,
+                sample.virtual_bytes,
                 sample.heap_bytes,
+                sample.heap_allocated_bytes,
+                sample.heap_free_bytes,
+                sample.heap_mode,
                 sample.open_fds,
                 sample.fd_snapshot,
             );
@@ -1069,7 +1258,11 @@ pub fn spawn_process_metrics_sampler() {
 
 pub fn update_process_memory(
     rss_bytes: Option<u64>,
+    virtual_bytes: Option<u64>,
     heap_bytes: Option<u64>,
+    heap_allocated_bytes: Option<u64>,
+    heap_free_bytes: Option<u64>,
+    heap_mode: &'static str,
     open_fds: Option<u64>,
     fd_snapshot: Option<ProcessFdSnapshot>,
 ) {
@@ -1077,8 +1270,23 @@ pub fn update_process_memory(
         .process_resident_memory_bytes
         .set(rss_bytes.unwrap_or(0) as f64);
     METRICS
+        .process_virtual_memory_bytes
+        .set(virtual_bytes.unwrap_or(0) as f64);
+    METRICS
         .process_heap_memory_bytes
         .set(heap_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_heap_allocated_bytes
+        .set(heap_allocated_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_heap_free_bytes
+        .set(heap_free_bytes.unwrap_or(0) as f64);
+    for mode in ["jemalloc", "exact", "estimated", "unavailable"] {
+        METRICS
+            .process_heap_mode_info
+            .with_label_values(&[mode])
+            .set(if mode == heap_mode { 1 } else { 0 });
+    }
     METRICS.process_open_fds.set(open_fds.unwrap_or(0) as f64);
     let snapshot = fd_snapshot.unwrap_or_default();
     METRICS
@@ -1106,7 +1314,11 @@ pub fn update_process_memory(
 pub fn record_malloc_trim(
     reason: &'static str,
     trimmed: bool,
+    rss_before_bytes: Option<u64>,
+    rss_after_bytes: Option<u64>,
     rss_released_bytes: Option<u64>,
+    heap_before_bytes: Option<u64>,
+    heap_after_bytes: Option<u64>,
     heap_released_bytes: Option<u64>,
 ) {
     METRICS
@@ -1118,9 +1330,40 @@ pub fn record_malloc_trim(
         .with_label_values(&["rss"])
         .set(rss_released_bytes.unwrap_or(0) as f64);
     METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["rss", "before"])
+        .set(rss_before_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["rss", "after"])
+        .set(rss_after_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["rss", "released"])
+        .set(rss_released_bytes.unwrap_or(0) as f64);
+    METRICS
         .process_malloc_trim_last_released_bytes
         .with_label_values(&["heap"])
         .set(heap_released_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["heap", "before"])
+        .set(heap_before_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["heap", "after"])
+        .set(heap_after_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_malloc_trim_last_bytes
+        .with_label_values(&["heap", "released"])
+        .set(heap_released_bytes.unwrap_or(0) as f64);
+}
+
+pub fn record_malloc_trim_error(reason: &'static str) {
+    METRICS
+        .process_malloc_trim_errors_total
+        .with_label_values(&[reason])
+        .inc();
 }
 
 pub fn record_transport_connect(source: &'static str, mode: &'static str, result: &'static str) {
@@ -1189,17 +1432,17 @@ impl SessionTracker {
     }
 }
 
-pub fn add_bytes(protocol: &'static str, direction: &'static str, bytes: usize) {
+pub fn add_bytes(protocol: &'static str, direction: &'static str, uplink: &str, bytes: usize) {
     METRICS
         .bytes_total
-        .with_label_values(&[protocol, direction])
+        .with_label_values(&[protocol, direction, uplink])
         .inc_by(u64::try_from(bytes).unwrap_or(u64::MAX));
 }
 
-pub fn add_udp_datagram(direction: &'static str) {
+pub fn add_udp_datagram(direction: &'static str, uplink: &str) {
     METRICS
         .udp_datagrams_total
-        .with_label_values(&[direction])
+        .with_label_values(&[direction, uplink])
         .inc();
 }
 
@@ -1308,6 +1551,13 @@ pub fn record_tun_flow_closed(uplink: &str, reason: &'static str, duration: Dura
         .with_label_values(&[reason, uplink])
         .observe(duration.as_secs_f64());
     METRICS.tun_flows_active.with_label_values(&[uplink]).dec();
+}
+
+pub fn record_tun_icmp_local_reply(ip_family: &'static str) {
+    METRICS
+        .tun_icmp_local_replies_total
+        .with_label_values(&[ip_family])
+        .inc();
 }
 
 pub fn record_tun_udp_forward_error(reason: &'static str) {
@@ -1448,13 +1698,42 @@ fn session_window_p95(window: &RecentSessionWindow) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::uplink::UplinkManagerSnapshot;
+    use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
 
     fn empty_snapshot() -> UplinkManagerSnapshot {
         UplinkManagerSnapshot {
             generated_at_unix_ms: 0,
+            load_balancing_mode: "active_active".to_string(),
+            routing_scope: "per_flow".to_string(),
+            global_active_uplink: None,
             uplinks: Vec::new(),
             sticky_routes: Vec::new(),
+        }
+    }
+
+    fn snapshot_uplink(name: &str) -> UplinkSnapshot {
+        UplinkSnapshot {
+            index: 0,
+            name: name.to_string(),
+            weight: 1.0,
+            tcp_healthy: None,
+            udp_healthy: None,
+            tcp_latency_ms: None,
+            udp_latency_ms: None,
+            tcp_rtt_ewma_ms: None,
+            udp_rtt_ewma_ms: None,
+            tcp_penalty_ms: None,
+            udp_penalty_ms: None,
+            tcp_effective_latency_ms: None,
+            udp_effective_latency_ms: None,
+            tcp_score_ms: None,
+            udp_score_ms: None,
+            cooldown_tcp_ms: None,
+            cooldown_udp_ms: None,
+            last_checked_ago_ms: None,
+            last_error: None,
+            standby_tcp_ready: 0,
+            standby_udp_ready: 0,
         }
     }
 
@@ -1477,7 +1756,11 @@ mod tests {
         init();
         update_process_memory(
             Some(1234),
+            Some(4321),
             Some(5678),
+            Some(5678),
+            Some(256),
+            "jemalloc",
             Some(42),
             Some(ProcessFdSnapshot {
                 total: 42,
@@ -1488,11 +1771,26 @@ mod tests {
                 other: 1,
             }),
         );
-        record_malloc_trim("periodic", true, Some(1024), Some(2048));
+        record_malloc_trim(
+            "periodic",
+            true,
+            Some(4096),
+            Some(3072),
+            Some(1024),
+            Some(8192),
+            Some(6144),
+            Some(2048),
+        );
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
         assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
+        assert!(rendered.contains("outline_ws_rust_process_virtual_memory_bytes 4321"));
         assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
+        assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
+        assert!(rendered.contains("outline_ws_rust_process_heap_free_bytes 256"));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_heap_mode_info{mode=\"jemalloc\"} 1"
+        ));
         assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
         assert!(rendered.contains(
             "outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"
@@ -1508,6 +1806,18 @@ mod tests {
         ));
         assert!(rendered.contains(
             "outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"heap\"} 2048"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"before\"} 4096"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"after\"} 3072"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"released\"} 1024"
+        ));
+        assert!(rendered.contains(
+            &format!("outline_ws_rust_allocator_info{{allocator=\"{}\"}} 1", ACTIVE_ALLOCATOR)
         ));
     }
 
@@ -1548,6 +1858,86 @@ mod tests {
     }
 
     #[test]
+    fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
+        init();
+        add_bytes("tcp", "client_to_upstream", "nuxt", 128);
+        add_bytes("udp", "upstream_to_client", "senko", 256);
+        add_udp_datagram("client_to_upstream", "nuxt");
+        add_udp_datagram("upstream_to_client", "senko");
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains(
+            "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",protocol=\"udp\",uplink=\"senko\"} 256"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",uplink=\"nuxt\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"senko\"} 1"
+        ));
+    }
+
+    #[test]
+    fn render_prometheus_exports_routing_selection_info() {
+        init();
+
+        let rendered = render_prometheus(&UplinkManagerSnapshot {
+            generated_at_unix_ms: 0,
+            load_balancing_mode: "active_passive".to_string(),
+            routing_scope: "global".to_string(),
+            global_active_uplink: Some("senko".to_string()),
+            uplinks: Vec::new(),
+            sticky_routes: Vec::new(),
+        })
+        .expect("render metrics");
+
+        assert!(rendered.contains(
+            "outline_ws_rust_selection_mode_info{mode=\"active_passive\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_routing_scope_info{scope=\"global\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 1"
+        ));
+    }
+
+    #[test]
+    fn render_prometheus_clears_previous_global_active_uplink() {
+        init();
+
+        render_prometheus(&UplinkManagerSnapshot {
+            generated_at_unix_ms: 0,
+            load_balancing_mode: "active_passive".to_string(),
+            routing_scope: "global".to_string(),
+            global_active_uplink: Some("senko".to_string()),
+            uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
+            sticky_routes: Vec::new(),
+        })
+        .expect("render first metrics");
+
+        let rendered = render_prometheus(&UplinkManagerSnapshot {
+            generated_at_unix_ms: 0,
+            load_balancing_mode: "active_passive".to_string(),
+            routing_scope: "global".to_string(),
+            global_active_uplink: Some("nuxt".to_string()),
+            uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
+            sticky_routes: Vec::new(),
+        })
+        .expect("render second metrics");
+
+        assert!(rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_global_active_uplink_info{uplink=\"nuxt\"} 1"
+        ));
+    }
+
+    #[test]
     fn init_exports_zero_value_tun_udp_forward_error_series() {
         init();
 
@@ -1563,6 +1953,12 @@ mod tests {
         ));
         assert!(rendered.contains(
             "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0"
         ));
     }
 

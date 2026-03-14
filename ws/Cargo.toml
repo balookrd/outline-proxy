@@ -3,6 +3,11 @@ name = "outline-ws-rust"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["allocator-jemalloc"]
+allocator-jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-sys"]
+allocator-system = []
+
 [dependencies]
 aes-gcm = "0.10"
 anyhow = "1.0"
@@ -35,6 +40,8 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tikv-jemallocator = { version = "0.6", optional = true, features = ["stats"] }
+tikv-jemalloc-sys = { version = "0.6", optional = true, features = ["stats"] }
 url = { version = "2.5", features = ["serde"] }
 webpki-roots = "0.26"
 

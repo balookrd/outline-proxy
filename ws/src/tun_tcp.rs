@@ -517,7 +517,12 @@ impl TunTcpEngine {
                     engine.abort_flow_with_rst(&key, "send_error").await;
                     return;
                 }
-                metrics::add_bytes("tcp", "client_to_upstream", payload.len());
+                metrics::add_bytes(
+                    "tcp",
+                    "client_to_upstream",
+                    &candidate.uplink.name,
+                    payload.len(),
+                );
             }
 
             if should_close_client_half {
@@ -540,6 +545,31 @@ impl TunTcpEngine {
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
     ) -> Result<()> {
+        if self
+            .inner
+            .uplinks
+            .strict_active_uplink_for(TransportKind::Tcp)
+        {
+            let active_uplink = self
+                .inner
+                .uplinks
+                .active_uplink_index_for_transport(TransportKind::Tcp)
+                .await;
+            let (should_abort, key) = {
+                let state = flow.lock().await;
+                (
+                    active_uplink.is_some_and(|active| {
+                        state.uplink_index != usize::MAX && state.uplink_index != active
+                    }),
+                    state.key.clone(),
+                )
+            };
+            if should_abort {
+                self.abort_flow_with_rst(&key, "global_switch").await;
+                return Ok(());
+            }
+        }
+
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
         state.last_seen = Instant::now();
@@ -683,6 +713,7 @@ impl TunTcpEngine {
         let seq_number = state.server_seq;
         let key = state.key.clone();
         let uplink_index = state.uplink_index;
+        let uplink_name = state.uplink_name.clone();
         let upstream_writer = state.upstream_writer.clone();
         if !packet.payload.is_empty()
             || (packet.flags & TCP_FLAG_FIN) != 0
@@ -745,7 +776,12 @@ impl TunTcpEngine {
                     self.abort_flow_with_rst(&key, "send_error").await;
                     return Ok(());
                 }
-                metrics::add_bytes("tcp", "client_to_upstream", pending_payload.len());
+                metrics::add_bytes(
+                    "tcp",
+                    "client_to_upstream",
+                    &uplink_name,
+                    pending_payload.len(),
+                );
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
                 state.pending_client_data.push_back(pending_payload.clone());
@@ -816,6 +852,28 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
+                if engine
+                    .inner
+                    .uplinks
+                    .strict_active_uplink_for(TransportKind::Tcp)
+                {
+                    let active_uplink = engine
+                        .inner
+                        .uplinks
+                        .active_uplink_index_for_transport(TransportKind::Tcp)
+                        .await;
+                    let should_abort = {
+                        let state = flow.lock().await;
+                        active_uplink.is_some_and(|active| {
+                            state.uplink_index != usize::MAX && state.uplink_index != active
+                        })
+                    };
+                    if should_abort {
+                        engine.abort_flow_with_rst(&key, "global_switch").await;
+                        return;
+                    }
+                }
+
                 let read_result = tokio::select! {
                     _ = close_rx.changed() => {
                         if *close_rx.borrow() {
@@ -831,7 +889,7 @@ impl TunTcpEngine {
                         if chunk.is_empty() {
                             continue;
                         }
-                        let (flush, ip_family, backlog_exceeded) = {
+                        let (flush, ip_family, backlog_exceeded, uplink_name) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
@@ -842,7 +900,12 @@ impl TunTcpEngine {
                                 exceeds_server_backlog_limit(&state, &engine.inner.tcp);
                             let flush = flush_server_output(&mut state);
                             sync_flow_metrics(&mut state);
-                            (flush, ip_family_from_version(key.version), backlog_exceeded)
+                            (
+                                flush,
+                                ip_family_from_version(key.version),
+                                backlog_exceeded,
+                                state.uplink_name.clone(),
+                            )
                         };
 
                         if backlog_exceeded {
@@ -942,7 +1005,12 @@ impl TunTcpEngine {
                                         "tcp_fin",
                                     );
                                 }
-                                metrics::add_bytes("tcp", "upstream_to_client", chunk.len());
+                                metrics::add_bytes(
+                                    "tcp",
+                                    "upstream_to_client",
+                                    &uplink_name,
+                                    chunk.len(),
+                                );
                             }
                             Err(error) => {
                                 warn!(error = %format!("{error:#}"), "failed to build TUN TCP data packet");
@@ -1228,44 +1296,64 @@ async fn select_tcp_candidate_and_connect(
     uplinks: &UplinkManager,
     target: &TargetAddr,
 ) -> Result<(UplinkCandidate, TcpShadowsocksWriter, TcpShadowsocksReader)> {
-    let candidates = uplinks.tcp_candidates(target).await;
-    if candidates.is_empty() {
-        let cooldowns = uplinks.tcp_cooldown_debug_summary().await;
-        warn!(
-            remote = %target,
-            tcp_uplinks = cooldowns.join("; "),
-            "dropping TUN TCP flow because all TCP uplinks are in cooldown or unavailable"
-        );
-        return Err(anyhow!(
-            "all TCP uplinks are in cooldown or unavailable for TUN flow"
-        ));
-    }
-
     let mut last_error = None;
     let mut failed_uplink = None::<String>;
-    for candidate in candidates {
-        match connect_tcp_uplink(uplinks, &candidate, target).await {
-            Ok((writer, reader)) => {
-                if let Some(from_uplink) = failed_uplink.take() {
-                    metrics::record_failover("tcp", &from_uplink, &candidate.uplink.name);
-                    info!(
-                        from_uplink,
-                        to_uplink = %candidate.uplink.name,
-                        remote = %target,
-                        "runtime TCP failover activated for TUN flow"
-                    );
-                }
-                return Ok((candidate, writer, reader));
+    let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
+    let mut tried_indexes = std::collections::HashSet::new();
+    loop {
+        let candidates = uplinks.tcp_candidates(target).await;
+        if candidates.is_empty() {
+            let cooldowns = uplinks.tcp_cooldown_debug_summary().await;
+            warn!(
+                remote = %target,
+                tcp_uplinks = cooldowns.join("; "),
+                "dropping TUN TCP flow because all TCP uplinks are in cooldown or unavailable"
+            );
+            return Err(anyhow!(
+                "all TCP uplinks are in cooldown or unavailable for TUN flow"
+            ));
+        }
+
+        let iter = if strict_transport {
+            candidates.into_iter().take(1).collect::<Vec<_>>()
+        } else {
+            candidates
+        };
+        let mut progressed = false;
+        for candidate in iter {
+            if strict_transport && !tried_indexes.insert(candidate.index) {
+                continue;
             }
-            Err(error) => {
-                uplinks
-                    .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
-                    .await;
-                if failed_uplink.is_none() {
-                    failed_uplink = Some(candidate.uplink.name.clone());
+            progressed = true;
+            match connect_tcp_uplink(uplinks, &candidate, target).await {
+                Ok((writer, reader)) => {
+                    uplinks
+                        .confirm_selected_uplink(TransportKind::Tcp, Some(target), candidate.index)
+                        .await;
+                    if let Some(from_uplink) = failed_uplink.take() {
+                        metrics::record_failover("tcp", &from_uplink, &candidate.uplink.name);
+                        info!(
+                            from_uplink,
+                            to_uplink = %candidate.uplink.name,
+                            remote = %target,
+                            "runtime TCP failover activated for TUN flow"
+                        );
+                    }
+                    return Ok((candidate, writer, reader));
                 }
-                last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+                Err(error) => {
+                    uplinks
+                        .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
+                        .await;
+                    if failed_uplink.is_none() {
+                        failed_uplink = Some(candidate.uplink.name.clone());
+                    }
+                    last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+                }
             }
+        }
+        if !strict_transport || !progressed {
+            break;
         }
     }
 
