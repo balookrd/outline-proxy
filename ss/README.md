@@ -149,7 +149,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
-| `memory_trim_interval_secs` | On Linux with glibc, periodically calls `malloc_trim(0)` to return freed memory to the OS; default is `60`, `0` disables it |
+| `memory_trim_interval_secs` | On Linux, periodically refreshes jemalloc stats and enables jemalloc background purging if needed; default is `60`, `0` disables it |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `public_host` | Public host used for generated Outline access keys |
@@ -308,7 +308,7 @@ The metrics set includes:
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
 - Process RSS / virtual memory gauges
-- Heap allocated / free gauges: exact allocator metrics on Linux+glibc, approximate `/proc/self/smaps`-based heap mapping metrics on other Linux targets
+- Heap allocated / free gauges from jemalloc allocator stats on Linux
 - Allocator trim counters and last trim before/after RSS gauges
 - Allocator support gauges so dashboards can distinguish unsupported features from real zero values
 - Build and configuration info
