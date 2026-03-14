@@ -247,19 +247,21 @@ impl UplinkManager {
                 effective_latency(status, TransportKind::Tcp, now, &self.inner.load_balancing);
             let udp_effective_latency =
                 effective_latency(status, TransportKind::Udp, now, &self.inner.load_balancing);
-            let tcp_score = score_latency(
+            let tcp_score = selection_score(
                 status,
                 uplink.weight,
                 TransportKind::Tcp,
                 now,
                 &self.inner.load_balancing,
+                self.inner.load_balancing.routing_scope,
             );
-            let udp_score = score_latency(
+            let udp_score = selection_score(
                 status,
                 uplink.weight,
                 TransportKind::Udp,
                 now,
                 &self.inner.load_balancing,
+                self.inner.load_balancing.routing_scope,
             );
             uplinks.push(UplinkSnapshot {
                 index,
@@ -1715,6 +1717,12 @@ fn scoring_base_latency(status: &UplinkStatus, transport: TransportKind) -> Opti
     }
 }
 
+fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
+    let base = base?;
+    let weight = weight.max(0.000_001);
+    Some(Duration::from_secs_f64(base.as_secs_f64() / weight))
+}
+
 fn score_latency(
     status: &UplinkStatus,
     weight: f64,
@@ -1722,9 +1730,15 @@ fn score_latency(
     now: Instant,
     config: &LoadBalancingConfig,
 ) -> Option<Duration> {
-    let effective = effective_latency(status, transport, now, config)?;
-    let weight = weight.max(0.000_001);
-    Some(Duration::from_secs_f64(effective.as_secs_f64() / weight))
+    weighted_latency_score(effective_latency(status, transport, now, config), weight)
+}
+
+fn base_score_latency(
+    status: &UplinkStatus,
+    weight: f64,
+    transport: TransportKind,
+) -> Option<Duration> {
+    weighted_latency_score(scoring_base_latency(status, transport), weight)
 }
 
 fn selection_score(
@@ -1736,23 +1750,26 @@ fn selection_score(
     scope: RoutingScope,
 ) -> Option<Duration> {
     match scope {
-        RoutingScope::Global => global_score_latency(status, weight, now, config),
-        _ => score_latency(status, weight, transport, now, config),
+        RoutingScope::Global => global_selection_score_latency(status, weight, now, config),
+        RoutingScope::PerUplink => base_score_latency(status, weight, transport),
+        RoutingScope::PerFlow => score_latency(status, weight, transport, now, config),
     }
 }
 
-fn global_score_latency(
+fn global_selection_score_latency(
     status: &UplinkStatus,
     weight: f64,
-    now: Instant,
-    config: &LoadBalancingConfig,
+    _now: Instant,
+    _config: &LoadBalancingConfig,
 ) -> Option<Duration> {
-    let tcp_score = score_latency(status, weight, TransportKind::Tcp, now, config);
-    let udp_score = score_latency(status, weight, TransportKind::Udp, now, config);
+    let tcp_score = base_score_latency(status, weight, TransportKind::Tcp);
+    let udp_score = base_score_latency(status, weight, TransportKind::Udp);
 
     match (tcp_score, udp_score) {
         // Global routing should primarily follow TCP quality.
         // UDP only acts as a weak tie-breaker and should not dominate selection.
+        // Penalties are intentionally excluded here; strict global switching should
+        // be driven by cooldown/failover rather than decayed score history.
         (Some(tcp), Some(udp)) => Some(Duration::from_secs_f64(
             tcp.as_secs_f64() + udp.as_secs_f64() * 0.05,
         )),
@@ -2087,6 +2104,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn per_uplink_scope_ignores_penalty_in_selection_score() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::PerUplink;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 30).await;
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].tcp_penalty = PenaltyState {
+                value_secs: 20.0,
+                updated_at: Some(Instant::now()),
+            };
+        }
+
+        let target = TargetAddr::Domain("example.com".to_string(), 443);
+        let candidates = manager.tcp_candidates(&target).await;
+        assert_eq!(candidates[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
     async fn global_scope_shares_selected_uplink_across_tcp_and_udp() {
         let mut config = lb();
         config.mode = LoadBalancingMode::ActivePassive;
@@ -2222,6 +2269,42 @@ mod tests {
 
         let second = manager.tcp_candidates(&target).await;
         assert_eq!(second[0].uplink.name, "primary");
+    }
+
+    #[tokio::test]
+    async fn global_scope_ignores_penalty_in_selection_score() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 30).await;
+        set_udp_status(&manager, 0, true, 40).await;
+        set_udp_status(&manager, 1, true, 50).await;
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].tcp_penalty = PenaltyState {
+                value_secs: 20.0,
+                updated_at: Some(Instant::now()),
+            };
+            statuses[0].udp_penalty = PenaltyState {
+                value_secs: 20.0,
+                updated_at: Some(Instant::now()),
+            };
+        }
+
+        let target = TargetAddr::Domain("example.com".to_string(), 443);
+        let candidates = manager.tcp_candidates(&target).await;
+        assert_eq!(candidates[0].uplink.name, "primary");
     }
 
     #[tokio::test]
