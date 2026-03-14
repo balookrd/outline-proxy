@@ -152,6 +152,7 @@
       "targets": [
         {
           "expr": "label_replace((max by (instance, mode) (outline_ws_rust_selection_mode_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
           "legendFormat": "{{instance_short}} {{mode}}",
           "refId": "A"
         }
@@ -206,6 +207,7 @@
       "targets": [
         {
           "expr": "label_replace((max by (instance, scope) (outline_ws_rust_routing_scope_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
           "legendFormat": "{{instance_short}} {{scope}}",
           "refId": "A"
         }
@@ -260,6 +262,7 @@
       "targets": [
         {
           "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
         }
@@ -318,12 +321,62 @@
       "targets": [
         {
           "expr": "label_replace((max by (instance) (outline_ws_rust_sticky_routes_total{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
       ],
       "title": "Global Sticky Routes",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 2,
+            "pointSize": 0
+          },
+          "max": 1,
+          "min": 0,
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 16,
+        "x": 0,
+        "y": 51
+      },
+      "id": 148,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} active",
+          "refId": "A"
+        }
+      ],
+      "title": "Global Active Uplink Timeline",
+      "type": "timeseries"
     },
     {
       "datasource": {
