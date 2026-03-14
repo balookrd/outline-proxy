@@ -10,6 +10,9 @@ use std::{
 
 use crate::config::Config;
 
+#[cfg(target_os = "linux")]
+use anyhow::{Context, Result};
+
 const TCP_CONNECT_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
@@ -31,7 +34,7 @@ pub struct ProcessMemorySnapshot {
     pub heap_free_bytes: Option<u64>,
 }
 
-#[cfg_attr(not(all(target_os = "linux", target_env = "gnu")), allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn record_allocator_trim_run(
     before: Option<ProcessMemorySnapshot>,
     after: Option<ProcessMemorySnapshot>,
@@ -62,13 +65,18 @@ pub fn record_allocator_trim_run(
     );
 }
 
-#[cfg_attr(not(all(target_os = "linux", target_env = "gnu")), allow(dead_code))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub fn record_allocator_trim_error() {
     ALLOCATOR_TRIM_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
     process_memory_snapshot_impl()
+}
+
+#[cfg(target_os = "linux")]
+pub fn trim_allocator() -> Result<bool> {
+    jemalloc_trim_allocator()
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -370,7 +378,7 @@ impl Metrics {
         write_help(
             &mut out,
             "outline_ss_allocator_heap_metrics_supported",
-            "Allocator heap metrics mode: 0=unsupported, 1=exact allocator metrics, 2=approximate /proc-based metrics.",
+            "Allocator heap metrics mode: 0=unsupported, 1=exact allocator metrics.",
         );
         write_type(&mut out, "outline_ss_allocator_heap_metrics_supported", "gauge");
         writeln!(
@@ -1310,17 +1318,15 @@ fn escape_label_value(value: &str) -> String {
 }
 
 const fn allocator_heap_metrics_support_level() -> i64 {
-    if cfg!(all(target_os = "linux", target_env = "gnu")) {
+    if cfg!(target_os = "linux") {
         1
-    } else if cfg!(all(target_os = "linux", not(target_env = "gnu"))) {
-        2
     } else {
         0
     }
 }
 
 const fn allocator_trim_supported() -> bool {
-    cfg!(all(target_os = "linux", target_env = "gnu"))
+    cfg!(target_os = "linux")
 }
 
 #[cfg(target_os = "linux")]
@@ -1328,7 +1334,7 @@ fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let resident_memory_bytes = proc_status_value_bytes(&status, "VmRSS:")?;
     let virtual_memory_bytes = proc_status_value_bytes(&status, "VmSize:")?;
-    let (heap_allocated_bytes, heap_free_bytes) = glibc_heap_snapshot();
+    let (heap_allocated_bytes, heap_free_bytes) = allocator_heap_snapshot();
     Some(ProcessMemorySnapshot {
         resident_memory_bytes,
         virtual_memory_bytes,
@@ -1351,19 +1357,9 @@ fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
     })
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
-fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
-    // mallinfo2 exposes glibc arena usage, which is a good approximation of allocator heap state.
-    let info = unsafe { libc::mallinfo2() };
-    (
-        Some(info.uordblks as u64),
-        Some(info.fordblks as u64),
-    )
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "gnu")))]
-fn glibc_heap_snapshot() -> (Option<u64>, Option<u64>) {
-    procfs_heap_snapshot()
+#[cfg(target_os = "linux")]
+fn allocator_heap_snapshot() -> (Option<u64>, Option<u64>) {
+    jemalloc_heap_snapshot().unwrap_or_else(|_| procfs_heap_snapshot())
 }
 
 #[cfg(target_os = "linux")]
@@ -1403,6 +1399,41 @@ fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
         Some(heap_resident_bytes),
         Some(heap_mapped_bytes.saturating_sub(heap_resident_bytes)),
     )
+}
+
+#[cfg(target_os = "linux")]
+fn jemalloc_heap_snapshot() -> Result<(Option<u64>, Option<u64>)> {
+    let epoch = tikv_jemalloc_ctl::epoch::mib().context("failed to create jemalloc epoch MIB")?;
+    epoch.advance().context("failed to advance jemalloc epoch")?;
+
+    let allocated = tikv_jemalloc_ctl::stats::allocated::mib()
+        .context("failed to create jemalloc allocated MIB")?
+        .read()
+        .context("failed to read jemalloc allocated stats")?;
+    let active = tikv_jemalloc_ctl::stats::active::mib()
+        .context("failed to create jemalloc active MIB")?
+        .read()
+        .context("failed to read jemalloc active stats")?;
+    let allocated = allocated as u64;
+    let active = active as u64;
+
+    Ok((
+        Some(allocated),
+        Some(active.saturating_sub(allocated)),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn jemalloc_trim_allocator() -> Result<bool> {
+    let background_threads_enabled = tikv_jemalloc_ctl::background_thread::read()
+        .context("failed to read jemalloc background_thread state")?;
+    if !background_threads_enabled {
+        tikv_jemalloc_ctl::background_thread::write(true)
+            .context("failed to enable jemalloc background_thread")?;
+    }
+
+    tikv_jemalloc_ctl::epoch::advance().context("failed to advance jemalloc epoch")?;
+    Ok(false)
 }
 
 #[cfg(target_os = "linux")]

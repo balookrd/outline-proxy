@@ -1904,11 +1904,6 @@
                   "color": "#73BF69",
                   "index": 1,
                   "text": "exact"
-                },
-                "2": {
-                  "color": "#FFB357",
-                  "index": 2,
-                  "text": "approximate"
                 }
               },
               "type": "value"
@@ -1924,10 +1919,6 @@
               {
                 "color": "#73BF69",
                 "value": 1
-              },
-              {
-                "color": "#FFB357",
-                "value": 2
               }
             ]
           }

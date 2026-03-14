@@ -11,6 +11,10 @@ use tracing_subscriber::{EnvFilter, fmt};
 use crate::access_key::{build_access_key_artifacts, render_access_key_report};
 use crate::config::Config;
 
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::load()?;
@@ -31,7 +35,7 @@ fn init_tracing() {
     fmt().with_env_filter(filter).compact().init();
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu"))]
+#[cfg(target_os = "linux")]
 fn start_memory_reclaimer(config: &Config) {
     if config.memory_trim_interval_secs == 0 {
         return;
@@ -49,13 +53,8 @@ fn start_memory_reclaimer(config: &Config) {
         loop {
             interval.tick().await;
             let before = crate::metrics::process_memory_snapshot();
-            match tokio::task::spawn_blocking(|| {
-                // Return free glibc arenas/pages to the OS after traffic spikes.
-                unsafe { libc::malloc_trim(0) != 0 }
-            })
-            .await
-            {
-                Ok(trim_hint) => {
+            match tokio::task::spawn_blocking(crate::metrics::trim_allocator).await {
+                Ok(Ok(trim_hint)) => {
                     let after = crate::metrics::process_memory_snapshot();
                     let released_bytes = before
                         .zip(after)
@@ -89,6 +88,10 @@ fn start_memory_reclaimer(config: &Config) {
                         );
                     }
                 }
+                Ok(Err(error)) => {
+                    crate::metrics::record_allocator_trim_error();
+                    tracing::warn!(?error, "allocator memory trim failed");
+                }
                 Err(error) => {
                     crate::metrics::record_allocator_trim_error();
                     tracing::warn!(?error, "allocator memory trim task failed");
@@ -98,12 +101,12 @@ fn start_memory_reclaimer(config: &Config) {
     });
 }
 
-#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+#[cfg(not(target_os = "linux"))]
 fn start_memory_reclaimer(config: &Config) {
     if config.memory_trim_interval_secs > 0 {
         tracing::warn!(
             memory_trim_interval_secs = config.memory_trim_interval_secs,
-            "periodic allocator trimming is only supported on Linux with glibc"
+            "periodic allocator trimming is only supported on Linux"
         );
     }
 }
