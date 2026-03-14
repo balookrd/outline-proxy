@@ -111,8 +111,8 @@ tun2udp + tun2tcp"]
   - `active_passive`: keep the current selected uplink until it becomes unhealthy or enters cooldown
 - routing scope:
   - `per_flow`: decisions are made independently per routing key / target
-  - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`)
-  - `global`: one shared sticky uplink is used for new user traffic across both `tcp` and `udp` whenever possible; health and scoring are still evaluated for the current transport so a UDP outage does not automatically block TCP
+  - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`); in `active_passive` mode the pinned TCP and UDP uplinks do not expire with `sticky_ttl`, and transport-specific flows are closed if they remain attached to an older active uplink after reselection
+  - `global`: one shared process-wide active uplink is used for new user traffic across both `tcp` and `udp`; selection is intentionally biased toward TCP health and TCP score so UDP quality has only weak influence on which uplink becomes globally active, the active global uplink does not expire with `sticky_ttl`, strict active selection now stays pinned until the current global uplink enters cooldown, and TUN flows that remain pinned to an older uplink after a global switch are actively closed so they reconnect through the new global uplink
 - per-uplink static `weight`
 - RTT EWMA scoring
 - failure penalty model with decay
@@ -132,7 +132,7 @@ tun2udp + tun2tcp"]
 ### TUN
 
 - existing TUN device integration only
-- `tun2udp` with flow lifecycle management
+- `tun2udp` with flow lifecycle management and local ICMP echo replies
 - stateful `tun2tcp` relay with retransmit, zero-window persist/backoff, SACK-aware receive/send behavior, adaptive RTO, and bounded buffering
 
 ### Operations
@@ -151,7 +151,7 @@ The project is intentionally practical, but there are still boundaries:
 - SOCKS5 username/password auth is not implemented.
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
-- IPv4 fragments and IPv6 extension-header paths on TUN traffic are not supported.
+- IPv4 fragments, IPv6 extension-header paths, and non-echo ICMP traffic on TUN are not supported.
 - HTTP probe supports `http://` today, not `https://`.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
@@ -170,6 +170,24 @@ Standard build:
 
 ```bash
 cargo build --release
+```
+
+Allocator selection:
+
+- default: `allocator-jemalloc`
+- optional: `allocator-system`
+
+Examples:
+
+```bash
+# Default production build (jemalloc)
+cargo build --release
+
+# Explicit jemalloc build
+cargo build --release --no-default-features --features allocator-jemalloc
+
+# System allocator build
+cargo build --release --no-default-features --features allocator-system
 ```
 
 Example static-ish Linux build with musl:
@@ -299,7 +317,7 @@ password = "Secret0"
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
-- `memory_trim_interval_secs` defaults to `60` and keeps periodic `malloc_trim(0)` enabled on Linux/glibc to return free pages to the OS after traffic spikes. Set it to `0` to disable periodic trimming.
+- `memory_trim_interval_secs` defaults to `60`. With the default jemalloc build it keeps allocator background maintenance active by enabling `background_thread` when needed and advancing `epoch` so allocator stats stay fresh. With the system allocator on Linux/glibc it keeps periodic `malloc_trim(0)` enabled to return free pages to the OS after traffic spikes. Set it to `0` to disable periodic trimming.
 
 ### Useful CLI and env overrides
 
@@ -365,8 +383,8 @@ Selection pipeline:
 Routing scope behavior:
 
 - `per_flow`: different targets can choose different uplinks
-- `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks
-- `global`: one selected uplink is shared across all traffic until failover or explicit reselection
+- `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks; in `active_passive` mode each transport keeps its own pinned active uplink until failover or explicit reselection
+- `global`: one selected uplink is shared across all new user traffic until failover or explicit reselection, with TCP health and TCP score taking priority over UDP quality; in this mode strict selection stays pinned to the current active uplink until it enters cooldown, and UDP traffic no longer falls through to a backup uplink while the current global uplink is still the active TCP choice
 
 Runtime failover:
 
@@ -413,11 +431,13 @@ The process attaches only to an already existing TUN device. Interface creation,
 Capabilities:
 
 - IPv4 and IPv6 UDP packet forwarding
+- local IPv4 ICMP echo reply (`ping`) handling
+- local IPv6 ICMPv6 echo reply handling
 - per-flow uplink transport
 - flow idle cleanup
 - bounded flow count
 - oldest-flow eviction on overflow
-- flow metrics and packet outcome metrics
+- flow metrics and packet outcome metrics, including local ICMP replies
 
 ### tun2tcp
 
@@ -490,12 +510,27 @@ Metrics include:
 On Linux, the process memory sampler updates:
 
 - `outline_ws_rust_process_resident_memory_bytes`
+- `outline_ws_rust_process_virtual_memory_bytes`
 - `outline_ws_rust_process_heap_memory_bytes`
+- `outline_ws_rust_process_heap_allocated_bytes`
+- `outline_ws_rust_process_heap_free_bytes`
+- `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_malloc_trim_total{reason,result}`
+- `outline_ws_rust_process_malloc_trim_errors_total{reason}`
 - `outline_ws_rust_process_malloc_trim_last_released_bytes{kind="rss|heap"}`
+- `outline_ws_rust_process_malloc_trim_last_bytes{kind="rss|heap",stage="before|after|released"}`
 
-On Linux with glibc, opportunistic allocator trimming also emits a dedicated log entry:
+With the default `jemalloc` build, heap metrics come from allocator stats:
+
+- `heap_memory_bytes` reflects jemalloc active bytes
+- `heap_allocated_bytes` reflects jemalloc allocated bytes
+- `heap_free_bytes` reflects `active - allocated`
+- `heap_mode_info{mode="jemalloc"}` marks that allocator-aware sampling is active
+
+With the default jemalloc build, periodic and opportunistic trim maintenance enables `background_thread` when needed and advances `epoch`; it does not try to write to `arena.<n>.purge`.
+
+On Linux with glibc and the system allocator, opportunistic allocator trimming also emits a dedicated log entry:
 
 - `malloc_trim invoked`
 
@@ -503,12 +538,14 @@ On Linux, the process also emits a periodic descriptor inventory log:
 
 - `process fd snapshot`
 
-The log includes RSS and heap before and after trimming so you can verify whether allocator trimming is actually returning memory on your host.
+When allocator trimming is supported, the log includes RSS and heap before and after trimming so you can verify whether memory is actually being returned on your host.
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-The main dashboard also includes `Open FDs`, `Socket FD Share`, `FD Types`, `Transport Connects Active by Source`, `Transport Connect Outcomes by Source`, `Upstream Transports Active by Source`, `Upstream Transport Lifecycles by Source`, `malloc_trim Calls (Selected Range)`, `malloc_trim Released Bytes`, and `UDP Forward Errors` so you can compare descriptor pressure, handshake churn, established upstream transport lifetime, TUN-side UDP forwarding failures, and trim activity with RSS and heap without switching to `journalctl`.
+The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Last RSS Released`, `Trim Errors`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Allocator Trim Activity`, and `Allocator Trim Effect`. Descriptor and transport pressure remain in a separate section so allocator behavior is visible without mixing it with FD churn.
 
 When runtime failure storms are suppressed because an uplink is already in cooldown, `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` and the `Suppressed Runtime Failures` panel show how much duplicate failure churn was intentionally ignored.
+`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` feed the `Selection Mode`, `Routing Scope`, `Global Active Uplink`, and `Global Sticky Routes` stat panels so you can confirm how the selector is configured and, in `global` scope, whether a sticky active uplink is currently pinned.
 When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` and the `UDP Forward Errors` panel break that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
+Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}` and visualized in the `Local ICMP Replies` panel.
 The `Active UDP Flows` panel shows current TUN UDP flow count alongside configured capacity, `UDP Flow Pressure Ratio` is a quick stat+spline indicator of how close the current UDP flow table is to its limit, and `UDP Flow Lifecycle` shows whether active flow growth comes from normal creation outpacing closure (`created > closed`) or from cleanup not keeping up with the current traffic mix.
 
 Dashboards:
@@ -519,12 +556,16 @@ Dashboards:
 The main dashboard is grouped into:
 
 - Overview
+- Routing Policy
 - Traffic
 - Latency
 - Health & Routing
-- Memory & Reclaim
+- Memory & Allocator
+- FD & Transport Pressure
 - Probes & Standby
 - TUN
+
+Traffic panels on the main dashboard now break payload throughput down by `uplink`, so active traffic split between `nuxt` and `senko` is visible directly in `Payload by Uplink (Selected Range)` and `Protocol Throughput`.
 
 The `tun2tcp` dashboard is grouped into:
 
@@ -535,6 +576,7 @@ The `tun2tcp` dashboard is grouped into:
 
 Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
 Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
+`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm whether an instance is running with `jemalloc` or the system allocator.
 
 Alert rules:
 
