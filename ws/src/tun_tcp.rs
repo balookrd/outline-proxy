@@ -1396,10 +1396,10 @@ async fn connect_tcp_uplink(
     let uplink = &candidate.uplink;
     let master_key = uplink.cipher.derive_master_key(&uplink.password);
     let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
-    let mut writer =
+    let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime);
+    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -3867,16 +3867,17 @@ mod tests {
             },
             uplink_index: 0,
             uplink_name: "test".to_string(),
-            upstream_writer: Some(Arc::new(Mutex::new(
-                TcpShadowsocksWriter::connect(
+            upstream_writer: Some(Arc::new(Mutex::new({
+                let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
                     sink,
                     cipher,
                     &master_key,
                     super::UpstreamTransportGuard::new("test", "tcp"),
                 )
-                    .await
-                    .unwrap(),
-            ))),
+                .await
+                .unwrap();
+                writer
+            }))),
             close_signal,
             status: super::TcpFlowStatus::Established,
             client_next_seq: 100,
@@ -4060,10 +4061,10 @@ mod tests {
         let cipher = CipherKind::Chacha20IetfPoly1305;
         let master_key = cipher.derive_master_key("Secret0");
         let lifetime = super::UpstreamTransportGuard::new("test", "tcp");
-        let mut writer =
+        let (mut writer, ctrl_tx) =
             TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime))
                 .await?;
-        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime);
+        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx);
 
         target_tx.send(reader.read_chunk().await?).unwrap();
 

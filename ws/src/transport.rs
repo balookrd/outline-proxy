@@ -7,7 +7,7 @@ use http::{Method, Request, Uri, Version};
 use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use pin_project_lite::pin_project;
 use rand::RngCore;
 use rustls::pki_types::ServerName;
@@ -24,7 +24,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::net::lookup_host;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -168,6 +168,11 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
             // Send QUIC PING frames so NAT mappings stay alive and the server
             // detects dead connections promptly.
             transport.keep_alive_interval(Some(Duration::from_secs(10)));
+            transport.max_idle_timeout(Some(
+                Duration::from_secs(120)
+                    .try_into()
+                    .expect("valid H3 QUIC client idle timeout"),
+            ));
             config.transport_config(Arc::new(transport));
             config
         })
@@ -377,7 +382,8 @@ type WsSink = SplitSink<AnyWsStream, Message>;
 type WsStream = SplitStream<AnyWsStream>;
 
 pub struct TcpShadowsocksWriter {
-    sink: Mutex<WsSink>,
+    data_tx: Option<mpsc::Sender<Message>>,
+    _writer_task: AbortOnDrop,
     cipher: CipherKind,
     key: Vec<u8>,
     nonce: [u8; 12],
@@ -387,6 +393,7 @@ pub struct TcpShadowsocksWriter {
 
 pub struct TcpShadowsocksReader {
     stream: WsStream,
+    ctrl_tx: mpsc::Sender<Message>,
     cipher: CipherKind,
     master_key: Vec<u8>,
     key: Option<Vec<u8>>,
@@ -401,8 +408,10 @@ pub struct TcpShadowsocksReader {
 }
 
 pub struct UdpWsTransport {
-    sink: Mutex<WsSink>,
+    data_tx: mpsc::Sender<Message>,
+    ctrl_tx: mpsc::Sender<Message>,
     stream: Mutex<WsStream>,
+    _writer_task: AbortOnDrop,
     cipher: CipherKind,
     master_key: Vec<u8>,
     _lifetime: Arc<UpstreamTransportGuard>,
@@ -480,23 +489,63 @@ pub async fn connect_websocket_with_source(
 }
 
 impl TcpShadowsocksWriter {
+    /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
+    /// `ctrl_tx` must be passed to the paired `TcpShadowsocksReader` so that
+    /// Pong responses are sent through the priority channel in the writer task.
     pub(crate) async fn connect(
         sink: WsSink,
         cipher: CipherKind,
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
-    ) -> Result<Self> {
+    ) -> Result<(Self, mpsc::Sender<Message>)> {
         let mut salt = vec![0u8; cipher.salt_len()];
         rand::thread_rng().fill_bytes(&mut salt);
 
-        Ok(Self {
-            sink: Mutex::new(sink),
-            cipher,
-            key: derive_subkey(cipher, master_key, &salt)?,
-            nonce: [0u8; 12],
-            pending_salt: Some(salt),
-            _lifetime: lifetime,
-        })
+        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+        let writer_task = tokio::spawn(async move {
+            let mut ws_sink = sink;
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = ctrl_rx.recv() => match msg {
+                            Some(m) => {
+                                if ws_sink.send(m).await.is_err() { return; }
+                            }
+                            None => ctrl_open = false,
+                        },
+                        msg = data_rx.recv() => match msg {
+                            Some(m) => {
+                                if ws_sink.send(m).await.is_err() { return; }
+                            }
+                            None => { let _ = ws_sink.close().await; return; }
+                        },
+                    }
+                } else {
+                    match data_rx.recv().await {
+                        Some(m) => {
+                            if ws_sink.send(m).await.is_err() { return; }
+                        }
+                        None => { let _ = ws_sink.close().await; return; }
+                    }
+                }
+            }
+        });
+
+        Ok((
+            Self {
+                data_tx: Some(data_tx),
+                _writer_task: AbortOnDrop(writer_task),
+                cipher,
+                key: derive_subkey(cipher, master_key, &salt)?,
+                nonce: [0u8; 12],
+                pending_salt: Some(salt),
+                _lifetime: lifetime,
+            },
+            ctrl_tx,
+        ))
     }
 
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
@@ -520,16 +569,18 @@ impl TcpShadowsocksWriter {
         frame.extend_from_slice(&encrypted_len);
         frame.extend_from_slice(&encrypted_payload);
 
-        let mut sink = self.sink.lock().await;
-        sink.send(Message::Binary(frame.into()))
+        self.data_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("writer already closed"))?
+            .send(Message::Binary(frame.into()))
             .await
             .context("failed to send encrypted frame")?;
         Ok(())
     }
 
     pub async fn close(&mut self) -> Result<()> {
-        let mut sink = self.sink.lock().await;
-        sink.close().await.context("failed to close websocket")?;
+        // Drop the sender; the writer task will flush and close the underlying sink.
+        drop(self.data_tx.take());
         Ok(())
     }
 }
@@ -540,9 +591,11 @@ impl TcpShadowsocksReader {
         cipher: CipherKind,
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
+        ctrl_tx: mpsc::Sender<Message>,
     ) -> Self {
         Self {
             stream,
+            ctrl_tx,
             cipher,
             master_key: master_key.to_vec(),
             key: None,
@@ -600,7 +653,12 @@ impl TcpShadowsocksReader {
                     self.closed_cleanly = true;
                     bail!("websocket closed");
                 }
-                Message::Ping(_) | Message::Pong(_) => {}
+                Message::Ping(payload) => {
+                    // Send Pong through the priority channel so it is not
+                    // delayed behind queued binary data frames.
+                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
+                }
+                Message::Pong(_) => {}
                 Message::Text(_) => bail!("unexpected text websocket frame"),
                 Message::Frame(_) => {}
             }
@@ -621,9 +679,49 @@ impl UdpWsTransport {
         source: &'static str,
     ) -> Self {
         let (sink, stream) = ws_stream.split();
+        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+        let writer_task = tokio::spawn(async move {
+            let mut ws_sink = sink;
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = ctrl_rx.recv() => match msg {
+                            Some(m) => {
+                                if ws_sink.send(m).await.is_err() { return; }
+                            }
+                            None => ctrl_open = false,
+                        },
+                        msg = data_rx.recv() => match msg {
+                            Some(Message::Close(_)) | None => {
+                                let _ = ws_sink.close().await;
+                                return;
+                            }
+                            Some(m) => {
+                                if ws_sink.send(m).await.is_err() { return; }
+                            }
+                        },
+                    }
+                } else {
+                    match data_rx.recv().await {
+                        Some(Message::Close(_)) | None => {
+                            let _ = ws_sink.close().await;
+                            return;
+                        }
+                        Some(m) => {
+                            if ws_sink.send(m).await.is_err() { return; }
+                        }
+                    }
+                }
+            }
+        });
         Self {
-            sink: Mutex::new(sink),
+            data_tx,
+            ctrl_tx,
             stream: Mutex::new(stream),
+            _writer_task: AbortOnDrop(writer_task),
             cipher,
             master_key: cipher.derive_master_key(password),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
@@ -646,8 +744,8 @@ impl UdpWsTransport {
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
         let packet = encrypt_udp_packet(self.cipher, &self.master_key, payload)?;
-        let mut sink = self.sink.lock().await;
-        sink.send(Message::Binary(packet.into()))
+        self.data_tx
+            .send(Message::Binary(packet.into()))
             .await
             .context("failed to send UDP websocket frame")?;
         Ok(())
@@ -666,7 +764,12 @@ impl UdpWsTransport {
                     return decrypt_udp_packet(self.cipher, &self.master_key, &bytes);
                 }
                 Message::Close(_) => bail!("websocket closed"),
-                Message::Ping(_) | Message::Pong(_) => {}
+                Message::Ping(payload) => {
+                    // Send Pong through the priority channel so it is not
+                    // delayed behind queued binary data frames.
+                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
+                }
+                Message::Pong(_) => {}
                 Message::Text(_) => bail!("unexpected text websocket frame"),
                 Message::Frame(_) => {}
             }
@@ -674,8 +777,8 @@ impl UdpWsTransport {
     }
 
     pub async fn close(&self) -> Result<()> {
-        let mut sink = self.sink.lock().await;
-        sink.close().await.context("failed to close websocket")?;
+        // Signal the writer task to flush pending frames and close the sink.
+        let _ = self.data_tx.send(Message::Close(None)).await;
         Ok(())
     }
 }
@@ -735,6 +838,9 @@ async fn connect_websocket_h2(
     };
 
     let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
+        .timer(TokioTimer::new())
+        .keep_alive_interval(Some(Duration::from_secs(20)))
+        .keep_alive_timeout(Duration::from_secs(20))
         .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
         .await
         .context("HTTP/2 handshake failed")?;
@@ -898,7 +1004,7 @@ async fn connect_h3_quic(
         inner: SockudoWebSocketStream::from_raw(
             h3_stream,
             sockudo_ws::Role::Client,
-            SockudoConfig::builder().http3_idle_timeout(30_000).build(),
+            SockudoConfig::builder().http3_idle_timeout(90_000).build(),
         ),
         endpoint,
         _connection: H3ConnectionGuard(connection_handle),

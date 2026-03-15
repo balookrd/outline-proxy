@@ -1623,10 +1623,10 @@ async fn run_http_probe(
 
     let master_key = uplink.cipher.derive_master_key(&uplink.password);
     let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
-    let mut writer =
+    let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let mut reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime);
+    let mut reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
