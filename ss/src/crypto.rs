@@ -143,10 +143,9 @@ impl AeadStreamDecryptor {
         &self.buffer
     }
 
-    pub fn pull_plaintext(&mut self) -> Result<Vec<Vec<u8>>, CryptoError> {
+    pub fn pull_plaintext(&mut self, output: &mut Vec<u8>) -> Result<(), CryptoError> {
         self.ensure_session_key()?;
 
-        let mut plaintext_chunks = Vec::new();
         loop {
             let Some(key) = &self.key else {
                 break;
@@ -157,7 +156,7 @@ impl AeadStreamDecryptor {
                     break;
                 }
 
-                let mut encrypted_len = self.buffer.split_to(2 + TAG_LEN).to_vec();
+                let mut encrypted_len = self.buffer.split_to(2 + TAG_LEN);
                 let nonce = next_stream_nonce(&mut self.nonce_counter);
                 let decrypted_len = key
                     .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
@@ -178,15 +177,15 @@ impl AeadStreamDecryptor {
                 break;
             }
 
-            let mut encrypted_payload = self.buffer.split_to(chunk_len + TAG_LEN).to_vec();
+            let mut encrypted_payload = self.buffer.split_to(chunk_len + TAG_LEN);
             let nonce = next_stream_nonce(&mut self.nonce_counter);
             let decrypted_payload =
                 key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
-            plaintext_chunks.push(decrypted_payload.to_vec());
+            output.extend_from_slice(decrypted_payload);
             self.pending_chunk_len = None;
         }
 
-        Ok(plaintext_chunks)
+        Ok(())
     }
 
     fn ensure_session_key(&mut self) -> Result<(), CryptoError> {
@@ -194,11 +193,13 @@ impl AeadStreamDecryptor {
             return Ok(());
         }
 
+        let mut any_candidate = false;
         for user in self.users.iter() {
             let salt_len = user.cipher.salt_len();
             if self.buffer.len() < salt_len + 2 + TAG_LEN {
                 continue;
             }
+            any_candidate = true;
 
             let salt = &self.buffer[..salt_len];
             let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
@@ -224,7 +225,11 @@ impl AeadStreamDecryptor {
             }
         }
 
-        Err(CryptoError::UnknownUser)
+        if any_candidate {
+            Err(CryptoError::UnknownUser)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -267,7 +272,8 @@ impl AeadStreamEncryptor {
             return Err(CryptoError::InvalidChunkSize(plaintext.len()));
         }
 
-        let mut output = Vec::new();
+        let salt_len = if self.sent_salt { 0 } else { self.salt.len() };
+        let mut output = Vec::with_capacity(salt_len + 2 + TAG_LEN + plaintext.len() + TAG_LEN);
         if !self.sent_salt {
             output.extend_from_slice(&self.salt);
             self.sent_salt = true;
@@ -276,7 +282,8 @@ impl AeadStreamEncryptor {
         let length = u16::try_from(plaintext.len())
             .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
             .to_be_bytes();
-        let mut encrypted_len = length.to_vec();
+        let mut encrypted_len = Vec::with_capacity(2 + TAG_LEN);
+        encrypted_len.extend_from_slice(&length);
         self.key
             .seal_in_place_append_tag(
                 next_stream_nonce(&mut self.nonce_counter),
@@ -286,7 +293,8 @@ impl AeadStreamEncryptor {
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(&encrypted_len);
 
-        let mut encrypted_payload = plaintext.to_vec();
+        let mut encrypted_payload = Vec::with_capacity(plaintext.len() + TAG_LEN);
+        encrypted_payload.extend_from_slice(plaintext);
         self.key
             .seal_in_place_append_tag(
                 next_stream_nonce(&mut self.nonce_counter),
@@ -589,10 +597,11 @@ mod tests {
 
         let mut decryptor = AeadStreamDecryptor::new(users.clone());
         decryptor.push(&ciphertext);
-        let plaintext = decryptor.pull_plaintext().unwrap();
+        let mut plaintext = Vec::new();
+        decryptor.pull_plaintext(&mut plaintext).unwrap();
 
         assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
-        assert_eq!(plaintext, vec![b"hello over websocket".to_vec()]);
+        assert_eq!(plaintext, b"hello over websocket");
     }
 
     #[test]
@@ -605,10 +614,11 @@ mod tests {
         for chunk in ciphertext.chunks(3) {
             decryptor.push(chunk);
         }
-        let plaintext = decryptor.pull_plaintext().unwrap();
+        let mut plaintext = Vec::new();
+        decryptor.pull_plaintext(&mut plaintext).unwrap();
 
         assert_eq!(decryptor.user().map(UserKey::id), Some("alice"));
-        assert_eq!(plaintext, vec![b"fragmented".to_vec()]);
+        assert_eq!(plaintext, b"fragmented");
     }
 
     #[test]
@@ -651,9 +661,10 @@ mod tests {
 
         let mut decryptor = AeadStreamDecryptor::new(users);
         decryptor.push(&ciphertext);
-        let plaintext = decryptor.pull_plaintext().unwrap();
+        let mut plaintext = Vec::new();
+        decryptor.pull_plaintext(&mut plaintext).unwrap();
 
         assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
-        assert_eq!(plaintext, vec![b"mixed cipher".to_vec()]);
+        assert_eq!(plaintext, b"mixed cipher");
     }
 }

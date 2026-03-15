@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt::Write,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -1008,13 +1008,13 @@ trait PrometheusLabels {
 }
 
 struct CounterVec<L> {
-    values: Mutex<BTreeMap<L, Arc<AtomicU64>>>,
+    values: RwLock<BTreeMap<L, Arc<AtomicU64>>>,
 }
 
 impl<L> Default for CounterVec<L> {
     fn default() -> Self {
         Self {
-            values: Mutex::new(BTreeMap::new()),
+            values: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -1024,8 +1024,15 @@ where
     L: Clone + Ord,
 {
     fn inc(&self, labels: L, value: u64) {
+        {
+            let values = self.values.read().expect("counter vec poisoned");
+            if let Some(cell) = values.get(&labels) {
+                cell.fetch_add(value, Ordering::Relaxed);
+                return;
+            }
+        }
         let cell = {
-            let mut values = self.values.lock().expect("counter vec poisoned");
+            let mut values = self.values.write().expect("counter vec poisoned");
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
@@ -1036,7 +1043,7 @@ where
 
     fn snapshot(&self) -> Vec<(L, u64)> {
         self.values
-            .lock()
+            .read()
             .expect("counter vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
@@ -1045,13 +1052,13 @@ where
 }
 
 struct GaugeVec<L> {
-    values: Mutex<BTreeMap<L, Arc<AtomicI64>>>,
+    values: RwLock<BTreeMap<L, Arc<AtomicI64>>>,
 }
 
 impl<L> Default for GaugeVec<L> {
     fn default() -> Self {
         Self {
-            values: Mutex::new(BTreeMap::new()),
+            values: RwLock::new(BTreeMap::new()),
         }
     }
 }
@@ -1061,8 +1068,15 @@ where
     L: Clone + Ord,
 {
     fn set(&self, labels: L, value: i64) {
+        {
+            let values = self.values.read().expect("gauge vec poisoned");
+            if let Some(cell) = values.get(&labels) {
+                cell.store(value, Ordering::Relaxed);
+                return;
+            }
+        }
         let cell = {
-            let mut values = self.values.lock().expect("gauge vec poisoned");
+            let mut values = self.values.write().expect("gauge vec poisoned");
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicI64::new(0)))
@@ -1072,8 +1086,15 @@ where
     }
 
     fn inc(&self, labels: L, value: i64) {
+        {
+            let values = self.values.read().expect("gauge vec poisoned");
+            if let Some(cell) = values.get(&labels) {
+                cell.fetch_add(value, Ordering::Relaxed);
+                return;
+            }
+        }
         let cell = {
-            let mut values = self.values.lock().expect("gauge vec poisoned");
+            let mut values = self.values.write().expect("gauge vec poisoned");
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicI64::new(0)))
@@ -1084,7 +1105,7 @@ where
 
     fn snapshot(&self) -> Vec<(L, i64)> {
         self.values
-            .lock()
+            .read()
             .expect("gauge vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
@@ -1094,7 +1115,7 @@ where
 
 struct HistogramVec<L> {
     buckets: &'static [f64],
-    values: Mutex<BTreeMap<L, Arc<Mutex<HistogramState>>>>,
+    values: RwLock<BTreeMap<L, Arc<Mutex<HistogramState>>>>,
 }
 
 impl<L> HistogramVec<L>
@@ -1104,27 +1125,31 @@ where
     fn new(buckets: &'static [f64]) -> Self {
         Self {
             buckets,
-            values: Mutex::new(BTreeMap::new()),
+            values: RwLock::new(BTreeMap::new()),
         }
     }
 
     fn observe(&self, labels: L, value: f64) {
+        {
+            let values = self.values.read().expect("histogram vec poisoned");
+            if let Some(state) = values.get(&labels) {
+                state.lock().expect("histogram state poisoned").observe(self.buckets, value);
+                return;
+            }
+        }
         let state = {
-            let mut values = self.values.lock().expect("histogram vec poisoned");
+            let mut values = self.values.write().expect("histogram vec poisoned");
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(Mutex::new(HistogramState::new(self.buckets))))
                 .clone()
         };
-        state
-            .lock()
-            .expect("histogram state poisoned")
-            .observe(self.buckets, value);
+        state.lock().expect("histogram state poisoned").observe(self.buckets, value);
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
         self.values
-            .lock()
+            .read()
             .expect("histogram vec poisoned")
             .iter()
             .map(|(labels, state)| {
