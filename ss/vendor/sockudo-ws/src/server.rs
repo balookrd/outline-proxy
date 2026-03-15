@@ -854,6 +854,8 @@ fn is_normal_h3_shutdown(error: &dyn std::error::Error) -> bool {
     let message = error.to_string();
     message.contains("ApplicationClose: H3_NO_ERROR")
         || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
+        || message.contains("ApplicationClose: 0x0")
+        || message.contains("InternalError in the quic trait implementation: internal error in the http stack")
 }
 
 #[cfg(feature = "http3")]
