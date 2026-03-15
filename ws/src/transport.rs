@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
+use h3::client::RequestStream as H3RequestStream;
 use http::{Method, Request, Uri, Version};
 use http_body_util::Empty;
 use hyper::client::conn::http2;
@@ -19,7 +19,8 @@ use sockudo_ws::{
     error::CloseReason as SockudoCloseReason,
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::net::lookup_host;
 use tokio::sync::Mutex;
@@ -46,8 +47,6 @@ use crate::types::{CipherKind, WsTransportMode};
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
-type H3OpenStreams = <h3_quinn::Connection as h3::quic::Connection<Bytes>>::OpenStreams;
-type H3SendRequestHandle = H3SendRequest<H3OpenStreams, Bytes>;
 
 pin_project! {
     struct H2WsStream {
@@ -102,8 +101,7 @@ pin_project! {
         #[pin]
         inner: RawH3WsStream,
         endpoint: quinn::Endpoint,
-        connection: quinn::Connection,
-        send_request: H3SendRequestHandle,
+        _connection: H3ConnectionGuard,
         driver_task: AbortOnDrop,
     }
 }
@@ -114,6 +112,33 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
     }
+}
+
+/// Sends QUIC `CONNECTION_CLOSE` when dropped so the server is notified
+/// immediately rather than waiting for its idle timeout to fire.
+struct H3ConnectionGuard(quinn::Connection);
+
+impl Drop for H3ConnectionGuard {
+    fn drop(&mut self) {
+        self.0.close(0u32.into(), b"websocket stream closed");
+    }
+}
+
+static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+
+/// Returns a shared, lazily-initialised TLS config for H3 connections.
+/// Building the config (parsing root certificates) is expensive; doing it once
+/// avoids the cost on every connection attempt and every warm-standby refill.
+fn h3_client_tls_config() -> Arc<ClientConfig> {
+    Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| {
+        let mut roots = RootCertStore::empty();
+        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h3".to_vec()];
+        Arc::new(config)
+    }))
 }
 
 struct TransportConnectGuard {
@@ -512,7 +537,10 @@ impl TcpShadowsocksReader {
             }
         }
 
-        Ok(self.buffer.drain(..len).collect())
+        // split_off(len) returns buffer[len..], leaving buffer[..len] in place;
+        // swap so we return the head and retain the tail.
+        let tail = self.buffer.split_off(len);
+        Ok(std::mem::replace(&mut self.buffer, tail))
     }
 }
 
@@ -703,13 +731,7 @@ async fn connect_websocket_h3(
     }
     server_addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
 
-    let mut roots = RootCertStore::empty();
-    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-
-    let mut tls_config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls_config.alpn_protocols = vec![b"h3".to_vec()];
+    let tls_config = h3_client_tls_config();
 
     let path = websocket_path(url);
     let mut last_error = None;
@@ -738,8 +760,12 @@ async fn connect_h3_quic(
     let bind_addr = bind_addr_for(server_addr);
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config.clone())
         .map_err(|_| anyhow!("invalid TLS config for QUIC client"))?;
-    let mut client_config = quinn::ClientConfig::new(std::sync::Arc::new(quic_config));
-    client_config.transport_config(std::sync::Arc::new(quinn::TransportConfig::default()));
+    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_config));
+    let mut transport_config = quinn::TransportConfig::default();
+    // Send QUIC PING frames so NAT mappings stay alive and the server detects
+    // dead connections promptly, rather than waiting for its idle timeout.
+    transport_config.keep_alive_interval(Some(Duration::from_secs(10)));
+    client_config.transport_config(Arc::new(transport_config));
 
     let socket = bind_udp_socket(bind_addr, fwmark)?;
     let mut endpoint = quinn::Endpoint::new(
@@ -809,8 +835,7 @@ async fn connect_h3_quic(
             SockudoConfig::builder().http3_idle_timeout(30_000).build(),
         ),
         endpoint,
-        connection: connection_handle,
-        send_request,
+        _connection: H3ConnectionGuard(connection_handle),
         driver_task,
     })
 }

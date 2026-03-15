@@ -8,6 +8,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::sync::{Mutex, RwLock, Semaphore};
 use tokio::time::{Instant, sleep, timeout};
+use bytes::Bytes;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
@@ -366,7 +367,7 @@ impl UplinkManager {
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
         self.set_active_uplink_index_for_transport(transport, uplink_index)
             .await;
-        self.store_sticky_route(routing_key, uplink_index).await;
+        self.store_sticky_route(&routing_key, uplink_index).await;
     }
 
     pub async fn global_active_uplink_index(&self) -> Option<usize> {
@@ -611,7 +612,7 @@ impl UplinkManager {
     ) -> Vec<UplinkCandidate> {
         self.prune_sticky_routes().await;
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.statuses.read().await;
         let now = Instant::now();
 
         let mut candidates = self
@@ -668,7 +669,7 @@ impl UplinkManager {
                 candidates.insert(0, sticky);
             }
         } else if let Some(first) = candidates.first() {
-            self.store_sticky_route(routing_key, first.index).await;
+            self.store_sticky_route(&routing_key, first.index).await;
         }
 
         candidates
@@ -686,7 +687,7 @@ impl UplinkManager {
         _target: Option<&TargetAddr>,
     ) -> Vec<UplinkCandidate> {
         self.prune_sticky_routes().await;
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.statuses.read().await;
         let now = Instant::now();
         let mut candidates = self
             .inner
@@ -736,33 +737,64 @@ impl UplinkManager {
                 .then_with(|| left.index.cmp(&right.index))
         });
 
+        let gate_transport =
+            strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
+        let mut switching_from_cooldown = false;
         if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
             if let Some(candidate) = candidates.iter().find(|candidate| candidate.index == active_index)
             {
-                let gate_transport =
-                    strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
                 if !cooldown_active(&statuses[active_index], gate_transport, now) {
-                    self.store_sticky_route(
-                        strict_route_key(transport, self.inner.load_balancing.routing_scope),
-                        active_index,
-                    )
-                    .await;
+                    let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
+                    self.store_sticky_route(&key, active_index).await;
                     return vec![UplinkCandidate {
                         index: candidate.index,
                         uplink: Arc::clone(&candidate.uplink),
                     }];
                 }
             }
+            switching_from_cooldown = true;
+        }
+
+        // When we are switching away from a failed active uplink (cooldown is
+        // active), re-sort with penalty-aware scoring so that uplinks which
+        // failed recently are deprioritized. This prevents oscillation under
+        // load: primary fails → switch to backup → backup fails → would switch
+        // back to primary (whose cooldown probe-cleared but penalty remains).
+        // For the initial selection (no previous active) penalties are ignored
+        // to preserve the intent that strict-mode selection is EWMA-driven.
+        if switching_from_cooldown {
+            candidates.sort_by(|left, right| {
+                let left_score = score_latency(
+                    &statuses[left.index],
+                    self.inner.uplinks[left.index].weight,
+                    gate_transport,
+                    now,
+                    &self.inner.load_balancing,
+                );
+                let right_score = score_latency(
+                    &statuses[right.index],
+                    self.inner.uplinks[right.index].weight,
+                    gate_transport,
+                    now,
+                    &self.inner.load_balancing,
+                );
+                rightless_bool(left.healthy)
+                    .cmp(&rightless_bool(right.healthy))
+                    .reverse()
+                    .then_with(|| {
+                        left_score
+                            .unwrap_or(Duration::MAX)
+                            .cmp(&right_score.unwrap_or(Duration::MAX))
+                    })
+                    .then_with(|| left.index.cmp(&right.index))
+            });
         }
 
         let selected = candidates[0].index;
         self.set_active_uplink_index_for_transport(transport, selected)
             .await;
-        self.store_sticky_route(
-            strict_route_key(transport, self.inner.load_balancing.routing_scope),
-            selected,
-        )
-        .await;
+        let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
+        self.store_sticky_route(&key, selected).await;
         vec![UplinkCandidate {
             index: selected,
             uplink: Arc::clone(&candidates[0].uplink),
@@ -823,12 +855,21 @@ impl UplinkManager {
             TransportKind::Udp => pool.udp_refill.lock().await,
         };
 
+        let transport_label = match transport {
+            TransportKind::Tcp => "tcp",
+            TransportKind::Udp => "udp",
+        };
+        let pool_vec = match transport {
+            TransportKind::Tcp => &pool.tcp,
+            TransportKind::Udp => &pool.udp,
+        };
+
+        // Read current length once; track additions with a counter to avoid
+        // re-locking on every iteration just to check the pool size.
+        let mut current_len = pool_vec.lock().await.len();
+
         loop {
-            let len = match transport {
-                TransportKind::Tcp => pool.tcp.lock().await.len(),
-                TransportKind::Udp => pool.udp.lock().await.len(),
-            };
-            if len >= desired {
+            if current_len >= desired {
                 break;
             }
 
@@ -860,19 +901,9 @@ impl UplinkManager {
 
             match ws {
                 Ok(ws) => {
-                    let pool_vec = match transport {
-                        TransportKind::Tcp => &pool.tcp,
-                        TransportKind::Udp => &pool.udp,
-                    };
                     pool_vec.lock().await.push_back(ws);
-                    metrics::record_warm_standby_refill(
-                        match transport {
-                            TransportKind::Tcp => "tcp",
-                            TransportKind::Udp => "udp",
-                        },
-                        &uplink.name,
-                        true,
-                    );
+                    current_len += 1;
+                    metrics::record_warm_standby_refill(transport_label, &uplink.name, true);
                     debug!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -881,14 +912,7 @@ impl UplinkManager {
                     );
                 }
                 Err(error) => {
-                    metrics::record_warm_standby_refill(
-                        match transport {
-                            TransportKind::Tcp => "tcp",
-                            TransportKind::Udp => "udp",
-                        },
-                        &uplink.name,
-                        false,
-                    );
+                    metrics::record_warm_standby_refill(transport_label, &uplink.name, false);
                     warn!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -930,7 +954,7 @@ impl UplinkManager {
         let mut alive = VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
-            let result = ping_idle_websocket(&mut ws).await;
+            let result = ping_idle_websocket(&mut ws, self.inner.probe.timeout).await;
             metrics::record_probe(
                 &uplink.name,
                 match transport {
@@ -1003,13 +1027,13 @@ impl UplinkManager {
             .iter()
             .find(|candidate| candidate.index == sticky_index)?;
         if !sticky.healthy {
-            self.store_sticky_route(routing_key.to_string(), candidates[0].index)
+            self.store_sticky_route(routing_key, candidates[0].index)
                 .await;
             return Some(candidates[0].index);
         }
 
         if self.inner.load_balancing.mode == LoadBalancingMode::ActivePassive {
-            self.store_sticky_route(routing_key.to_string(), sticky.index)
+            self.store_sticky_route(routing_key, sticky.index)
                 .await;
             return Some(sticky.index);
         }
@@ -1045,23 +1069,23 @@ impl UplinkManager {
         };
 
         if should_switch {
-            self.store_sticky_route(routing_key.to_string(), fastest.index)
+            self.store_sticky_route(routing_key, fastest.index)
                 .await;
             Some(fastest.index)
         } else {
-            self.store_sticky_route(routing_key.to_string(), sticky.index)
+            self.store_sticky_route(routing_key, sticky.index)
                 .await;
             Some(sticky.index)
         }
     }
 
-    async fn store_sticky_route(&self, routing_key: RoutingKey, uplink_index: usize) {
+    async fn store_sticky_route(&self, routing_key: &str, uplink_index: usize) {
         let mut sticky = self.inner.sticky_routes.write().await;
         sticky.insert(
-            routing_key.clone(),
+            routing_key.to_owned(),
             StickyRoute {
                 uplink_index,
-                expires_at: if self.strict_pinned_route_key(&routing_key) {
+                expires_at: if self.strict_pinned_route_key(routing_key) {
                     Instant::now() + Duration::from_secs(365 * 24 * 60 * 60)
                 } else {
                     Instant::now() + self.inner.load_balancing.sticky_ttl
@@ -1148,13 +1172,20 @@ impl UplinkManager {
                         );
                         if !result.tcp_ok {
                             add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                        } else {
+                            // Only clear runtime-failure cooldown when the probe confirms TCP is
+                            // healthy. Clearing unconditionally would make a recently-failed
+                            // uplink immediately eligible again, causing oscillation under load.
+                            status.cooldown_until_tcp = None;
                         }
                         if !result.udp_ok {
                             add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        } else {
+                            status.cooldown_until_udp = None;
                         }
-                        status.cooldown_until_tcp = None;
-                        status.cooldown_until_udp = None;
-                        status.last_error = None;
+                        if result.tcp_ok && result.udp_ok {
+                            status.last_error = None;
+                        }
                         (
                             status
                                 .tcp_rtt_ewma
@@ -1263,6 +1294,7 @@ async fn run_tcp_probe(
             uplink.tcp_ws_mode,
             uplink.fwmark,
             Arc::clone(&dial_limit),
+            probe.timeout,
         )
         .await;
         metrics::record_probe(
@@ -1312,6 +1344,7 @@ async fn run_udp_probe(
             uplink.udp_ws_mode,
             uplink.fwmark,
             Arc::clone(&dial_limit),
+            probe.timeout,
         )
         .await;
         metrics::record_probe(
@@ -1349,6 +1382,7 @@ async fn run_ws_probe(
     mode: crate::types::WsTransportMode,
     fwmark: Option<u32>,
     dial_limit: Arc<Semaphore>,
+    pong_timeout: Duration,
 ) -> Result<()> {
     let _permit = dial_limit
         .acquire_owned()
@@ -1358,7 +1392,7 @@ async fn run_ws_probe(
         .await
         .with_context(|| format!("failed to connect WebSocket probe to {url}"))?;
 
-    ping_idle_websocket(&mut ws_stream).await?;
+    ping_idle_websocket(&mut ws_stream, pong_timeout).await?;
     debug!(
         uplink = %uplink_name,
         transport,
@@ -1379,31 +1413,35 @@ async fn run_ws_probe(
     Ok(())
 }
 
-async fn ping_idle_websocket(ws_stream: &mut AnyWsStream) -> Result<()> {
-    let payload = b"probe".to_vec();
+async fn ping_idle_websocket(ws_stream: &mut AnyWsStream, pong_timeout: Duration) -> Result<()> {
     ws_stream
-        .send(Message::Ping(payload.clone().into()))
+        .send(Message::Ping(Bytes::from_static(b"probe")))
         .await
         .context("failed to send WebSocket ping")?;
 
-    loop {
-        let message = ws_stream
-            .next()
-            .await
-            .ok_or_else(|| anyhow!("websocket probe stream closed before pong"))?
-            .context("websocket probe read failed")?;
-        match message {
-            Message::Pong(bytes) if bytes.as_ref() == payload.as_slice() => return Ok(()),
-            Message::Pong(_) => return Ok(()),
-            Message::Ping(_) | Message::Binary(_) | Message::Text(_) => continue,
-            Message::Close(frame) => bail!("websocket probe received close frame: {:?}", frame),
-            Message::Frame(_) => continue,
+    timeout(pong_timeout, async {
+        loop {
+            let message = ws_stream
+                .next()
+                .await
+                .ok_or_else(|| anyhow!("websocket probe stream closed before pong"))?
+                .context("websocket probe read failed")?;
+            match message {
+                Message::Pong(bytes) if bytes.as_ref() == b"probe" => return Ok(()),
+                Message::Pong(_) => return Ok(()),
+                Message::Ping(_) | Message::Binary(_) | Message::Text(_) => continue,
+                Message::Close(frame) => bail!("websocket probe received close frame: {:?}", frame),
+                Message::Frame(_) => continue,
+            }
         }
-    }
+    })
+    .await
+    .context("websocket ping/pong timed out")?
 }
 
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     let lower = format!("{error:#}").to_lowercase();
+    // TCP / H1 / H2 expected close reasons
     lower.contains("websocket probe received close frame")
         || lower.contains("websocket probe stream closed before pong")
         || lower.contains("connection reset by peer")
@@ -1411,6 +1449,15 @@ fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
         || lower.contains("os error 104")
         || lower.contains("os error 54")
         || lower.contains("os error 32")
+        // Ping/pong timed out — stream went stale in the standby pool
+        || lower.contains("websocket ping/pong timed out")
+        // H3 / QUIC expected close reasons (errors are stringified via
+        // sockudo_to_ws_error, so we match on substrings of the message)
+        || lower.contains("timed out")
+        || lower.contains("application closed")
+        || lower.contains("connection lost")
+        || lower.contains("stream reset")
+        || lower.contains("transport error")
 }
 
 async fn run_http_probe(
@@ -2387,5 +2434,67 @@ mod tests {
 
         assert_eq!(penalty_second, penalty_first);
         assert!(cooldown_second <= cooldown_first);
+    }
+
+    // Regression test: in global mode with 3+ uplinks, when the current active
+    // enters cooldown the penalty-aware fallback must prefer a fresh uplink over
+    // the one that recently failed, even if the recently-failed uplink has a
+    // marginally better raw EWMA. With only 2 uplinks the recently-failed one is
+    // the only healthy option, so this only matters with 3 or more uplinks.
+    #[tokio::test]
+    async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup1", "wss://backup1.example.com/tcp"),
+                make_uplink("backup2", "wss://backup2.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
+
+        // Initial state: primary fastest (no active set yet), backup1 middle, backup2 slowest.
+        set_tcp_status(&manager, 0, true, 15).await;
+        set_tcp_status(&manager, 1, true, 20).await;
+        set_tcp_status(&manager, 2, true, 30).await;
+        set_udp_status(&manager, 0, true, 15).await;
+        set_udp_status(&manager, 1, true, 20).await;
+        set_udp_status(&manager, 2, true, 30).await;
+
+        let first = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(first[0].uplink.name, "primary");
+
+        // Primary fails → switch to backup1 (next best by EWMA).
+        let err = anyhow!("connection refused");
+        manager.report_runtime_failure(0, TransportKind::Tcp, &err).await;
+        let second = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(second[0].uplink.name, "backup1", "should switch to backup1");
+
+        // Probe clears primary's cooldown but leaves the penalty intact.
+        // Primary now looks like: healthy, EWMA=15ms (best), but tcp_penalty≈500ms.
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].cooldown_until_tcp = None;
+            statuses[0].tcp_healthy = Some(true);
+        }
+
+        // Backup1 (current active) enters cooldown due to runtime failure.
+        manager.report_runtime_failure(1, TransportKind::Tcp, &err).await;
+
+        // Without penalty-aware fallback the sort is by EWMA alone:
+        //   primary 15ms < backup2 30ms → primary selected (oscillation back).
+        // With penalty-aware fallback the sort includes tcp_penalty:
+        //   primary effective ≈ 515ms > backup2 30ms → backup2 selected.
+        let third = manager.tcp_candidates(&tcp_target).await;
+        assert_eq!(
+            third[0].uplink.name, "backup2",
+            "penalty-aware fallback must prefer fresh backup2 over recently-failed primary"
+        );
     }
 }
