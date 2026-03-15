@@ -9,6 +9,8 @@ use std::{
     },
 };
 
+use bytes::Bytes;
+
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Router,
@@ -36,7 +38,7 @@ use sockudo_ws::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
-    sync::mpsc,
+    sync::{Semaphore, mpsc},
     time::{Duration, timeout},
 };
 use tokio_rustls::TlsAcceptor;
@@ -45,19 +47,17 @@ use tracing::{debug, info, warn};
 use crate::{
     config::Config,
     crypto::{
-        AeadStreamDecryptor, AeadStreamEncryptor, MAX_CHUNK_SIZE, UserKey, decrypt_udp_packet,
-        diagnose_stream_handshake, diagnose_udp_packet, encrypt_udp_packet,
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
+        decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet, encrypt_udp_packet,
     },
     metrics::{DisconnectReason, Metrics, Protocol, Transport},
     protocol::{TargetAddr, parse_target_addr},
 };
 
-const H3_WEBSOCKET_IDLE_TIMEOUT_SECS: u32 = 180;
 const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
-const H3_QUIC_KEEP_ALIVE_SECS: u64 = 15;
+const H3_QUIC_PING_INTERVAL_SECS: u64 = 15;
 const H3_STREAM_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
 const H3_CONNECTION_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
-const H3_SEND_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
 const H3_MAX_CONCURRENT_BIDI_STREAMS: u32 = 4_096;
 const H3_MAX_CONCURRENT_UNI_STREAMS: u32 = 1_024;
 const H3_WRITE_BUFFER_BYTES: usize = 256 * 1024;
@@ -66,6 +66,7 @@ const H3_UDP_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
 const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
+const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
 
 #[derive(Clone)]
 struct AppState {
@@ -292,7 +293,7 @@ async fn handle_tcp_connection(
         Ok::<(), anyhow::Error>(())
     });
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    let mut plaintext_buffer = Vec::new();
+    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
     let mut upstream_writer = None;
     let mut upstream_to_client = None;
     let mut authenticated_user = None;
@@ -308,8 +309,9 @@ async fn handle_tcp_connection(
                     data.len(),
                 );
                 decryptor.push(&data);
-                let plaintext_chunks = decryptor.pull_plaintext().map_err(|error| {
-                    if error.to_string().contains("no configured key matched the incoming data") {
+                match decryptor.pull_plaintext(&mut plaintext_buffer) {
+                    Ok(()) => {}
+                    Err(CryptoError::UnknownUser) => {
                         debug!(
                             path = %path,
                             candidates = ?candidate_users,
@@ -320,17 +322,13 @@ async fn handle_tcp_connection(
                             ),
                             "tcp authentication failed for all path candidates"
                         );
-                        anyhow!(
+                        return Err(anyhow!(
                             "no configured key matched the incoming data on tcp path {} candidates={:?}",
                             path,
                             candidate_users
-                        )
-                    } else {
-                        anyhow!(error)
+                        ));
                     }
-                })?;
-                for chunk in plaintext_chunks {
-                    plaintext_buffer.extend_from_slice(&chunk);
+                    Err(error) => return Err(anyhow!(error)),
                 }
 
                 if upstream_writer.is_none() {
@@ -464,6 +462,7 @@ async fn handle_udp_connection(
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
+    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
@@ -492,6 +491,13 @@ async fn handle_udp_connection(
                     "in",
                     data.len(),
                 );
+                let permit = match task_limit.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("udp concurrent relay limit reached, dropping datagram");
+                        continue;
+                    }
+                };
                 let tx = outbound_tx.clone();
                 let users = users.clone();
                 let metrics = metrics.clone();
@@ -499,10 +505,11 @@ async fn handle_udp_connection(
                 let candidate_users = candidate_users.clone();
                 let udp_session_recorded = udp_session_recorded.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(error) =
                         handle_udp_datagram(
                             users,
-                            data.to_vec(),
+                            data,
                             tx,
                             metrics,
                             protocol,
@@ -567,7 +574,7 @@ async fn handle_tcp_h3_connection(
         Ok::<(), anyhow::Error>(())
     });
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    let mut plaintext_buffer = Vec::new();
+    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
     let mut upstream_writer = None;
     let mut upstream_to_client = None;
     let mut authenticated_user = None;
@@ -583,8 +590,9 @@ async fn handle_tcp_h3_connection(
                     data.len(),
                 );
                 decryptor.push(&data);
-                let plaintext_chunks = decryptor.pull_plaintext().map_err(|error| {
-                    if error.to_string().contains("no configured key matched the incoming data") {
+                match decryptor.pull_plaintext(&mut plaintext_buffer) {
+                    Ok(()) => {}
+                    Err(CryptoError::UnknownUser) => {
                         debug!(
                             path = %path,
                             candidates = ?candidate_users,
@@ -595,17 +603,13 @@ async fn handle_tcp_h3_connection(
                             ),
                             "tcp authentication failed for all path candidates"
                         );
-                        anyhow!(
+                        return Err(anyhow!(
                             "no configured key matched the incoming data on tcp path {} candidates={:?}",
                             path,
                             candidate_users
-                        )
-                    } else {
-                        anyhow!(error)
+                        ));
                     }
-                })?;
-                for chunk in plaintext_chunks {
-                    plaintext_buffer.extend_from_slice(&chunk);
+                    Err(error) => return Err(anyhow!(error)),
                 }
 
                 if upstream_writer.is_none() {
@@ -732,6 +736,7 @@ async fn handle_udp_h3_connection(
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
+    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         while let Some(message) = outbound_rx.recv().await {
@@ -761,6 +766,13 @@ async fn handle_udp_h3_connection(
                     "in",
                     data.len(),
                 );
+                let permit = match task_limit.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("udp concurrent relay limit reached, dropping datagram");
+                        continue;
+                    }
+                };
                 let tx = outbound_tx.clone();
                 let users = users.clone();
                 let metrics = metrics.clone();
@@ -768,9 +780,10 @@ async fn handle_udp_h3_connection(
                 let candidate_users = candidate_users.clone();
                 let udp_session_recorded = udp_session_recorded.clone();
                 tokio::spawn(async move {
+                    let _permit = permit;
                     if let Err(error) = handle_udp_h3_datagram(
                         users,
-                        data.to_vec(),
+                        data,
                         tx,
                         metrics,
                         path,
@@ -860,7 +873,7 @@ async fn relay_upstream_to_h3_client(
 
 async fn handle_udp_datagram(
     users: Arc<[UserKey]>,
-    data: Vec<u8>,
+    data: Bytes,
     outbound_tx: mpsc::Sender<Message>,
     metrics: Arc<Metrics>,
     protocol: Protocol,
@@ -869,23 +882,23 @@ async fn handle_udp_datagram(
     udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
-    let packet = decrypt_udp_packet(users.as_ref(), &data).map_err(|error| {
-        if error.to_string().contains("no configured key matched the incoming data") {
+    let packet = match decrypt_udp_packet(users.as_ref(), &data) {
+        Ok(packet) => packet,
+        Err(CryptoError::UnknownUser) => {
             debug!(
                 path = %path,
                 candidates = ?candidate_users,
                 attempts = ?diagnose_udp_packet(users.as_ref(), &data),
                 "udp authentication failed for all path candidates"
             );
-            anyhow!(
+            return Err(anyhow!(
                 "no configured key matched the incoming udp data on path {} candidates={:?}",
                 path,
                 candidate_users
-            )
-        } else {
-            anyhow!(error)
+            ));
         }
-    })?;
+        Err(error) => return Err(anyhow!(error)),
+    };
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
@@ -958,7 +971,7 @@ async fn handle_udp_datagram(
 
 async fn handle_udp_h3_datagram(
     users: Arc<[UserKey]>,
-    data: Vec<u8>,
+    data: Bytes,
     outbound_tx: mpsc::Sender<H3Message>,
     metrics: Arc<Metrics>,
     path: String,
@@ -966,23 +979,23 @@ async fn handle_udp_h3_datagram(
     udp_session_recorded: Arc<AtomicBool>,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
-    let packet = decrypt_udp_packet(users.as_ref(), &data).map_err(|error| {
-        if error.to_string().contains("no configured key matched the incoming data") {
+    let packet = match decrypt_udp_packet(users.as_ref(), &data) {
+        Ok(packet) => packet,
+        Err(CryptoError::UnknownUser) => {
             debug!(
                 path = %path,
                 candidates = ?candidate_users,
                 attempts = ?diagnose_udp_packet(users.as_ref(), &data),
                 "udp authentication failed for all path candidates"
             );
-            anyhow!(
+            return Err(anyhow!(
                 "no configured key matched the incoming udp data on path {} candidates={:?}",
                 path,
                 candidate_users
-            )
-        } else {
-            anyhow!(error)
+            ));
         }
-    })?;
+        Err(error) => return Err(anyhow!(error)),
+    };
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
@@ -1412,8 +1425,8 @@ async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transpor
 
 fn build_h3_ws_config() -> H3WebSocketConfig {
     H3WebSocketConfig::builder()
-        .idle_timeout(H3_WEBSOCKET_IDLE_TIMEOUT_SECS)
-        .ping_interval(H3_QUIC_KEEP_ALIVE_SECS as u32)
+        .idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS as u32)
+        .ping_interval(H3_QUIC_PING_INTERVAL_SECS as u32)
         .max_backpressure(H3_MAX_BACKPRESSURE_BYTES)
         .write_buffer_size(H3_WRITE_BUFFER_BYTES)
         .http3_idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS * 1_000)
@@ -1441,10 +1454,14 @@ fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
                 .try_into()
                 .context("invalid HTTP/3 idle timeout")?,
         ))
-        .keep_alive_interval(Some(Duration::from_secs(H3_QUIC_KEEP_ALIVE_SECS)))
-        .stream_receive_window(quinn::VarInt::from_u32(H3_STREAM_WINDOW_BYTES as u32))
-        .receive_window(quinn::VarInt::from_u32(H3_CONNECTION_WINDOW_BYTES as u32))
-        .send_window(H3_SEND_WINDOW_BYTES)
+        .stream_receive_window(quinn::VarInt::from_u32(
+            u32::try_from(H3_STREAM_WINDOW_BYTES).expect("H3_STREAM_WINDOW_BYTES exceeds u32"),
+        ))
+        .receive_window(quinn::VarInt::from_u32(
+            u32::try_from(H3_CONNECTION_WINDOW_BYTES)
+                .expect("H3_CONNECTION_WINDOW_BYTES exceeds u32"),
+        ))
+        .send_window(H3_CONNECTION_WINDOW_BYTES)
         .datagram_receive_buffer_size(Some(H3_CONNECTION_WINDOW_BYTES as usize))
         .datagram_send_buffer_size(H3_CONNECTION_WINDOW_BYTES as usize);
     Ok(transport)
