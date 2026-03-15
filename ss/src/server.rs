@@ -37,7 +37,7 @@ use sockudo_ws::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
+    net::{TcpListener, TcpSocket, TcpStream, lookup_host},
     sync::{Semaphore, mpsc},
     time::{Duration, timeout},
 };
@@ -48,14 +48,18 @@ use crate::{
     config::Config,
     crypto::{
         AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
-        decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet, encrypt_udp_packet,
+        decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet,
     },
+    fwmark::apply_fwmark_if_needed,
     metrics::{DisconnectReason, Metrics, Protocol, Transport},
+    nat::{NatKey, NatTable, UdpResponseSender},
     protocol::{TargetAddr, parse_target_addr},
 };
 
+const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
+const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
 const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
-const H3_QUIC_PING_INTERVAL_SECS: u64 = 15;
+const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 const H3_STREAM_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
 const H3_CONNECTION_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
 const H3_MAX_CONCURRENT_BIDI_STREAMS: u32 = 4_096;
@@ -73,6 +77,7 @@ struct AppState {
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
+    nat_table: Arc<NatTable>,
 }
 
 #[derive(Clone)]
@@ -88,7 +93,8 @@ pub async fn run(config: Config) -> Result<()> {
     let users = build_users(&config)?;
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
-    let app = build_app(tcp_routes.clone(), udp_routes.clone(), metrics.clone());
+    let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
+    let app = build_app(tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table));
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind {}", config.listen))?;
@@ -107,6 +113,21 @@ pub async fn run(config: Config) -> Result<()> {
     } else {
         None
     };
+
+    // Periodic NAT entry eviction.
+    {
+        let nat_table_cleanup = Arc::clone(&nat_table);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                nat_table_cleanup.evict_idle().await;
+            }
+        });
+    }
+
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let user_routes = describe_user_routes(users.as_ref());
@@ -123,6 +144,7 @@ pub async fn run(config: Config) -> Result<()> {
         user_routes = ?user_routes,
         method = ?config.method,
         users = users.len(),
+        udp_nat_idle_timeout_secs = config.udp_nat_idle_timeout_secs,
         "websocket shadowsocks server listening",
     );
 
@@ -131,7 +153,7 @@ pub async fn run(config: Config) -> Result<()> {
             let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
             tokio::try_join!(
                 serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone()),
+                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table)),
                 serve_metrics_listener(metrics_listener, metrics_app)
             )?;
             Ok(())
@@ -139,7 +161,7 @@ pub async fn run(config: Config) -> Result<()> {
         (Some(h3_server), None) => {
             tokio::try_join!(
                 serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone())
+                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table))
             )?;
             Ok(())
         }
@@ -228,6 +250,7 @@ async fn udp_websocket_upgrade(
     let session = state
         .metrics
         .open_websocket_session(Transport::Udp, protocol);
+    let nat_table = state.nat_table.clone();
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_udp_connection(
             socket,
@@ -236,6 +259,7 @@ async fn udp_websocket_upgrade(
             protocol,
             path.clone(),
             route.candidate_users,
+            nat_table,
         )
         .await
         {
@@ -273,22 +297,46 @@ async fn handle_tcp_connection(
     candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<Message>(8);
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            if let Message::Binary(data) = &message {
-                writer_metrics.record_websocket_binary_frame(
-                    Transport::Tcp,
-                    protocol,
-                    "out",
-                    data.len(),
-                );
+        let mut ctrl_open = true;
+        loop {
+            if ctrl_open {
+                tokio::select! {
+                    biased;
+                    msg = outbound_ctrl_rx.recv() => match msg {
+                        Some(m) => ws_sender.send(m).await.context("failed to write websocket frame")?,
+                        None => ctrl_open = false,
+                    },
+                    msg = outbound_data_rx.recv() => match msg {
+                        Some(m) => {
+                            if let Message::Binary(data) = &m {
+                                writer_metrics.record_websocket_binary_frame(
+                                    Transport::Tcp,
+                                    protocol,
+                                    "out",
+                                    data.len(),
+                                );
+                            }
+                            ws_sender.send(m).await.context("failed to write websocket frame")?;
+                        }
+                        None => break,
+                    },
+                }
+            } else {
+                let Some(m) = outbound_data_rx.recv().await else { break };
+                if let Message::Binary(data) = &m {
+                    writer_metrics.record_websocket_binary_frame(
+                        Transport::Tcp,
+                        protocol,
+                        "out",
+                        data.len(),
+                    );
+                }
+                ws_sender.send(m).await.context("failed to write websocket frame")?;
             }
-            ws_sender
-                .send(message)
-                .await
-                .context("failed to write websocket frame")?;
         }
         Ok::<(), anyhow::Error>(())
     });
@@ -377,7 +425,7 @@ async fn handle_tcp_connection(
 
                     let (upstream_reader, writer) = stream.into_split();
                     let mut encryptor = AeadStreamEncryptor::new(&user)?;
-                    let tx = outbound_tx.clone();
+                    let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
                     let user_id = user.id().to_owned();
                     upstream_to_client = Some(tokio::spawn(async move {
@@ -421,7 +469,7 @@ async fn handle_tcp_connection(
                 break;
             }
             Message::Ping(payload) => {
-                outbound_tx
+                outbound_ctrl_tx
                     .send(Message::Pong(payload))
                     .await
                     .context("failed to queue websocket pong")?;
@@ -444,7 +492,8 @@ async fn handle_tcp_connection(
         guard.finish();
     }
 
-    drop(outbound_tx);
+    drop(outbound_ctrl_tx);
+    drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
@@ -458,26 +507,51 @@ async fn handle_udp_connection(
     protocol: Protocol,
     path: String,
     candidate_users: Arc<[String]>,
+    nat_table: Arc<NatTable>,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<Message>(64);
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<Message>(8);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
     let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            if let Message::Binary(data) = &message {
-                writer_metrics.record_websocket_binary_frame(
-                    Transport::Udp,
-                    protocol,
-                    "out",
-                    data.len(),
-                );
+        let mut ctrl_open = true;
+        loop {
+            if ctrl_open {
+                tokio::select! {
+                    biased;
+                    msg = outbound_ctrl_rx.recv() => match msg {
+                        Some(m) => ws_sender.send(m).await.context("failed to write websocket frame")?,
+                        None => ctrl_open = false,
+                    },
+                    msg = outbound_data_rx.recv() => match msg {
+                        Some(m) => {
+                            if let Message::Binary(data) = &m {
+                                writer_metrics.record_websocket_binary_frame(
+                                    Transport::Udp,
+                                    protocol,
+                                    "out",
+                                    data.len(),
+                                );
+                            }
+                            ws_sender.send(m).await.context("failed to write websocket frame")?;
+                        }
+                        None => break,
+                    },
+                }
+            } else {
+                let Some(m) = outbound_data_rx.recv().await else { break };
+                if let Message::Binary(data) = &m {
+                    writer_metrics.record_websocket_binary_frame(
+                        Transport::Udp,
+                        protocol,
+                        "out",
+                        data.len(),
+                    );
+                }
+                ws_sender.send(m).await.context("failed to write websocket frame")?;
             }
-            ws_sender
-                .send(message)
-                .await
-                .context("failed to write websocket frame")?;
         }
         Ok::<(), anyhow::Error>(())
     });
@@ -498,16 +572,18 @@ async fn handle_udp_connection(
                         continue;
                     }
                 };
-                let tx = outbound_tx.clone();
+                let tx = outbound_data_tx.clone();
                 let users = users.clone();
                 let metrics = metrics.clone();
                 let path = path.clone();
                 let candidate_users = candidate_users.clone();
                 let udp_session_recorded = udp_session_recorded.clone();
+                let nat_table = Arc::clone(&nat_table);
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Err(error) =
                         handle_udp_datagram(
+                            nat_table,
                             users,
                             data,
                             tx,
@@ -528,7 +604,7 @@ async fn handle_udp_connection(
                 break;
             }
             Message::Ping(payload) => {
-                outbound_tx
+                outbound_ctrl_tx
                     .send(Message::Pong(payload))
                     .await
                     .context("failed to queue websocket pong")?;
@@ -538,7 +614,8 @@ async fn handle_udp_connection(
         }
     }
 
-    drop(outbound_tx);
+    drop(outbound_ctrl_tx);
+    drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
@@ -553,22 +630,46 @@ async fn handle_tcp_h3_connection(
     candidate_users: Arc<[String]>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            if let H3Message::Binary(data) = &message {
-                writer_metrics.record_websocket_binary_frame(
-                    Transport::Tcp,
-                    Protocol::Http3,
-                    "out",
-                    data.len(),
-                );
+        let mut ctrl_open = true;
+        loop {
+            if ctrl_open {
+                tokio::select! {
+                    biased;
+                    msg = outbound_ctrl_rx.recv() => match msg {
+                        Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
+                        None => ctrl_open = false,
+                    },
+                    msg = outbound_data_rx.recv() => match msg {
+                        Some(m) => {
+                            if let H3Message::Binary(data) = &m {
+                                writer_metrics.record_websocket_binary_frame(
+                                    Transport::Tcp,
+                                    Protocol::Http3,
+                                    "out",
+                                    data.len(),
+                                );
+                            }
+                            ws_writer.send(m).await.context("failed to write websocket frame")?;
+                        }
+                        None => break,
+                    },
+                }
+            } else {
+                let Some(m) = outbound_data_rx.recv().await else { break };
+                if let H3Message::Binary(data) = &m {
+                    writer_metrics.record_websocket_binary_frame(
+                        Transport::Tcp,
+                        Protocol::Http3,
+                        "out",
+                        data.len(),
+                    );
+                }
+                ws_writer.send(m).await.context("failed to write websocket frame")?;
             }
-            ws_writer
-                .send(message)
-                .await
-                .context("failed to write websocket frame")?;
         }
         let _ = ws_writer.close(1000, "").await;
         Ok::<(), anyhow::Error>(())
@@ -658,7 +759,7 @@ async fn handle_tcp_h3_connection(
 
                     let (upstream_reader, writer) = stream.into_split();
                     let mut encryptor = AeadStreamEncryptor::new(&user)?;
-                    let tx = outbound_tx.clone();
+                    let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
                     let user_id = user.id().to_owned();
                     upstream_to_client = Some(tokio::spawn(async move {
@@ -701,7 +802,13 @@ async fn handle_tcp_h3_connection(
                 debug!("client closed tcp websocket");
                 break;
             }
-            H3Message::Ping(_) | H3Message::Pong(_) => {}
+            H3Message::Ping(payload) => {
+                outbound_ctrl_tx
+                    .send(H3Message::Pong(payload))
+                    .await
+                    .context("failed to queue websocket pong")?;
+            }
+            H3Message::Pong(_) => {}
             H3Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }
@@ -719,7 +826,8 @@ async fn handle_tcp_h3_connection(
         guard.finish();
     }
 
-    drop(outbound_tx);
+    drop(outbound_ctrl_tx);
+    drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
@@ -732,26 +840,51 @@ async fn handle_udp_h3_connection(
     metrics: Arc<Metrics>,
     path: String,
     candidate_users: Arc<[String]>,
+    nat_table: Arc<NatTable>,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
-    let (outbound_tx, mut outbound_rx) = mpsc::channel::<H3Message>(64);
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
     let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        while let Some(message) = outbound_rx.recv().await {
-            if let H3Message::Binary(data) = &message {
-                writer_metrics.record_websocket_binary_frame(
-                    Transport::Udp,
-                    Protocol::Http3,
-                    "out",
-                    data.len(),
-                );
+        let mut ctrl_open = true;
+        loop {
+            if ctrl_open {
+                tokio::select! {
+                    biased;
+                    msg = outbound_ctrl_rx.recv() => match msg {
+                        Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
+                        None => ctrl_open = false,
+                    },
+                    msg = outbound_data_rx.recv() => match msg {
+                        Some(m) => {
+                            if let H3Message::Binary(data) = &m {
+                                writer_metrics.record_websocket_binary_frame(
+                                    Transport::Udp,
+                                    Protocol::Http3,
+                                    "out",
+                                    data.len(),
+                                );
+                            }
+                            ws_writer.send(m).await.context("failed to write websocket frame")?;
+                        }
+                        None => break,
+                    },
+                }
+            } else {
+                let Some(m) = outbound_data_rx.recv().await else { break };
+                if let H3Message::Binary(data) = &m {
+                    writer_metrics.record_websocket_binary_frame(
+                        Transport::Udp,
+                        Protocol::Http3,
+                        "out",
+                        data.len(),
+                    );
+                }
+                ws_writer.send(m).await.context("failed to write websocket frame")?;
             }
-            ws_writer
-                .send(message)
-                .await
-                .context("failed to write websocket frame")?;
         }
         let _ = ws_writer.close(1000, "").await;
         Ok::<(), anyhow::Error>(())
@@ -773,15 +906,17 @@ async fn handle_udp_h3_connection(
                         continue;
                     }
                 };
-                let tx = outbound_tx.clone();
+                let tx = outbound_data_tx.clone();
                 let users = users.clone();
                 let metrics = metrics.clone();
                 let path = path.clone();
                 let candidate_users = candidate_users.clone();
                 let udp_session_recorded = udp_session_recorded.clone();
+                let nat_table = Arc::clone(&nat_table);
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Err(error) = handle_udp_h3_datagram(
+                        nat_table,
                         users,
                         data,
                         tx,
@@ -800,12 +935,19 @@ async fn handle_udp_h3_connection(
                 debug!("client closed udp websocket");
                 break;
             }
-            H3Message::Ping(_) | H3Message::Pong(_) => {}
+            H3Message::Ping(payload) => {
+                outbound_ctrl_tx
+                    .send(H3Message::Pong(payload))
+                    .await
+                    .context("failed to queue websocket pong")?;
+            }
+            H3Message::Pong(_) => {}
             H3Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }
 
-    drop(outbound_tx);
+    drop(outbound_ctrl_tx);
+    drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
@@ -872,6 +1014,7 @@ async fn relay_upstream_to_h3_client(
 }
 
 async fn handle_udp_datagram(
+    nat_table: Arc<NatTable>,
     users: Arc<[UserKey]>,
     data: Bytes,
     outbound_tx: mpsc::Sender<Message>,
@@ -915,13 +1058,31 @@ async fn handle_udp_datagram(
         path = %path,
         "udp shadowsocks user authenticated"
     );
+
+    let resolved = resolve_target(&target).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
         path = %path,
         target = %target_display,
+        resolved = %resolved,
         "udp datagram relay"
     );
+
+    let nat_key = NatKey {
+        user_id: packet.user.id().to_owned(),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+    };
+    let entry = nat_table
+        .get_or_create(nat_key, &packet.user, Arc::clone(&metrics))
+        .await
+        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
+
+    // Register this session so the reader task knows where to deliver responses.
+    entry
+        .register_session(UdpResponseSender::ws(outbound_tx, protocol))
+        .await;
 
     metrics.record_udp_payload_bytes(
         packet.user.id(),
@@ -929,47 +1090,29 @@ async fn handle_udp_datagram(
         "client_to_target",
         payload.len(),
     );
-    let responses = match relay_udp_payload(&target, payload, packet.user.fwmark()).await {
-        Ok(responses) => responses,
-        Err(error) => {
-            metrics.record_udp_request(
-                packet.user.id(),
-                protocol,
-                "error",
-                started_at.elapsed().as_secs_f64(),
-            );
-            return Err(error);
-        }
-    };
-    for (_, response_payload) in &responses {
-        metrics.record_udp_payload_bytes(
+    if let Err(error) = entry.socket().send_to(payload, resolved).await {
+        metrics.record_udp_request(
             packet.user.id(),
             protocol,
-            "target_to_client",
-            response_payload.len(),
+            "error",
+            started_at.elapsed().as_secs_f64(),
         );
+        return Err(error)
+            .with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
-    metrics.record_udp_response_datagrams(packet.user.id(), protocol, responses.len());
+    entry.touch();
     metrics.record_udp_request(
         packet.user.id(),
         protocol,
-        if responses.is_empty() { "timeout" } else { "success" },
+        "success",
         started_at.elapsed().as_secs_f64(),
     );
-    for (source, response_payload) in responses {
-        let mut plaintext = TargetAddr::Socket(source).encode()?;
-        plaintext.extend_from_slice(&response_payload);
-        let ciphertext = encrypt_udp_packet(&packet.user, &plaintext)?;
-        outbound_tx
-            .send(Message::Binary(ciphertext.into()))
-            .await
-            .context("failed to queue udp response")?;
-    }
 
     Ok(())
 }
 
 async fn handle_udp_h3_datagram(
+    nat_table: Arc<NatTable>,
     users: Arc<[UserKey]>,
     data: Bytes,
     outbound_tx: mpsc::Sender<H3Message>,
@@ -1012,13 +1155,30 @@ async fn handle_udp_h3_datagram(
         path = %path,
         "udp shadowsocks user authenticated"
     );
+
+    let resolved = resolve_target(&target).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
         path = %path,
         target = %target_display,
+        resolved = %resolved,
         "udp datagram relay"
     );
+
+    let nat_key = NatKey {
+        user_id: packet.user.id().to_owned(),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+    };
+    let entry = nat_table
+        .get_or_create(nat_key, &packet.user, Arc::clone(&metrics))
+        .await
+        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
+
+    entry
+        .register_session(UdpResponseSender::h3(outbound_tx))
+        .await;
 
     metrics.record_udp_payload_bytes(
         packet.user.id(),
@@ -1026,87 +1186,27 @@ async fn handle_udp_h3_datagram(
         "client_to_target",
         payload.len(),
     );
-    let responses = match relay_udp_payload(&target, payload, packet.user.fwmark()).await {
-        Ok(responses) => responses,
-        Err(error) => {
-            metrics.record_udp_request(
-                packet.user.id(),
-                Protocol::Http3,
-                "error",
-                started_at.elapsed().as_secs_f64(),
-            );
-            return Err(error);
-        }
-    };
-    for (_, response_payload) in &responses {
-        metrics.record_udp_payload_bytes(
+    if let Err(error) = entry.socket().send_to(payload, resolved).await {
+        metrics.record_udp_request(
             packet.user.id(),
             Protocol::Http3,
-            "target_to_client",
-            response_payload.len(),
+            "error",
+            started_at.elapsed().as_secs_f64(),
         );
+        return Err(error)
+            .with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
-    metrics.record_udp_response_datagrams(packet.user.id(), Protocol::Http3, responses.len());
+    entry.touch();
     metrics.record_udp_request(
         packet.user.id(),
         Protocol::Http3,
-        if responses.is_empty() { "timeout" } else { "success" },
+        "success",
         started_at.elapsed().as_secs_f64(),
     );
-    for (source, response_payload) in responses {
-        let mut plaintext = TargetAddr::Socket(source).encode()?;
-        plaintext.extend_from_slice(&response_payload);
-        let ciphertext = encrypt_udp_packet(&packet.user, &plaintext)?;
-        outbound_tx
-            .send(H3Message::Binary(ciphertext.into()))
-            .await
-            .context("failed to queue udp response")?;
-    }
 
     Ok(())
 }
 
-async fn relay_udp_payload(
-    target: &TargetAddr,
-    payload: &[u8],
-    fwmark: Option<u32>,
-) -> Result<Vec<(std::net::SocketAddr, Vec<u8>)>> {
-    let resolved = resolve_target(target).await?;
-    let bind_addr = if resolved.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let socket = UdpSocket::bind(bind_addr)
-        .await
-        .with_context(|| format!("failed to bind udp socket for {resolved}"))?;
-    apply_fwmark_if_needed(&socket, fwmark)
-        .with_context(|| format!("failed to apply fwmark {fwmark:?} to udp socket"))?;
-    socket
-        .send_to(payload, resolved)
-        .await
-        .with_context(|| format!("failed to send udp datagram to {resolved}"))?;
-
-    let mut buffer = vec![0_u8; 65_535];
-    let mut responses = Vec::new();
-
-    let first = timeout(Duration::from_secs(5), socket.recv_from(&mut buffer)).await;
-    match first {
-        Ok(Ok((read, source))) => responses.push((source, buffer[..read].to_vec())),
-        Ok(Err(error)) => return Err(error).context("failed to receive udp response"),
-        Err(_) => return Ok(responses),
-    }
-
-    loop {
-        match timeout(Duration::from_millis(30), socket.recv_from(&mut buffer)).await {
-            Ok(Ok((read, source))) => responses.push((source, buffer[..read].to_vec())),
-            Ok(Err(error)) => return Err(error).context("failed to receive udp response"),
-            Err(_) => break,
-        }
-    }
-
-    Ok(responses)
-}
 
 async fn resolve_target(target: &TargetAddr) -> Result<SocketAddr> {
     resolve_target_addrs(target).await?.into_iter().next().ok_or_else(|| {
@@ -1220,61 +1320,6 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
     }
 }
 
-#[cfg(unix)]
-fn apply_fwmark_if_needed<T>(socket: &T, fwmark: Option<u32>) -> std::io::Result<()>
-where
-    T: std::os::fd::AsRawFd,
-{
-    if let Some(fwmark) = fwmark {
-        apply_fwmark(socket, fwmark)
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(unix))]
-fn apply_fwmark_if_needed<T>(_socket: &T, fwmark: Option<u32>) -> std::io::Result<()> {
-    if fwmark.is_some() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "fwmark is only supported on Unix/Linux",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn apply_fwmark<T>(socket: &T, fwmark: u32) -> std::io::Result<()>
-where
-    T: std::os::fd::AsRawFd,
-{
-    let value: libc::c_uint = fwmark;
-    let rc = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            libc::SOL_SOCKET,
-            libc::SO_MARK,
-            &value as *const _ as *const libc::c_void,
-            std::mem::size_of_val(&value) as libc::socklen_t,
-        )
-    };
-    if rc == -1 {
-        return Err(std::io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-#[cfg(all(unix, not(target_os = "linux")))]
-fn apply_fwmark<T>(_socket: &T, _fwmark: u32) -> std::io::Result<()>
-where
-    T: std::os::fd::AsRawFd,
-{
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "fwmark is only supported on Linux",
-    ))
-}
-
 fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -1380,11 +1425,13 @@ fn build_app(
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
+    nat_table: Arc<NatTable>,
 ) -> Router {
     let state = AppState {
         tcp_routes: tcp_routes.clone(),
         udp_routes: udp_routes.clone(),
         metrics,
+        nat_table,
     };
     let mut router = Router::new();
 
@@ -1513,6 +1560,7 @@ async fn serve_h3_server(
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
+    nat_table: Arc<NatTable>,
 ) -> Result<()> {
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
@@ -1530,6 +1578,7 @@ async fn serve_h3_server(
                 let metrics = metrics.clone();
                 let tcp_paths = tcp_paths.clone();
                 let udp_paths = udp_paths.clone();
+                let nat_table = Arc::clone(&nat_table);
                 async move {
                     if tcp_paths.contains(req.path.as_str()) {
                         let route = tcp_routes
@@ -1577,6 +1626,7 @@ async fn serve_h3_server(
                             metrics.clone(),
                             req.path.clone(),
                             route.candidate_users,
+                            nat_table,
                         )
                         .await
                         {
@@ -1721,7 +1771,11 @@ async fn serve_tls_listener(
             let io = TokioIo::new(tls_stream);
             let service = TowerToHyperService::new(app);
             let mut builder = HyperBuilder::new(TokioExecutor::new());
-            builder.http2().enable_connect_protocol();
+            builder
+                .http2()
+                .enable_connect_protocol()
+                .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
+                .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
 
             if let Err(error) = builder.serve_connection_with_upgrades(io, service).await {
                 if !is_benign_tls_serve_error(error.as_ref()) {
@@ -1772,9 +1826,9 @@ mod tests {
 
     use super::{
         build_app, build_transport_route_map, build_users, connect_tcp_addrs,
-        connect_tcp_target, order_tcp_connect_addrs, relay_udp_payload, serve_h3_server,
-        serve_listener,
+        connect_tcp_target, order_tcp_connect_addrs, serve_h3_server, serve_listener,
     };
+    use crate::nat::NatTable;
     use crate::config::{CipherKind, Config, UserEntry};
     use crate::metrics::{Metrics, Transport};
     use crate::protocol::TargetAddr;
@@ -1858,26 +1912,31 @@ mod tests {
 
     #[tokio::test]
     async fn udp_ipv6_loopback_smoke() -> Result<()> {
-        let socket = match UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await {
-            Ok(socket) => socket,
+        let echo = match UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await {
+            Ok(s) => s,
             Err(error) if ipv6_unavailable(&error) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let addr = socket.local_addr()?;
-
+        let echo_addr = echo.local_addr()?;
         let server = tokio::spawn(async move {
             let mut buf = [0_u8; 64];
-            let (read, peer) = socket.recv_from(&mut buf).await?;
-            socket.send_to(&buf[..read], peer).await?;
+            let (read, peer) = echo.recv_from(&mut buf).await?;
+            echo.send_to(&buf[..read], peer).await?;
             Result::<_, anyhow::Error>::Ok(buf[..read].to_vec())
         });
 
-        let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
-        let responses = relay_udp_payload(&target, b"ping", None).await?;
+        // Send a datagram to the echo server and wait for the reply.
+        let client = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await?;
+        client.send_to(b"ping", echo_addr).await?;
+        let mut buf = [0_u8; 64];
+        let (read, source) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut buf),
+        )
+        .await??;
 
-        assert_eq!(responses.len(), 1);
-        assert_eq!(responses[0].0.ip(), Ipv6Addr::LOCALHOST);
-        assert_eq!(responses[0].1, b"ping");
+        assert_eq!(source.ip(), Ipv6Addr::LOCALHOST);
+        assert_eq!(&buf[..read], b"ping");
         assert_eq!(server.await??, b"ping");
         Ok(())
     }
@@ -1889,10 +1948,12 @@ mod tests {
 
         let config = sample_config(addr);
         let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let app = build_app(
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
+            nat_table,
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
@@ -1940,8 +2001,9 @@ mod tests {
         let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
         let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
         let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let server = tokio::spawn(async move {
-            serve_h3_server(server, tcp_routes, udp_routes, metrics).await
+            serve_h3_server(server, tcp_routes, udp_routes, metrics, nat_table).await
         });
 
         let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -1999,6 +2061,7 @@ mod tests {
             metrics_path: "/metrics".into(),
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             public_host: None,

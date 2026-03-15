@@ -22,6 +22,7 @@ pub struct Config {
     pub metrics_path: String,
     pub client_active_ttl_secs: u64,
     pub memory_trim_interval_secs: u64,
+    pub udp_nat_idle_timeout_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub public_host: Option<String>,
@@ -67,6 +68,10 @@ impl Config {
                 .memory_trim_interval_secs
                 .or(file.memory_trim_interval_secs)
                 .unwrap_or(60),
+            udp_nat_idle_timeout_secs: args
+                .udp_nat_idle_timeout_secs
+                .or(file.udp_nat_idle_timeout_secs)
+                .unwrap_or(300),
             ws_path_tcp: args
                 .ws_path_tcp
                 .or(file.ws_path_tcp)
@@ -229,6 +234,9 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS")]
     memory_trim_interval_secs: Option<u64>,
 
+    #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
+    udp_nat_idle_timeout_secs: Option<u64>,
+
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     ws_path_tcp: Option<String>,
 
@@ -285,6 +293,7 @@ struct FileConfig {
     metrics_path: Option<String>,
     client_active_ttl_secs: Option<u64>,
     memory_trim_interval_secs: Option<u64>,
+    udp_nat_idle_timeout_secs: Option<u64>,
     #[serde(default)]
     ws_path_tcp: Option<String>,
     #[serde(default)]

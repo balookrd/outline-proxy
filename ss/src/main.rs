@@ -1,7 +1,9 @@
 mod access_key;
 mod config;
 mod crypto;
+mod fwmark;
 mod metrics;
+mod nat;
 mod protocol;
 mod server;
 

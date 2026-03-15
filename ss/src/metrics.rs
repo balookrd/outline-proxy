@@ -1494,6 +1494,7 @@ mod tests {
             metrics_path: "/metrics".to_owned(),
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
             public_host: None,
