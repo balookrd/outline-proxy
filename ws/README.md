@@ -262,6 +262,7 @@ interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
+min_failures = 1
 
 [probe.ws]
 enabled = true
@@ -286,6 +287,7 @@ rtt_ewma_alpha = 0.3
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
+h3_downgrade_secs = 60
 
 [[uplinks]]
 name = "primary"
@@ -312,6 +314,8 @@ password = "Secret0"
 ### Key config behavior
 
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3`.
+- `[probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering a full failover.
+- `[load_balancing] h3_downgrade_secs` (default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
 - The canonical config format is `probe`, `load_balancing`, and `uplinks` without the `outline.` prefix.
 - The legacy `[outline]` format is still accepted for backward compatibility, and remains the least confusing way to express a single-uplink shorthand TOML config.
 - CLI flags and environment variables can override file settings.
@@ -356,10 +360,18 @@ Recommended operator stance:
 - enable `h2` only when the reverse proxy and origin are known-good for RFC 8441
 - enable `h3` only when QUIC is explicitly supported and reachable
 
+**Shared QUIC endpoint:** H3 connections that do not use a per-uplink `fwmark` share a single UDP socket per address family (one for IPv4, one for IPv6). This means N warm-standby H3 connections do not open N UDP sockets. Connections that require a specific `fwmark` still use their own dedicated socket because the mark must be applied before the first `sendmsg`.
+
+QUIC keep-alive pings are sent every 10 seconds to prevent NAT mapping expiry and to allow the server to detect dead connections without waiting for the full idle timeout.
+
 Runtime fallback behavior:
 
 - requested `h3` tries `h3`, then `h2`, then `http1`
 - requested `h2` tries `h2`, then `http1`
+
+**H3 runtime downgrade:** when an active H3 TCP connection is closed by the server with an application-level H3 error code (e.g. `H3_INTERNAL_ERROR`, `H3_REQUEST_REJECTED`, `H3_CONNECT_ERROR`), the uplink automatically falls back to H2 for new TCP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds). After the downgrade window expires, H3 is retried. This prevents reconnect storms where every new flow establishes an H3 connection only to have the server close the entire QUIC connection shortly after.
+
+Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 downgrade, new standby slots are filled using H2.
 
 ## Uplink Selection and Runtime Behavior
 
@@ -386,6 +398,8 @@ Routing scope behavior:
 - `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks; in `active_passive` mode each transport keeps its own pinned active uplink until failover or explicit reselection, and penalties no longer bias the strict transport score
 - `global`: one selected uplink is shared across all new user traffic until failover or explicit reselection, with TCP health and TCP score taking priority over UDP quality; in this mode strict selection stays pinned to the current active uplink until it enters cooldown, penalties no longer bias the strict global score, and UDP traffic no longer falls through to a backup uplink while the current global uplink is still the active TCP choice
 
+**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted with penalty-aware scoring (EWMA RTT + decaying failure penalty / weight). This prevents oscillation with three or more uplinks: without penalties, a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed, causing rapid back-and-forth. With penalties, a fresher backup with a higher raw RTT wins over the recently-failed primary until the penalty decays.
+
 Runtime failover:
 
 - UDP can switch uplinks within an active association after runtime send/read failure.
@@ -404,6 +418,7 @@ Probe execution controls:
 
 - `max_concurrent`: total concurrent probe tasks
 - `max_dials`: dedicated cap for probe dial attempts
+- `min_failures`: minimum number of consecutive probe failures required before the uplink is marked unhealthy and a runtime failure is recorded (default: `1`)
 
 Probe activation rules:
 
@@ -452,6 +467,7 @@ Capabilities:
 - zero-window persist/backoff
 - bounded buffering and retransmit budgets
 - flow termination on timeout, overflow, or relay failure
+- transport-error reporting to the uplink penalty system: abrupt upstream closes (e.g. QUIC `APPLICATION_CLOSE` / `H3_INTERNAL_ERROR`) are forwarded to `report_runtime_failure`, so the H3→H2 downgrade and failure penalty apply to TUN TCP flows the same way they apply to SOCKS5 flows; clean WebSocket closes (FIN or Close frame) are not counted as failures
 
 This is intended for real operations, but it is still not equivalent to a kernel TCP stack.
 
@@ -502,6 +518,8 @@ Metrics include:
 - rolling session p95 gauge
 - payload bytes and UDP datagrams
 - uplink health, latency, EWMA RTT, penalties, score, cooldown, standby readiness
+- per-uplink consecutive TCP/UDP failure counters
+- per-uplink H3 downgrade state (remaining downgrade window in milliseconds)
 - probe results and latency
 - warm-standby acquire and refill outcomes
 - TUN flow and packet metrics
