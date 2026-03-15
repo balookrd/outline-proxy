@@ -127,11 +127,15 @@ pub fn encrypt_udp_packet(
     master_key: &[u8],
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let mut salt = vec![0u8; cipher.salt_len()];
-    rand::thread_rng().fill_bytes(&mut salt);
-    let key = derive_subkey(cipher, master_key, &salt)?;
+    let salt_len = cipher.salt_len();
+    // Use a stack buffer (max salt size = max key size = 32 bytes) to avoid heap allocation
+    let mut salt_buf = [0u8; 32];
+    let salt = &mut salt_buf[..salt_len];
+    rand::thread_rng().fill_bytes(salt);
+    let key = derive_subkey(cipher, master_key, salt)?;
     let mut encrypted = encrypt(cipher, &key, &UDP_ZERO_NONCE, payload)?;
-    let mut packet = salt;
+    let mut packet = Vec::with_capacity(salt_len + encrypted.len());
+    packet.extend_from_slice(salt);
     packet.append(&mut encrypted);
     Ok(packet)
 }
