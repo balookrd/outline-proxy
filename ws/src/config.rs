@@ -87,6 +87,7 @@ pub struct ProbeConfig {
     pub timeout: Duration,
     pub max_concurrent: usize,
     pub max_dials: usize,
+    pub min_failures: usize,
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,
@@ -122,6 +123,8 @@ pub struct LoadBalancingConfig {
     pub failure_penalty: Duration,
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,
+    /// How long to downgrade from H3 to H2 after an H3 runtime error.
+    pub h3_downgrade_duration: Duration,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -248,6 +251,7 @@ struct ProbeSection {
     timeout_secs: Option<u64>,
     max_concurrent: Option<usize>,
     max_dials: Option<usize>,
+    min_failures: Option<usize>,
     ws: Option<WsProbeSection>,
     http: Option<HttpProbeSection>,
     dns: Option<DnsProbeSection>,
@@ -283,6 +287,7 @@ struct LoadBalancingSection {
     failure_penalty_ms: Option<u64>,
     failure_penalty_max_ms: Option<u64>,
     failure_penalty_halflife_secs: Option<u64>,
+    h3_downgrade_secs: Option<u64>,
 }
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
@@ -515,6 +520,7 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         timeout: Duration::from_secs(probe.and_then(|p| p.timeout_secs).unwrap_or(10)),
         max_concurrent: probe.and_then(|p| p.max_concurrent).unwrap_or(4).max(1),
         max_dials: probe.and_then(|p| p.max_dials).unwrap_or(2).max(1),
+        min_failures: probe.and_then(|p| p.min_failures).unwrap_or(1).max(1),
         ws: WsProbeConfig {
             enabled: probe
                 .and_then(|p| p.ws.as_ref())
@@ -556,6 +562,9 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         failure_penalty_halflife: Duration::from_secs(
             lb.and_then(|l| l.failure_penalty_halflife_secs)
                 .unwrap_or(60),
+        ),
+        h3_downgrade_duration: Duration::from_secs(
+            lb.and_then(|l| l.h3_downgrade_secs).unwrap_or(60),
         ),
     })
 }

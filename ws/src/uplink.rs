@@ -60,6 +60,12 @@ struct UplinkStatus {
     last_checked: Option<Instant>,
     cooldown_until_tcp: Option<Instant>,
     cooldown_until_udp: Option<Instant>,
+    tcp_consecutive_failures: u32,
+    udp_consecutive_failures: u32,
+    /// When set, H3 connections for TCP encountered repeated APPLICATION_CLOSE
+    /// errors at runtime (e.g. H3_INTERNAL_ERROR from server). Until this
+    /// instant, the uplink falls back to H2 for TCP to avoid the storm.
+    h3_tcp_downgrade_until: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -121,6 +127,9 @@ pub struct UplinkSnapshot {
     pub last_error: Option<String>,
     pub standby_tcp_ready: usize,
     pub standby_udp_ready: usize,
+    pub tcp_consecutive_failures: u32,
+    pub udp_consecutive_failures: u32,
+    pub h3_tcp_downgrade_until_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -146,6 +155,9 @@ impl Default for UplinkStatus {
             last_checked: None,
             cooldown_until_tcp: None,
             cooldown_until_udp: None,
+            tcp_consecutive_failures: 0,
+            udp_consecutive_failures: 0,
+            h3_tcp_downgrade_until: None,
         }
     }
 }
@@ -294,6 +306,12 @@ impl UplinkManager {
                 last_error: status.last_error.clone(),
                 standby_tcp_ready,
                 standby_udp_ready,
+                tcp_consecutive_failures: status.tcp_consecutive_failures,
+                udp_consecutive_failures: status.udp_consecutive_failures,
+                h3_tcp_downgrade_until_ms: status
+                    .h3_tcp_downgrade_until
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|v| v.as_millis()),
             });
         }
 
@@ -539,7 +557,51 @@ impl UplinkManager {
                 "runtime uplink failure recorded"
             );
         }
+        // If this is an H3 application-level connection close (e.g.
+        // H3_INTERNAL_ERROR) and the uplink is configured for H3, mark H3 as
+        // temporarily broken so subsequent connections use H2 instead.  This
+        // prevents a reconnect storm where every new flow establishes an H3
+        // connection only to have the server close the entire QUIC connection
+        // ~300ms later with APPLICATION_CLOSE.
+        if matches!(transport, TransportKind::Tcp) {
+            let uplink = &self.inner.uplinks[index];
+            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                && is_h3_application_close_error(error)
+            {
+                let now = tokio::time::Instant::now();
+                let mut statuses = self.inner.statuses.write().await;
+                let status = &mut statuses[index];
+                let downgrade_until =
+                    now + self.inner.load_balancing.h3_downgrade_duration;
+                let prev = status.h3_tcp_downgrade_until;
+                if prev.map_or(true, |t| t < now) {
+                    warn!(
+                        uplink = %uplink.name,
+                        downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                        "H3 runtime error detected, downgrading TCP transport to H2"
+                    );
+                }
+                status.h3_tcp_downgrade_until = Some(downgrade_until);
+            }
+        }
         self.clear_standby(index, transport).await;
+    }
+
+    /// Returns the effective TCP WebSocket mode for `index`, falling back to
+    /// H2 when H3 has been marked broken by repeated runtime errors.
+    async fn effective_tcp_ws_mode(&self, index: usize) -> crate::types::WsTransportMode {
+        let uplink = &self.inner.uplinks[index];
+        if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+            let statuses = self.inner.statuses.read().await;
+            let status = &statuses[index];
+            if status
+                .h3_tcp_downgrade_until
+                .is_some_and(|t| t > tokio::time::Instant::now())
+            {
+                return crate::types::WsTransportMode::H2;
+            }
+        }
+        uplink.tcp_ws_mode
     }
 
     pub async fn acquire_tcp_standby_or_connect(
@@ -556,10 +618,15 @@ impl UplinkManager {
         }
 
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
-        debug!(uplink = %candidate.uplink.name, "no warm-standby TCP websocket available, dialing on-demand");
+        let mode = self.effective_tcp_ws_mode(candidate.index).await;
+        debug!(
+            uplink = %candidate.uplink.name,
+            mode = %mode,
+            "no warm-standby TCP websocket available, dialing on-demand"
+        );
         connect_websocket_with_source(
             &candidate.uplink.tcp_ws_url,
-            candidate.uplink.tcp_ws_mode,
+            mode,
             candidate.uplink.fwmark,
             source,
         )
@@ -875,9 +942,10 @@ impl UplinkManager {
 
             let ws = match transport {
                 TransportKind::Tcp => {
+                    let mode = self.effective_tcp_ws_mode(index).await;
                     connect_websocket_with_source(
                         &uplink.tcp_ws_url,
-                        uplink.tcp_ws_mode,
+                        mode,
                         uplink.fwmark,
                         "standby_tcp",
                     )
@@ -1153,11 +1221,10 @@ impl UplinkManager {
                 Ok(result) => {
                     let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
                         let now = Instant::now();
+                        let min_failures = self.inner.probe.min_failures;
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
                         status.last_checked = Some(now);
-                        status.tcp_healthy = Some(result.tcp_ok);
-                        status.udp_healthy = Some(result.udp_ok);
                         status.tcp_latency = result.tcp_latency;
                         status.udp_latency = result.udp_latency;
                         update_rtt_ewma(
@@ -1171,16 +1238,32 @@ impl UplinkManager {
                             self.inner.load_balancing.rtt_ewma_alpha,
                         );
                         if !result.tcp_ok {
-                            add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                            status.tcp_consecutive_failures =
+                                status.tcp_consecutive_failures.saturating_add(1);
+                            if status.tcp_consecutive_failures >= min_failures as u32 {
+                                status.tcp_healthy = Some(false);
+                                add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                            }
                         } else {
+                            status.tcp_consecutive_failures = 0;
+                            status.tcp_healthy = Some(true);
                             // Only clear runtime-failure cooldown when the probe confirms TCP is
                             // healthy. Clearing unconditionally would make a recently-failed
                             // uplink immediately eligible again, causing oscillation under load.
                             status.cooldown_until_tcp = None;
+                            // Clear H3 downgrade: probe success proves H3 is working again.
+                            status.h3_tcp_downgrade_until = None;
                         }
                         if !result.udp_ok {
-                            add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                            status.udp_consecutive_failures =
+                                status.udp_consecutive_failures.saturating_add(1);
+                            if status.udp_consecutive_failures >= min_failures as u32 {
+                                status.udp_healthy = Some(false);
+                                add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                            }
                         } else {
+                            status.udp_consecutive_failures = 0;
+                            status.udp_healthy = Some(true);
                             status.cooldown_until_udp = None;
                         }
                         if result.tcp_ok && result.udp_ok {
@@ -1213,13 +1296,22 @@ impl UplinkManager {
                 Err(error) => {
                     {
                         let now = Instant::now();
+                        let min_failures = self.inner.probe.min_failures;
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
                         status.last_checked = Some(now);
-                        status.tcp_healthy = Some(false);
-                        status.udp_healthy = Some(false);
-                        add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
-                        add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        status.tcp_consecutive_failures =
+                            status.tcp_consecutive_failures.saturating_add(1);
+                        status.udp_consecutive_failures =
+                            status.udp_consecutive_failures.saturating_add(1);
+                        if status.tcp_consecutive_failures >= min_failures as u32 {
+                            status.tcp_healthy = Some(false);
+                            add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                        }
+                        if status.udp_consecutive_failures >= min_failures as u32 {
+                            status.udp_healthy = Some(false);
+                            add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        }
                         status.last_error = Some(format!("{error:#}"));
                     }
                     warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
@@ -1437,6 +1529,18 @@ async fn ping_idle_websocket(ws_stream: &mut AnyWsStream, pong_timeout: Duration
     })
     .await
     .context("websocket ping/pong timed out")?
+}
+
+/// Returns `true` when the error looks like the server closed the QUIC
+/// connection with an H3 application-level error code (e.g. H3_INTERNAL_ERROR,
+/// H3_REQUEST_REJECTED).  These indicate that the whole connection was torn
+/// down, not just the stream, and should trigger an H3→H2 downgrade.
+fn is_h3_application_close_error(error: &anyhow::Error) -> bool {
+    let msg = format!("{error:#}");
+    msg.contains("H3_INTERNAL_ERROR")
+        || msg.contains("H3_REQUEST_REJECTED")
+        || msg.contains("H3_CONNECT_ERROR")
+        || msg.contains("ApplicationClose")
 }
 
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
@@ -1966,6 +2070,7 @@ mod tests {
             failure_penalty: Duration::from_millis(500),
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),
+            h3_downgrade_duration: Duration::from_secs(60),
         }
     }
 
@@ -2000,6 +2105,7 @@ mod tests {
             timeout: Duration::from_secs(5),
             max_concurrent: 1,
             max_dials: 1,
+            min_failures: 1,
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,

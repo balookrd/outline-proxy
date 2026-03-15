@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
-use h3::client::RequestStream as H3RequestStream;
+use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
 use http::{Method, Request, Uri, Version};
 use http_body_util::Empty;
 use hyper::client::conn::http2;
@@ -102,6 +102,15 @@ pin_project! {
         #[pin]
         inner: RawH3WsStream,
         endpoint: quinn::Endpoint,
+        // Kept alive to prevent the h3 driver from initiating graceful shutdown
+        // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
+        // being dropped as a signal that no more requests will be made and may
+        // close the connection before the single WebSocket stream is used.
+        // Must be declared before `_connection` so it is dropped first: the h3
+        // layer needs to see the SendRequest gone before the QUIC connection
+        // closes, otherwise the server may receive an abrupt APPLICATION_CLOSE
+        // before the proper h3 shutdown sequence completes.
+        _send_request: H3SendRequest<h3_quinn::OpenStreams, Bytes>,
         _connection: H3ConnectionGuard,
         driver_task: AbortOnDrop,
     }
@@ -121,7 +130,10 @@ struct H3ConnectionGuard(quinn::Connection);
 
 impl Drop for H3ConnectionGuard {
     fn drop(&mut self) {
-        self.0.close(0u32.into(), b"websocket stream closed");
+        // H3_NO_ERROR = 0x100 per RFC 9114 §8.1. Using 0 is not a valid H3
+        // application error code and causes some servers to respond with
+        // H3_INTERNAL_ERROR, triggering a reconnect storm under load.
+        self.0.close(0x100u32.into(), b"websocket stream closed");
     }
 }
 
@@ -381,6 +393,11 @@ pub struct TcpShadowsocksReader {
     nonce: [u8; 12],
     buffer: Vec<u8>,
     _lifetime: Arc<UpstreamTransportGuard>,
+    /// `true` when the last read ended with a clean WebSocket close (Close
+    /// frame or EOF).  `false` means the stream was interrupted by a transport
+    /// error (e.g. QUIC APPLICATION_CLOSE / H3_INTERNAL_ERROR).  Callers can
+    /// use this to decide whether to report a runtime uplink failure.
+    pub closed_cleanly: bool,
 }
 
 pub struct UdpWsTransport {
@@ -532,6 +549,7 @@ impl TcpShadowsocksReader {
             nonce: [0u8; 12],
             buffer: Vec::new(),
             _lifetime: lifetime,
+            closed_cleanly: false,
         }
     }
 
@@ -567,16 +585,21 @@ impl TcpShadowsocksReader {
 
     async fn read_exact_from_ws(&mut self, len: usize) -> Result<Vec<u8>> {
         while self.buffer.len() < len {
-            let next = self
-                .stream
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("websocket closed"))?
-                .context("websocket read failed")?;
+            let next = match self.stream.next().await {
+                None => {
+                    self.closed_cleanly = true;
+                    bail!("websocket closed");
+                }
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => return Err(anyhow!("websocket read failed: {e}")),
+            };
 
             match next {
                 Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
-                Message::Close(_) => bail!("websocket closed"),
+                Message::Close(_) => {
+                    self.closed_cleanly = true;
+                    bail!("websocket closed");
+                }
                 Message::Ping(_) | Message::Pong(_) => {}
                 Message::Text(_) => bail!("unexpected text websocket frame"),
                 Message::Frame(_) => {}
@@ -879,6 +902,7 @@ async fn connect_h3_quic(
         ),
         endpoint,
         _connection: H3ConnectionGuard(connection_handle),
+        _send_request: send_request,
         driver_task,
     })
 }
@@ -997,6 +1021,14 @@ fn is_expected_h3_close(err: &str) -> bool {
     err.contains("H3_NO_ERROR")
         || err.contains("Connection closed by client")
         || err.contains("connection closed by client")
+        // H3 application-level closes from the server (e.g. H3_INTERNAL_ERROR
+        // when the backend crashes under load). These are already reported as
+        // runtime uplink failures via closed_cleanly=false in the flow reader;
+        // logging them as ERROR here would just add noise.
+        || err.contains("H3_INTERNAL_ERROR")
+        || err.contains("H3_REQUEST_REJECTED")
+        || err.contains("H3_CONNECT_ERROR")
+        || err.contains("ApplicationClose")
 }
 
 fn websocket_target_uri(url: &Url) -> Result<String> {
