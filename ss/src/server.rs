@@ -1286,6 +1286,8 @@ fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
             || message.contains("peer closed connection without sending TLS close_notify")
             || message.contains("ApplicationClose: H3_NO_ERROR")
             || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
+            || message.contains("ApplicationClose: 0x0")
+            || message.contains("InternalError in the quic trait implementation: internal error in the http stack")
     })
 }
 
@@ -1294,6 +1296,7 @@ fn is_normal_h3_shutdown(error: &anyhow::Error) -> bool {
         let message = cause.to_string();
         message.contains("ApplicationClose: H3_NO_ERROR")
             || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
+            || message.contains("ApplicationClose: 0x0")
     })
 }
 
