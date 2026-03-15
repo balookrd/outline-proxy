@@ -1288,6 +1288,7 @@ fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
             || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
             || message.contains("ApplicationClose: 0x0")
             || message.contains("InternalError in the quic trait implementation: internal error in the http stack")
+            || message.contains("Connection error: Timeout")
     })
 }
 

@@ -849,10 +849,24 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame
+    /// Send a close frame and shut down the underlying transport write half.
+    ///
+    /// For HTTP/3 WebSocket (RFC 9220) this calls `finish()` on the h3 request
+    /// stream, which sends a QUIC FIN instead of RESET_STREAM.  Without the
+    /// explicit shutdown the quinn `SendStream` is dropped without `finish()`,
+    /// causing a `RESET_STREAM` that some H3 clients (or proxies) treat as a
+    /// connection-level error and respond with `H3_INTERNAL_ERROR`, closing the
+    /// entire QUIC connection instead of just the WebSocket stream.
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
         self.send(Message::Close(Some(CloseReason::new(code, reason))))
-            .await
+            .await?;
+        // Call shutdown to send FIN on the underlying transport (QUIC send
+        // stream for H3, TCP half-close for H1/H2).  Errors are intentionally
+        // ignored: by this point the WebSocket Close frame has already been
+        // delivered and the stream is logically finished.
+        use tokio::io::AsyncWriteExt as _;
+        let _ = self.writer.shutdown().await;
+        Ok(())
     }
 
     /// Check if the connection is closed
@@ -1476,10 +1490,16 @@ where
         self.send(Message::Binary(data)).await
     }
 
-    /// Send a close frame
+    /// Send a close frame and shut down the underlying transport write half.
+    ///
+    /// See [`SplitWriter::close`] for details on why the `shutdown()` call is
+    /// necessary for HTTP/3 WebSocket streams.
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
         self.send(Message::Close(Some(CloseReason::new(code, reason))))
-            .await
+            .await?;
+        use tokio::io::AsyncWriteExt as _;
+        let _ = self.writer.shutdown().await;
+        Ok(())
     }
 
     /// Check if the connection is closed
