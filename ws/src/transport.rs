@@ -18,6 +18,7 @@ use sockudo_ws::{
     Stream as SockudoTransportStream, WebSocketStream as SockudoWebSocketStream,
     error::CloseReason as SockudoCloseReason,
 };
+use once_cell::sync::OnceCell;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -139,6 +140,51 @@ fn h3_client_tls_config() -> Arc<ClientConfig> {
         config.alpn_protocols = vec![b"h3".to_vec()];
         Arc::new(config)
     }))
+}
+
+static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();
+
+/// Returns a cloned QUIC client config built once from the cached TLS config.
+fn h3_quic_client_config() -> quinn::ClientConfig {
+    H3_QUIC_CLIENT_CONFIG
+        .get_or_init(|| {
+            let tls = h3_client_tls_config();
+            let quic = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
+                .expect("H3 TLS ALPN config is always QUIC-compatible");
+            let mut config = quinn::ClientConfig::new(Arc::new(quic));
+            let mut transport = quinn::TransportConfig::default();
+            // Send QUIC PING frames so NAT mappings stay alive and the server
+            // detects dead connections promptly.
+            transport.keep_alive_interval(Some(Duration::from_secs(10)));
+            config.transport_config(Arc::new(transport));
+            config
+        })
+        .clone()
+}
+
+// One UDP socket per address family, shared across all H3 connections that do
+// not require a per-socket fwmark. Sharing the endpoint eliminates the "N
+// warm-standby connections = N UDP sockets" resource explosion.
+static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
+static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
+
+fn get_or_init_shared_h3_endpoint(bind_addr: SocketAddr) -> Result<quinn::Endpoint> {
+    let cell = if bind_addr.is_ipv4() {
+        &H3_CLIENT_ENDPOINT_V4
+    } else {
+        &H3_CLIENT_ENDPOINT_V6
+    };
+    let endpoint = cell.get_or_try_init(|| {
+        let socket = bind_udp_socket(bind_addr, None)?;
+        quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind shared QUIC client endpoint on {bind_addr}"))
+    })?;
+    Ok(endpoint.clone())
 }
 
 struct TransportConnectGuard {
@@ -731,12 +777,10 @@ async fn connect_websocket_h3(
     }
     server_addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
 
-    let tls_config = h3_client_tls_config();
-
     let path = websocket_path(url);
     let mut last_error = None;
     for server_addr in server_addrs {
-        match connect_h3_quic(server_addr, host, &path, &tls_config, fwmark, source).await {
+        match connect_h3_quic(server_addr, host, &path, fwmark, source).await {
             Ok(ws) => return Ok(AnyWsStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
@@ -752,33 +796,32 @@ async fn connect_h3_quic(
     server_addr: std::net::SocketAddr,
     server_name: &str,
     path: &str,
-    tls_config: &ClientConfig,
     fwmark: Option<u32>,
     source: &'static str,
 ) -> Result<H3WsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h3");
     let bind_addr = bind_addr_for(server_addr);
-    let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config.clone())
-        .map_err(|_| anyhow!("invalid TLS config for QUIC client"))?;
-    let mut client_config = quinn::ClientConfig::new(Arc::new(quic_config));
-    let mut transport_config = quinn::TransportConfig::default();
-    // Send QUIC PING frames so NAT mappings stay alive and the server detects
-    // dead connections promptly, rather than waiting for its idle timeout.
-    transport_config.keep_alive_interval(Some(Duration::from_secs(10)));
-    client_config.transport_config(Arc::new(transport_config));
+    let client_config = h3_quic_client_config();
 
-    let socket = bind_udp_socket(bind_addr, fwmark)?;
-    let mut endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
-        None,
-        socket,
-        Arc::new(quinn::TokioRuntime),
-    )
-    .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?;
-    endpoint.set_default_client_config(client_config);
+    // For fwmark connections the socket must be bound with the mark set before
+    // connect, so each stream needs its own UDP socket and endpoint.  For all
+    // other connections we reuse one shared endpoint per address family so that
+    // N warm-standby streams share a single UDP socket rather than opening N.
+    let endpoint = if fwmark.is_some() {
+        let socket = bind_udp_socket(bind_addr, fwmark)?;
+        quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"))?
+    } else {
+        get_or_init_shared_h3_endpoint(bind_addr)?
+    };
 
     let connection = endpoint
-        .connect(server_addr, server_name)
+        .connect_with(client_config, server_addr, server_name)
         .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?
         .await
         .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
