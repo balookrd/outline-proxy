@@ -107,6 +107,16 @@ The UDP endpoint expects exactly one Shadowsocks AEAD UDP packet per WebSocket b
 3. The server decrypts the packet, extracts the target address, and forwards the datagram.
 4. Each received upstream response is returned as its own encrypted WebSocket binary frame.
 
+Each incoming datagram is dispatched to an independent relay task. At most 256 concurrent relay tasks are allowed per WebSocket connection. Datagrams that arrive when the limit is reached are silently dropped and logged at `warn` level. This prevents unbounded goroutine growth when a client sends bursts faster than upstream DNS or target hosts can respond.
+
+**UDP NAT table:** the server maintains a persistent UDP socket per `(user_id, fwmark, target_addr)` triple shared across all WebSocket sessions for that user. This means:
+
+- The upstream source port is stable for the lifetime of the NAT entry — stateful UDP protocols (QUIC, DTLS, some game and VoIP protocols) work correctly.
+- Unsolicited upstream responses (server-initiated pushes, QUIC stream continuations) are delivered to the currently active WebSocket session even if they arrive between datagrams.
+- After a WebSocket reconnect, the existing upstream socket is reused immediately — no new UDP handshake or association required on the upstream side.
+
+NAT entries are evicted after `udp_nat_idle_timeout_secs` (default 300 seconds) of no outbound traffic. A background task scans for idle entries every 60 seconds.
+
 ## User Model
 
 Each user can define:
@@ -150,6 +160,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `metrics_path` | Prometheus endpoint path |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
 | `memory_trim_interval_secs` | On Linux, periodically refreshes jemalloc stats and enables jemalloc background purging if needed; default is `60`, `0` disables it |
+| `udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram; default is `300` (5 minutes) |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `public_host` | Public host used for generated Outline access keys |
@@ -184,6 +195,7 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
 - `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
+- `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
 - `OUTLINE_SS_PUBLIC_HOST`
@@ -381,13 +393,16 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 - HTTP/2 WebSocket support relies on RFC 8441 Extended CONNECT.
 - HTTP/3 WebSocket support relies on RFC 9220.
 - The repository currently vendors and patches `h3` and `sockudo-ws` for HTTP/3 behavior needed by this project. Details are documented in [PATCHES.md](/Users/mmalykhin/Documents/outline-ss-rust/PATCHES.md).
+- The vendored `sockudo-ws` patch now sends a QUIC FIN (via `AsyncWriteExt::shutdown`) after delivering the WebSocket Close frame. Without this, dropping the `SendStream` triggers `RESET_STREAM`, which some H3 clients and intermediaries treat as a connection-level error and respond with `H3_INTERNAL_ERROR`, tearing down the entire QUIC connection.
+- QUIC idle timeout is 120 seconds and WebSocket ping interval is 15 seconds. These values are now consistent between the QUIC transport layer and the WebSocket idle settings.
+- The following QUIC close conditions are treated as benign (not counted as errors): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0`, QUIC stack internal errors from the http layer, and connection idle timeouts.
 
 ## Limitations
 
 - No Outline management API
 - No built-in user provisioning service
 - No SIP003 plugin negotiation
-- No UDP NAT state sharing across WebSocket sessions
+- UDP NAT entries are shared across reconnects but not across different users or different target addresses
 - The UDP transport model is one encrypted Shadowsocks UDP packet per WebSocket binary frame
 
 ## Development
