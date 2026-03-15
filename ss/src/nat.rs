@@ -204,6 +204,7 @@ impl NatTable {
             target = %key.target,
             "created UDP NAT entry"
         );
+        metrics.record_udp_nat_entry_created();
         entries.insert(key, Arc::clone(&entry));
         Ok(entry)
     }
@@ -211,7 +212,7 @@ impl NatTable {
     /// Remove entries that have had no outbound traffic for longer than
     /// `self.idle_timeout`.  The reader task for each evicted entry is aborted
     /// when the `Arc<NatEntry>` refcount reaches zero.
-    pub(crate) async fn evict_idle(&self) {
+    pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
         let threshold = unix_secs_now().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
         let before = entries.len();
@@ -220,6 +221,7 @@ impl NatTable {
         });
         let evicted = before - entries.len();
         if evicted > 0 {
+            metrics.record_udp_nat_entries_evicted(evicted);
             debug!(
                 evicted,
                 remaining = entries.len(),
@@ -290,6 +292,7 @@ async fn nat_reader_task(
                 debug!(%target, "NAT response dropped: WebSocket session disconnected");
             }
         } else {
+            metrics.record_udp_nat_response_dropped();
             debug!(%target, "NAT response dropped: no active WebSocket session");
         }
     }
