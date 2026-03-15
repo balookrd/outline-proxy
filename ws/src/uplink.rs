@@ -494,7 +494,17 @@ impl UplinkManager {
                     } else {
                         metrics::record_runtime_failure_suppressed("tcp", &uplink_name);
                     }
-                    status.tcp_healthy = Some(false);
+                    // When probe is enabled it is the authoritative source of
+                    // tcp_healthy.  A single runtime connection failure is not
+                    // sufficient evidence that the server is down — only the probe
+                    // can confirm that.  Setting tcp_healthy here would cause a
+                    // global-scope failover on every transient error, which is exactly
+                    // what we want to avoid.  When probe is disabled there is no other
+                    // health signal, so fall back to marking the uplink unhealthy
+                    // immediately so that cooldown-based gating can still trigger a switch.
+                    if !self.inner.probe.enabled() {
+                        status.tcp_healthy = Some(false);
+                    }
                     (
                         uplink_name,
                         status.cooldown_until_tcp,
@@ -518,7 +528,9 @@ impl UplinkManager {
                     } else {
                         metrics::record_runtime_failure_suppressed("udp", &uplink_name);
                     }
-                    status.udp_healthy = Some(false);
+                    if !self.inner.probe.enabled() {
+                        status.udp_healthy = Some(false);
+                    }
                     (
                         uplink_name,
                         status.cooldown_until_udp,
@@ -810,7 +822,22 @@ impl UplinkManager {
         if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
             if let Some(candidate) = candidates.iter().find(|candidate| candidate.index == active_index)
             {
-                if !cooldown_active(&statuses[active_index], gate_transport, now) {
+                // In global scope with probe enabled: keep the current uplink unless the
+                // probe has confirmed it is down (tcp_healthy == Some(false)).  Runtime
+                // failures only set a cooldown; they do NOT update tcp_healthy when probe
+                // is enabled (see report_runtime_failure), so a transient connection error
+                // cannot trigger a failover here.
+                // When probe is disabled, runtime failures do set tcp_healthy = Some(false),
+                // but that field is not used for the switch decision — instead we fall back
+                // to cooldown-based gating so that failures can still cause a switch.
+                let should_keep = if self.inner.load_balancing.routing_scope == RoutingScope::Global
+                    && self.inner.probe.enabled()
+                {
+                    statuses[active_index].tcp_healthy != Some(false)
+                } else {
+                    !cooldown_active(&statuses[active_index], gate_transport, now)
+                };
+                if should_keep {
                     let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
                     self.store_sticky_route(&key, active_index).await;
                     return vec![UplinkCandidate {
@@ -1193,16 +1220,35 @@ impl UplinkManager {
             let timeout_duration = self.inner.probe.timeout;
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
+            let probe_attempts = probe.attempts.max(1);
             tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
                     .await
                     .expect("probe execution semaphore closed");
-                let outcome = timeout(timeout_duration, probe_uplink(&uplink, &probe, dial_limit))
+                // Retry the probe up to `attempts` times within one cycle.
+                // As soon as any attempt returns Ok we accept that result and
+                // stop; only if every attempt fails do we propagate the error.
+                // This makes each probe cycle resilient to transient network
+                // blips that would otherwise needlessly increment the
+                // consecutive-failure counter.
+                let mut outcome = Err(anyhow!("no probe attempts"));
+                for attempt in 0..probe_attempts {
+                    outcome = timeout(
+                        timeout_duration,
+                        probe_uplink(&uplink, &probe, Arc::clone(&dial_limit)),
+                    )
                     .await
                     .unwrap_or_else(|_| {
                         Err(anyhow!("probe timed out after {:?}", timeout_duration))
                     });
+                    if outcome.is_ok() {
+                        break;
+                    }
+                    if attempt + 1 < probe_attempts {
+                        sleep(Duration::from_millis(500)).await;
+                    }
+                }
                 (index, uplink, outcome)
             });
         }
@@ -2106,6 +2152,7 @@ mod tests {
             max_concurrent: 1,
             max_dials: 1,
             min_failures: 1,
+            attempts: 1,
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
@@ -2395,8 +2442,11 @@ mod tests {
         assert_eq!(udp_candidates[0].uplink.name, "primary");
     }
 
+    // When probe is disabled, the global scope falls back to cooldown-based gating:
+    // the active uplink is kept even if tcp_healthy flips to false, as long as no
+    // cooldown has been set by a runtime failure.
     #[tokio::test]
-    async fn global_scope_keeps_current_active_uplink_until_cooldown() {
+    async fn global_scope_keeps_current_active_uplink_until_cooldown_when_probe_disabled() {
         let mut config = lb();
         config.mode = LoadBalancingMode::ActivePassive;
         config.routing_scope = RoutingScope::Global;
@@ -2422,6 +2472,61 @@ mod tests {
 
         let second = manager.tcp_candidates(&target).await;
         assert_eq!(second[0].uplink.name, "primary");
+    }
+
+    // When probe is enabled, the global scope switches only when the probe confirms
+    // the active uplink is down (tcp_healthy == Some(false)).  A transient runtime
+    // cooldown alone must not trigger a failover.
+    #[tokio::test]
+    async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enabled() {
+        let mut config = lb();
+        config.mode = LoadBalancingMode::ActivePassive;
+        config.routing_scope = RoutingScope::Global;
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            ProbeConfig {
+                interval: Duration::from_secs(30),
+                timeout: Duration::from_secs(5),
+                max_concurrent: 1,
+                max_dials: 1,
+                min_failures: 1,
+                attempts: 1,
+                ws: WsProbeConfig { enabled: true },
+                http: None,
+                dns: None,
+            },
+            config.clone(),
+        )
+        .unwrap();
+
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 60).await;
+
+        let target = TargetAddr::Domain("example.com".to_string(), 443);
+        let first = manager.tcp_candidates(&target).await;
+        assert_eq!(first[0].uplink.name, "primary");
+
+        // Runtime failure sets cooldown but probe has not confirmed the server is down.
+        // Simulate: cooldown set but tcp_healthy still Some(true).
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].cooldown_until_tcp = Some(Instant::now() + Duration::from_secs(10));
+            // tcp_healthy is still Some(true) — probe has not fired yet
+        }
+
+        // Must keep primary: probe hasn't confirmed it is down.
+        let second = manager.tcp_candidates(&target).await;
+        assert_eq!(second[0].uplink.name, "primary", "should not switch on cooldown alone");
+
+        // Now the probe confirms primary is down.
+        set_tcp_status(&manager, 0, false, 20).await;
+
+        // Must switch to backup.
+        let third = manager.tcp_candidates(&target).await;
+        assert_eq!(third[0].uplink.name, "backup", "should switch when probe confirms failure");
     }
 
     #[tokio::test]

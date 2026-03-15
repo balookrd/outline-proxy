@@ -88,6 +88,11 @@ pub struct ProbeConfig {
     pub max_concurrent: usize,
     pub max_dials: usize,
     pub min_failures: usize,
+    /// Number of connection attempts per probe cycle. If any attempt succeeds the
+    /// cycle is counted as a success. Retries are separated by a short pause
+    /// (500 ms) so the total time per cycle can be up to
+    /// `attempts × (timeout + 500 ms)`. Default: 2.
+    pub attempts: usize,
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,
@@ -252,6 +257,7 @@ struct ProbeSection {
     max_concurrent: Option<usize>,
     max_dials: Option<usize>,
     min_failures: Option<usize>,
+    attempts: Option<usize>,
     ws: Option<WsProbeSection>,
     http: Option<HttpProbeSection>,
     dns: Option<DnsProbeSection>,
@@ -520,7 +526,8 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         timeout: Duration::from_secs(probe.and_then(|p| p.timeout_secs).unwrap_or(10)),
         max_concurrent: probe.and_then(|p| p.max_concurrent).unwrap_or(4).max(1),
         max_dials: probe.and_then(|p| p.max_dials).unwrap_or(2).max(1),
-        min_failures: probe.and_then(|p| p.min_failures).unwrap_or(1).max(1),
+        min_failures: probe.and_then(|p| p.min_failures).unwrap_or(3).max(1),
+        attempts: probe.and_then(|p| p.attempts).unwrap_or(2).max(1),
         ws: WsProbeConfig {
             enabled: probe
                 .and_then(|p| p.ws.as_ref())
