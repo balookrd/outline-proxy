@@ -18,7 +18,7 @@ pub enum CipherKind {
     Aes256Gcm,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum WsTransportMode {
     Http1,

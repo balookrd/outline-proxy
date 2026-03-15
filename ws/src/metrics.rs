@@ -1734,6 +1734,9 @@ mod tests {
             last_error: None,
             standby_tcp_ready: 0,
             standby_udp_ready: 0,
+            tcp_consecutive_failures: 0,
+            udp_consecutive_failures: 0,
+            h3_tcp_downgrade_until_ms: None,
         }
     }
 

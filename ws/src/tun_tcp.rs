@@ -1020,6 +1020,26 @@ impl TunTcpEngine {
                         }
                     }
                     Err(error) => {
+                        // Transport errors (e.g. QUIC APPLICATION_CLOSE /
+                        // H3_INTERNAL_ERROR) set closed_cleanly=false.  Report
+                        // them as uplink runtime failures so the penalty system
+                        // can switch to a backup uplink or fall back to H2/H1.
+                        // Clean WebSocket closes (FIN, Close frame) do not
+                        // indicate an uplink problem and are not reported.
+                        if !upstream_reader.closed_cleanly {
+                            let uplink_index = flow.lock().await.uplink_index;
+                            if uplink_index != usize::MAX {
+                                engine
+                                    .inner
+                                    .uplinks
+                                    .report_runtime_failure(
+                                        uplink_index,
+                                        TransportKind::Tcp,
+                                        &error,
+                                    )
+                                    .await;
+                            }
+                        }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
                         let flush = {
                             let mut state = flow.lock().await;
@@ -3729,6 +3749,7 @@ mod tests {
                 timeout: Duration::from_secs(5),
                 max_concurrent: 2,
                 max_dials: 1,
+                min_failures: 1,
                 ws: WsProbeConfig { enabled: false },
                 http: None,
                 dns: None,
@@ -3745,6 +3766,7 @@ mod tests {
                 failure_penalty: Duration::from_millis(500),
                 failure_penalty_max: Duration::from_secs(30),
                 failure_penalty_halflife: Duration::from_secs(60),
+                h3_downgrade_duration: Duration::from_secs(60),
             },
         )
         .unwrap()

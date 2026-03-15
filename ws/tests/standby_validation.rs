@@ -80,6 +80,7 @@ async fn build_manager(
             timeout: Duration::from_secs(5),
             max_concurrent: 2,
             max_dials: 1,
+            min_failures: 1,
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
@@ -96,6 +97,7 @@ async fn build_manager(
             failure_penalty: Duration::from_millis(500),
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),
+            h3_downgrade_duration: Duration::from_secs(60),
         },
     )
     .expect("manager must build")
