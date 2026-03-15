@@ -81,6 +81,7 @@ async fn build_manager(
             max_concurrent: 2,
             max_dials: 1,
             min_failures: 1,
+            attempts: 1,
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
