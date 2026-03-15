@@ -117,13 +117,14 @@ pub async fn run(config: Config) -> Result<()> {
     // Periodic NAT entry eviction.
     {
         let nat_table_cleanup = Arc::clone(&nat_table);
+        let metrics_cleanup = Arc::clone(&metrics);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             interval.tick().await;
             loop {
                 interval.tick().await;
-                nat_table_cleanup.evict_idle().await;
+                nat_table_cleanup.evict_idle(&metrics_cleanup).await;
             }
         });
     }

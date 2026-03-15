@@ -153,6 +153,10 @@ pub struct Metrics {
     udp_relay_duration_seconds: HistogramVec<UserProtocolResultLabels>,
     udp_payload_bytes_total: CounterVec<UserProtocolDirectionLabels>,
     udp_response_datagrams_total: CounterVec<UserProtocolLabels>,
+    udp_nat_active_entries: AtomicI64,
+    udp_nat_entries_created_total: AtomicU64,
+    udp_nat_entries_evicted_total: AtomicU64,
+    udp_nat_responses_dropped_total: AtomicU64,
 }
 
 impl Metrics {
@@ -182,6 +186,10 @@ impl Metrics {
             udp_relay_duration_seconds: HistogramVec::new(UDP_RELAY_BUCKETS),
             udp_payload_bytes_total: CounterVec::default(),
             udp_response_datagrams_total: CounterVec::default(),
+            udp_nat_active_entries: AtomicI64::new(0),
+            udp_nat_entries_created_total: AtomicU64::new(0),
+            udp_nat_entries_evicted_total: AtomicU64::new(0),
+            udp_nat_responses_dropped_total: AtomicU64::new(0),
         })
     }
 
@@ -319,6 +327,20 @@ impl Metrics {
             UserProtocolLabels::new(user, protocol),
             count as u64,
         );
+    }
+
+    pub fn record_udp_nat_entry_created(&self) {
+        self.udp_nat_active_entries.fetch_add(1, Ordering::Relaxed);
+        self.udp_nat_entries_created_total.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn record_udp_nat_entries_evicted(&self, count: usize) {
+        self.udp_nat_active_entries.fetch_sub(count as i64, Ordering::Relaxed);
+        self.udp_nat_entries_evicted_total.fetch_add(count as u64, Ordering::Relaxed);
+    }
+
+    pub fn record_udp_nat_response_dropped(&self) {
+        self.udp_nat_responses_dropped_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn render_prometheus(&self) -> String {
@@ -714,6 +736,22 @@ impl Metrics {
             "UDP response datagrams sent back to the client.",
             &self.udp_response_datagrams_total,
         );
+
+        write_help(&mut out, "outline_ss_udp_nat_active_entries", "Current number of active UDP NAT table entries.");
+        write_type(&mut out, "outline_ss_udp_nat_active_entries", "gauge");
+        writeln!(out, "outline_ss_udp_nat_active_entries {}", self.udp_nat_active_entries.load(Ordering::Relaxed)).ok();
+
+        write_help(&mut out, "outline_ss_udp_nat_entries_created_total", "Total UDP NAT table entries ever created.");
+        write_type(&mut out, "outline_ss_udp_nat_entries_created_total", "counter");
+        writeln!(out, "outline_ss_udp_nat_entries_created_total {}", self.udp_nat_entries_created_total.load(Ordering::Relaxed)).ok();
+
+        write_help(&mut out, "outline_ss_udp_nat_entries_evicted_total", "Total UDP NAT table entries evicted due to idle timeout.");
+        write_type(&mut out, "outline_ss_udp_nat_entries_evicted_total", "counter");
+        writeln!(out, "outline_ss_udp_nat_entries_evicted_total {}", self.udp_nat_entries_evicted_total.load(Ordering::Relaxed)).ok();
+
+        write_help(&mut out, "outline_ss_udp_nat_responses_dropped_total", "UDP upstream responses dropped because no WebSocket session was registered.");
+        write_type(&mut out, "outline_ss_udp_nat_responses_dropped_total", "counter");
+        writeln!(out, "outline_ss_udp_nat_responses_dropped_total {}", self.udp_nat_responses_dropped_total.load(Ordering::Relaxed)).ok();
 
         out
     }
