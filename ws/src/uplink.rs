@@ -66,6 +66,11 @@ struct UplinkStatus {
     /// errors at runtime (e.g. H3_INTERNAL_ERROR from server). Until this
     /// instant, the uplink falls back to H2 for TCP to avoid the storm.
     h3_tcp_downgrade_until: Option<Instant>,
+    /// Timestamp of the most recent real TCP data transfer through this uplink.
+    /// Used to suppress probe cycles when the uplink is actively carrying traffic.
+    last_active_tcp: Option<Instant>,
+    /// Timestamp of the most recent real UDP data transfer through this uplink.
+    last_active_udp: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -130,6 +135,8 @@ pub struct UplinkSnapshot {
     pub tcp_consecutive_failures: u32,
     pub udp_consecutive_failures: u32,
     pub h3_tcp_downgrade_until_ms: Option<u128>,
+    pub last_active_tcp_ago_ms: Option<u128>,
+    pub last_active_udp_ago_ms: Option<u128>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -158,6 +165,8 @@ impl Default for UplinkStatus {
             tcp_consecutive_failures: 0,
             udp_consecutive_failures: 0,
             h3_tcp_downgrade_until: None,
+            last_active_tcp: None,
+            last_active_udp: None,
         }
     }
 }
@@ -312,6 +321,12 @@ impl UplinkManager {
                     .h3_tcp_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
+                last_active_tcp_ago_ms: status
+                    .last_active_tcp
+                    .map(|t| now.duration_since(t).as_millis()),
+                last_active_udp_ago_ms: status
+                    .last_active_udp
+                    .map(|t| now.duration_since(t).as_millis()),
             });
         }
 
@@ -569,17 +584,24 @@ impl UplinkManager {
                 "runtime uplink failure recorded"
             );
         }
-        // If this is an H3 application-level connection close (e.g.
-        // H3_INTERNAL_ERROR) and the uplink is configured for H3, mark H3 as
-        // temporarily broken so subsequent connections use H2 instead.  This
-        // prevents a reconnect storm where every new flow establishes an H3
-        // connection only to have the server close the entire QUIC connection
-        // ~300ms later with APPLICATION_CLOSE.
+        // If the uplink is configured for H3 and a TCP connection failed at
+        // runtime for any reason, mark H3 as temporarily broken so subsequent
+        // connections use H2 instead.
+        //
+        // Previously this was gated on specific APPLICATION_CLOSE error codes
+        // (H3_INTERNAL_ERROR, etc.), but H3/QUIC connections can fail with
+        // many other errors (connection lost, transport error, stream reset,
+        // QUIC timeout, …) that would leave the downgrade timer unset and
+        // cause repeated cooldown-driven flapping:
+        //   cooldown expires → try H3 → non-APPLICATION_CLOSE error → cooldown →
+        //   switch to backup → cooldown expires → try H3 again → repeat.
+        // Triggering the downgrade on any TCP failure is safe: if the server
+        // is genuinely down both H3 and H2 will fail and we failover to another
+        // uplink regardless.  Recovery is natural: once h3_downgrade_duration
+        // elapses the next real connection re-tests H3.
         if matches!(transport, TransportKind::Tcp) {
             let uplink = &self.inner.uplinks[index];
-            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
-                && is_h3_application_close_error(error)
-            {
+            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
                 let now = tokio::time::Instant::now();
                 let mut statuses = self.inner.statuses.write().await;
                 let status = &mut statuses[index];
@@ -589,14 +611,101 @@ impl UplinkManager {
                 if prev.map_or(true, |t| t < now) {
                     warn!(
                         uplink = %uplink.name,
+                        error = %format!("{error:#}"),
                         downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
-                        "H3 runtime error detected, downgrading TCP transport to H2"
+                        "H3 TCP runtime error detected, downgrading TCP transport to H2"
                     );
                 }
                 status.h3_tcp_downgrade_until = Some(downgrade_until);
             }
         }
         self.clear_standby(index, transport).await;
+    }
+
+    /// Called when real traffic successfully flows through an uplink.
+    ///
+    /// Updates the activity timestamp (rate-limited to once per 5 s to keep
+    /// write-lock contention low for high-frequency UDP callers), marks the
+    /// transport as healthy, resets consecutive-failure counters, and clears
+    /// any active failure cooldown.  A successful data transfer is stronger
+    /// evidence of liveness than a probe ping/pong, so we treat it
+    /// accordingly.
+    pub async fn report_active_traffic(&self, index: usize, transport: TransportKind) {
+        let now = Instant::now();
+        // Fast path: skip the write lock when we recently reported for this transport.
+        {
+            let statuses = self.inner.statuses.read().await;
+            let last = match transport {
+                TransportKind::Tcp => statuses[index].last_active_tcp,
+                TransportKind::Udp => statuses[index].last_active_udp,
+            };
+            if last.map_or(false, |t| now.duration_since(t) < Duration::from_secs(5)) {
+                return;
+            }
+        }
+        let uplink_name = self.inner.uplinks[index].name.clone();
+        let mut statuses = self.inner.statuses.write().await;
+        let status = &mut statuses[index];
+        // Double-check after acquiring write lock.
+        let last = match transport {
+            TransportKind::Tcp => &mut status.last_active_tcp,
+            TransportKind::Udp => &mut status.last_active_udp,
+        };
+        if last.map_or(false, |t| now.duration_since(t) < Duration::from_secs(5)) {
+            return;
+        }
+        *last = Some(now);
+        debug!(
+            uplink = %uplink_name,
+            transport = ?transport,
+            "real traffic activity recorded"
+        );
+        // When probe is enabled it is the authoritative source of tcp_healthy /
+        // udp_healthy.  Overriding it here would let an in-flight session on a
+        // probe-marked-unhealthy uplink keep resetting the health flag to
+        // Some(true), preventing the failover from taking effect in
+        // active-passive / global scope.  When probe is disabled there is no
+        // other health signal, so we update the health state from traffic.
+        let probe_enabled = self.inner.probe.enabled();
+        match transport {
+            TransportKind::Tcp => {
+                if !probe_enabled {
+                    status.tcp_healthy = Some(true);
+                    status.tcp_consecutive_failures = 0;
+                }
+                status.cooldown_until_tcp = None;
+            }
+            TransportKind::Udp => {
+                if !probe_enabled {
+                    status.udp_healthy = Some(true);
+                    status.udp_consecutive_failures = 0;
+                }
+                status.cooldown_until_udp = None;
+            }
+        }
+    }
+
+    /// Feed a connection-establishment latency sample into the RTT EWMA for
+    /// the given uplink and transport.  Called when a fresh (non-standby)
+    /// WebSocket connection is established so that real path quality is
+    /// reflected in routing scores alongside probe-derived measurements.
+    pub async fn report_connection_latency(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        latency: Duration,
+    ) {
+        let mut statuses = self.inner.statuses.write().await;
+        let status = &mut statuses[index];
+        let alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        match transport {
+            TransportKind::Tcp => {
+                update_rtt_ewma(&mut status.tcp_rtt_ewma, Some(latency), alpha);
+            }
+            TransportKind::Udp => {
+                update_rtt_ewma(&mut status.udp_rtt_ewma, Some(latency), alpha);
+            }
+        }
     }
 
     /// Returns the effective TCP WebSocket mode for `index`, falling back to
@@ -636,14 +745,20 @@ impl UplinkManager {
             mode = %mode,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
-        connect_websocket_with_source(
+        let started = Instant::now();
+        let ws = connect_websocket_with_source(
             &candidate.uplink.tcp_ws_url,
             mode,
             candidate.uplink.fwmark,
             source,
         )
         .await
-        .with_context(|| format!("failed to connect to {}", candidate.uplink.tcp_ws_url))
+        .with_context(|| format!("failed to connect to {}", candidate.uplink.tcp_ws_url))?;
+        // Feed the on-demand dial latency into the RTT EWMA so real connection
+        // quality is reflected in routing scores, not just probe ping/pong times.
+        self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
+            .await;
+        Ok(ws)
     }
 
     pub async fn acquire_udp_standby_or_connect(
@@ -672,7 +787,8 @@ impl UplinkManager {
                 candidate.uplink.name
             )
         })?;
-        UdpWsTransport::connect(
+        let started = Instant::now();
+        let transport = UdpWsTransport::connect(
             udp_ws_url,
             candidate.uplink.udp_ws_mode,
             candidate.uplink.cipher,
@@ -681,7 +797,10 @@ impl UplinkManager {
             source,
         )
         .await
-        .with_context(|| format!("failed to connect to {}", udp_ws_url))
+        .with_context(|| format!("failed to connect to {}", udp_ws_url))?;
+        self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
+            .await;
+        Ok(transport)
     }
 
     async fn ordered_candidates(
@@ -1138,21 +1257,25 @@ impl UplinkManager {
             .find(|candidate| candidate.healthy)
             .unwrap_or(sticky);
         let now = Instant::now();
-        let sticky_score = selection_score(
+        // Always use penalty-aware scoring for the hysteresis check, regardless of routing
+        // scope. This prevents a recently-failed uplink from immediately winning back the
+        // sticky route when only its cooldown has expired but the failure penalty is still
+        // elevated. Without this, Global scope (which ignores penalty in selection_score)
+        // would cause oscillation: primary fails → switch to backup → cooldown expires →
+        // primary wins back on base latency alone before the penalty has decayed.
+        let sticky_score = score_latency(
             &statuses[sticky.index],
             self.inner.uplinks[sticky.index].weight,
             transport,
             now,
             &self.inner.load_balancing,
-            self.inner.load_balancing.routing_scope,
         );
-        let fastest_score = selection_score(
+        let fastest_score = score_latency(
             &statuses[fastest.index],
             self.inner.uplinks[fastest.index].weight,
             transport,
             now,
             &self.inner.load_balancing,
-            self.inner.load_balancing.routing_scope,
         );
 
         let should_switch = match (sticky_score, fastest_score) {
@@ -1214,13 +1337,49 @@ impl UplinkManager {
 
     async fn probe_all(&self) {
         let mut tasks = tokio::task::JoinSet::new();
+        let now = Instant::now();
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
+            // Skip the probe if recent traffic demonstrates the uplink is alive
+            // AND it is already marked healthy.  We must NOT skip when the uplink
+            // is unhealthy (tcp_healthy == Some(false) or None): in that case the
+            // probe is the only mechanism that can confirm recovery and restore
+            // the uplink to healthy status.  Skipping when unhealthy would leave
+            // the health state stuck — a lingering session on the failed uplink
+            // would prevent the probe from ever running and the uplink would
+            // never come back online.
+            {
+                let statuses = self.inner.statuses.read().await;
+                let s = &statuses[index];
+                let threshold = self.inner.probe.interval;
+                let tcp_active = s.last_active_tcp.map_or(false, |t| now.duration_since(t) < threshold);
+                let tcp_currently_healthy = s.tcp_healthy == Some(true);
+                if tcp_active && tcp_currently_healthy {
+                    let udp_active = s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
+                    debug!(
+                        uplink = %uplink.name,
+                        last_active_tcp_ms = s.last_active_tcp.map(|t| now.duration_since(t).as_millis()),
+                        last_active_udp_ms = s.last_active_udp.map(|t| now.duration_since(t).as_millis()),
+                        udp_also_active = udp_active,
+                        "skipping probe cycle: real traffic observed and uplink is healthy"
+                    );
+                    continue;
+                }
+            }
+
             let uplink = Arc::clone(uplink);
             let probe = self.inner.probe.clone();
             let timeout_duration = self.inner.probe.timeout;
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let probe_attempts = probe.attempts.max(1);
+            // Use the effective TCP WS mode so that when H3 is in the
+            // downgrade window the probe tests H2 connectivity instead.
+            // This prevents the probe from clearing h3_tcp_downgrade_until
+            // prematurely via a successful H3 ping/pong that does not
+            // represent real data-path behaviour (the server may reject
+            // actual streams with APPLICATION_CLOSE while still answering
+            // ping/pong at the connection level).
+            let effective_tcp_mode = self.effective_tcp_ws_mode(index).await;
             tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
@@ -1236,7 +1395,7 @@ impl UplinkManager {
                 for attempt in 0..probe_attempts {
                     outcome = timeout(
                         timeout_duration,
-                        probe_uplink(&uplink, &probe, Arc::clone(&dial_limit)),
+                        probe_uplink(&uplink, &probe, Arc::clone(&dial_limit), effective_tcp_mode),
                     )
                     .await
                     .unwrap_or_else(|_| {
@@ -1290,6 +1449,27 @@ impl UplinkManager {
                                 status.tcp_healthy = Some(false);
                                 add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
                             }
+                            // If this uplink is configured for H3 and the TCP
+                            // probe failed, downgrade to H2 for the next probe
+                            // cycle.  Without this, intermittent H3 probe
+                            // failures cause probe-driven flapping in
+                            // active-passive / global scope: the probe
+                            // alternates pass (H3) / fail (H3) → switch to
+                            // backup / switch back to primary on every cycle.
+                            // With H2 downgrade, recovery probing uses H2
+                            // which is stable, and H3 is only retried after the
+                            // downgrade timer expires.
+                            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+                                let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
+                                if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
+                                    warn!(
+                                        uplink = %uplink.name,
+                                        downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                                        "H3 TCP probe failed, downgrading to H2 for next probe cycle"
+                                    );
+                                }
+                                status.h3_tcp_downgrade_until = Some(downgrade_until);
+                            }
                         } else {
                             status.tcp_consecutive_failures = 0;
                             status.tcp_healthy = Some(true);
@@ -1297,8 +1477,12 @@ impl UplinkManager {
                             // healthy. Clearing unconditionally would make a recently-failed
                             // uplink immediately eligible again, causing oscillation under load.
                             status.cooldown_until_tcp = None;
-                            // Clear H3 downgrade: probe success proves H3 is working again.
-                            status.h3_tcp_downgrade_until = None;
+                            // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
+                            // effective (possibly downgraded) WS mode, so a successful probe
+                            // only confirms H2 connectivity during a downgrade window — it does
+                            // not prove that H3 is healthy again.  H3 recovery is tested
+                            // naturally: once the downgrade timer expires, the next real
+                            // connection attempt uses H3 and resets the timer only if it fails.
                         }
                         if !result.udp_ok {
                             status.udp_consecutive_failures =
@@ -1358,6 +1542,20 @@ impl UplinkManager {
                             status.udp_healthy = Some(false);
                             add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
                         }
+                        // Probe connection itself failed (ws connect / timeout).
+                        // Same H3 downgrade logic as the tcp_ok=false case above.
+                        if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+                            let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
+                            if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
+                                warn!(
+                                    uplink = %uplink.name,
+                                    error = %format!("{error:#}"),
+                                    downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                                    "H3 probe connection failed, downgrading TCP to H2"
+                                );
+                            }
+                            status.h3_tcp_downgrade_until = Some(downgrade_until);
+                        }
                         status.last_error = Some(format!("{error:#}"));
                     }
                     warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
@@ -1405,8 +1603,10 @@ async fn probe_uplink(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
 ) -> Result<ProbeOutcome> {
-    let (tcp_ok, tcp_latency) = run_tcp_probe(uplink, probe, Arc::clone(&dial_limit)).await?;
+    let (tcp_ok, tcp_latency) =
+        run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode).await?;
     let (udp_ok, udp_latency) = run_udp_probe(uplink, probe, dial_limit).await?;
 
     Ok(ProbeOutcome {
@@ -1421,6 +1621,7 @@ async fn run_tcp_probe(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
 ) -> Result<(bool, Option<Duration>)> {
     let started = Instant::now();
     if probe.ws.enabled {
@@ -1429,7 +1630,7 @@ async fn run_tcp_probe(
             &uplink.name,
             "tcp",
             &uplink.tcp_ws_url,
-            uplink.tcp_ws_mode,
+            effective_tcp_mode,
             uplink.fwmark,
             Arc::clone(&dial_limit),
             probe.timeout,
@@ -1446,7 +1647,7 @@ async fn run_tcp_probe(
     }
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
-        let result = run_http_probe(uplink, http_probe, dial_limit).await;
+        let result = run_http_probe(uplink, http_probe, dial_limit, effective_tcp_mode).await;
         metrics::record_probe(
             &uplink.name,
             "tcp",
@@ -1577,18 +1778,6 @@ async fn ping_idle_websocket(ws_stream: &mut AnyWsStream, pong_timeout: Duration
     .context("websocket ping/pong timed out")?
 }
 
-/// Returns `true` when the error looks like the server closed the QUIC
-/// connection with an H3 application-level error code (e.g. H3_INTERNAL_ERROR,
-/// H3_REQUEST_REJECTED).  These indicate that the whole connection was torn
-/// down, not just the stream, and should trigger an H3→H2 downgrade.
-fn is_h3_application_close_error(error: &anyhow::Error) -> bool {
-    let msg = format!("{error:#}");
-    msg.contains("H3_INTERNAL_ERROR")
-        || msg.contains("H3_REQUEST_REJECTED")
-        || msg.contains("H3_CONNECT_ERROR")
-        || msg.contains("ApplicationClose")
-}
-
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     let lower = format!("{error:#}").to_lowercase();
     // TCP / H1 / H2 expected close reasons
@@ -1614,6 +1803,7 @@ async fn run_http_probe(
     uplink: &UplinkConfig,
     probe: &HttpProbeConfig,
     dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
 ) -> Result<bool> {
     if probe.url.scheme() != "http" {
         bail!("only http:// probe URLs are currently supported");
@@ -1653,7 +1843,7 @@ async fn run_http_probe(
             .expect("probe dial semaphore closed");
         connect_websocket_with_source(
             &uplink.tcp_ws_url,
-            uplink.tcp_ws_mode,
+            effective_tcp_mode,
             uplink.fwmark,
             "probe_http",
         )
@@ -1891,7 +2081,7 @@ fn effective_latency(
     config: &LoadBalancingConfig,
 ) -> Option<Duration> {
     let base = scoring_base_latency(status, transport);
-    let penalty = current_penalty(
+    let mut penalty = current_penalty(
         match transport {
             TransportKind::Tcp => &status.tcp_penalty,
             TransportKind::Udp => &status.udp_penalty,
@@ -1899,6 +2089,21 @@ fn effective_latency(
         now,
         config,
     );
+    // While an H3 TCP downgrade is active, add failure_penalty_max on top of
+    // the existing penalty.  This keeps the uplink's score high enough that
+    // active-active flows (per-flow scope) prefer the backup uplink and do not
+    // switch back to the primary while it is operating in H2 fallback mode.
+    //
+    // Without this, the primary's score recovers as good H2 latency feeds into
+    // the EWMA and the failure penalty decays, causing flows to shift back to
+    // primary.  Once h3_tcp_downgrade_until expires, those flows then try H3,
+    // encounter the same failure, and the whole cycle repeats.
+    if matches!(transport, TransportKind::Tcp)
+        && status.h3_tcp_downgrade_until.is_some_and(|t| t > now)
+    {
+        let extra = config.failure_penalty_max;
+        penalty = Some(penalty.unwrap_or_default().saturating_add(extra));
+    }
     match (base, penalty) {
         (Some(base), Some(penalty)) => Some(base.saturating_add(penalty)),
         (Some(base), None) => Some(base),
@@ -2645,6 +2850,63 @@ mod tests {
 
         assert_eq!(penalty_second, penalty_first);
         assert!(cooldown_second <= cooldown_first);
+    }
+
+    // Regression: Global+ActiveActive must not switch back to primary the moment the
+    // cooldown expires. global_selection_score_latency ignores penalty, so without the
+    // fix in preferred_sticky_index the system would immediately re-select primary on
+    // base latency alone, causing oscillation every ~failure_cooldown seconds.
+    #[tokio::test]
+    async fn global_active_active_does_not_switch_back_during_penalty_window() {
+        let mut config = lb();
+        config.routing_scope = RoutingScope::Global;
+        // Keep mode as ActiveActive (default in lb()).
+        let manager = UplinkManager::new(
+            vec![
+                make_uplink("primary", "wss://primary.example.com/tcp"),
+                make_uplink("backup", "wss://backup.example.com/tcp"),
+            ],
+            probe_disabled(),
+            config,
+        )
+        .unwrap();
+
+        // Primary is faster (20 ms), backup is slower (80 ms).
+        set_tcp_status(&manager, 0, true, 20).await;
+        set_tcp_status(&manager, 1, true, 80).await;
+        set_udp_status(&manager, 0, true, 20).await;
+        set_udp_status(&manager, 1, true, 80).await;
+
+        let target = TargetAddr::Domain("example.com".to_string(), 443);
+        let first = manager.tcp_candidates(&target).await;
+        assert_eq!(first[0].uplink.name, "primary");
+
+        // Runtime failure on primary: sets cooldown + penalty.
+        let err = anyhow!("connection reset");
+        manager.report_runtime_failure(0, TransportKind::Tcp, &err).await;
+
+        // Cooldown makes primary unhealthy → switch to backup.
+        let second = manager.tcp_candidates(&target).await;
+        assert_eq!(second[0].uplink.name, "backup", "should switch to backup on failure");
+
+        // Simulate cooldown expiry (probe cleared it) while penalty is still large.
+        // Before the fix, global_selection_score_latency ignored the penalty so
+        // primary (20ms base) would beat backup (80ms base) + hysteresis and switch back.
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].cooldown_until_tcp = None;
+            statuses[0].tcp_healthy = Some(true); // probe confirmed it is up again
+            // penalty remains high (500 ms, just added)
+        }
+
+        // Must stay on backup: penalty on primary is still 500 ms, much larger than
+        // the 60 ms gap that would be needed to beat backup + hysteresis.
+        let third = manager.tcp_candidates(&target).await;
+        assert_eq!(
+            third[0].uplink.name,
+            "backup",
+            "must not switch back to primary while failure penalty is elevated"
+        );
     }
 
     // Regression test: in global mode with 3+ uplinks, when the current active
