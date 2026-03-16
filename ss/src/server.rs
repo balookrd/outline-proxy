@@ -347,6 +347,7 @@ async fn handle_tcp_connection(
     let mut upstream_to_client = None;
     let mut authenticated_user = None;
     let mut upstream_guard = None;
+    let mut client_closed = false;
 
     while let Some(message) = ws_receiver.next().await {
         match message.context("websocket receive failure")? {
@@ -467,6 +468,7 @@ async fn handle_tcp_connection(
             }
             Message::Close(_) => {
                 debug!("client closed tcp websocket");
+                client_closed = true;
                 break;
             }
             Message::Ping(payload) => {
@@ -484,20 +486,35 @@ async fn handle_tcp_connection(
         writer.shutdown().await.ok();
     }
 
-    if let Some(task) = upstream_to_client {
-        task.await
-            .context("tcp upstream relay task join failed")??;
+    if client_closed {
+        // Client initiated the close; tungstenite state is now ClosedByPeer so
+        // ws_sender.send() will fail for any further frames.  Abort the relay
+        // task so it cannot queue additional data that the writer can never
+        // deliver, then let the writer drain and exit without propagating its
+        // error.
+        if let Some(task) = upstream_to_client {
+            task.abort();
+        }
+        if let Some(guard) = upstream_guard {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        let _ = writer_task.await;
+    } else {
+        if let Some(task) = upstream_to_client {
+            task.await
+                .context("tcp upstream relay task join failed")??;
+        }
+        if let Some(guard) = upstream_guard {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        writer_task
+            .await
+            .context("websocket writer task join failed")??;
     }
-
-    if let Some(guard) = upstream_guard {
-        guard.finish();
-    }
-
-    drop(outbound_ctrl_tx);
-    drop(outbound_data_tx);
-    writer_task
-        .await
-        .context("websocket writer task join failed")??;
     Ok(())
 }
 
