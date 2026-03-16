@@ -369,7 +369,16 @@ Runtime fallback behavior:
 - requested `h3` tries `h3`, then `h2`, then `http1`
 - requested `h2` tries `h2`, then `http1`
 
-**H3 runtime downgrade:** when an active H3 TCP connection is closed by the server with an application-level H3 error code (e.g. `H3_INTERNAL_ERROR`, `H3_REQUEST_REJECTED`, `H3_CONNECT_ERROR`), the uplink automatically falls back to H2 for new TCP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds). After the downgrade window expires, H3 is retried. This prevents reconnect storms where every new flow establishes an H3 connection only to have the server close the entire QUIC connection shortly after.
+**H3 runtime downgrade:** when any TCP runtime failure occurs on an H3-configured uplink (connection reset, stream error, QUIC transport error, `H3_INTERNAL_ERROR`, timeout, or any other upstream TCP failure), the uplink automatically falls back to H2 for new TCP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds). After the downgrade window expires, H3 is retried by the next real connection. This prevents reconnect storms where every new flow establishes an H3 connection only to have it fail shortly after.
+
+The same downgrade is also triggered by TCP probe failures on H3 uplinks, preventing probe-driven flapping in `active_passive + global` mode: without this, intermittent H3 probe pass/fail alternation would cause a failover switch every probe cycle.
+
+Probe behavior during a downgrade window:
+- Probes use `effective_tcp_ws_mode`, which returns H2 while `h3_tcp_downgrade_until` is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3.
+- A successful probe during the window does **not** clear `h3_tcp_downgrade_until`. H3 recovery is tested naturally once the timer expires and the next real connection attempts H3. If that attempt fails, the timer is reset.
+
+Scoring during a downgrade window (`per_flow` scope):
+- While `h3_tcp_downgrade_until` is active, the uplink's effective latency score has `failure_penalty_max` added on top of the normal failure penalty. This prevents `active_active + per_flow` flows from switching back to the primary uplink while it is operating in H2 fallback mode: as the normal failure penalty decays, the extra downgrade penalty keeps the primary's score unfavorable until the window closes.
 
 Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 downgrade, new standby slots are filled using H2.
 
