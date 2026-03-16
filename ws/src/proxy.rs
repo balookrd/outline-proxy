@@ -120,12 +120,13 @@ async fn handle_tcp_connect(
 
         let (mut client_read, mut client_write) = client.into_split();
         let uplink_uplink_name = selected_uplink_name.clone();
-        let uplink = async {
+        let uplinks_uplink = uplinks.clone();
+        let uplink = async move {
             let mut writer = writer;
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             loop {
                 if strict_transport
-                    && uplinks
+                    && uplinks_uplink
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await
                         .is_some_and(|active| active != selected_index)
@@ -142,16 +143,20 @@ async fn handle_tcp_connect(
                 }
                 metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
                 writer.send_chunk(&buf[..read]).await?;
+                uplinks_uplink
+                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .await;
             }
             Ok::<(), anyhow::Error>(())
         };
 
         let downlink_uplink_name = selected_uplink_name.clone();
-        let downlink = async {
+        let uplinks_downlink = uplinks.clone();
+        let downlink = async move {
             let mut reader = reader;
             loop {
                 if strict_transport
-                    && uplinks
+                    && uplinks_downlink
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await
                         .is_some_and(|active| active != selected_index)
@@ -172,15 +177,36 @@ async fn handle_tcp_connect(
                     .write_all(&chunk)
                     .await
                     .context("client write failed")?;
+                uplinks_downlink
+                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .await;
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::select! {
+        let result = tokio::select! {
             result = uplink => result,
             result = downlink => result,
+        };
+        // Report mid-stream upstream transport failures so that broken transports
+        // (e.g. H3 APPLICATION_CLOSE received after session establishment) trigger
+        // the H3→H2 downgrade and flush stale warm-standby connections immediately,
+        // rather than waiting for the next connection attempt to fail.
+        // Client-side disconnects and intentional uplink switches are excluded.
+        if let Err(ref err) = result {
+            let msg = format!("{err:#}");
+            let is_upstream_failure = !msg.contains("client read failed")
+                && !msg.contains("client write failed")
+                && !msg.contains("active uplink switched")
+                && !msg.contains("websocket closed");
+            if is_upstream_failure {
+                uplinks
+                    .report_runtime_failure(selected_index, TransportKind::Tcp, err)
+                    .await;
+            }
         }
+        result
     }
     .await;
     session.finish(result.is_ok());
@@ -255,6 +281,7 @@ async fn handle_udp_associate(
                     let active = active_transport_uplink.lock().await;
                     (Arc::clone(&active.transport), active.uplink_name.clone())
                 };
+                let active_index = active_transport_uplink.lock().await.index;
                 if let Err(error) = transport.send_packet(&payload).await {
                     let replacement = failover_udp_transport(
                         &uplinks_uplink,
@@ -271,9 +298,15 @@ async fn handle_udp_associate(
                         &replacement.uplink_name,
                         payload.len(),
                     );
+                    uplinks_uplink
+                        .report_active_traffic(replacement.index, TransportKind::Udp)
+                        .await;
                 } else {
                     metrics::add_udp_datagram("client_to_upstream", &uplink_name);
                     metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
+                    uplinks_uplink
+                        .report_active_traffic(active_index, TransportKind::Udp)
+                        .await;
                 }
             }
         };
