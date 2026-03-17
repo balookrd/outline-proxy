@@ -1546,9 +1546,15 @@
           "instant": true,
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
+        },
+        {
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "instant": true,
+          "legendFormat": "{{instance_short}} {{uplink}}/{{proto}}",
+          "refId": "B"
         }
       ],
-      "title": "Global Active Uplink",
+      "title": "Active Uplink",
       "type": "stat"
     },
     {
@@ -1705,9 +1711,14 @@
           "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} active",
           "refId": "A"
+        },
+        {
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}}/{{proto}} active",
+          "refId": "B"
         }
       ],
-      "title": "Global Active Uplink Timeline",
+      "title": "Active Uplink Timeline",
       "type": "timeseries"
     },
     {
@@ -4926,7 +4937,7 @@
     ]
   },
   "time": {
-    "from": "now-1h",
+    "from": "now-15m",
     "to": "now"
   },
   "timepicker": {},
