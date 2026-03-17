@@ -130,6 +130,9 @@ pub struct LoadBalancingConfig {
     pub failure_penalty_halflife: Duration,
     /// How long to downgrade from H3 to H2 after an H3 runtime error.
     pub h3_downgrade_duration: Duration,
+    /// Interval at which WS ping frames are sent on idle UDP data-path connections
+    /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
+    pub udp_ws_keepalive_interval: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -294,6 +297,7 @@ struct LoadBalancingSection {
     failure_penalty_max_ms: Option<u64>,
     failure_penalty_halflife_secs: Option<u64>,
     h3_downgrade_secs: Option<u64>,
+    udp_ws_keepalive_secs: Option<u64>,
 }
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
@@ -573,6 +577,10 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         h3_downgrade_duration: Duration::from_secs(
             lb.and_then(|l| l.h3_downgrade_secs).unwrap_or(60),
         ),
+        udp_ws_keepalive_interval: lb
+            .and_then(|l| l.udp_ws_keepalive_secs)
+            .map(Duration::from_secs)
+            .or(Some(Duration::from_secs(60))),
     })
 }
 

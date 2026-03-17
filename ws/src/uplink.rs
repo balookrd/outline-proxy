@@ -791,6 +791,7 @@ impl UplinkManager {
                 candidate.uplink.cipher,
                 &candidate.uplink.password,
                 source,
+                self.inner.load_balancing.udp_ws_keepalive_interval,
             ));
         }
 
@@ -810,6 +811,7 @@ impl UplinkManager {
             &candidate.uplink.password,
             candidate.uplink.fwmark,
             source,
+            self.inner.load_balancing.udp_ws_keepalive_interval,
         )
         .await
         .with_context(|| format!("failed to connect to {}", udp_ws_url))?;
@@ -1955,6 +1957,7 @@ async fn run_dns_probe(
             &uplink.password,
             uplink.fwmark,
             "probe_dns",
+            None,
         )
         .await
         .with_context(|| {
@@ -2345,6 +2348,7 @@ mod tests {
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),
             h3_downgrade_duration: Duration::from_secs(60),
+            udp_ws_keepalive_interval: None,
         }
     }
 

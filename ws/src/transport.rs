@@ -412,6 +412,7 @@ pub struct UdpWsTransport {
     ctrl_tx: mpsc::Sender<Message>,
     stream: Mutex<WsStream>,
     _writer_task: AbortOnDrop,
+    _keepalive_task: Option<AbortOnDrop>,
     cipher: CipherKind,
     master_key: Vec<u8>,
     _lifetime: Arc<UpstreamTransportGuard>,
@@ -677,6 +678,7 @@ impl UdpWsTransport {
         cipher: CipherKind,
         password: &str,
         source: &'static str,
+        keepalive_interval: Option<Duration>,
     ) -> Self {
         let (sink, stream) = ws_stream.split();
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
@@ -717,11 +719,25 @@ impl UdpWsTransport {
                 }
             }
         });
+        let keepalive_task = keepalive_interval.map(|interval| {
+            let keepalive_ctrl_tx = ctrl_tx.clone();
+            AbortOnDrop(tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(interval);
+                ticker.tick().await; // skip the first immediate tick
+                loop {
+                    ticker.tick().await;
+                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
+                        break;
+                    }
+                }
+            }))
+        });
         Self {
             data_tx,
             ctrl_tx,
             stream: Mutex::new(stream),
             _writer_task: AbortOnDrop(writer_task),
+            _keepalive_task: keepalive_task,
             cipher,
             master_key: cipher.derive_master_key(password),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
@@ -735,11 +751,12 @@ impl UdpWsTransport {
         password: &str,
         fwmark: Option<u32>,
         source: &'static str,
+        keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
         let ws_stream = connect_websocket_with_source(url, mode, fwmark, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
-        Ok(Self::from_websocket(ws_stream, cipher, password, source))
+        Ok(Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
