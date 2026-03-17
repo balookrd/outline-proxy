@@ -91,6 +91,7 @@ struct Metrics {
     selection_mode_info: IntGaugeVec,
     routing_scope_info: IntGaugeVec,
     global_active_uplink_info: IntGaugeVec,
+    per_uplink_active_uplink_info: IntGaugeVec,
     sticky_routes_total: IntGauge,
     sticky_routes_by_uplink: IntGaugeVec,
     session_recent_windows: Mutex<HashMap<&'static str, RecentSessionWindow>>,
@@ -631,6 +632,14 @@ impl Metrics {
             &["uplink"],
         )
         .expect("global_active_uplink_info metric");
+        let per_uplink_active_uplink_info = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_per_uplink_active_uplink_info",
+                "Currently selected active uplink per transport protocol for per_uplink routing scope.",
+            ),
+            &["proto", "uplink"],
+        )
+        .expect("per_uplink_active_uplink_info metric");
         let sticky_routes_total = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_sticky_routes_total",
             "Current number of sticky routes.",
@@ -850,6 +859,9 @@ impl Metrics {
             .register(Box::new(global_active_uplink_info.clone()))
             .expect("register global_active_uplink_info");
         registry
+            .register(Box::new(per_uplink_active_uplink_info.clone()))
+            .expect("register per_uplink_active_uplink_info");
+        registry
             .register(Box::new(sticky_routes_total.clone()))
             .expect("register sticky_routes_total");
         registry
@@ -937,6 +949,7 @@ impl Metrics {
             selection_mode_info,
             routing_scope_info,
             global_active_uplink_info,
+            per_uplink_active_uplink_info,
             sticky_routes_total,
             sticky_routes_by_uplink,
             session_recent_windows: Mutex::new(HashMap::new()),
@@ -994,6 +1007,11 @@ impl Metrics {
             self.global_active_uplink_info
                 .with_label_values(&[&uplink.name])
                 .set(0);
+            for proto in ["tcp", "udp"] {
+                self.per_uplink_active_uplink_info
+                    .with_label_values(&[proto, &uplink.name])
+                    .set(0);
+            }
             self.uplink_weight
                 .with_label_values(&[&uplink.name])
                 .set(uplink.weight);
@@ -1075,6 +1093,16 @@ impl Metrics {
         if let Some(global_active_uplink) = &snapshot.global_active_uplink {
             self.global_active_uplink_info
                 .with_label_values(&[global_active_uplink])
+                .set(1);
+        }
+        if let Some(tcp_active) = &snapshot.tcp_active_uplink {
+            self.per_uplink_active_uplink_info
+                .with_label_values(&["tcp", tcp_active])
+                .set(1);
+        }
+        if let Some(udp_active) = &snapshot.udp_active_uplink {
+            self.per_uplink_active_uplink_info
+                .with_label_values(&["udp", udp_active])
                 .set(1);
         }
 
@@ -1706,6 +1734,8 @@ mod tests {
             load_balancing_mode: "active_active".to_string(),
             routing_scope: "per_flow".to_string(),
             global_active_uplink: None,
+            tcp_active_uplink: None,
+            udp_active_uplink: None,
             uplinks: Vec::new(),
             sticky_routes: Vec::new(),
         }
@@ -1737,6 +1767,8 @@ mod tests {
             tcp_consecutive_failures: 0,
             udp_consecutive_failures: 0,
             h3_tcp_downgrade_until_ms: None,
+            last_active_tcp_ago_ms: None,
+            last_active_udp_ago_ms: None,
         }
     }
 
@@ -1892,6 +1924,8 @@ mod tests {
             load_balancing_mode: "active_passive".to_string(),
             routing_scope: "global".to_string(),
             global_active_uplink: Some("senko".to_string()),
+            tcp_active_uplink: None,
+            udp_active_uplink: None,
             uplinks: Vec::new(),
             sticky_routes: Vec::new(),
         })
@@ -1917,6 +1951,8 @@ mod tests {
             load_balancing_mode: "active_passive".to_string(),
             routing_scope: "global".to_string(),
             global_active_uplink: Some("senko".to_string()),
+            tcp_active_uplink: None,
+            udp_active_uplink: None,
             uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
             sticky_routes: Vec::new(),
         })
@@ -1927,6 +1963,8 @@ mod tests {
             load_balancing_mode: "active_passive".to_string(),
             routing_scope: "global".to_string(),
             global_active_uplink: Some("nuxt".to_string()),
+            tcp_active_uplink: None,
+            udp_active_uplink: None,
             uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
             sticky_routes: Vec::new(),
         })

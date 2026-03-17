@@ -105,6 +105,10 @@ pub struct UplinkManagerSnapshot {
     pub load_balancing_mode: String,
     pub routing_scope: String,
     pub global_active_uplink: Option<String>,
+    /// Active uplink for TCP in per_uplink routing scope.
+    pub tcp_active_uplink: Option<String>,
+    /// Active uplink for UDP in per_uplink routing scope.
+    pub udp_active_uplink: Option<String>,
     pub uplinks: Vec<UplinkSnapshot>,
     pub sticky_routes: Vec<StickyRouteSnapshot>,
 }
@@ -257,6 +261,8 @@ impl UplinkManager {
         let statuses = self.inner.statuses.read().await.clone();
         let sticky = self.inner.sticky_routes.read().await.clone();
         let global_active_index = *self.inner.global_active_uplink.read().await;
+        let tcp_active_index = *self.inner.tcp_active_uplink.read().await;
+        let udp_active_index = *self.inner.udp_active_uplink.read().await;
 
         let mut uplinks = Vec::with_capacity(self.inner.uplinks.len());
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
@@ -333,6 +339,13 @@ impl UplinkManager {
         let global_active_uplink = global_active_index
             .and_then(|index| self.inner.uplinks.get(index))
             .map(|uplink| uplink.name.clone());
+        let per_uplink = self.strict_per_uplink_active_uplink();
+        let tcp_active_uplink = per_uplink
+            .then(|| tcp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone()))
+            .flatten();
+        let udp_active_uplink = per_uplink
+            .then(|| udp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone()))
+            .flatten();
 
         let sticky_routes = sticky
             .into_iter()
@@ -357,6 +370,8 @@ impl UplinkManager {
             load_balancing_mode: load_balancing_mode_name(self.inner.load_balancing.mode).to_string(),
             routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
             global_active_uplink,
+            tcp_active_uplink,
+            udp_active_uplink,
             uplinks,
             sticky_routes,
         }
@@ -1353,7 +1368,15 @@ impl UplinkManager {
                 let threshold = self.inner.probe.interval;
                 let tcp_active = s.last_active_tcp.map_or(false, |t| now.duration_since(t) < threshold);
                 let tcp_currently_healthy = s.tcp_healthy == Some(true);
-                if tcp_active && tcp_currently_healthy {
+                // Do NOT skip if there is an active cooldown: a runtime
+                // connection failure was reported, meaning the uplink may be
+                // down even though tcp_healthy is still Some(true) (the probe
+                // is the authoritative health source when enabled, so
+                // report_runtime_failure does not flip tcp_healthy directly).
+                // We must run the probe so it can detect the failure and
+                // trigger failover.
+                let tcp_no_cooldown = !cooldown_active(s, TransportKind::Tcp, now);
+                if tcp_active && tcp_currently_healthy && tcp_no_cooldown {
                     let udp_active = s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
                     debug!(
                         uplink = %uplink.name,
