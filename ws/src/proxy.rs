@@ -407,23 +407,44 @@ async fn connect_tcp_uplink(
     candidate: &crate::uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
-    let ws_stream = uplinks
-        .acquire_tcp_standby_or_connect(candidate, "socks_tcp")
-        .await?;
-    let (ws_sink, ws_stream) = ws_stream.split();
+    // Variant A: try a standby pool connection first.  If it turns out to be
+    // stale (fails before any server bytes arrive), discard it silently and
+    // retry with a fresh on-demand dial — without recording a runtime failure.
+    if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
+        match do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    error = %format!("{e:#}"),
+                    "stale standby TCP pool connection, retrying with fresh dial"
+                );
+            }
+        }
+    }
 
-    let uplink = &candidate.uplink;
+    let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
+    do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await
+}
+
+async fn do_tcp_ss_setup(
+    ws_stream: crate::transport::AnyWsStream,
+    uplink: &crate::config::UplinkConfig,
+    target: &TargetAddr,
+    source: &'static str,
+) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password);
-    let lifetime = UpstreamTransportGuard::new("socks_tcp", "tcp");
+    let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
+    let reader =
+        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
         .context("failed to send target address")?;
-
     Ok((writer, reader))
 }
 
