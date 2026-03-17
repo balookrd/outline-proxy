@@ -602,19 +602,29 @@ fn spawn_udp_flow_reader(
         };
 
         if let Err(ref error) = result {
-            uplinks
-                .report_runtime_failure(uplink_index, TransportKind::Udp, &error)
-                .await;
-            metrics::record_tun_packet(
-                "upstream_to_tun",
-                ip_family_from_version(key.version),
-                "error",
-            );
-            warn!(
-                flow_id,
-                error = %format!("{error:#}"),
-                "TUN UDP flow reader stopped"
-            );
+            // Only report a runtime failure if this flow is still the current flow.
+            // If it was already removed (e.g. by idle-timeout cleanup), the WS close
+            // we received was from our own intentional transport.close() — not a real failure.
+            let is_current = flows
+                .lock()
+                .await
+                .get(&key)
+                .map_or(false, |f| f.id == flow_id);
+            if is_current {
+                uplinks
+                    .report_runtime_failure(uplink_index, TransportKind::Udp, &error)
+                    .await;
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_from_version(key.version),
+                    "error",
+                );
+                warn!(
+                    flow_id,
+                    error = %format!("{error:#}"),
+                    "TUN UDP flow reader stopped"
+                );
+            }
         }
         close_flow_if_current(&flows, &key, flow_id, close_reason).await;
     });
