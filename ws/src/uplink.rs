@@ -248,6 +248,28 @@ impl UplinkManager {
         });
     }
 
+    /// Spawns a background loop that pings warm-standby **TCP** pool connections
+    /// at `tcp_ws_standby_keepalive_interval` to keep them alive through NAT/
+    /// firewall idle-timeout windows.  This is separate from the 15-second
+    /// validation loop: the validation loop also runs for UDP and handles
+    /// refill; this loop is TCP-only and intentionally runs more frequently.
+    pub fn spawn_standby_keepalive_loop(&self) {
+        let interval = match self.inner.load_balancing.tcp_ws_standby_keepalive_interval {
+            Some(d) if self.inner.load_balancing.warm_standby_tcp > 0 => d,
+            _ => return,
+        };
+
+        let manager = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(interval).await;
+                for index in 0..manager.inner.uplinks.len() {
+                    manager.maintain_pool(index, TransportKind::Tcp).await;
+                }
+            }
+        });
+    }
+
     pub async fn run_standby_maintenance(&self) {
         self.refill_all_standby().await;
     }
@@ -740,19 +762,29 @@ impl UplinkManager {
         uplink.tcp_ws_mode
     }
 
-    pub async fn acquire_tcp_standby_or_connect(
+    /// Pops one connection from the TCP standby pool without falling back to a
+    /// fresh dial.  Returns `None` if the pool is empty.  Callers can use this
+    /// to implement a silent retry: attempt the pool entry first; if it turns
+    /// out to be stale, fall back to `connect_tcp_ws_fresh` without recording
+    /// a runtime failure.
+    pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<AnyWsStream> {
+        let ws = self.inner.standby_pools[candidate.index]
+            .tcp
+            .lock()
+            .await
+            .pop_front()?;
+        self.spawn_refill(candidate.index, TransportKind::Tcp);
+        metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
+        debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
+        Some(ws)
+    }
+
+    /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
+    pub async fn connect_tcp_ws_fresh(
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<AnyWsStream> {
-        let pool = &self.inner.standby_pools[candidate.index];
-        if let Some(ws) = pool.tcp.lock().await.pop_front() {
-            self.spawn_refill(candidate.index, TransportKind::Tcp);
-            metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
-            debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
-            return Ok(ws);
-        }
-
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
         let mode = self.effective_tcp_ws_mode(candidate.index).await;
         debug!(
@@ -774,6 +806,17 @@ impl UplinkManager {
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
             .await;
         Ok(ws)
+    }
+
+    pub async fn acquire_tcp_standby_or_connect(
+        &self,
+        candidate: &UplinkCandidate,
+        source: &'static str,
+    ) -> Result<AnyWsStream> {
+        if let Some(ws) = self.try_take_tcp_standby(candidate).await {
+            return Ok(ws);
+        }
+        self.connect_tcp_ws_fresh(candidate, source).await
     }
 
     pub async fn acquire_udp_standby_or_connect(
@@ -2349,6 +2392,7 @@ mod tests {
             failure_penalty_halflife: Duration::from_secs(60),
             h3_downgrade_duration: Duration::from_secs(60),
             udp_ws_keepalive_interval: None,
+            tcp_ws_standby_keepalive_interval: None,
         }
     }
 

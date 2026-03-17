@@ -49,6 +49,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     )?;
     uplinks.spawn_probe_loop();
     uplinks.spawn_warm_standby_loop();
+    uplinks.spawn_standby_keepalive_loop();
 
     if let Some(tun) = config.tun.clone() {
         crate::tun::spawn_tun_loop(tun, uplinks.clone())

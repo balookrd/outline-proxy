@@ -133,6 +133,10 @@ pub struct LoadBalancingConfig {
     /// Interval at which WS ping frames are sent on idle UDP data-path connections
     /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
     pub udp_ws_keepalive_interval: Option<Duration>,
+    /// How often to ping warm-standby TCP pool connections to keep them alive through
+    /// NAT/firewall idle timeouts. Runs in addition to the 15-second validation cycle.
+    /// None disables the extra keepalive loop (validation every 15 s still runs).
+    pub tcp_ws_standby_keepalive_interval: Option<Duration>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -298,6 +302,7 @@ struct LoadBalancingSection {
     failure_penalty_halflife_secs: Option<u64>,
     h3_downgrade_secs: Option<u64>,
     udp_ws_keepalive_secs: Option<u64>,
+    tcp_ws_standby_keepalive_secs: Option<u64>,
 }
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
@@ -581,6 +586,10 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
             .or(Some(Duration::from_secs(60))),
+        tcp_ws_standby_keepalive_interval: lb
+            .and_then(|l| l.tcp_ws_standby_keepalive_secs)
+            .map(Duration::from_secs)
+            .or(Some(Duration::from_secs(30))),
     })
 }
 
