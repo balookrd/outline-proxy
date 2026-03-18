@@ -60,13 +60,19 @@ const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
 const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
 const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
-const H3_STREAM_WINDOW_BYTES: u64 = 8 * 1024 * 1024;
-const H3_CONNECTION_WINDOW_BYTES: u64 = 32 * 1024 * 1024;
+// Flow control windows: larger values allow higher throughput at high RTT.
+// Stream window must be <= connection window.
+const H3_STREAM_WINDOW_BYTES: u64 = 16 * 1024 * 1024; // 16 MB (was 8 MB)
+const H3_CONNECTION_WINDOW_BYTES: u64 = 64 * 1024 * 1024; // 64 MB (was 32 MB)
 const H3_MAX_CONCURRENT_BIDI_STREAMS: u32 = 4_096;
 const H3_MAX_CONCURRENT_UNI_STREAMS: u32 = 1_024;
-const H3_WRITE_BUFFER_BYTES: usize = 256 * 1024;
-const H3_MAX_BACKPRESSURE_BYTES: usize = 8 * 1024 * 1024;
-const H3_UDP_SOCKET_BUFFER_BYTES: usize = 8 * 1024 * 1024;
+// Larger write buffer reduces per-packet overhead by batching more data per send.
+const H3_WRITE_BUFFER_BYTES: usize = 512 * 1024; // 512 KB (was 256 KB)
+// Higher backpressure threshold avoids dropping connections for transiently slow clients.
+const H3_MAX_BACKPRESSURE_BYTES: usize = 16 * 1024 * 1024; // 16 MB (was 8 MB)
+// Larger OS UDP socket buffers are the primary defense against packet drops under burst load.
+// Increase net.core.rmem_max / kern.ipc.maxsockbuf on the host if the OS silently caps this.
+const H3_UDP_SOCKET_BUFFER_BYTES: usize = 32 * 1024 * 1024; // 32 MB (was 8 MB)
 const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
@@ -1480,8 +1486,10 @@ async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transpor
     let ws_config = build_h3_ws_config();
     let server_config = build_h3_quinn_server_config(tls_config)?;
     let socket = bind_h3_udp_socket(listen)?;
+    let mut endpoint_config = quinn::EndpointConfig::default();
+    endpoint_config.max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE).context("invalid H3 max UDP payload size")?;
     let endpoint = quinn::Endpoint::new(
-        quinn::EndpointConfig::default(),
+        endpoint_config,
         Some(server_config),
         socket,
         Arc::new(quinn::TokioRuntime),
@@ -1551,9 +1559,29 @@ fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocke
     socket
         .set_recv_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
         .context("failed to set HTTP/3 UDP receive buffer")?;
+    if let Ok(actual) = socket.recv_buffer_size() {
+        if actual < H3_UDP_SOCKET_BUFFER_BYTES {
+            tracing::warn!(
+                requested = H3_UDP_SOCKET_BUFFER_BYTES,
+                actual,
+                "HTTP/3 UDP receive buffer capped by OS — increase net.core.rmem_max (Linux) \
+                 or kern.ipc.maxsockbuf (macOS) to reduce packet drops"
+            );
+        }
+    }
     socket
         .set_send_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
         .context("failed to set HTTP/3 UDP send buffer")?;
+    if let Ok(actual) = socket.send_buffer_size() {
+        if actual < H3_UDP_SOCKET_BUFFER_BYTES {
+            tracing::warn!(
+                requested = H3_UDP_SOCKET_BUFFER_BYTES,
+                actual,
+                "HTTP/3 UDP send buffer capped by OS — increase net.core.wmem_max (Linux) \
+                 or kern.ipc.maxsockbuf (macOS) to reduce packet drops"
+            );
+        }
+    }
     socket
         .bind(&socket2::SockAddr::from(listen))
         .with_context(|| format!("failed to bind HTTP/3 UDP socket {listen}"))?;
