@@ -6,9 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::{Instant, sleep, timeout};
-use bytes::Bytes;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 
@@ -44,6 +43,9 @@ struct UplinkManagerInner {
     standby_pools: Vec<StandbyPool>,
     probe_execution_limit: Arc<Semaphore>,
     probe_dial_limit: Arc<Semaphore>,
+    /// Notified when a runtime failure sets a fresh cooldown, so the probe
+    /// loop wakes up immediately instead of waiting for the next interval.
+    probe_wakeup: Arc<Notify>,
 }
 
 #[derive(Clone, Debug)]
@@ -62,6 +64,8 @@ struct UplinkStatus {
     cooldown_until_udp: Option<Instant>,
     tcp_consecutive_failures: u32,
     udp_consecutive_failures: u32,
+    tcp_consecutive_successes: u32,
+    udp_consecutive_successes: u32,
     /// When set, H3 connections for TCP encountered repeated APPLICATION_CLOSE
     /// errors at runtime (e.g. H3_INTERNAL_ERROR from server). Until this
     /// instant, the uplink falls back to H2 for TCP to avoid the storm.
@@ -168,6 +172,8 @@ impl Default for UplinkStatus {
             cooldown_until_udp: None,
             tcp_consecutive_failures: 0,
             udp_consecutive_failures: 0,
+            tcp_consecutive_successes: 0,
+            udp_consecutive_successes: 0,
             h3_tcp_downgrade_until: None,
             last_active_tcp: None,
             last_active_udp: None,
@@ -212,6 +218,7 @@ impl UplinkManager {
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),
                 probe_execution_limit: Arc::new(Semaphore::new(probe_max_concurrent)),
                 probe_dial_limit: Arc::new(Semaphore::new(probe_max_dials)),
+                probe_wakeup: Arc::new(Notify::new()),
             }),
         })
     }
@@ -225,7 +232,12 @@ impl UplinkManager {
         tokio::spawn(async move {
             manager.probe_all().await;
             loop {
-                sleep(manager.inner.probe.interval).await;
+                // Wake up either when the scheduled interval elapses or when a
+                // runtime failure triggers an early wakeup (probe_wakeup).
+                tokio::select! {
+                    _ = sleep(manager.inner.probe.interval) => {}
+                    _ = manager.inner.probe_wakeup.notified() => {}
+                }
                 manager.probe_all().await;
             }
         });
@@ -620,6 +632,11 @@ impl UplinkManager {
                 error = %format!("{error:#}"),
                 "runtime uplink failure recorded"
             );
+            // Wake the probe loop immediately so it can confirm the failure
+            // without waiting for the next scheduled interval.
+            if self.inner.probe.enabled() {
+                self.inner.probe_wakeup.notify_one();
+            }
         }
         // If the uplink is configured for H3 and a TCP connection failed at
         // runtime for any reason, mark H3 as temporarily broken so subsequent
@@ -719,6 +736,22 @@ impl UplinkManager {
                 }
                 status.cooldown_until_udp = None;
             }
+        }
+    }
+
+    /// Called when the upstream WebSocket closes unexpectedly mid-session
+    /// (server-initiated close, not a client disconnect).  Does not set a
+    /// full runtime-failure cooldown — that would penalise the uplink for
+    /// normal per-connection lifetime limits — but clears the activity
+    /// timestamp so that the next probe cycle is not skipped.  This ensures
+    /// the probe detects a downed server promptly instead of waiting for
+    /// `probe.interval` of silence.
+    pub async fn report_upstream_close(&self, index: usize, transport: TransportKind) {
+        let mut statuses = self.inner.statuses.write().await;
+        let status = &mut statuses[index];
+        match transport {
+            TransportKind::Tcp => status.last_active_tcp = None,
+            TransportKind::Udp => status.last_active_udp = None,
         }
     }
 
@@ -1001,31 +1034,86 @@ impl UplinkManager {
         if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
             if let Some(candidate) = candidates.iter().find(|candidate| candidate.index == active_index)
             {
-                // In global scope with probe enabled: keep the current uplink unless the
-                // probe has confirmed it is down (tcp_healthy == Some(false)).  Runtime
-                // failures only set a cooldown; they do NOT update tcp_healthy when probe
-                // is enabled (see report_runtime_failure), so a transient connection error
-                // cannot trigger a failover here.
+                // When probe is enabled it is the authoritative source of health.  Runtime
+                // failures only set a cooldown; they do NOT update tcp_healthy/udp_healthy
+                // when probe is enabled (see report_runtime_failure), so a single transient
+                // connection error cannot trigger a permanent failover here.
+                // Once the probe has confirmed the uplink is down (tcp/udp_healthy ==
+                // Some(false)), we must switch even after the cooldown expires — otherwise
+                // the dead uplink would be retried every failure_cooldown seconds.
                 // When probe is disabled, runtime failures do set tcp_healthy = Some(false),
                 // but that field is not used for the switch decision — instead we fall back
                 // to cooldown-based gating so that failures can still cause a switch.
+                let probe_healthy = if self.inner.probe.enabled() {
+                    match gate_transport {
+                        TransportKind::Tcp => statuses[active_index].tcp_healthy != Some(false),
+                        TransportKind::Udp => statuses[active_index].udp_healthy != Some(false),
+                    }
+                } else {
+                    true
+                };
+                // Global + probe enabled: probe is the sole gate — do not also require
+                // !cooldown, because cooldown is not set by probe failures and we want
+                // probe-confirmed health to immediately re-allow the primary.
+                // All other cases (PerUplink / probe disabled): combine probe health with
+                // cooldown so that transient runtime failures still trigger a temporary
+                // switch while persistent probe failures cause a permanent switch.
                 let should_keep = if self.inner.load_balancing.routing_scope == RoutingScope::Global
                     && self.inner.probe.enabled()
                 {
-                    statuses[active_index].tcp_healthy != Some(false)
+                    probe_healthy
                 } else {
-                    !cooldown_active(&statuses[active_index], gate_transport, now)
+                    probe_healthy && !cooldown_active(&statuses[active_index], gate_transport, now)
                 };
                 if should_keep {
-                    let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
-                    self.store_sticky_route(&key, active_index).await;
-                    return vec![UplinkCandidate {
-                        index: candidate.index,
-                        uplink: Arc::clone(&candidate.uplink),
-                    }];
+                    // When auto_failback is disabled (default), never switch away
+                    // from a healthy active uplink — only failure triggers a switch.
+                    if !self.inner.load_balancing.auto_failback {
+                        let key =
+                            strict_route_key(transport, self.inner.load_balancing.routing_scope);
+                        self.store_sticky_route(&key, active_index).await;
+                        return vec![UplinkCandidate {
+                            index: candidate.index,
+                            uplink: Arc::clone(&candidate.uplink),
+                        }];
+                    }
+                    // auto_failback = true: if a higher-priority healthy candidate
+                    // exists, switch to it — but only once it has been consistently
+                    // healthy for at least min_failures consecutive probe cycles.
+                    // A single successful probe is not enough: the primary may be
+                    // transiently up (e.g. service restarting) and returning traffic
+                    // to it prematurely would break connections.
+                    let best = candidates.first();
+                    let is_best = best.map_or(true, |b| b.index == active_index);
+                    let best_is_stable = best.map_or(true, |b| {
+                        let min = self.inner.probe.min_failures as u32;
+                        let consecutive = match gate_transport {
+                            TransportKind::Tcp => statuses[b.index].tcp_consecutive_successes,
+                            TransportKind::Udp => statuses[b.index].udp_consecutive_successes,
+                        };
+                        consecutive >= min
+                    });
+                    if is_best || !best_is_stable {
+                        let key =
+                            strict_route_key(transport, self.inner.load_balancing.routing_scope);
+                        self.store_sticky_route(&key, active_index).await;
+                        return vec![UplinkCandidate {
+                            index: candidate.index,
+                            uplink: Arc::clone(&candidate.uplink),
+                        }];
+                    }
+                    // Current active is healthy but the best candidate is stable
+                    // enough to switch to.  Fall through; switching_from_cooldown
+                    // stays false so we use base (penalty-free) scoring.
+                } else {
+                    // Active uplink is unhealthy or on cooldown — switch with
+                    // penalty-aware re-sort to avoid oscillating back immediately.
+                    switching_from_cooldown = true;
                 }
+            } else {
+                // Active uplink no longer in the candidate set — re-select.
+                switching_from_cooldown = true;
             }
-            switching_from_cooldown = true;
         }
 
         // When we are switching away from a failed active uplink (cooldown is
@@ -1228,7 +1316,21 @@ impl UplinkManager {
         let mut alive = VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
-            let result = ping_idle_websocket(&mut ws, self.inner.probe.timeout).await;
+            // Check liveness with a non-blocking read (1 ms timeout).
+            // Many servers do not respond to WebSocket ping frames, so we use
+            // a quick peek instead: if the server has closed the connection we
+            // will see a Close frame or an error immediately; otherwise the
+            // read times out and we treat the connection as still alive.
+            let alive_result: Result<()> =
+                match timeout(Duration::from_millis(1), ws.next()).await {
+                    Err(_elapsed) => Ok(()), // still open — nothing to read
+                    Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                    Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
+                    Ok(Some(Ok(Message::Close(frame)))) => {
+                        Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                    }
+                    Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
+                };
             metrics::record_probe(
                 &uplink.name,
                 match transport {
@@ -1236,10 +1338,10 @@ impl UplinkManager {
                     TransportKind::Udp => "udp",
                 },
                 "standby_ws",
-                result.is_ok(),
+                alive_result.is_ok(),
                 started.elapsed(),
             );
-            match result {
+            match alive_result {
                 Ok(()) => alive.push_back(ws),
                 Err(error) => {
                     if is_expected_standby_probe_failure(&error) {
@@ -1511,6 +1613,7 @@ impl UplinkManager {
                             self.inner.load_balancing.rtt_ewma_alpha,
                         );
                         if !result.tcp_ok {
+                            status.tcp_consecutive_successes = 0;
                             status.tcp_consecutive_failures =
                                 status.tcp_consecutive_failures.saturating_add(1);
                             if status.tcp_consecutive_failures >= min_failures as u32 {
@@ -1540,6 +1643,8 @@ impl UplinkManager {
                             }
                         } else {
                             status.tcp_consecutive_failures = 0;
+                            status.tcp_consecutive_successes =
+                                status.tcp_consecutive_successes.saturating_add(1);
                             status.tcp_healthy = Some(true);
                             // Only clear runtime-failure cooldown when the probe confirms TCP is
                             // healthy. Clearing unconditionally would make a recently-failed
@@ -1552,19 +1657,27 @@ impl UplinkManager {
                             // naturally: once the downgrade timer expires, the next real
                             // connection attempt uses H3 and resets the timer only if it fails.
                         }
-                        if !result.udp_ok {
-                            status.udp_consecutive_failures =
-                                status.udp_consecutive_failures.saturating_add(1);
-                            if status.udp_consecutive_failures >= min_failures as u32 {
-                                status.udp_healthy = Some(false);
-                                add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        if result.udp_applicable {
+                            if !result.udp_ok {
+                                status.udp_consecutive_failures =
+                                    status.udp_consecutive_failures.saturating_add(1);
+                                if status.udp_consecutive_failures >= min_failures as u32 {
+                                    status.udp_healthy = Some(false);
+                                    add_penalty(
+                                        &mut status.udp_penalty,
+                                        now,
+                                        &self.inner.load_balancing,
+                                    );
+                                }
+                            } else {
+                                status.udp_consecutive_failures = 0;
+                                status.udp_consecutive_successes =
+                                    status.udp_consecutive_successes.saturating_add(1);
+                                status.udp_healthy = Some(true);
+                                status.cooldown_until_udp = None;
                             }
-                        } else {
-                            status.udp_consecutive_failures = 0;
-                            status.udp_healthy = Some(true);
-                            status.cooldown_until_udp = None;
                         }
-                        if result.tcp_ok && result.udp_ok {
+                        if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
                             status.last_error = None;
                         }
                         (
@@ -1589,7 +1702,9 @@ impl UplinkManager {
                         "uplink probe succeeded"
                     );
                     refill_tcp = result.tcp_ok;
-                    refill_udp = result.udp_ok;
+                    // When UDP is not configured for this uplink, leave the
+                    // standby pool alone (don't clear it, don't refill it).
+                    refill_udp = result.udp_applicable && result.udp_ok;
                 }
                 Err(error) => {
                     {
@@ -1598,17 +1713,28 @@ impl UplinkManager {
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
                         status.last_checked = Some(now);
+                        status.tcp_consecutive_successes = 0;
                         status.tcp_consecutive_failures =
                             status.tcp_consecutive_failures.saturating_add(1);
-                        status.udp_consecutive_failures =
-                            status.udp_consecutive_failures.saturating_add(1);
                         if status.tcp_consecutive_failures >= min_failures as u32 {
                             status.tcp_healthy = Some(false);
                             add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
                         }
-                        if status.udp_consecutive_failures >= min_failures as u32 {
-                            status.udp_healthy = Some(false);
-                            add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        // Only penalise UDP when it is actually configured.
+                        // The probe Err path is usually a TCP connect failure;
+                        // penalising UDP here when there is no udp_ws_url would
+                        // permanently mark UDP unhealthy for TCP-only uplinks.
+                        if uplink.udp_ws_url.is_some() {
+                            status.udp_consecutive_failures =
+                                status.udp_consecutive_failures.saturating_add(1);
+                            if status.udp_consecutive_failures >= min_failures as u32 {
+                                status.udp_healthy = Some(false);
+                                add_penalty(
+                                    &mut status.udp_penalty,
+                                    now,
+                                    &self.inner.load_balancing,
+                                );
+                            }
                         }
                         // Probe connection itself failed (ws connect / timeout).
                         // Same H3 downgrade logic as the tcp_ok=false case above.
@@ -1637,7 +1763,10 @@ impl UplinkManager {
             }
             if refill_udp {
                 self.spawn_refill(index, TransportKind::Udp);
-            } else {
+            } else if uplink.udp_ws_url.is_some() {
+                // Only clear UDP standby when UDP is actually configured.
+                // Without this guard a TCP-only uplink would keep clearing an
+                // already-empty UDP pool on every probe cycle.
                 self.clear_standby(index, TransportKind::Udp).await;
             }
         }
@@ -1647,7 +1776,11 @@ impl UplinkManager {
 #[derive(Debug)]
 struct ProbeOutcome {
     tcp_ok: bool,
+    /// false when the uplink has no `udp_ws_url` — means "UDP not applicable",
+    /// not "UDP probe failed".  Health and standby tracking are skipped in
+    /// this case so that Grafana shows empty (unknown) rather than red (0).
     udp_ok: bool,
+    udp_applicable: bool,
     tcp_latency: Option<Duration>,
     udp_latency: Option<Duration>,
 }
@@ -1675,11 +1808,13 @@ async fn probe_uplink(
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency) =
         run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode).await?;
-    let (udp_ok, udp_latency) = run_udp_probe(uplink, probe, dial_limit).await?;
+    let (udp_ok, udp_applicable, udp_latency) =
+        run_udp_probe(uplink, probe, dial_limit).await?;
 
     Ok(ProbeOutcome {
         tcp_ok,
         udp_ok,
+        udp_applicable,
         tcp_latency,
         udp_latency,
     })
@@ -1736,9 +1871,11 @@ async fn run_udp_probe(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-) -> Result<(bool, Option<Duration>)> {
+) -> Result<(bool, bool, Option<Duration>)> {
     let Some(udp_ws_url) = uplink.udp_ws_url.as_ref() else {
-        return Ok((false, None));
+        // No UDP URL configured — UDP is not applicable for this uplink.
+        // Return applicable=false so the caller skips UDP health tracking.
+        return Ok((false, false, None));
     };
 
     let started = Instant::now();
@@ -1774,12 +1911,12 @@ async fn run_udp_probe(
             probe_started.elapsed(),
         );
         let ok = result?;
-        return Ok((ok, Some(started.elapsed())));
+        return Ok((ok, true, Some(started.elapsed())));
     }
     if probe.ws.enabled {
-        return Ok((true, Some(started.elapsed())));
+        return Ok((true, true, Some(started.elapsed())));
     }
-    Ok((true, None))
+    Ok((true, true, None))
 }
 
 async fn run_ws_probe(
@@ -1789,23 +1926,26 @@ async fn run_ws_probe(
     mode: crate::types::WsTransportMode,
     fwmark: Option<u32>,
     dial_limit: Arc<Semaphore>,
-    pong_timeout: Duration,
+    _pong_timeout: Duration,
 ) -> Result<()> {
     let _permit = dial_limit
         .acquire_owned()
         .await
         .expect("probe dial semaphore closed");
+    // Verify WebSocket connectivity only — TCP connect + TLS + HTTP upgrade.
+    // Many servers do not respond to WebSocket ping control frames (they expect
+    // Shadowsocks data immediately), so we do not send a ping here.  The
+    // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_websocket_with_source(url, mode, fwmark, "probe_ws")
         .await
         .with_context(|| format!("failed to connect WebSocket probe to {url}"))?;
 
-    ping_idle_websocket(&mut ws_stream, pong_timeout).await?;
     debug!(
         uplink = %uplink_name,
         transport,
         probe = "ws",
         url = %url,
-        "closing probe websocket after successful ping"
+        "WebSocket probe connected, closing"
     );
     if let Err(error) = ws_stream.close().await {
         debug!(
@@ -1820,31 +1960,6 @@ async fn run_ws_probe(
     Ok(())
 }
 
-async fn ping_idle_websocket(ws_stream: &mut AnyWsStream, pong_timeout: Duration) -> Result<()> {
-    ws_stream
-        .send(Message::Ping(Bytes::from_static(b"probe")))
-        .await
-        .context("failed to send WebSocket ping")?;
-
-    timeout(pong_timeout, async {
-        loop {
-            let message = ws_stream
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("websocket probe stream closed before pong"))?
-                .context("websocket probe read failed")?;
-            match message {
-                Message::Pong(bytes) if bytes.as_ref() == b"probe" => return Ok(()),
-                Message::Pong(_) => return Ok(()),
-                Message::Ping(_) | Message::Binary(_) | Message::Text(_) => continue,
-                Message::Close(frame) => bail!("websocket probe received close frame: {:?}", frame),
-                Message::Frame(_) => continue,
-            }
-        }
-    })
-    .await
-    .context("websocket ping/pong timed out")?
-}
 
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     let lower = format!("{error:#}").to_lowercase();

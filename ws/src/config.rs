@@ -137,6 +137,10 @@ pub struct LoadBalancingConfig {
     /// NAT/firewall idle timeouts. Runs in addition to the 15-second validation cycle.
     /// None disables the extra keepalive loop (validation every 15 s still runs).
     pub tcp_ws_standby_keepalive_interval: Option<Duration>,
+    /// When false (default), the active uplink is only replaced when it fails.
+    /// When true, traffic returns to the highest-priority healthy uplink once it
+    /// has been stable for `min_failures` consecutive probe cycles.
+    pub auto_failback: bool,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -303,6 +307,7 @@ struct LoadBalancingSection {
     h3_downgrade_secs: Option<u64>,
     udp_ws_keepalive_secs: Option<u64>,
     tcp_ws_standby_keepalive_secs: Option<u64>,
+    auto_failback: Option<bool>,
 }
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
@@ -590,6 +595,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             .and_then(|l| l.tcp_ws_standby_keepalive_secs)
             .map(Duration::from_secs)
             .or(Some(Duration::from_secs(30))),
+        auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
     })
 }
 

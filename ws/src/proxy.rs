@@ -204,6 +204,18 @@ async fn handle_tcp_connect(
                 uplinks
                     .report_runtime_failure(selected_index, TransportKind::Tcp, err)
                     .await;
+            } else if msg.contains("websocket closed") {
+                // The upstream server closed the WebSocket connection
+                // mid-stream (server-initiated close, not a client
+                // disconnect).  We do not set a full runtime-failure
+                // cooldown to avoid penalising the uplink for normal
+                // per-connection lifetime limits, but we clear the
+                // activity timestamp so the probe is not skipped on the
+                // next cycle — this lets the probe detect a downed server
+                // promptly rather than waiting for probe.interval of silence.
+                uplinks
+                    .report_upstream_close(selected_index, TransportKind::Tcp)
+                    .await;
             }
         }
         result
