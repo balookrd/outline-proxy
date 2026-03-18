@@ -551,7 +551,20 @@ impl UplinkManager {
                     let already_in_cooldown =
                         status.cooldown_until_tcp.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
-                        add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                        // When probe is enabled it is the authoritative source of health.
+                        // Do not add a penalty on every transient runtime failure: under
+                        // load, H3 streams drop frequently even on a healthy server, so
+                        // accumulating penalty here would inflate the uplink's effective
+                        // score and cause it to lose EWMA-based elections even while the
+                        // probe continues to report it as healthy.  Penalty is instead
+                        // added by the probe path once it confirms a real failure
+                        // (consecutive_failures >= min_failures).
+                        // When probe is disabled there is no other confirmation signal,
+                        // so we still penalise immediately to influence cooldown-based
+                        // candidate selection.
+                        if !self.inner.probe.enabled() {
+                            add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                        }
                         status.cooldown_until_tcp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
                         metrics::record_runtime_failure("tcp", &uplink_name);
@@ -585,7 +598,12 @@ impl UplinkManager {
                     let already_in_cooldown =
                         status.cooldown_until_udp.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
-                        add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        // Same rationale as TCP above: when probe is enabled, defer
+                        // penalty to the probe confirmation path to avoid inflating
+                        // the score of a healthy-but-loaded uplink.
+                        if !self.inner.probe.enabled() {
+                            add_penalty(&mut status.udp_penalty, now, &self.inner.load_balancing);
+                        }
                         status.cooldown_until_udp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
                         metrics::record_runtime_failure("udp", &uplink_name);
@@ -746,12 +764,36 @@ impl UplinkManager {
     /// timestamp so that the next probe cycle is not skipped.  This ensures
     /// the probe detects a downed server promptly instead of waiting for
     /// `probe.interval` of silence.
+    ///
+    /// Exception: when traffic was active very recently (within
+    /// `failure_cooldown`), the timestamp is preserved.  Under load servers
+    /// close connections frequently due to per-connection lifetime limits;
+    /// clearing the timestamp each time would force probe cycles during the
+    /// busiest moments, which risks false-negative health readings and
+    /// spurious failovers.  The scheduled probe interval provides a more
+    /// reliable signal once the burst subsides.
     pub async fn report_upstream_close(&self, index: usize, transport: TransportKind) {
+        let now = Instant::now();
+        let threshold = self.inner.load_balancing.failure_cooldown;
         let mut statuses = self.inner.statuses.write().await;
         let status = &mut statuses[index];
         match transport {
-            TransportKind::Tcp => status.last_active_tcp = None,
-            TransportKind::Udp => status.last_active_udp = None,
+            TransportKind::Tcp => {
+                let recently_active = status
+                    .last_active_tcp
+                    .is_some_and(|t| now.duration_since(t) < threshold);
+                if !recently_active {
+                    status.last_active_tcp = None;
+                }
+            }
+            TransportKind::Udp => {
+                let recently_active = status
+                    .last_active_udp
+                    .is_some_and(|t| now.duration_since(t) < threshold);
+                if !recently_active {
+                    status.last_active_udp = None;
+                }
+            }
         }
     }
 
@@ -1083,8 +1125,53 @@ impl UplinkManager {
                     // A single successful probe is not enough: the primary may be
                     // transiently up (e.g. service restarting) and returning traffic
                     // to it prematurely would break connections.
-                    let best = candidates.first();
-                    let is_best = best.map_or(true, |b| b.index == active_index);
+                    //
+                    // IMPORTANT: auto_failback only ever switches to a
+                    // *higher-priority* uplink.  Switching to a lower-priority
+                    // uplink is a failover, not a failback; failovers must be
+                    // driven by probe-confirmed failure, not by EWMA comparison.
+                    //
+                    // Priority is defined by `weight` (higher weight = more
+                    // preferred, because score = EWMA / weight).  Index is used
+                    // as a stable tiebreaker when weights are equal.
+                    //
+                    // The distinction matters under load: the active uplink's EWMA
+                    // inflates (slower H3 connections feed higher latency samples)
+                    // while the idle backup retains a low probe-derived EWMA.  If
+                    // auto_failback used raw EWMA to pick "best", the backup would
+                    // appear superior and trigger a spurious switch even though the
+                    // active is probe-healthy and carrying real traffic.
+                    //
+                    // Weight is a stable, load-independent priority signal: we only
+                    // failback to a candidate that has strictly higher weight than
+                    // the active (or equal weight but lower config index).  If the
+                    // active is already the highest-priority probe-healthy uplink,
+                    // best is None and we keep the active without any switch.
+                    let active_weight = self.inner.uplinks[active_index].weight;
+                    let best = candidates.iter()
+                        .filter(|b| {
+                            let b_weight = self.inner.uplinks[b.index].weight;
+                            let higher_priority =
+                                b_weight > active_weight
+                                || (b_weight == active_weight && b.index < active_index);
+                            higher_priority
+                                && match gate_transport {
+                                    TransportKind::Tcp => {
+                                        statuses[b.index].tcp_healthy == Some(true)
+                                    }
+                                    TransportKind::Udp => {
+                                        statuses[b.index].udp_healthy == Some(true)
+                                    }
+                                }
+                        })
+                        .max_by(|a, b| {
+                            let wa = self.inner.uplinks[a.index].weight;
+                            let wb = self.inner.uplinks[b.index].weight;
+                            wa.partial_cmp(&wb)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                                .then_with(|| b.index.cmp(&a.index)) // lower index wins
+                        });
+                    let is_best = best.is_none();
                     let best_is_stable = best.map_or(true, |b| {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
@@ -1523,13 +1610,32 @@ impl UplinkManager {
                 // We must run the probe so it can detect the failure and
                 // trigger failover.
                 let tcp_no_cooldown = !cooldown_active(s, TransportKind::Tcp, now);
-                if tcp_active && tcp_currently_healthy && tcp_no_cooldown {
+                // In global scope with probe enabled the probe is the sole
+                // health gate — the cooldown from a runtime failure does NOT
+                // affect the switch decision (see strict_transport_candidates).
+                // Running a probe immediately after a runtime failure under
+                // load is counterproductive: the server is busy, the new QUIC
+                // handshake competes with existing traffic, and the probe is
+                // likely to fail → false negative → spurious failover.
+                // Active traffic is already stronger evidence of liveness than
+                // a probe ping, so we skip the probe cycle whenever traffic is
+                // flowing and the uplink is probe-confirmed healthy, regardless
+                // of any active runtime-failure cooldown.
+                // For non-global scopes the cooldown gate is used for candidate
+                // selection, so we must still probe to confirm recovery before
+                // the cooldown expires and re-admits the uplink.
+                let global_probe =
+                    self.inner.load_balancing.routing_scope == RoutingScope::Global
+                    && self.inner.probe.enabled();
+                let skip_allowed = tcp_no_cooldown || global_probe;
+                if tcp_active && tcp_currently_healthy && skip_allowed {
                     let udp_active = s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
                     debug!(
                         uplink = %uplink.name,
                         last_active_tcp_ms = s.last_active_tcp.map(|t| now.duration_since(t).as_millis()),
                         last_active_udp_ms = s.last_active_udp.map(|t| now.duration_since(t).as_millis()),
                         udp_also_active = udp_active,
+                        had_cooldown = !tcp_no_cooldown,
                         "skipping probe cycle: real traffic observed and uplink is healthy"
                     );
                     continue;
@@ -2508,6 +2614,7 @@ mod tests {
             h3_downgrade_duration: Duration::from_secs(60),
             udp_ws_keepalive_interval: None,
             tcp_ws_standby_keepalive_interval: None,
+            auto_failback: false,
         }
     }
 

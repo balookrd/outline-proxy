@@ -12,6 +12,10 @@ It supports:
 - existing TUN device integration for `tun2udp`
 - stateful `tun2tcp` relay with production-oriented guardrails
 
+---
+
+*Русская версия: [README.ru.md](README.ru.md)*
+
 ## Overview
 
 At a high level, the process does five jobs:
