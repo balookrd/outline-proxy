@@ -1015,12 +1015,19 @@ impl Metrics {
             self.uplink_weight
                 .with_label_values(&[&uplink.name])
                 .set(uplink.weight);
-            self.uplink_health
-                .with_label_values(&["tcp", &uplink.name])
-                .set(bool_to_f64(uplink.tcp_healthy));
-            self.uplink_health
-                .with_label_values(&["udp", &uplink.name])
-                .set(bool_to_f64(uplink.udp_healthy));
+            // Only export health when it is known — None (probe not yet run)
+            // is left unexported so Grafana shows it as empty rather than 0,
+            // which is indistinguishable from a confirmed-unhealthy uplink.
+            if let Some(tcp_healthy) = uplink.tcp_healthy {
+                self.uplink_health
+                    .with_label_values(&["tcp", &uplink.name])
+                    .set(if tcp_healthy { 1.0 } else { 0.0 });
+            }
+            if let Some(udp_healthy) = uplink.udp_healthy {
+                self.uplink_health
+                    .with_label_values(&["udp", &uplink.name])
+                    .set(if udp_healthy { 1.0 } else { 0.0 });
+            }
 
             if let Some(latency_ms) = uplink.tcp_latency_ms {
                 self.uplink_latency_seconds
@@ -1114,12 +1121,6 @@ impl Metrics {
     }
 }
 
-fn bool_to_f64(value: Option<bool>) -> f64 {
-    match value {
-        Some(true) => 1.0,
-        Some(false) | None => 0.0,
-    }
-}
 
 pub fn init() {
     let _ = METRICS

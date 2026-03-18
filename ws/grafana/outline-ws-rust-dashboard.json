@@ -1350,9 +1350,54 @@
       "title": "Uplink Health Table",
       "transformations": [
         {
-          "id": "seriesToColumns",
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "groupBy",
           "options": {
-            "byField": "uplink"
+            "fields": {
+              "transport": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "uplink": {
+                "aggregations": [],
+                "operation": "groupby"
+              },
+              "Value #A": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #B": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #C": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #D": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              },
+              "Value #E": {
+                "aggregations": ["lastNotNull"],
+                "operation": "aggregate"
+              }
+            }
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": {
+              "Value #A (lastNotNull)": "Health",
+              "Value #B (lastNotNull)": "Latency",
+              "Value #C (lastNotNull)": "Standby Ready",
+              "Value #D (lastNotNull)": "Penalty",
+              "Value #E (lastNotNull)": "Eff. Latency"
+            }
           }
         }
       ],
