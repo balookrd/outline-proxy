@@ -4,6 +4,8 @@
 
 It is designed for deployments that need modern WebSocket transports, multi-user routing, per-user policy controls, and observability without carrying the full Outline management plane.
 
+*Русская версия: [README.ru.md](README.ru.md)*
+
 ## Overview
 
 This server accepts Shadowsocks AEAD traffic encapsulated inside WebSocket binary frames and relays it to arbitrary TCP or UDP destinations.
@@ -342,6 +344,49 @@ The dashboard covers:
 - TCP and UDP throughput by user
 - UDP request rate and response datagram rate
 
+## HTTP/3 Performance Tuning
+
+The server requests 32 MB OS UDP socket buffers (send and receive). On most systems the kernel silently caps the actual size at a lower value. If the log shows a warning like:
+
+```
+HTTP/3 UDP receive buffer capped by OS — increase net.core.rmem_max
+```
+
+raise the OS limits before starting the service.
+
+**Linux:**
+
+```bash
+sysctl -w net.core.rmem_max=33554432
+sysctl -w net.core.wmem_max=33554432
+```
+
+To persist across reboots, add to `/etc/sysctl.d/99-quic.conf`:
+
+```
+net.core.rmem_max=33554432
+net.core.wmem_max=33554432
+```
+
+**macOS:**
+
+```bash
+sysctl -w kern.ipc.maxsockbuf=33554432
+```
+
+### Internal QUIC constants
+
+| Constant | Value | Purpose |
+| --- | --- | --- |
+| UDP socket buffer (send + recv) | 32 MB | Absorbs packet bursts; primary defense against OS-level drops |
+| QUIC stream receive window | 16 MB | Throughput ceiling per stream at high RTT |
+| QUIC connection receive window | 64 MB | Aggregate throughput ceiling per connection |
+| WebSocket write buffer | 512 KB | Batches outbound data to reduce syscall overhead |
+| WebSocket backpressure limit | 16 MB | Maximum buffered data before a slow-client connection is dropped |
+| Max UDP payload size | 1 350 bytes | Safe value for internet paths; avoids IP fragmentation |
+| QUIC ping interval | 10 s | Keeps connections alive through NAT and firewalls |
+| QUIC idle timeout | 120 s | Maximum inactivity before the server closes a connection |
+
 ## Production Operations
 
 ### systemd
@@ -394,7 +439,7 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 - HTTP/3 WebSocket support relies on RFC 9220.
 - The repository currently vendors and patches `h3` and `sockudo-ws` for HTTP/3 behavior needed by this project. Details are documented in [PATCHES.md](/Users/mmalykhin/Documents/outline-ss-rust/PATCHES.md).
 - The vendored `sockudo-ws` patch now sends a QUIC FIN (via `AsyncWriteExt::shutdown`) after delivering the WebSocket Close frame. Without this, dropping the `SendStream` triggers `RESET_STREAM`, which some H3 clients and intermediaries treat as a connection-level error and respond with `H3_INTERNAL_ERROR`, tearing down the entire QUIC connection.
-- QUIC idle timeout is 120 seconds and WebSocket ping interval is 15 seconds. These values are now consistent between the QUIC transport layer and the WebSocket idle settings.
+- QUIC idle timeout is 120 seconds and WebSocket ping interval is 10 seconds. These values are consistent between the QUIC transport layer and the WebSocket idle settings.
 - The following QUIC close conditions are treated as benign (not counted as errors): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0`, QUIC stack internal errors from the http layer, and connection idle timeouts.
 
 ## Limitations
