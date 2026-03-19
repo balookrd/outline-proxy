@@ -2113,7 +2113,9 @@ mod tests {
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
             print_access_keys: false,
+            write_access_keys_dir: None,
             password: None,
             fwmark: None,
             users: vec![UserEntry {

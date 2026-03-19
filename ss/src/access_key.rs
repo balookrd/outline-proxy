@@ -1,3 +1,8 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
 use anyhow::{Result, anyhow, bail};
 
 use crate::config::{Config, UserEntry};
@@ -9,6 +14,14 @@ pub struct AccessKeyArtifact {
     pub config_url: Option<String>,
     pub access_key_url: Option<String>,
     pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenAccessKeyArtifact {
+    pub user_id: String,
+    pub path: PathBuf,
+    pub config_url: Option<String>,
+    pub access_key_url: Option<String>,
 }
 
 pub fn build_access_key_artifacts(config: &Config) -> Result<Vec<AccessKeyArtifact>> {
@@ -55,12 +68,58 @@ pub fn render_access_key_report(artifacts: &[AccessKeyArtifact]) -> String {
     out
 }
 
+pub fn write_access_key_artifacts(
+    artifacts: &[AccessKeyArtifact],
+    output_dir: &Path,
+) -> Result<Vec<WrittenAccessKeyArtifact>> {
+    fs::create_dir_all(output_dir)?;
+
+    artifacts
+        .iter()
+        .map(|artifact| {
+            let path = output_dir.join(&artifact.config_filename);
+            fs::write(&path, &artifact.yaml)?;
+            Ok(WrittenAccessKeyArtifact {
+                user_id: artifact.user_id.clone(),
+                path,
+                config_url: artifact.config_url.clone(),
+                access_key_url: artifact.access_key_url.clone(),
+            })
+        })
+        .collect()
+}
+
+pub fn render_written_access_key_report(artifacts: &[WrittenAccessKeyArtifact]) -> String {
+    let mut out = String::new();
+
+    for (index, artifact) in artifacts.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+
+        out.push_str(&format!("user: {}\n", artifact.user_id));
+        out.push_str(&format!("written_file: {}\n", artifact.path.display()));
+        if let Some(config_url) = &artifact.config_url {
+            out.push_str(&format!("config_url: {}\n", config_url));
+        }
+        if let Some(access_key_url) = &artifact.access_key_url {
+            out.push_str(&format!("access_key_url: {}\n", access_key_url));
+        }
+    }
+
+    out
+}
+
 fn build_user_artifact(
     config: &Config,
     user: &UserEntry,
     public_host: &str,
 ) -> Result<AccessKeyArtifact> {
-    let config_filename = format!("{}.yaml", sanitize_filename(&user.id));
+    let config_filename = format!(
+        "{}{}",
+        sanitize_filename(&user.id),
+        config.access_key_file_extension
+    );
     let config_url = config
         .access_key_url_base
         .as_deref()
@@ -196,7 +255,8 @@ fn yaml_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_access_key_artifacts, dynamic_access_key_url, normalize_host, sanitize_filename,
+        build_access_key_artifacts, dynamic_access_key_url, normalize_host,
+        render_written_access_key_report, sanitize_filename, write_access_key_artifacts,
     };
     use crate::config::{CipherKind, Config, UserEntry};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -219,7 +279,9 @@ mod tests {
             public_host: Some("vpn.example.com".into()),
             public_scheme: "wss".into(),
             access_key_url_base: Some("https://keys.example.com/outline".into()),
+            access_key_file_extension: ".yaml".into(),
             print_access_keys: false,
+            write_access_keys_dir: None,
             password: None,
             fwmark: None,
             users: vec![
@@ -285,5 +347,43 @@ mod tests {
         assert_eq!(normalize_host("2001:db8::10"), "[2001:db8::10]");
         assert_eq!(normalize_host("2001:db8::10:443"), "[2001:db8::10]:443");
         assert_eq!(normalize_host("[2001:db8::10]:443"), "[2001:db8::10]:443");
+    }
+
+    #[test]
+    fn writes_outline_artifacts_to_directory() {
+        let artifacts = build_access_key_artifacts(&sample_config()).unwrap();
+        let output_dir = std::env::temp_dir().join(format!(
+            "outline-ss-rust-access-key-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let written = write_access_key_artifacts(&artifacts, &output_dir).unwrap();
+
+        assert_eq!(written.len(), 2);
+        assert_eq!(
+            std::fs::read_to_string(output_dir.join("alice.yaml")).unwrap(),
+            artifacts[0].yaml
+        );
+        assert!(render_written_access_key_report(&written).contains("written_file:"));
+
+        std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn uses_custom_access_key_file_extension() {
+        let mut config = sample_config();
+        config.access_key_file_extension = ".txt".into();
+
+        let artifacts = build_access_key_artifacts(&config).unwrap();
+
+        assert_eq!(artifacts[0].config_filename, "alice.txt");
+        assert_eq!(
+            artifacts[0].access_key_url.as_deref(),
+            Some("ssconf://keys.example.com/outline/alice.txt")
+        );
     }
 }

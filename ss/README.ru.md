@@ -170,7 +170,9 @@ cargo run -- --config ./config.toml
 | `public_host` | Публичный хост для генерации Outline-ключей |
 | `public_scheme` | `ws` или `wss` для генерируемых client URL |
 | `access_key_url_base` | Базовый URL для хостинга генерируемых YAML-файлов |
+| `access_key_file_extension` | Расширение для генерируемых файлов клиентской Outline-конфигурации; по умолчанию `.yaml` |
 | `print_access_keys` | Вывести динамические Outline-конфигурации и завершить работу |
+| `write_access_keys_dir` | Записать per-user Outline YAML-файлы в указанный каталог и завершить работу |
 | `method` | Глобальный шифр Shadowsocks по умолчанию |
 | `password` | Пароль в режиме одного пользователя |
 | `fwmark` | `fwmark` в режиме одного пользователя |
@@ -312,12 +314,24 @@ cargo run -- \
   --config ./config.toml
 ```
 
+Или запись по одному YAML-файлу на пользователя в каталог:
+
+```bash
+cargo run -- \
+  --write-access-keys-dir ./keys \
+  --config ./config.toml
+```
+
 Для каждого пользователя сервер выводит:
 
 - YAML-конфигурацию транспорта
 - предлагаемое имя файла, например `alice.yaml`
 - `config_url`
 - `ssconf://` URL ключа доступа
+
+Если задан `write_access_keys_dir`, сервер записывает YAML-файлы в этот каталог и выводит полный путь к каждому сгенерированному клиентскому конфигу.
+
+Расширение файлов по умолчанию — `.yaml`, но его можно изменить через `access_key_file_extension`, например на `.txt` или `.conf`.
 
 Генерируемый YAML автоматически отражает:
 

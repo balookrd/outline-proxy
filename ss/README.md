@@ -168,7 +168,9 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `public_host` | Public host used for generated Outline access keys |
 | `public_scheme` | `ws` or `wss` for generated client URLs |
 | `access_key_url_base` | Base URL where generated YAML files will be hosted |
+| `access_key_file_extension` | File extension for generated Outline client config files; default is `.yaml` |
 | `print_access_keys` | Print dynamic Outline configs and exit |
+| `write_access_keys_dir` | Write per-user Outline YAML files into the specified directory and exit |
 | `method` | Default Shadowsocks cipher |
 | `password` | Single-user fallback password |
 | `fwmark` | Single-user fallback `fwmark` |
@@ -267,12 +269,24 @@ cargo run -- \
   --config ./config.toml
 ```
 
+Or write one YAML file per user into a directory:
+
+```bash
+cargo run -- \
+  --write-access-keys-dir ./keys \
+  --config ./config.toml
+```
+
 For each user the server prints:
 
 - a YAML transport config
 - a suggested filename such as `alice.yaml`
 - a `config_url`
 - an `ssconf://` access key URL
+
+When `write_access_keys_dir` is set, the server writes the YAML files to that directory and prints the absolute file path for each generated client config.
+
+The generated filename extension defaults to `.yaml`, but can be changed with `access_key_file_extension`, for example `.txt` or `.conf`.
 
 The generated YAML automatically reflects:
 

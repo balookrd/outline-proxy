@@ -31,9 +31,12 @@ ws_path_udp = "/udp"
 public_host = "vpn.example.com"
 public_scheme = "wss"
 access_key_url_base = "https://keys.example.com/outline"
+# access_key_file_extension = ".yaml"
 
 # Set to true to print Outline YAML configs and ssconf:// URLs, then exit.
 print_access_keys = false
+# Or write one generated YAML file per user into a directory, then exit.
+# write_access_keys_dir = "./keys"
 
 method = "chacha20-ietf-poly1305"
 

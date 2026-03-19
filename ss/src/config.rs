@@ -28,7 +28,9 @@ pub struct Config {
     pub public_host: Option<String>,
     pub public_scheme: String,
     pub access_key_url_base: Option<String>,
+    pub access_key_file_extension: String,
     pub print_access_keys: bool,
+    pub write_access_keys_dir: Option<PathBuf>,
     pub password: Option<String>,
     pub fwmark: Option<u32>,
     pub users: Vec<UserEntry>,
@@ -86,10 +88,14 @@ impl Config {
                 .or(file.public_scheme)
                 .unwrap_or_else(|| "wss".to_owned()),
             access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
+            access_key_file_extension: normalize_access_key_file_extension(
+                args.access_key_file_extension.or(file.access_key_file_extension),
+            ),
             print_access_keys: args
                 .print_access_keys
                 .or(file.print_access_keys)
                 .unwrap_or(false),
+            write_access_keys_dir: args.write_access_keys_dir.or(file.write_access_keys_dir),
             password: args.password.or(file.password),
             fwmark: args.fwmark.or(file.fwmark),
             users: if args.users.is_empty() {
@@ -252,6 +258,9 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_URL_BASE")]
     access_key_url_base: Option<String>,
 
+    #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_FILE_EXTENSION")]
+    access_key_file_extension: Option<String>,
+
     #[arg(
         long,
         env = "OUTLINE_SS_PRINT_ACCESS_KEYS",
@@ -261,6 +270,9 @@ struct ConfigArgs {
         require_equals = true
     )]
     print_access_keys: Option<bool>,
+
+    #[arg(long, env = "OUTLINE_SS_WRITE_ACCESS_KEYS_DIR")]
+    write_access_keys_dir: Option<PathBuf>,
 
     #[arg(long, env = "OUTLINE_SS_PASSWORD")]
     password: Option<String>,
@@ -301,7 +313,9 @@ struct FileConfig {
     public_host: Option<String>,
     public_scheme: Option<String>,
     access_key_url_base: Option<String>,
+    access_key_file_extension: Option<String>,
     print_access_keys: Option<bool>,
+    write_access_keys_dir: Option<PathBuf>,
     password: Option<String>,
     fwmark: Option<u32>,
     users: Option<Vec<UserEntry>>,
@@ -414,6 +428,15 @@ fn default_listen_addr() -> SocketAddr {
     "0.0.0.0:3000"
         .parse()
         .expect("hardcoded listen address should parse")
+}
+
+fn normalize_access_key_file_extension(extension: Option<String>) -> String {
+    let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
+    if extension.starts_with('.') {
+        extension
+    } else {
+        format!(".{extension}")
+    }
 }
 
 #[cfg(test)]
