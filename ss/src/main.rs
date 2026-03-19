@@ -10,7 +10,10 @@ mod server;
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use crate::access_key::{build_access_key_artifacts, render_access_key_report};
+use crate::access_key::{
+    build_access_key_artifacts, render_access_key_report, render_written_access_key_report,
+    write_access_key_artifacts,
+};
 use crate::config::Config;
 
 #[cfg(target_os = "linux")]
@@ -20,9 +23,18 @@ static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemall
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = Config::load()?;
-    if config.print_access_keys {
+    if config.print_access_keys || config.write_access_keys_dir.is_some() {
         let artifacts = build_access_key_artifacts(&config)?;
-        print!("{}", render_access_key_report(&artifacts));
+        if config.print_access_keys {
+            print!("{}", render_access_key_report(&artifacts));
+        }
+        if let Some(output_dir) = &config.write_access_keys_dir {
+            let written = write_access_key_artifacts(&artifacts, output_dir)?;
+            if config.print_access_keys {
+                println!();
+            }
+            print!("{}", render_written_access_key_report(&written));
+        }
         return Ok(());
     }
 
