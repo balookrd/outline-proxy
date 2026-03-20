@@ -106,6 +106,9 @@ tun2udp + tun2tcp"]
 - `chacha20-ietf-poly1305`
 - `aes-128-gcm`
 - `aes-256-gcm`
+- `2022-blake3-aes-128-gcm`
+- `2022-blake3-aes-256-gcm`
+- `2022-blake3-chacha20-poly1305`
 
 ### Управление аплинками
 
@@ -331,6 +334,7 @@ password = "Secret0"
 ### Ключевые параметры конфигурации
 
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3`.
+- `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
 - CLI/env-эквиваленты `--socks5-username` / `SOCKS5_USERNAME` и `--socks5-password` / `SOCKS5_PASSWORD` тоже задают одного пользователя.

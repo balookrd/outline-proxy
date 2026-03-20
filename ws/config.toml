@@ -79,6 +79,11 @@ udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
+# for ss2022 methods use a base64 PSK, for example:
+# method = "2022-blake3-aes-128-gcm"
+# password = "AQIDBAUGBwgJCgsMDQ4PEA=="
+# method = "2022-blake3-chacha20-poly1305"
+# password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
 
 [[uplinks]]
 name = "backup"

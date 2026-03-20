@@ -21,7 +21,7 @@ use sockudo_ws::{
 };
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::net::TcpStream;
 use tokio::net::lookup_host;
 use tokio::sync::{Mutex, mpsc};
@@ -36,14 +36,14 @@ use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::crypto::{
-    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, derive_subkey,
-    encrypt, encrypt_udp_packet, increment_nonce,
+    SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, decrypt_udp_packet_2022, derive_subkey,
+    encrypt, encrypt_udp_packet, encrypt_udp_packet_2022, increment_nonce,
 };
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
-use crate::types::{CipherKind, WsTransportMode};
+use crate::types::{CipherKind, TargetAddr, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
@@ -381,6 +381,23 @@ impl Sink<Message> for AnyWsStream {
 type WsSink = SplitSink<AnyWsStream, Message>;
 type WsStream = SplitStream<AnyWsStream>;
 
+struct Ss2022TcpWriterState {
+    request_salt: Vec<u8>,
+    header_sent: bool,
+}
+
+struct Ss2022TcpReaderState {
+    request_salt: Vec<u8>,
+    response_header_read: bool,
+}
+
+struct Ss2022UdpState {
+    client_session_id: u64,
+    next_client_packet_id: u64,
+    server_session_id: Option<u64>,
+    last_server_packet_id: Option<u64>,
+}
+
 pub struct TcpShadowsocksWriter {
     data_tx: Option<mpsc::Sender<Message>>,
     _writer_task: AbortOnDrop,
@@ -388,6 +405,7 @@ pub struct TcpShadowsocksWriter {
     key: Vec<u8>,
     nonce: [u8; 12],
     pending_salt: Option<Vec<u8>>,
+    ss2022: Option<Ss2022TcpWriterState>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -399,6 +417,7 @@ pub struct TcpShadowsocksReader {
     key: Option<Vec<u8>>,
     nonce: [u8; 12],
     buffer: Vec<u8>,
+    ss2022: Option<Ss2022TcpReaderState>,
     _lifetime: Arc<UpstreamTransportGuard>,
     /// `true` when the last read ended with a clean WebSocket close (Close
     /// frame or EOF).  `false` means the stream was interrupted by a transport
@@ -415,6 +434,7 @@ pub struct UdpWsTransport {
     _keepalive_task: Option<AbortOnDrop>,
     cipher: CipherKind,
     master_key: Vec<u8>,
+    ss2022: Option<Mutex<Ss2022UdpState>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -489,6 +509,54 @@ pub async fn connect_websocket_with_source(
     }
 }
 
+fn unix_timestamp_secs() -> Result<u64> {
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_secs())
+}
+
+fn build_ss2022_request_header(target: &TargetAddr) -> Result<(Vec<u8>, Vec<u8>)> {
+    let target = target.to_wire_bytes()?;
+    let padding_len: u16 = 16;
+    let mut fixed = Vec::with_capacity(11);
+    fixed.push(0);
+    fixed.extend_from_slice(&unix_timestamp_secs()?.to_be_bytes());
+    fixed.extend_from_slice(
+        &(target.len() as u16 + 2 + usize::from(padding_len) as u16).to_be_bytes(),
+    );
+
+    let mut variable = Vec::with_capacity(target.len() + 2 + usize::from(padding_len));
+    variable.extend_from_slice(&target);
+    variable.extend_from_slice(&padding_len.to_be_bytes());
+    let mut padding = vec![0u8; usize::from(padding_len)];
+    rand::thread_rng().fill_bytes(&mut padding);
+    variable.extend_from_slice(&padding);
+    Ok((fixed, variable))
+}
+
+fn parse_ss2022_response_header(
+    cipher: CipherKind,
+    request_salt: &[u8],
+    plaintext: &[u8],
+) -> Result<usize> {
+    let expected_len = 1 + 8 + cipher.salt_len() + 2;
+    if plaintext.len() != expected_len {
+        bail!("invalid ss2022 response header length: {}", plaintext.len());
+    }
+    if plaintext[0] != 1 {
+        bail!("invalid ss2022 response header type: {}", plaintext[0]);
+    }
+
+    let request_salt_start = 9;
+    let request_salt_end = request_salt_start + cipher.salt_len();
+    if &plaintext[request_salt_start..request_salt_end] != request_salt {
+        bail!("ss2022 response header request salt mismatch");
+    }
+
+    Ok(u16::from_be_bytes([plaintext[request_salt_end], plaintext[request_salt_end + 1]]) as usize)
+}
+
 impl TcpShadowsocksWriter {
     /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
     /// `ctrl_tx` must be passed to the paired `TcpShadowsocksReader` so that
@@ -540,6 +608,7 @@ impl TcpShadowsocksWriter {
             }
         });
 
+        let request_salt = salt.clone();
         Ok((
             Self {
                 data_tx: Some(data_tx),
@@ -548,15 +617,59 @@ impl TcpShadowsocksWriter {
                 key: derive_subkey(cipher, master_key, &salt)?,
                 nonce: [0u8; 12],
                 pending_salt: Some(salt),
+                ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
+                    request_salt,
+                    header_sent: false,
+                }),
                 _lifetime: lifetime,
             },
             ctrl_tx,
         ))
     }
 
+    pub fn request_salt(&self) -> Option<&[u8]> {
+        self.ss2022
+            .as_ref()
+            .map(|state| state.request_salt.as_slice())
+    }
+
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
-        if payload.len() > SHADOWSOCKS_MAX_PAYLOAD {
+        if payload.len() > self.cipher.max_payload_len() {
             bail!("payload too large: {}", payload.len());
+        }
+
+        if let Some(state) = &mut self.ss2022 {
+            if !state.header_sent {
+                let target = TargetAddr::from_wire_bytes(payload)
+                    .context("invalid ss2022 initial target header")?
+                    .0;
+                let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
+                let encrypted_fixed = encrypt(self.cipher, &self.key, &self.nonce, &fixed_header)?;
+                increment_nonce(&mut self.nonce);
+                let encrypted_variable =
+                    encrypt(self.cipher, &self.key, &self.nonce, &variable_header)?;
+                increment_nonce(&mut self.nonce);
+
+                let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
+                let mut frame = Vec::with_capacity(
+                    pending_salt_len + encrypted_fixed.len() + encrypted_variable.len(),
+                );
+                if let Some(salt) = self.pending_salt.take() {
+                    state.request_salt = salt.clone();
+                    frame.extend_from_slice(&salt);
+                }
+                frame.extend_from_slice(&encrypted_fixed);
+                frame.extend_from_slice(&encrypted_variable);
+                state.header_sent = true;
+
+                self.data_tx
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("writer already closed"))?
+                    .send(Message::Binary(frame.into()))
+                    .await
+                    .context("failed to send encrypted frame")?;
+                return Ok(());
+            }
         }
 
         let len = (payload.len() as u16).to_be_bytes();
@@ -607,9 +720,18 @@ impl TcpShadowsocksReader {
             key: None,
             nonce: [0u8; 12],
             buffer: Vec::new(),
+            ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
         }
+    }
+
+    pub(crate) fn with_request_salt(mut self, request_salt: Option<Vec<u8>>) -> Self {
+        self.ss2022 = request_salt.map(|request_salt| Ss2022TcpReaderState {
+            request_salt,
+            response_header_read: false,
+        });
+        self
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
@@ -622,6 +744,35 @@ impl TcpShadowsocksReader {
             .clone()
             .ok_or_else(|| anyhow!("missing derived key"))?;
 
+        let need_ss2022_response_header = self
+            .ss2022
+            .as_ref()
+            .is_some_and(|state| !state.response_header_read);
+        if need_ss2022_response_header {
+            let request_salt = self
+                .ss2022
+                .as_ref()
+                .map(|state| state.request_salt.clone())
+                .ok_or_else(|| anyhow!("missing ss2022 request salt"))?;
+            {
+                let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
+                let encrypted_header = self.read_exact_from_ws(header_len).await?;
+                let header = decrypt(self.cipher, &key, &self.nonce, &encrypted_header)?;
+                increment_nonce(&mut self.nonce);
+                let payload_len =
+                    parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
+                let encrypted_payload = self
+                    .read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN)
+                    .await?;
+                let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
+                increment_nonce(&mut self.nonce);
+                if let Some(state) = &mut self.ss2022 {
+                    state.response_header_read = true;
+                }
+                return Ok(payload);
+            }
+        }
+
         let encrypted_len = self.read_exact_from_ws(2 + SHADOWSOCKS_TAG_LEN).await?;
         let len = decrypt(self.cipher, &key, &self.nonce, &encrypted_len)?;
         increment_nonce(&mut self.nonce);
@@ -630,7 +781,7 @@ impl TcpShadowsocksReader {
             bail!("invalid decrypted length block");
         }
         let payload_len = u16::from_be_bytes([len[0], len[1]]) as usize;
-        if payload_len > SHADOWSOCKS_MAX_PAYLOAD {
+        if payload_len > self.cipher.max_payload_len() {
             bail!("payload length exceeds limit: {payload_len}");
         }
 
@@ -750,7 +901,17 @@ impl UdpWsTransport {
             _writer_task: AbortOnDrop(writer_task),
             _keepalive_task: keepalive_task,
             cipher,
-            master_key: cipher.derive_master_key(password),
+            master_key: cipher
+                .derive_master_key(password)
+                .expect("validated cipher password"),
+            ss2022: cipher.is_ss2022().then(|| {
+                Mutex::new(Ss2022UdpState {
+                    client_session_id: rand::random::<u64>(),
+                    next_client_packet_id: 0,
+                    server_session_id: None,
+                    last_server_packet_id: None,
+                })
+            }),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
@@ -777,7 +938,20 @@ impl UdpWsTransport {
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
-        let packet = encrypt_udp_packet(self.cipher, &self.master_key, payload)?;
+        let packet = if let Some(state) = &self.ss2022 {
+            let mut state = state.lock().await;
+            let packet = encrypt_udp_packet_2022(
+                self.cipher,
+                &self.master_key,
+                state.client_session_id,
+                state.next_client_packet_id,
+                payload,
+            )?;
+            state.next_client_packet_id += 1;
+            packet
+        } else {
+            encrypt_udp_packet(self.cipher, &self.master_key, payload)?
+        };
         self.data_tx
             .send(Message::Binary(packet.into()))
             .await
@@ -795,6 +969,26 @@ impl UdpWsTransport {
                 .context("websocket read failed")?;
             match message {
                 Message::Binary(bytes) => {
+                    if let Some(state) = &self.ss2022 {
+                        let expected_client_session_id = state.lock().await.client_session_id;
+                        let (session_id, packet_id, payload) = decrypt_udp_packet_2022(
+                            self.cipher,
+                            &self.master_key,
+                            expected_client_session_id,
+                            &bytes,
+                        )?;
+                        let mut state = state.lock().await;
+                        if let Some(last_server_packet_id) = state.last_server_packet_id {
+                            if state.server_session_id == Some(session_id)
+                                && packet_id <= last_server_packet_id
+                            {
+                                bail!("duplicate or out-of-order ss2022 UDP packet");
+                            }
+                        }
+                        state.server_session_id = Some(session_id);
+                        state.last_server_packet_id = Some(packet_id);
+                        return Ok(payload);
+                    }
                     return decrypt_udp_packet(self.cipher, &self.master_key, &bytes);
                 }
                 Message::Close(_) => bail!("websocket closed"),
