@@ -85,6 +85,7 @@ tun2udp + tun2tcp"]
 ### SOCKS5
 
 - No-auth SOCKS5
+- Optional username/password auth (`RFC 1929`)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
 - SOCKS5 UDP fragmentation reassembly on inbound client traffic
@@ -155,7 +156,6 @@ tun2udp + tun2tcp"]
 
 The project is intentionally practical, but there are still boundaries:
 
-- SOCKS5 username/password auth is not implemented.
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - IPv4 fragments, IPv6 extension-header paths, and non-echo ICMP traffic on TUN are not supported.
@@ -240,6 +240,15 @@ Example:
 ```toml
 [socks5]
 listen = "[::]:1080"
+# Optional local SOCKS5 auth for clients.
+#
+# [[socks5.users]]
+# username = "alice"
+# password = "secret1"
+#
+# [[socks5.users]]
+# username = "bob"
+# password = "secret2"
 
 [metrics]
 listen = "[::1]:9090"
@@ -322,6 +331,9 @@ password = "Secret0"
 ### Key config behavior
 
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3`.
+- `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
+- `[socks5] username` + `password` is still accepted as a shorthand for a single user.
+- CLI/env equivalents `--socks5-username` / `SOCKS5_USERNAME` and `--socks5-password` / `SOCKS5_PASSWORD` also configure a single user.
 - `[probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering failover. The same value also sets the consecutive-success stability threshold for `auto_failback`.
 - `[load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
@@ -338,6 +350,8 @@ password = "Secret0"
 
 - `--config` / `PROXY_CONFIG`
 - `--listen` / `SOCKS5_LISTEN`
+- `--socks5-username` / `SOCKS5_USERNAME`
+- `--socks5-password` / `SOCKS5_PASSWORD`
 - `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
 - `--tcp-ws-mode` / `OUTLINE_TCP_WS_MODE`
 - `--udp-ws-url` / `OUTLINE_UDP_WS_URL`

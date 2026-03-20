@@ -1121,12 +1121,13 @@ impl Metrics {
     }
 }
 
-
 pub fn init() {
     let _ = METRICS
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
-    let _ = METRICS.allocator_info.with_label_values(&[ACTIVE_ALLOCATOR]);
+    let _ = METRICS
+        .allocator_info
+        .with_label_values(&[ACTIVE_ALLOCATOR]);
     let _ = METRICS.start_time_seconds.get();
     let initial_sample = sample_process_memory();
     update_process_memory(
@@ -1140,7 +1141,10 @@ pub fn init() {
         initial_sample.fd_snapshot,
     );
     for kind in ["socket", "pipe", "anon_inode", "regular_file", "other"] {
-        METRICS.process_fd_by_type.with_label_values(&[kind]).set(0.0);
+        METRICS
+            .process_fd_by_type
+            .with_label_values(&[kind])
+            .set(0.0);
     }
     for source in [
         "direct",
@@ -1226,10 +1230,16 @@ pub fn init() {
             .set(0);
     }
     for mode in ["active_active", "active_passive"] {
-        METRICS.selection_mode_info.with_label_values(&[mode]).set(0);
+        METRICS
+            .selection_mode_info
+            .with_label_values(&[mode])
+            .set(0);
     }
     for scope in ["per_flow", "per_uplink", "global"] {
-        METRICS.routing_scope_info.with_label_values(&[scope]).set(0);
+        METRICS
+            .routing_scope_info
+            .with_label_values(&[scope])
+            .set(0);
     }
     for result in [
         "started",
@@ -1420,11 +1430,7 @@ pub fn record_upstream_transport(
         .inc();
 }
 
-pub fn add_upstream_transports_active(
-    source: &'static str,
-    protocol: &'static str,
-    delta: i64,
-) {
+pub fn add_upstream_transports_active(source: &'static str, protocol: &'static str, delta: i64) {
     METRICS
         .upstream_transports_active
         .with_label_values(&[source, protocol])
@@ -1824,16 +1830,10 @@ mod tests {
         assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
         assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
         assert!(rendered.contains("outline_ws_rust_process_heap_free_bytes 256"));
-        assert!(rendered.contains(
-            "outline_ws_rust_process_heap_mode_info{mode=\"jemalloc\"} 1"
-        ));
+        assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"jemalloc\"} 1"));
         assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
-        assert!(rendered.contains(
-            "outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"
-        ));
+        assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
+        assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
         assert!(rendered.contains(
             "outline_ws_rust_process_malloc_trim_total{reason=\"periodic\",result=\"success\"} 1"
         ));
@@ -1852,9 +1852,10 @@ mod tests {
         assert!(rendered.contains(
             "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"released\"} 1024"
         ));
-        assert!(rendered.contains(
-            &format!("outline_ws_rust_allocator_info{{allocator=\"{}\"}} 1", ACTIVE_ALLOCATOR)
-        ));
+        assert!(rendered.contains(&format!(
+            "outline_ws_rust_allocator_info{{allocator=\"{}\"}} 1",
+            ACTIVE_ALLOCATOR
+        )));
     }
 
     #[test]
@@ -1932,15 +1933,11 @@ mod tests {
         })
         .expect("render metrics");
 
-        assert!(rendered.contains(
-            "outline_ws_rust_selection_mode_info{mode=\"active_passive\"} 1"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_routing_scope_info{scope=\"global\"} 1"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 1"
-        ));
+        assert!(
+            rendered.contains("outline_ws_rust_selection_mode_info{mode=\"active_passive\"} 1")
+        );
+        assert!(rendered.contains("outline_ws_rust_routing_scope_info{scope=\"global\"} 1"));
+        assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 1"));
     }
 
     #[test]
@@ -1971,12 +1968,8 @@ mod tests {
         })
         .expect("render second metrics");
 
-        assert!(rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_global_active_uplink_info{uplink=\"nuxt\"} 1"
-        ));
+        assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 0"));
+        assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"nuxt\"} 1"));
     }
 
     #[test]
@@ -1990,18 +1983,20 @@ mod tests {
         assert!(rendered.contains(
             "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"} 0"
         ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0"
-        ));
+        assert!(
+            rendered.contains(
+                "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"} 0"
+            )
+        );
+        assert!(
+            rendered.contains("outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0")
+        );
+        assert!(
+            rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"} 0")
+        );
+        assert!(
+            rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0")
+        );
     }
 
     #[test]
@@ -2010,9 +2005,7 @@ mod tests {
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
         assert!(rendered.contains("outline_ws_rust_requests_total{command=\"connect\"} 0"));
-        assert!(rendered.contains(
-            "outline_ws_rust_requests_total{command=\"udp_associate\"} 0"
-        ));
+        assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
     }

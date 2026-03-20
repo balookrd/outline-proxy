@@ -34,7 +34,7 @@ pub async fn handle_client(
     config: AppConfig,
     uplinks: UplinkManager,
 ) -> Result<()> {
-    let request = negotiate(&mut client).await?;
+    let request = negotiate(&mut client, config.socks5_auth.as_ref()).await?;
     debug!(%peer, ?request, "accepted SOCKS5 request");
     metrics::record_request(match &request {
         SocksRequest::Connect(_) => "connect",
@@ -329,12 +329,8 @@ async fn handle_udp_associate(
         let uplinks_downlink = uplinks.clone();
         let downlink = async move {
             loop {
-                reconcile_global_udp_transport(
-                    &uplinks_downlink,
-                    &active_transport_downlink,
-                    None,
-                )
-                .await?;
+                reconcile_global_udp_transport(&uplinks_downlink, &active_transport_downlink, None)
+                    .await?;
                 let active = {
                     let active = active_transport_downlink.lock().await;
                     (
@@ -362,9 +358,10 @@ async fn handle_udp_associate(
                             payload.len(),
                         );
                         let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
-                        let client_addr = client_udp_addr_downlink.lock().await.ok_or_else(|| {
-                            anyhow!("received UDP response before client sent any packet")
-                        })?;
+                        let client_addr =
+                            client_udp_addr_downlink.lock().await.ok_or_else(|| {
+                                anyhow!("received UDP response before client sent any packet")
+                            })?;
                         let packet = build_udp_packet(&target, &payload[consumed..])?;
                         socket_downlink
                             .send_to(&packet, client_addr)

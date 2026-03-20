@@ -918,11 +918,7 @@ impl TunTcpEngine {
                             engine
                                 .inner
                                 .uplinks
-                                .report_runtime_failure(
-                                    uplink_index,
-                                    TransportKind::Tcp,
-                                    &error,
-                                )
+                                .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
                                 .await;
                             let (cooldown_ms, penalty_ms) = engine
                                 .inner
@@ -2029,7 +2025,11 @@ fn buffered_client_bytes(state: &TcpFlowState) -> usize {
         .iter()
         .map(|segment| segment.payload.len())
         .sum::<usize>()
-        + state.pending_client_data.iter().map(Vec::len).sum::<usize>()
+        + state
+            .pending_client_data
+            .iter()
+            .map(Vec::len)
+            .sum::<usize>()
 }
 
 fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
@@ -2654,7 +2654,8 @@ fn sync_flow_metrics(state: &mut TcpFlowState) {
     let inflight_segments = state.unacked_server_segments.len();
     let inflight_bytes = bytes_in_flight(&state.unacked_server_segments);
     let pending_server_bytes = pending_server_bytes(state);
-    let buffered_client_segments = state.pending_client_segments.len() + state.pending_client_data.len();
+    let buffered_client_segments =
+        state.pending_client_segments.len() + state.pending_client_data.len();
     let zero_window = state.client_window == 0 && pending_server_bytes > 0;
     let congestion_window = state.congestion_window;
     let slow_start_threshold = state.slow_start_threshold;
@@ -4086,8 +4087,7 @@ mod tests {
         let master_key = cipher.derive_master_key("Secret0");
         let lifetime = super::UpstreamTransportGuard::new("test", "tcp");
         let (mut writer, ctrl_tx) =
-            TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime))
-                .await?;
+            TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
         let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx);
 
         target_tx.send(reader.read_chunk().await?).unwrap();

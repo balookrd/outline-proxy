@@ -1,8 +1,8 @@
 pub mod config;
 pub mod crypto;
+pub mod memory;
 pub mod metrics;
 pub mod metrics_http;
-pub mod memory;
 pub mod proxy;
 pub mod socks5;
 pub mod transport;
