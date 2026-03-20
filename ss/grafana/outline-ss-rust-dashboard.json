@@ -1322,12 +1322,108 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#E24D42",
+            "mode": "fixed"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "id": 35,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (short_instance, user, protocol, direction) (label_replace(rate(outline_ss_udp_oversized_datagrams_dropped_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{user}} udp oversized {{direction}} {{protocol}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "UDP Oversized Datagram Drop Rate",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 46
       },
       "id": 30,
       "panels": [],
@@ -1401,7 +1497,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 47
       },
       "id": 13,
       "options": {
@@ -1497,7 +1593,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 47
       },
       "id": 19,
       "options": {
@@ -1609,7 +1705,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 47
+        "y": 55
       },
       "id": 33,
       "options": {
@@ -1712,7 +1808,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 47
+        "y": 55
       },
       "id": 34,
       "options": {
@@ -1808,7 +1904,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 63
       },
       "id": 14,
       "options": {
@@ -1874,7 +1970,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 69
       },
       "id": 18,
       "options": {
@@ -1930,7 +2026,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 65
+        "y": 73
       },
       "id": 31,
       "panels": [],
@@ -1973,7 +2069,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 66
+        "y": 74
       },
       "id": 24,
       "options": {
@@ -2042,7 +2138,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 66
+        "y": 74
       },
       "id": 25,
       "options": {
@@ -2107,7 +2203,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 66
+        "y": 74
       },
       "id": 26,
       "options": {
@@ -2187,7 +2283,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 66
+        "y": 74
       },
       "id": 27,
       "options": {
@@ -2299,7 +2395,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 70
+        "y": 78
       },
       "id": 20,
       "options": {
@@ -2414,7 +2510,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 70
+        "y": 78
       },
       "id": 21,
       "options": {
@@ -2544,7 +2640,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 78
+        "y": 86
       },
       "id": 22,
       "options": {
@@ -2681,7 +2777,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 78
+        "y": 86
       },
       "id": 23,
       "options": {
@@ -2810,5 +2906,5 @@
   "timezone": "",
   "title": "outline-ss-rust",
   "uid": "outline-ss-rust",
-  "version": 15
+  "version": 16
 }

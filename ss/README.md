@@ -163,6 +163,7 @@ Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_lis
 | `h3_cert_path` / `h3_key_path` | Required to enable HTTP/3 |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
+| `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
 | `memory_trim_interval_secs` | On Linux, periodically refreshes jemalloc stats and enables jemalloc background purging if needed; default is `60`, `0` disables it |
 | `udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram; default is `300` (5 minutes) |
@@ -204,6 +205,7 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 - `OUTLINE_SS_H3_KEY_PATH`
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
+- `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
 - `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`

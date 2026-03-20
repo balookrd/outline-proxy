@@ -78,6 +78,7 @@ const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
+const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 
 #[derive(Clone)]
 struct AppState {
@@ -85,6 +86,7 @@ struct AppState {
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 }
 
 #[derive(Clone)]
@@ -101,7 +103,13 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
-    let app = build_app(tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table));
+    let app = build_app(
+        tcp_routes.clone(),
+        udp_routes.clone(),
+        metrics.clone(),
+        Arc::clone(&nat_table),
+        config.prefer_ipv4_upstream,
+    );
     let listener = if let Some(listen) = config.listen {
         Some(
             TcpListener::bind(listen)
@@ -178,6 +186,7 @@ pub async fn run(config: Config) -> Result<()> {
         method = ?config.method,
         users = users.len(),
         udp_nat_idle_timeout_secs = config.udp_nat_idle_timeout_secs,
+        prefer_ipv4_upstream = config.prefer_ipv4_upstream,
         "websocket shadowsocks server listening",
     );
 
@@ -191,8 +200,17 @@ pub async fn run(config: Config) -> Result<()> {
         let udp_routes = udp_routes.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
+        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         tasks.spawn(async move {
-            serve_h3_server(h3_server, tcp_routes, udp_routes, metrics, nat_table).await
+            serve_h3_server(
+                h3_server,
+                tcp_routes,
+                udp_routes,
+                metrics,
+                nat_table,
+                prefer_ipv4_upstream,
+            )
+            .await
         });
     }
     if let Some(metrics_listener) = metrics_listener {
@@ -202,13 +220,19 @@ pub async fn run(config: Config) -> Result<()> {
     if let Some(listener) = ss_tcp_listener {
         let users = users.clone();
         let metrics = metrics.clone();
-        tasks.spawn(async move { serve_ss_tcp_listener(listener, users, metrics).await });
+        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        tasks.spawn(async move {
+            serve_ss_tcp_listener(listener, users, metrics, prefer_ipv4_upstream).await
+        });
     }
     if let Some(socket) = ss_udp_socket {
         let users = users.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
-        tasks.spawn(async move { serve_ss_udp_socket(socket, users, metrics, nat_table).await });
+        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        tasks.spawn(async move {
+            serve_ss_udp_socket(socket, users, metrics, nat_table, prefer_ipv4_upstream).await
+        });
     }
 
     while let Some(result) = tasks.join_next().await {
@@ -243,6 +267,7 @@ async fn tcp_websocket_upgrade(
             protocol,
             path.clone(),
             route.candidate_users,
+            state.prefer_ipv4_upstream,
         )
         .await
         {
@@ -300,6 +325,7 @@ async fn udp_websocket_upgrade(
             path.clone(),
             route.candidate_users,
             nat_table,
+            state.prefer_ipv4_upstream,
         )
         .await
         {
@@ -335,6 +361,7 @@ async fn handle_tcp_connection(
     protocol: Protocol,
     path: String,
     candidate_users: Arc<[String]>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
@@ -435,7 +462,13 @@ async fn handle_tcp_connection(
                     );
                     let target_display = target.display_host_port();
                     let connect_started = std::time::Instant::now();
-                    let stream = match connect_tcp_target(&target, user.fwmark()).await {
+                    let stream = match connect_tcp_target(
+                        &target,
+                        user.fwmark(),
+                        prefer_ipv4_upstream,
+                    )
+                    .await
+                    {
                         Ok(stream) => {
                             metrics.record_tcp_connect(
                                 user.id(),
@@ -566,6 +599,7 @@ async fn handle_udp_connection(
     path: String,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
@@ -650,6 +684,7 @@ async fn handle_udp_connection(
                             path,
                             candidate_users,
                             udp_session_recorded,
+                            prefer_ipv4_upstream,
                         )
                             .await
                     {
@@ -686,6 +721,7 @@ async fn handle_tcp_h3_connection(
     metrics: Arc<Metrics>,
     path: String,
     candidate_users: Arc<[String]>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
@@ -786,7 +822,13 @@ async fn handle_tcp_h3_connection(
                     );
                     let target_display = target.display_host_port();
                     let connect_started = std::time::Instant::now();
-                    let stream = match connect_tcp_target(&target, user.fwmark()).await {
+                    let stream = match connect_tcp_target(
+                        &target,
+                        user.fwmark(),
+                        prefer_ipv4_upstream,
+                    )
+                    .await
+                    {
                         Ok(stream) => {
                             metrics.record_tcp_connect(
                                 user.id(),
@@ -900,6 +942,7 @@ async fn handle_udp_h3_connection(
     path: String,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
     let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
@@ -983,6 +1026,7 @@ async fn handle_udp_h3_connection(
                         path,
                         candidate_users,
                         udp_session_recorded,
+                        prefer_ipv4_upstream,
                     )
                     .await
                     {
@@ -1082,6 +1126,7 @@ async fn handle_udp_datagram(
     path: String,
     candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
     let packet = match decrypt_udp_packet(users.as_ref(), &data) {
@@ -1118,7 +1163,7 @@ async fn handle_udp_datagram(
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target).await?;
+    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -1144,6 +1189,28 @@ async fn handle_udp_datagram(
         .register_session(UdpResponseSender::ws(outbound_tx, protocol))
         .await;
 
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        metrics.record_udp_oversized_datagram_dropped(
+            packet.user.id(),
+            protocol,
+            "client_to_target",
+        );
+        warn!(
+            user = packet.user.id(),
+            path = %path,
+            target = %resolved,
+            plaintext_bytes = payload.len(),
+            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+            "dropping oversized udp datagram before upstream send"
+        );
+        metrics.record_udp_request(
+            packet.user.id(),
+            protocol,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
     metrics.record_udp_payload_bytes(
         packet.user.id(),
         protocol,
@@ -1180,6 +1247,7 @@ async fn handle_udp_h3_datagram(
     path: String,
     candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
     let packet = match decrypt_udp_packet(users.as_ref(), &data) {
@@ -1216,7 +1284,7 @@ async fn handle_udp_h3_datagram(
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target).await?;
+    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -1241,6 +1309,28 @@ async fn handle_udp_h3_datagram(
         .register_session(UdpResponseSender::h3(outbound_tx))
         .await;
 
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        metrics.record_udp_oversized_datagram_dropped(
+            packet.user.id(),
+            Protocol::Http3,
+            "client_to_target",
+        );
+        warn!(
+            user = packet.user.id(),
+            path = %path,
+            target = %resolved,
+            plaintext_bytes = payload.len(),
+            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+            "dropping oversized udp datagram before upstream send"
+        );
+        metrics.record_udp_request(
+            packet.user.id(),
+            Protocol::Http3,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
     metrics.record_udp_payload_bytes(
         packet.user.id(),
         Protocol::Http3,
@@ -1269,20 +1359,35 @@ async fn handle_udp_h3_datagram(
 }
 
 
-async fn resolve_target(target: &TargetAddr) -> Result<SocketAddr> {
-    resolve_target_addrs(target).await?.into_iter().next().ok_or_else(|| {
+async fn resolve_target(target: &TargetAddr, prefer_ipv4_upstream: bool) -> Result<SocketAddr> {
+    resolve_target_addrs(target, prefer_ipv4_upstream)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
         anyhow!("dns lookup returned no records for {}", target.display_host_port())
     })
 }
 
-async fn resolve_target_addrs(target: &TargetAddr) -> Result<Vec<SocketAddr>> {
+async fn resolve_target_addrs(target: &TargetAddr, prefer_ipv4_upstream: bool) -> Result<Vec<SocketAddr>> {
     match target {
-        TargetAddr::Socket(addr) => Ok(vec![*addr]),
+        TargetAddr::Socket(addr) => {
+            if prefer_ipv4_upstream && addr.is_ipv6() {
+                return Err(anyhow!(
+                    "ipv6 upstream disabled by prefer_ipv4_upstream for {}",
+                    addr
+                ));
+            }
+            Ok(vec![*addr])
+        }
         TargetAddr::Domain(host, port) => {
-            let addrs = lookup_host((host.as_str(), *port))
+            let mut addrs = lookup_host((host.as_str(), *port))
                 .await
                 .with_context(|| format!("dns lookup failed for {host}:{port}"))?
                 .collect::<Vec<_>>();
+            if prefer_ipv4_upstream {
+                addrs.retain(SocketAddr::is_ipv4);
+            }
             if addrs.is_empty() {
                 return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
             }
@@ -1291,15 +1396,26 @@ async fn resolve_target_addrs(target: &TargetAddr) -> Result<Vec<SocketAddr>> {
     }
 }
 
-async fn connect_tcp_target(target: &TargetAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    let resolved = order_tcp_connect_addrs(resolve_target_addrs(target).await?);
+async fn connect_tcp_target(
+    target: &TargetAddr,
+    fwmark: Option<u32>,
+    prefer_ipv4_upstream: bool,
+) -> Result<TcpStream> {
+    let resolved = order_tcp_connect_addrs(
+        resolve_target_addrs(target, prefer_ipv4_upstream).await?,
+        prefer_ipv4_upstream,
+    );
     connect_tcp_addrs(&resolved, fwmark)
         .await
         .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
 }
 
-fn order_tcp_connect_addrs(addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
-    let prefer_ipv6 = addrs.first().is_some_and(SocketAddr::is_ipv6);
+fn order_tcp_connect_addrs(addrs: Vec<SocketAddr>, prefer_ipv4_upstream: bool) -> Vec<SocketAddr> {
+    let prefer_ipv6 = if prefer_ipv4_upstream {
+        false
+    } else {
+        addrs.first().is_some_and(SocketAddr::is_ipv6)
+    };
     let mut seen = HashSet::with_capacity(addrs.len());
     let mut ipv4 = VecDeque::new();
     let mut ipv6 = VecDeque::new();
@@ -1372,7 +1488,11 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
         .with_context(|| format!("failed to apply fwmark {fwmark:?} to tcp socket"))?;
 
     match timeout(Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS), socket.connect(resolved)).await {
-        Ok(Ok(stream)) => Ok(stream),
+        Ok(Ok(stream)) => {
+            configure_tcp_stream(&stream)
+                .with_context(|| format!("failed to configure tcp stream for {resolved}"))?;
+            Ok(stream)
+        }
         Ok(Err(error)) => Err(error).with_context(|| format!("tcp connect failed for {resolved}")),
         Err(_) => Err(anyhow!(
             "tcp connect timed out after {}s for {resolved}",
@@ -1381,17 +1501,28 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
     }
 }
 
+fn configure_tcp_stream(stream: &TcpStream) -> Result<()> {
+    stream
+        .set_nodelay(true)
+        .context("failed to enable TCP_NODELAY")
+}
+
 async fn serve_ss_tcp_listener(
     listener: TcpListener,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     loop {
         let (stream, peer) = listener.accept().await.context("failed to accept shadowsocks tcp connection")?;
+        configure_tcp_stream(&stream)
+            .with_context(|| format!("failed to configure accepted shadowsocks tcp connection from {peer}"))?;
         let users = users.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
-            if let Err(error) = handle_ss_tcp_connection(stream, users, metrics).await {
+            if let Err(error) =
+                handle_ss_tcp_connection(stream, users, metrics, prefer_ipv4_upstream).await
+            {
                 if is_benign_ws_disconnect(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
                 } else {
@@ -1406,7 +1537,9 @@ async fn handle_ss_tcp_connection(
     socket: TcpStream,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
+    let peer_addr = socket.peer_addr().ok();
     let (mut client_reader, client_writer) = socket.into_split();
     let mut client_writer = Some(client_writer);
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
@@ -1416,6 +1549,7 @@ async fn handle_ss_tcp_connection(
     let mut authenticated_user = None;
     let mut upstream_guard = None;
     let mut read_buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    let client_sent_eof;
 
     loop {
         let read = client_reader
@@ -1423,14 +1557,32 @@ async fn handle_ss_tcp_connection(
             .await
             .context("failed to read from shadowsocks client")?;
         if read == 0 {
+            debug!(peer_addr = ?peer_addr, "socket tcp client closed connection");
+            client_sent_eof = true;
             break;
         }
 
+        debug!(
+            peer_addr = ?peer_addr,
+            encrypted_bytes = read,
+            buffered_before = decryptor.buffered_data().len(),
+            "socket tcp received encrypted bytes"
+        );
+
         decryptor.push(&read_buffer[..read]);
         match decryptor.pull_plaintext(&mut plaintext_buffer) {
-            Ok(()) => {}
+            Ok(()) => {
+                debug!(
+                    peer_addr = ?peer_addr,
+                    plaintext_buffer_len = plaintext_buffer.len(),
+                    buffered_after = decryptor.buffered_data().len(),
+                    authenticated_user = decryptor.user().map(|user| user.id()),
+                    "socket tcp decrypted client bytes"
+                );
+            }
             Err(CryptoError::UnknownUser) => {
                 debug!(
+                    peer_addr = ?peer_addr,
                     buffered = decryptor.buffered_data().len(),
                     attempts = ?diagnose_stream_handshake(users.as_ref(), decryptor.buffered_data()),
                     "socket tcp authentication failed for all configured users"
@@ -1448,13 +1600,27 @@ async fn handle_ss_tcp_connection(
                 continue;
             };
             debug!(
+                peer_addr = ?peer_addr,
                 user = user.id(),
                 cipher = user.cipher().as_str(),
                 "socket tcp shadowsocks user authenticated"
             );
             let target_display = target.display_host_port();
+            debug!(
+                peer_addr = ?peer_addr,
+                user = user.id(),
+                target = %target_display,
+                initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
+                "socket tcp parsed target address"
+            );
             let connect_started = std::time::Instant::now();
-            let stream = match connect_tcp_target(&target, user.fwmark()).await {
+            let stream = match connect_tcp_target(
+                &target,
+                user.fwmark(),
+                prefer_ipv4_upstream,
+            )
+            .await
+            {
                 Ok(stream) => {
                     metrics.record_tcp_connect(
                         user.id(),
@@ -1475,6 +1641,7 @@ async fn handle_ss_tcp_connection(
                 }
             };
             info!(
+                peer_addr = ?peer_addr,
                 user = user.id(),
                 fwmark = ?user.fwmark(),
                 target = %target_display,
@@ -1516,6 +1683,12 @@ async fn handle_ss_tcp_connection(
                     "client_to_target",
                     plaintext_buffer.len(),
                 );
+                debug!(
+                    peer_addr = ?peer_addr,
+                    user = user.id(),
+                    plaintext_bytes = plaintext_buffer.len(),
+                    "socket tcp relaying plaintext to upstream"
+                );
             }
             writer
                 .write_all(&plaintext_buffer)
@@ -1530,7 +1703,12 @@ async fn handle_ss_tcp_connection(
     }
 
     if let Some(task) = upstream_to_client {
-        task.abort();
+        if client_sent_eof {
+            task.await
+                .context("socket tcp upstream relay task join failed after client eof")??;
+        } else {
+            task.abort();
+        }
     }
 
     if let Some(guard) = upstream_guard {
@@ -1558,6 +1736,12 @@ async fn relay_upstream_to_socket_client(
 
         metrics.record_tcp_payload_bytes(&user_id, Protocol::Socket, "target_to_client", read);
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
+        debug!(
+            user = user_id,
+            plaintext_bytes = read,
+            encrypted_bytes = ciphertext.len(),
+            "socket tcp relaying upstream bytes to client"
+        );
         client_writer
             .write_all(&ciphertext)
             .await
@@ -1573,6 +1757,7 @@ async fn serve_ss_udp_socket(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
     let mut buffer = vec![0_u8; 65_535];
@@ -1581,6 +1766,11 @@ async fn serve_ss_udp_socket(
             .recv_from(&mut buffer)
             .await
             .context("failed to receive shadowsocks udp packet")?;
+        debug!(
+            client_addr = %client_addr,
+            encrypted_bytes = read,
+            "socket udp received encrypted datagram"
+        );
         let permit = match task_limit.clone().try_acquire_owned() {
             Ok(p) => p,
             Err(_) => {
@@ -1595,8 +1785,16 @@ async fn serve_ss_udp_socket(
         let socket = Arc::clone(&socket);
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) =
-                handle_ss_udp_datagram(nat_table, users, data, client_addr, socket, metrics).await
+            if let Err(error) = handle_ss_udp_datagram(
+                nat_table,
+                users,
+                data,
+                client_addr,
+                socket,
+                metrics,
+                prefer_ipv4_upstream,
+            )
+            .await
             {
                 warn!(%client_addr, ?error, "socket udp datagram relay failed");
             }
@@ -1611,6 +1809,7 @@ async fn handle_ss_udp_datagram(
     client_addr: SocketAddr,
     outbound_socket: Arc<UdpSocket>,
     metrics: Arc<Metrics>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
     let packet = match decrypt_udp_packet(users.as_ref(), &data) {
@@ -1618,6 +1817,7 @@ async fn handle_ss_udp_datagram(
         Err(CryptoError::UnknownUser) => {
             debug!(
                 client_addr = %client_addr,
+                encrypted_bytes = data.len(),
                 attempts = ?diagnose_udp_packet(users.as_ref(), &data),
                 "socket udp authentication failed for all configured users"
             );
@@ -1635,10 +1835,19 @@ async fn handle_ss_udp_datagram(
         user = packet.user.id(),
         cipher = packet.user.cipher().as_str(),
         client_addr = %client_addr,
+        plaintext_bytes = payload.len(),
         "socket udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target).await?;
+    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
+    debug!(
+        user = packet.user.id(),
+        client_addr = %client_addr,
+        target = %target_display,
+        resolved = %resolved,
+        plaintext_bytes = payload.len(),
+        "socket udp resolved target"
+    );
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -1663,11 +1872,40 @@ async fn handle_ss_udp_datagram(
         .register_session(UdpResponseSender::datagram(outbound_socket, client_addr))
         .await;
 
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        metrics.record_udp_oversized_datagram_dropped(
+            packet.user.id(),
+            Protocol::Socket,
+            "client_to_target",
+        );
+        warn!(
+            user = packet.user.id(),
+            client_addr = %client_addr,
+            target = %resolved,
+            plaintext_bytes = payload.len(),
+            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+            "dropping oversized socket udp datagram before upstream send"
+        );
+        metrics.record_udp_request(
+            packet.user.id(),
+            Protocol::Socket,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
     metrics.record_udp_payload_bytes(
         packet.user.id(),
         Protocol::Socket,
         "client_to_target",
         payload.len(),
+    );
+    debug!(
+        user = packet.user.id(),
+        client_addr = %client_addr,
+        target = %resolved,
+        plaintext_bytes = payload.len(),
+        "socket udp relaying datagram to upstream"
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         metrics.record_udp_request(
@@ -1796,12 +2034,14 @@ fn build_app(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 ) -> Router {
     let state = AppState {
         tcp_routes: tcp_routes.clone(),
         udp_routes: udp_routes.clone(),
         metrics,
         nat_table,
+        prefer_ipv4_upstream,
     };
     let mut router = Router::new();
 
@@ -1953,6 +2193,7 @@ async fn serve_h3_server(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
@@ -1986,6 +2227,7 @@ async fn serve_h3_server(
                             metrics.clone(),
                             req.path.clone(),
                             route.candidate_users,
+                            prefer_ipv4_upstream,
                         )
                         .await
                         {
@@ -2019,6 +2261,7 @@ async fn serve_h3_server(
                             req.path.clone(),
                             route.candidate_users,
                             nat_table,
+                            prefer_ipv4_upstream,
                         )
                         .await
                         {
@@ -2212,13 +2455,17 @@ mod tests {
     };
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::{TcpListener, UdpSocket},
+        net::{TcpListener, TcpStream, UdpSocket},
     };
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
 
     use super::{
         build_app, build_transport_route_map, build_users, connect_tcp_addrs,
         connect_tcp_target, order_tcp_connect_addrs, serve_h3_server, serve_listener,
+        serve_ss_tcp_listener, serve_ss_udp_socket,
+    };
+    use crate::crypto::{
+        AeadStreamDecryptor, AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet,
     };
     use crate::nat::NatTable;
     use crate::config::{CipherKind, Config, UserEntry};
@@ -2243,7 +2490,7 @@ mod tests {
         });
 
         let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
-        let mut client = connect_tcp_target(&target, None).await?;
+        let mut client = connect_tcp_target(&target, None, false).await?;
         client.write_all(b"ping").await?;
 
         let mut reply = [0_u8; 4];
@@ -2262,7 +2509,7 @@ mod tests {
             SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
             SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
             SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
-        ]);
+        ], false);
 
         assert_eq!(
             ordered,
@@ -2346,6 +2593,7 @@ mod tests {
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
+            false,
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
@@ -2377,6 +2625,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await?;
+            let mut buf = [0_u8; 16];
+            stream.read_exact(&mut buf[..4]).await?;
+            stream.write_all(b"pong").await?;
+            Result::<_, anyhow::Error>::Ok(buf[..4].to_vec())
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config(listen_addr);
+        let users = build_users(&config)?;
+        let user = users[0].clone();
+        let metrics = Metrics::new(&config);
+        let server = tokio::spawn(async move {
+            serve_ss_tcp_listener(listener, users, metrics, false).await
+        });
+
+        let mut client = TcpStream::connect(listen_addr).await?;
+        let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+        request.extend_from_slice(b"ping");
+        let mut encryptor = AeadStreamEncryptor::new(&user, None)?;
+        let ciphertext = encryptor.encrypt_chunk(&request)?;
+        client.write_all(&ciphertext).await?;
+
+        let mut encrypted_reply = [0_u8; 256];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.read(&mut encrypted_reply),
+        )
+        .await??;
+        assert!(read > 0);
+
+        let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user].into_boxed_slice()));
+        let mut plaintext = Vec::new();
+        decryptor.push(&encrypted_reply[..read]);
+        decryptor.pull_plaintext(&mut plaintext)?;
+        assert_eq!(plaintext, b"pong");
+        assert_eq!(upstream_task.await??, b"ping");
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
         let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let (tls_config, cert_der) = test_h3_server_tls()?;
@@ -2395,7 +2692,7 @@ mod tests {
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let server = tokio::spawn(async move {
-            serve_h3_server(server, tcp_routes, udp_routes, metrics, nat_table).await
+            serve_h3_server(server, tcp_routes, udp_routes, metrics, nat_table, false).await
         });
 
         let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -2434,6 +2731,53 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let mut buf = [0_u8; 64];
+            let (read, peer) = upstream.recv_from(&mut buf).await?;
+            upstream.send_to(&buf[..read], peer).await?;
+            Result::<_, anyhow::Error>::Ok(buf[..read].to_vec())
+        });
+
+        let listener = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)));
+        let users = build_users(&config)?;
+        let user = users[0].clone();
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let server = tokio::spawn(async move {
+            serve_ss_udp_socket(listener, users, metrics, nat_table, false).await
+        });
+
+        let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+        plaintext.extend_from_slice(b"ping");
+        let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+        client.send_to(&ciphertext, listen_addr).await?;
+
+        let mut encrypted_reply = [0_u8; 256];
+        let (read, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut encrypted_reply),
+        )
+        .await??;
+
+        let packet = decrypt_udp_packet(std::slice::from_ref(&user), &encrypted_reply[..read])?;
+        let (target, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
+            .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
+        assert_eq!(target, TargetAddr::Socket(upstream_addr));
+        assert_eq!(&packet.payload[consumed..], b"ping");
+        assert_eq!(upstream_task.await??, b"ping");
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
     fn ipv6_unavailable(error: &std::io::Error) -> bool {
         matches!(
             error.kind(),
@@ -2452,6 +2796,7 @@ mod tests {
             h3_key_path: None,
             metrics_listen: None,
             metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,

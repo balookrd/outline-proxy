@@ -21,6 +21,7 @@ pub struct Config {
     pub h3_key_path: Option<PathBuf>,
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
+    pub prefer_ipv4_upstream: bool,
     pub client_active_ttl_secs: u64,
     pub memory_trim_interval_secs: u64,
     pub udp_nat_idle_timeout_secs: u64,
@@ -63,6 +64,10 @@ impl Config {
                 .metrics_path
                 .or(file.metrics_path)
                 .unwrap_or_else(|| "/metrics".to_owned()),
+            prefer_ipv4_upstream: args
+                .prefer_ipv4_upstream
+                .or(file.prefer_ipv4_upstream)
+                .unwrap_or(false),
             client_active_ttl_secs: args
                 .client_active_ttl_secs
                 .or(file.client_active_ttl_secs)
@@ -264,6 +269,16 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_METRICS_PATH")]
     metrics_path: Option<String>,
 
+    #[arg(
+        long,
+        env = "OUTLINE_SS_PREFER_IPV4_UPSTREAM",
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    prefer_ipv4_upstream: Option<bool>,
+
     #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
     client_active_ttl_secs: Option<u64>,
 
@@ -334,6 +349,7 @@ struct FileConfig {
     h3_key_path: Option<PathBuf>,
     metrics_listen: Option<SocketAddr>,
     metrics_path: Option<String>,
+    prefer_ipv4_upstream: Option<bool>,
     client_active_ttl_secs: Option<u64>,
     memory_trim_interval_secs: Option<u64>,
     udp_nat_idle_timeout_secs: Option<u64>,
@@ -557,6 +573,7 @@ udp_ws_path = "/alice-legacy-udp"
             h3_key_path: None,
             metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
             metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
@@ -592,6 +609,7 @@ udp_ws_path = "/alice-legacy-udp"
             h3_key_path: Some("key.pem".into()),
             metrics_listen: None,
             metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,

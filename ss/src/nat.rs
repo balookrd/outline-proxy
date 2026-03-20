@@ -43,6 +43,7 @@ use crate::{
 };
 
 const UDP_NAT_RECV_BUF_SIZE: usize = 65_535;
+const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 
 // ── NAT key ──────────────────────────────────────────────────────────────────
 
@@ -307,6 +308,26 @@ async fn nat_reader_task(
                 continue;
             }
         };
+
+        let protocol = {
+            let guard = session_tx.lock().await;
+            guard.as_ref().map(UdpResponseSender::protocol)
+        };
+        if matches!(protocol, Some(Protocol::Socket)) && ciphertext.len() > MAX_UDP_PAYLOAD_SIZE {
+            metrics.record_udp_oversized_datagram_dropped(
+                user.id(),
+                Protocol::Socket,
+                "target_to_client",
+            );
+            warn!(
+                user = user.id(),
+                %source,
+                encrypted_bytes = ciphertext.len(),
+                max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+                "dropping oversized socket udp response datagram"
+            );
+            continue;
+        }
 
         // Deliver to the currently registered client session.
         let guard = session_tx.lock().await;

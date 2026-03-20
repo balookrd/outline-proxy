@@ -455,7 +455,7 @@ impl AeadStreamEncryptor {
                 nonce_counter,
                 salt,
                 sent_salt,
-            } => encrypt_legacy_chunk(key, nonce_counter, salt, sent_salt, plaintext),
+            } => encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext),
             StreamEncryptorMode::Ss2022 {
                 key,
                 nonce_counter,
@@ -1017,6 +1017,33 @@ fn pull_ss2022_payload(
     Ok(true)
 }
 
+fn encrypt_legacy_chunks(
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    salt: &[u8],
+    sent_salt: &mut bool,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let chunk_count = plaintext.len().div_ceil(LEGACY_MAX_CHUNK_SIZE).max(1);
+    let mut output = Vec::with_capacity(
+        (!*sent_salt as usize) * salt.len()
+            + plaintext.len()
+            + chunk_count * (2 + TAG_LEN + TAG_LEN),
+    );
+
+    for chunk in plaintext.chunks(LEGACY_MAX_CHUNK_SIZE) {
+        output.extend_from_slice(&encrypt_legacy_chunk(
+            key,
+            nonce_counter,
+            salt,
+            sent_salt,
+            chunk,
+        )?);
+    }
+
+    Ok(output)
+}
+
 fn encrypt_legacy_chunk(
     key: &LessSafeKey,
     nonce_counter: &mut u64,
@@ -1034,7 +1061,6 @@ fn encrypt_legacy_chunk(
         output.extend_from_slice(salt);
         *sent_salt = true;
     }
-
     let length = u16::try_from(plaintext.len())
         .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
         .to_be_bytes();
@@ -1441,6 +1467,21 @@ mod tests {
 
         assert_eq!(decryptor.user().map(UserKey::id), Some("alice"));
         assert_eq!(plaintext, b"aes128");
+    }
+
+    #[test]
+    fn legacy_stream_encryptor_splits_large_responses() {
+        let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
+        let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
+        let plaintext = vec![0x5a; super::LEGACY_MAX_CHUNK_SIZE + 10_000];
+        let ciphertext = encryptor.encrypt_chunk(&plaintext).unwrap();
+
+        let mut decryptor = AeadStreamDecryptor::new(users);
+        decryptor.push(&ciphertext);
+        let mut decrypted = Vec::new();
+        decryptor.pull_plaintext(&mut decrypted).unwrap();
+
+        assert_eq!(decrypted, plaintext);
     }
 
     #[test]

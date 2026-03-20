@@ -275,6 +275,7 @@ mod tests {
             h3_key_path: None,
             metrics_listen: None,
             metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
