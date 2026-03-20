@@ -74,7 +74,7 @@ pub struct Args {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
-    pub listen: SocketAddr,
+    pub listen: Option<SocketAddr>,
     pub socks5_auth: Option<Socks5AuthConfig>,
     pub uplinks: Vec<UplinkConfig>,
     pub probe: ProbeConfig,
@@ -385,10 +385,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
 
-    let listen = args
-        .listen
-        .or_else(|| socks5.and_then(|s| s.listen))
-        .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 1080)));
+    let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
     let uplinks = load_uplinks(outline.as_ref(), args)?;
@@ -400,6 +397,12 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .map(|listen| MetricsConfig { listen });
     let memory_trim_interval = load_memory_trim_interval(file.as_ref(), args)?;
     let tun = load_tun_config(tun_section, args)?;
+
+    if listen.is_none() && tun.is_none() {
+        bail!(
+            "no ingress configured: set --listen / [socks5].listen and/or configure [tun]"
+        );
+    }
 
     Ok(AppConfig {
         listen,
@@ -1248,6 +1251,9 @@ mod tests {
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
             memory_trim_interval_secs = 45
+
+            [socks5]
+            listen = "127.0.0.1:1080"
             "#,
         )
         .unwrap();
@@ -1268,6 +1274,9 @@ mod tests {
             tcp_ws_url = "wss://example.com/secret/tcp"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
             "#,
         )
         .unwrap();
@@ -1289,6 +1298,9 @@ mod tests {
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
             memory_trim_interval_secs = 0
+
+            [socks5]
+            listen = "127.0.0.1:1080"
             "#,
         )
         .unwrap();
@@ -1442,7 +1454,13 @@ mod tests {
         )
         .unwrap();
 
-        let args = super::Args::parse_from(["test", "--metrics-listen", "[::1]:9090"]);
+        let args = super::Args::parse_from([
+            "test",
+            "--metrics-listen",
+            "[::1]:9090",
+            "--listen",
+            "127.0.0.1:1080",
+        ]);
         let config = load_config(&path, &args).await.unwrap();
         assert_eq!(
             config.metrics.as_ref().unwrap().listen,
@@ -1491,6 +1509,9 @@ mod tests {
             udp_addr = "ss.example.com:8388"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
             "#,
         )
         .unwrap();
@@ -1504,6 +1525,62 @@ mod tests {
         assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
         assert!(uplink.tcp_ws_url.is_none());
         assert!(uplink.udp_ws_url.is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_rejects_missing_all_ingress() {
+        let path = std::env::temp_dir().join("outline-ws-rust-no-ingress.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let err = super::load_config(&path, &args).await.unwrap_err();
+        assert!(format!("{err:#}").contains("no ingress configured"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_allows_tun_without_socks5_listener() {
+        let path = std::env::temp_dir().join("outline-ws-rust-tun-only.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+
+            [tun]
+            path = "/dev/tun0"
+            mtu = 1500
+            max_flows = 512
+            idle_timeout_secs = 60
+
+            [tun.tcp]
+            connect_timeout_secs = 7
+            handshake_timeout_secs = 9
+            half_close_timeout_secs = 30
+            max_pending_server_bytes = 262144
+            max_buffered_client_segments = 2048
+            max_buffered_client_bytes = 65536
+            max_retransmits = 6
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let config = super::load_config(&path, &args).await.unwrap();
+        assert!(config.listen.is_none());
+        assert!(config.tun.is_some());
 
         let _ = std::fs::remove_file(path);
     }

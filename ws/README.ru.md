@@ -243,6 +243,7 @@ cargo run --release -- \
 
 ```toml
 [socks5]
+# Опционально. Если секции или listen нет, SOCKS5 listener не поднимается.
 listen = "[::]:1080"
 # Опциональная локальная SOCKS5-аутентификация для клиентов.
 #
@@ -345,6 +346,7 @@ password = "Secret0"
 ### Ключевые параметры конфигурации
 
 - `transport` принимает `websocket` (по умолчанию) или `shadowsocks`.
+- Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3` и используются только с `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.

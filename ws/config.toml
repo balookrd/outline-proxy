@@ -1,4 +1,5 @@
 [socks5]
+# Optional. If omitted, the SOCKS5 listener is disabled.
 listen = "[::]:1080"
 # Optional local SOCKS5 auth for clients.
 #
