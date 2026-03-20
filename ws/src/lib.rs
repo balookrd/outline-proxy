@@ -57,12 +57,18 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
             .context("failed to start TUN loop")?;
     }
 
-    let listener = TcpListener::bind(config.listen)
-        .await
-        .with_context(|| format!("failed to bind {}", config.listen))?;
+    let listener = if let Some(listen) = config.listen {
+        Some(
+            TcpListener::bind(listen)
+                .await
+                .with_context(|| format!("failed to bind {}", listen))?,
+        )
+    } else {
+        None
+    };
 
     info!(
-        listen = %config.listen,
+        socks5_listen = ?config.listen,
         uplinks = uplinks.uplinks().len(),
         tun_enabled = config.tun.is_some(),
         "proxy started"
@@ -71,6 +77,11 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     if let Some(metrics) = config.metrics.clone() {
         spawn_metrics_server(metrics, uplinks.clone());
     }
+
+    let Some(listener) = listener else {
+        std::future::pending::<()>().await;
+        unreachable!("pending future never resolves");
+    };
 
     loop {
         let (stream, peer) = listener.accept().await.context("accept failed")?;

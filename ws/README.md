@@ -243,6 +243,7 @@ Example:
 
 ```toml
 [socks5]
+# Optional. If omitted, the SOCKS5 listener is disabled.
 listen = "[::]:1080"
 # Optional local SOCKS5 auth for clients.
 #
@@ -345,6 +346,7 @@ password = "Secret0"
 ### Key config behavior
 
 - `transport` accepts `websocket` (default) or `shadowsocks`.
+- At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3` and are only used with `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
