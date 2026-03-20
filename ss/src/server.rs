@@ -102,9 +102,15 @@ pub async fn run(config: Config) -> Result<()> {
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
     let app = build_app(tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table));
-    let listener = TcpListener::bind(config.listen)
-        .await
-        .with_context(|| format!("failed to bind {}", config.listen))?;
+    let listener = if let Some(listen) = config.listen {
+        Some(
+            TcpListener::bind(listen)
+                .await
+                .with_context(|| format!("failed to bind {}", listen))?,
+        )
+    } else {
+        None
+    };
     let ss_tcp_listener = if let Some(ss_listen) = config.ss_listen {
         Some(
             TcpListener::bind(ss_listen)
@@ -158,7 +164,7 @@ pub async fn run(config: Config) -> Result<()> {
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let user_routes = describe_user_routes(users.as_ref());
     info!(
-        listen = %config.listen,
+        listen = ?config.listen,
         ss_listen = ?config.ss_listen,
         tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
@@ -176,7 +182,7 @@ pub async fn run(config: Config) -> Result<()> {
     );
 
     let mut tasks = JoinSet::new();
-    {
+    if let Some(listener) = listener {
         let config = Arc::clone(&config);
         tasks.spawn(async move { serve_tcp_listener(listener, app, config).await });
     }
@@ -2437,7 +2443,7 @@ mod tests {
 
     fn sample_config(listen: SocketAddr) -> Config {
         Config {
-            listen,
+            listen: Some(listen),
             ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,

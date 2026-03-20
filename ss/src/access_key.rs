@@ -25,6 +25,9 @@ pub struct WrittenAccessKeyArtifact {
 }
 
 pub fn build_access_key_artifacts(config: &Config) -> Result<Vec<AccessKeyArtifact>> {
+    if config.listen.is_none() {
+        bail!("Outline access keys require the websocket listen listener to be configured");
+    }
     let users = config.user_entries()?;
     let public_host = config
         .public_host
@@ -263,7 +266,7 @@ mod tests {
 
     fn sample_config() -> Config {
         Config {
-            listen: SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000),
+            listen: Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 3000)),
             ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,

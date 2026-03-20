@@ -1524,7 +1524,7 @@ mod tests {
     #[test]
     fn renders_prometheus_metrics() {
         let config = Config {
-            listen: "127.0.0.1:3000".parse().unwrap(),
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
             ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,

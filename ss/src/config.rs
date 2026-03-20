@@ -12,7 +12,7 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    pub listen: SocketAddr,
+    pub listen: Option<SocketAddr>,
     pub ss_listen: Option<SocketAddr>,
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
@@ -51,8 +51,7 @@ impl Config {
         let config = Self {
             listen: args
                 .listen
-                .or(file.listen)
-                .unwrap_or_else(default_listen_addr),
+                .or(file.listen),
             ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
             tls_key_path: args.tls_key_path.or(file.tls_key_path),
@@ -146,12 +145,19 @@ impl Config {
         if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
             bail!("public_scheme must be either \"ws\" or \"wss\"");
         }
+        if !self.data_plane_listener_enabled() {
+            bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
+        }
         match (&self.tls_cert_path, &self.tls_key_path) {
             (Some(_), Some(_)) | (None, None) => {}
             _ => bail!("tls_cert_path and tls_key_path must be configured together"),
         }
         match (&self.h3_cert_path, &self.h3_key_path) {
-            (Some(_), Some(_)) => {}
+            (Some(_), Some(_)) => {
+                if self.h3_listen.is_none() {
+                    bail!("h3_listen must be configured explicitly when HTTP/3 is enabled");
+                }
+            }
             (None, None) => {
                 if self.h3_listen.is_some() {
                     bail!("h3_listen requires both h3_cert_path and h3_key_path");
@@ -162,7 +168,7 @@ impl Config {
         if !self.metrics_path.starts_with('/') {
             bail!("metrics_path must start with '/'");
         }
-        if self.ss_listen == Some(self.listen) {
+        if self.listen.is_some() && self.listen == self.ss_listen {
             bail!("ss_listen must differ from listen");
         }
         if self.ss_listen.is_some() && self.ss_listen == self.metrics_listen {
@@ -170,6 +176,12 @@ impl Config {
         }
         if self.ss_listen.is_some() && self.ss_listen == self.effective_h3_listen() {
             bail!("ss_listen must differ from h3_listen");
+        }
+        if self.listen.is_some() && self.listen == self.metrics_listen {
+            bail!("listen must differ from metrics_listen");
+        }
+        if self.listen.is_some() && self.listen == self.effective_h3_listen() {
+            bail!("listen must differ from h3_listen");
         }
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
@@ -207,7 +219,11 @@ impl Config {
     }
 
     pub fn effective_h3_listen(&self) -> Option<SocketAddr> {
-        self.h3_enabled().then_some(self.h3_listen.unwrap_or(self.listen))
+        self.h3_enabled().then_some(self.h3_listen).flatten()
+    }
+
+    pub fn data_plane_listener_enabled(&self) -> bool {
+        self.listen.is_some() || self.h3_enabled() || self.ss_listen.is_some()
     }
 }
 
@@ -470,12 +486,6 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
         .with_context(|| format!("failed to parse config file {}", path.display()))
 }
 
-fn default_listen_addr() -> SocketAddr {
-    "0.0.0.0:3000"
-        .parse()
-        .expect("hardcoded listen address should parse")
-}
-
 fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
     if extension.starts_with('.') {
@@ -487,7 +497,7 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::FileConfig;
+    use super::{CipherKind, Config, FileConfig};
 
     #[test]
     fn parses_new_ws_path_keys() {
@@ -533,5 +543,75 @@ udp_ws_path = "/alice-legacy-udp"
 
         assert!(error.contains("unknown field"));
         assert!(error.contains("ws_path"));
+    }
+
+    #[test]
+    fn requires_at_least_one_data_plane_listener() {
+        let error = Config {
+            listen: None,
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
+            metrics_path: "/metrics".into(),
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "wss".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: Some("secret".into()),
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("configure at least one data-plane listener"));
+    }
+
+    #[test]
+    fn requires_explicit_h3_listener_when_enabled() {
+        let error = Config {
+            listen: None,
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: Some("cert.pem".into()),
+            h3_key_path: Some("key.pem".into()),
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "wss".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: Some("secret".into()),
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("h3_listen must be configured explicitly"));
     }
 }
