@@ -157,6 +157,7 @@ cargo run -- --config ./config.toml
 | Ключ | Назначение |
 | --- | --- |
 | `listen` | Основной TCP-слушатель для HTTP/1.1 и HTTP/2 |
+| `ss_listen` | Опциональный plain Shadowsocks TCP+UDP слушатель для обычных `ss://` клиентов |
 | `tls_cert_path` / `tls_key_path` | Опциональный встроенный TLS для основного слушателя |
 | `h3_listen` | Опциональный QUIC-слушатель для HTTP/3 |
 | `h3_cert_path` / `h3_key_path` | Обязательны для включения HTTP/3 |
@@ -195,6 +196,7 @@ ws_path_udp = "/alice/udp"
 
 - `OUTLINE_SS_CONFIG`
 - `OUTLINE_SS_LISTEN`
+- `OUTLINE_SS_SS_LISTEN`
 - `OUTLINE_SS_TLS_CERT_PATH`
 - `OUTLINE_SS_TLS_KEY_PATH`
 - `OUTLINE_SS_H3_LISTEN`
@@ -224,6 +226,8 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 Параметры `method`, `fwmark`, `ws_path_tcp` и `ws_path_udp` на уровне пользователя задаются только в TOML.
 
 `memory_trim_interval_secs` — параметр уровня процесса. Полезен на Linux-системах с glibc, где долгоживущий прокси сохраняет высокий RSS после пиковой нагрузки.
+
+Если задан `ss_listen`, сервер поднимает ещё и классический Shadowsocks-сервис на этом адресе. Он слушает и TCP, и UDP на одном порту и использует тех же пользователей, шифры, `fwmark` и тот же UDP NAT, что и WebSocket-транспорты.
 
 ## Режимы развёртывания
 

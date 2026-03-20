@@ -1,4 +1,4 @@
-//! Process-wide UDP NAT table for sharing socket state across WebSocket sessions.
+//! Process-wide UDP NAT table for sharing socket state across client sessions.
 //!
 //! Instead of creating a new ephemeral UDP socket per incoming datagram, the NAT
 //! table maintains a persistent socket per `(user_id, fwmark, target_addr)` triple.
@@ -7,8 +7,8 @@
 //! - A stable source port for the lifetime of the NAT entry, which is required by
 //!   stateful UDP protocols (QUIC, DTLS, some game protocols).
 //! - Delivery of unsolicited upstream responses (server-initiated pushes) to the
-//!   currently active WebSocket session.
-//! - Transparent reconnect: a new WebSocket session for the same user immediately
+//!   currently active client session.
+//! - Transparent reconnect: a new client session for the same user immediately
 //!   receives responses from the existing upstream socket without re-establishing
 //!   the upstream association.
 //!
@@ -58,10 +58,10 @@ pub(crate) struct NatKey {
 
 // ── Response sender abstraction ───────────────────────────────────────────────
 
-/// A cloneable handle to the outbound channel of the currently active WebSocket
-/// session.  Wraps both H1/H2 (`axum::extract::ws::Message`) and H3
-/// (`sockudo_ws::Message`) channel types so the NAT reader task can deliver
-/// upstream responses without knowing the transport layer.
+/// A cloneable handle to the outbound path of the currently active client
+/// session. Wraps both WebSocket transports and plain UDP sockets so the NAT
+/// reader task can deliver upstream responses without knowing the transport
+/// layer.
 pub(crate) struct UdpResponseSender {
     inner: UdpResponseSenderInner,
     protocol: Protocol,
@@ -70,6 +70,10 @@ pub(crate) struct UdpResponseSender {
 enum UdpResponseSenderInner {
     Ws(mpsc::Sender<Message>),
     H3(mpsc::Sender<H3Message>),
+    Datagram {
+        socket: Arc<UdpSocket>,
+        client_addr: SocketAddr,
+    },
 }
 
 impl UdpResponseSender {
@@ -87,6 +91,16 @@ impl UdpResponseSender {
         }
     }
 
+    pub(crate) fn datagram(socket: Arc<UdpSocket>, client_addr: SocketAddr) -> Self {
+        Self {
+            inner: UdpResponseSenderInner::Datagram {
+                socket,
+                client_addr,
+            },
+            protocol: Protocol::Socket,
+        }
+    }
+
     fn protocol(&self) -> Protocol {
         self.protocol
     }
@@ -96,6 +110,10 @@ impl UdpResponseSender {
         match &self.inner {
             UdpResponseSenderInner::Ws(tx) => tx.send(Message::Binary(data)).await.is_ok(),
             UdpResponseSenderInner::H3(tx) => tx.send(H3Message::Binary(data)).await.is_ok(),
+            UdpResponseSenderInner::Datagram {
+                socket,
+                client_addr,
+            } => socket.send_to(&data, *client_addr).await.is_ok(),
         }
     }
 }
@@ -104,7 +122,7 @@ impl UdpResponseSender {
 
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
-    /// The channel for the currently active WebSocket session.
+    /// The outbound path for the currently active client session.
     /// Updated every time a new outbound datagram arrives so responses are
     /// delivered to the right session even after a reconnect.
     session_tx: Arc<Mutex<Option<UdpResponseSender>>>,
@@ -123,7 +141,7 @@ impl Drop for AbortOnDrop {
 }
 
 impl NatEntry {
-    /// Set the active WebSocket session that should receive upstream responses.
+    /// Set the active client session that should receive upstream responses.
     /// The previous session (if any) is replaced; its channel may be closed.
     pub(crate) async fn register_session(&self, sender: UdpResponseSender) {
         *self.session_tx.lock().await = Some(sender);
@@ -158,7 +176,7 @@ impl NatTable {
 
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
     /// UDP socket, applies `fwmark` if set, and starts a background reader task
-    /// that delivers upstream responses to the registered WebSocket session.
+    /// that delivers upstream responses to the registered client session.
     pub(crate) async fn get_or_create(
         &self,
         key: NatKey,
@@ -290,7 +308,7 @@ async fn nat_reader_task(
             }
         };
 
-        // Deliver to the currently registered WebSocket session.
+        // Deliver to the currently registered client session.
         let guard = session_tx.lock().await;
         if let Some(sender) = guard.as_ref() {
             let protocol = sender.protocol();
@@ -302,11 +320,11 @@ async fn nat_reader_task(
             );
             metrics.record_udp_response_datagrams(user.id(), protocol, 1);
             if !sender.send_bytes(Bytes::from(ciphertext)).await {
-                debug!(%target, "NAT response dropped: WebSocket session disconnected");
+                debug!(%target, "NAT response dropped: client session disconnected");
             }
         } else {
             metrics.record_udp_nat_response_dropped();
-            debug!(%target, "NAT response dropped: no active WebSocket session");
+            debug!(%target, "NAT response dropped: no active client session");
         }
     }
 }

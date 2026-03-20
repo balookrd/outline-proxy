@@ -37,8 +37,9 @@ use sockudo_ws::{
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpSocket, TcpStream, lookup_host},
+    net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
     sync::{Semaphore, mpsc},
+    task::JoinSet,
     time::{Duration, timeout},
 };
 use tokio_rustls::TlsAcceptor;
@@ -104,6 +105,24 @@ pub async fn run(config: Config) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind {}", config.listen))?;
+    let ss_tcp_listener = if let Some(ss_listen) = config.ss_listen {
+        Some(
+            TcpListener::bind(ss_listen)
+                .await
+                .with_context(|| format!("failed to bind shadowsocks tcp listener {}", ss_listen))?,
+        )
+    } else {
+        None
+    };
+    let ss_udp_socket = if let Some(ss_listen) = config.ss_listen {
+        Some(Arc::new(
+            UdpSocket::bind(ss_listen)
+                .await
+                .with_context(|| format!("failed to bind shadowsocks udp socket {}", ss_listen))?,
+        ))
+    } else {
+        None
+    };
     let metrics_listener = if config.metrics_enabled() {
         let metrics_listen = config.metrics_listen.expect("metrics listen must exist");
         Some(
@@ -140,6 +159,7 @@ pub async fn run(config: Config) -> Result<()> {
     let user_routes = describe_user_routes(users.as_ref());
     info!(
         listen = %config.listen,
+        ss_listen = ?config.ss_listen,
         tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
         metrics_listen = ?config.metrics_listen,
@@ -155,33 +175,40 @@ pub async fn run(config: Config) -> Result<()> {
         "websocket shadowsocks server listening",
     );
 
-    match (h3_server, metrics_listener) {
-        (Some(h3_server), Some(metrics_listener)) => {
-            let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
-            tokio::try_join!(
-                serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table)),
-                serve_metrics_listener(metrics_listener, metrics_app)
-            )?;
-            Ok(())
-        }
-        (Some(h3_server), None) => {
-            tokio::try_join!(
-                serve_tcp_listener(listener, app, config.as_ref()),
-                serve_h3_server(h3_server, tcp_routes.clone(), udp_routes.clone(), metrics.clone(), Arc::clone(&nat_table))
-            )?;
-            Ok(())
-        }
-        (None, Some(metrics_listener)) => {
-            let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
-            tokio::try_join!(
-                serve_tcp_listener(listener, app, config.as_ref()),
-                serve_metrics_listener(metrics_listener, metrics_app)
-            )?;
-            Ok(())
-        }
-        (None, None) => serve_tcp_listener(listener, app, config.as_ref()).await,
+    let mut tasks = JoinSet::new();
+    {
+        let config = Arc::clone(&config);
+        tasks.spawn(async move { serve_tcp_listener(listener, app, config).await });
     }
+    if let Some(h3_server) = h3_server {
+        let tcp_routes = tcp_routes.clone();
+        let udp_routes = udp_routes.clone();
+        let metrics = metrics.clone();
+        let nat_table = Arc::clone(&nat_table);
+        tasks.spawn(async move {
+            serve_h3_server(h3_server, tcp_routes, udp_routes, metrics, nat_table).await
+        });
+    }
+    if let Some(metrics_listener) = metrics_listener {
+        let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
+        tasks.spawn(async move { serve_metrics_listener(metrics_listener, metrics_app).await });
+    }
+    if let Some(listener) = ss_tcp_listener {
+        let users = users.clone();
+        let metrics = metrics.clone();
+        tasks.spawn(async move { serve_ss_tcp_listener(listener, users, metrics).await });
+    }
+    if let Some(socket) = ss_udp_socket {
+        let users = users.clone();
+        let metrics = metrics.clone();
+        let nat_table = Arc::clone(&nat_table);
+        tasks.spawn(async move { serve_ss_udp_socket(socket, users, metrics, nat_table).await });
+    }
+
+    while let Some(result) = tasks.join_next().await {
+        result.context("server task join failed")??;
+    }
+    Ok(())
 }
 
 async fn tcp_websocket_upgrade(
@@ -1348,6 +1375,315 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
     }
 }
 
+async fn serve_ss_tcp_listener(
+    listener: TcpListener,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+) -> Result<()> {
+    loop {
+        let (stream, peer) = listener.accept().await.context("failed to accept shadowsocks tcp connection")?;
+        let users = users.clone();
+        let metrics = metrics.clone();
+        tokio::spawn(async move {
+            if let Err(error) = handle_ss_tcp_connection(stream, users, metrics).await {
+                if is_benign_ws_disconnect(&error) {
+                    debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
+                } else {
+                    warn!(%peer, ?error, "shadowsocks tcp connection terminated with error");
+                }
+            }
+        });
+    }
+}
+
+async fn handle_ss_tcp_connection(
+    socket: TcpStream,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+) -> Result<()> {
+    let (mut client_reader, client_writer) = socket.into_split();
+    let mut client_writer = Some(client_writer);
+    let mut decryptor = AeadStreamDecryptor::new(users.clone());
+    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
+    let mut upstream_writer = None;
+    let mut upstream_to_client = None;
+    let mut authenticated_user = None;
+    let mut upstream_guard = None;
+    let mut read_buffer = vec![0_u8; MAX_CHUNK_SIZE];
+
+    loop {
+        let read = client_reader
+            .read(&mut read_buffer)
+            .await
+            .context("failed to read from shadowsocks client")?;
+        if read == 0 {
+            break;
+        }
+
+        decryptor.push(&read_buffer[..read]);
+        match decryptor.pull_plaintext(&mut plaintext_buffer) {
+            Ok(()) => {}
+            Err(CryptoError::UnknownUser) => {
+                debug!(
+                    buffered = decryptor.buffered_data().len(),
+                    attempts = ?diagnose_stream_handshake(users.as_ref(), decryptor.buffered_data()),
+                    "socket tcp authentication failed for all configured users"
+                );
+                return Err(anyhow!("no configured key matched the incoming socket tcp stream"));
+            }
+            Err(error) => return Err(anyhow!(error)),
+        }
+
+        if upstream_writer.is_none() {
+            let Some((target, consumed)) = parse_target_addr(&plaintext_buffer)? else {
+                continue;
+            };
+            let Some(user) = decryptor.user().cloned() else {
+                continue;
+            };
+            debug!(
+                user = user.id(),
+                cipher = user.cipher().as_str(),
+                "socket tcp shadowsocks user authenticated"
+            );
+            let target_display = target.display_host_port();
+            let connect_started = std::time::Instant::now();
+            let stream = match connect_tcp_target(&target, user.fwmark()).await {
+                Ok(stream) => {
+                    metrics.record_tcp_connect(
+                        user.id(),
+                        Protocol::Socket,
+                        "success",
+                        connect_started.elapsed().as_secs_f64(),
+                    );
+                    stream
+                }
+                Err(error) => {
+                    metrics.record_tcp_connect(
+                        user.id(),
+                        Protocol::Socket,
+                        "error",
+                        connect_started.elapsed().as_secs_f64(),
+                    );
+                    return Err(error).with_context(|| format!("failed to connect to {target_display}"));
+                }
+            };
+            info!(
+                user = user.id(),
+                fwmark = ?user.fwmark(),
+                target = %target_display,
+                "socket tcp upstream connected"
+            );
+
+            let (upstream_reader, writer) = stream.into_split();
+            let mut encryptor =
+                AeadStreamEncryptor::new(&user, decryptor.response_context())?;
+            let client_writer = client_writer
+                .take()
+                .ok_or_else(|| anyhow!("socket tcp client writer missing"))?;
+            let relay_metrics = metrics.clone();
+            let user_id = user.id().to_owned();
+            upstream_to_client = Some(tokio::spawn(async move {
+                relay_upstream_to_socket_client(
+                    upstream_reader,
+                    client_writer,
+                    &mut encryptor,
+                    relay_metrics,
+                    user_id,
+                )
+                .await
+            }));
+            metrics.record_tcp_authenticated_session(user.id(), Protocol::Socket);
+            upstream_guard = Some(metrics.open_tcp_upstream_connection(user.id(), Protocol::Socket));
+            authenticated_user = Some(user);
+            upstream_writer = Some(writer);
+            plaintext_buffer.drain(..consumed);
+        }
+
+        if let Some(writer) = &mut upstream_writer
+            && !plaintext_buffer.is_empty()
+        {
+            if let Some(user) = &authenticated_user {
+                metrics.record_tcp_payload_bytes(
+                    user.id(),
+                    Protocol::Socket,
+                    "client_to_target",
+                    plaintext_buffer.len(),
+                );
+            }
+            writer
+                .write_all(&plaintext_buffer)
+                .await
+                .context("failed to write decrypted data upstream")?;
+            plaintext_buffer.clear();
+        }
+    }
+
+    if let Some(mut writer) = upstream_writer {
+        writer.shutdown().await.ok();
+    }
+
+    if let Some(task) = upstream_to_client {
+        task.abort();
+    }
+
+    if let Some(guard) = upstream_guard {
+        guard.finish();
+    }
+    Ok(())
+}
+
+async fn relay_upstream_to_socket_client(
+    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
+    mut client_writer: tokio::net::tcp::OwnedWriteHalf,
+    encryptor: &mut AeadStreamEncryptor,
+    metrics: Arc<Metrics>,
+    user_id: String,
+) -> Result<()> {
+    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    loop {
+        let read = upstream_reader
+            .read(&mut buffer)
+            .await
+            .context("failed to read from upstream")?;
+        if read == 0 {
+            break;
+        }
+
+        metrics.record_tcp_payload_bytes(&user_id, Protocol::Socket, "target_to_client", read);
+        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
+        client_writer
+            .write_all(&ciphertext)
+            .await
+            .context("failed to write encrypted socket payload")?;
+    }
+
+    client_writer.shutdown().await.ok();
+    Ok(())
+}
+
+async fn serve_ss_udp_socket(
+    socket: Arc<UdpSocket>,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    nat_table: Arc<NatTable>,
+) -> Result<()> {
+    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
+    let mut buffer = vec![0_u8; 65_535];
+    loop {
+        let (read, client_addr) = socket
+            .recv_from(&mut buffer)
+            .await
+            .context("failed to receive shadowsocks udp packet")?;
+        let permit = match task_limit.clone().try_acquire_owned() {
+            Ok(p) => p,
+            Err(_) => {
+                warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
+                continue;
+            }
+        };
+        let data = Bytes::copy_from_slice(&buffer[..read]);
+        let users = users.clone();
+        let metrics = metrics.clone();
+        let nat_table = Arc::clone(&nat_table);
+        let socket = Arc::clone(&socket);
+        tokio::spawn(async move {
+            let _permit = permit;
+            if let Err(error) =
+                handle_ss_udp_datagram(nat_table, users, data, client_addr, socket, metrics).await
+            {
+                warn!(%client_addr, ?error, "socket udp datagram relay failed");
+            }
+        });
+    }
+}
+
+async fn handle_ss_udp_datagram(
+    nat_table: Arc<NatTable>,
+    users: Arc<[UserKey]>,
+    data: Bytes,
+    client_addr: SocketAddr,
+    outbound_socket: Arc<UdpSocket>,
+    metrics: Arc<Metrics>,
+) -> Result<()> {
+    let started_at = std::time::Instant::now();
+    let packet = match decrypt_udp_packet(users.as_ref(), &data) {
+        Ok(packet) => packet,
+        Err(CryptoError::UnknownUser) => {
+            debug!(
+                client_addr = %client_addr,
+                attempts = ?diagnose_udp_packet(users.as_ref(), &data),
+                "socket udp authentication failed for all configured users"
+            );
+            return Err(anyhow!("no configured key matched the incoming socket udp datagram"));
+        }
+        Err(error) => return Err(anyhow!(error)),
+    };
+    let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
+        return Err(anyhow!("udp packet is missing a complete target address"));
+    };
+    let payload = &packet.payload[consumed..];
+    let target_display = target.display_host_port();
+    metrics.record_client_last_seen(packet.user.id());
+    debug!(
+        user = packet.user.id(),
+        cipher = packet.user.cipher().as_str(),
+        client_addr = %client_addr,
+        "socket udp shadowsocks user authenticated"
+    );
+
+    let resolved = resolve_target(&target).await?;
+    info!(
+        user = packet.user.id(),
+        fwmark = ?packet.user.fwmark(),
+        client_addr = %client_addr,
+        target = %target_display,
+        resolved = %resolved,
+        "socket udp datagram relay"
+    );
+
+    let nat_key = NatKey {
+        user_id: packet.user.id().to_owned(),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+        udp_client_session_id: packet.session.client_session_id(),
+    };
+    let entry = nat_table
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
+        .await
+        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
+
+    entry
+        .register_session(UdpResponseSender::datagram(outbound_socket, client_addr))
+        .await;
+
+    metrics.record_udp_payload_bytes(
+        packet.user.id(),
+        Protocol::Socket,
+        "client_to_target",
+        payload.len(),
+    );
+    if let Err(error) = entry.socket().send_to(payload, resolved).await {
+        metrics.record_udp_request(
+            packet.user.id(),
+            Protocol::Socket,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Err(error)
+            .with_context(|| format!("failed to send UDP datagram to {resolved}"));
+    }
+    entry.touch();
+    metrics.record_udp_request(
+        packet.user.id(),
+        Protocol::Socket,
+        "success",
+        started_at.elapsed().as_secs_f64(),
+    );
+
+    Ok(())
+}
+
 fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
@@ -1596,9 +1932,9 @@ fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocke
     Ok(socket)
 }
 
-async fn serve_tcp_listener(listener: TcpListener, app: Router, config: &Config) -> Result<()> {
+async fn serve_tcp_listener(listener: TcpListener, app: Router, config: Arc<Config>) -> Result<()> {
     if config.tcp_tls_enabled() {
-        let acceptor = build_tcp_tls_acceptor(config)?;
+        let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
         serve_tls_listener(listener, app, acceptor).await
     } else {
         serve_listener(listener, app).await
@@ -2102,6 +2438,7 @@ mod tests {
     fn sample_config(listen: SocketAddr) -> Config {
         Config {
             listen,
+            ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,
             h3_listen: None,

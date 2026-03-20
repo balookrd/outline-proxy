@@ -13,6 +13,7 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen: SocketAddr,
+    pub ss_listen: Option<SocketAddr>,
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
     pub h3_listen: Option<SocketAddr>,
@@ -52,6 +53,7 @@ impl Config {
                 .listen
                 .or(file.listen)
                 .unwrap_or_else(default_listen_addr),
+            ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
             tls_key_path: args.tls_key_path.or(file.tls_key_path),
             h3_listen: args.h3_listen.or(file.h3_listen),
@@ -160,6 +162,15 @@ impl Config {
         if !self.metrics_path.starts_with('/') {
             bail!("metrics_path must start with '/'");
         }
+        if self.ss_listen == Some(self.listen) {
+            bail!("ss_listen must differ from listen");
+        }
+        if self.ss_listen.is_some() && self.ss_listen == self.metrics_listen {
+            bail!("ss_listen must differ from metrics_listen");
+        }
+        if self.ss_listen.is_some() && self.ss_listen == self.effective_h3_listen() {
+            bail!("ss_listen must differ from h3_listen");
+        }
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
         let mut udp_paths = BTreeSet::new();
@@ -212,6 +223,9 @@ struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_LISTEN")]
     listen: Option<SocketAddr>,
+
+    #[arg(long, env = "OUTLINE_SS_SS_LISTEN")]
+    ss_listen: Option<SocketAddr>,
 
     #[arg(long, env = "OUTLINE_SS_TLS_CERT_PATH")]
     tls_cert_path: Option<PathBuf>,
@@ -296,6 +310,7 @@ struct ConfigArgs {
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     listen: Option<SocketAddr>,
+    ss_listen: Option<SocketAddr>,
     tls_cert_path: Option<PathBuf>,
     tls_key_path: Option<PathBuf>,
     h3_listen: Option<SocketAddr>,

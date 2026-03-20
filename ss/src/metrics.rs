@@ -99,6 +99,7 @@ pub enum Protocol {
     Http1,
     Http2,
     Http3,
+    Socket,
 }
 
 impl Protocol {
@@ -107,6 +108,7 @@ impl Protocol {
             Self::Http1 => "http1",
             Self::Http2 => "http2",
             Self::Http3 => "http3",
+            Self::Socket => "socket",
         }
     }
 }
@@ -1523,6 +1525,7 @@ mod tests {
     fn renders_prometheus_metrics() {
         let config = Config {
             listen: "127.0.0.1:3000".parse().unwrap(),
+            ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,
             h3_listen: None,
