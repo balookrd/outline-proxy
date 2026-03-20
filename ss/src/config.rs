@@ -324,18 +324,34 @@ struct FileConfig {
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
 pub enum CipherKind {
+    #[value(name = "aes-128-gcm")]
+    #[serde(rename = "aes-128-gcm")]
+    Aes128Gcm,
     #[value(name = "aes-256-gcm")]
     #[serde(rename = "aes-256-gcm")]
     Aes256Gcm,
     #[value(name = "chacha20-ietf-poly1305")]
     #[serde(rename = "chacha20-ietf-poly1305")]
     Chacha20IetfPoly1305,
+    #[value(name = "2022-blake3-aes-128-gcm")]
+    #[serde(rename = "2022-blake3-aes-128-gcm")]
+    Aes128Gcm2022,
+    #[value(name = "2022-blake3-aes-256-gcm")]
+    #[serde(rename = "2022-blake3-aes-256-gcm")]
+    Aes256Gcm2022,
+    #[value(name = "2022-blake3-chacha20-poly1305")]
+    #[serde(rename = "2022-blake3-chacha20-poly1305")]
+    Chacha20Poly13052022,
 }
 
 impl CipherKind {
     pub const fn key_len(self) -> usize {
         match self {
-            Self::Aes256Gcm | Self::Chacha20IetfPoly1305 => 32,
+            Self::Aes128Gcm | Self::Aes128Gcm2022 => 16,
+            Self::Aes256Gcm
+            | Self::Chacha20IetfPoly1305
+            | Self::Aes256Gcm2022
+            | Self::Chacha20Poly13052022 => 32,
         }
     }
 
@@ -343,10 +359,25 @@ impl CipherKind {
         self.key_len()
     }
 
+    pub const fn is_2022(self) -> bool {
+        matches!(
+            self,
+            Self::Aes128Gcm2022 | Self::Aes256Gcm2022 | Self::Chacha20Poly13052022
+        )
+    }
+
+    pub const fn is_2022_aes(self) -> bool {
+        matches!(self, Self::Aes128Gcm2022 | Self::Aes256Gcm2022)
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Aes128Gcm => "aes-128-gcm",
             Self::Aes256Gcm => "aes-256-gcm",
             Self::Chacha20IetfPoly1305 => "chacha20-ietf-poly1305",
+            Self::Aes128Gcm2022 => "2022-blake3-aes-128-gcm",
+            Self::Aes256Gcm2022 => "2022-blake3-aes-256-gcm",
+            Self::Chacha20Poly13052022 => "2022-blake3-chacha20-poly1305",
         }
     }
 }

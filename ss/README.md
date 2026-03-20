@@ -31,7 +31,7 @@ It supports:
 | --- | --- | --- |
 | Shadowsocks AEAD TCP | Supported | Stream mode over WebSocket binary frames |
 | Shadowsocks AEAD UDP | Supported | One UDP packet per WebSocket binary frame |
-| Ciphers | Supported | `chacha20-ietf-poly1305`, `aes-256-gcm` |
+| Ciphers | Supported | `aes-128-gcm`, `aes-256-gcm`, `chacha20-ietf-poly1305`, `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, `2022-blake3-chacha20-poly1305` |
 | Multi-user | Supported | Automatic user identification by successful decryption |
 | Per-user cipher | Supported | Each user may override the global default |
 | Per-user WebSocket paths | Supported | Independent `ws_path_tcp` and `ws_path_udp` |
@@ -172,7 +172,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | `print_access_keys` | Print dynamic Outline configs and exit |
 | `write_access_keys_dir` | Write per-user Outline YAML files into the specified directory and exit |
 | `method` | Default Shadowsocks cipher |
-| `password` | Single-user fallback password |
+| `password` | Single-user fallback password or base64 PSK for `2022-*` methods |
 | `fwmark` | Single-user fallback `fwmark` |
 
 ### Per-User Settings
@@ -186,6 +186,8 @@ method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 ```
+
+For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
 
 ### Environment Variables
 

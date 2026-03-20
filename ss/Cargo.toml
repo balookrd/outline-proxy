@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+aes = "0.8"
 anyhow = "1.0"
 axum = { version = "0.8", features = ["ws", "http2"] }
+base64 = "0.22"
+blake3 = "1.8"
 bytes = "1.10"
+chacha20poly1305 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 h3 = "0.0.8"
