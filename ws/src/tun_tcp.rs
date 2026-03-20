@@ -1410,13 +1410,15 @@ async fn do_tcp_ss_setup(
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
     let (ws_sink, ws_stream) = ws_stream.split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password);
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
+    let request_salt = writer.request_salt().map(|salt| salt.to_vec());
     let reader =
-        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
+        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
+            .with_request_salt(request_salt);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -3879,7 +3881,7 @@ mod tests {
         let ws = AnyWsStream::Http1 { inner: ws_stream };
         let (sink, _stream) = ws.split();
         let cipher = CipherKind::Chacha20IetfPoly1305;
-        let master_key = cipher.derive_master_key("Secret0");
+        let master_key = cipher.derive_master_key("Secret0").unwrap();
         let (close_signal, _close_rx) = tokio::sync::watch::channel(false);
         super::TcpFlowState {
             id: 1,
@@ -4084,11 +4086,13 @@ mod tests {
         let ws = AnyWsStream::Http1 { inner: ws };
         let (sink, stream) = ws.split();
         let cipher = CipherKind::Chacha20IetfPoly1305;
-        let master_key = cipher.derive_master_key("Secret0");
+        let master_key = cipher.derive_master_key("Secret0").unwrap();
         let lifetime = super::UpstreamTransportGuard::new("test", "tcp");
         let (mut writer, ctrl_tx) =
             TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
-        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx);
+        let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+        let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx)
+            .with_request_salt(request_salt);
 
         target_tx.send(reader.read_chunk().await?).unwrap();
 

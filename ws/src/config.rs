@@ -627,6 +627,13 @@ fn build_uplink(
     if !weight.is_finite() || weight <= 0.0 {
         bail!("uplink weight must be a finite positive number");
     }
+    let cipher = cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305);
+    let password = password
+        .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?;
+    cipher
+        .derive_master_key(&password)
+        .with_context(|| format!("invalid password/PSK for cipher {cipher}"))?;
+
     Ok(UplinkConfig {
         name,
         tcp_ws_url: tcp_ws_url.ok_or_else(|| {
@@ -635,9 +642,8 @@ fn build_uplink(
         tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
         udp_ws_url,
         udp_ws_mode: udp_ws_mode.unwrap_or_default(),
-        cipher: cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305),
-        password: password
-            .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?,
+        cipher,
+        password,
         weight,
         fwmark,
     })

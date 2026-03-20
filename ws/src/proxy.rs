@@ -443,13 +443,15 @@ async fn do_tcp_ss_setup(
     source: &'static str,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
     let (ws_sink, ws_stream) = ws_stream.split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password);
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
+    let request_salt = writer.request_salt().map(|salt| salt.to_vec());
     let reader =
-        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
+        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
+            .with_request_salt(request_salt);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await

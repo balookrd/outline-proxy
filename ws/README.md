@@ -106,6 +106,9 @@ tun2udp + tun2tcp"]
 - `chacha20-ietf-poly1305`
 - `aes-128-gcm`
 - `aes-256-gcm`
+- `2022-blake3-aes-128-gcm`
+- `2022-blake3-aes-256-gcm`
+- `2022-blake3-chacha20-poly1305`
 
 ### Uplink management
 
@@ -331,6 +334,7 @@ password = "Secret0"
 ### Key config behavior
 
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3`.
+- `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.
 - CLI/env equivalents `--socks5-username` / `SOCKS5_USERNAME` and `--socks5-password` / `SOCKS5_PASSWORD` also configure a single user.
