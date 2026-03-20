@@ -33,6 +33,7 @@ struct Metrics {
     session_recent_samples: IntGaugeVec,
     bytes_total: IntCounterVec,
     udp_datagrams_total: IntCounterVec,
+    udp_oversized_dropped_total: IntCounterVec,
     uplink_selected_total: IntCounterVec,
     uplink_runtime_failures_total: IntCounterVec,
     uplink_runtime_failures_suppressed_total: IntCounterVec,
@@ -191,6 +192,14 @@ impl Metrics {
             &["direction", "uplink"],
         )
         .expect("udp_datagrams_total metric");
+        let udp_oversized_dropped_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_udp_oversized_dropped_total",
+                "Oversized UDP packets dropped before forwarding.",
+            ),
+            &["direction"],
+        )
+        .expect("udp_oversized_dropped_total metric");
         let uplink_selected_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_uplink_selected_total",
@@ -685,6 +694,9 @@ impl Metrics {
             .register(Box::new(udp_datagrams_total.clone()))
             .expect("register udp_datagrams_total");
         registry
+            .register(Box::new(udp_oversized_dropped_total.clone()))
+            .expect("register udp_oversized_dropped_total");
+        registry
             .register(Box::new(uplink_selected_total.clone()))
             .expect("register uplink_selected_total");
         registry
@@ -891,6 +903,7 @@ impl Metrics {
             session_recent_samples,
             bytes_total,
             udp_datagrams_total,
+            udp_oversized_dropped_total,
             uplink_selected_total,
             uplink_runtime_failures_total,
             uplink_runtime_failures_suppressed_total,
@@ -1218,6 +1231,11 @@ pub fn init() {
     for command in ["connect", "udp_associate"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
+    for direction in ["incoming", "outgoing"] {
+        let _ = METRICS
+            .udp_oversized_dropped_total
+            .with_label_values(&[direction]);
+    }
     for protocol in ["tcp", "udp"] {
         let _ = METRICS.sessions_active.with_label_values(&[protocol]);
         METRICS
@@ -1478,6 +1496,13 @@ pub fn add_udp_datagram(direction: &'static str, uplink: &str) {
     METRICS
         .udp_datagrams_total
         .with_label_values(&[direction, uplink])
+        .inc();
+}
+
+pub fn record_dropped_oversized_udp_packet(direction: &'static str) {
+    METRICS
+        .udp_oversized_dropped_total
+        .with_label_values(&[direction])
         .inc();
 }
 
@@ -1916,6 +1941,7 @@ mod tests {
         add_bytes("udp", "upstream_to_client", "senko", 256);
         add_udp_datagram("client_to_upstream", "nuxt");
         add_udp_datagram("upstream_to_client", "senko");
+        record_dropped_oversized_udp_packet("incoming");
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
         assert!(rendered.contains(
@@ -1929,6 +1955,9 @@ mod tests {
         ));
         assert!(rendered.contains(
             "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"senko\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1"
         ));
     }
 
@@ -2027,6 +2056,12 @@ mod tests {
         assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
+        assert!(rendered.contains(
+            "outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0"
+        ));
     }
 
     #[test]

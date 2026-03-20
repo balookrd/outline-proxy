@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use crate::config::TunConfig;
 use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
-use crate::transport::UdpWsTransport;
+use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::tun_tcp::TunTcpEngine;
 use crate::types::TargetAddr;
 use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
@@ -348,6 +348,9 @@ async fn forward_udp_packet(
 
     let payload = build_udp_payload(&remote_target, &packet.payload)?;
     if let Err(error) = transport.send_packet(&payload).await {
+        if is_dropped_oversized_udp_error(&error) {
+            return Ok(());
+        }
         uplinks
             .report_runtime_failure(uplink_index, TransportKind::Udp, &error)
             .await;
@@ -363,7 +366,12 @@ async fn forward_udp_packet(
             )
             .await?;
         metrics::record_failover("udp", &uplink_name, &replacement_name);
-        replacement_transport.send_packet(&payload).await?;
+        if let Err(error) = replacement_transport.send_packet(&payload).await {
+            if is_dropped_oversized_udp_error(&error) {
+                return Ok(());
+            }
+            return Err(error);
+        }
         metrics::add_udp_datagram("client_to_upstream", &replacement_name);
         metrics::add_bytes(
             "udp",
