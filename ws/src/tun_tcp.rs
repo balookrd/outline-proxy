@@ -13,9 +13,12 @@ use tracing::{debug, info, warn};
 use crate::config::TunTcpConfig;
 use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
-use crate::transport::{TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard};
+use crate::transport::{
+    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source,
+};
 use crate::tun::SharedTunWriter;
-use crate::types::TargetAddr;
+use crate::types::{TargetAddr, UplinkTransport};
 use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
 pub(crate) const IPV4_HEADER_LEN: usize = 20;
@@ -1384,6 +1387,20 @@ async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    if candidate.uplink.transport == UplinkTransport::Shadowsocks {
+        let stream = connect_shadowsocks_tcp_with_source(
+            candidate
+                .uplink
+                .tcp_addr
+                .as_ref()
+                .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", candidate.uplink.name))?,
+            candidate.uplink.fwmark,
+            "tun_tcp",
+        )
+        .await?;
+        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target).await;
+    }
+
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
@@ -1419,6 +1436,29 @@ async fn do_tcp_ss_setup(
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt);
+    writer
+        .send_chunk(&target.to_wire_bytes()?)
+        .await
+        .context("failed to send target address")?;
+    Ok((writer, reader))
+}
+
+async fn do_tcp_ss_setup_socket(
+    stream: tokio::net::TcpStream,
+    uplink: &crate::config::UplinkConfig,
+    target: &TargetAddr,
+) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    let (reader_half, writer_half) = stream.into_split();
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
+    let mut writer = TcpShadowsocksWriter::connect_socket(
+        writer_half,
+        uplink.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )?;
+    let reader = TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
+        .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -2836,7 +2876,7 @@ mod tests {
     };
     use crate::transport::{AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter};
     use crate::tun::SharedTunWriter;
-    use crate::types::{CipherKind, TargetAddr, WsTransportMode};
+    use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
     use crate::uplink::UplinkManager;
     use futures_util::StreamExt;
     use tokio::fs::File;
@@ -3758,10 +3798,13 @@ mod tests {
         UplinkManager::new(
             vec![UplinkConfig {
                 name: "test".to_string(),
-                tcp_ws_url,
+                transport: UplinkTransport::Websocket,
+                tcp_ws_url: Some(tcp_ws_url),
                 tcp_ws_mode: WsTransportMode::Http1,
                 udp_ws_url: None,
                 udp_ws_mode: WsTransportMode::Http1,
+                tcp_addr: None,
+                udp_addr: None,
                 cipher: CipherKind::Chacha20IetfPoly1305,
                 password: "Secret0".to_string(),
                 weight: 1.0,

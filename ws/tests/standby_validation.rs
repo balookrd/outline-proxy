@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use outline_ws_rust::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
-use outline_ws_rust::types::{CipherKind, WsTransportMode};
+use outline_ws_rust::types::{CipherKind, UplinkTransport, WsTransportMode};
 use outline_ws_rust::uplink::UplinkManager;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
@@ -66,10 +66,13 @@ async fn build_manager(
     UplinkManager::new(
         vec![UplinkConfig {
             name: "test".to_string(),
-            tcp_ws_url,
+            transport: UplinkTransport::Websocket,
+            tcp_ws_url: Some(tcp_ws_url),
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url,
             udp_ws_mode: WsTransportMode::Http1,
+            tcp_addr: None,
+            udp_addr: None,
             cipher: CipherKind::Chacha20IetfPoly1305,
             password: "Secret0".to_string(),
             weight: 1.0,

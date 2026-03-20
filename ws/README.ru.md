@@ -1,6 +1,6 @@
 # outline-ws-rust
 
-`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3.
+`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его либо на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, либо на прямые Shadowsocks socket uplink'и.
 
 Поддерживает:
 
@@ -97,6 +97,7 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
+- прямые Shadowsocks TCP/UDP socket uplink'и
 - transport fallback:
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
@@ -311,6 +312,7 @@ h3_downgrade_secs = 60
 
 [[uplinks]]
 name = "primary"
+transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_ws_mode = "h3"
@@ -322,6 +324,7 @@ password = "Secret0"
 
 [[uplinks]]
 name = "backup"
+transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
 tcp_ws_mode = "h2"
@@ -329,11 +332,21 @@ udp_ws_url = "wss://backup.example.com/SECRET/udp"
 udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
+
+[[uplinks]]
+name = "direct-ss"
+transport = "shadowsocks"
+tcp_addr = "ss.example.com:8388"
+udp_addr = "ss.example.com:8388"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
 ```
 
 ### Ключевые параметры конфигурации
 
-- `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3`.
+- `transport` принимает `websocket` (по умолчанию) или `shadowsocks`.
+- `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3` и используются только с `transport = "websocket"`.
+- `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
