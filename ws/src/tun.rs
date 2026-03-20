@@ -295,9 +295,7 @@ async fn forward_udp_packet(
     let (existing, stale_flow) = {
         let mut guard = flows.lock().await;
         match guard.get(&key) {
-            Some(flow)
-                if active_uplink.is_some_and(|active| active != flow.uplink_index) =>
-            {
+            Some(flow) if active_uplink.is_some_and(|active| active != flow.uplink_index) => {
                 let stale = guard.remove(&key).expect("stale TUN UDP flow must exist");
                 (None, Some(stale))
             }
@@ -963,8 +961,7 @@ fn build_ipv6_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
         Ipv6Addr::from(source),
         &reply[IPV6_HEADER_LEN..total_len],
     );
-    reply[IPV6_HEADER_LEN + 2..IPV6_HEADER_LEN + 4]
-        .copy_from_slice(&icmp_checksum.to_be_bytes());
+    reply[IPV6_HEADER_LEN + 2..IPV6_HEADER_LEN + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
     Ok(reply)
 }
 
@@ -1175,8 +1172,8 @@ fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
 mod tests {
     use super::{
         IPV4_HEADER_LEN, IPV6_HEADER_LEN, IpVersion, PacketDisposition, build_icmp_echo_reply,
-        build_ipv4_udp_packet, build_ipv6_udp_packet, checksum16, classify_packet,
-        icmpv6_checksum, parse_udp_packet,
+        build_ipv4_udp_packet, build_ipv6_udp_packet, checksum16, classify_packet, icmpv6_checksum,
+        parse_udp_packet,
     };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
@@ -1257,10 +1254,15 @@ mod tests {
         assert_eq!(reply[12..16], [8, 8, 8, 8]);
         assert_eq!(reply[16..20], [10, 0, 0, 2]);
         assert_eq!(reply[IPV4_HEADER_LEN], 0);
-        assert_eq!(reply[IPV4_HEADER_LEN + 4..IPV4_HEADER_LEN + 8], [0x12, 0x34, 0x00, 0x07]);
+        assert_eq!(
+            reply[IPV4_HEADER_LEN + 4..IPV4_HEADER_LEN + 8],
+            [0x12, 0x34, 0x00, 0x07]
+        );
         assert_eq!(&reply[IPV4_HEADER_LEN + 8..], b"ping");
         assert_eq!(
-            checksum16(&reply[IPV4_HEADER_LEN..usize::from(u16::from_be_bytes([reply[2], reply[3]]))]),
+            checksum16(
+                &reply[IPV4_HEADER_LEN..usize::from(u16::from_be_bytes([reply[2], reply[3]]))]
+            ),
             0
         );
     }
@@ -1281,7 +1283,10 @@ mod tests {
         assert_eq!(reply[8..24], destination.octets());
         assert_eq!(reply[24..40], source.octets());
         assert_eq!(reply[IPV6_HEADER_LEN], 129);
-        assert_eq!(reply[IPV6_HEADER_LEN + 4..IPV6_HEADER_LEN + 8], [0xab, 0xcd, 0x00, 0x02]);
+        assert_eq!(
+            reply[IPV6_HEADER_LEN + 4..IPV6_HEADER_LEN + 8],
+            [0xab, 0xcd, 0x00, 0x02]
+        );
         assert_eq!(&reply[IPV6_HEADER_LEN + 8..], b"pong");
         let checksum = icmpv6_checksum(destination, source, &reply[IPV6_HEADER_LEN..]);
         assert_eq!(checksum, 0);

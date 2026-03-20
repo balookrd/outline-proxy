@@ -2,8 +2,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use outline_ws_rust::config::{Args, load_config};
-use outline_ws_rust::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use outline_ws_rust::memory::spawn_periodic_trim_loop;
+use outline_ws_rust::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 
 #[tokio::main]
 async fn main() -> Result<()> {

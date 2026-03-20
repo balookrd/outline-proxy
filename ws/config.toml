@@ -1,5 +1,14 @@
 [socks5]
 listen = "[::]:1080"
+# Optional local SOCKS5 auth for clients.
+#
+# [[socks5.users]]
+# username = "alice"
+# password = "secret1"
+#
+# [[socks5.users]]
+# username = "bob"
+# password = "secret2"
 
 [metrics]
 listen = "[::1]:9090"

@@ -8,6 +8,7 @@ use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use once_cell::sync::OnceCell;
 use pin_project_lite::pin_project;
 use rand::RngCore;
 use rustls::pki_types::ServerName;
@@ -18,7 +19,6 @@ use sockudo_ws::{
     Stream as SockudoTransportStream, WebSocketStream as SockudoWebSocketStream,
     error::CloseReason as SockudoCloseReason,
 };
-use once_cell::sync::OnceCell;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -527,9 +527,14 @@ impl TcpShadowsocksWriter {
                 } else {
                     match data_rx.recv().await {
                         Some(m) => {
-                            if ws_sink.send(m).await.is_err() { return; }
+                            if ws_sink.send(m).await.is_err() {
+                                return;
+                            }
                         }
-                        None => { let _ = ws_sink.close().await; return; }
+                        None => {
+                            let _ = ws_sink.close().await;
+                            return;
+                        }
                     }
                 }
             }
@@ -713,7 +718,9 @@ impl UdpWsTransport {
                             return;
                         }
                         Some(m) => {
-                            if ws_sink.send(m).await.is_err() { return; }
+                            if ws_sink.send(m).await.is_err() {
+                                return;
+                            }
                         }
                     }
                 }
@@ -726,7 +733,11 @@ impl UdpWsTransport {
                 ticker.tick().await; // skip the first immediate tick
                 loop {
                     ticker.tick().await;
-                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
+                    if keepalive_ctrl_tx
+                        .send(Message::Ping(vec![].into()))
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -756,7 +767,13 @@ impl UdpWsTransport {
         let ws_stream = connect_websocket_with_source(url, mode, fwmark, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
-        Ok(Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval))
+        Ok(Self::from_websocket(
+            ws_stream,
+            cipher,
+            password,
+            source,
+            keepalive_interval,
+        ))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
@@ -1098,12 +1115,10 @@ async fn connect_tcp_socket_with_fwmark(
         {
             // Connection in progress; writable() below will signal completion.
         }
-        Err(e) => {
-            return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}"))
-        }
+        Err(e) => return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}")),
     }
-    let stream = TcpStream::from_std(socket.into())
-        .context("failed to adopt TCP socket into tokio")?;
+    let stream =
+        TcpStream::from_std(socket.into()).context("failed to adopt TCP socket into tokio")?;
     // Yield to the runtime until the OS signals that the socket is writable,
     // which means the three-way handshake completed (or failed).
     stream

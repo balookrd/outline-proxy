@@ -20,6 +20,12 @@ pub struct Args {
     #[arg(long, env = "SOCKS5_LISTEN")]
     pub listen: Option<SocketAddr>,
 
+    #[arg(long, env = "SOCKS5_USERNAME")]
+    pub socks5_username: Option<String>,
+
+    #[arg(long, env = "SOCKS5_PASSWORD")]
+    pub socks5_password: Option<String>,
+
     #[arg(long, env = "OUTLINE_TCP_WS_URL")]
     pub tcp_ws_url: Option<Url>,
 
@@ -57,9 +63,10 @@ pub struct Args {
     pub tun_mtu: Option<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen: SocketAddr,
+    pub socks5_auth: Option<Socks5AuthConfig>,
     pub uplinks: Vec<UplinkConfig>,
     pub probe: ProbeConfig,
     pub load_balancing: LoadBalancingConfig,
@@ -79,6 +86,17 @@ pub struct UplinkConfig {
     pub password: String,
     pub weight: f64,
     pub fwmark: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Socks5AuthUserConfig {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Socks5AuthConfig {
+    pub users: Vec<Socks5AuthUserConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +224,15 @@ struct ConfigFile {
 #[derive(Debug, Deserialize)]
 struct Socks5Section {
     listen: Option<SocketAddr>,
+    username: Option<String>,
+    password: Option<String>,
+    users: Option<Vec<Socks5UserSection>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Socks5UserSection {
+    username: Option<String>,
+    password: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -332,6 +359,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .listen
         .or_else(|| socks5.and_then(|s| s.listen))
         .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 1080)));
+    let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
     let uplinks = load_uplinks(outline.as_ref(), args)?;
     let probe = load_probe_config(outline.as_ref())?;
@@ -345,6 +373,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
 
     Ok(AppConfig {
         listen,
+        socks5_auth,
         uplinks,
         probe,
         load_balancing,
@@ -352,6 +381,103 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         memory_trim_interval,
         tun,
     })
+}
+
+fn load_socks5_auth_config(
+    socks5: Option<&Socks5Section>,
+    args: &Args,
+) -> Result<Option<Socks5AuthConfig>> {
+    let cli_username = args.socks5_username.clone();
+    let cli_password = args.socks5_password.clone();
+
+    if cli_username.is_some() || cli_password.is_some() {
+        return match (cli_username, cli_password) {
+            (Some(username), Some(password)) => Ok(Some(Socks5AuthConfig {
+                users: vec![validate_socks5_auth_user(
+                    Socks5AuthUserConfig { username, password },
+                    "CLI socks5 auth user",
+                )?],
+            })),
+            (Some(_), None) => {
+                bail!(
+                    "missing socks5 password: pass --socks5-password together with --socks5-username"
+                )
+            }
+            (None, Some(_)) => {
+                bail!(
+                    "missing socks5 username: pass --socks5-username together with --socks5-password"
+                )
+            }
+            (None, None) => unreachable!("checked above"),
+        };
+    }
+
+    let Some(socks5) = socks5 else {
+        return Ok(None);
+    };
+
+    let users = match (&socks5.users, &socks5.username, &socks5.password) {
+        (Some(users), None, None) => users
+            .iter()
+            .enumerate()
+            .map(|(index, user)| {
+                let username = user.username.clone().ok_or_else(|| {
+                    anyhow!(
+                        "missing socks5 user username in [socks5].users entry {}",
+                        index + 1
+                    )
+                })?;
+                let password = user.password.clone().ok_or_else(|| {
+                    anyhow!(
+                        "missing socks5 user password in [socks5].users entry {}",
+                        index + 1
+                    )
+                })?;
+                validate_socks5_auth_user(
+                    Socks5AuthUserConfig { username, password },
+                    &format!("socks5 user {}", index + 1),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?,
+        (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
+            bail!(
+                "use either [socks5].username/password for a single user or [[socks5.users]] for multiple users, not both"
+            )
+        }
+        (None, Some(username), Some(password)) => vec![validate_socks5_auth_user(
+            Socks5AuthUserConfig {
+                username: username.clone(),
+                password: password.clone(),
+            },
+            "socks5 auth user",
+        )?],
+        (None, Some(_), None) => {
+            bail!("missing socks5 password: set [socks5].password together with [socks5].username")
+        }
+        (None, None, Some(_)) => {
+            bail!("missing socks5 username: set [socks5].username together with [socks5].password")
+        }
+        (None, None, None) => Vec::new(),
+    };
+
+    if users.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(Socks5AuthConfig { users }))
+}
+
+fn validate_socks5_auth_user(
+    user: Socks5AuthUserConfig,
+    context_label: &str,
+) -> Result<Socks5AuthUserConfig> {
+    if user.username.len() > u8::MAX as usize {
+        bail!("{context_label} username is too long; maximum is 255 bytes");
+    }
+    if user.password.len() > u8::MAX as usize {
+        bail!("{context_label} password is too long; maximum is 255 bytes");
+    }
+    Ok(user)
 }
 
 fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
@@ -732,21 +858,157 @@ mod tests {
     #[test]
     fn config_deserializes() {
         let cfg = r#"
-            [socks5]
-            listen = "127.0.0.1:1080"
-
             tcp_ws_url = "wss://example.com/secret/tcp"
             tcp_ws_mode = "h2"
             udp_ws_url = "wss://example.com/secret/udp"
             udp_ws_mode = "h2"
             method = "chacha20-ietf-poly1305"
             password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+            username = "alice"
+            password = "secret"
         "#;
         let parsed: ConfigFile = toml::from_str(cfg).unwrap();
+        let socks5 = parsed.socks5.unwrap();
         assert_eq!(
-            parsed.socks5.unwrap().listen.unwrap(),
+            socks5.listen.unwrap(),
             SocketAddr::from(([127, 0, 0, 1], 1080))
         );
+        assert_eq!(socks5.username.as_deref(), Some("alice"));
+        assert_eq!(socks5.password.as_deref(), Some("secret"));
+    }
+
+    #[tokio::test]
+    async fn load_config_enables_single_optional_socks5_auth() {
+        let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+            username = "alice"
+            password = "secret"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let config = load_config(&path, &args).await.unwrap();
+        assert_eq!(
+            config.socks5_auth,
+            Some(super::Socks5AuthConfig {
+                users: vec![super::Socks5AuthUserConfig {
+                    username: "alice".to_string(),
+                    password: "secret".to_string(),
+                }],
+            })
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_enables_multiple_socks5_users() {
+        let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-users.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+
+            [[socks5.users]]
+            username = "alice"
+            password = "secret1"
+
+            [[socks5.users]]
+            username = "bob"
+            password = "secret2"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let config = load_config(&path, &args).await.unwrap();
+        assert_eq!(
+            config.socks5_auth,
+            Some(super::Socks5AuthConfig {
+                users: vec![
+                    super::Socks5AuthUserConfig {
+                        username: "alice".to_string(),
+                        password: "secret1".to_string(),
+                    },
+                    super::Socks5AuthUserConfig {
+                        username: "bob".to_string(),
+                        password: "secret2".to_string(),
+                    },
+                ],
+            })
+        );
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_rejects_partial_socks5_auth() {
+        let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-partial.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+            username = "alice"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let err = load_config(&path, &args).await.unwrap_err();
+        assert!(format!("{err:#}").contains("missing socks5 password"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_rejects_mixed_single_and_multi_socks5_auth() {
+        let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-mixed.toml");
+        std::fs::write(
+            &path,
+            r#"
+            tcp_ws_url = "wss://example.com/secret/tcp"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+
+            [socks5]
+            listen = "127.0.0.1:1080"
+            username = "alice"
+            password = "secret"
+
+            [[socks5.users]]
+            username = "bob"
+            password = "secret2"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let err = load_config(&path, &args).await.unwrap_err();
+        assert!(format!("{err:#}").contains("not both"));
+
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

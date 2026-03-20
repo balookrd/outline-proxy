@@ -85,6 +85,7 @@ tun2udp + tun2tcp"]
 ### SOCKS5
 
 - SOCKS5 без аутентификации
+- Опциональная аутентификация по логину/паролю (`RFC 1929`)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
 - пересборка UDP-фрагментов SOCKS5 на входящем клиентском трафике
@@ -155,7 +156,6 @@ tun2udp + tun2tcp"]
 
 Проект намеренно практичен, но ограничения есть:
 
-- Аутентификация SOCKS5 по логину/паролю не реализована.
 - Shadowsocks 2022 не реализован.
 - `tun2tcp` ориентирован на production, но всё ещё не эквивалентен ядерному TCP-стеку.
 - IPv4-фрагменты, пути с extension headers в IPv6 и не-echo ICMP на TUN не поддерживаются.
@@ -240,6 +240,15 @@ cargo run --release -- \
 ```toml
 [socks5]
 listen = "[::]:1080"
+# Опциональная локальная SOCKS5-аутентификация для клиентов.
+#
+# [[socks5.users]]
+# username = "alice"
+# password = "secret1"
+#
+# [[socks5.users]]
+# username = "bob"
+# password = "secret2"
 
 [metrics]
 listen = "[::1]:9090"
@@ -322,6 +331,9 @@ password = "Secret0"
 ### Ключевые параметры конфигурации
 
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3`.
+- `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
+- `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
+- CLI/env-эквиваленты `--socks5-username` / `SOCKS5_USERNAME` и `--socks5-password` / `SOCKS5_PASSWORD` тоже задают одного пользователя.
 - `[probe] min_failures` (по умолчанию `1`): количество последовательных неудачных проб, необходимых для объявления аплинка нездоровым. Увеличьте до `2` или `3`, чтобы допускать разовые сбои проб без запуска failover. То же значение используется в качестве порога стабильности последовательных успехов для `auto_failback`.
 - `[load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
   - `false` (по умолчанию): активный аплинк заменяется **только при сбое**. Как только прокси переключился на резервный, он остаётся на нём, пока не упадёт сам резервный — никакого автоматического возврата на primary. Рекомендуется для production, чтобы исключить лишние обрывы соединений.
@@ -338,6 +350,8 @@ password = "Secret0"
 
 - `--config` / `PROXY_CONFIG`
 - `--listen` / `SOCKS5_LISTEN`
+- `--socks5-username` / `SOCKS5_USERNAME`
+- `--socks5-password` / `SOCKS5_PASSWORD`
 - `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
 - `--tcp-ws-mode` / `OUTLINE_TCP_WS_MODE`
 - `--udp-ws-url` / `OUTLINE_UDP_WS_URL`

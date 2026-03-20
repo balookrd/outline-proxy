@@ -1,21 +1,33 @@
 use std::collections::{HashMap, VecDeque};
-use std::hash::{BuildHasher, Hash};
 #[cfg(target_os = "linux")]
 use std::fs;
+use std::hash::{BuildHasher, Hash};
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 use std::sync::atomic::{AtomicU64, Ordering};
-#[cfg(any(
-    feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
-))]
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::time::Duration;
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
+))]
+use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(any(
+    feature = "allocator-jemalloc",
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 use tokio::time::sleep;
 use tracing::debug;
@@ -26,7 +38,11 @@ use tracing::warn;
 
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 use crate::metrics;
 #[cfg(feature = "allocator-jemalloc")]
@@ -35,13 +51,21 @@ use tikv_jemalloc_sys as jemalloc_sys;
 const SHRINK_MIN_CAPACITY: usize = 256;
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 const TRIM_INTERVAL_SECS: u64 = 30;
 
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 static LAST_TRIM_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 
@@ -106,7 +130,8 @@ fn should_shrink(len: usize, capacity: usize) -> bool {
 
 pub fn sample_process_memory() -> ProcessMemorySnapshot {
     let fd_snapshot = sample_process_fd_snapshot();
-    let (heap_bytes, heap_allocated_bytes, heap_free_bytes, heap_mode) = sample_process_heap_state();
+    let (heap_bytes, heap_allocated_bytes, heap_free_bytes, heap_mode) =
+        sample_process_heap_state();
     let snapshot = ProcessMemorySnapshot {
         rss_bytes: sample_process_rss_bytes(),
         virtual_bytes: sample_process_virtual_bytes(),
@@ -155,7 +180,11 @@ pub fn spawn_periodic_trim_loop(interval: Duration) {
         }
     });
 
-    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc")))]
+    #[cfg(all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    ))]
     tokio::spawn(async move {
         loop {
             sleep(interval).await;
@@ -165,7 +194,11 @@ pub fn spawn_periodic_trim_loop(interval: Duration) {
 
     #[cfg(not(any(
         feature = "allocator-jemalloc",
-        all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+        all(
+            target_os = "linux",
+            target_env = "gnu",
+            not(feature = "allocator-jemalloc")
+        )
     )))]
     {
         let _ = interval;
@@ -213,7 +246,11 @@ fn trim_memory_now(reason: &'static str, respect_min_interval: bool) {
             "jemalloc background maintenance invoked"
         );
     }
-    #[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc")))]
+    #[cfg(all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    ))]
     {
         if respect_min_interval && should_skip_trim_due_to_interval() {
             return;
@@ -246,7 +283,11 @@ fn trim_memory_now(reason: &'static str, respect_min_interval: bool) {
             "malloc_trim invoked"
         );
     }
-    #[cfg(not(all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))))]
+    #[cfg(not(all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )))]
     {
         let _ = (reason, respect_min_interval);
     }
@@ -254,7 +295,11 @@ fn trim_memory_now(reason: &'static str, respect_min_interval: bool) {
 
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 fn released_bytes(before: Option<u64>, after: Option<u64>) -> Option<u64> {
     match (before, after) {
@@ -266,7 +311,11 @@ fn released_bytes(before: Option<u64>, after: Option<u64>) -> Option<u64> {
 
 #[cfg(any(
     feature = "allocator-jemalloc",
-    all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc"))
+    all(
+        target_os = "linux",
+        target_env = "gnu",
+        not(feature = "allocator-jemalloc")
+    )
 ))]
 fn should_skip_trim_due_to_interval() -> bool {
     let now_secs = SystemTime::now()
@@ -310,7 +359,11 @@ fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'stat
     (None, None, None, "unavailable")
 }
 
-#[cfg(all(target_os = "linux", target_env = "gnu", not(feature = "allocator-jemalloc")))]
+#[cfg(all(
+    target_os = "linux",
+    target_env = "gnu",
+    not(feature = "allocator-jemalloc")
+))]
 fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
     let heap = unsafe { libc::mallinfo2() };
     if heap.uordblks > 0 || heap.fordblks > 0 {
@@ -330,7 +383,11 @@ fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'stat
     )
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "gnu"), not(feature = "allocator-jemalloc")))]
+#[cfg(all(
+    target_os = "linux",
+    not(target_env = "gnu"),
+    not(feature = "allocator-jemalloc")
+))]
 fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
     (
         sample_proc_status_kib("VmData").map(|value_kib| value_kib.saturating_mul(1024)),
@@ -347,8 +404,9 @@ fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'stat
 
 #[cfg(target_os = "linux")]
 fn sample_process_virtual_bytes() -> Option<u64> {
-    sample_proc_statm_virtual_bytes()
-        .or_else(|| sample_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024)))
+    sample_proc_statm_virtual_bytes().or_else(|| {
+        sample_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024))
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
