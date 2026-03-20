@@ -432,7 +432,8 @@ async fn handle_tcp_connection(
                     );
 
                     let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor = AeadStreamEncryptor::new(&user)?;
+                    let mut encryptor =
+                        AeadStreamEncryptor::new(&user, decryptor.response_context())?;
                     let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
                     let user_id = user.id().to_owned();
@@ -782,7 +783,8 @@ async fn handle_tcp_h3_connection(
                     );
 
                     let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor = AeadStreamEncryptor::new(&user)?;
+                    let mut encryptor =
+                        AeadStreamEncryptor::new(&user, decryptor.response_context())?;
                     let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
                     let user_id = user.id().to_owned();
@@ -1097,9 +1099,10 @@ async fn handle_udp_datagram(
         user_id: packet.user.id().to_owned(),
         fwmark: packet.user.fwmark(),
         target: resolved,
+        udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
-        .get_or_create(nat_key, &packet.user, Arc::clone(&metrics))
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
@@ -1194,9 +1197,10 @@ async fn handle_udp_h3_datagram(
         user_id: packet.user.id().to_owned(),
         fwmark: packet.user.fwmark(),
         target: resolved,
+        udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
-        .get_or_create(nat_key, &packet.user, Arc::clone(&metrics))
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 

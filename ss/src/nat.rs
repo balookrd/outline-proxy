@@ -36,7 +36,7 @@ use tokio::{
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{UserKey, encrypt_udp_packet},
+    crypto::{UdpSession, UserKey, encrypt_udp_packet_for_response},
     fwmark::apply_fwmark_if_needed,
     metrics::{Metrics, Protocol},
     protocol::TargetAddr,
@@ -53,6 +53,7 @@ pub(crate) struct NatKey {
     pub user_id: String,
     pub fwmark: Option<u32>,
     pub target: SocketAddr,
+    pub udp_client_session_id: Option<[u8; 8]>,
 }
 
 // ── Response sender abstraction ───────────────────────────────────────────────
@@ -162,6 +163,7 @@ impl NatTable {
         &self,
         key: NatKey,
         user: &UserKey,
+        udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
         let mut entries = self.entries.lock().await;
@@ -183,14 +185,24 @@ impl NatTable {
 
         let session_tx: Arc<Mutex<Option<UdpResponseSender>>> = Arc::new(Mutex::new(None));
         let last_active_secs = Arc::new(AtomicU64::new(unix_secs_now()));
+        let next_packet_id = Arc::new(AtomicU64::new(0));
+        let server_session_id = match udp_session {
+            UdpSession::Legacy => None,
+            UdpSession::Aes2022 { .. } | UdpSession::Chacha2022 { .. } => {
+                Some(random_session_id()?)
+            }
+        };
 
         let reader_task = tokio::spawn(nat_reader_task(
             Arc::clone(&socket),
             Arc::clone(&session_tx),
             user.clone(),
             key.target,
+            udp_session.clone(),
+            server_session_id,
             Arc::clone(&metrics),
             Arc::clone(&last_active_secs),
+            Arc::clone(&next_packet_id),
         ));
 
         let entry = Arc::new(NatEntry {
@@ -244,8 +256,11 @@ async fn nat_reader_task(
     session_tx: Arc<Mutex<Option<UdpResponseSender>>>,
     user: UserKey,
     target: SocketAddr,
+    udp_session: UdpSession,
+    server_session_id: Option<[u8; 8]>,
     metrics: Arc<Metrics>,
     last_active: Arc<AtomicU64>,
+    next_packet_id: Arc<AtomicU64>,
 ) {
     let mut buf = vec![0u8; UDP_NAT_RECV_BUF_SIZE];
     loop {
@@ -259,17 +274,15 @@ async fn nat_reader_task(
 
         last_active.store(unix_secs_now(), Ordering::Relaxed);
 
-        // Encode (source_addr ++ response_payload), then encrypt with the user key.
-        let mut plaintext = match TargetAddr::Socket(source).encode() {
-            Ok(v) => v,
-            Err(error) => {
-                warn!(%source, %error, "failed to encode NAT response source address");
-                continue;
-            }
-        };
-        plaintext.extend_from_slice(&buf[..n]);
-
-        let ciphertext = match encrypt_udp_packet(&user, &plaintext) {
+        let packet_id = next_packet_id.fetch_add(1, Ordering::Relaxed);
+        let ciphertext = match encrypt_udp_packet_for_response(
+            &user,
+            &TargetAddr::Socket(source),
+            &buf[..n],
+            &udp_session,
+            server_session_id,
+            packet_id,
+        ) {
             Ok(v) => v,
             Err(error) => {
                 warn!(%source, %error, "failed to encrypt NAT UDP response");
@@ -299,6 +312,16 @@ async fn nat_reader_task(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn random_session_id() -> Result<[u8; 8]> {
+    use ring::rand::{SecureRandom, SystemRandom};
+
+    let mut session_id = [0_u8; 8];
+    SystemRandom::new()
+        .fill(&mut session_id)
+        .map_err(|error| anyhow::anyhow!("failed to generate UDP session id: {error:?}"))?;
+    Ok(session_id)
+}
 
 fn unix_secs_now() -> u64 {
     SystemTime::now()
