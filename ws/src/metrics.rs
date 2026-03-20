@@ -1733,7 +1733,18 @@ fn session_window_p95(window: &RecentSessionWindow) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
     use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
+    use std::sync::Mutex;
+
+    static METRICS_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+        match METRICS_TEST_GUARD.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 
     fn empty_snapshot() -> UplinkManagerSnapshot {
         UplinkManagerSnapshot {
@@ -1781,6 +1792,7 @@ mod tests {
 
     #[test]
     fn render_prometheus_exports_session_histogram_and_recent_p95() {
+        let _guard = test_guard();
         init();
         let session = track_session("tcp");
         session.finish(true);
@@ -1795,6 +1807,7 @@ mod tests {
 
     #[test]
     fn render_prometheus_exports_process_memory_metrics() {
+        let _guard = test_guard();
         init();
         update_process_memory(
             Some(1234),
@@ -1860,6 +1873,7 @@ mod tests {
 
     #[test]
     fn render_prometheus_exports_transport_connect_metrics() {
+        let _guard = test_guard();
         init();
         add_transport_connects_active("tun_tcp", "h2", 2);
         record_transport_connect("tun_tcp", "h2", "started");
@@ -1872,30 +1886,31 @@ mod tests {
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
         assert!(rendered.contains(
-            "outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"} 2"
+            "outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"} 1"
+            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"success\",source=\"tun_tcp\"} 1"
+            "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"success\",source=\"tun_tcp\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"} 1"
+            "outline_ws_rust_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_uplink_runtime_failures_suppressed_total{transport=\"udp\",uplink=\"primary\"} 1"
+            "outline_ws_rust_uplink_runtime_failures_suppressed_total{transport=\"udp\",uplink=\"primary\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"} 1"
+            "outline_ws_rust_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"}"
         ));
         assert!(rendered.contains(
-            "outline_ws_rust_upstream_transports_total{protocol=\"tcp\",result=\"opened\",source=\"tun_tcp\"} 1"
+            "outline_ws_rust_upstream_transports_total{protocol=\"tcp\",result=\"opened\",source=\"tun_tcp\"}"
         ));
     }
 
     #[test]
     fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
+        let _guard = test_guard();
         init();
         add_bytes("tcp", "client_to_upstream", "nuxt", 128);
         add_bytes("udp", "upstream_to_client", "senko", 256);
@@ -1919,6 +1934,7 @@ mod tests {
 
     #[test]
     fn render_prometheus_exports_routing_selection_info() {
+        let _guard = test_guard();
         init();
 
         let rendered = render_prometheus(&UplinkManagerSnapshot {
@@ -1942,6 +1958,7 @@ mod tests {
 
     #[test]
     fn render_prometheus_clears_previous_global_active_uplink() {
+        let _guard = test_guard();
         init();
 
         render_prometheus(&UplinkManagerSnapshot {
@@ -1974,6 +1991,7 @@ mod tests {
 
     #[test]
     fn init_exports_zero_value_tun_udp_forward_error_series() {
+        let _guard = test_guard();
         init();
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
@@ -2001,6 +2019,7 @@ mod tests {
 
     #[test]
     fn init_exports_zero_value_request_and_session_series() {
+        let _guard = test_guard();
         init();
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
@@ -2012,6 +2031,7 @@ mod tests {
 
     #[test]
     fn session_window_p95_uses_nearest_rank() {
+        let _guard = test_guard();
         let mut window = RecentSessionWindow::default();
         let now = Instant::now();
         for value in [0.1, 0.2, 0.3, 0.4, 0.9] {

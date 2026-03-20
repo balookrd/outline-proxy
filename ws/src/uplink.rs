@@ -19,9 +19,10 @@ use crate::memory::{maybe_shrink_hash_map, maybe_shrink_vecdeque};
 use crate::metrics;
 use crate::transport::{
     AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport,
-    UpstreamTransportGuard, connect_websocket_with_source,
+    UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
+    connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
-use crate::types::TargetAddr;
+use crate::types::{TargetAddr, UplinkTransport};
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -682,7 +683,9 @@ impl UplinkManager {
         // elapses the next real connection re-tests H3.
         if matches!(transport, TransportKind::Tcp) {
             let uplink = &self.inner.uplinks[index];
-            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+            if uplink.transport == UplinkTransport::Websocket
+                && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+            {
                 let now = tokio::time::Instant::now();
                 let mut statuses = self.inner.statuses.write().await;
                 let status = &mut statuses[index];
@@ -832,7 +835,9 @@ impl UplinkManager {
     /// H2 when H3 has been marked broken by repeated runtime errors.
     async fn effective_tcp_ws_mode(&self, index: usize) -> crate::types::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
-        if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+        if uplink.transport == UplinkTransport::Websocket
+            && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+        {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
             if status
@@ -851,6 +856,9 @@ impl UplinkManager {
     /// out to be stale, fall back to `connect_tcp_ws_fresh` without recording
     /// a runtime failure.
     pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<AnyWsStream> {
+        if candidate.uplink.transport != UplinkTransport::Websocket {
+            return None;
+        }
         let ws = self.inner.standby_pools[candidate.index]
             .tcp
             .lock()
@@ -868,6 +876,12 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<AnyWsStream> {
+        if candidate.uplink.transport != UplinkTransport::Websocket {
+            bail!(
+                "uplink {} does not use websocket transport",
+                candidate.uplink.name
+            );
+        }
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
         let mode = self.effective_tcp_ws_mode(candidate.index).await;
         debug!(
@@ -877,13 +891,26 @@ impl UplinkManager {
         );
         let started = Instant::now();
         let ws = connect_websocket_with_source(
-            &candidate.uplink.tcp_ws_url,
+            candidate
+                .uplink
+                .tcp_ws_url
+                .as_ref()
+                .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", candidate.uplink.name))?,
             mode,
             candidate.uplink.fwmark,
             source,
         )
         .await
-        .with_context(|| format!("failed to connect to {}", candidate.uplink.tcp_ws_url))?;
+        .with_context(|| {
+            format!(
+                "failed to connect to {}",
+                candidate
+                    .uplink
+                    .tcp_ws_url
+                    .as_ref()
+                    .expect("validated tcp_ws_url")
+            )
+        })?;
         // Feed the on-demand dial latency into the RTT EWMA so real connection
         // quality is reflected in routing scores, not just probe ping/pong times.
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
@@ -907,6 +934,26 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<UdpWsTransport> {
+        if candidate.uplink.transport == UplinkTransport::Shadowsocks {
+            metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
+            let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
+                anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
+            })?;
+            let started = Instant::now();
+            let socket =
+                connect_shadowsocks_udp_with_source(udp_addr, candidate.uplink.fwmark, source)
+                    .await
+                    .with_context(|| format!("failed to connect to {}", udp_addr))?;
+            self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
+                .await;
+            return Ok(UdpWsTransport::from_socket(
+                socket,
+                candidate.uplink.cipher,
+                &candidate.uplink.password,
+                source,
+            ));
+        }
+
         let pool = &self.inner.standby_pools[candidate.index];
         if let Some(ws) = pool.udp.lock().await.pop_front() {
             self.spawn_refill(candidate.index, TransportKind::Udp);
@@ -1313,6 +1360,9 @@ impl UplinkManager {
         }
 
         let uplink = Arc::clone(&self.inner.uplinks[index]);
+        if uplink.transport != UplinkTransport::Websocket {
+            return;
+        }
         let pool = &self.inner.standby_pools[index];
         let refill_guard = match transport {
             TransportKind::Tcp => pool.tcp_refill.lock().await,
@@ -1340,16 +1390,22 @@ impl UplinkManager {
             let ws = match transport {
                 TransportKind::Tcp => {
                     let mode = self.effective_tcp_ws_mode(index).await;
+                    let Some(tcp_ws_url) = uplink.tcp_ws_url.as_ref() else {
+                        break;
+                    };
                     connect_websocket_with_source(
-                        &uplink.tcp_ws_url,
+                        tcp_ws_url,
                         mode,
                         uplink.fwmark,
                         "standby_tcp",
                     )
                     .await
-                    .with_context(|| format!("failed to preconnect to {}", uplink.tcp_ws_url))
+                    .with_context(|| format!("failed to preconnect to {}", tcp_ws_url))
                 }
                 TransportKind::Udp => {
+                    if uplink.transport != UplinkTransport::Websocket {
+                        break;
+                    }
                     let Some(url) = uplink.udp_ws_url.as_ref() else {
                         break;
                     };
@@ -1756,7 +1812,9 @@ impl UplinkManager {
                             // With H2 downgrade, recovery probing uses H2
                             // which is stable, and H3 is only retried after the
                             // downgrade timer expires.
-                            if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+                            if uplink.transport == UplinkTransport::Websocket
+                                && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                            {
                                 let downgrade_until =
                                     now + self.inner.load_balancing.h3_downgrade_duration;
                                 if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
@@ -1851,7 +1909,7 @@ impl UplinkManager {
                         // The probe Err path is usually a TCP connect failure;
                         // penalising UDP here when there is no udp_ws_url would
                         // permanently mark UDP unhealthy for TCP-only uplinks.
-                        if uplink.udp_ws_url.is_some() {
+                        if uplink.supports_udp() {
                             status.udp_consecutive_failures =
                                 status.udp_consecutive_failures.saturating_add(1);
                             if status.udp_consecutive_failures >= min_failures as u32 {
@@ -1865,7 +1923,9 @@ impl UplinkManager {
                         }
                         // Probe connection itself failed (ws connect / timeout).
                         // Same H3 downgrade logic as the tcp_ok=false case above.
-                        if uplink.tcp_ws_mode == crate::types::WsTransportMode::H3 {
+                        if uplink.transport == UplinkTransport::Websocket
+                            && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                        {
                             let downgrade_until =
                                 now + self.inner.load_balancing.h3_downgrade_duration;
                             if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
@@ -1891,7 +1951,7 @@ impl UplinkManager {
             }
             if refill_udp {
                 self.spawn_refill(index, TransportKind::Udp);
-            } else if uplink.udp_ws_url.is_some() {
+            } else if uplink.supports_udp() {
                 // Only clear UDP standby when UDP is actually configured.
                 // Without this guard a TCP-only uplink would keep clearing an
                 // already-empty UDP pool on every probe cycle.
@@ -1956,16 +2016,26 @@ async fn run_tcp_probe(
     let started = Instant::now();
     if probe.ws.enabled {
         let probe_started = Instant::now();
-        let result = run_ws_probe(
-            &uplink.name,
-            "tcp",
-            &uplink.tcp_ws_url,
-            effective_tcp_mode,
-            uplink.fwmark,
-            Arc::clone(&dial_limit),
-            probe.timeout,
-        )
-        .await;
+        let result = match uplink.transport {
+            UplinkTransport::Websocket => run_ws_probe(
+                &uplink.name,
+                "tcp",
+                uplink
+                    .tcp_ws_url
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                effective_tcp_mode,
+                uplink.fwmark,
+                Arc::clone(&dial_limit),
+                probe.timeout,
+            )
+            .await,
+            UplinkTransport::Shadowsocks => run_tcp_socket_probe(
+                uplink,
+                Arc::clone(&dial_limit),
+            )
+            .await,
+        };
         metrics::record_probe(
             &uplink.name,
             "tcp",
@@ -1999,25 +2069,33 @@ async fn run_udp_probe(
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
 ) -> Result<(bool, bool, Option<Duration>)> {
-    let Some(udp_ws_url) = uplink.udp_ws_url.as_ref() else {
-        // No UDP URL configured — UDP is not applicable for this uplink.
-        // Return applicable=false so the caller skips UDP health tracking.
+    if !uplink.supports_udp() {
         return Ok((false, false, None));
-    };
+    }
 
     let started = Instant::now();
     if probe.ws.enabled {
         let probe_started = Instant::now();
-        let result = run_ws_probe(
-            &uplink.name,
-            "udp",
-            udp_ws_url,
-            uplink.udp_ws_mode,
-            uplink.fwmark,
-            Arc::clone(&dial_limit),
-            probe.timeout,
-        )
-        .await;
+        let result = match uplink.transport {
+            UplinkTransport::Websocket => run_ws_probe(
+                &uplink.name,
+                "udp",
+                uplink
+                    .udp_ws_url
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
+                uplink.udp_ws_mode,
+                uplink.fwmark,
+                Arc::clone(&dial_limit),
+                probe.timeout,
+            )
+            .await,
+            UplinkTransport::Shadowsocks => run_udp_socket_probe(
+                uplink,
+                Arc::clone(&dial_limit),
+            )
+            .await,
+        };
         metrics::record_probe(
             &uplink.name,
             "udp",
@@ -2087,6 +2165,32 @@ async fn run_ws_probe(
     Ok(())
 }
 
+async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
+    let _permit = dial_limit
+        .acquire_owned()
+        .await
+        .expect("probe dial semaphore closed");
+    let addr = uplink
+        .tcp_addr
+        .as_ref()
+        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?;
+    let _stream = connect_shadowsocks_tcp_with_source(addr, uplink.fwmark, "probe_tcp").await?;
+    Ok(())
+}
+
+async fn run_udp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
+    let _permit = dial_limit
+        .acquire_owned()
+        .await
+        .expect("probe dial semaphore closed");
+    let addr = uplink
+        .udp_addr
+        .as_ref()
+        .ok_or_else(|| anyhow!("uplink {} missing udp_addr", uplink.name))?;
+    let _socket = connect_shadowsocks_udp_with_source(addr, uplink.fwmark, "probe_udp").await?;
+    Ok(())
+}
+
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     let lower = format!("{error:#}").to_lowercase();
     // TCP / H1 / H2 expected close reasons
@@ -2145,36 +2249,84 @@ async fn run_http_probe(
         path
     };
 
-    let ws_stream = {
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
+    let (mut writer, mut reader) = {
         let _permit = dial_limit
             .acquire_owned()
             .await
             .expect("probe dial semaphore closed");
-        connect_websocket_with_source(
-            &uplink.tcp_ws_url,
-            effective_tcp_mode,
-            uplink.fwmark,
-            "probe_http",
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to connect HTTP probe websocket for uplink {}",
-                uplink.name
-            )
-        })?
+        match uplink.transport {
+            UplinkTransport::Websocket => {
+                let ws_stream = connect_websocket_with_source(
+                    uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    "probe_http",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect HTTP probe websocket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (ws_sink, ws_stream) = ws_stream.split();
+                let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+                    ws_sink,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )
+                .await?;
+                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let reader = TcpShadowsocksReader::new(
+                    ws_stream,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
+                    ctrl_tx,
+                )
+                .with_request_salt(request_salt);
+                (writer, reader)
+            }
+            UplinkTransport::Shadowsocks => {
+                let stream = connect_shadowsocks_tcp_with_source(
+                    uplink
+                        .tcp_addr
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
+                    uplink.fwmark,
+                    "probe_http",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect HTTP probe shadowsocks socket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (reader_half, writer_half) = stream.into_split();
+                (
+                    TcpShadowsocksWriter::connect_socket(
+                        writer_half,
+                        uplink.cipher,
+                        &master_key,
+                        Arc::clone(&lifetime),
+                    )?,
+                    TcpShadowsocksReader::new_socket(
+                        reader_half,
+                        uplink.cipher,
+                        &master_key,
+                        lifetime,
+                    ),
+                )
+            }
+        }
     };
-    let (ws_sink, ws_stream) = ws_stream.split();
-
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
-    let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
-            .await?;
-    let request_salt = writer.request_salt().map(|salt| salt.to_vec());
-    let mut reader =
-        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
-            .with_request_salt(request_salt);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
@@ -2206,7 +2358,7 @@ async fn run_http_probe(
         transport = "tcp",
         probe = "http",
         url = %probe.url,
-        "closing probe websocket after successful HTTP probe"
+        "closing probe transport after successful HTTP probe"
     );
     if let Err(error) = writer.close().await {
         debug!(
@@ -2227,32 +2379,53 @@ async fn run_dns_probe(
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
 ) -> Result<bool> {
-    let udp_ws_url = uplink
-        .udp_ws_url
-        .as_ref()
-        .ok_or_else(|| anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name))?;
-
     let transport = {
         let _permit = dial_limit
             .acquire_owned()
             .await
             .expect("probe dial semaphore closed");
-        UdpWsTransport::connect(
-            udp_ws_url,
-            uplink.udp_ws_mode,
-            uplink.cipher,
-            &uplink.password,
-            uplink.fwmark,
-            "probe_dns",
-            None,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to connect DNS probe websocket for uplink {}",
-                uplink.name
-            )
-        })?
+        match uplink.transport {
+            UplinkTransport::Websocket => {
+                let udp_ws_url = uplink
+                    .udp_ws_url
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name))?;
+                UdpWsTransport::connect(
+                    udp_ws_url,
+                    uplink.udp_ws_mode,
+                    uplink.cipher,
+                    &uplink.password,
+                    uplink.fwmark,
+                    "probe_dns",
+                    None,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect DNS probe websocket for uplink {}",
+                        uplink.name
+                    )
+                })?
+            }
+            UplinkTransport::Shadowsocks => {
+                let socket = connect_shadowsocks_udp_with_source(
+                    uplink
+                        .udp_addr
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name))?,
+                    uplink.fwmark,
+                    "probe_dns",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect DNS probe shadowsocks socket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")
+            }
+        }
     };
 
     let dns_server = probe.target_addr()?;
@@ -2285,17 +2458,15 @@ async fn run_dns_probe(
         uplink = %uplink.name,
         transport = "udp",
         probe = "dns",
-        url = %udp_ws_url,
-        "closing probe websocket after successful DNS probe"
+        "closing probe transport after successful DNS probe"
     );
     if let Err(error) = transport.close().await {
         debug!(
             uplink = %uplink.name,
             transport = "udp",
             probe = "dns",
-            url = %udp_ws_url,
             error = %format!("{error:#}"),
-            "probe websocket close returned error during teardown"
+            "probe transport close returned error during teardown"
         );
     }
 
@@ -2350,11 +2521,11 @@ fn supports_transport_for_scope(
     match scope {
         RoutingScope::Global => match transport {
             TransportKind::Tcp => true,
-            TransportKind::Udp => uplink.udp_ws_url.is_some(),
+            TransportKind::Udp => uplink.supports_udp(),
         },
         _ => match transport {
             TransportKind::Tcp => true,
-            TransportKind::Udp => uplink.udp_ws_url.is_some(),
+            TransportKind::Udp => uplink.supports_udp(),
         },
     }
 }
@@ -2616,7 +2787,7 @@ mod tests {
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
         WsProbeConfig,
     };
-    use crate::types::{CipherKind, TargetAddr, WsTransportMode};
+    use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
     use tokio::time::Instant;
 
     fn lb() -> LoadBalancingConfig {
@@ -2681,10 +2852,13 @@ mod tests {
     fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         UplinkConfig {
             name: name.to_string(),
-            tcp_ws_url: Url::parse(url).unwrap(),
+            transport: UplinkTransport::Websocket,
+            tcp_ws_url: Some(Url::parse(url).unwrap()),
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
             udp_ws_mode: WsTransportMode::Http1,
+            tcp_addr: None,
+            udp_addr: None,
             cipher: CipherKind::Chacha20IetfPoly1305,
             password: "secret".to_string(),
             weight: 1.0,

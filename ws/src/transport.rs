@@ -22,8 +22,9 @@ use sockudo_ws::{
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::net::TcpStream;
-use tokio::net::lookup_host;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::{TcpStream, UdpSocket, lookup_host};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
@@ -36,14 +37,15 @@ use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::crypto::{
-    SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, decrypt_udp_packet_2022, derive_subkey,
-    encrypt, encrypt_udp_packet, encrypt_udp_packet_2022, increment_nonce,
+    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet,
+    decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet,
+    encrypt_udp_packet_2022, increment_nonce,
 };
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
-use crate::types::{CipherKind, TargetAddr, WsTransportMode};
+use crate::types::{CipherKind, ServerAddr, TargetAddr, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
@@ -381,6 +383,39 @@ impl Sink<Message> for AnyWsStream {
 type WsSink = SplitSink<AnyWsStream, Message>;
 type WsStream = SplitStream<AnyWsStream>;
 
+enum TcpWriteTransport {
+    Websocket {
+        data_tx: Option<mpsc::Sender<Message>>,
+        _writer_task: AbortOnDrop,
+    },
+    Socket {
+        writer: OwnedWriteHalf,
+    },
+}
+
+enum TcpReadTransport {
+    Websocket {
+        stream: WsStream,
+        ctrl_tx: mpsc::Sender<Message>,
+    },
+    Socket {
+        reader: OwnedReadHalf,
+    },
+}
+
+enum UdpTransport {
+    Websocket {
+        data_tx: mpsc::Sender<Message>,
+        ctrl_tx: mpsc::Sender<Message>,
+        stream: Mutex<WsStream>,
+        _writer_task: AbortOnDrop,
+        _keepalive_task: Option<AbortOnDrop>,
+    },
+    Socket {
+        socket: UdpSocket,
+    },
+}
+
 struct Ss2022TcpWriterState {
     request_salt: Vec<u8>,
     header_sent: bool,
@@ -399,8 +434,7 @@ struct Ss2022UdpState {
 }
 
 pub struct TcpShadowsocksWriter {
-    data_tx: Option<mpsc::Sender<Message>>,
-    _writer_task: AbortOnDrop,
+    transport: TcpWriteTransport,
     cipher: CipherKind,
     key: Vec<u8>,
     nonce: [u8; 12],
@@ -410,8 +444,7 @@ pub struct TcpShadowsocksWriter {
 }
 
 pub struct TcpShadowsocksReader {
-    stream: WsStream,
-    ctrl_tx: mpsc::Sender<Message>,
+    transport: TcpReadTransport,
     cipher: CipherKind,
     master_key: Vec<u8>,
     key: Option<Vec<u8>>,
@@ -427,11 +460,7 @@ pub struct TcpShadowsocksReader {
 }
 
 pub struct UdpWsTransport {
-    data_tx: mpsc::Sender<Message>,
-    ctrl_tx: mpsc::Sender<Message>,
-    stream: Mutex<WsStream>,
-    _writer_task: AbortOnDrop,
-    _keepalive_task: Option<AbortOnDrop>,
+    transport: UdpTransport,
     cipher: CipherKind,
     master_key: Vec<u8>,
     ss2022: Option<Mutex<Ss2022UdpState>>,
@@ -507,6 +536,50 @@ pub async fn connect_websocket_with_source(
             }
         },
     }
+}
+
+pub async fn connect_shadowsocks_tcp_with_source(
+    addr: &ServerAddr,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<TcpStream> {
+    let mut connect_guard = TransportConnectGuard::new(source, "tcp");
+    let server_addr = resolve_server_addr(addr).await?;
+    let stream = connect_tcp_socket(server_addr, fwmark).await?;
+    connect_guard.finish("success");
+    Ok(stream)
+}
+
+pub async fn connect_shadowsocks_udp_with_source(
+    addr: &ServerAddr,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<UdpSocket> {
+    let mut connect_guard = TransportConnectGuard::new(source, "udp");
+    let server_addr = resolve_server_addr(addr).await?;
+    let bind_addr = bind_addr_for(server_addr);
+    let socket = if fwmark.is_some() {
+        UdpSocket::from_std(bind_udp_socket(bind_addr, fwmark)?)
+            .context("failed to adopt UDP socket into tokio")?
+    } else {
+        UdpSocket::bind(bind_addr)
+            .await
+            .with_context(|| format!("failed to bind UDP socket on {bind_addr}"))?
+    };
+    socket
+        .connect(server_addr)
+        .await
+        .with_context(|| format!("failed to connect UDP socket to {server_addr}"))?;
+    connect_guard.finish("success");
+    Ok(socket)
+}
+
+async fn resolve_server_addr(addr: &ServerAddr) -> Result<SocketAddr> {
+    lookup_host((addr.host(), addr.port()))
+        .await
+        .with_context(|| format!("failed to resolve {}", addr))?
+        .next()
+        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
 }
 
 fn unix_timestamp_secs() -> Result<u64> {
@@ -611,8 +684,10 @@ impl TcpShadowsocksWriter {
         let request_salt = salt.clone();
         Ok((
             Self {
-                data_tx: Some(data_tx),
-                _writer_task: AbortOnDrop(writer_task),
+                transport: TcpWriteTransport::Websocket {
+                    data_tx: Some(data_tx),
+                    _writer_task: AbortOnDrop(writer_task),
+                },
                 cipher,
                 key: derive_subkey(cipher, master_key, &salt)?,
                 nonce: [0u8; 12],
@@ -625,6 +700,28 @@ impl TcpShadowsocksWriter {
             },
             ctrl_tx,
         ))
+    }
+
+    pub(crate) fn connect_socket(
+        writer: OwnedWriteHalf,
+        cipher: CipherKind,
+        master_key: &[u8],
+        lifetime: Arc<UpstreamTransportGuard>,
+    ) -> Result<Self> {
+        let mut salt = vec![0u8; cipher.salt_len()];
+        rand::thread_rng().fill_bytes(&mut salt);
+        Ok(Self {
+            transport: TcpWriteTransport::Socket { writer },
+            cipher,
+            key: derive_subkey(cipher, master_key, &salt)?,
+            nonce: [0u8; 12],
+            pending_salt: Some(salt.clone()),
+            ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
+                request_salt: salt,
+                header_sent: false,
+            }),
+            _lifetime: lifetime,
+        })
     }
 
     pub fn request_salt(&self) -> Option<&[u8]> {
@@ -662,13 +759,8 @@ impl TcpShadowsocksWriter {
                 frame.extend_from_slice(&encrypted_variable);
                 state.header_sent = true;
 
-                self.data_tx
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("writer already closed"))?
-                    .send(Message::Binary(frame.into()))
-                    .await
-                    .context("failed to send encrypted frame")?;
-                return Ok(());
+        self.write_frame(frame).await?;
+        return Ok(());
             }
         }
 
@@ -688,19 +780,35 @@ impl TcpShadowsocksWriter {
         frame.extend_from_slice(&encrypted_len);
         frame.extend_from_slice(&encrypted_payload);
 
-        self.data_tx
-            .as_ref()
-            .ok_or_else(|| anyhow!("writer already closed"))?
-            .send(Message::Binary(frame.into()))
-            .await
-            .context("failed to send encrypted frame")?;
+        self.write_frame(frame).await?;
         Ok(())
     }
 
     pub async fn close(&mut self) -> Result<()> {
-        // Drop the sender; the writer task will flush and close the underlying sink.
-        drop(self.data_tx.take());
+        match &mut self.transport {
+            TcpWriteTransport::Websocket { data_tx, .. } => {
+                drop(data_tx.take());
+            }
+            TcpWriteTransport::Socket { writer } => {
+                writer.shutdown().await.context("socket shutdown failed")?;
+            }
+        }
         Ok(())
+    }
+
+    async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()> {
+        match &mut self.transport {
+            TcpWriteTransport::Websocket { data_tx, .. } => data_tx
+                .as_ref()
+                .ok_or_else(|| anyhow!("writer already closed"))?
+                .send(Message::Binary(frame.into()))
+                .await
+                .context("failed to send encrypted frame"),
+            TcpWriteTransport::Socket { writer } => writer
+                .write_all(&frame)
+                .await
+                .context("failed to write encrypted frame to socket"),
+        }
     }
 }
 
@@ -713,8 +821,26 @@ impl TcpShadowsocksReader {
         ctrl_tx: mpsc::Sender<Message>,
     ) -> Self {
         Self {
-            stream,
-            ctrl_tx,
+            transport: TcpReadTransport::Websocket { stream, ctrl_tx },
+            cipher,
+            master_key: master_key.to_vec(),
+            key: None,
+            nonce: [0u8; 12],
+            buffer: Vec::new(),
+            ss2022: None,
+            _lifetime: lifetime,
+            closed_cleanly: false,
+        }
+    }
+
+    pub(crate) fn new_socket(
+        reader: OwnedReadHalf,
+        cipher: CipherKind,
+        master_key: &[u8],
+        lifetime: Arc<UpstreamTransportGuard>,
+    ) -> Self {
+        Self {
+            transport: TcpReadTransport::Socket { reader },
             cipher,
             master_key: master_key.to_vec(),
             key: None,
@@ -794,37 +920,48 @@ impl TcpShadowsocksReader {
     }
 
     async fn read_exact_from_ws(&mut self, len: usize) -> Result<Vec<u8>> {
-        while self.buffer.len() < len {
-            let next = match self.stream.next().await {
-                None => {
-                    self.closed_cleanly = true;
-                    bail!("websocket closed");
+        match &mut self.transport {
+            TcpReadTransport::Socket { reader } => {
+                let mut buf = vec![0u8; len];
+                if let Err(err) = reader.read_exact(&mut buf).await {
+                    if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                        self.closed_cleanly = true;
+                        bail!("socket closed");
+                    }
+                    return Err(err).context("socket read failed");
                 }
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => return Err(anyhow!("websocket read failed: {e}")),
-            };
+                Ok(buf)
+            }
+            TcpReadTransport::Websocket { stream, ctrl_tx } => {
+                while self.buffer.len() < len {
+                    let next = match stream.next().await {
+                        None => {
+                            self.closed_cleanly = true;
+                            bail!("websocket closed");
+                        }
+                        Some(Ok(msg)) => msg,
+                        Some(Err(e)) => return Err(anyhow!("websocket read failed: {e}")),
+                    };
 
-            match next {
-                Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
-                Message::Close(_) => {
-                    self.closed_cleanly = true;
-                    bail!("websocket closed");
+                    match next {
+                        Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
+                        Message::Close(_) => {
+                            self.closed_cleanly = true;
+                            bail!("websocket closed");
+                        }
+                        Message::Ping(payload) => {
+                            let _ = ctrl_tx.try_send(Message::Pong(payload));
+                        }
+                        Message::Pong(_) => {}
+                        Message::Text(_) => bail!("unexpected text websocket frame"),
+                        Message::Frame(_) => {}
+                    }
                 }
-                Message::Ping(payload) => {
-                    // Send Pong through the priority channel so it is not
-                    // delayed behind queued binary data frames.
-                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
-                }
-                Message::Pong(_) => {}
-                Message::Text(_) => bail!("unexpected text websocket frame"),
-                Message::Frame(_) => {}
+
+                let tail = self.buffer.split_off(len);
+                Ok(std::mem::replace(&mut self.buffer, tail))
             }
         }
-
-        // split_off(len) returns buffer[len..], leaving buffer[..len] in place;
-        // swap so we return the head and retain the tail.
-        let tail = self.buffer.split_off(len);
-        Ok(std::mem::replace(&mut self.buffer, tail))
     }
 }
 
@@ -895,11 +1032,37 @@ impl UdpWsTransport {
             }))
         });
         Self {
-            data_tx,
-            ctrl_tx,
-            stream: Mutex::new(stream),
-            _writer_task: AbortOnDrop(writer_task),
-            _keepalive_task: keepalive_task,
+            transport: UdpTransport::Websocket {
+                data_tx,
+                ctrl_tx,
+                stream: Mutex::new(stream),
+                _writer_task: AbortOnDrop(writer_task),
+                _keepalive_task: keepalive_task,
+            },
+            cipher,
+            master_key: cipher
+                .derive_master_key(password)
+                .expect("validated cipher password"),
+            ss2022: cipher.is_ss2022().then(|| {
+                Mutex::new(Ss2022UdpState {
+                    client_session_id: rand::random::<u64>(),
+                    next_client_packet_id: 0,
+                    server_session_id: None,
+                    last_server_packet_id: None,
+                })
+            }),
+            _lifetime: UpstreamTransportGuard::new(source, "udp"),
+        }
+    }
+
+    pub(crate) fn from_socket(
+        socket: UdpSocket,
+        cipher: CipherKind,
+        password: &str,
+        source: &'static str,
+    ) -> Self {
+        Self {
+            transport: UdpTransport::Socket { socket },
             cipher,
             master_key: cipher
                 .derive_master_key(password)
@@ -952,62 +1115,82 @@ impl UdpWsTransport {
         } else {
             encrypt_udp_packet(self.cipher, &self.master_key, payload)?
         };
-        self.data_tx
-            .send(Message::Binary(packet.into()))
-            .await
-            .context("failed to send UDP websocket frame")?;
-        Ok(())
+        match &self.transport {
+            UdpTransport::Websocket { data_tx, .. } => data_tx
+                .send(Message::Binary(packet.into()))
+                .await
+                .context("failed to send UDP websocket frame"),
+            UdpTransport::Socket { socket } => socket
+                .send(&packet)
+                .await
+                .context("failed to send UDP shadowsocks packet")
+                .map(|_| ()),
+        }
     }
 
     pub async fn read_packet(&self) -> Result<Vec<u8>> {
-        let mut stream = self.stream.lock().await;
-        loop {
-            let message = stream
-                .next()
-                .await
-                .ok_or_else(|| anyhow!("websocket closed"))?
-                .context("websocket read failed")?;
-            match message {
-                Message::Binary(bytes) => {
-                    if let Some(state) = &self.ss2022 {
-                        let expected_client_session_id = state.lock().await.client_session_id;
-                        let (session_id, packet_id, payload) = decrypt_udp_packet_2022(
-                            self.cipher,
-                            &self.master_key,
-                            expected_client_session_id,
-                            &bytes,
-                        )?;
-                        let mut state = state.lock().await;
-                        if let Some(last_server_packet_id) = state.last_server_packet_id {
-                            if state.server_session_id == Some(session_id)
-                                && packet_id <= last_server_packet_id
-                            {
-                                bail!("duplicate or out-of-order ss2022 UDP packet");
-                            }
+        match &self.transport {
+            UdpTransport::Socket { socket } => {
+                let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD + 128];
+                let len = socket
+                    .recv(&mut buf)
+                    .await
+                    .context("failed to read UDP shadowsocks packet")?;
+                self.decrypt_udp_bytes(&buf[..len]).await
+            }
+            UdpTransport::Websocket {
+                stream, ctrl_tx, ..
+            } => {
+                let mut stream = stream.lock().await;
+                loop {
+                    let message = stream
+                        .next()
+                        .await
+                        .ok_or_else(|| anyhow!("websocket closed"))?
+                        .context("websocket read failed")?;
+                    match message {
+                        Message::Binary(bytes) => return self.decrypt_udp_bytes(&bytes).await,
+                        Message::Close(_) => bail!("websocket closed"),
+                        Message::Ping(payload) => {
+                            let _ = ctrl_tx.try_send(Message::Pong(payload));
                         }
-                        state.server_session_id = Some(session_id);
-                        state.last_server_packet_id = Some(packet_id);
-                        return Ok(payload);
+                        Message::Pong(_) => {}
+                        Message::Text(_) => bail!("unexpected text websocket frame"),
+                        Message::Frame(_) => {}
                     }
-                    return decrypt_udp_packet(self.cipher, &self.master_key, &bytes);
                 }
-                Message::Close(_) => bail!("websocket closed"),
-                Message::Ping(payload) => {
-                    // Send Pong through the priority channel so it is not
-                    // delayed behind queued binary data frames.
-                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
-                }
-                Message::Pong(_) => {}
-                Message::Text(_) => bail!("unexpected text websocket frame"),
-                Message::Frame(_) => {}
             }
         }
     }
 
     pub async fn close(&self) -> Result<()> {
-        // Signal the writer task to flush pending frames and close the sink.
-        let _ = self.data_tx.send(Message::Close(None)).await;
+        if let UdpTransport::Websocket { data_tx, .. } = &self.transport {
+            let _ = data_tx.send(Message::Close(None)).await;
+        }
         Ok(())
+    }
+
+    async fn decrypt_udp_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
+        if let Some(state) = &self.ss2022 {
+            let expected_client_session_id = state.lock().await.client_session_id;
+            let (session_id, packet_id, payload) = decrypt_udp_packet_2022(
+                self.cipher,
+                &self.master_key,
+                expected_client_session_id,
+                bytes,
+            )?;
+            let mut state = state.lock().await;
+            if let Some(last_server_packet_id) = state.last_server_packet_id {
+                if state.server_session_id == Some(session_id) && packet_id <= last_server_packet_id
+                {
+                    bail!("duplicate or out-of-order ss2022 UDP packet");
+                }
+            }
+            state.server_session_id = Some(session_id);
+            state.last_server_packet_id = Some(packet_id);
+            return Ok(payload);
+        }
+        decrypt_udp_packet(self.cipher, &self.master_key, bytes)
     }
 }
 

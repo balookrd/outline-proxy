@@ -1,6 +1,6 @@
 # outline-ws-rust
 
-`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3.
+`outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to either Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3, or to direct Shadowsocks socket uplinks.
 
 It supports:
 
@@ -97,6 +97,7 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
+- direct Shadowsocks TCP/UDP socket uplinks
 - transport fallback:
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
@@ -311,6 +312,7 @@ h3_downgrade_secs = 60
 
 [[uplinks]]
 name = "primary"
+transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_ws_mode = "h3"
@@ -322,6 +324,7 @@ password = "Secret0"
 
 [[uplinks]]
 name = "backup"
+transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
 tcp_ws_mode = "h2"
@@ -329,11 +332,21 @@ udp_ws_url = "wss://backup.example.com/SECRET/udp"
 udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
+
+[[uplinks]]
+name = "direct-ss"
+transport = "shadowsocks"
+tcp_addr = "ss.example.com:8388"
+udp_addr = "ss.example.com:8388"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
 ```
 
 ### Key config behavior
 
-- `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3`.
+- `transport` accepts `websocket` (default) or `shadowsocks`.
+- `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3` and are only used with `transport = "websocket"`.
+- `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.

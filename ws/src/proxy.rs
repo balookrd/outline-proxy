@@ -17,8 +17,9 @@ use crate::socks5::{
 };
 use crate::transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source,
 };
-use crate::types::{TargetAddr, socket_addr_to_target};
+use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
 struct ActiveUdpTransport {
@@ -416,6 +417,20 @@ async fn connect_tcp_uplink(
     candidate: &crate::uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    if candidate.uplink.transport == UplinkTransport::Shadowsocks {
+        let stream = connect_shadowsocks_tcp_with_source(
+            candidate
+                .uplink
+                .tcp_addr
+                .as_ref()
+                .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", candidate.uplink.name))?,
+            candidate.uplink.fwmark,
+            "socks_tcp",
+        )
+        .await?;
+        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target, "socks_tcp").await;
+    }
+
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
@@ -452,6 +467,30 @@ async fn do_tcp_ss_setup(
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt);
+    writer
+        .send_chunk(&target.to_wire_bytes()?)
+        .await
+        .context("failed to send target address")?;
+    Ok((writer, reader))
+}
+
+async fn do_tcp_ss_setup_socket(
+    stream: TcpStream,
+    uplink: &crate::config::UplinkConfig,
+    target: &TargetAddr,
+    source: &'static str,
+) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    let (reader_half, writer_half) = stream.into_split();
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let lifetime = UpstreamTransportGuard::new(source, "tcp");
+    let mut writer = TcpShadowsocksWriter::connect_socket(
+        writer_half,
+        uplink.cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )?;
+    let reader = TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
+        .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await

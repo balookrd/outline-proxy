@@ -9,7 +9,7 @@ use serde::Deserialize;
 use tokio::fs;
 use url::Url;
 
-use crate::types::{CipherKind, WsTransportMode};
+use crate::types::{CipherKind, ServerAddr, UplinkTransport, WsTransportMode};
 
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "SOCKS5 -> Outline over WebSocket proxy")]
@@ -29,11 +29,20 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_TCP_WS_URL")]
     pub tcp_ws_url: Option<Url>,
 
+    #[arg(long, env = "OUTLINE_TRANSPORT")]
+    pub transport: Option<UplinkTransport>,
+
     #[arg(long, env = "OUTLINE_TCP_WS_MODE", help = "http1, h2, or h3")]
     pub tcp_ws_mode: Option<WsTransportMode>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
     pub udp_ws_url: Option<Url>,
+
+    #[arg(long, env = "OUTLINE_TCP_ADDR")]
+    pub tcp_addr: Option<ServerAddr>,
+
+    #[arg(long, env = "OUTLINE_UDP_ADDR")]
+    pub udp_addr: Option<ServerAddr>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_MODE", help = "http1, h2, or h3")]
     pub udp_ws_mode: Option<WsTransportMode>,
@@ -78,14 +87,26 @@ pub struct AppConfig {
 #[derive(Debug, Clone)]
 pub struct UplinkConfig {
     pub name: String,
-    pub tcp_ws_url: Url,
+    pub transport: UplinkTransport,
+    pub tcp_ws_url: Option<Url>,
     pub tcp_ws_mode: WsTransportMode,
     pub udp_ws_url: Option<Url>,
     pub udp_ws_mode: WsTransportMode,
+    pub tcp_addr: Option<ServerAddr>,
+    pub udp_addr: Option<ServerAddr>,
     pub cipher: CipherKind,
     pub password: String,
     pub weight: f64,
     pub fwmark: Option<u32>,
+}
+
+impl UplinkConfig {
+    pub fn supports_udp(&self) -> bool {
+        match self.transport {
+            UplinkTransport::Websocket => self.udp_ws_url.is_some(),
+            UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,10 +226,13 @@ pub struct TunTcpConfig {
 #[derive(Debug, Deserialize)]
 struct ConfigFile {
     socks5: Option<Socks5Section>,
+    transport: Option<UplinkTransport>,
     tcp_ws_url: Option<Url>,
     tcp_ws_mode: Option<WsTransportMode>,
     udp_ws_url: Option<Url>,
     udp_ws_mode: Option<WsTransportMode>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
     method: Option<CipherKind>,
     password: Option<String>,
     fwmark: Option<u32>,
@@ -237,10 +261,13 @@ struct Socks5UserSection {
 
 #[derive(Debug, Deserialize, Clone)]
 struct OutlineSection {
+    transport: Option<UplinkTransport>,
     tcp_ws_url: Option<Url>,
     tcp_ws_mode: Option<WsTransportMode>,
     udp_ws_url: Option<Url>,
     udp_ws_mode: Option<WsTransportMode>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
     method: Option<CipherKind>,
     password: Option<String>,
     fwmark: Option<u32>,
@@ -278,10 +305,13 @@ struct TunTcpSection {
 #[derive(Debug, Deserialize, Clone)]
 struct UplinkSection {
     name: Option<String>,
+    transport: Option<UplinkTransport>,
     tcp_ws_url: Option<Url>,
     tcp_ws_mode: Option<WsTransportMode>,
     udp_ws_url: Option<Url>,
     udp_ws_mode: Option<WsTransportMode>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
     method: Option<CipherKind>,
     password: Option<String>,
     weight: Option<f64>,
@@ -482,9 +512,12 @@ fn validate_socks5_auth_user(
 
 fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
     let top_level_present = file.tcp_ws_url.is_some()
+        || file.transport.is_some()
         || file.tcp_ws_mode.is_some()
         || file.udp_ws_url.is_some()
         || file.udp_ws_mode.is_some()
+        || file.tcp_addr.is_some()
+        || file.udp_addr.is_some()
         || file.method.is_some()
         || file.password.is_some()
         || file.fwmark.is_some()
@@ -496,10 +529,13 @@ fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
         (false, None) => None,
         (false, Some(legacy)) => Some(legacy),
         (true, None) => Some(OutlineSection {
+            transport: file.transport,
             tcp_ws_url: file.tcp_ws_url.clone(),
             tcp_ws_mode: file.tcp_ws_mode,
             udp_ws_url: file.udp_ws_url.clone(),
             udp_ws_mode: file.udp_ws_mode,
+            tcp_addr: file.tcp_addr.clone(),
+            udp_addr: file.udp_addr.clone(),
             method: file.method,
             password: file.password.clone(),
             fwmark: file.fwmark,
@@ -508,10 +544,13 @@ fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
             load_balancing: file.load_balancing.clone(),
         }),
         (true, Some(legacy)) => Some(OutlineSection {
+            transport: file.transport.or(legacy.transport),
             tcp_ws_url: file.tcp_ws_url.clone().or(legacy.tcp_ws_url),
             tcp_ws_mode: file.tcp_ws_mode.or(legacy.tcp_ws_mode),
             udp_ws_url: file.udp_ws_url.clone().or(legacy.udp_ws_url),
             udp_ws_mode: file.udp_ws_mode.or(legacy.udp_ws_mode),
+            tcp_addr: file.tcp_addr.clone().or(legacy.tcp_addr),
+            udp_addr: file.udp_addr.clone().or(legacy.udp_addr),
             method: file.method.or(legacy.method),
             password: file.password.clone().or(legacy.password),
             fwmark: file.fwmark.or(legacy.fwmark),
@@ -546,9 +585,12 @@ impl DnsProbeConfig {
 
 fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<UplinkConfig>> {
     let cli_override_requested = args.tcp_ws_url.is_some()
+        || args.transport.is_some()
         || args.tcp_ws_mode.is_some()
         || args.udp_ws_url.is_some()
         || args.udp_ws_mode.is_some()
+        || args.tcp_addr.is_some()
+        || args.udp_addr.is_some()
         || args.method.is_some()
         || args.password.is_some()
         || args.fwmark.is_some();
@@ -556,6 +598,9 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
     if cli_override_requested {
         return Ok(vec![build_uplink(
             "cli".to_string(),
+            args.transport
+                .or_else(|| outline.and_then(|o| o.transport))
+                .unwrap_or_default(),
             args.tcp_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|o| o.tcp_ws_url.clone())),
@@ -566,6 +611,12 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
                 .or_else(|| outline.and_then(|o| o.udp_ws_url.clone())),
             args.udp_ws_mode
                 .or_else(|| outline.and_then(|o| o.udp_ws_mode)),
+            args.tcp_addr
+                .clone()
+                .or_else(|| outline.and_then(|o| o.tcp_addr.clone())),
+            args.udp_addr
+                .clone()
+                .or_else(|| outline.and_then(|o| o.udp_addr.clone())),
             args.method.or_else(|| outline.and_then(|o| o.method)),
             args.password
                 .clone()
@@ -583,10 +634,13 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
                     .name
                     .clone()
                     .unwrap_or_else(|| format!("uplink-{}", index + 1)),
+                uplink.transport.unwrap_or_default(),
                 uplink.tcp_ws_url.clone(),
                 uplink.tcp_ws_mode,
                 uplink.udp_ws_url.clone(),
                 uplink.udp_ws_mode,
+                uplink.tcp_addr.clone(),
+                uplink.udp_addr.clone(),
                 uplink.method,
                 uplink.password.clone(),
                 uplink.weight,
@@ -601,10 +655,13 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
 
     Ok(vec![build_uplink(
         "default".to_string(),
+        outline.and_then(|o| o.transport).unwrap_or_default(),
         outline.and_then(|o| o.tcp_ws_url.clone()),
         outline.and_then(|o| o.tcp_ws_mode),
         outline.and_then(|o| o.udp_ws_url.clone()),
         outline.and_then(|o| o.udp_ws_mode),
+        outline.and_then(|o| o.tcp_addr.clone()),
+        outline.and_then(|o| o.udp_addr.clone()),
         outline.and_then(|o| o.method),
         outline.and_then(|o| o.password.clone()),
         Some(1.0),
@@ -614,10 +671,13 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
 
 fn build_uplink(
     name: String,
+    transport: UplinkTransport,
     tcp_ws_url: Option<Url>,
     tcp_ws_mode: Option<WsTransportMode>,
     udp_ws_url: Option<Url>,
     udp_ws_mode: Option<WsTransportMode>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
     cipher: Option<CipherKind>,
     password: Option<String>,
     weight: Option<f64>,
@@ -636,12 +696,43 @@ fn build_uplink(
 
     Ok(UplinkConfig {
         name,
-        tcp_ws_url: tcp_ws_url.ok_or_else(|| {
-            anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
-        })?,
+        transport,
+        tcp_ws_url: match transport {
+            UplinkTransport::Websocket => Some(tcp_ws_url.ok_or_else(|| {
+                anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
+            })?),
+            UplinkTransport::Shadowsocks => {
+                if tcp_ws_url.is_some() || udp_ws_url.is_some() {
+                    bail!(
+                        "websocket uplink fields are not valid for transport=shadowsocks; use tcp_addr/udp_addr"
+                    );
+                }
+                None
+            }
+        },
         tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
-        udp_ws_url,
+        udp_ws_url: match transport {
+            UplinkTransport::Websocket => udp_ws_url,
+            UplinkTransport::Shadowsocks => None,
+        },
         udp_ws_mode: udp_ws_mode.unwrap_or_default(),
+        tcp_addr: match transport {
+            UplinkTransport::Websocket => {
+                if tcp_addr.is_some() || udp_addr.is_some() {
+                    bail!(
+                        "socket uplink fields are not valid for transport=websocket; use tcp_ws_url/udp_ws_url"
+                    );
+                }
+                None
+            }
+            UplinkTransport::Shadowsocks => Some(tcp_addr.ok_or_else(|| {
+                anyhow!("missing tcp_addr: set it in config.toml or pass --tcp-addr")
+            })?),
+        },
+        udp_addr: match transport {
+            UplinkTransport::Websocket => None,
+            UplinkTransport::Shadowsocks => udp_addr,
+        },
         cipher,
         password,
         weight,
@@ -1385,6 +1476,34 @@ mod tests {
         let args = super::Args::parse_from(["test"]);
         let config = super::load_config(&path, &args).await.unwrap();
         assert!(!config.probe.enabled());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn load_config_supports_direct_shadowsocks_uplink() {
+        let path = std::env::temp_dir().join("outline-ws-rust-direct-ss.toml");
+        std::fs::write(
+            &path,
+            r#"
+            transport = "shadowsocks"
+            tcp_addr = "ss.example.com:8388"
+            udp_addr = "ss.example.com:8388"
+            method = "chacha20-ietf-poly1305"
+            password = "Secret0"
+            "#,
+        )
+        .unwrap();
+
+        let args = super::Args::parse_from(["test"]);
+        let config = super::load_config(&path, &args).await.unwrap();
+        assert_eq!(config.uplinks.len(), 1);
+        let uplink = &config.uplinks[0];
+        assert_eq!(uplink.transport, crate::types::UplinkTransport::Shadowsocks);
+        assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
+        assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
+        assert!(uplink.tcp_ws_url.is_none());
+        assert!(uplink.udp_ws_url.is_none());
 
         let _ = std::fs::remove_file(path);
     }
