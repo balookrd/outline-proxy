@@ -165,6 +165,7 @@ cargo run -- --config ./config.toml
 | `h3_cert_path` / `h3_key_path` | Обязательны для включения HTTP/3 |
 | `metrics_listen` | Опциональный Prometheus-слушатель |
 | `metrics_path` | Путь Prometheus-эндпоинта |
+| `prefer_ipv4_upstream` | Предпочитать IPv4 для upstream DNS и connect; полезно, если IPv6-путь ломает трафик |
 | `client_active_ttl_secs` | TTL в секундах для вычисления `client_active` / `client_up` |
 | `memory_trim_interval_secs` | На Linux периодически обновляет статистику jemalloc и включает фоновую очистку; по умолчанию `60`, `0` — отключить |
 | `udp_nat_idle_timeout_secs` | Время жизни UDP NAT-записи после последней исходящей датаграммы; по умолчанию `300` |
@@ -206,6 +207,7 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_H3_KEY_PATH`
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
+- `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
 - `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`

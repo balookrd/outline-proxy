@@ -22,6 +22,11 @@ listen = "0.0.0.0:3000"
 # Optional Prometheus listener. Prefer binding this to loopback or a private network.
 # metrics_listen = "127.0.0.1:9090"
 metrics_path = "/metrics"
+
+# Prefer IPv4 when resolving upstream targets.
+# Useful when some clients or CDNs break over IPv6 but work over IPv4.
+# prefer_ipv4_upstream = true
+
 client_active_ttl_secs = 300
 # On Linux with glibc, periodically returns free allocator pages to the OS after traffic spikes.
 # Set to 0 to disable.

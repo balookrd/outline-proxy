@@ -155,6 +155,7 @@ pub struct Metrics {
     udp_relay_duration_seconds: HistogramVec<UserProtocolResultLabels>,
     udp_payload_bytes_total: CounterVec<UserProtocolDirectionLabels>,
     udp_response_datagrams_total: CounterVec<UserProtocolLabels>,
+    udp_oversized_datagrams_dropped_total: CounterVec<UserProtocolDirectionLabels>,
     udp_nat_active_entries: AtomicI64,
     udp_nat_entries_created_total: AtomicU64,
     udp_nat_entries_evicted_total: AtomicU64,
@@ -188,6 +189,7 @@ impl Metrics {
             udp_relay_duration_seconds: HistogramVec::new(UDP_RELAY_BUCKETS),
             udp_payload_bytes_total: CounterVec::default(),
             udp_response_datagrams_total: CounterVec::default(),
+            udp_oversized_datagrams_dropped_total: CounterVec::default(),
             udp_nat_active_entries: AtomicI64::new(0),
             udp_nat_entries_created_total: AtomicU64::new(0),
             udp_nat_entries_evicted_total: AtomicU64::new(0),
@@ -328,6 +330,18 @@ impl Metrics {
         self.udp_response_datagrams_total.inc(
             UserProtocolLabels::new(user, protocol),
             count as u64,
+        );
+    }
+
+    pub fn record_udp_oversized_datagram_dropped(
+        &self,
+        user: &str,
+        protocol: Protocol,
+        direction: &'static str,
+    ) {
+        self.udp_oversized_datagrams_dropped_total.inc(
+            UserProtocolDirectionLabels::new(user, protocol, direction),
+            1,
         );
     }
 
@@ -737,6 +751,12 @@ impl Metrics {
             "outline_ss_udp_response_datagrams_total",
             "UDP response datagrams sent back to the client.",
             &self.udp_response_datagrams_total,
+        );
+        render_counter_family(
+            &mut out,
+            "outline_ss_udp_oversized_datagrams_dropped_total",
+            "UDP datagrams dropped because they exceeded the maximum payload size supported by the transport path.",
+            &self.udp_oversized_datagrams_dropped_total,
         );
 
         write_help(&mut out, "outline_ss_udp_nat_active_entries", "Current number of active UDP NAT table entries.");
@@ -1533,6 +1553,7 @@ mod tests {
             h3_key_path: None,
             metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
             metrics_path: "/metrics".to_owned(),
+            prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
             memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
