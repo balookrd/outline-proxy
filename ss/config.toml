@@ -3,6 +3,11 @@ listen = "0.0.0.0:3000"
 # IPv6 example:
 # listen = "[::]:3000"
 
+# Optional plain Shadowsocks listener.
+# This starts a separate TCP+UDP service on the same address for classic `ss://` clients.
+# It must differ from `listen`, `h3_listen`, and `metrics_listen`.
+# ss_listen = "0.0.0.0:8388"
+
 # Optional TLS for the TCP listener (HTTP/1.1 + HTTP/2 / RFC 8441).
 # If set, clients should use `wss://` for the TCP listener.
 # tls_cert_path = "./cert.pem"

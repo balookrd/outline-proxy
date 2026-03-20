@@ -155,6 +155,7 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 | Key | Purpose |
 | --- | --- |
 | `listen` | Main TCP listener for HTTP/1.1 and HTTP/2 |
+| `ss_listen` | Optional plain Shadowsocks TCP+UDP listener for classic `ss://` clients |
 | `tls_cert_path` / `tls_key_path` | Optional built-in TLS for the main listener |
 | `h3_listen` | Optional QUIC listener address for HTTP/3 |
 | `h3_cert_path` / `h3_key_path` | Required to enable HTTP/3 |
@@ -193,6 +194,7 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 
 - `OUTLINE_SS_CONFIG`
 - `OUTLINE_SS_LISTEN`
+- `OUTLINE_SS_SS_LISTEN`
 - `OUTLINE_SS_TLS_CERT_PATH`
 - `OUTLINE_SS_TLS_KEY_PATH`
 - `OUTLINE_SS_H3_LISTEN`
@@ -223,6 +225,8 @@ Per-user `method`, `fwmark`, `ws_path_tcp`, and `ws_path_udp` are configured in 
 
 `memory_trim_interval_secs` is a process-level setting rather than a per-user setting. It is most useful on Linux systems using glibc, where a long-running proxy can keep a high RSS after peak traffic even though the memory is already free inside the allocator.
 
+If `ss_listen` is set, the server also exposes a classic Shadowsocks service on that address. It binds both TCP and UDP on the same port and reuses the same users, ciphers, `fwmark`, and UDP NAT behavior as the WebSocket transports.
+
 ## Deployment Modes
 
 ### 1. Plain WebSocket
@@ -248,7 +252,19 @@ ws_path_udp = "/udp"
 
 This serves `wss://` on the main TCP listener and supports RFC 8441 on the same socket.
 
-### 3. Built-In HTTP/3
+### 3. Plain Shadowsocks Socket Service
+
+```toml
+listen = "0.0.0.0:3000"
+ss_listen = "0.0.0.0:8388"
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
+method = "chacha20-ietf-poly1305"
+```
+
+This keeps the existing WebSocket ingress and additionally exposes a native Shadowsocks TCP+UDP port for non-Outline clients.
+
+### 4. Built-In HTTP/3
 
 ```toml
 listen = "0.0.0.0:5443"
