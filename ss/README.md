@@ -150,14 +150,16 @@ cargo run -- --config ./config.toml
 
 A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents/outline-ss-rust/config.toml).
 
+Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_listen` is configured, the server exits with a configuration error. Only the listeners you set are started.
+
 ### Top-Level Settings
 
 | Key | Purpose |
 | --- | --- |
-| `listen` | Main TCP listener for HTTP/1.1 and HTTP/2 |
+| `listen` | Optional main TCP listener for HTTP/1.1 and HTTP/2 |
 | `ss_listen` | Optional plain Shadowsocks TCP+UDP listener for classic `ss://` clients |
 | `tls_cert_path` / `tls_key_path` | Optional built-in TLS for the main listener |
-| `h3_listen` | Optional QUIC listener address for HTTP/3 |
+| `h3_listen` | Optional QUIC listener address for HTTP/3; must be set explicitly when HTTP/3 is enabled |
 | `h3_cert_path` / `h3_key_path` | Required to enable HTTP/3 |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
