@@ -588,6 +588,7 @@ scrape_configs:
 - гистограмму длительности сессий
 - rolling p95 gauge сессий
 - payload bytes и UDP datagrams
+- счётчики дропа oversized UDP-пакетов для входящих клиентских пакетов и исходящих ответов клиенту
 - health, latency, EWMA RTT, штрафы, скор, cooldown, готовность standby аплинков. `uplink_health` экспортируется как `1` (здоров) или `0` (нездоров) только если проба выполнялась и подтвердила состояние. До первого цикла проб метрика отсутствует — пустое значение означает «неизвестно», а не нездоров.
 - счётчики последовательных TCP/UDP-сбоев и последовательных успехов на аплинк
 - состояние H3-даунгрейда на аплинк (оставшееся окно в миллисекундах)
@@ -636,6 +637,12 @@ Snapshot дескрипторов включает общее количеств
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` питают stat-панели `Selection Mode`, `Routing Scope`, `Global Active Uplink` и `Global Sticky Routes`.
 
 При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` и панель `UDP Forward Errors` разбивают их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
+Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}` и показывается в панели `Oversized UDP Drops`.
+
+Для прямых UDP uplink'ов с `transport = "shadowsocks"` действуют те же проверки на границах локального relay:
+
+- `incoming`: relay дропает пакет, если `target + payload` превышает лимит Shadowsocks AEAD payload ещё до шифрования и отправки в uplink
+- `outgoing`: relay дропает пакет, если декодированный ответ от upstream после сборки становится слишком большим для безопасной SOCKS5 UDP datagram перед отправкой клиенту
 
 Дашборды:
 

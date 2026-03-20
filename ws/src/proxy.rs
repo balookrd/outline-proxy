@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
@@ -17,7 +17,7 @@ use crate::socks5::{
 };
 use crate::transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source,
+    connect_shadowsocks_tcp_with_source, is_dropped_oversized_udp_error,
 };
 use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
@@ -28,6 +28,9 @@ struct ActiveUdpTransport {
     uplink_weight: f64,
     transport: Arc<UdpWsTransport>,
 }
+
+const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
+const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
 
 pub async fn handle_client(
     mut client: TcpStream,
@@ -284,6 +287,17 @@ async fn handle_udp_associate(
 
                 let mut payload = packet.target.to_wire_bytes()?;
                 payload.extend_from_slice(&packet.payload);
+                if payload.len() > MAX_CLIENT_UDP_PACKET_SIZE {
+                    warn!(
+                        %addr,
+                        target = %packet.target,
+                        payload_len = payload.len(),
+                        limit = MAX_CLIENT_UDP_PACKET_SIZE,
+                        "dropping oversized incoming UDP packet"
+                    );
+                    metrics::record_dropped_oversized_udp_packet("incoming");
+                    continue;
+                }
                 reconcile_global_udp_transport(
                     &uplinks_uplink,
                     &active_transport_uplink,
@@ -296,6 +310,9 @@ async fn handle_udp_associate(
                 };
                 let active_index = active_transport_uplink.lock().await.index;
                 if let Err(error) = transport.send_packet(&payload).await {
+                    if is_dropped_oversized_udp_error(&error) {
+                        continue;
+                    }
                     let replacement = failover_udp_transport(
                         &uplinks_uplink,
                         &active_transport_uplink,
@@ -303,7 +320,12 @@ async fn handle_udp_associate(
                         error,
                     )
                     .await?;
-                    replacement.transport.send_packet(&payload).await?;
+                    if let Err(error) = replacement.transport.send_packet(&payload).await {
+                        if is_dropped_oversized_udp_error(&error) {
+                            continue;
+                        }
+                        return Err(error);
+                    }
                     metrics::add_udp_datagram("client_to_upstream", &replacement.uplink_name);
                     metrics::add_bytes(
                         "udp",
@@ -364,6 +386,17 @@ async fn handle_udp_associate(
                                 anyhow!("received UDP response before client sent any packet")
                             })?;
                         let packet = build_udp_packet(&target, &payload[consumed..])?;
+                        if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
+                            warn!(
+                                %client_addr,
+                                target = %target,
+                                packet_len = packet.len(),
+                                limit = MAX_UDP_RELAY_PACKET_SIZE,
+                                "dropping oversized outgoing UDP response"
+                            );
+                            metrics::record_dropped_oversized_udp_packet("outgoing");
+                            continue;
+                        }
                         socket_downlink
                             .send_to(&packet, client_addr)
                             .await
@@ -376,6 +409,17 @@ async fn handle_udp_associate(
                     anyhow!("received UDP response before client sent any packet")
                 })?;
                 let packet = build_udp_packet(&target, &payload[consumed..])?;
+                if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
+                    warn!(
+                        %client_addr,
+                        target = %target,
+                        packet_len = packet.len(),
+                        limit = MAX_UDP_RELAY_PACKET_SIZE,
+                        "dropping oversized outgoing UDP response"
+                    );
+                    metrics::record_dropped_oversized_udp_packet("outgoing");
+                    continue;
+                }
                 metrics::add_udp_datagram("upstream_to_client", &active.1);
                 metrics::add_bytes("udp", "upstream_to_client", &active.1, payload.len());
                 socket_downlink

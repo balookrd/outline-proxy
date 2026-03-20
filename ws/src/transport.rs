@@ -51,6 +51,9 @@ type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
 
+const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
+const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
+
 pin_project! {
     struct H2WsStream {
         #[pin]
@@ -574,6 +577,10 @@ pub async fn connect_shadowsocks_udp_with_source(
     Ok(socket)
 }
 
+pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
+    format!("{error:#}").contains(OVERSIZED_UDP_UPLINK_DROP_ERR)
+}
+
 async fn resolve_server_addr(addr: &ServerAddr) -> Result<SocketAddr> {
     lookup_host((addr.host(), addr.port()))
         .await
@@ -731,8 +738,8 @@ impl TcpShadowsocksWriter {
     }
 
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
-        if payload.len() > self.cipher.max_payload_len() {
-            bail!("payload too large: {}", payload.len());
+        if payload.is_empty() {
+            return Ok(());
         }
 
         if let Some(state) = &mut self.ss2022 {
@@ -759,11 +766,18 @@ impl TcpShadowsocksWriter {
                 frame.extend_from_slice(&encrypted_variable);
                 state.header_sent = true;
 
-        self.write_frame(frame).await?;
-        return Ok(());
+                self.write_frame(frame).await?;
+                return Ok(());
             }
         }
 
+        for chunk in payload.chunks(self.cipher.max_payload_len()) {
+            self.send_payload_frame(chunk).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
         let len = (payload.len() as u16).to_be_bytes();
         let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
         increment_nonce(&mut self.nonce);
@@ -1120,11 +1134,23 @@ impl UdpWsTransport {
                 .send(Message::Binary(packet.into()))
                 .await
                 .context("failed to send UDP websocket frame"),
-            UdpTransport::Socket { socket } => socket
-                .send(&packet)
-                .await
-                .context("failed to send UDP shadowsocks packet")
-                .map(|_| ()),
+            UdpTransport::Socket { socket } => {
+                if packet.len() > MAX_UDP_SOCKET_PACKET_SIZE {
+                    warn!(
+                        packet_len = packet.len(),
+                        limit = MAX_UDP_SOCKET_PACKET_SIZE,
+                        cipher = %self.cipher,
+                        "dropping oversized UDP packet before shadowsocks uplink send"
+                    );
+                    crate::metrics::record_dropped_oversized_udp_packet("outgoing");
+                    bail!(OVERSIZED_UDP_UPLINK_DROP_ERR);
+                }
+                socket
+                    .send(&packet)
+                    .await
+                    .context("failed to send UDP shadowsocks packet")
+                    .map(|_| ())
+            }
         }
     }
 
@@ -1737,5 +1763,46 @@ impl tokio::io::AsyncWrite for H2Io {
             H2IoProj::Plain { inner } => inner.poll_shutdown(cx),
             H2IoProj::Tls { inner } => inner.poll_shutdown(cx),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn tcp_writer_splits_large_aead_payload_into_multiple_chunks() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 128 * 1024];
+            let mut total = 0usize;
+            loop {
+                let read = stream.read(&mut buf[total..]).await.unwrap();
+                if read == 0 {
+                    break;
+                }
+                total += read;
+            }
+            total
+        });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (_reader_half, writer_half) = stream.into_split();
+        let cipher = CipherKind::Chacha20IetfPoly1305;
+        let master_key = cipher.derive_master_key("password").unwrap();
+        let lifetime = UpstreamTransportGuard::new("test", "tcp");
+        let mut writer =
+            TcpShadowsocksWriter::connect_socket(writer_half, cipher, &master_key, lifetime)
+                .unwrap();
+        let payload = vec![0x42; 40_000];
+
+        writer.send_chunk(&payload).await.unwrap();
+        writer.close().await.unwrap();
+
+        let total = server.await.unwrap();
+        assert!(total > payload.len());
     }
 }
