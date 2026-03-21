@@ -469,6 +469,7 @@ async fn connect_tcp_uplink(
                 .as_ref()
                 .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", candidate.uplink.name))?,
             candidate.uplink.fwmark,
+            candidate.uplink.ipv6_first,
             "socks_tcp",
         )
         .await?;
@@ -533,8 +534,9 @@ async fn do_tcp_ss_setup_socket(
         &master_key,
         Arc::clone(&lifetime),
     )?;
-    let reader = TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-        .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
+    let reader =
+        TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
+            .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await

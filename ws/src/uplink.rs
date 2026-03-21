@@ -25,6 +25,7 @@ use crate::transport::{
 use crate::types::{TargetAddr, UplinkTransport};
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
+const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone)]
 pub struct UplinkManager {
@@ -75,6 +76,11 @@ struct UplinkStatus {
     last_active_tcp: Option<Instant>,
     /// Timestamp of the most recent real UDP data transfer through this uplink.
     last_active_udp: Option<Instant>,
+    /// Timestamp of the most recent early probe wakeup caused by a runtime
+    /// failure. Used to keep runtime-failure storms from waking the probe loop
+    /// on every fresh cooldown window under sustained load.
+    last_probe_wakeup_tcp: Option<Instant>,
+    last_probe_wakeup_udp: Option<Instant>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -177,6 +183,8 @@ impl Default for UplinkStatus {
             h3_tcp_downgrade_until: None,
             last_active_tcp: None,
             last_active_udp: None,
+            last_probe_wakeup_tcp: None,
+            last_probe_wakeup_udp: None,
         }
     }
 }
@@ -553,11 +561,16 @@ impl UplinkManager {
         transport: TransportKind,
         error: &anyhow::Error,
     ) {
-        let (uplink_name, cooldown_until, penalty_ms, already_in_cooldown) = {
+        let error_text = format!("{error:#}");
+        let failure_cause = classify_runtime_failure_cause(&error_text);
+        let failure_signature = classify_runtime_failure_signature(&error_text);
+        let failure_other_detail = (failure_signature == "other")
+            .then(|| normalize_other_runtime_failure_detail(&error_text));
+        let (uplink_name, cooldown_until, penalty_ms, already_in_cooldown, should_wake_probe) = {
             let now = Instant::now();
             let mut statuses = self.inner.statuses.write().await;
             let status = &mut statuses[index];
-            status.last_error = Some(format!("{error:#}"));
+            status.last_error = Some(error_text.clone());
             let uplink_name = self.inner.uplinks[index].name.clone();
             match transport {
                 TransportKind::Tcp => {
@@ -582,6 +595,19 @@ impl UplinkManager {
                         status.cooldown_until_tcp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
                         metrics::record_runtime_failure("tcp", &uplink_name);
+                        metrics::record_runtime_failure_cause("tcp", &uplink_name, failure_cause);
+                        metrics::record_runtime_failure_signature(
+                            "tcp",
+                            &uplink_name,
+                            failure_signature,
+                        );
+                        if let Some(detail) = &failure_other_detail {
+                            metrics::record_runtime_failure_other_detail(
+                                "tcp",
+                                &uplink_name,
+                                detail,
+                            );
+                        }
                     } else {
                         metrics::record_runtime_failure_suppressed("tcp", &uplink_name);
                     }
@@ -596,12 +622,20 @@ impl UplinkManager {
                     if !self.inner.probe.enabled() {
                         status.tcp_healthy = Some(false);
                     }
+                    let should_wake_probe = self.inner.probe.enabled()
+                        && !already_in_cooldown
+                        && mark_probe_wakeup(
+                            &mut status.last_probe_wakeup_tcp,
+                            now,
+                            PROBE_WAKEUP_MIN_INTERVAL,
+                        );
                     (
                         uplink_name,
                         status.cooldown_until_tcp,
                         current_penalty(&status.tcp_penalty, now, &self.inner.load_balancing)
                             .map(|value| value.as_millis()),
                         already_in_cooldown,
+                        should_wake_probe,
                     )
                 }
                 TransportKind::Udp => {
@@ -618,18 +652,39 @@ impl UplinkManager {
                         status.cooldown_until_udp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
                         metrics::record_runtime_failure("udp", &uplink_name);
+                        metrics::record_runtime_failure_cause("udp", &uplink_name, failure_cause);
+                        metrics::record_runtime_failure_signature(
+                            "udp",
+                            &uplink_name,
+                            failure_signature,
+                        );
+                        if let Some(detail) = &failure_other_detail {
+                            metrics::record_runtime_failure_other_detail(
+                                "udp",
+                                &uplink_name,
+                                detail,
+                            );
+                        }
                     } else {
                         metrics::record_runtime_failure_suppressed("udp", &uplink_name);
                     }
                     if !self.inner.probe.enabled() {
                         status.udp_healthy = Some(false);
                     }
+                    let should_wake_probe = self.inner.probe.enabled()
+                        && !already_in_cooldown
+                        && mark_probe_wakeup(
+                            &mut status.last_probe_wakeup_udp,
+                            now,
+                            PROBE_WAKEUP_MIN_INTERVAL,
+                        );
                     (
                         uplink_name,
                         status.cooldown_until_udp,
                         current_penalty(&status.udp_penalty, now, &self.inner.load_balancing)
                             .map(|value| value.as_millis()),
                         already_in_cooldown,
+                        should_wake_probe,
                     )
                 }
             }
@@ -662,8 +717,34 @@ impl UplinkManager {
             );
             // Wake the probe loop immediately so it can confirm the failure
             // without waiting for the next scheduled interval.
-            if self.inner.probe.enabled() {
+            if should_wake_probe {
+                metrics::record_probe_wakeup(
+                    &uplink_name,
+                    match transport {
+                        TransportKind::Tcp => "tcp",
+                        TransportKind::Udp => "udp",
+                    },
+                    "runtime_failure",
+                    "sent",
+                );
                 self.inner.probe_wakeup.notify_one();
+            } else if self.inner.probe.enabled() {
+                metrics::record_probe_wakeup(
+                    &uplink_name,
+                    match transport {
+                        TransportKind::Tcp => "tcp",
+                        TransportKind::Udp => "udp",
+                    },
+                    "runtime_failure",
+                    "suppressed",
+                );
+                debug!(
+                    uplink = %uplink_name,
+                    uplink_index = index,
+                    transport = ?transport,
+                    min_interval_secs = PROBE_WAKEUP_MIN_INTERVAL.as_secs(),
+                    "probe wakeup suppressed by runtime-failure rate limit"
+                );
             }
         }
         // If the uplink is configured for H3 and a TCP connection failed at
@@ -703,6 +784,24 @@ impl UplinkManager {
             }
         }
         self.clear_standby(index, transport).await;
+    }
+
+    pub async fn runtime_failure_probe_wakeup_debug_state(
+        &self,
+        index: usize,
+        transport: TransportKind,
+    ) -> Option<u128> {
+        let now = Instant::now();
+        let statuses = self.inner.statuses.read().await;
+        let status = statuses.get(index)?;
+        match transport {
+            TransportKind::Tcp => status
+                .last_probe_wakeup_tcp
+                .map(|t| now.saturating_duration_since(t).as_millis()),
+            TransportKind::Udp => status
+                .last_probe_wakeup_udp
+                .map(|t| now.saturating_duration_since(t).as_millis()),
+        }
     }
 
     /// Called when real traffic successfully flows through an uplink.
@@ -890,27 +989,27 @@ impl UplinkManager {
             "no warm-standby TCP websocket available, dialing on-demand"
         );
         let started = Instant::now();
-        let ws = connect_websocket_with_source(
-            candidate
-                .uplink
-                .tcp_ws_url
-                .as_ref()
-                .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", candidate.uplink.name))?,
-            mode,
-            candidate.uplink.fwmark,
-            source,
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "failed to connect to {}",
-                candidate
-                    .uplink
-                    .tcp_ws_url
-                    .as_ref()
-                    .expect("validated tcp_ws_url")
+        let ws =
+            connect_websocket_with_source(
+                candidate.uplink.tcp_ws_url.as_ref().ok_or_else(|| {
+                    anyhow!("uplink {} missing tcp_ws_url", candidate.uplink.name)
+                })?,
+                mode,
+                candidate.uplink.fwmark,
+                candidate.uplink.ipv6_first,
+                source,
             )
-        })?;
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to connect to {}",
+                    candidate
+                        .uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .expect("validated tcp_ws_url")
+                )
+            })?;
         // Feed the on-demand dial latency into the RTT EWMA so real connection
         // quality is reflected in routing scores, not just probe ping/pong times.
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
@@ -937,13 +1036,20 @@ impl UplinkManager {
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
             metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
             let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
-                anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
+                anyhow!(
+                    "udp_addr is not configured for uplink {}",
+                    candidate.uplink.name
+                )
             })?;
             let started = Instant::now();
-            let socket =
-                connect_shadowsocks_udp_with_source(udp_addr, candidate.uplink.fwmark, source)
-                    .await
-                    .with_context(|| format!("failed to connect to {}", udp_addr))?;
+            let socket = connect_shadowsocks_udp_with_source(
+                udp_addr,
+                candidate.uplink.fwmark,
+                candidate.uplink.ipv6_first,
+                source,
+            )
+            .await
+            .with_context(|| format!("failed to connect to {}", udp_addr))?;
             self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
                 .await;
             return Ok(UdpWsTransport::from_socket(
@@ -983,6 +1089,7 @@ impl UplinkManager {
             candidate.uplink.cipher,
             &candidate.uplink.password,
             candidate.uplink.fwmark,
+            candidate.uplink.ipv6_first,
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
         )
@@ -1397,6 +1504,7 @@ impl UplinkManager {
                         tcp_ws_url,
                         mode,
                         uplink.fwmark,
+                        uplink.ipv6_first,
                         "standby_tcp",
                     )
                     .await
@@ -1413,6 +1521,7 @@ impl UplinkManager {
                         url,
                         uplink.udp_ws_mode,
                         uplink.fwmark,
+                        uplink.ipv6_first,
                         "standby_udp",
                     )
                     .await
@@ -2017,24 +2126,24 @@ async fn run_tcp_probe(
     if probe.ws.enabled {
         let probe_started = Instant::now();
         let result = match uplink.transport {
-            UplinkTransport::Websocket => run_ws_probe(
-                &uplink.name,
-                "tcp",
-                uplink
-                    .tcp_ws_url
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                effective_tcp_mode,
-                uplink.fwmark,
-                Arc::clone(&dial_limit),
-                probe.timeout,
-            )
-            .await,
-            UplinkTransport::Shadowsocks => run_tcp_socket_probe(
-                uplink,
-                Arc::clone(&dial_limit),
-            )
-            .await,
+            UplinkTransport::Websocket => {
+                run_ws_probe(
+                    &uplink.name,
+                    "tcp",
+                    uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    Arc::clone(&dial_limit),
+                    probe.timeout,
+                )
+                .await
+            }
+            UplinkTransport::Shadowsocks => {
+                run_tcp_socket_probe(uplink, Arc::clone(&dial_limit)).await
+            }
         };
         metrics::record_probe(
             &uplink.name,
@@ -2077,24 +2186,24 @@ async fn run_udp_probe(
     if probe.ws.enabled {
         let probe_started = Instant::now();
         let result = match uplink.transport {
-            UplinkTransport::Websocket => run_ws_probe(
-                &uplink.name,
-                "udp",
-                uplink
-                    .udp_ws_url
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
-                uplink.udp_ws_mode,
-                uplink.fwmark,
-                Arc::clone(&dial_limit),
-                probe.timeout,
-            )
-            .await,
-            UplinkTransport::Shadowsocks => run_udp_socket_probe(
-                uplink,
-                Arc::clone(&dial_limit),
-            )
-            .await,
+            UplinkTransport::Websocket => {
+                run_ws_probe(
+                    &uplink.name,
+                    "udp",
+                    uplink
+                        .udp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
+                    uplink.udp_ws_mode,
+                    uplink.fwmark,
+                    Arc::clone(&dial_limit),
+                    probe.timeout,
+                )
+                .await
+            }
+            UplinkTransport::Shadowsocks => {
+                run_udp_socket_probe(uplink, Arc::clone(&dial_limit)).await
+            }
         };
         metrics::record_probe(
             &uplink.name,
@@ -2141,7 +2250,7 @@ async fn run_ws_probe(
     // Many servers do not respond to WebSocket ping control frames (they expect
     // Shadowsocks data immediately), so we do not send a ping here.  The
     // data-path is checked by the http / dns sub-probes that follow.
-    let mut ws_stream = connect_websocket_with_source(url, mode, fwmark, "probe_ws")
+    let mut ws_stream = connect_websocket_with_source(url, mode, fwmark, false, "probe_ws")
         .await
         .with_context(|| format!("failed to connect WebSocket probe to {url}"))?;
 
@@ -2174,7 +2283,9 @@ async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>)
         .tcp_addr
         .as_ref()
         .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?;
-    let _stream = connect_shadowsocks_tcp_with_source(addr, uplink.fwmark, "probe_tcp").await?;
+    let _stream =
+        connect_shadowsocks_tcp_with_source(addr, uplink.fwmark, uplink.ipv6_first, "probe_tcp")
+            .await?;
     Ok(())
 }
 
@@ -2187,7 +2298,9 @@ async fn run_udp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>)
         .udp_addr
         .as_ref()
         .ok_or_else(|| anyhow!("uplink {} missing udp_addr", uplink.name))?;
-    let _socket = connect_shadowsocks_udp_with_source(addr, uplink.fwmark, "probe_udp").await?;
+    let _socket =
+        connect_shadowsocks_udp_with_source(addr, uplink.fwmark, uplink.ipv6_first, "probe_udp")
+            .await?;
     Ok(())
 }
 
@@ -2210,6 +2323,13 @@ fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
         || lower.contains("connection lost")
         || lower.contains("stream reset")
         || lower.contains("transport error")
+}
+
+fn build_http_probe_request(host: &str, port: u16, path: &str) -> String {
+    format!(
+        "HEAD {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+        format_http_host_header(host, port)
+    )
 }
 
 async fn run_http_probe(
@@ -2265,6 +2385,7 @@ async fn run_http_probe(
                         .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
                     effective_tcp_mode,
                     uplink.fwmark,
+                    uplink.ipv6_first,
                     "probe_http",
                 )
                 .await
@@ -2300,6 +2421,7 @@ async fn run_http_probe(
                         .as_ref()
                         .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
                     uplink.fwmark,
+                    uplink.ipv6_first,
                     "probe_http",
                 )
                 .await
@@ -2331,20 +2453,29 @@ async fn run_http_probe(
         .send_chunk(&target.to_wire_bytes()?)
         .await
         .context("failed to send HTTP probe target")?;
-
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
-        format_http_host_header(host, port)
+    crate::metrics::add_probe_bytes(
+        &uplink.name,
+        "tcp",
+        "http",
+        "outgoing",
+        target.to_wire_bytes()?.len(),
     );
+
+    // Use HEAD so health checks do not pull response bodies through the data
+    // path. This keeps probe traffic tiny even when the probe URL points at a
+    // large page or object.
+    let request = build_http_probe_request(host, port, &path);
     writer
         .send_chunk(request.as_bytes())
         .await
         .context("failed to send HTTP probe request")?;
+    crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", request.len());
 
     let response = reader
         .read_chunk()
         .await
         .context("failed to read HTTP probe response")?;
+    crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "incoming", response.len());
     let line = String::from_utf8_lossy(&response);
     let status = line
         .lines()
@@ -2386,16 +2517,16 @@ async fn run_dns_probe(
             .expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
-                let udp_ws_url = uplink
-                    .udp_ws_url
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name))?;
+                let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
+                    anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
+                })?;
                 UdpWsTransport::connect(
                     udp_ws_url,
                     uplink.udp_ws_mode,
                     uplink.cipher,
                     &uplink.password,
                     uplink.fwmark,
+                    uplink.ipv6_first,
                     "probe_dns",
                     None,
                 )
@@ -2409,11 +2540,11 @@ async fn run_dns_probe(
             }
             UplinkTransport::Shadowsocks => {
                 let socket = connect_shadowsocks_udp_with_source(
-                    uplink
-                        .udp_addr
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name))?,
+                    uplink.udp_addr.as_ref().ok_or_else(|| {
+                        anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name)
+                    })?,
                     uplink.fwmark,
+                    uplink.ipv6_first,
                     "probe_dns",
                 )
                 .await
@@ -2437,10 +2568,12 @@ async fn run_dns_probe(
         .send_packet(&payload)
         .await
         .context("failed to send DNS probe packet")?;
+    crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "outgoing", payload.len());
     let response = transport
         .read_packet()
         .await
         .context("failed to read DNS probe response")?;
+    crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "incoming", response.len());
     let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
     let dns = &response[consumed..];
 
@@ -2750,6 +2883,144 @@ fn rightless_bool(value: bool) -> u8 {
     if value { 1 } else { 0 }
 }
 
+fn mark_probe_wakeup(
+    last_wakeup: &mut Option<Instant>,
+    now: Instant,
+    min_interval: Duration,
+) -> bool {
+    if last_wakeup.is_some_and(|prev| now.duration_since(prev) < min_interval) {
+        return false;
+    }
+    *last_wakeup = Some(now);
+    true
+}
+
+fn classify_runtime_failure_cause(error_text: &str) -> &'static str {
+    let lower = error_text.to_ascii_lowercase();
+    if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("connection reset")
+        || lower.contains("broken pipe")
+        || lower.contains("connection lost")
+        || lower.contains("stream reset")
+    {
+        "reset"
+    } else if lower.contains("websocket closed")
+        || lower.contains("stream ended")
+        || lower.contains("eof")
+        || lower.contains("closed by server")
+    {
+        "closed"
+    } else if lower.contains("failed to connect")
+        || lower.contains("connection refused")
+        || lower.contains("dns resolution")
+        || lower.contains("resolve")
+    {
+        "connect"
+    } else if lower.contains("decrypt")
+        || lower.contains("encrypt")
+        || lower.contains("aead")
+        || lower.contains("salt")
+        || lower.contains("nonce")
+        || lower.contains("ss2022")
+    {
+        "crypto"
+    } else {
+        "other"
+    }
+}
+
+fn classify_runtime_failure_signature(error_text: &str) -> &'static str {
+    let lower = error_text.to_ascii_lowercase();
+    if lower.contains("failed to read") {
+        "read_failed"
+    } else if lower.contains("failed to send") || lower.contains("failed to write") {
+        "write_failed"
+    } else if lower.contains("websocket read failed") {
+        "ws_read_failed"
+    } else if lower.contains("websocket closed") {
+        "ws_closed"
+    } else if lower.contains("control connection read failed") {
+        "control_read_failed"
+    } else if lower.contains("udp relay receive failed") {
+        "udp_relay_receive_failed"
+    } else if lower.contains("socket shutdown failed") {
+        "socket_shutdown_failed"
+    } else if lower.contains("invalid ss2022") {
+        "invalid_ss2022"
+    } else if lower.contains("duplicate or out-of-order") {
+        "udp_out_of_order"
+    } else if lower.contains("request salt mismatch") {
+        "request_salt_mismatch"
+    } else if lower.contains("oversized udp") {
+        "oversized_udp"
+    } else if lower.contains("failed to connect") {
+        "connect_failed"
+    } else if lower.contains("dns resolution returned no addresses") {
+        "dns_no_addresses"
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "timeout"
+    } else if lower.contains("connection reset") {
+        "connection_reset"
+    } else if lower.contains("broken pipe") {
+        "broken_pipe"
+    } else if lower.contains("connection lost") {
+        "connection_lost"
+    } else if lower.contains("stream reset") {
+        "stream_reset"
+    } else if lower.contains("application closed") {
+        "application_closed"
+    } else if lower.contains("transport error") {
+        "transport_error"
+    } else if lower.contains("decrypt") {
+        "decrypt_failed"
+    } else if lower.contains("encrypt") {
+        "encrypt_failed"
+    } else {
+        "other"
+    }
+}
+
+fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
+    let first_line = error_text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("other");
+    let mut normalized = String::with_capacity(first_line.len().min(48));
+    let mut prev_underscore = false;
+    for ch in first_line.to_ascii_lowercase().chars() {
+        let mapped = if ch.is_ascii_alphabetic() {
+            ch
+        } else if ch.is_ascii_digit() {
+            '#'
+        } else {
+            '_'
+        };
+        if mapped == '_' {
+            if prev_underscore {
+                continue;
+            }
+            prev_underscore = true;
+        } else {
+            prev_underscore = false;
+        }
+        normalized.push(mapped);
+        if normalized.len() >= 48 {
+            break;
+        }
+    }
+    let normalized = normalized
+        .trim_matches('_')
+        .chars()
+        .take(48)
+        .collect::<String>();
+    if normalized.is_empty() {
+        "other".to_string()
+    } else {
+        normalized
+    }
+}
+
 pub fn log_uplink_summary(manager: &UplinkManager) {
     info!(
         uplinks = manager.uplinks().len(),
@@ -2780,8 +3051,8 @@ mod tests {
     use url::Url;
 
     use super::{
-        PenaltyState, TransportKind, UplinkManager, UplinkStatus, effective_latency, score_latency,
-        update_rtt_ewma,
+        PenaltyState, TransportKind, UplinkManager, UplinkStatus, build_http_probe_request,
+        effective_latency, score_latency, update_rtt_ewma,
     };
     use crate::config::{
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
@@ -2849,6 +3120,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn http_probe_uses_head_request() {
+        let request = build_http_probe_request("example.com", 80, "/healthz?full=1");
+        assert!(request.starts_with("HEAD /healthz?full=1 HTTP/1.1\r\n"));
+        assert!(request.contains("\r\nHost: example.com\r\n"));
+        assert!(request.ends_with("\r\nConnection: close\r\n\r\n"));
+    }
+
+    #[test]
+    fn http_probe_formats_ipv6_host_header() {
+        let request = build_http_probe_request("2001:db8::1", 8080, "/");
+        assert!(request.contains("\r\nHost: [2001:db8::1]:8080\r\n"));
+    }
+
     fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         UplinkConfig {
             name: name.to_string(),
@@ -2863,6 +3148,7 @@ mod tests {
             password: "secret".to_string(),
             weight: 1.0,
             fwmark: None,
+            ipv6_first: false,
         }
     }
 
@@ -3336,6 +3622,45 @@ mod tests {
 
         assert_eq!(penalty_second, penalty_first);
         assert!(cooldown_second <= cooldown_first);
+    }
+
+    #[tokio::test]
+    async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
+        let mut probe = probe_disabled();
+        probe.ws.enabled = true;
+        let manager = UplinkManager::new(
+            vec![make_uplink("primary", "wss://primary.example.com/tcp")],
+            probe,
+            lb(),
+        )
+        .unwrap();
+
+        let first_error = anyhow!("first failure");
+        manager
+            .report_runtime_failure(0, TransportKind::Udp, &first_error)
+            .await;
+        let first_wakeup_age = manager
+            .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
+            .await;
+        assert!(first_wakeup_age.is_some());
+
+        {
+            let mut statuses = manager.inner.statuses.write().await;
+            statuses[0].cooldown_until_udp = None;
+        }
+
+        let second_error = anyhow!("second failure");
+        manager
+            .report_runtime_failure(0, TransportKind::Udp, &second_error)
+            .await;
+        let second_wakeup_age = manager
+            .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
+            .await;
+
+        assert_eq!(
+            second_wakeup_age, first_wakeup_age,
+            "fresh cooldown should not trigger a second early probe wakeup inside the rate-limit window"
+        );
     }
 
     // Regression: Global+ActiveActive must not switch back to primary the moment the
