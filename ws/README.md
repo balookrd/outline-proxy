@@ -172,6 +172,7 @@ The project is intentionally practical, but there are still boundaries:
 - [`systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
+- `grafana/outline-ws-rust-native-burst-dashboard.json` - startup and traffic-switch burst diagnostics for native Shadowsocks mode
 - [`prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
 - [`PATCHES.md`](/Users/mmalykhin/Documents/Playground/PATCHES.md) - local vendored patch inventory
 
@@ -273,7 +274,7 @@ listen = "[::1]:9090"
 # connect_timeout_secs = 10
 # handshake_timeout_secs = 15
 # half_close_timeout_secs = 60
-# max_pending_server_bytes = 1048576
+# max_pending_server_bytes = 4194304
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
@@ -290,6 +291,8 @@ enabled = true
 
 [probe.http]
 url = "http://example.com/"
+
+`probe.http` sends an HTTP `HEAD` request, not `GET`, so health checks do not download response bodies through the uplink.
 
 [probe.dns]
 server = "1.1.1.1"
@@ -318,6 +321,7 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_ws_mode = "h3"
 # fwmark = 100
+# ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
@@ -349,6 +353,7 @@ password = "Secret0"
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3` and are only used with `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
+- `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.
@@ -648,6 +653,7 @@ Dashboards:
 
 - [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
+- `grafana/outline-ws-rust-native-burst-dashboard.json`
 
 The main dashboard is grouped into:
 

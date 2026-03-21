@@ -89,7 +89,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (outline_ws_rust_sessions_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (outline_ws_rust_sessions_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -152,7 +152,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_requests_total{instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -215,7 +215,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (increase(outline_ws_rust_bytes_total{instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (increase(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
         }
@@ -278,7 +278,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -384,7 +384,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, command) (rate(outline_ws_rust_requests_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, command) (rate(outline_ws_rust_requests_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} socks5 {{command}}",
           "refId": "A"
         }
@@ -477,7 +477,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, protocol, direction) (rate(outline_ws_rust_bytes_total{instance=~\"$instance\"}[$__rate_interval]) * 8)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, protocol, direction) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]) * 8)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{protocol}} {{direction}} throughput",
           "refId": "A"
         }
@@ -614,7 +614,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_session_recent_p95_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_session_recent_p95_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{protocol}} session p95",
           "refId": "A"
         }
@@ -753,17 +753,17 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} effective latency",
           "refId": "A"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} raw latency",
           "refId": "B"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{instance=~\"$instance\"} / clamp_min(outline_ws_rust_uplink_latency_seconds{instance=~\"$instance\"}, 0.001)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\"} / clamp_min(outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\"}, 0.001)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} latency ratio",
           "refId": "C"
         }
@@ -887,12 +887,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} raw rtt",
           "refId": "A"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_rtt_ewma_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_rtt_ewma_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} ewma rtt",
           "refId": "B"
         }
@@ -1014,12 +1014,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} runtime failures",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, from_uplink, to_uplink) (rate(outline_ws_rust_uplink_failovers_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, from_uplink, to_uplink) (rate(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} failover {{from_uplink}} -> {{to_uplink}}",
           "refId": "B"
         }
@@ -1128,7 +1128,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_penalty_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_penalty_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} penalty",
           "refId": "A"
         }
@@ -1252,12 +1252,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((outline_ws_rust_uplink_score_seconds{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_score_seconds{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} weighted score",
           "refId": "A"
         },
         {
-          "expr": "label_replace((outline_ws_rust_uplink_weight{instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((outline_ws_rust_uplink_weight{job=~\"$job\",instance=~\"$instance\"}), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} configured weight",
           "refId": "B"
         }
@@ -1317,31 +1317,31 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "outline_ws_rust_uplink_health{instance=~\"$instance\"}",
+          "expr": "outline_ws_rust_uplink_health{job=~\"$job\",instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "A"
         },
         {
-          "expr": "outline_ws_rust_uplink_latency_seconds{instance=~\"$instance\"}",
+          "expr": "outline_ws_rust_uplink_latency_seconds{job=~\"$job\",instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "B"
         },
         {
-          "expr": "outline_ws_rust_uplink_standby_ready{instance=~\"$instance\"}",
+          "expr": "outline_ws_rust_uplink_standby_ready{job=~\"$job\",instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "C"
         },
         {
-          "expr": "outline_ws_rust_uplink_penalty_seconds{instance=~\"$instance\"}",
+          "expr": "outline_ws_rust_uplink_penalty_seconds{job=~\"$job\",instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "D"
         },
         {
-          "expr": "outline_ws_rust_uplink_effective_latency_seconds{instance=~\"$instance\"}",
+          "expr": "outline_ws_rust_uplink_effective_latency_seconds{job=~\"$job\",instance=~\"$instance\"}",
           "format": "table",
           "instant": true,
           "refId": "E"
@@ -1467,7 +1467,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_selection_mode_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_selection_mode_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{mode}}",
           "refId": "A"
@@ -1527,7 +1527,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, scope) (outline_ws_rust_routing_scope_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, scope) (outline_ws_rust_routing_scope_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{scope}}",
           "refId": "A"
@@ -1587,13 +1587,13 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{uplink}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}} {{uplink}}/{{proto}}",
           "refId": "B"
@@ -1657,7 +1657,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_sticky_routes_total{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_sticky_routes_total{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "instant": true,
           "legendFormat": "{{instance_short}}",
           "refId": "A"
@@ -1753,12 +1753,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, uplink) (outline_ws_rust_global_active_uplink_info{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} active",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, proto, uplink) (outline_ws_rust_per_uplink_active_uplink_info{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}}/{{proto}} active",
           "refId": "B"
         }
@@ -1867,7 +1867,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_suppressed_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_uplink_runtime_failures_suppressed_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} suppressed",
           "refId": "A"
         }
@@ -1947,7 +1947,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -2029,7 +2029,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_malloc_trim_last_bytes{instance=~\"$instance\",kind=\"rss\",stage=\"released\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_malloc_trim_last_bytes{job=~\"$job\",instance=~\"$instance\",kind=\"rss\",stage=\"released\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -2092,7 +2092,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_process_malloc_trim_errors_total{instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_process_malloc_trim_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
@@ -2151,7 +2151,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_process_heap_mode_info{instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, mode) (outline_ws_rust_process_heap_mode_info{job=~\"$job\",instance=~\"$instance\"} > 0)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{mode}}",
           "refId": "A"
         }
@@ -2275,12 +2275,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} process rss",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_virtual_memory_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} process virtual",
           "refId": "B"
         }
@@ -2404,12 +2404,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_allocated_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_allocated_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} heap allocated",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_free_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_free_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} heap free",
           "refId": "B"
         }
@@ -2548,17 +2548,17 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} trim runs",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{instance=~\"$instance\",result=\"success\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{job=~\"$job\",instance=~\"$instance\",result=\"success\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} trim release events",
           "refId": "B"
         },
         {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_errors_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} trim errors",
           "refId": "C"
         }
@@ -2697,7 +2697,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, stage) (outline_ws_rust_process_malloc_trim_last_bytes{instance=~\"$instance\",kind=\"rss\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, stage) (outline_ws_rust_process_malloc_trim_last_bytes{job=~\"$job\",instance=~\"$instance\",kind=\"rss\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} trim rss {{stage}}",
           "refId": "A"
         }
@@ -2793,7 +2793,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_open_fds{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_open_fds{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} open fds",
           "refId": "A"
         }
@@ -2878,7 +2878,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((100 * max by (instance) (outline_ws_rust_process_fd_by_type{instance=~\"$instance\",kind=\"socket\"}) / clamp_min(max by (instance) (outline_ws_rust_process_open_fds{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((100 * max by (instance) (outline_ws_rust_process_fd_by_type{job=~\"$job\",instance=~\"$instance\",kind=\"socket\"}) / clamp_min(max by (instance) (outline_ws_rust_process_open_fds{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} socket fd share",
           "refId": "A"
         }
@@ -3047,7 +3047,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, kind) (outline_ws_rust_process_fd_by_type{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, kind) (outline_ws_rust_process_fd_by_type{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{kind}} fds",
           "refId": "A"
         }
@@ -3171,7 +3171,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, source, protocol) (outline_ws_rust_upstream_transports_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, source, protocol) (outline_ws_rust_upstream_transports_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{source}} {{protocol}} active upstream",
           "refId": "A"
         }
@@ -3310,7 +3310,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, source, mode) (outline_ws_rust_transport_connects_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance, source, mode) (outline_ws_rust_transport_connects_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{source}} {{mode}} active connects",
           "refId": "A"
         }
@@ -3449,7 +3449,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, source, mode, result) (rate(outline_ws_rust_transport_connects_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, source, mode, result) (rate(outline_ws_rust_transport_connects_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{source}} {{mode}} {{result}}",
           "refId": "A"
         }
@@ -3573,7 +3573,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, source, protocol, result) (rate(outline_ws_rust_upstream_transports_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, source, protocol, result) (rate(outline_ws_rust_upstream_transports_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{source}} {{protocol}} {{result}}",
           "refId": "A"
         }
@@ -3695,7 +3695,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{instance=~\"$instance\"}[$__rate_interval]) / rate(outline_ws_rust_probe_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((avg by (instance, uplink, transport, probe) (rate(outline_ws_rust_probe_duration_seconds_sum{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]) / rate(outline_ws_rust_probe_duration_seconds_count{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} {{probe}} probe latency",
           "refId": "A"
         }
@@ -3804,7 +3804,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe!=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",probe!=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",probe!=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} health probe error ratio",
           "refId": "A"
         }
@@ -3913,7 +3913,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{instance=~\"$instance\",probe=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",probe=\"standby_ws\",result=\"error\"}[$__rate_interval])) / clamp_min(sum by (instance, uplink, transport) (rate(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",probe=\"standby_ws\"}[$__rate_interval])), 1e-9)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} standby probe error ratio",
           "refId": "A"
         }
@@ -4067,12 +4067,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, outcome) (rate(outline_ws_rust_warm_standby_acquire_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, outcome) (rate(outline_ws_rust_warm_standby_acquire_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} standby {{outcome}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, result) (rate(outline_ws_rust_warm_standby_refill_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, result) (rate(outline_ws_rust_warm_standby_refill_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} refill {{result}}",
           "refId": "B"
         }
@@ -4224,12 +4224,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_flows_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_flows_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} active udp flows",
           "refId": "A"
         },
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_tun_max_flows{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_tun_max_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} udp max flows",
           "refId": "B"
         }
@@ -4298,7 +4298,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (outline_ws_rust_tun_flows_active{instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (outline_ws_rust_tun_flows_active{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_tun_max_flows{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} udp flow pressure ratio",
           "refId": "A"
         }
@@ -4422,12 +4422,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=\"created\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",event=\"created\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} created",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"idle_timeout|evicted|read_error|send_error|closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",event=~\"idle_timeout|evicted|read_error|send_error|closed\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} closed",
           "refId": "B"
         }
@@ -4520,7 +4520,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{instance=~\"$instance\",event=~\"read_error|send_error\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_flows_total{job=~\"$job\",instance=~\"$instance\",event=~\"read_error|send_error\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -4659,7 +4659,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, direction, ip_family, outcome) (rate(outline_ws_rust_tun_packets_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, direction, ip_family, outcome) (rate(outline_ws_rust_tun_packets_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{direction}} {{ip_family}} {{outcome}} packets",
           "refId": "A"
         }
@@ -4798,7 +4798,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, reason) (rate(outline_ws_rust_tun_udp_forward_errors_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, reason) (rate(outline_ws_rust_tun_udp_forward_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{reason}}",
           "refId": "A"
         }
@@ -4922,7 +4922,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, direction) (rate(outline_ws_rust_udp_oversized_dropped_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, direction) (rate(outline_ws_rust_udp_oversized_dropped_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{direction}}",
           "refId": "A"
         }
@@ -5046,7 +5046,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_icmp_local_replies_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, ip_family) (rate(outline_ws_rust_tun_icmp_local_replies_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{ip_family}}",
           "refId": "A"
         }
@@ -5082,20 +5082,43 @@
       },
       {
         "current": {
-          "text": "cloud2.beerloga.su:443",
-          "value": "cloud2.beerloga.su:443"
+          "text": "All",
+          "value": "$__all"
         },
         "datasource": {
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_build_info, instance)",
+        "definition": "label_values(outline_ws_rust_build_info, job)",
+        "includeAll": true,
+        "label": "Job",
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(outline_ws_rust_build_info, job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
         "includeAll": true,
         "label": "Instance",
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(outline_ws_rust_build_info, instance)",
+          "query": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
           "refId": "Prometheus-instance-Variable-Query"
         },
         "refresh": 2,

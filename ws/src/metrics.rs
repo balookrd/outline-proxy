@@ -37,9 +37,14 @@ struct Metrics {
     uplink_selected_total: IntCounterVec,
     uplink_runtime_failures_total: IntCounterVec,
     uplink_runtime_failures_suppressed_total: IntCounterVec,
+    uplink_runtime_failure_causes_total: IntCounterVec,
+    uplink_runtime_failure_signatures_total: IntCounterVec,
+    uplink_runtime_failure_other_details_total: IntCounterVec,
     uplink_failovers_total: IntCounterVec,
     probe_runs_total: IntCounterVec,
     probe_duration_seconds: HistogramVec,
+    probe_bytes_total: IntCounterVec,
+    probe_wakeups_total: IntCounterVec,
     warm_standby_acquire_total: IntCounterVec,
     warm_standby_refill_total: IntCounterVec,
     metrics_http_requests_total: IntCounterVec,
@@ -224,6 +229,30 @@ impl Metrics {
             &["transport", "uplink"],
         )
         .expect("uplink_runtime_failures_suppressed_total metric");
+        let uplink_runtime_failure_causes_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_runtime_failure_causes_total",
+                "Runtime transport failures by uplink and classified cause.",
+            ),
+            &["transport", "uplink", "cause"],
+        )
+        .expect("uplink_runtime_failure_causes_total metric");
+        let uplink_runtime_failure_signatures_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_runtime_failure_signatures_total",
+                "Runtime transport failures by uplink and normalized failure signature.",
+            ),
+            &["transport", "uplink", "signature"],
+        )
+        .expect("uplink_runtime_failure_signatures_total metric");
+        let uplink_runtime_failure_other_details_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_uplink_runtime_failure_other_details_total",
+                "Runtime transport failures that remained in the 'other' bucket, grouped by a normalized raw detail signature.",
+            ),
+            &["transport", "uplink", "detail"],
+        )
+        .expect("uplink_runtime_failure_other_details_total metric");
         let uplink_failovers_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_uplink_failovers_total",
@@ -251,6 +280,22 @@ impl Metrics {
             &["uplink", "transport", "probe"],
         )
         .expect("probe_duration_seconds metric");
+        let probe_bytes_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_probe_bytes_total",
+                "Application payload bytes exchanged by probes, by uplink, transport, probe type, and direction.",
+            ),
+            &["uplink", "transport", "probe", "direction"],
+        )
+        .expect("probe_bytes_total metric");
+        let probe_wakeups_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_probe_wakeups_total",
+                "Early probe wakeup events by uplink, transport, reason, and result.",
+            ),
+            &["uplink", "transport", "reason", "result"],
+        )
+        .expect("probe_wakeups_total metric");
         let warm_standby_acquire_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_warm_standby_acquire_total",
@@ -706,6 +751,15 @@ impl Metrics {
             .register(Box::new(uplink_runtime_failures_suppressed_total.clone()))
             .expect("register uplink_runtime_failures_suppressed_total");
         registry
+            .register(Box::new(uplink_runtime_failure_causes_total.clone()))
+            .expect("register uplink_runtime_failure_causes_total");
+        registry
+            .register(Box::new(uplink_runtime_failure_signatures_total.clone()))
+            .expect("register uplink_runtime_failure_signatures_total");
+        registry
+            .register(Box::new(uplink_runtime_failure_other_details_total.clone()))
+            .expect("register uplink_runtime_failure_other_details_total");
+        registry
             .register(Box::new(uplink_failovers_total.clone()))
             .expect("register uplink_failovers_total");
         registry
@@ -714,6 +768,12 @@ impl Metrics {
         registry
             .register(Box::new(probe_duration_seconds.clone()))
             .expect("register probe_duration_seconds");
+        registry
+            .register(Box::new(probe_bytes_total.clone()))
+            .expect("register probe_bytes_total");
+        registry
+            .register(Box::new(probe_wakeups_total.clone()))
+            .expect("register probe_wakeups_total");
         registry
             .register(Box::new(warm_standby_acquire_total.clone()))
             .expect("register warm_standby_acquire_total");
@@ -907,9 +967,14 @@ impl Metrics {
             uplink_selected_total,
             uplink_runtime_failures_total,
             uplink_runtime_failures_suppressed_total,
+            uplink_runtime_failure_causes_total,
+            uplink_runtime_failure_signatures_total,
+            uplink_runtime_failure_other_details_total,
             uplink_failovers_total,
             probe_runs_total,
             probe_duration_seconds,
+            probe_bytes_total,
+            probe_wakeups_total,
             warm_standby_acquire_total,
             warm_standby_refill_total,
             metrics_http_requests_total,
@@ -1520,6 +1585,31 @@ pub fn record_runtime_failure(transport: &'static str, uplink: &str) {
         .inc();
 }
 
+pub fn record_runtime_failure_cause(transport: &'static str, uplink: &str, cause: &'static str) {
+    METRICS
+        .uplink_runtime_failure_causes_total
+        .with_label_values(&[transport, uplink, cause])
+        .inc();
+}
+
+pub fn record_runtime_failure_signature(
+    transport: &'static str,
+    uplink: &str,
+    signature: &'static str,
+) {
+    METRICS
+        .uplink_runtime_failure_signatures_total
+        .with_label_values(&[transport, uplink, signature])
+        .inc();
+}
+
+pub fn record_runtime_failure_other_detail(transport: &'static str, uplink: &str, detail: &str) {
+    METRICS
+        .uplink_runtime_failure_other_details_total
+        .with_label_values(&[transport, uplink, detail])
+        .inc();
+}
+
 pub fn record_runtime_failure_suppressed(transport: &'static str, uplink: &str) {
     METRICS
         .uplink_runtime_failures_suppressed_total
@@ -1554,6 +1644,31 @@ pub fn record_probe(
         .probe_duration_seconds
         .with_label_values(&[uplink, transport, probe])
         .observe(duration.as_secs_f64());
+}
+
+pub fn add_probe_bytes(
+    uplink: &str,
+    transport: &'static str,
+    probe: &'static str,
+    direction: &'static str,
+    bytes: usize,
+) {
+    METRICS
+        .probe_bytes_total
+        .with_label_values(&[uplink, transport, probe, direction])
+        .inc_by(u64::try_from(bytes).unwrap_or(u64::MAX));
+}
+
+pub fn record_probe_wakeup(
+    uplink: &str,
+    transport: &'static str,
+    reason: &'static str,
+    result: &'static str,
+) {
+    METRICS
+        .probe_wakeups_total
+        .with_label_values(&[uplink, transport, reason, result])
+        .inc();
 }
 
 pub fn record_warm_standby_acquire(transport: &'static str, uplink: &str, outcome: &'static str) {
@@ -1758,8 +1873,8 @@ fn session_window_p95(window: &RecentSessionWindow) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use once_cell::sync::Lazy;
     use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
+    use once_cell::sync::Lazy;
     use std::sync::Mutex;
 
     static METRICS_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -1910,9 +2025,11 @@ mod tests {
         record_upstream_transport("tun_tcp", "tcp", "closed");
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-        assert!(rendered.contains(
-            "outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}"
-        ));
+        assert!(
+            rendered.contains(
+                "outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}"
+            )
+        );
         assert!(rendered.contains(
             "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"}"
         ));
@@ -1939,6 +2056,13 @@ mod tests {
         init();
         add_bytes("tcp", "client_to_upstream", "nuxt", 128);
         add_bytes("udp", "upstream_to_client", "senko", 256);
+        add_probe_bytes("primary", "tcp", "http", "outgoing", 64);
+        add_probe_bytes("primary", "udp", "dns", "incoming", 96);
+        record_probe_wakeup("primary", "udp", "runtime_failure", "sent");
+        record_probe_wakeup("primary", "udp", "runtime_failure", "suppressed");
+        record_runtime_failure_cause("tcp", "primary", "timeout");
+        record_runtime_failure_signature("tcp", "primary", "read_failed");
+        record_runtime_failure_other_detail("tcp", "primary", "failed_to_read_chunk");
         add_udp_datagram("client_to_upstream", "nuxt");
         add_udp_datagram("upstream_to_client", "senko");
         record_dropped_oversized_udp_packet("incoming");
@@ -1951,14 +2075,36 @@ mod tests {
             "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",protocol=\"udp\",uplink=\"senko\"} 256"
         ));
         assert!(rendered.contains(
+            "outline_ws_rust_probe_bytes_total{direction=\"outgoing\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_probe_bytes_total{direction=\"incoming\",probe=\"dns\",transport=\"udp\",uplink=\"primary\"} 96"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_probe_wakeups_total{reason=\"runtime_failure\",result=\"sent\",transport=\"udp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_probe_wakeups_total{reason=\"runtime_failure\",result=\"suppressed\",transport=\"udp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_uplink_runtime_failure_causes_total{cause=\"timeout\",transport=\"tcp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_uplink_runtime_failure_signatures_total{signature=\"read_failed\",transport=\"tcp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",transport=\"tcp\",uplink=\"primary\"} 1"
+        ));
+        assert!(rendered.contains(
             "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",uplink=\"nuxt\"} 1"
         ));
         assert!(rendered.contains(
             "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"senko\"} 1"
         ));
-        assert!(rendered.contains(
-            "outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1"
-        ));
+        assert!(
+            rendered
+                .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1")
+        );
     }
 
     #[test]
@@ -2056,12 +2202,14 @@ mod tests {
         assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
         assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
-        assert!(rendered.contains(
-            "outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0"
-        ));
+        assert!(
+            rendered
+                .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 0")
+        );
+        assert!(
+            rendered
+                .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
+        );
     }
 
     #[test]

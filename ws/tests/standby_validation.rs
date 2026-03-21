@@ -77,6 +77,7 @@ async fn build_manager(
             password: "Secret0".to_string(),
             weight: 1.0,
             fwmark: None,
+            ipv6_first: false,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

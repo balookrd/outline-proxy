@@ -33,7 +33,7 @@ memory_trim_interval_secs = 60
 # connect_timeout_secs = 10
 # handshake_timeout_secs = 15
 # half_close_timeout_secs = 60
-# max_pending_server_bytes = 1048576
+# max_pending_server_bytes = 4194304
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
@@ -77,6 +77,8 @@ weight = 1.0
 tcp_ws_mode = "h3"
 # Linux only, requires CAP_NET_ADMIN if set
 # fwmark = 100
+# Prefer IPv6 addresses first for this uplink
+# ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"

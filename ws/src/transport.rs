@@ -38,8 +38,8 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::crypto::{
     SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet,
-    decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet,
-    encrypt_udp_packet_2022, increment_nonce,
+    decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet, encrypt_udp_packet_2022,
+    increment_nonce,
 };
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
@@ -474,23 +474,25 @@ pub async fn connect_websocket(
     url: &Url,
     mode: WsTransportMode,
     fwmark: Option<u32>,
+    ipv6_first: bool,
 ) -> Result<AnyWsStream> {
-    connect_websocket_with_source(url, mode, fwmark, "direct").await
+    connect_websocket_with_source(url, mode, fwmark, ipv6_first, "direct").await
 }
 
 pub async fn connect_websocket_with_source(
     url: &Url,
     mode: WsTransportMode,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<AnyWsStream> {
     match mode {
         WsTransportMode::Http1 => {
-            let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
+            let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             Ok(AnyWsStream::Http1 { inner: ws_stream })
         }
-        WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, source).await {
+        WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 Ok(stream)
@@ -502,12 +504,12 @@ pub async fn connect_websocket_with_source(
                     fallback = "http1",
                     "h2 websocket connect failed, falling back"
                 );
-                let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
+                let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(AnyWsStream::Http1 { inner: ws_stream })
             }
         },
-        WsTransportMode::H3 => match connect_websocket_h3(url, fwmark, source).await {
+        WsTransportMode::H3 => match connect_websocket_h3(url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 Ok(stream)
@@ -519,7 +521,7 @@ pub async fn connect_websocket_with_source(
                     fallback = "h2",
                     "h3 websocket connect failed, falling back"
                 );
-                match connect_websocket_h2(url, fwmark, source).await {
+                match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         Ok(stream)
@@ -531,7 +533,8 @@ pub async fn connect_websocket_with_source(
                             fallback = "http1",
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
-                        let ws_stream = connect_websocket_http1(url, fwmark, source).await?;
+                        let ws_stream =
+                            connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(AnyWsStream::Http1 { inner: ws_stream })
                     }
@@ -544,10 +547,11 @@ pub async fn connect_websocket_with_source(
 pub async fn connect_shadowsocks_tcp_with_source(
     addr: &ServerAddr,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<TcpStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "tcp");
-    let server_addr = resolve_server_addr(addr).await?;
+    let server_addr = resolve_server_addr(addr, ipv6_first).await?;
     let stream = connect_tcp_socket(server_addr, fwmark).await?;
     connect_guard.finish("success");
     Ok(stream)
@@ -556,10 +560,11 @@ pub async fn connect_shadowsocks_tcp_with_source(
 pub async fn connect_shadowsocks_udp_with_source(
     addr: &ServerAddr,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<UdpSocket> {
     let mut connect_guard = TransportConnectGuard::new(source, "udp");
-    let server_addr = resolve_server_addr(addr).await?;
+    let server_addr = resolve_server_addr(addr, ipv6_first).await?;
     let bind_addr = bind_addr_for(server_addr);
     let socket = if fwmark.is_some() {
         UdpSocket::from_std(bind_udp_socket(bind_addr, fwmark)?)
@@ -581,12 +586,39 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
     format!("{error:#}").contains(OVERSIZED_UDP_UPLINK_DROP_ERR)
 }
 
-async fn resolve_server_addr(addr: &ServerAddr) -> Result<SocketAddr> {
-    lookup_host((addr.host(), addr.port()))
+async fn resolve_server_addr(addr: &ServerAddr, ipv6_first: bool) -> Result<SocketAddr> {
+    resolve_host_with_preference(
+        addr.host(),
+        addr.port(),
+        &format!("failed to resolve {}", addr),
+        ipv6_first,
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
+}
+
+async fn resolve_host_with_preference(
+    host: &str,
+    port: u16,
+    context: &str,
+    ipv6_first: bool,
+) -> Result<Vec<SocketAddr>> {
+    let mut server_addrs = lookup_host((host, port))
         .await
-        .with_context(|| format!("failed to resolve {}", addr))?
-        .next()
-        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
+        .with_context(|| context.to_string())?
+        .collect::<Vec<_>>();
+    server_addrs.sort_by_key(|addr| {
+        if ipv6_first {
+            if addr.is_ipv6() { 0 } else { 1 }
+        } else if addr.is_ipv4() {
+            0
+        } else {
+            1
+        }
+    });
+    Ok(server_addrs)
 }
 
 fn unix_timestamp_secs() -> Result<u64> {
@@ -1099,10 +1131,11 @@ impl UdpWsTransport {
         cipher: CipherKind,
         password: &str,
         fwmark: Option<u32>,
+        ipv6_first: bool,
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream = connect_websocket_with_source(url, mode, fwmark, source)
+        let ws_stream = connect_websocket_with_source(url, mode, fwmark, ipv6_first, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
         Ok(Self::from_websocket(
@@ -1223,6 +1256,7 @@ impl UdpWsTransport {
 async fn connect_websocket_http1(
     url: &Url,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<H1WsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "http1");
@@ -1232,11 +1266,12 @@ async fn connect_websocket_http1(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr = lookup_host((host, port))
-        .await
-        .context("failed to resolve websocket host")?
-        .next()
-        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+    let server_addr =
+        resolve_host_with_preference(host, port, "failed to resolve websocket host", ipv6_first)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let tcp = connect_tcp_socket(server_addr, fwmark).await?;
     let (ws_stream, _) = client_async_tls(url.as_str(), tcp)
         .await
@@ -1248,6 +1283,7 @@ async fn connect_websocket_http1(
 async fn connect_websocket_h2(
     url: &Url,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<AnyWsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h2");
@@ -1257,11 +1293,16 @@ async fn connect_websocket_h2(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr = lookup_host((host, port))
-        .await
-        .context("failed to resolve h2 websocket host")?
-        .next()
-        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+    let server_addr = resolve_host_with_preference(
+        host,
+        port,
+        "failed to resolve h2 websocket host",
+        ipv6_first,
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let target_uri = websocket_target_uri(url)?;
 
     let io = match url.scheme() {
@@ -1322,6 +1363,7 @@ async fn connect_websocket_h2(
 async fn connect_websocket_h3(
     url: &Url,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<AnyWsStream> {
     if url.scheme() != "wss" {
@@ -1334,14 +1376,16 @@ async fn connect_websocket_h3(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let mut server_addrs = lookup_host((host, port))
-        .await
-        .context("failed to resolve h3 websocket host")?
-        .collect::<Vec<_>>();
+    let server_addrs = resolve_host_with_preference(
+        host,
+        port,
+        "failed to resolve h3 websocket host",
+        ipv6_first,
+    )
+    .await?;
     if server_addrs.is_empty() {
         bail!("DNS resolution returned no addresses for {host}:{port}");
     }
-    server_addrs.sort_by_key(|addr| if addr.is_ipv4() { 0 } else { 1 });
 
     let path = websocket_path(url);
     let mut last_error = None;

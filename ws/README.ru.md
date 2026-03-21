@@ -172,6 +172,7 @@ tun2udp + tun2tcp"]
 - `systemd/outline-ws-rust.service` — hardened systemd unit
 - `grafana/outline-ws-rust-dashboard.json` — основной операционный дашборд
 - `grafana/outline-ws-rust-tun-tcp-dashboard.json` — дашборд `tun2tcp`
+- `grafana/outline-ws-rust-native-burst-dashboard.json` — диагностика стартового и переключательного burst в native Shadowsocks
 - `prometheus/outline-ws-rust-alerts.yml` — alert rules Prometheus
 - `PATCHES.md` — реестр локальных патчей vendored-зависимостей
 
@@ -273,7 +274,7 @@ listen = "[::1]:9090"
 # connect_timeout_secs = 10
 # handshake_timeout_secs = 15
 # half_close_timeout_secs = 60
-# max_pending_server_bytes = 1048576
+# max_pending_server_bytes = 4194304
 # max_buffered_client_segments = 4096
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
@@ -290,6 +291,8 @@ enabled = true
 
 [probe.http]
 url = "http://example.com/"
+
+`probe.http` отправляет HTTP-запрос `HEAD`, а не `GET`, чтобы health-check не тянул тело ответа через uplink.
 
 [probe.dns]
 server = "1.1.1.1"
@@ -318,6 +321,7 @@ tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
 tcp_ws_mode = "h3"
 # fwmark = 100
+# ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
 udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
@@ -349,6 +353,7 @@ password = "Secret0"
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3` и используются только с `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
+- `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
@@ -648,6 +653,7 @@ Snapshot дескрипторов включает общее количеств
 
 - `grafana/outline-ws-rust-dashboard.json`
 - `grafana/outline-ws-rust-tun-tcp-dashboard.json`
+- `grafana/outline-ws-rust-native-burst-dashboard.json`
 
 Основной дашборд сгруппирован по секциям:
 

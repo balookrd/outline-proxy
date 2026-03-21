@@ -56,6 +56,9 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_FWMARK")]
     pub fwmark: Option<u32>,
 
+    #[arg(long, env = "OUTLINE_IPV6_FIRST")]
+    pub ipv6_first: Option<bool>,
+
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
@@ -98,6 +101,7 @@ pub struct UplinkConfig {
     pub password: String,
     pub weight: f64,
     pub fwmark: Option<u32>,
+    pub ipv6_first: bool,
 }
 
 impl UplinkConfig {
@@ -236,6 +240,7 @@ struct ConfigFile {
     method: Option<CipherKind>,
     password: Option<String>,
     fwmark: Option<u32>,
+    ipv6_first: Option<bool>,
     uplinks: Option<Vec<UplinkSection>>,
     probe: Option<ProbeSection>,
     load_balancing: Option<LoadBalancingSection>,
@@ -271,6 +276,7 @@ struct OutlineSection {
     method: Option<CipherKind>,
     password: Option<String>,
     fwmark: Option<u32>,
+    ipv6_first: Option<bool>,
     uplinks: Option<Vec<UplinkSection>>,
     probe: Option<ProbeSection>,
     load_balancing: Option<LoadBalancingSection>,
@@ -316,6 +322,7 @@ struct UplinkSection {
     password: Option<String>,
     weight: Option<f64>,
     fwmark: Option<u32>,
+    ipv6_first: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -399,9 +406,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let tun = load_tun_config(tun_section, args)?;
 
     if listen.is_none() && tun.is_none() {
-        bail!(
-            "no ingress configured: set --listen / [socks5].listen and/or configure [tun]"
-        );
+        bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
     }
 
     Ok(AppConfig {
@@ -524,6 +529,7 @@ fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
         || file.method.is_some()
         || file.password.is_some()
         || file.fwmark.is_some()
+        || file.ipv6_first.is_some()
         || file.uplinks.is_some()
         || file.probe.is_some()
         || file.load_balancing.is_some();
@@ -542,6 +548,7 @@ fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
             method: file.method,
             password: file.password.clone(),
             fwmark: file.fwmark,
+            ipv6_first: file.ipv6_first,
             uplinks: file.uplinks.clone(),
             probe: file.probe.clone(),
             load_balancing: file.load_balancing.clone(),
@@ -557,6 +564,7 @@ fn resolve_outline_section(file: &ConfigFile) -> Option<OutlineSection> {
             method: file.method.or(legacy.method),
             password: file.password.clone().or(legacy.password),
             fwmark: file.fwmark.or(legacy.fwmark),
+            ipv6_first: file.ipv6_first.or(legacy.ipv6_first),
             uplinks: file.uplinks.clone().or(legacy.uplinks),
             probe: file.probe.clone().or(legacy.probe),
             load_balancing: file.load_balancing.clone().or(legacy.load_balancing),
@@ -596,7 +604,8 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         || args.udp_addr.is_some()
         || args.method.is_some()
         || args.password.is_some()
-        || args.fwmark.is_some();
+        || args.fwmark.is_some()
+        || args.ipv6_first.is_some();
 
     if cli_override_requested {
         return Ok(vec![build_uplink(
@@ -626,6 +635,8 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
                 .or_else(|| outline.and_then(|o| o.password.clone())),
             Some(1.0),
             args.fwmark.or_else(|| outline.and_then(|o| o.fwmark)),
+            args.ipv6_first
+                .or_else(|| outline.and_then(|o| o.ipv6_first)),
         )?]);
     }
 
@@ -648,6 +659,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
                 uplink.password.clone(),
                 uplink.weight,
                 uplink.fwmark,
+                uplink.ipv6_first,
             )?);
         }
         if resolved.is_empty() {
@@ -669,6 +681,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         outline.and_then(|o| o.password.clone()),
         Some(1.0),
         outline.and_then(|o| o.fwmark),
+        outline.and_then(|o| o.ipv6_first),
     )?])
 }
 
@@ -685,6 +698,7 @@ fn build_uplink(
     password: Option<String>,
     weight: Option<f64>,
     fwmark: Option<u32>,
+    ipv6_first: Option<bool>,
 ) -> Result<UplinkConfig> {
     let weight = weight.unwrap_or(1.0);
     if !weight.is_finite() || weight <= 0.0 {
@@ -740,6 +754,7 @@ fn build_uplink(
         password,
         weight,
         fwmark,
+        ipv6_first: ipv6_first.unwrap_or(false),
     })
 }
 
@@ -880,7 +895,7 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         ),
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
-            .unwrap_or(1_048_576),
+            .unwrap_or(4_194_304),
         max_buffered_client_segments: tcp_section
             .and_then(|section| section.max_buffered_client_segments)
             .unwrap_or(4096),
@@ -1521,8 +1536,14 @@ mod tests {
         assert_eq!(config.uplinks.len(), 1);
         let uplink = &config.uplinks[0];
         assert_eq!(uplink.transport, crate::types::UplinkTransport::Shadowsocks);
-        assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
-        assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
+        assert_eq!(
+            uplink.tcp_addr.as_ref().unwrap().to_string(),
+            "ss.example.com:8388"
+        );
+        assert_eq!(
+            uplink.udp_addr.as_ref().unwrap().to_string(),
+            "ss.example.com:8388"
+        );
         assert!(uplink.tcp_ws_url.is_none());
         assert!(uplink.udp_ws_url.is_none());
 
