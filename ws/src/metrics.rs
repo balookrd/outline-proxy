@@ -81,6 +81,10 @@ struct Metrics {
     tun_tcp_pending_server_bytes: IntGaugeVec,
     tun_tcp_buffered_client_segments: IntGaugeVec,
     tun_tcp_zero_window_flows: IntGaugeVec,
+    tun_tcp_backlog_pressure_flows: IntGaugeVec,
+    tun_tcp_backlog_pressure_seconds: GaugeVec,
+    tun_tcp_ack_progress_stall_flows: IntGaugeVec,
+    tun_tcp_ack_progress_stall_seconds: GaugeVec,
     tun_tcp_congestion_window_bytes: IntGaugeVec,
     tun_tcp_slow_start_threshold_bytes: IntGaugeVec,
     tun_tcp_retransmission_timeout_seconds: GaugeVec,
@@ -558,6 +562,38 @@ impl Metrics {
             &["uplink"],
         )
         .expect("tun_tcp_zero_window_flows metric");
+        let tun_tcp_backlog_pressure_flows = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_tcp_backlog_pressure_flows",
+                "Current number of TUN TCP flows above the configured server backlog limit.",
+            ),
+            &["uplink"],
+        )
+        .expect("tun_tcp_backlog_pressure_flows metric");
+        let tun_tcp_backlog_pressure_seconds = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_tcp_backlog_pressure_seconds",
+                "Current accumulated backlog-pressure duration for active TUN TCP flows.",
+            ),
+            &["uplink"],
+        )
+        .expect("tun_tcp_backlog_pressure_seconds metric");
+        let tun_tcp_ack_progress_stall_flows = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_tcp_ack_progress_stall_flows",
+                "Current number of TUN TCP flows with pending server data but no recent ACK progress.",
+            ),
+            &["uplink"],
+        )
+        .expect("tun_tcp_ack_progress_stall_flows metric");
+        let tun_tcp_ack_progress_stall_seconds = GaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_tcp_ack_progress_stall_seconds",
+                "Current accumulated ACK-progress stall duration for active TUN TCP flows with pending server data.",
+            ),
+            &["uplink"],
+        )
+        .expect("tun_tcp_ack_progress_stall_seconds metric");
         let tun_tcp_congestion_window_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_congestion_window_bytes",
@@ -883,6 +919,18 @@ impl Metrics {
             .register(Box::new(tun_tcp_zero_window_flows.clone()))
             .expect("register tun_tcp_zero_window_flows");
         registry
+            .register(Box::new(tun_tcp_backlog_pressure_flows.clone()))
+            .expect("register tun_tcp_backlog_pressure_flows");
+        registry
+            .register(Box::new(tun_tcp_backlog_pressure_seconds.clone()))
+            .expect("register tun_tcp_backlog_pressure_seconds");
+        registry
+            .register(Box::new(tun_tcp_ack_progress_stall_flows.clone()))
+            .expect("register tun_tcp_ack_progress_stall_flows");
+        registry
+            .register(Box::new(tun_tcp_ack_progress_stall_seconds.clone()))
+            .expect("register tun_tcp_ack_progress_stall_seconds");
+        registry
             .register(Box::new(tun_tcp_congestion_window_bytes.clone()))
             .expect("register tun_tcp_congestion_window_bytes");
         registry
@@ -1011,6 +1059,10 @@ impl Metrics {
             tun_tcp_pending_server_bytes,
             tun_tcp_buffered_client_segments,
             tun_tcp_zero_window_flows,
+            tun_tcp_backlog_pressure_flows,
+            tun_tcp_backlog_pressure_seconds,
+            tun_tcp_ack_progress_stall_flows,
+            tun_tcp_ack_progress_stall_seconds,
             tun_tcp_congestion_window_bytes,
             tun_tcp_slow_start_threshold_bytes,
             tun_tcp_retransmission_timeout_seconds,
@@ -1807,6 +1859,34 @@ pub fn add_tun_tcp_buffered_client_segments(uplink: &str, delta: i64) {
 pub fn add_tun_tcp_zero_window_flows(uplink: &str, delta: i64) {
     METRICS
         .tun_tcp_zero_window_flows
+        .with_label_values(&[uplink])
+        .add(delta);
+}
+
+pub fn add_tun_tcp_backlog_pressure_flows(uplink: &str, delta: i64) {
+    METRICS
+        .tun_tcp_backlog_pressure_flows
+        .with_label_values(&[uplink])
+        .add(delta);
+}
+
+pub fn add_tun_tcp_backlog_pressure_seconds(uplink: &str, delta: f64) {
+    METRICS
+        .tun_tcp_backlog_pressure_seconds
+        .with_label_values(&[uplink])
+        .add(delta);
+}
+
+pub fn add_tun_tcp_ack_progress_stall_flows(uplink: &str, delta: i64) {
+    METRICS
+        .tun_tcp_ack_progress_stall_flows
+        .with_label_values(&[uplink])
+        .add(delta);
+}
+
+pub fn add_tun_tcp_ack_progress_stall_seconds(uplink: &str, delta: f64) {
+    METRICS
+        .tun_tcp_ack_progress_stall_seconds
         .with_label_values(&[uplink])
         .add(delta);
 }
