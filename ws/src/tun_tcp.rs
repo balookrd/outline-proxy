@@ -41,7 +41,6 @@ const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
-
 #[derive(Clone)]
 pub struct TunTcpEngine {
     inner: Arc<TunTcpEngineInner>,
@@ -107,6 +106,8 @@ struct TcpFlowState {
     congestion_window: usize,
     slow_start_threshold: usize,
     pending_server_data: VecDeque<Vec<u8>>,
+    backlog_limit_exceeded_since: Option<Instant>,
+    last_ack_progress_at: Instant,
     pending_client_data: VecDeque<Vec<u8>>,
     unacked_server_segments: VecDeque<ServerSegment>,
     pending_client_segments: Vec<BufferedClientSegment>,
@@ -118,6 +119,10 @@ struct TcpFlowState {
     reported_pending_server_bytes: usize,
     reported_buffered_client_segments: usize,
     reported_zero_window: bool,
+    reported_backlog_pressure: bool,
+    reported_backlog_pressure_us: u64,
+    reported_ack_progress_stall: bool,
+    reported_ack_progress_stall_us: u64,
     reported_active: bool,
     reported_congestion_window: usize,
     reported_slow_start_threshold: usize,
@@ -345,6 +350,8 @@ impl TunTcpEngine {
             congestion_window: MAX_SERVER_SEGMENT_PAYLOAD * TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: TCP_SERVER_RECV_WINDOW_CAPACITY,
             pending_server_data: VecDeque::new(),
+            backlog_limit_exceeded_since: None,
+            last_ack_progress_at: now,
             pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
             pending_client_segments: Vec::new(),
@@ -356,6 +363,10 @@ impl TunTcpEngine {
             reported_pending_server_bytes: 0,
             reported_buffered_client_segments: 0,
             reported_zero_window: false,
+            reported_backlog_pressure: false,
+            reported_backlog_pressure_us: 0,
+            reported_ack_progress_stall: false,
+            reported_ack_progress_stall_us: 0,
             reported_active: false,
             reported_congestion_window: 0,
             reported_slow_start_threshold: 0,
@@ -892,26 +903,33 @@ impl TunTcpEngine {
                         if chunk.is_empty() {
                             continue;
                         }
-                        let (flush, ip_family, backlog_exceeded, uplink_name) = {
+                        let (flush, ip_family, backlog_pressure, uplink_name) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
                             }
                             state.last_seen = Instant::now();
                             state.pending_server_data.push_back(chunk.clone());
-                            let backlog_exceeded =
-                                exceeds_server_backlog_limit(&state, &engine.inner.tcp);
                             let flush = flush_server_output(&mut state);
+                            let backlog_pressure = assess_server_backlog_pressure(
+                                &mut state,
+                                &engine.inner.tcp,
+                                Instant::now(),
+                                flush
+                                    .as_ref()
+                                    .map(|flush| flush.window_stalled)
+                                    .unwrap_or(false),
+                            );
                             sync_flow_metrics(&mut state);
                             (
                                 flush,
                                 ip_family_from_version(key.version),
-                                backlog_exceeded,
+                                backlog_pressure,
                                 state.uplink_name.clone(),
                             )
                         };
 
-                        if backlog_exceeded {
+                        if backlog_pressure.should_abort {
                             let uplink_name = key_uplink_name(&flow).await;
                             let uplink_index = {
                                 let state = flow.lock().await;
@@ -933,12 +951,26 @@ impl TunTcpEngine {
                                 uplink_index,
                                 cooldown_ms,
                                 penalty_ms,
+                                pending_bytes = backlog_pressure.pending_bytes,
+                                limit_bytes = engine.inner.tcp.max_pending_server_bytes,
+                                grace_ms = backlog_pressure.over_limit_ms.unwrap_or_default(),
+                                no_progress_ms = backlog_pressure.no_progress_ms.unwrap_or_default(),
                                 "closing TUN TCP flow after server backlog limit"
                             );
                             engine
                                 .abort_flow_with_rst(&key, "server_backlog_limit")
                                 .await;
                             return;
+                        } else if backlog_pressure.exceeded {
+                            debug!(
+                                uplink = %uplink_name,
+                                pending_bytes = backlog_pressure.pending_bytes,
+                                limit_bytes = engine.inner.tcp.max_pending_server_bytes,
+                                over_limit_ms = backlog_pressure.over_limit_ms.unwrap_or_default(),
+                                no_progress_ms = backlog_pressure.no_progress_ms.unwrap_or_default(),
+                                window_stalled = backlog_pressure.window_stalled,
+                                "TUN TCP flow is under backlog pressure, delaying abort"
+                            );
                         }
 
                         match flush {
@@ -2190,8 +2222,50 @@ fn exceeds_client_reassembly_limits(state: &TcpFlowState, config: &TunTcpConfig)
         || buffered_client_bytes(state) > config.max_buffered_client_bytes
 }
 
-fn exceeds_server_backlog_limit(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
-    pending_server_bytes(state) > config.max_pending_server_bytes
+#[derive(Debug, Clone, Copy, Default)]
+struct ServerBacklogPressure {
+    exceeded: bool,
+    should_abort: bool,
+    pending_bytes: usize,
+    over_limit_ms: Option<u128>,
+    no_progress_ms: Option<u128>,
+    window_stalled: bool,
+}
+
+fn assess_server_backlog_pressure(
+    state: &mut TcpFlowState,
+    config: &TunTcpConfig,
+    now: Instant,
+    window_stalled: bool,
+) -> ServerBacklogPressure {
+    let pending_bytes = pending_server_bytes(state);
+    if pending_bytes <= config.max_pending_server_bytes {
+        state.backlog_limit_exceeded_since = None;
+        return ServerBacklogPressure {
+            pending_bytes,
+            window_stalled,
+            ..ServerBacklogPressure::default()
+        };
+    }
+
+    let first_exceeded_at = *state.backlog_limit_exceeded_since.get_or_insert(now);
+    let over_limit_for = now.saturating_duration_since(first_exceeded_at);
+    let no_progress_for = now.saturating_duration_since(state.last_ack_progress_at);
+    let hard_limit = config
+        .max_pending_server_bytes
+        .saturating_mul(config.backlog_hard_limit_multiplier);
+    let should_abort = pending_bytes > hard_limit
+        || over_limit_for >= config.backlog_abort_grace
+        || (window_stalled && no_progress_for >= config.backlog_no_progress_abort);
+
+    ServerBacklogPressure {
+        exceeded: true,
+        should_abort,
+        pending_bytes,
+        over_limit_ms: Some(over_limit_for.as_millis()),
+        no_progress_ms: Some(no_progress_for.as_millis()),
+        window_stalled,
+    }
 }
 
 fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
@@ -2447,6 +2521,8 @@ fn note_ack_progress(state: &mut TcpFlowState, bytes_acked: usize, rtt_sample: O
         return;
     }
 
+    state.last_ack_progress_at = Instant::now();
+
     if state.congestion_window < state.slow_start_threshold {
         state.congestion_window = state.congestion_window.saturating_add(bytes_acked);
     } else {
@@ -2701,6 +2777,18 @@ fn sync_flow_metrics(state: &mut TcpFlowState) {
     let buffered_client_segments =
         state.pending_client_segments.len() + state.pending_client_data.len();
     let zero_window = state.client_window == 0 && pending_server_bytes > 0;
+    let backlog_pressure = state.backlog_limit_exceeded_since.is_some();
+    let backlog_pressure_us = state
+        .backlog_limit_exceeded_since
+        .map(|since| since.elapsed().as_micros() as u64)
+        .unwrap_or(0);
+    let ack_progress_stall =
+        pending_server_bytes > 0 && state.last_ack_progress_at.elapsed() >= Duration::from_secs(1);
+    let ack_progress_stall_us = if pending_server_bytes > 0 {
+        state.last_ack_progress_at.elapsed().as_micros() as u64
+    } else {
+        0
+    };
     let congestion_window = state.congestion_window;
     let slow_start_threshold = state.slow_start_threshold;
     let retransmission_timeout_us = state.retransmission_timeout.as_micros() as u64;
@@ -2742,6 +2830,29 @@ fn sync_flow_metrics(state: &mut TcpFlowState) {
         metrics::add_tun_tcp_zero_window_flows(uplink, if zero_window { 1 } else { -1 });
         state.reported_zero_window = zero_window;
     }
+    if backlog_pressure != state.reported_backlog_pressure {
+        metrics::add_tun_tcp_backlog_pressure_flows(uplink, if backlog_pressure { 1 } else { -1 });
+        state.reported_backlog_pressure = backlog_pressure;
+    }
+    apply_u64_seconds_gauge_delta(
+        uplink,
+        backlog_pressure_us,
+        &mut state.reported_backlog_pressure_us,
+        metrics::add_tun_tcp_backlog_pressure_seconds,
+    );
+    if ack_progress_stall != state.reported_ack_progress_stall {
+        metrics::add_tun_tcp_ack_progress_stall_flows(
+            uplink,
+            if ack_progress_stall { 1 } else { -1 },
+        );
+        state.reported_ack_progress_stall = ack_progress_stall;
+    }
+    apply_u64_seconds_gauge_delta(
+        uplink,
+        ack_progress_stall_us,
+        &mut state.reported_ack_progress_stall_us,
+        metrics::add_tun_tcp_ack_progress_stall_seconds,
+    );
     apply_usize_gauge_delta(
         uplink,
         congestion_window,
@@ -2799,6 +2910,28 @@ fn clear_flow_metrics(state: &mut TcpFlowState) {
     if state.reported_zero_window {
         metrics::add_tun_tcp_zero_window_flows(uplink, -1);
         state.reported_zero_window = false;
+    }
+    if state.reported_backlog_pressure {
+        metrics::add_tun_tcp_backlog_pressure_flows(uplink, -1);
+        state.reported_backlog_pressure = false;
+    }
+    if state.reported_backlog_pressure_us != 0 {
+        metrics::add_tun_tcp_backlog_pressure_seconds(
+            uplink,
+            -(state.reported_backlog_pressure_us as f64) / 1_000_000.0,
+        );
+        state.reported_backlog_pressure_us = 0;
+    }
+    if state.reported_ack_progress_stall {
+        metrics::add_tun_tcp_ack_progress_stall_flows(uplink, -1);
+        state.reported_ack_progress_stall = false;
+    }
+    if state.reported_ack_progress_stall_us != 0 {
+        metrics::add_tun_tcp_ack_progress_stall_seconds(
+            uplink,
+            -(state.reported_ack_progress_stall_us as f64) / 1_000_000.0,
+        );
+        state.reported_ack_progress_stall_us = 0;
     }
     if state.reported_congestion_window != 0 {
         metrics::add_tun_tcp_congestion_window_bytes(
@@ -3793,7 +3926,105 @@ mod tests {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
         };
-        assert!(super::exceeds_server_backlog_limit(&state, &config));
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);
+        assert!(pressure.exceeded);
+    }
+
+    #[tokio::test]
+    async fn server_backlog_pressure_allows_brief_window_stall() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.client_window = 0;
+        state.client_window_end = state.server_seq;
+        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            ..test_tun_tcp_config()
+        };
+
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
+
+        assert!(pressure.exceeded);
+        assert!(!pressure.should_abort);
+        assert!(state.backlog_limit_exceeded_since.is_some());
+    }
+
+    #[tokio::test]
+    async fn server_backlog_pressure_aborts_after_grace_even_without_window_stall() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            ..test_tun_tcp_config()
+        };
+        state.backlog_limit_exceeded_since = Some(Instant::now() - config.backlog_abort_grace);
+
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);
+
+        assert!(pressure.exceeded);
+        assert!(pressure.should_abort);
+    }
+
+    #[tokio::test]
+    async fn server_backlog_pressure_aborts_after_grace_when_stalled() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.client_window = 0;
+        state.client_window_end = state.server_seq;
+        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            ..test_tun_tcp_config()
+        };
+        state.backlog_limit_exceeded_since = Some(Instant::now() - config.backlog_abort_grace);
+
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
+
+        assert!(pressure.exceeded);
+        assert!(pressure.should_abort);
+    }
+
+    #[tokio::test]
+    async fn server_backlog_pressure_aborts_after_no_ack_progress_timeout() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.client_window = 0;
+        state.client_window_end = state.server_seq;
+        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            backlog_abort_grace: Duration::from_secs(60),
+            backlog_no_progress_abort: Duration::from_secs(2),
+            ..test_tun_tcp_config()
+        };
+        state.last_ack_progress_at = Instant::now() - config.backlog_no_progress_abort;
+
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
+
+        assert!(pressure.exceeded);
+        assert!(pressure.should_abort);
+        assert!(
+            pressure.no_progress_ms.unwrap_or_default()
+                >= config.backlog_no_progress_abort.as_millis()
+        );
+    }
+
+    #[tokio::test]
+    async fn server_backlog_pressure_aborts_immediately_above_hard_limit() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.pending_server_data = VecDeque::from([vec![1; 512]]);
+        let config = TunTcpConfig {
+            max_pending_server_bytes: 200,
+            ..test_tun_tcp_config()
+        };
+
+        let pressure =
+            super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);
+
+        assert!(pressure.exceeded);
+        assert!(pressure.should_abort);
     }
 
     async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
@@ -3851,6 +4082,9 @@ mod tests {
             handshake_timeout: Duration::from_secs(5),
             half_close_timeout: Duration::from_secs(15),
             max_pending_server_bytes: 1_048_576,
+            backlog_abort_grace: Duration::from_secs(3),
+            backlog_hard_limit_multiplier: 2,
+            backlog_no_progress_abort: Duration::from_secs(8),
             max_buffered_client_segments: 4096,
             max_buffered_client_bytes: 262_144,
             max_retransmits: 12,
@@ -3970,6 +4204,8 @@ mod tests {
             congestion_window: super::MAX_SERVER_SEGMENT_PAYLOAD * super::TCP_INITIAL_CWND_SEGMENTS,
             slow_start_threshold: super::TCP_SERVER_RECV_WINDOW_CAPACITY,
             pending_server_data: VecDeque::new(),
+            backlog_limit_exceeded_since: None,
+            last_ack_progress_at: Instant::now(),
             pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
             pending_client_segments: Vec::new(),
@@ -3981,6 +4217,10 @@ mod tests {
             reported_pending_server_bytes: 0,
             reported_buffered_client_segments: 0,
             reported_zero_window: false,
+            reported_backlog_pressure: false,
+            reported_backlog_pressure_us: 0,
+            reported_ack_progress_stall: false,
+            reported_ack_progress_stall_us: 0,
             reported_active: false,
             reported_congestion_window: 0,
             reported_slow_start_threshold: 0,

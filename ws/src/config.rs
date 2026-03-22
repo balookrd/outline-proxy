@@ -222,6 +222,9 @@ pub struct TunTcpConfig {
     pub handshake_timeout: Duration,
     pub half_close_timeout: Duration,
     pub max_pending_server_bytes: usize,
+    pub backlog_abort_grace: Duration,
+    pub backlog_hard_limit_multiplier: usize,
+    pub backlog_no_progress_abort: Duration,
     pub max_buffered_client_segments: usize,
     pub max_buffered_client_bytes: usize,
     pub max_retransmits: u32,
@@ -303,6 +306,9 @@ struct TunTcpSection {
     handshake_timeout_secs: Option<u64>,
     half_close_timeout_secs: Option<u64>,
     max_pending_server_bytes: Option<usize>,
+    backlog_abort_grace_secs: Option<u64>,
+    backlog_hard_limit_multiplier: Option<usize>,
+    backlog_no_progress_abort_secs: Option<u64>,
     max_buffered_client_segments: Option<usize>,
     max_buffered_client_bytes: Option<usize>,
     max_retransmits: Option<u32>,
@@ -896,6 +902,19 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
             .unwrap_or(4_194_304),
+        backlog_abort_grace: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.backlog_abort_grace_secs)
+                .unwrap_or(3),
+        ),
+        backlog_hard_limit_multiplier: tcp_section
+            .and_then(|section| section.backlog_hard_limit_multiplier)
+            .unwrap_or(2),
+        backlog_no_progress_abort: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.backlog_no_progress_abort_secs)
+                .unwrap_or(8),
+        ),
         max_buffered_client_segments: tcp_section
             .and_then(|section| section.max_buffered_client_segments)
             .unwrap_or(4096),
@@ -917,6 +936,15 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
     }
     if tcp.max_pending_server_bytes < 16_384 {
         bail!("tun.tcp.max_pending_server_bytes must be at least 16384");
+    }
+    if tcp.backlog_abort_grace < Duration::from_secs(1) {
+        bail!("tun.tcp.backlog_abort_grace_secs must be at least 1");
+    }
+    if tcp.backlog_hard_limit_multiplier < 2 {
+        bail!("tun.tcp.backlog_hard_limit_multiplier must be at least 2");
+    }
+    if tcp.backlog_no_progress_abort < Duration::from_secs(1) {
+        bail!("tun.tcp.backlog_no_progress_abort_secs must be at least 1");
     }
     if tcp.max_buffered_client_segments == 0 {
         bail!("tun.tcp.max_buffered_client_segments must be greater than zero");
@@ -1235,6 +1263,9 @@ mod tests {
             handshake_timeout_secs = 12
             half_close_timeout_secs = 45
             max_pending_server_bytes = 524288
+            backlog_abort_grace_secs = 4
+            backlog_hard_limit_multiplier = 3
+            backlog_no_progress_abort_secs = 9
             max_buffered_client_segments = 1024
             max_buffered_client_bytes = 131072
             max_retransmits = 9
@@ -1251,6 +1282,9 @@ mod tests {
         assert_eq!(tcp.handshake_timeout_secs, Some(12));
         assert_eq!(tcp.half_close_timeout_secs, Some(45));
         assert_eq!(tcp.max_pending_server_bytes, Some(524288));
+        assert_eq!(tcp.backlog_abort_grace_secs, Some(4));
+        assert_eq!(tcp.backlog_hard_limit_multiplier, Some(3));
+        assert_eq!(tcp.backlog_no_progress_abort_secs, Some(9));
         assert_eq!(tcp.max_buffered_client_segments, Some(1024));
         assert_eq!(tcp.max_buffered_client_bytes, Some(131072));
         assert_eq!(tcp.max_retransmits, Some(9));
@@ -1372,6 +1406,9 @@ mod tests {
             handshake_timeout_secs = 9
             half_close_timeout_secs = 30
             max_pending_server_bytes = 262144
+            backlog_abort_grace_secs = 5
+            backlog_hard_limit_multiplier = 4
+            backlog_no_progress_abort_secs = 11
             max_buffered_client_segments = 2048
             max_buffered_client_bytes = 65536
             max_retransmits = 6
@@ -1406,6 +1443,23 @@ mod tests {
         assert_eq!(
             config.tun.as_ref().unwrap().tcp.max_pending_server_bytes,
             262_144
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.backlog_abort_grace,
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            config
+                .tun
+                .as_ref()
+                .unwrap()
+                .tcp
+                .backlog_hard_limit_multiplier,
+            4
+        );
+        assert_eq!(
+            config.tun.as_ref().unwrap().tcp.backlog_no_progress_abort,
+            Duration::from_secs(11)
         );
         assert_eq!(
             config

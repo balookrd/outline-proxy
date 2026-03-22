@@ -82,7 +82,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} active tcp flows",
           "refId": "A"
         }
@@ -138,7 +138,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_tun_tcp_async_connects_active{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_tun_tcp_async_connects_active{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} async connects",
           "refId": "A"
         }
@@ -222,7 +222,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{job=~\"$job\",instance=~\"$instance\",event=~\"fast_retransmit|timeout_retransmit\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -338,7 +338,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, result) (rate(outline_ws_rust_tun_tcp_async_connects_total{instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, result) (rate(outline_ws_rust_tun_tcp_async_connects_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{result}}",
           "refId": "A"
         }
@@ -424,7 +424,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, event) (rate(outline_ws_rust_tun_tcp_events_total{job=~\"$job\",instance=~\"$instance\",event=~\"window_stall|zero_window_probe|deferred_fin_sent\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{event}}",
           "refId": "A"
         }
@@ -493,7 +493,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_segments{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} inflight segments",
           "refId": "A"
         }
@@ -549,7 +549,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_inflight_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} inflight bytes",
           "refId": "A"
         }
@@ -605,7 +605,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_pending_server_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} pending server bytes",
           "refId": "A"
         }
@@ -661,7 +661,7 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_buffered_client_segments{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} buffered client segments",
           "refId": "A"
         }
@@ -745,12 +745,12 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_smoothed_rtt_seconds{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} srtt",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_retransmission_timeout_seconds{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} rto",
           "refId": "B"
         }
@@ -806,12 +806,236 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_zero_window_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} zero-window flows",
           "refId": "A"
         }
       ],
       "title": "Zero-Window Flows",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#C15C17",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "id": 11,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_backlog_pressure_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} backlog pressure flows",
+          "refId": "A"
+        }
+      ],
+      "title": "Backlog Pressure Flows",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#F2495C",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "id": 12,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_backlog_pressure_seconds{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} backlog pressure seconds",
+          "refId": "A"
+        }
+      ],
+      "title": "Backlog Pressure Duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#EAB839",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 52
+      },
+      "id": 13,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_ack_progress_stall_flows{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} ack-progress stall flows",
+          "refId": "A"
+        }
+      ],
+      "title": "ACK Progress Stall Flows",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#6ED0E0",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 52
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_ack_progress_stall_seconds{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} {{uplink}} ack-progress stall seconds",
+          "refId": "A"
+        }
+      ],
+      "title": "ACK Progress Stall Duration",
       "type": "timeseries"
     },
     {
@@ -863,7 +1087,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 60
       },
       "id": 9,
       "options": {
@@ -877,12 +1101,12 @@
       },
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_congestion_window_bytes{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} cwnd",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink) (outline_ws_rust_tun_tcp_slow_start_threshold_bytes{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(sum by (instance, uplink) (outline_ws_rust_tun_tcp_flows_active{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} ssthresh",
           "refId": "B"
         }
@@ -928,7 +1152,34 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(outline_ws_rust_build_info, instance)",
+        "definition": "label_values(outline_ws_rust_build_info, job)",
+        "hide": 0,
+        "includeAll": true,
+        "label": "Job",
+        "multi": false,
+        "name": "job",
+        "options": [],
+        "query": {
+          "query": "label_values(outline_ws_rust_build_info, job)",
+          "refId": "Prometheus-job-Variable-Query"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": ".*"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
         "hide": 0,
         "includeAll": true,
         "label": "Instance",
@@ -936,7 +1187,7 @@
         "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(outline_ws_rust_build_info, instance)",
+          "query": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
           "refId": "Prometheus-instance-Variable-Query"
         },
         "refresh": 2,
@@ -955,6 +1206,6 @@
   "timezone": "",
   "title": "outline-ws-rust tun2tcp",
   "uid": "outline-ws-rust-tun-tcp",
-  "version": 2,
+  "version": 3,
   "weekStart": ""
 }
