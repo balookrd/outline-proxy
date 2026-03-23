@@ -8,6 +8,7 @@ pub mod socks5;
 pub mod transport;
 pub mod tun;
 pub mod tun_tcp;
+pub mod tun_udp;
 pub mod types;
 pub mod uplink;
 
