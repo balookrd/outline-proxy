@@ -50,12 +50,12 @@ use self::state_machine::{
     build_flow_syn_ack_packet, clear_flow_metrics, client_fin_seen, decode_client_window,
     drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
     flush_server_output, is_duplicate_syn, maybe_emit_zero_window_probe, normalize_client_segment,
-    note_ack_progress, note_congestion_event, process_server_ack,
-    queue_future_segment_with_recv_window, reset_zero_window_persist, retransmit_budget_exhausted,
-    retransmit_due_segment, retransmit_oldest_unacked_packet, seq_gt, seq_lt,
-    server_fin_awaiting_ack, server_fin_sent, set_flow_status, sync_flow_metrics,
-    transition_on_client_fin, transition_on_server_fin_ack, trim_packet_to_receive_window,
-    update_client_send_window,
+    note_ack_progress, note_congestion_event, note_recent_client_timestamp,
+    packet_overlaps_receive_window, process_server_ack, queue_future_segment_with_recv_window,
+    reset_zero_window_persist, retransmit_budget_exhausted, retransmit_due_segment,
+    retransmit_oldest_unacked_packet, seq_gt, seq_lt, server_fin_awaiting_ack, server_fin_sent,
+    set_flow_status, sync_flow_metrics, timestamp_lt, transition_on_client_fin,
+    transition_on_server_fin_ack, trim_packet_to_receive_window, update_client_send_window,
 };
 #[cfg(test)]
 use self::state_machine::{
@@ -104,18 +104,32 @@ struct ParsedTcpPacket {
     sequence_number: u32,
     acknowledgement_number: u32,
     window_size: u16,
+    max_segment_size: Option<u16>,
     window_scale: Option<u8>,
     sack_permitted: bool,
     sack_blocks: Vec<(u32, u32)>,
+    timestamp_value: Option<u32>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    timestamp_echo_reply: Option<u32>,
     flags: u8,
     payload: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
 struct ParsedTcpOptions {
+    max_segment_size: Option<u16>,
     window_scale: Option<u8>,
     sack_permitted: bool,
     sack_blocks: Vec<(u32, u32)>,
+    timestamp_value: Option<u32>,
+    timestamp_echo_reply: Option<u32>,
+}
+
+enum PacketValidation {
+    Accept,
+    Ignore,
+    ChallengeAck(&'static str),
+    CloseFlow(&'static str),
 }
 
 enum FlowMaintenancePlan {
@@ -269,6 +283,70 @@ fn plan_flow_maintenance(
     )))
 }
 
+fn validate_packet_timestamps(state: &TcpFlowState, packet: &ParsedTcpPacket) -> PacketValidation {
+    if !state.timestamps_enabled || (packet.flags & TCP_FLAG_RST) != 0 {
+        return PacketValidation::Accept;
+    }
+
+    let Some(timestamp_value) = packet.timestamp_value else {
+        return if packet_overlaps_receive_window(state, packet) {
+            PacketValidation::ChallengeAck("missing_timestamp")
+        } else {
+            PacketValidation::Ignore
+        };
+    };
+
+    if state
+        .recent_client_timestamp
+        .is_some_and(|recent| timestamp_lt(timestamp_value, recent))
+    {
+        return if packet_overlaps_receive_window(state, packet) {
+            PacketValidation::ChallengeAck("paws_reject")
+        } else {
+            PacketValidation::Ignore
+        };
+    }
+
+    PacketValidation::Accept
+}
+
+fn validate_existing_packet(state: &TcpFlowState, packet: &ParsedTcpPacket) -> PacketValidation {
+    if (packet.flags & TCP_FLAG_RST) != 0 {
+        if packet.sequence_number == state.client_next_seq {
+            return PacketValidation::CloseFlow("client_rst");
+        }
+        return if packet_overlaps_receive_window(state, packet) {
+            PacketValidation::ChallengeAck("invalid_rst")
+        } else {
+            PacketValidation::Ignore
+        };
+    }
+
+    match validate_packet_timestamps(state, packet) {
+        PacketValidation::Accept => {}
+        other => return other,
+    }
+
+    if (packet.flags & TCP_FLAG_SYN) != 0 {
+        return if packet_overlaps_receive_window(state, packet) {
+            PacketValidation::ChallengeAck("unexpected_syn")
+        } else {
+            PacketValidation::Ignore
+        };
+    }
+
+    if (packet.flags & TCP_FLAG_ACK) != 0 && seq_gt(packet.acknowledgement_number, state.server_seq)
+    {
+        return if packet_overlaps_receive_window(state, packet) {
+            PacketValidation::ChallengeAck("ack_above_snd_nxt")
+        } else {
+            PacketValidation::Ignore
+        };
+    }
+
+    PacketValidation::Accept
+}
+
 impl TunTcpEngine {
     pub(crate) fn new(
         writer: SharedTunWriter,
@@ -302,16 +380,13 @@ impl TunTcpEngine {
             remote_port: parsed.destination_port,
         };
         let ip_family = ip_family_from_version(parsed.version);
-
-        if (parsed.flags & TCP_FLAG_RST) != 0 {
-            self.close_flow(&key, "client_rst").await;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
-            return Ok(());
-        }
-
         let flow = self.lookup_flow(&key).await;
         match flow {
             Some(flow) => self.handle_existing_flow(flow, parsed).await,
+            None if (parsed.flags & TCP_FLAG_RST) != 0 => {
+                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
+                Ok(())
+            }
             None => self.handle_new_flow(key, parsed).await,
         }
     }
@@ -325,6 +400,20 @@ impl TunTcpEngine {
             self.close_flow(key, "write_tun_error").await;
             return Err(error);
         }
+        Ok(())
+    }
+
+    async fn write_ack_packet_with_event(
+        &self,
+        key: &TcpFlowKey,
+        ack: Vec<u8>,
+        ip_family: &'static str,
+        uplink_name: &str,
+        event: &'static str,
+    ) -> Result<()> {
+        self.write_tun_packet_or_close_flow(key, &ack).await?;
+        metrics::record_tun_tcp_event(uplink_name, event);
+        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         Ok(())
     }
 
@@ -410,6 +499,10 @@ impl TunTcpEngine {
             client_next_seq: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
             client_sack_permitted: packet.sack_permitted,
+            client_max_segment_size: packet.max_segment_size,
+            timestamps_enabled: packet.timestamp_value.is_some(),
+            recent_client_timestamp: packet.timestamp_value,
+            server_timestamp_offset: rand::random::<u32>(),
             client_window: u32::from(packet.window_size),
             client_window_end: server_isn
                 .wrapping_add(1)
@@ -755,12 +848,6 @@ impl TunTcpEngine {
 
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
-        state.last_seen = Instant::now();
-        update_client_send_window(&mut state, &packet);
-        if state.client_window > 0 {
-            reset_zero_window_persist(&mut state);
-        }
-        sync_flow_metrics_and_wake(&mut state);
 
         if state.status == TcpFlowStatus::SynReceived {
             if is_duplicate_syn(&packet, state.client_next_seq) {
@@ -776,7 +863,45 @@ impl TunTcpEngine {
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
                 return Ok(());
             }
+        }
 
+        match validate_existing_packet(&state, &packet) {
+            PacketValidation::Accept => {}
+            PacketValidation::Ignore => return Ok(()),
+            PacketValidation::CloseFlow(reason) => {
+                let key = state.key.clone();
+                drop(state);
+                self.close_flow(&key, reason).await;
+                if reason == "client_rst" {
+                    metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
+                }
+                return Ok(());
+            }
+            PacketValidation::ChallengeAck(event) => {
+                let key = state.key.clone();
+                let uplink_name = state.uplink_name.clone();
+                let ack = build_flow_ack_packet(
+                    &state,
+                    state.server_seq,
+                    state.client_next_seq,
+                    TCP_FLAG_ACK,
+                )?;
+                drop(state);
+                self.write_ack_packet_with_event(&key, ack, ip_family, &uplink_name, event)
+                    .await?;
+                return Ok(());
+            }
+        }
+
+        note_recent_client_timestamp(&mut state, packet.timestamp_value);
+        state.last_seen = Instant::now();
+        update_client_send_window(&mut state, &packet);
+        if state.client_window > 0 {
+            reset_zero_window_persist(&mut state);
+        }
+        sync_flow_metrics_and_wake(&mut state);
+
+        if state.status == TcpFlowStatus::SynReceived {
             if (packet.flags & TCP_FLAG_ACK) != 0
                 && packet.acknowledgement_number == state.server_seq
                 && packet.sequence_number == state.client_next_seq
@@ -1670,9 +1795,12 @@ fn parse_tcp_segment(
             segment[11],
         ]),
         window_size: u16::from_be_bytes([segment[14], segment[15]]),
+        max_segment_size: options.max_segment_size,
         window_scale: options.window_scale,
         sack_permitted: options.sack_permitted,
         sack_blocks: options.sack_blocks,
+        timestamp_value: options.timestamp_value,
+        timestamp_echo_reply: options.timestamp_echo_reply,
         flags: segment[13],
         payload: segment[header_len..].to_vec(),
     })
@@ -1695,6 +1823,10 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                 }
                 let body = &options[index + 2..index + len];
                 match kind {
+                    2 if body.len() == 2 => {
+                        parsed.max_segment_size =
+                            Some(u16::from_be_bytes([body[0], body[1]]).max(1));
+                    }
                     3 if body.len() == 1 => {
                         parsed.window_scale = Some(body[0].min(14));
                     }
@@ -1710,6 +1842,12 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                                 parsed.sack_blocks.push((left, right));
                             }
                         }
+                    }
+                    8 if body.len() == 8 => {
+                        parsed.timestamp_value =
+                            Some(u32::from_be_bytes([body[0], body[1], body[2], body[3]]));
+                        parsed.timestamp_echo_reply =
+                            Some(u32::from_be_bytes([body[4], body[5], body[6], body[7]]));
                     }
                     _ => {}
                 }
@@ -2483,6 +2621,359 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40007;
+        let remote_port = 443;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq.wrapping_add(100),
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(ack.flags, TCP_FLAG_ACK);
+        assert_eq!(ack.acknowledgement_number, 1001);
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40008;
+        let remote_port = 443;
+        let key = super::TcpFlowKey {
+            version: super::IpVersion::V4,
+            client_ip: client_ip.into(),
+            client_port,
+            remote_ip: remote_ip.into(),
+            remote_port,
+        };
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1002,
+                server_next_seq,
+                4096,
+                TCP_FLAG_RST,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(ack.flags, TCP_FLAG_ACK);
+        assert_eq!(ack.acknowledgement_number, 1001);
+        assert!(engine.inner.flows.lock().await.get(&key).is_some());
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40009;
+        let remote_port = 443;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(ack.flags, TCP_FLAG_ACK);
+        assert_eq!(ack.acknowledgement_number, 1001);
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40010;
+        let remote_port = 443;
+
+        engine
+            .handle_packet(&build_client_packet_with_options(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[8, 10, 0, 0, 0, 20, 0, 0, 0, 0, 1, 1],
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet_with_options(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[8, 10, 0, 0, 0, 21, 0, 0, 0, 20, 1, 1],
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .handle_packet(&build_client_packet_with_options(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[8, 10, 0, 0, 0, 19, 0, 0, 0, 20, 1, 1],
+                b"bad",
+            ))
+            .await
+            .unwrap();
+
+        let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(ack.flags, TCP_FLAG_ACK);
+        assert_eq!(ack.acknowledgement_number, 1001);
+        assert!(upstream.try_recv_chunk().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_respects_peer_mss_for_server_segments() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40011;
+        let remote_port = 443;
+
+        engine
+            .handle_packet(&build_client_packet_with_options(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[2, 4, 0x02, 0x58],
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        upstream.send_chunk(&vec![b'X'; 1000]).await;
+        let data = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(data.payload.len(), 600);
+    }
+
+    #[tokio::test]
     async fn tun_tcp_client_fin_transitions_through_last_ack() {
         let upstream = TestTcpUpstream::start().await;
         let manager = build_test_manager(upstream.url()).await;
@@ -2828,9 +3319,12 @@ mod tests {
             sequence_number: 100,
             acknowledgement_number: 0,
             window_size: 4096,
+            max_segment_size: None,
             window_scale: None,
             sack_permitted: false,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_ACK,
             payload: b"abcdef".to_vec(),
         };
@@ -2851,9 +3345,12 @@ mod tests {
             sequence_number: 100,
             acknowledgement_number: 0,
             window_size: 4096,
+            max_segment_size: None,
             window_scale: None,
             sack_permitted: false,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
             payload: b"abc".to_vec(),
         };
@@ -2874,9 +3371,12 @@ mod tests {
             sequence_number: 100,
             acknowledgement_number: 0,
             window_size: 4096,
+            max_segment_size: None,
             window_scale: None,
             sack_permitted: false,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
             payload: b"abc".to_vec(),
         };
@@ -2897,9 +3397,12 @@ mod tests {
             sequence_number: 41,
             acknowledgement_number: 0,
             window_size: 4096,
+            max_segment_size: None,
             window_scale: Some(4),
             sack_permitted: true,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_SYN,
             payload: Vec::new(),
         };
@@ -2917,9 +3420,12 @@ mod tests {
             sequence_number: 200,
             acknowledgement_number: 0,
             window_size: 4096,
+            max_segment_size: None,
             window_scale: None,
             sack_permitted: false,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_ACK,
             payload: b"later".to_vec(),
         };
@@ -3014,6 +3520,46 @@ mod tests {
         assert_eq!(parsed.sack_blocks, vec![(120, 140)]);
     }
 
+    #[test]
+    fn parse_tcp_packet_extracts_mss_and_timestamps() {
+        let packet = build_client_packet_with_options(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            &[2, 4, 0x05, 0xb4, 8, 10, 0, 0, 0, 9, 0, 0, 0, 7, 1, 1],
+            &[],
+        );
+        let parsed = super::parse_tcp_packet(&packet).unwrap();
+        assert_eq!(parsed.max_segment_size, Some(1460));
+        assert_eq!(parsed.timestamp_value, Some(9));
+        assert_eq!(parsed.timestamp_echo_reply, Some(7));
+    }
+
+    #[tokio::test]
+    async fn build_flow_syn_ack_advertises_mss_and_timestamps() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.client_sack_permitted = true;
+        state.timestamps_enabled = true;
+        state.recent_client_timestamp = Some(1234);
+        state.server_timestamp_offset = 7;
+
+        let packet = super::build_flow_syn_ack_packet(&state, 900, 101).unwrap();
+        let parsed = super::parse_tcp_packet(&packet).unwrap();
+        assert_eq!(parsed.flags, TCP_FLAG_SYN | TCP_FLAG_ACK);
+        assert_eq!(
+            parsed.max_segment_size,
+            Some(super::MAX_SERVER_SEGMENT_PAYLOAD as u16)
+        );
+        assert!(parsed.sack_permitted);
+        assert_eq!(parsed.timestamp_echo_reply, Some(1234));
+        assert!(parsed.timestamp_value.unwrap_or_default() >= 7);
+    }
+
     #[tokio::test]
     async fn process_server_ack_marks_sacked_segments_without_cumulative_ack() {
         let mut state = tcp_flow_state_for_tests().await;
@@ -3067,9 +3613,12 @@ mod tests {
             sequence_number: 99,
             acknowledgement_number: 1000,
             window_size: 1,
+            max_segment_size: None,
             window_scale: None,
             sack_permitted: false,
             sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
             flags: TCP_FLAG_ACK,
             payload: Vec::new(),
         };
@@ -3142,6 +3691,47 @@ mod tests {
         .unwrap();
         let parsed = super::parse_tcp_packet(&packet).unwrap();
         assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124)]);
+    }
+
+    #[tokio::test]
+    async fn build_flow_ack_packet_limits_sack_blocks_when_timestamps_are_enabled() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.client_sack_permitted = true;
+        state.timestamps_enabled = true;
+        state.recent_client_timestamp = Some(55);
+        state.pending_client_segments = vec![
+            BufferedClientSegment {
+                sequence_number: 112,
+                flags: TCP_FLAG_ACK,
+                payload: b"aaaa".to_vec(),
+            },
+            BufferedClientSegment {
+                sequence_number: 120,
+                flags: TCP_FLAG_ACK,
+                payload: b"bbbb".to_vec(),
+            },
+            BufferedClientSegment {
+                sequence_number: 128,
+                flags: TCP_FLAG_ACK,
+                payload: b"cccc".to_vec(),
+            },
+            BufferedClientSegment {
+                sequence_number: 136,
+                flags: TCP_FLAG_ACK,
+                payload: b"dddd".to_vec(),
+            },
+        ];
+
+        let packet = super::build_flow_ack_packet(
+            &state,
+            state.server_seq,
+            state.client_next_seq,
+            TCP_FLAG_ACK,
+        )
+        .unwrap();
+        let parsed = super::parse_tcp_packet(&packet).unwrap();
+        assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124), (128, 132)]);
+        assert_eq!(parsed.timestamp_echo_reply, Some(55));
     }
 
     #[tokio::test]
@@ -3573,6 +4163,10 @@ mod tests {
             client_next_seq: 100,
             client_window_scale: 0,
             client_sack_permitted: false,
+            client_max_segment_size: None,
+            timestamps_enabled: false,
+            recent_client_timestamp: None,
+            server_timestamp_offset: 0,
             client_window: 4096,
             client_window_end: 5096,
             client_window_update_seq: 100,
