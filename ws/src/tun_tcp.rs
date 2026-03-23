@@ -44,23 +44,23 @@ const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod state_machine;
 
+#[cfg(test)]
 use self::state_machine::{
-    AckEffect, ServerFlush, TcpFlowState, TcpFlowStatus, apply_client_segment,
-    assess_server_backlog_pressure, build_flow_ack_packet, build_flow_packet,
-    build_flow_syn_ack_packet, clear_flow_metrics, client_fin_seen, decode_client_window,
-    drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
-    flush_server_output, is_duplicate_syn, maybe_emit_zero_window_probe, normalize_client_segment,
+    BufferedClientSegment, ClientSegmentView, ServerSegment, drain_ready_buffered_segments,
+    queue_future_segment,
+};
+use self::state_machine::{
+    ServerFlush, TcpFlowState, TcpFlowStatus, apply_client_segment, assess_server_backlog_pressure,
+    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics,
+    client_fin_seen, decode_client_window, drain_ready_buffered_segments_from_state,
+    exceeds_client_reassembly_limits, flush_server_output, is_duplicate_syn,
+    maybe_emit_zero_window_probe, next_retransmission_deadline, normalize_client_segment,
     note_ack_progress, note_congestion_event, note_recent_client_timestamp,
     packet_overlaps_receive_window, process_server_ack, queue_future_segment_with_recv_window,
     reset_zero_window_persist, retransmit_budget_exhausted, retransmit_due_segment,
     retransmit_oldest_unacked_packet, seq_gt, seq_lt, server_fin_awaiting_ack, server_fin_sent,
     set_flow_status, sync_flow_metrics, timestamp_lt, transition_on_client_fin,
     transition_on_server_fin_ack, trim_packet_to_receive_window, update_client_send_window,
-};
-#[cfg(test)]
-use self::state_machine::{
-    BufferedClientSegment, ClientSegmentView, ServerSegment, drain_ready_buffered_segments,
-    queue_future_segment,
 };
 
 #[derive(Clone)]
@@ -148,15 +148,6 @@ fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
     state.maintenance_notify.notify_one();
 }
 
-fn next_retransmit_deadline(state: &TcpFlowState) -> Option<Instant> {
-    let rto = state.retransmission_timeout;
-    state
-        .unacked_server_segments
-        .iter()
-        .map(|segment| segment.last_sent + rto)
-        .min()
-}
-
 fn next_zero_window_probe_deadline(state: &TcpFlowState) -> Option<Instant> {
     if state.client_window == 0
         && !state.pending_server_data.is_empty()
@@ -173,7 +164,7 @@ fn next_flow_deadline(
     tcp: &TunTcpConfig,
     idle_timeout: Duration,
 ) -> Option<Instant> {
-    let mut deadline = next_retransmit_deadline(state)
+    let mut deadline = next_retransmission_deadline(state)
         .into_iter()
         .chain(next_zero_window_probe_deadline(state))
         .min();
@@ -515,6 +506,7 @@ impl TunTcpEngine {
             server_seq: server_isn.wrapping_add(1),
             last_client_ack: packet.sequence_number.wrapping_add(1),
             duplicate_ack_count: 0,
+            fast_recovery_end: None,
             receive_window_capacity: self.inner.tcp.max_buffered_client_bytes,
             smoothed_rtt: None,
             rttvar: TCP_INITIAL_RTO / 2,
@@ -526,7 +518,8 @@ impl TunTcpEngine {
             last_ack_progress_at: now,
             pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
-            pending_client_segments: Vec::new(),
+            sack_scoreboard: Vec::new(),
+            pending_client_segments: VecDeque::new(),
             server_fin_pending: false,
             zero_window_probe_backoff: TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
             next_zero_window_probe_at: None,
@@ -927,12 +920,15 @@ impl TunTcpEngine {
             packet.acknowledgement_number,
             &packet.sack_blocks,
         );
-        if let AckEffect::Advanced {
-            bytes_acked,
-            rtt_sample,
-        } = ack_effect
-        {
-            note_ack_progress(&mut state, bytes_acked, rtt_sample);
+        let bytes_acked = ack_effect.bytes_acked;
+        let rtt_sample = ack_effect.rtt_sample;
+        if ack_effect.has_ack_progress() {
+            note_ack_progress(
+                &mut state,
+                bytes_acked,
+                rtt_sample,
+                ack_effect.grow_congestion_window,
+            );
             sync_flow_metrics_and_wake(&mut state);
         }
 
@@ -949,8 +945,7 @@ impl TunTcpEngine {
             sync_flow_metrics_and_wake(&mut state);
         }
 
-        if matches!(ack_effect, AckEffect::DuplicateThresholdReached) {
-            note_congestion_event(&mut state, false);
+        if ack_effect.retransmit_now {
             metrics::record_tun_tcp_event(&state.uplink_name, "fast_retransmit");
             if let Some(packet) = retransmit_oldest_unacked_packet(&mut state)? {
                 if retransmit_budget_exhausted(&state, &self.inner.tcp) {
@@ -2151,6 +2146,7 @@ mod tests {
     };
     use crate::transport::{AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter};
     use crate::tun::SharedTunWriter;
+    use crate::tun_tcp::state_machine::SequenceRange;
     use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
     use crate::uplink::UplinkManager;
     use futures_util::StreamExt;
@@ -3429,10 +3425,10 @@ mod tests {
             flags: TCP_FLAG_ACK,
             payload: b"later".to_vec(),
         };
-        let mut pending = Vec::new();
+        let mut pending = VecDeque::new();
 
-        queue_future_segment(&mut pending, &packet);
-        queue_future_segment(&mut pending, &packet);
+        queue_future_segment(&mut pending, &packet, 100);
+        queue_future_segment(&mut pending, &packet, 100);
 
         assert_eq!(pending.len(), 1);
     }
@@ -3440,18 +3436,32 @@ mod tests {
     #[test]
     fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
         let mut expected_seq = 103;
-        let mut pending = vec![
-            BufferedClientSegment {
-                sequence_number: 106,
-                flags: TCP_FLAG_ACK,
-                payload: b"ghi".to_vec(),
-            },
-            BufferedClientSegment {
-                sequence_number: 103,
-                flags: TCP_FLAG_ACK,
-                payload: b"def".to_vec(),
-            },
-        ];
+        let mut pending = VecDeque::new();
+        let first = ParsedTcpPacket {
+            version: super::IpVersion::V4,
+            source_ip: "10.0.0.1".parse().unwrap(),
+            destination_ip: "8.8.8.8".parse().unwrap(),
+            source_port: 12345,
+            destination_port: 80,
+            sequence_number: 106,
+            acknowledgement_number: 0,
+            window_size: 4096,
+            max_segment_size: None,
+            window_scale: None,
+            sack_permitted: false,
+            sack_blocks: Vec::new(),
+            timestamp_value: None,
+            timestamp_echo_reply: None,
+            flags: TCP_FLAG_ACK,
+            payload: b"ghi".to_vec(),
+        };
+        let second = ParsedTcpPacket {
+            sequence_number: 103,
+            payload: b"def".to_vec(),
+            ..first.clone()
+        };
+        queue_future_segment(&mut pending, &first, expected_seq);
+        queue_future_segment(&mut pending, &second, expected_seq);
         let mut payload = Vec::new();
 
         let closed = drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut payload);
@@ -3465,11 +3475,11 @@ mod tests {
     #[test]
     fn drain_ready_buffered_segments_stops_on_gap() {
         let mut expected_seq = 103;
-        let mut pending = vec![BufferedClientSegment {
+        let mut pending = VecDeque::from([BufferedClientSegment {
             sequence_number: 106,
             flags: TCP_FLAG_ACK,
             payload: b"ghi".to_vec(),
-        }];
+        }]);
         let mut payload = Vec::new();
 
         let closed = drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut payload);
@@ -3483,11 +3493,11 @@ mod tests {
     #[test]
     fn drain_ready_buffered_segments_closes_on_buffered_fin() {
         let mut expected_seq = 103;
-        let mut pending = vec![BufferedClientSegment {
+        let mut pending = VecDeque::from([BufferedClientSegment {
             sequence_number: 103,
             flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
             payload: b"def".to_vec(),
-        }];
+        }]);
         let mut payload = Vec::new();
 
         let closed = drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut payload);
@@ -3573,7 +3583,6 @@ mod tests {
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
                 payload: b"AAAA".to_vec(),
-                sacked: false,
                 last_sent: Instant::now(),
                 first_sent: Instant::now(),
                 retransmits: 0,
@@ -3583,7 +3592,6 @@ mod tests {
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
                 payload: b"BBBB".to_vec(),
-                sacked: false,
                 last_sent: Instant::now(),
                 first_sent: Instant::now(),
                 retransmits: 0,
@@ -3591,9 +3599,114 @@ mod tests {
         ]);
 
         let effect = super::process_server_ack(&mut state, 1000, &[(1004, 1008)]);
-        assert_eq!(effect, super::AckEffect::Duplicate);
-        assert!(!state.unacked_server_segments[0].sacked);
-        assert!(state.unacked_server_segments[1].sacked);
+        assert_eq!(effect.bytes_acked, 0);
+        assert!(!effect.retransmit_now);
+        assert_eq!(
+            state.sack_scoreboard,
+            vec![SequenceRange {
+                start: 1004,
+                end: 1008,
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn process_server_ack_partial_ack_in_fast_recovery_requests_next_retransmit() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.last_client_ack = 1000;
+        state.server_seq = 1016;
+        state.slow_start_threshold = 2400;
+        state.congestion_window = 4000;
+        state.fast_recovery_end = Some(1016);
+        state.sack_scoreboard = vec![SequenceRange {
+            start: 1008,
+            end: 1012,
+        }];
+        state.unacked_server_segments = VecDeque::from([
+            super::ServerSegment {
+                sequence_number: 1000,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"AAAA".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_millis(200),
+                retransmits: 0,
+            },
+            super::ServerSegment {
+                sequence_number: 1004,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"BBBB".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_secs(2),
+                retransmits: 1,
+            },
+            super::ServerSegment {
+                sequence_number: 1008,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"CCCC".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_secs(2),
+                retransmits: 0,
+            },
+            super::ServerSegment {
+                sequence_number: 1012,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"DDDD".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_secs(2),
+                retransmits: 0,
+            },
+        ]);
+
+        let effect = super::process_server_ack(&mut state, 1004, &[(1008, 1012)]);
+        assert_eq!(effect.bytes_acked, 4);
+        assert!(!effect.grow_congestion_window);
+        assert!(effect.retransmit_now);
+        assert_eq!(
+            state.congestion_window,
+            state.slow_start_threshold + super::MAX_SERVER_SEGMENT_PAYLOAD
+        );
+        assert_eq!(state.fast_recovery_end, Some(1016));
+    }
+
+    #[tokio::test]
+    async fn process_server_ack_exits_fast_recovery_once_recovery_point_is_acked() {
+        let mut state = tcp_flow_state_for_tests().await;
+        state.last_client_ack = 1000;
+        state.server_seq = 1016;
+        state.slow_start_threshold = 2400;
+        state.congestion_window = 4000;
+        state.fast_recovery_end = Some(1016);
+        state.unacked_server_segments = VecDeque::from([
+            super::ServerSegment {
+                sequence_number: 1000,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"AAAA".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_millis(200),
+                retransmits: 1,
+            },
+            super::ServerSegment {
+                sequence_number: 1004,
+                acknowledgement_number: 500,
+                flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                payload: b"BBBB".to_vec(),
+                last_sent: Instant::now() - Duration::from_secs(2),
+                first_sent: Instant::now() - Duration::from_secs(2),
+                retransmits: 1,
+            },
+        ]);
+
+        let effect = super::process_server_ack(&mut state, 1008, &[]);
+        assert_eq!(effect.bytes_acked, 8);
+        assert!(!effect.grow_congestion_window);
+        assert!(!effect.retransmit_now);
+        assert!(state.fast_recovery_end.is_none());
+        assert_eq!(state.congestion_window, state.slow_start_threshold);
     }
 
     #[tokio::test]
@@ -3670,7 +3783,7 @@ mod tests {
     async fn build_flow_ack_packet_advertises_sack_blocks_for_buffered_segments() {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_sack_permitted = true;
-        state.pending_client_segments = vec![
+        state.pending_client_segments = VecDeque::from([
             BufferedClientSegment {
                 sequence_number: 120,
                 flags: TCP_FLAG_ACK,
@@ -3681,7 +3794,7 @@ mod tests {
                 flags: TCP_FLAG_ACK,
                 payload: b"abcd".to_vec(),
             },
-        ];
+        ]);
         let packet = super::build_flow_ack_packet(
             &state,
             state.server_seq,
@@ -3699,7 +3812,7 @@ mod tests {
         state.client_sack_permitted = true;
         state.timestamps_enabled = true;
         state.recent_client_timestamp = Some(55);
-        state.pending_client_segments = vec![
+        state.pending_client_segments = VecDeque::from([
             BufferedClientSegment {
                 sequence_number: 112,
                 flags: TCP_FLAG_ACK,
@@ -3720,7 +3833,7 @@ mod tests {
                 flags: TCP_FLAG_ACK,
                 payload: b"dddd".to_vec(),
             },
-        ];
+        ]);
 
         let packet = super::build_flow_ack_packet(
             &state,
@@ -3738,13 +3851,16 @@ mod tests {
     async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_next_seq = 500;
+        state.sack_scoreboard = vec![SequenceRange {
+            start: 1004,
+            end: 1008,
+        }];
         state.unacked_server_segments = VecDeque::from([
             super::ServerSegment {
                 sequence_number: 1000,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
                 payload: b"AAAA".to_vec(),
-                sacked: false,
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3754,7 +3870,6 @@ mod tests {
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
                 payload: b"BBBB".to_vec(),
-                sacked: true,
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3764,7 +3879,6 @@ mod tests {
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
                 payload: b"CCCC".to_vec(),
-                sacked: false,
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3785,7 +3899,7 @@ mod tests {
         state.congestion_window = super::MAX_SERVER_SEGMENT_PAYLOAD;
         state.slow_start_threshold = super::TCP_SERVER_RECV_WINDOW_CAPACITY;
 
-        super::note_ack_progress(&mut state, 600, Some(Duration::from_millis(120)));
+        super::note_ack_progress(&mut state, 600, Some(Duration::from_millis(120)), true);
         assert_eq!(state.smoothed_rtt, Some(Duration::from_millis(120)));
         assert!(state.retransmission_timeout >= Duration::from_millis(200));
         assert_eq!(
@@ -3805,7 +3919,6 @@ mod tests {
             acknowledgement_number: 500,
             flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
             payload: b"AAAA".to_vec(),
-            sacked: false,
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
@@ -3820,7 +3933,7 @@ mod tests {
     #[tokio::test]
     async fn reassembly_limits_trigger_for_segment_and_byte_pressure() {
         let mut state = tcp_flow_state_for_tests().await;
-        state.pending_client_segments = vec![
+        state.pending_client_segments = VecDeque::from([
             super::BufferedClientSegment {
                 sequence_number: 150,
                 flags: TCP_FLAG_ACK,
@@ -3831,7 +3944,7 @@ mod tests {
                 flags: TCP_FLAG_ACK,
                 payload: vec![2; 32],
             },
-        ];
+        ]);
         let config = TunTcpConfig {
             max_buffered_client_segments: 1,
             max_buffered_client_bytes: 48,
@@ -4174,6 +4287,7 @@ mod tests {
             server_seq: 1000,
             last_client_ack: 1000,
             duplicate_ack_count: 0,
+            fast_recovery_end: None,
             receive_window_capacity: 262_144,
             smoothed_rtt: None,
             rttvar: super::TCP_INITIAL_RTO / 2,
@@ -4185,7 +4299,8 @@ mod tests {
             last_ack_progress_at: Instant::now(),
             pending_client_data: VecDeque::new(),
             unacked_server_segments: VecDeque::new(),
-            pending_client_segments: Vec::new(),
+            sack_scoreboard: Vec::new(),
+            pending_client_segments: VecDeque::new(),
             server_fin_pending: false,
             zero_window_probe_backoff: super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
             next_zero_window_probe_at: None,

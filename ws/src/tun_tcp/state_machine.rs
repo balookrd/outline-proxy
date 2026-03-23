@@ -52,6 +52,7 @@ pub(super) struct TcpFlowState {
     pub(super) server_seq: u32,
     pub(super) last_client_ack: u32,
     pub(super) duplicate_ack_count: u8,
+    pub(super) fast_recovery_end: Option<u32>,
     pub(super) receive_window_capacity: usize,
     pub(super) smoothed_rtt: Option<Duration>,
     pub(super) rttvar: Duration,
@@ -63,7 +64,8 @@ pub(super) struct TcpFlowState {
     pub(super) last_ack_progress_at: Instant,
     pub(super) pending_client_data: VecDeque<Vec<u8>>,
     pub(super) unacked_server_segments: VecDeque<ServerSegment>,
-    pub(super) pending_client_segments: Vec<BufferedClientSegment>,
+    pub(super) sack_scoreboard: Vec<SequenceRange>,
+    pub(super) pending_client_segments: VecDeque<BufferedClientSegment>,
     pub(super) server_fin_pending: bool,
     pub(super) zero_window_probe_backoff: Duration,
     pub(super) next_zero_window_probe_at: Option<Instant>,
@@ -99,13 +101,18 @@ pub(super) struct BufferedClientSegment {
     pub(super) payload: Vec<u8>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SequenceRange {
+    pub(super) start: u32,
+    pub(super) end: u32,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct ServerSegment {
     pub(super) sequence_number: u32,
     pub(super) acknowledgement_number: u32,
     pub(super) flags: u8,
     pub(super) payload: Vec<u8>,
-    pub(super) sacked: bool,
     pub(super) last_sent: Instant,
     pub(super) first_sent: Instant,
     pub(super) retransmits: u32,
@@ -129,15 +136,27 @@ pub(super) struct ServerBacklogPressure {
     pub(super) window_stalled: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AckEffect {
-    None,
-    Advanced {
-        bytes_acked: usize,
-        rtt_sample: Option<Duration>,
-    },
-    Duplicate,
-    DuplicateThresholdReached,
+#[derive(Debug, Clone, Copy)]
+pub(super) struct AckEffect {
+    pub(super) bytes_acked: usize,
+    pub(super) rtt_sample: Option<Duration>,
+    pub(super) grow_congestion_window: bool,
+    pub(super) retransmit_now: bool,
+}
+
+impl AckEffect {
+    const fn none() -> Self {
+        Self {
+            bytes_acked: 0,
+            rtt_sample: None,
+            grow_congestion_window: false,
+            retransmit_now: false,
+        }
+    }
+
+    pub(super) const fn has_ack_progress(self) -> bool {
+        self.bytes_acked != 0 || self.rtt_sample.is_some()
+    }
 }
 
 pub(super) fn build_flow_packet(
@@ -545,25 +564,108 @@ fn normalize_client_segment_parts(
     ClientSegmentView { payload, fin }
 }
 
+fn buffered_client_segment_data_end(segment: &BufferedClientSegment) -> u32 {
+    segment
+        .sequence_number
+        .wrapping_add(segment.payload.len() as u32)
+}
+
+fn client_segment_has_fin(segment: &BufferedClientSegment) -> bool {
+    (segment.flags & TCP_FLAG_FIN) != 0
+}
+
+fn insert_client_segment(
+    pending_segments: &mut VecDeque<BufferedClientSegment>,
+    segment: BufferedClientSegment,
+    expected_seq: u32,
+) {
+    let insert_index = pending_segments
+        .iter()
+        .position(|existing| {
+            existing.sequence_number.wrapping_sub(expected_seq)
+                > segment.sequence_number.wrapping_sub(expected_seq)
+        })
+        .unwrap_or(pending_segments.len());
+    pending_segments.insert(insert_index, segment);
+}
+
 pub(super) fn queue_future_segment(
-    pending_segments: &mut Vec<BufferedClientSegment>,
+    pending_segments: &mut VecDeque<BufferedClientSegment>,
     packet: &ParsedTcpPacket,
+    expected_seq: u32,
 ) {
     if packet.payload.is_empty() && (packet.flags & TCP_FLAG_FIN) == 0 {
         return;
     }
-    let candidate = BufferedClientSegment {
-        sequence_number: packet.sequence_number,
-        flags: packet.flags & (TCP_FLAG_FIN | TCP_FLAG_ACK),
-        payload: packet.payload.clone(),
-    };
-    if pending_segments
-        .iter()
-        .any(|existing| existing == &candidate)
-    {
-        return;
+
+    let payload_start = packet.sequence_number;
+    let payload_end = payload_start.wrapping_add(packet.payload.len() as u32);
+    let mut cursor = payload_start;
+    let existing_segments = pending_segments.iter().cloned().collect::<Vec<_>>();
+    for existing in existing_segments {
+        let existing_start = existing.sequence_number;
+        let existing_end = buffered_client_segment_data_end(&existing);
+        if !seq_gt(existing_end, cursor) {
+            continue;
+        }
+        if !seq_gt(payload_end, existing_start) {
+            break;
+        }
+        if seq_gt(existing_start, cursor) {
+            let end = if seq_lt(payload_end, existing_start) {
+                payload_end
+            } else {
+                existing_start
+            };
+            let start_offset = cursor.wrapping_sub(payload_start) as usize;
+            let end_offset = end.wrapping_sub(payload_start) as usize;
+            insert_client_segment(
+                pending_segments,
+                BufferedClientSegment {
+                    sequence_number: cursor,
+                    flags: packet.flags & TCP_FLAG_ACK,
+                    payload: packet.payload[start_offset..end_offset].to_vec(),
+                },
+                expected_seq,
+            );
+        }
+        if seq_gt(existing_end, cursor) {
+            cursor = existing_end;
+        }
+        if !seq_gt(payload_end, cursor) {
+            break;
+        }
     }
-    pending_segments.push(candidate);
+    if seq_gt(payload_end, cursor) {
+        let start_offset = cursor.wrapping_sub(payload_start) as usize;
+        insert_client_segment(
+            pending_segments,
+            BufferedClientSegment {
+                sequence_number: cursor,
+                flags: packet.flags & TCP_FLAG_ACK,
+                payload: packet.payload[start_offset..].to_vec(),
+            },
+            expected_seq,
+        );
+    }
+
+    if (packet.flags & TCP_FLAG_FIN) != 0 {
+        let fin_sequence = payload_end;
+        if !pending_segments.iter().any(|existing| {
+            client_segment_has_fin(existing)
+                && buffered_client_segment_data_end(existing) == fin_sequence
+        }) {
+            insert_client_segment(
+                pending_segments,
+                BufferedClientSegment {
+                    sequence_number: fin_sequence,
+                    flags: packet.flags & (TCP_FLAG_FIN | TCP_FLAG_ACK),
+                    payload: Vec::new(),
+                },
+                expected_seq,
+            );
+        }
+    }
 }
 
 pub(super) fn queue_future_segment_with_recv_window(
@@ -573,7 +675,11 @@ pub(super) fn queue_future_segment_with_recv_window(
     let Some(trimmed) = trim_packet_to_receive_window(state, packet) else {
         return;
     };
-    queue_future_segment(&mut state.pending_client_segments, &trimmed);
+    queue_future_segment(
+        &mut state.pending_client_segments,
+        &trimmed,
+        state.client_next_seq,
+    );
 }
 
 pub(super) fn exceeds_client_reassembly_limits(
@@ -624,19 +730,25 @@ pub(super) fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpC
     state
         .unacked_server_segments
         .iter()
+        .filter(|segment| !server_segment_is_sacked(state, segment))
         .any(|segment| segment.retransmits >= config.max_retransmits)
 }
 
 pub(super) fn drain_ready_buffered_segments(
     expected_seq: &mut u32,
-    pending_segments: &mut Vec<BufferedClientSegment>,
+    pending_segments: &mut VecDeque<BufferedClientSegment>,
     pending_payload: &mut Vec<u8>,
 ) -> bool {
     loop {
-        let Some(index) = find_next_ready_segment_index(*expected_seq, pending_segments) else {
+        let Some(segment) = pending_segments.front() else {
             return false;
         };
-        let segment = pending_segments.remove(index);
+        if seq_gt(segment.sequence_number, *expected_seq) {
+            return false;
+        }
+        let segment = pending_segments
+            .pop_front()
+            .expect("front exists while draining");
         let normalized = normalize_client_segment_parts(
             segment.sequence_number,
             segment.flags,
@@ -687,26 +799,6 @@ pub(super) fn apply_client_segment(
     false
 }
 
-fn find_next_ready_segment_index(
-    expected_seq: u32,
-    pending_segments: &[BufferedClientSegment],
-) -> Option<usize> {
-    let mut best: Option<(usize, u32)> = None;
-    for (index, segment) in pending_segments.iter().enumerate() {
-        if seq_gt(segment.sequence_number, expected_seq) {
-            continue;
-        }
-        if best
-            .as_ref()
-            .map(|(_, best_seq)| seq_lt(segment.sequence_number, *best_seq))
-            .unwrap_or(true)
-        {
-            best = Some((index, segment.sequence_number));
-        }
-    }
-    best.map(|(index, _)| index)
-}
-
 pub(super) fn is_duplicate_syn(packet: &ParsedTcpPacket, expected_seq: u32) -> bool {
     (packet.flags & TCP_FLAG_SYN) != 0
         && (packet.flags & TCP_FLAG_ACK) == 0
@@ -724,10 +816,6 @@ pub(super) fn seq_gt(lhs: u32, rhs: u32) -> bool {
 
 pub(super) fn seq_ge(lhs: u32, rhs: u32) -> bool {
     !seq_lt(lhs, rhs)
-}
-
-fn seq_le(lhs: u32, rhs: u32) -> bool {
-    !seq_gt(lhs, rhs)
 }
 
 pub(super) fn timestamp_lt(lhs: u32, rhs: u32) -> bool {
@@ -762,26 +850,152 @@ pub(super) fn packet_overlaps_receive_window(
         || (seq_ge(last, rcv_nxt) && seq_lt(last, rcv_nxt.wrapping_add(rcv_wnd)))
 }
 
+fn merge_sequence_ranges(mut ranges: Vec<SequenceRange>, anchor: u32) -> Vec<SequenceRange> {
+    ranges.retain(|range| seq_gt(range.end, range.start));
+    ranges.sort_by_key(|range| range.start.wrapping_sub(anchor));
+
+    let mut merged: Vec<SequenceRange> = Vec::with_capacity(ranges.len());
+    for range in ranges {
+        match merged.last_mut() {
+            Some(last) if !seq_gt(range.start, last.end) => {
+                if seq_gt(range.end, last.end) {
+                    last.end = range.end;
+                }
+            }
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+fn trim_sack_scoreboard(scoreboard: &mut Vec<SequenceRange>, cumulative_ack: u32) {
+    let mut ranges = Vec::with_capacity(scoreboard.len());
+    for mut range in scoreboard.drain(..) {
+        if !seq_gt(range.end, cumulative_ack) {
+            continue;
+        }
+        if seq_lt(range.start, cumulative_ack) {
+            range.start = cumulative_ack;
+        }
+        if seq_gt(range.end, range.start) {
+            ranges.push(range);
+        }
+    }
+    *scoreboard = merge_sequence_ranges(ranges, cumulative_ack);
+}
+
+fn update_sack_scoreboard(
+    scoreboard: &mut Vec<SequenceRange>,
+    cumulative_ack: u32,
+    sack_blocks: &[(u32, u32)],
+) -> bool {
+    let before = scoreboard.clone();
+    let mut ranges = std::mem::take(scoreboard);
+    for (start, end) in sack_blocks {
+        let mut range = SequenceRange {
+            start: *start,
+            end: *end,
+        };
+        if !seq_gt(range.end, cumulative_ack) {
+            continue;
+        }
+        if seq_lt(range.start, cumulative_ack) {
+            range.start = cumulative_ack;
+        }
+        if seq_gt(range.end, range.start) {
+            ranges.push(range);
+        }
+    }
+    *scoreboard = merge_sequence_ranges(ranges, cumulative_ack);
+    *scoreboard != before
+}
+
+fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bool {
+    if !seq_gt(end, start) {
+        return true;
+    }
+
+    for range in scoreboard {
+        if seq_gt(range.start, start) {
+            return false;
+        }
+        if !seq_gt(range.end, start) {
+            continue;
+        }
+        return !seq_lt(range.end, end);
+    }
+    false
+}
+
+fn server_segment_is_sacked(state: &TcpFlowState, segment: &ServerSegment) -> bool {
+    let end = segment
+        .sequence_number
+        .wrapping_add(server_segment_len(segment) as u32);
+    range_fully_covered(&state.sack_scoreboard, segment.sequence_number, end)
+}
+
+fn bytes_in_pipe(state: &TcpFlowState) -> usize {
+    state
+        .unacked_server_segments
+        .iter()
+        .filter(|segment| !server_segment_is_sacked(state, segment))
+        .map(server_segment_len)
+        .sum()
+}
+
+fn count_segments_in_pipe(state: &TcpFlowState) -> usize {
+    state
+        .unacked_server_segments
+        .iter()
+        .filter(|segment| !server_segment_is_sacked(state, segment))
+        .count()
+}
+
+pub(super) fn next_retransmission_deadline(state: &TcpFlowState) -> Option<Instant> {
+    let rto = state.retransmission_timeout;
+    state
+        .unacked_server_segments
+        .iter()
+        .filter(|segment| !server_segment_is_sacked(state, segment))
+        .map(|segment| segment.last_sent + rto)
+        .min()
+}
+
+fn enter_fast_recovery(state: &mut TcpFlowState) {
+    let inflight = bytes_in_pipe(state).max(server_max_segment_payload(state));
+    state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
+    state.congestion_window = state.slow_start_threshold.saturating_add(
+        server_max_segment_payload(state) * usize::from(TCP_FAST_RETRANSMIT_DUP_ACKS),
+    );
+    state.fast_recovery_end = Some(state.server_seq);
+    state.duplicate_ack_count = TCP_FAST_RETRANSMIT_DUP_ACKS;
+}
+
+fn exit_fast_recovery(state: &mut TcpFlowState) {
+    state.fast_recovery_end = None;
+    state.duplicate_ack_count = 0;
+    state.congestion_window = state
+        .slow_start_threshold
+        .max(server_max_segment_payload(state));
+}
+
 pub(super) fn process_server_ack(
     state: &mut TcpFlowState,
     acknowledgement_number: u32,
     sack_blocks: &[(u32, u32)],
 ) -> AckEffect {
+    let scoreboard_advanced = update_sack_scoreboard(
+        &mut state.sack_scoreboard,
+        acknowledgement_number,
+        sack_blocks,
+    );
+    trim_sack_scoreboard(&mut state.sack_scoreboard, acknowledgement_number);
+
     if state.unacked_server_segments.is_empty() {
         state.last_client_ack = acknowledgement_number;
         state.duplicate_ack_count = 0;
-        return AckEffect::None;
-    }
-
-    for segment in &mut state.unacked_server_segments {
-        let segment_end = segment
-            .sequence_number
-            .wrapping_add(server_segment_len(segment) as u32);
-        if sack_blocks.iter().any(|(left, right)| {
-            seq_le(*left, segment.sequence_number) && seq_ge(*right, segment_end)
-        }) {
-            segment.sacked = true;
-        }
+        state.fast_recovery_end = None;
+        return AckEffect::none();
     }
 
     if seq_gt(acknowledgement_number, state.last_client_ack) {
@@ -806,40 +1020,70 @@ pub(super) fn process_server_ack(
                 break;
             }
         }
-        AckEffect::Advanced {
+
+        let mut grow_congestion_window = true;
+        let mut retransmit_now = false;
+        if let Some(recovery_end) = state.fast_recovery_end {
+            grow_congestion_window = false;
+            if seq_ge(acknowledgement_number, recovery_end)
+                || state.unacked_server_segments.is_empty()
+            {
+                exit_fast_recovery(state);
+            } else {
+                state.congestion_window = state
+                    .slow_start_threshold
+                    .saturating_add(server_max_segment_payload(state));
+                retransmit_now = preferred_retransmit_index(state).is_some();
+            }
+        }
+
+        AckEffect {
             bytes_acked,
             rtt_sample,
+            grow_congestion_window,
+            retransmit_now,
         }
     } else if acknowledgement_number == state.last_client_ack {
         state.duplicate_ack_count = state.duplicate_ack_count.saturating_add(1);
-        if state.duplicate_ack_count >= TCP_FAST_RETRANSMIT_DUP_ACKS {
-            state.duplicate_ack_count = 0;
-            AckEffect::DuplicateThresholdReached
+        if state.fast_recovery_end.is_some() {
+            state.congestion_window = state
+                .congestion_window
+                .saturating_add(server_max_segment_payload(state));
+            AckEffect {
+                bytes_acked: 0,
+                rtt_sample: None,
+                grow_congestion_window: false,
+                retransmit_now: scoreboard_advanced && preferred_retransmit_index(state).is_some(),
+            }
+        } else if state.duplicate_ack_count >= TCP_FAST_RETRANSMIT_DUP_ACKS {
+            enter_fast_recovery(state);
+            AckEffect {
+                bytes_acked: 0,
+                rtt_sample: None,
+                grow_congestion_window: false,
+                retransmit_now: preferred_retransmit_index(state).is_some(),
+            }
         } else {
-            AckEffect::Duplicate
+            AckEffect::none()
         }
     } else {
-        AckEffect::None
+        AckEffect::none()
     }
 }
 
 fn highest_sacked_end(state: &TcpFlowState) -> Option<u32> {
     state
-        .unacked_server_segments
+        .sack_scoreboard
         .iter()
-        .filter(|segment| segment.sacked)
-        .map(|segment| {
-            segment
-                .sequence_number
-                .wrapping_add(server_segment_len(segment) as u32)
-        })
-        .max_by(|lhs, rhs| lhs.cmp(rhs))
+        .map(|range| range.end)
+        .max_by_key(|end| end.wrapping_sub(state.last_client_ack))
 }
 
 fn preferred_retransmit_index(state: &TcpFlowState) -> Option<usize> {
     if let Some(highest_sacked_end) = highest_sacked_end(state) {
         if let Some(index) = state.unacked_server_segments.iter().position(|segment| {
-            !segment.sacked && seq_lt(segment.sequence_number, highest_sacked_end)
+            !server_segment_is_sacked(state, segment)
+                && seq_lt(segment.sequence_number, highest_sacked_end)
         }) {
             return Some(index);
         }
@@ -848,14 +1092,11 @@ fn preferred_retransmit_index(state: &TcpFlowState) -> Option<usize> {
     state
         .unacked_server_segments
         .iter()
-        .position(|segment| !segment.sacked)
-        .or_else(|| (!state.unacked_server_segments.is_empty()).then_some(0))
+        .position(|segment| !server_segment_is_sacked(state, segment))
 }
 
 fn congestion_window_remaining(state: &TcpFlowState) -> usize {
-    state
-        .congestion_window
-        .saturating_sub(bytes_in_flight(&state.unacked_server_segments))
+    state.congestion_window.saturating_sub(bytes_in_pipe(state))
 }
 
 fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
@@ -890,11 +1131,12 @@ pub(super) fn note_ack_progress(
     state: &mut TcpFlowState,
     bytes_acked: usize,
     rtt_sample: Option<Duration>,
+    grow_congestion_window: bool,
 ) {
     if let Some(sample) = rtt_sample {
         update_rtt_estimator(state, sample);
     }
-    if bytes_acked == 0 {
+    if bytes_acked == 0 || !grow_congestion_window {
         return;
     }
 
@@ -910,8 +1152,10 @@ pub(super) fn note_ack_progress(
 }
 
 pub(super) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
-    let inflight = bytes_in_flight(&state.unacked_server_segments);
+    let inflight = bytes_in_pipe(state);
     state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
+    state.fast_recovery_end = None;
+    state.duplicate_ack_count = 0;
     state.congestion_window = if timeout {
         MAX_SERVER_SEGMENT_PAYLOAD
     } else {
@@ -963,7 +1207,6 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
             acknowledgement_number,
             flags: TCP_FLAG_ACK | TCP_FLAG_PSH,
             payload,
-            sacked: false,
             last_sent: Instant::now(),
             first_sent: Instant::now(),
             retransmits: 0,
@@ -1040,7 +1283,6 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         acknowledgement_number: state.client_next_seq,
         flags: TCP_FLAG_FIN | TCP_FLAG_ACK,
         payload: Vec::new(),
-        sacked: false,
         last_sent: Instant::now(),
         first_sent: Instant::now(),
         retransmits: 0,
@@ -1120,10 +1362,9 @@ pub(super) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result<Option<
         })
         .or_else(|| {
             let rto = current_retransmission_timeout(state);
-            state
-                .unacked_server_segments
-                .iter()
-                .position(|segment| segment.last_sent.elapsed() >= rto)
+            state.unacked_server_segments.iter().position(|segment| {
+                !server_segment_is_sacked(state, segment) && segment.last_sent.elapsed() >= rto
+            })
         })
     else {
         return Ok(None);
@@ -1148,10 +1389,6 @@ pub(super) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result<Option<
     )?))
 }
 
-fn bytes_in_flight(segments: &VecDeque<ServerSegment>) -> usize {
-    segments.iter().map(server_segment_len).sum()
-}
-
 fn server_segment_len(segment: &ServerSegment) -> usize {
     segment.payload.len()
         + usize::from((segment.flags & TCP_FLAG_SYN) != 0)
@@ -1163,8 +1400,8 @@ fn pending_server_bytes(state: &TcpFlowState) -> usize {
 }
 
 pub(super) fn sync_flow_metrics(state: &mut TcpFlowState) {
-    let inflight_segments = state.unacked_server_segments.len();
-    let inflight_bytes = bytes_in_flight(&state.unacked_server_segments);
+    let inflight_segments = count_segments_in_pipe(state);
+    let inflight_bytes = bytes_in_pipe(state);
     let pending_server_bytes = pending_server_bytes(state);
     let buffered_client_segments =
         state.pending_client_segments.len() + state.pending_client_data.len();
