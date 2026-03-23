@@ -41,6 +41,13 @@ const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+const IPV6_NEXT_HEADER_HOP_BY_HOP: u8 = 0;
+const IPV6_NEXT_HEADER_TCP: u8 = 6;
+const IPV6_NEXT_HEADER_ROUTING: u8 = 43;
+const IPV6_NEXT_HEADER_FRAGMENT: u8 = 44;
+const IPV6_NEXT_HEADER_AUTH: u8 = 51;
+const IPV6_NEXT_HEADER_DESTINATION_OPTIONS: u8 = 60;
+const IPV6_NEXT_HEADER_NONE: u8 = 59;
 
 mod state_machine;
 
@@ -1720,11 +1727,14 @@ fn parse_ipv4_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
     if packet.len() < total_len {
         bail!("truncated IPv4 TCP packet");
     }
+    if checksum16(&packet[..header_len]) != 0 {
+        bail!("invalid IPv4 header checksum");
+    }
     let fragment_field = u16::from_be_bytes([packet[6], packet[7]]);
     if (fragment_field & 0x1fff) != 0 || (fragment_field & 0x2000) != 0 {
         bail!("IPv4 fragments are not supported on TUN TCP path");
     }
-    if packet[9] != 6 {
+    if packet[9] != IPV6_NEXT_HEADER_TCP {
         bail!("expected IPv4 TCP packet");
     }
     let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
@@ -1746,8 +1756,9 @@ fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
     if packet.len() < total_len {
         bail!("truncated IPv6 TCP packet");
     }
-    if packet[6] != 6 {
-        bail!("IPv6 extension headers are not supported on TUN TCP path");
+    let (next_header, segment_offset) = locate_ipv6_tcp_segment(packet, total_len)?;
+    if next_header != IPV6_NEXT_HEADER_TCP {
+        bail!("expected IPv6 TCP packet");
     }
     let mut src = [0u8; 16];
     src.copy_from_slice(&packet[8..24]);
@@ -1757,8 +1768,52 @@ fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
         IpVersion::V6,
         IpAddr::V6(Ipv6Addr::from(src)),
         IpAddr::V6(Ipv6Addr::from(dst)),
-        &packet[IPV6_HEADER_LEN..total_len],
+        &packet[segment_offset..total_len],
     )
+}
+
+fn locate_ipv6_tcp_segment(packet: &[u8], total_len: usize) -> Result<(u8, usize)> {
+    let mut next_header = packet[6];
+    let mut offset = IPV6_HEADER_LEN;
+
+    loop {
+        match next_header {
+            IPV6_NEXT_HEADER_TCP => return Ok((next_header, offset)),
+            IPV6_NEXT_HEADER_HOP_BY_HOP
+            | IPV6_NEXT_HEADER_ROUTING
+            | IPV6_NEXT_HEADER_DESTINATION_OPTIONS => {
+                if offset + 2 > total_len {
+                    bail!("truncated IPv6 extension header");
+                }
+                let header_len = (usize::from(packet[offset + 1]) + 1) * 8;
+                if header_len < 8 || offset + header_len > total_len {
+                    bail!("invalid IPv6 extension header length");
+                }
+                next_header = packet[offset];
+                offset += header_len;
+            }
+            IPV6_NEXT_HEADER_AUTH => {
+                if offset + 2 > total_len {
+                    bail!("truncated IPv6 authentication header");
+                }
+                let header_len = (usize::from(packet[offset + 1]) + 2) * 4;
+                if header_len < 8 || offset + header_len > total_len {
+                    bail!("invalid IPv6 authentication header length");
+                }
+                next_header = packet[offset];
+                offset += header_len;
+            }
+            IPV6_NEXT_HEADER_FRAGMENT => {
+                bail!("IPv6 fragments are not supported on TUN TCP path");
+            }
+            IPV6_NEXT_HEADER_NONE => {
+                bail!("expected IPv6 TCP packet");
+            }
+            _ => {
+                bail!("IPv6 extension headers are not supported on TUN TCP path");
+            }
+        }
+    }
 }
 
 fn parse_tcp_segment(
@@ -1770,6 +1825,7 @@ fn parse_tcp_segment(
     if segment.len() < TCP_HEADER_LEN {
         bail!("short TCP segment");
     }
+    validate_tcp_checksum(version, source_ip, destination_ip, segment)?;
     let header_len = usize::from(segment[12] >> 4) * 4;
     if header_len < TCP_HEADER_LEN || segment.len() < header_len {
         bail!("invalid TCP header length");
@@ -1799,6 +1855,27 @@ fn parse_tcp_segment(
         flags: segment[13],
         payload: segment[header_len..].to_vec(),
     })
+}
+
+fn validate_tcp_checksum(
+    version: IpVersion,
+    source_ip: IpAddr,
+    destination_ip: IpAddr,
+    segment: &[u8],
+) -> Result<()> {
+    let checksum_valid = match (version, source_ip, destination_ip) {
+        (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
+            tcp_checksum_ipv4(source_ip, destination_ip, segment) == 0
+        }
+        (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
+            tcp_checksum_ipv6(source_ip, destination_ip, segment) == 0
+        }
+        _ => bail!("unexpected address family while validating TCP checksum"),
+    };
+    if !checksum_valid {
+        bail!("invalid TCP checksum");
+    }
+    Ok(())
 }
 
 fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
@@ -2127,7 +2204,7 @@ fn ip_family_from_version(version: IpVersion) -> &'static str {
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
-    use std::net::{Ipv4Addr, SocketAddr};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::path::PathBuf;
     use std::sync::{
         Arc,
@@ -2150,6 +2227,8 @@ mod tests {
     use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
     use crate::uplink::UplinkManager;
     use futures_util::StreamExt;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng, seq::SliceRandom};
     use tokio::fs::File;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::sync::{Mutex, Notify, mpsc};
@@ -3220,10 +3299,17 @@ mod tests {
 
     #[test]
     fn ipv4_syn_generates_rst_ack() {
-        let packet = [
-            0x45, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 64, 6, 0, 0, 10, 0, 0, 2, 8, 8, 8, 8,
-            0x9c, 0x40, 0x00, 0x50, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x02, 0x40, 0x00, 0, 0, 0, 0,
-        ];
+        let packet = build_client_packet(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40000,
+            80,
+            1,
+            0,
+            0x4000,
+            TCP_FLAG_SYN,
+            &[],
+        );
         let response = parse_action_response(&packet);
         assert_eq!(response[9], 6);
         assert_eq!(response[IPV4_HEADER_LEN + 13], TCP_FLAG_RST | TCP_FLAG_ACK);
@@ -3231,11 +3317,18 @@ mod tests {
 
     #[test]
     fn ipv6_ack_generates_rst() {
-        let packet = [
-            0x60, 0x00, 0x00, 0x00, 0x00, 0x14, 0x06, 64, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 1, 0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0x9c, 0x40, 0x00, 0x50, 0, 0,
-            0, 1, 0, 0, 0, 5, 0x50, 0x10, 0x40, 0x00, 0, 0, 0, 0,
-        ];
+        let packet = build_client_ipv6_packet_with_options(
+            Ipv6Addr::LOCALHOST,
+            Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            40000,
+            80,
+            1,
+            5,
+            0x4000,
+            TCP_FLAG_ACK,
+            &[],
+            &[],
+        );
         let response = parse_action_response(&packet);
         assert_eq!(response[6], 6);
         assert_eq!(response[IPV6_HEADER_LEN + 13], TCP_FLAG_RST);
@@ -3243,60 +3336,33 @@ mod tests {
 
     #[test]
     fn rst_packets_are_ignored() {
-        let packet = [
-            0x45, 0x00, 0x00, 0x28, 0x00, 0x00, 0x00, 0x00, 64, 6, 0, 0, 10, 0, 0, 2, 8, 8, 8, 8,
-            0x9c, 0x40, 0x00, 0x50, 0, 0, 0, 1, 0, 0, 0, 5, 0x50, 0x14, 0x40, 0x00, 0, 0, 0, 0,
-        ];
+        let packet = build_client_packet(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40000,
+            80,
+            1,
+            5,
+            0x4000,
+            TCP_FLAG_RST | TCP_FLAG_ACK,
+            &[],
+        );
         assert!(handle_stateless_packet(&packet).unwrap().is_none());
     }
 
     #[test]
     fn parsed_tcp_packet_keeps_payload() {
-        let packet = [
-            0x45,
-            0x00,
-            0x00,
-            0x2b,
-            0x00,
-            0x00,
-            0x00,
-            0x00,
-            64,
-            6,
-            0,
-            0,
-            10,
-            0,
-            0,
-            2,
-            8,
-            8,
-            8,
-            8,
-            0x9c,
-            0x40,
-            0x00,
-            0x50,
-            0,
-            0,
-            0,
+        let packet = build_client_packet(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40000,
+            80,
             1,
-            0,
-            0,
-            0,
             5,
-            0x50,
+            0x4000,
             TCP_FLAG_ACK,
-            0x40,
-            0x00,
-            0,
-            0,
-            0,
-            0,
-            b'a',
-            b'b',
-            b'c',
-        ];
+            b"abc",
+        );
         let parsed: ParsedTcpPacket = super::parse_tcp_packet(&packet).unwrap();
         assert_eq!(parsed.flags, TCP_FLAG_ACK);
         assert_eq!(parsed.payload, b"abc");
@@ -3548,6 +3614,266 @@ mod tests {
         assert_eq!(parsed.max_segment_size, Some(1460));
         assert_eq!(parsed.timestamp_value, Some(9));
         assert_eq!(parsed.timestamp_echo_reply, Some(7));
+    }
+
+    #[test]
+    fn parse_tcp_packet_rejects_invalid_ipv4_header_checksum() {
+        let mut packet = build_client_packet(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            b"hello",
+        );
+        packet[12] ^= 0x01;
+        let error = super::parse_tcp_packet(&packet).unwrap_err();
+        assert!(error.to_string().contains("invalid IPv4 header checksum"));
+    }
+
+    #[test]
+    fn parse_tcp_packet_rejects_invalid_tcp_checksum_ipv4() {
+        let mut packet = build_client_packet(
+            Ipv4Addr::new(10, 0, 0, 2),
+            Ipv4Addr::new(8, 8, 8, 8),
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            b"hello",
+        );
+        packet[IPV4_HEADER_LEN + 7] ^= 0x01;
+        let error = super::parse_tcp_packet(&packet).unwrap_err();
+        assert!(error.to_string().contains("invalid TCP checksum"));
+    }
+
+    #[test]
+    fn parse_tcp_packet_rejects_invalid_tcp_checksum_ipv6() {
+        let client_ip = Ipv6Addr::LOCALHOST;
+        let remote_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let mut packet = build_client_ipv6_packet_with_options(
+            client_ip,
+            remote_ip,
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            &[],
+            b"hello",
+        );
+        packet[IPV6_HEADER_LEN + 5] ^= 0x01;
+        let error = super::parse_tcp_packet(&packet).unwrap_err();
+        assert!(error.to_string().contains("invalid TCP checksum"));
+    }
+
+    #[test]
+    fn parse_tcp_packet_accepts_ipv6_destination_options_before_tcp() {
+        let client_ip = Ipv6Addr::LOCALHOST;
+        let remote_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let packet = build_client_ipv6_packet_with_extension_headers(
+            client_ip,
+            remote_ip,
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            &[vec![
+                super::IPV6_NEXT_HEADER_DESTINATION_OPTIONS,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ]],
+            &tcp_option_pad(vec![2, 4, 0x05, 0xb4]),
+            b"hello",
+        );
+        let parsed = super::parse_tcp_packet(&packet).unwrap();
+        assert_eq!(parsed.version, super::IpVersion::V6);
+        assert_eq!(parsed.source_port, 40004);
+        assert_eq!(parsed.destination_port, 443);
+        assert_eq!(parsed.max_segment_size, Some(1460));
+        assert_eq!(parsed.payload, b"hello");
+    }
+
+    #[test]
+    fn parse_tcp_packet_rejects_ipv6_fragment_header() {
+        let client_ip = Ipv6Addr::LOCALHOST;
+        let remote_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let packet = build_client_ipv6_packet_with_extension_headers(
+            client_ip,
+            remote_ip,
+            40004,
+            443,
+            10,
+            100,
+            2048,
+            TCP_FLAG_ACK,
+            &[vec![super::IPV6_NEXT_HEADER_FRAGMENT, 0, 0, 0, 0, 0, 0, 0]],
+            &[],
+            b"hello",
+        );
+        let error = super::parse_tcp_packet(&packet).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("IPv6 fragments are not supported")
+        );
+    }
+
+    #[test]
+    fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
+        let mut rng = StdRng::seed_from_u64(0x5eed_7a11);
+        for _ in 0..128 {
+            let payload_len = rng.gen_range(0..48);
+            let mut payload = vec![0u8; payload_len];
+            rng.fill(payload.as_mut_slice());
+            let flags = [
+                TCP_FLAG_ACK,
+                TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+                TCP_FLAG_ACK | TCP_FLAG_FIN,
+                TCP_FLAG_SYN,
+                TCP_FLAG_SYN | TCP_FLAG_ACK,
+            ][rng.gen_range(0..5)];
+            let payload = if (flags & TCP_FLAG_SYN) != 0 {
+                Vec::new()
+            } else {
+                payload
+            };
+            let options = match rng.gen_range(0..4) {
+                0 => Vec::new(),
+                1 => tcp_option_pad(vec![2, 4, 0x05, 0xb4]),
+                2 => tcp_option_pad(vec![1, 3, 3, 7]),
+                _ => tcp_option_pad(vec![8, 10, 0, 0, 0, 9, 0, 0, 0, 7]),
+            };
+            let sequence_number = rng.r#gen::<u32>();
+            let acknowledgement_number = rng.r#gen::<u32>();
+            let window_size = rng.gen_range(1..=u16::MAX);
+
+            if rng.gen_bool(0.5) {
+                let client_ip = Ipv4Addr::new(10, 0, 0, rng.gen_range(2..=250));
+                let remote_ip = Ipv4Addr::new(8, 8, 4, rng.gen_range(1..=250));
+                let packet = build_client_packet_with_options(
+                    client_ip,
+                    remote_ip,
+                    rng.gen_range(1024..=65000),
+                    rng.gen_range(1..=65000),
+                    sequence_number,
+                    acknowledgement_number,
+                    window_size,
+                    flags,
+                    &options,
+                    &payload,
+                );
+                let parsed = super::parse_tcp_packet(&packet).unwrap();
+                assert_eq!(parsed.version, super::IpVersion::V4);
+                assert_eq!(parsed.sequence_number, sequence_number);
+                assert_eq!(parsed.acknowledgement_number, acknowledgement_number);
+                assert_eq!(parsed.flags, flags);
+                assert_eq!(parsed.payload, payload);
+
+                let mut mutated = packet.clone();
+                mutated[IPV4_HEADER_LEN + 4] ^= 0x01;
+                assert!(super::parse_tcp_packet(&mutated).is_err());
+            } else {
+                let client_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
+                let remote_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
+                let packet = build_client_ipv6_packet_with_options(
+                    client_ip,
+                    remote_ip,
+                    rng.gen_range(1024..=65000),
+                    rng.gen_range(1..=65000),
+                    sequence_number,
+                    acknowledgement_number,
+                    window_size,
+                    flags,
+                    &options,
+                    &payload,
+                );
+                let parsed = super::parse_tcp_packet(&packet).unwrap();
+                assert_eq!(parsed.version, super::IpVersion::V6);
+                assert_eq!(parsed.sequence_number, sequence_number);
+                assert_eq!(parsed.acknowledgement_number, acknowledgement_number);
+                assert_eq!(parsed.flags, flags);
+                assert_eq!(parsed.payload, payload);
+
+                let mut mutated = packet.clone();
+                mutated[IPV6_HEADER_LEN + 8] ^= 0x01;
+                assert!(super::parse_tcp_packet(&mutated).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn randomized_out_of_order_reassembly_smoke() {
+        let mut rng = StdRng::seed_from_u64(0x51ce_2026);
+        for _ in 0..64 {
+            let sequence_start = rng.gen_range(10_000..50_000);
+            let total_len = rng.gen_range(12..96);
+            let mut original = vec![0u8; total_len];
+            rng.fill(original.as_mut_slice());
+
+            let mut segments = Vec::new();
+            let mut cursor = 0usize;
+            while cursor < total_len {
+                let len = rng.gen_range(1..=(total_len - cursor).min(16));
+                segments.push((
+                    sequence_start + cursor as u32,
+                    original[cursor..cursor + len].to_vec(),
+                ));
+                if cursor > 0 && rng.gen_bool(0.35) {
+                    let overlap_start = cursor.saturating_sub(rng.gen_range(1..=cursor.min(4)));
+                    segments.push((
+                        sequence_start + overlap_start as u32,
+                        original[overlap_start..cursor + len].to_vec(),
+                    ));
+                }
+                cursor += len;
+            }
+            segments.shuffle(&mut rng);
+
+            let mut pending = VecDeque::new();
+            for (sequence_number, payload) in segments {
+                let packet = ParsedTcpPacket {
+                    version: super::IpVersion::V4,
+                    source_ip: "10.0.0.1".parse().unwrap(),
+                    destination_ip: "8.8.8.8".parse().unwrap(),
+                    source_port: 12345,
+                    destination_port: 80,
+                    sequence_number,
+                    acknowledgement_number: 0,
+                    window_size: 4096,
+                    max_segment_size: None,
+                    window_scale: None,
+                    sack_permitted: false,
+                    sack_blocks: Vec::new(),
+                    timestamp_value: None,
+                    timestamp_echo_reply: None,
+                    flags: TCP_FLAG_ACK,
+                    payload,
+                };
+                queue_future_segment(&mut pending, &packet, sequence_start);
+            }
+
+            let mut expected_seq = sequence_start;
+            let mut reassembled = Vec::new();
+            let closed =
+                drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut reassembled);
+            assert!(!closed);
+            assert_eq!(expected_seq, sequence_start + total_len as u32);
+            assert_eq!(reassembled, original);
+        }
     }
 
     #[tokio::test]
@@ -4213,7 +4539,7 @@ mod tests {
         options: &[u8],
         payload: &[u8],
     ) -> Vec<u8> {
-        let mut packet = super::build_response_packet_custom(
+        super::build_response_packet_custom(
             super::IpVersion::V4,
             client_ip.into(),
             remote_ip.into(),
@@ -4226,10 +4552,97 @@ mod tests {
             options,
             payload,
         )
-        .unwrap();
-        let tcp_offset = IPV4_HEADER_LEN;
-        let checksum = super::tcp_checksum_ipv4(client_ip, remote_ip, &packet[tcp_offset..]);
-        packet[tcp_offset + 16..tcp_offset + 18].copy_from_slice(&checksum.to_be_bytes());
+        .unwrap()
+    }
+
+    fn build_client_ipv6_packet_with_options(
+        client_ip: Ipv6Addr,
+        remote_ip: Ipv6Addr,
+        client_port: u16,
+        remote_port: u16,
+        sequence_number: u32,
+        acknowledgement_number: u32,
+        window_size: u16,
+        flags: u8,
+        options: &[u8],
+        payload: &[u8],
+    ) -> Vec<u8> {
+        super::build_response_packet_custom(
+            super::IpVersion::V6,
+            client_ip.into(),
+            remote_ip.into(),
+            client_port,
+            remote_port,
+            sequence_number,
+            acknowledgement_number,
+            flags,
+            window_size,
+            options,
+            payload,
+        )
+        .unwrap()
+    }
+
+    fn tcp_option_pad(mut options: Vec<u8>) -> Vec<u8> {
+        while options.len() % 4 != 0 {
+            options.push(1);
+        }
+        options
+    }
+
+    fn build_client_ipv6_packet_with_extension_headers(
+        client_ip: Ipv6Addr,
+        remote_ip: Ipv6Addr,
+        client_port: u16,
+        remote_port: u16,
+        sequence_number: u32,
+        acknowledgement_number: u32,
+        window_size: u16,
+        flags: u8,
+        extension_headers: &[Vec<u8>],
+        options: &[u8],
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let tcp_packet = build_client_ipv6_packet_with_options(
+            client_ip,
+            remote_ip,
+            client_port,
+            remote_port,
+            sequence_number,
+            acknowledgement_number,
+            window_size,
+            flags,
+            options,
+            payload,
+        );
+
+        let tcp_segment = &tcp_packet[IPV6_HEADER_LEN..];
+        let extension_len: usize = extension_headers.iter().map(Vec::len).sum();
+        let total_len = IPV6_HEADER_LEN + extension_len + tcp_segment.len();
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&((extension_len + tcp_segment.len()) as u16).to_be_bytes());
+        packet[6] = extension_headers
+            .first()
+            .and_then(|header| header.first().copied())
+            .unwrap_or(super::IPV6_NEXT_HEADER_TCP);
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&client_ip.octets());
+        packet[24..40].copy_from_slice(&remote_ip.octets());
+
+        let mut offset = IPV6_HEADER_LEN;
+        for (index, header) in extension_headers.iter().enumerate() {
+            let mut encoded = header.clone();
+            let next = if index + 1 < extension_headers.len() {
+                extension_headers[index + 1][0]
+            } else {
+                super::IPV6_NEXT_HEADER_TCP
+            };
+            encoded[0] = next;
+            packet[offset..offset + encoded.len()].copy_from_slice(&encoded);
+            offset += encoded.len();
+        }
+        packet[offset..].copy_from_slice(tcp_segment);
         packet
     }
 
