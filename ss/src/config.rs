@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashSet, BTreeSet},
+    collections::{BTreeSet, HashSet},
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -50,9 +50,7 @@ impl Config {
         };
 
         let config = Self {
-            listen: args
-                .listen
-                .or(file.listen),
+            listen: args.listen.or(file.listen),
             ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
             tls_key_path: args.tls_key_path.or(file.tls_key_path),
@@ -95,7 +93,8 @@ impl Config {
                 .unwrap_or_else(|| "wss".to_owned()),
             access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
             access_key_file_extension: normalize_access_key_file_extension(
-                args.access_key_file_extension.or(file.access_key_file_extension),
+                args.access_key_file_extension
+                    .or(file.access_key_file_extension),
             ),
             print_access_keys: args
                 .print_access_keys
@@ -206,7 +205,10 @@ impl Config {
             udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
         }
         if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
-            bail!("tcp and udp websocket paths must be distinct, conflict on {}", conflict);
+            bail!(
+                "tcp and udp websocket paths must be distinct, conflict on {}",
+                conflict
+            );
         }
         Ok(())
     }
@@ -288,10 +290,18 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
     udp_nat_idle_timeout_secs: Option<u64>,
 
-    #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
+    #[arg(
+        long = "ws-path-tcp",
+        visible_alias = "ws-path",
+        env = "OUTLINE_SS_WS_PATH_TCP"
+    )]
     ws_path_tcp: Option<String>,
 
-    #[arg(long = "ws-path-udp", visible_alias = "udp-ws-path", env = "OUTLINE_SS_WS_PATH_UDP")]
+    #[arg(
+        long = "ws-path-udp",
+        visible_alias = "udp-ws-path",
+        env = "OUTLINE_SS_WS_PATH_UDP"
+    )]
     ws_path_udp: Option<String>,
 
     #[arg(long, env = "OUTLINE_SS_PUBLIC_HOST")]

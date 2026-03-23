@@ -13,8 +13,12 @@ use crate::config::Config;
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
 
-const TCP_CONNECT_BUCKETS: &[f64] = &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
-const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
+const TCP_CONNECT_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
+];
+const UDP_RELAY_BUCKETS: &[f64] = &[
+    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
+];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
 static ALLOCATOR_TRIM_RUNS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -46,8 +50,12 @@ pub fn record_allocator_trim_run(
     }
     ALLOCATOR_TRIM_LAST_RUN_SECONDS.store(unix_timestamp_seconds(), Ordering::Relaxed);
 
-    let rss_before = before.map(|snapshot| snapshot.resident_memory_bytes).unwrap_or(0);
-    let rss_after = after.map(|snapshot| snapshot.resident_memory_bytes).unwrap_or(0);
+    let rss_before = before
+        .map(|snapshot| snapshot.resident_memory_bytes)
+        .unwrap_or(0);
+    let rss_after = after
+        .map(|snapshot| snapshot.resident_memory_bytes)
+        .unwrap_or(0);
     let released = rss_before.saturating_sub(rss_after);
     ALLOCATOR_TRIM_LAST_RSS_BEFORE_BYTES.store(rss_before as i64, Ordering::Relaxed);
     ALLOCATOR_TRIM_LAST_RSS_AFTER_BYTES.store(rss_after as i64, Ordering::Relaxed);
@@ -59,7 +67,8 @@ pub fn record_allocator_trim_run(
         Ordering::Relaxed,
     );
     ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_AFTER_BYTES.store(
-        after.and_then(|snapshot| snapshot.heap_allocated_bytes)
+        after
+            .and_then(|snapshot| snapshot.heap_allocated_bytes)
             .unwrap_or(0) as i64,
         Ordering::Relaxed,
     );
@@ -202,7 +211,10 @@ impl Metrics {
         transport: Transport,
         protocol: Protocol,
     ) -> WebSocketSessionGuard {
-        let labels = WsLabels { transport, protocol };
+        let labels = WsLabels {
+            transport,
+            protocol,
+        };
         self.websocket_upgrades_total.inc(labels.clone(), 1);
         self.active_websocket_sessions.inc(labels.clone(), 1);
         WebSocketSessionGuard {
@@ -231,10 +243,8 @@ impl Metrics {
 
     pub fn record_tcp_authenticated_session(&self, user: &str, protocol: Protocol) {
         self.record_client_session(user, protocol, Transport::Tcp);
-        self.tcp_authenticated_sessions_total.inc(
-            UserProtocolLabels::new(user, protocol),
-            1,
-        );
+        self.tcp_authenticated_sessions_total
+            .inc(UserProtocolLabels::new(user, protocol), 1);
     }
 
     pub fn record_client_session(&self, user: &str, protocol: Protocol, transport: Transport) {
@@ -246,10 +256,8 @@ impl Metrics {
     }
 
     pub fn record_client_last_seen(&self, user: &str) {
-        self.client_last_seen_seconds.set(
-            UserLabels::new(user),
-            unix_timestamp_seconds(),
-        );
+        self.client_last_seen_seconds
+            .set(UserLabels::new(user), unix_timestamp_seconds());
     }
 
     pub fn record_tcp_connect(
@@ -327,10 +335,8 @@ impl Metrics {
     }
 
     pub fn record_udp_response_datagrams(&self, user: &str, protocol: Protocol, count: usize) {
-        self.udp_response_datagrams_total.inc(
-            UserProtocolLabels::new(user, protocol),
-            count as u64,
-        );
+        self.udp_response_datagrams_total
+            .inc(UserProtocolLabels::new(user, protocol), count as u64);
     }
 
     pub fn record_udp_oversized_datagram_dropped(
@@ -347,23 +353,31 @@ impl Metrics {
 
     pub fn record_udp_nat_entry_created(&self) {
         self.udp_nat_active_entries.fetch_add(1, Ordering::Relaxed);
-        self.udp_nat_entries_created_total.fetch_add(1, Ordering::Relaxed);
+        self.udp_nat_entries_created_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_udp_nat_entries_evicted(&self, count: usize) {
-        self.udp_nat_active_entries.fetch_sub(count as i64, Ordering::Relaxed);
-        self.udp_nat_entries_evicted_total.fetch_add(count as u64, Ordering::Relaxed);
+        self.udp_nat_active_entries
+            .fetch_sub(count as i64, Ordering::Relaxed);
+        self.udp_nat_entries_evicted_total
+            .fetch_add(count as u64, Ordering::Relaxed);
     }
 
     pub fn record_udp_nat_response_dropped(&self) {
-        self.udp_nat_responses_dropped_total.fetch_add(1, Ordering::Relaxed);
+        self.udp_nat_responses_dropped_total
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn render_prometheus(&self) -> String {
         self.scrapes_total.fetch_add(1, Ordering::Relaxed);
         let mut out = String::with_capacity(32 * 1024);
 
-        write_help(&mut out, "outline_ss_build_info", "Build metadata for the running binary.");
+        write_help(
+            &mut out,
+            "outline_ss_build_info",
+            "Build metadata for the running binary.",
+        );
         write_type(&mut out, "outline_ss_build_info", "gauge");
         writeln!(
             out,
@@ -418,7 +432,11 @@ impl Metrics {
             "outline_ss_allocator_heap_metrics_supported",
             "Allocator heap metrics mode: 0=unsupported, 1=exact allocator metrics.",
         );
-        write_type(&mut out, "outline_ss_allocator_heap_metrics_supported", "gauge");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_heap_metrics_supported",
+            "gauge",
+        );
         writeln!(
             out,
             "outline_ss_allocator_heap_metrics_supported {}",
@@ -445,7 +463,11 @@ impl Metrics {
                 "outline_ss_process_resident_memory_bytes",
                 "Resident set size of the outline-ss-rust process.",
             );
-            write_type(&mut out, "outline_ss_process_resident_memory_bytes", "gauge");
+            write_type(
+                &mut out,
+                "outline_ss_process_resident_memory_bytes",
+                "gauge",
+            );
             writeln!(
                 out,
                 "outline_ss_process_resident_memory_bytes {}",
@@ -515,7 +537,11 @@ impl Metrics {
             "outline_ss_allocator_trim_release_events_total",
             "Allocator trim attempts that observed memory release.",
         );
-        write_type(&mut out, "outline_ss_allocator_trim_release_events_total", "counter");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_release_events_total",
+            "counter",
+        );
         writeln!(
             out,
             "outline_ss_allocator_trim_release_events_total {}",
@@ -528,7 +554,11 @@ impl Metrics {
             "outline_ss_allocator_trim_errors_total",
             "Allocator trim task errors.",
         );
-        write_type(&mut out, "outline_ss_allocator_trim_errors_total", "counter");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_errors_total",
+            "counter",
+        );
         writeln!(
             out,
             "outline_ss_allocator_trim_errors_total {}",
@@ -541,7 +571,11 @@ impl Metrics {
             "outline_ss_allocator_trim_last_run_seconds",
             "Unix timestamp of the most recent allocator trim attempt.",
         );
-        write_type(&mut out, "outline_ss_allocator_trim_last_run_seconds", "gauge");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_run_seconds",
+            "gauge",
+        );
         writeln!(
             out,
             "outline_ss_allocator_trim_last_run_seconds {}",
@@ -554,7 +588,11 @@ impl Metrics {
             "outline_ss_allocator_trim_last_rss_before_bytes",
             "RSS measured immediately before the most recent allocator trim.",
         );
-        write_type(&mut out, "outline_ss_allocator_trim_last_rss_before_bytes", "gauge");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_before_bytes",
+            "gauge",
+        );
         writeln!(
             out,
             "outline_ss_allocator_trim_last_rss_before_bytes {}",
@@ -567,7 +605,11 @@ impl Metrics {
             "outline_ss_allocator_trim_last_rss_after_bytes",
             "RSS measured immediately after the most recent allocator trim.",
         );
-        write_type(&mut out, "outline_ss_allocator_trim_last_rss_after_bytes", "gauge");
+        write_type(
+            &mut out,
+            "outline_ss_allocator_trim_last_rss_after_bytes",
+            "gauge",
+        );
         writeln!(
             out,
             "outline_ss_allocator_trim_last_rss_after_bytes {}",
@@ -678,19 +720,13 @@ impl Metrics {
             &mut out,
             "outline_ss_client_active",
             "Client active state by user using the configured TTL.",
-            client_active_snapshots(
-                &self.client_last_seen_seconds,
-                self.client_active_ttl_secs,
-            ),
+            client_active_snapshots(&self.client_last_seen_seconds, self.client_active_ttl_secs),
         );
         render_gauge_snapshots(
             &mut out,
             "outline_ss_client_up",
             "Alias of outline_ss_client_active for online-state dashboards.",
-            client_active_snapshots(
-                &self.client_last_seen_seconds,
-                self.client_active_ttl_secs,
-            ),
+            client_active_snapshots(&self.client_last_seen_seconds, self.client_active_ttl_secs),
         );
         render_counter_family(
             &mut out,
@@ -759,21 +795,69 @@ impl Metrics {
             &self.udp_oversized_datagrams_dropped_total,
         );
 
-        write_help(&mut out, "outline_ss_udp_nat_active_entries", "Current number of active UDP NAT table entries.");
+        write_help(
+            &mut out,
+            "outline_ss_udp_nat_active_entries",
+            "Current number of active UDP NAT table entries.",
+        );
         write_type(&mut out, "outline_ss_udp_nat_active_entries", "gauge");
-        writeln!(out, "outline_ss_udp_nat_active_entries {}", self.udp_nat_active_entries.load(Ordering::Relaxed)).ok();
+        writeln!(
+            out,
+            "outline_ss_udp_nat_active_entries {}",
+            self.udp_nat_active_entries.load(Ordering::Relaxed)
+        )
+        .ok();
 
-        write_help(&mut out, "outline_ss_udp_nat_entries_created_total", "Total UDP NAT table entries ever created.");
-        write_type(&mut out, "outline_ss_udp_nat_entries_created_total", "counter");
-        writeln!(out, "outline_ss_udp_nat_entries_created_total {}", self.udp_nat_entries_created_total.load(Ordering::Relaxed)).ok();
+        write_help(
+            &mut out,
+            "outline_ss_udp_nat_entries_created_total",
+            "Total UDP NAT table entries ever created.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_udp_nat_entries_created_total",
+            "counter",
+        );
+        writeln!(
+            out,
+            "outline_ss_udp_nat_entries_created_total {}",
+            self.udp_nat_entries_created_total.load(Ordering::Relaxed)
+        )
+        .ok();
 
-        write_help(&mut out, "outline_ss_udp_nat_entries_evicted_total", "Total UDP NAT table entries evicted due to idle timeout.");
-        write_type(&mut out, "outline_ss_udp_nat_entries_evicted_total", "counter");
-        writeln!(out, "outline_ss_udp_nat_entries_evicted_total {}", self.udp_nat_entries_evicted_total.load(Ordering::Relaxed)).ok();
+        write_help(
+            &mut out,
+            "outline_ss_udp_nat_entries_evicted_total",
+            "Total UDP NAT table entries evicted due to idle timeout.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_udp_nat_entries_evicted_total",
+            "counter",
+        );
+        writeln!(
+            out,
+            "outline_ss_udp_nat_entries_evicted_total {}",
+            self.udp_nat_entries_evicted_total.load(Ordering::Relaxed)
+        )
+        .ok();
 
-        write_help(&mut out, "outline_ss_udp_nat_responses_dropped_total", "UDP upstream responses dropped because no WebSocket session was registered.");
-        write_type(&mut out, "outline_ss_udp_nat_responses_dropped_total", "counter");
-        writeln!(out, "outline_ss_udp_nat_responses_dropped_total {}", self.udp_nat_responses_dropped_total.load(Ordering::Relaxed)).ok();
+        write_help(
+            &mut out,
+            "outline_ss_udp_nat_responses_dropped_total",
+            "UDP upstream responses dropped because no WebSocket session was registered.",
+        );
+        write_type(
+            &mut out,
+            "outline_ss_udp_nat_responses_dropped_total",
+            "counter",
+        );
+        writeln!(
+            out,
+            "outline_ss_udp_nat_responses_dropped_total {}",
+            self.udp_nat_responses_dropped_total.load(Ordering::Relaxed)
+        )
+        .ok();
 
         out
     }
@@ -1193,7 +1277,10 @@ where
         {
             let values = self.values.read().expect("histogram vec poisoned");
             if let Some(state) = values.get(&labels) {
-                state.lock().expect("histogram state poisoned").observe(self.buckets, value);
+                state
+                    .lock()
+                    .expect("histogram state poisoned")
+                    .observe(self.buckets, value);
                 return;
             }
         }
@@ -1204,7 +1291,10 @@ where
                 .or_insert_with(|| Arc::new(Mutex::new(HistogramState::new(self.buckets))))
                 .clone()
         };
-        state.lock().expect("histogram state poisoned").observe(self.buckets, value);
+        state
+            .lock()
+            .expect("histogram state poisoned")
+            .observe(self.buckets, value);
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
@@ -1266,12 +1356,8 @@ struct HistogramSnapshot {
     sum: f64,
 }
 
-fn render_counter_family<L>(
-    out: &mut String,
-    name: &str,
-    help: &str,
-    metric: &CounterVec<L>,
-) where
+fn render_counter_family<L>(out: &mut String, name: &str, help: &str, metric: &CounterVec<L>)
+where
     L: PrometheusLabels + Clone + Ord,
 {
     write_help(out, name, help);
@@ -1281,12 +1367,8 @@ fn render_counter_family<L>(
     }
 }
 
-fn render_gauge_family<L>(
-    out: &mut String,
-    name: &str,
-    help: &str,
-    metric: &GaugeVec<L>,
-) where
+fn render_gauge_family<L>(out: &mut String, name: &str, help: &str, metric: &GaugeVec<L>)
+where
     L: PrometheusLabels + Clone + Ord,
 {
     write_help(out, name, help);
@@ -1307,12 +1389,8 @@ where
     }
 }
 
-fn render_histogram_family<L>(
-    out: &mut String,
-    name: &str,
-    help: &str,
-    metric: &HistogramVec<L>,
-) where
+fn render_histogram_family<L>(out: &mut String, name: &str, help: &str, metric: &HistogramVec<L>)
+where
     L: PrometheusLabels + Clone + Ord,
 {
     write_help(out, name, help);
@@ -1324,13 +1402,33 @@ fn render_histogram_family<L>(
             cumulative += snapshot.bucket_counts[idx];
             let mut bucket_labels = base_labels.clone();
             bucket_labels.push(("le", upper_bound.to_string()));
-            write_metric_line(out, &format!("{name}_bucket"), &bucket_labels, cumulative.to_string());
+            write_metric_line(
+                out,
+                &format!("{name}_bucket"),
+                &bucket_labels,
+                cumulative.to_string(),
+            );
         }
         let mut inf_labels = base_labels.clone();
         inf_labels.push(("le", "+Inf".to_owned()));
-        write_metric_line(out, &format!("{name}_bucket"), &inf_labels, snapshot.count.to_string());
-        write_metric_line(out, &format!("{name}_sum"), &base_labels, format!("{:.6}", snapshot.sum));
-        write_metric_line(out, &format!("{name}_count"), &base_labels, snapshot.count.to_string());
+        write_metric_line(
+            out,
+            &format!("{name}_bucket"),
+            &inf_labels,
+            snapshot.count.to_string(),
+        );
+        write_metric_line(
+            out,
+            &format!("{name}_sum"),
+            &base_labels,
+            format!("{:.6}", snapshot.sum),
+        );
+        write_metric_line(
+            out,
+            &format!("{name}_count"),
+            &base_labels,
+            snapshot.count.to_string(),
+        );
     }
 }
 
@@ -1342,7 +1440,12 @@ fn write_type(out: &mut String, name: &str, metric_type: &str) {
     writeln!(out, "# TYPE {name} {metric_type}").ok();
 }
 
-fn write_metric_line(out: &mut String, name: &str, labels: &[(&'static str, String)], value: String) {
+fn write_metric_line(
+    out: &mut String,
+    name: &str,
+    labels: &[(&'static str, String)],
+    value: String,
+) {
     if labels.is_empty() {
         writeln!(out, "{name} {value}").ok();
         return;
@@ -1403,11 +1506,7 @@ fn escape_label_value(value: &str) -> String {
 }
 
 const fn allocator_heap_metrics_support_level() -> i64 {
-    if cfg!(target_os = "linux") {
-        1
-    } else {
-        0
-    }
+    if cfg!(target_os = "linux") { 1 } else { 0 }
 }
 
 const fn allocator_trim_supported() -> bool {
@@ -1489,7 +1588,9 @@ fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
 #[cfg(target_os = "linux")]
 fn jemalloc_heap_snapshot() -> Result<(Option<u64>, Option<u64>)> {
     let epoch = tikv_jemalloc_ctl::epoch::mib().context("failed to create jemalloc epoch MIB")?;
-    epoch.advance().context("failed to advance jemalloc epoch")?;
+    epoch
+        .advance()
+        .context("failed to advance jemalloc epoch")?;
 
     let allocated = tikv_jemalloc_ctl::stats::allocated::mib()
         .context("failed to create jemalloc allocated MIB")?
@@ -1502,10 +1603,7 @@ fn jemalloc_heap_snapshot() -> Result<(Option<u64>, Option<u64>)> {
     let allocated = allocated as u64;
     let active = active as u64;
 
-    Ok((
-        Some(allocated),
-        Some(active.saturating_sub(allocated)),
-    ))
+    Ok((Some(allocated), Some(active.saturating_sub(allocated))))
 }
 
 #[cfg(target_os = "linux")]

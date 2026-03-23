@@ -185,9 +185,11 @@ impl NatTable {
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
-        let mut entries = self.entries.lock().await;
-        if let Some(entry) = entries.get(&key) {
-            return Ok(Arc::clone(entry));
+        if let Some(entry) = {
+            let entries = self.entries.lock().await;
+            entries.get(&key).cloned()
+        } {
+            return Ok(entry);
         }
 
         let bind_addr: &str = if key.target.is_ipv4() {
@@ -211,6 +213,11 @@ impl NatTable {
                 Some(random_session_id()?)
             }
         };
+
+        let mut entries = self.entries.lock().await;
+        if let Some(entry) = entries.get(&key).cloned() {
+            return Ok(entry);
+        }
 
         let reader_task = tokio::spawn(nat_reader_task(
             Arc::clone(&socket),
@@ -247,9 +254,7 @@ impl NatTable {
         let threshold = unix_secs_now().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
         let before = entries.len();
-        entries.retain(|_, entry| {
-            entry.last_active_secs.load(Ordering::Relaxed) >= threshold
-        });
+        entries.retain(|_, entry| entry.last_active_secs.load(Ordering::Relaxed) >= threshold);
         let evicted = before - entries.len();
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
@@ -333,12 +338,7 @@ async fn nat_reader_task(
         let guard = session_tx.lock().await;
         if let Some(sender) = guard.as_ref() {
             let protocol = sender.protocol();
-            metrics.record_udp_payload_bytes(
-                user.id(),
-                protocol,
-                "target_to_client",
-                n,
-            );
+            metrics.record_udp_payload_bytes(user.id(), protocol, "target_to_client", n);
             metrics.record_udp_response_datagrams(user.id(), protocol, 1);
             if !sender.send_bytes(Bytes::from(ciphertext)).await {
                 debug!(%target, "NAT response dropped: client session disconnected");
