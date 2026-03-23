@@ -557,7 +557,7 @@ async fn handle_tcp_connection(
                     {
                         Ok(stream) => {
                             metrics.record_tcp_connect(
-                                user.id(),
+                                user.id_arc(),
                                 protocol,
                                 "success",
                                 connect_started.elapsed().as_secs_f64(),
@@ -566,7 +566,7 @@ async fn handle_tcp_connection(
                         }
                         Err(error) => {
                             metrics.record_tcp_connect(
-                                user.id(),
+                                user.id_arc(),
                                 protocol,
                                 "error",
                                 connect_started.elapsed().as_secs_f64(),
@@ -588,7 +588,7 @@ async fn handle_tcp_connection(
                         AeadStreamEncryptor::new(&user, decryptor.response_context())?;
                     let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
-                    let user_id = user.id().to_owned();
+                    let user_id = user.id_arc();
                     upstream_to_client = Some(tokio::spawn(async move {
                         relay_upstream_to_client(
                             upstream_reader,
@@ -600,9 +600,9 @@ async fn handle_tcp_connection(
                         )
                         .await
                     }));
-                    metrics.record_tcp_authenticated_session(user.id(), protocol);
+                    metrics.record_tcp_authenticated_session(user.id_arc(), protocol);
                     upstream_guard =
-                        Some(metrics.open_tcp_upstream_connection(user.id(), protocol));
+                        Some(metrics.open_tcp_upstream_connection(user.id_arc(), protocol));
                     authenticated_user = Some(user);
                     upstream_writer = Some(writer);
                     plaintext_buffer.drain(..consumed);
@@ -612,7 +612,7 @@ async fn handle_tcp_connection(
                     if !plaintext_buffer.is_empty() {
                         if let Some(user) = &authenticated_user {
                             metrics.record_tcp_payload_bytes(
-                                user.id(),
+                                user.id_arc(),
                                 protocol,
                                 "client_to_target",
                                 plaintext_buffer.len(),
@@ -943,7 +943,7 @@ async fn handle_tcp_h3_connection(
                     {
                         Ok(stream) => {
                             metrics.record_tcp_connect(
-                                user.id(),
+                                user.id_arc(),
                                 Protocol::Http3,
                                 "success",
                                 connect_started.elapsed().as_secs_f64(),
@@ -952,7 +952,7 @@ async fn handle_tcp_h3_connection(
                         }
                         Err(error) => {
                             metrics.record_tcp_connect(
-                                user.id(),
+                                user.id_arc(),
                                 Protocol::Http3,
                                 "error",
                                 connect_started.elapsed().as_secs_f64(),
@@ -974,7 +974,7 @@ async fn handle_tcp_h3_connection(
                         AeadStreamEncryptor::new(&user, decryptor.response_context())?;
                     let tx = outbound_data_tx.clone();
                     let relay_metrics = metrics.clone();
-                    let user_id = user.id().to_owned();
+                    let user_id = user.id_arc();
                     upstream_to_client = Some(tokio::spawn(async move {
                         relay_upstream_to_h3_client(
                             upstream_reader,
@@ -985,9 +985,9 @@ async fn handle_tcp_h3_connection(
                         )
                         .await
                     }));
-                    metrics.record_tcp_authenticated_session(user.id(), Protocol::Http3);
+                    metrics.record_tcp_authenticated_session(user.id_arc(), Protocol::Http3);
                     upstream_guard =
-                        Some(metrics.open_tcp_upstream_connection(user.id(), Protocol::Http3));
+                        Some(metrics.open_tcp_upstream_connection(user.id_arc(), Protocol::Http3));
                     authenticated_user = Some(user);
                     upstream_writer = Some(writer);
                     plaintext_buffer.drain(..consumed);
@@ -997,7 +997,7 @@ async fn handle_tcp_h3_connection(
                     if !plaintext_buffer.is_empty() {
                         if let Some(user) = &authenticated_user {
                             metrics.record_tcp_payload_bytes(
-                                user.id(),
+                                user.id_arc(),
                                 Protocol::Http3,
                                 "client_to_target",
                                 plaintext_buffer.len(),
@@ -1201,7 +1201,7 @@ async fn relay_upstream_to_client(
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
     protocol: Protocol,
-    user_id: String,
+    user_id: Arc<str>,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
     loop {
@@ -1213,7 +1213,7 @@ async fn relay_upstream_to_client(
             break;
         }
 
-        metrics.record_tcp_payload_bytes(&user_id, protocol, "target_to_client", read);
+        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
         outbound_tx
             .send(Message::Binary(ciphertext.into()))
@@ -1230,7 +1230,7 @@ async fn relay_upstream_to_h3_client(
     outbound_tx: mpsc::Sender<H3Message>,
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
-    user_id: String,
+    user_id: Arc<str>,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
     loop {
@@ -1242,7 +1242,12 @@ async fn relay_upstream_to_h3_client(
             break;
         }
 
-        metrics.record_tcp_payload_bytes(&user_id, Protocol::Http3, "target_to_client", read);
+        metrics.record_tcp_payload_bytes(
+            Arc::clone(&user_id),
+            Protocol::Http3,
+            "target_to_client",
+            read,
+        );
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
         outbound_tx
             .send(H3Message::Binary(ciphertext.into()))
@@ -1292,15 +1297,16 @@ async fn handle_udp_datagram(
             Err(error) => return Err(anyhow!(error)),
         };
     cached_user_index.store(user_index, Ordering::Relaxed);
+    let user_id = packet.user.id_arc();
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
     if !udp_session_recorded.swap(true, Ordering::Relaxed) {
-        metrics.record_client_session(packet.user.id(), protocol, Transport::Udp);
+        metrics.record_client_session(Arc::clone(&user_id), protocol, Transport::Udp);
     } else {
-        metrics.record_client_last_seen(packet.user.id());
+        metrics.record_client_last_seen(Arc::clone(&user_id));
     }
     debug!(
         user = packet.user.id(),
@@ -1343,7 +1349,7 @@ async fn handle_udp_datagram(
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         metrics.record_udp_oversized_datagram_dropped(
-            packet.user.id(),
+            Arc::clone(&user_id),
             protocol,
             "client_to_target",
         );
@@ -1356,7 +1362,7 @@ async fn handle_udp_datagram(
             "dropping oversized udp datagram before upstream send"
         );
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -1364,14 +1370,14 @@ async fn handle_udp_datagram(
         return Ok(());
     }
     metrics.record_udp_payload_bytes(
-        packet.user.id(),
+        Arc::clone(&user_id),
         protocol,
         "client_to_target",
         payload.len(),
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -1380,7 +1386,7 @@ async fn handle_udp_datagram(
     }
     entry.touch();
     metrics.record_udp_request(
-        packet.user.id(),
+        user_id,
         protocol,
         "success",
         started_at.elapsed().as_secs_f64(),
@@ -1426,15 +1432,16 @@ async fn handle_udp_h3_datagram(
             Err(error) => return Err(anyhow!(error)),
         };
     cached_user_index.store(user_index, Ordering::Relaxed);
+    let user_id = packet.user.id_arc();
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
     if !udp_session_recorded.swap(true, Ordering::Relaxed) {
-        metrics.record_client_session(packet.user.id(), Protocol::Http3, Transport::Udp);
+        metrics.record_client_session(Arc::clone(&user_id), Protocol::Http3, Transport::Udp);
     } else {
-        metrics.record_client_last_seen(packet.user.id());
+        metrics.record_client_last_seen(Arc::clone(&user_id));
     }
     debug!(
         user = packet.user.id(),
@@ -1476,7 +1483,7 @@ async fn handle_udp_h3_datagram(
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         metrics.record_udp_oversized_datagram_dropped(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Http3,
             "client_to_target",
         );
@@ -1489,7 +1496,7 @@ async fn handle_udp_h3_datagram(
             "dropping oversized udp datagram before upstream send"
         );
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Http3,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -1497,14 +1504,14 @@ async fn handle_udp_h3_datagram(
         return Ok(());
     }
     metrics.record_udp_payload_bytes(
-        packet.user.id(),
+        Arc::clone(&user_id),
         Protocol::Http3,
         "client_to_target",
         payload.len(),
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Http3,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -1513,7 +1520,7 @@ async fn handle_udp_h3_datagram(
     }
     entry.touch();
     metrics.record_udp_request(
-        packet.user.id(),
+        user_id,
         Protocol::Http3,
         "success",
         started_at.elapsed().as_secs_f64(),
@@ -1817,7 +1824,7 @@ async fn handle_ss_tcp_connection(
                 match connect_tcp_target(&target, user.fwmark(), prefer_ipv4_upstream).await {
                     Ok(stream) => {
                         metrics.record_tcp_connect(
-                            user.id(),
+                            user.id_arc(),
                             Protocol::Socket,
                             "success",
                             connect_started.elapsed().as_secs_f64(),
@@ -1826,7 +1833,7 @@ async fn handle_ss_tcp_connection(
                     }
                     Err(error) => {
                         metrics.record_tcp_connect(
-                            user.id(),
+                            user.id_arc(),
                             Protocol::Socket,
                             "error",
                             connect_started.elapsed().as_secs_f64(),
@@ -1849,7 +1856,7 @@ async fn handle_ss_tcp_connection(
                 .take()
                 .ok_or_else(|| anyhow!("socket tcp client writer missing"))?;
             let relay_metrics = metrics.clone();
-            let user_id = user.id().to_owned();
+            let user_id = user.id_arc();
             upstream_to_client = Some(tokio::spawn(async move {
                 relay_upstream_to_socket_client(
                     upstream_reader,
@@ -1860,9 +1867,9 @@ async fn handle_ss_tcp_connection(
                 )
                 .await
             }));
-            metrics.record_tcp_authenticated_session(user.id(), Protocol::Socket);
+            metrics.record_tcp_authenticated_session(user.id_arc(), Protocol::Socket);
             upstream_guard =
-                Some(metrics.open_tcp_upstream_connection(user.id(), Protocol::Socket));
+                Some(metrics.open_tcp_upstream_connection(user.id_arc(), Protocol::Socket));
             authenticated_user = Some(user);
             upstream_writer = Some(writer);
             plaintext_buffer.drain(..consumed);
@@ -1873,7 +1880,7 @@ async fn handle_ss_tcp_connection(
         {
             if let Some(user) = &authenticated_user {
                 metrics.record_tcp_payload_bytes(
-                    user.id(),
+                    user.id_arc(),
                     Protocol::Socket,
                     "client_to_target",
                     plaintext_buffer.len(),
@@ -1917,7 +1924,7 @@ async fn relay_upstream_to_socket_client(
     mut client_writer: tokio::net::tcp::OwnedWriteHalf,
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
-    user_id: String,
+    user_id: Arc<str>,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
     loop {
@@ -1929,10 +1936,15 @@ async fn relay_upstream_to_socket_client(
             break;
         }
 
-        metrics.record_tcp_payload_bytes(&user_id, Protocol::Socket, "target_to_client", read);
+        metrics.record_tcp_payload_bytes(
+            Arc::clone(&user_id),
+            Protocol::Socket,
+            "target_to_client",
+            read,
+        );
         let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
         debug!(
-            user = user_id,
+            user = %user_id,
             plaintext_bytes = read,
             encrypted_bytes = ciphertext.len(),
             "socket tcp relaying upstream bytes to client"
@@ -2024,12 +2036,13 @@ async fn handle_ss_udp_datagram(
         }
         Err(error) => return Err(anyhow!(error)),
     };
+    let user_id = packet.user.id_arc();
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
-    metrics.record_client_last_seen(packet.user.id());
+    metrics.record_client_last_seen(Arc::clone(&user_id));
     debug!(
         user = packet.user.id(),
         cipher = packet.user.cipher().as_str(),
@@ -2079,7 +2092,7 @@ async fn handle_ss_udp_datagram(
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         metrics.record_udp_oversized_datagram_dropped(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Socket,
             "client_to_target",
         );
@@ -2092,7 +2105,7 @@ async fn handle_ss_udp_datagram(
             "dropping oversized socket udp datagram before upstream send"
         );
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Socket,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -2100,7 +2113,7 @@ async fn handle_ss_udp_datagram(
         return Ok(());
     }
     metrics.record_udp_payload_bytes(
-        packet.user.id(),
+        Arc::clone(&user_id),
         Protocol::Socket,
         "client_to_target",
         payload.len(),
@@ -2114,7 +2127,7 @@ async fn handle_ss_udp_datagram(
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         metrics.record_udp_request(
-            packet.user.id(),
+            Arc::clone(&user_id),
             Protocol::Socket,
             "error",
             started_at.elapsed().as_secs_f64(),
@@ -2123,7 +2136,7 @@ async fn handle_ss_udp_datagram(
     }
     entry.touch();
     metrics.record_udp_request(
-        packet.user.id(),
+        user_id,
         Protocol::Socket,
         "success",
         started_at.elapsed().as_secs_f64(),
