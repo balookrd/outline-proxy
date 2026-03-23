@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
-use tokio::sync::{Mutex, watch};
-use tokio::time::{sleep, timeout};
+use tokio::sync::{Mutex, Notify, watch};
+use tokio::time::{sleep_until, timeout};
 use tracing::{debug, info, warn};
 
 use crate::config::TunTcpConfig;
@@ -29,7 +29,6 @@ pub(crate) const TCP_FLAG_SYN: u8 = 0x02;
 pub(crate) const TCP_FLAG_RST: u8 = 0x04;
 const TCP_FLAG_PSH: u8 = 0x08;
 pub(crate) const TCP_FLAG_ACK: u8 = 0x10;
-const TCP_FLOW_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 const TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL: Duration = Duration::from_secs(1);
 const TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL: Duration = Duration::from_secs(30);
 const TCP_FAST_RETRANSMIT_DUP_ACKS: u8 = 3;
@@ -41,19 +40,22 @@ const TCP_MIN_RTO: Duration = Duration::from_millis(200);
 const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
+const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod state_machine;
 
 use self::state_machine::{
     AckEffect, ServerFlush, TcpFlowState, TcpFlowStatus, apply_client_segment,
     assess_server_backlog_pressure, build_flow_ack_packet, build_flow_packet,
-    build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window,
+    build_flow_syn_ack_packet, clear_flow_metrics, client_fin_seen, decode_client_window,
     drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
     flush_server_output, is_duplicate_syn, maybe_emit_zero_window_probe, normalize_client_segment,
     note_ack_progress, note_congestion_event, process_server_ack,
     queue_future_segment_with_recv_window, reset_zero_window_persist, retransmit_budget_exhausted,
-    retransmit_due_segment, retransmit_oldest_unacked_packet, seq_gt, seq_lt, set_flow_status,
-    sync_flow_metrics, trim_packet_to_receive_window, update_client_send_window,
+    retransmit_due_segment, retransmit_oldest_unacked_packet, seq_gt, seq_lt,
+    server_fin_awaiting_ack, server_fin_sent, set_flow_status, sync_flow_metrics,
+    transition_on_client_fin, transition_on_server_fin_ack, trim_packet_to_receive_window,
+    update_client_send_window,
 };
 #[cfg(test)]
 use self::state_machine::{
@@ -116,6 +118,157 @@ struct ParsedTcpOptions {
     sack_blocks: Vec<(u32, u32)>,
 }
 
+enum FlowMaintenancePlan {
+    Wait(Option<Instant>),
+    SendPacket {
+        packet: Vec<u8>,
+        packet_metric: &'static str,
+        event: &'static str,
+    },
+    Abort(&'static str),
+    Close(&'static str),
+}
+
+fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
+    sync_flow_metrics(state);
+    state.maintenance_notify.notify_one();
+}
+
+fn next_retransmit_deadline(state: &TcpFlowState) -> Option<Instant> {
+    let rto = state.retransmission_timeout;
+    state
+        .unacked_server_segments
+        .iter()
+        .map(|segment| segment.last_sent + rto)
+        .min()
+}
+
+fn next_zero_window_probe_deadline(state: &TcpFlowState) -> Option<Instant> {
+    if state.client_window == 0
+        && !state.pending_server_data.is_empty()
+        && state.unacked_server_segments.is_empty()
+    {
+        Some(state.next_zero_window_probe_at.unwrap_or_else(Instant::now))
+    } else {
+        None
+    }
+}
+
+fn next_flow_deadline(
+    state: &TcpFlowState,
+    tcp: &TunTcpConfig,
+    idle_timeout: Duration,
+) -> Option<Instant> {
+    let mut deadline = next_retransmit_deadline(state)
+        .into_iter()
+        .chain(next_zero_window_probe_deadline(state))
+        .min();
+
+    if state.status == TcpFlowStatus::SynReceived {
+        deadline = Some(
+            deadline
+                .map(|current| current.min(state.status_since + tcp.handshake_timeout))
+                .unwrap_or(state.status_since + tcp.handshake_timeout),
+        );
+    }
+
+    if matches!(
+        state.status,
+        TcpFlowStatus::CloseWait
+            | TcpFlowStatus::FinWait1
+            | TcpFlowStatus::FinWait2
+            | TcpFlowStatus::Closing
+            | TcpFlowStatus::LastAck
+    ) {
+        deadline = Some(
+            deadline
+                .map(|current| current.min(state.status_since + tcp.half_close_timeout))
+                .unwrap_or(state.status_since + tcp.half_close_timeout),
+        );
+    }
+
+    if state.status == TcpFlowStatus::TimeWait {
+        deadline = Some(
+            deadline
+                .map(|current| current.min(state.status_since + TCP_TIME_WAIT_TIMEOUT))
+                .unwrap_or(state.status_since + TCP_TIME_WAIT_TIMEOUT),
+        );
+    } else {
+        deadline = Some(
+            deadline
+                .map(|current| current.min(state.last_seen + idle_timeout))
+                .unwrap_or(state.last_seen + idle_timeout),
+        );
+    }
+
+    deadline
+}
+
+fn plan_flow_maintenance(
+    state: &mut TcpFlowState,
+    tcp: &TunTcpConfig,
+    idle_timeout: Duration,
+    now: Instant,
+) -> Result<FlowMaintenancePlan> {
+    if state.status == TcpFlowStatus::TimeWait
+        && now.saturating_duration_since(state.status_since) >= TCP_TIME_WAIT_TIMEOUT
+    {
+        return Ok(FlowMaintenancePlan::Close("time_wait_expired"));
+    }
+
+    if state.status == TcpFlowStatus::SynReceived
+        && now.saturating_duration_since(state.status_since) >= tcp.handshake_timeout
+    {
+        return Ok(FlowMaintenancePlan::Abort("handshake_timeout"));
+    }
+
+    if matches!(
+        state.status,
+        TcpFlowStatus::CloseWait
+            | TcpFlowStatus::FinWait1
+            | TcpFlowStatus::FinWait2
+            | TcpFlowStatus::Closing
+            | TcpFlowStatus::LastAck
+    ) && now.saturating_duration_since(state.status_since) >= tcp.half_close_timeout
+    {
+        return Ok(FlowMaintenancePlan::Abort("half_close_timeout"));
+    }
+
+    if state.status != TcpFlowStatus::TimeWait
+        && now.saturating_duration_since(state.last_seen) >= idle_timeout
+    {
+        return Ok(FlowMaintenancePlan::Abort("idle_timeout"));
+    }
+
+    if let Some(packet) = retransmit_due_segment(state)? {
+        note_congestion_event(state, true);
+        if retransmit_budget_exhausted(state, tcp) {
+            return Ok(FlowMaintenancePlan::Abort("retransmit_budget_exhausted"));
+        }
+        sync_flow_metrics_and_wake(state);
+        return Ok(FlowMaintenancePlan::SendPacket {
+            packet,
+            packet_metric: "tcp_retransmit",
+            event: "timeout_retransmit",
+        });
+    }
+
+    if let Some(packet) = maybe_emit_zero_window_probe(state)? {
+        sync_flow_metrics_and_wake(state);
+        return Ok(FlowMaintenancePlan::SendPacket {
+            packet,
+            packet_metric: "tcp_window_probe",
+            event: "zero_window_probe",
+        });
+    }
+
+    Ok(FlowMaintenancePlan::Wait(next_flow_deadline(
+        state,
+        tcp,
+        idle_timeout,
+    )))
+}
+
 impl TunTcpEngine {
     pub(crate) fn new(
         writer: SharedTunWriter,
@@ -136,7 +289,6 @@ impl TunTcpEngine {
                 tcp,
             }),
         };
-        engine.spawn_cleanup_loop();
         engine
     }
 
@@ -162,16 +314,6 @@ impl TunTcpEngine {
             Some(flow) => self.handle_existing_flow(flow, parsed).await,
             None => self.handle_new_flow(key, parsed).await,
         }
-    }
-
-    fn spawn_cleanup_loop(&self) {
-        let engine = self.clone();
-        tokio::spawn(async move {
-            loop {
-                sleep(TCP_FLOW_CLEANUP_INTERVAL).await;
-                engine.cleanup_idle_flows().await;
-            }
-        });
     }
 
     async fn lookup_flow(&self, key: &TcpFlowKey) -> Option<Arc<Mutex<TcpFlowState>>> {
@@ -230,6 +372,7 @@ impl TunTcpEngine {
         close_upstream_writer(upstream_writer).await;
         metrics::record_tun_tcp_event(&uplink_name, reason);
         debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
+        self.maybe_shrink_flow_table().await;
     }
 
     async fn handle_new_flow(&self, key: TcpFlowKey, packet: ParsedTcpPacket) -> Result<()> {
@@ -254,6 +397,7 @@ impl TunTcpEngine {
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let (close_signal, close_rx) = watch::channel(false);
+        let maintenance_notify = Arc::new(Notify::new());
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
@@ -261,6 +405,7 @@ impl TunTcpEngine {
             uplink_name: "connecting".to_string(),
             upstream_writer: None,
             close_signal,
+            maintenance_notify,
             status: TcpFlowStatus::SynReceived,
             client_next_seq: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
@@ -319,7 +464,7 @@ impl TunTcpEngine {
 
         let syn_ack = {
             let mut state = state.lock().await;
-            sync_flow_metrics(&mut state);
+            sync_flow_metrics_and_wake(&mut state);
             build_flow_syn_ack_packet(&state, server_isn, packet.sequence_number.wrapping_add(1))?
         };
         self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
@@ -328,6 +473,7 @@ impl TunTcpEngine {
             ip_family_from_version(packet.version),
             "tcp_synack",
         );
+        self.spawn_flow_maintenance(key.clone(), state.clone(), close_rx.clone());
         self.spawn_upstream_connect(
             key,
             target,
@@ -368,6 +514,95 @@ impl TunTcpEngine {
         metrics::record_tun_tcp_event(&uplink_name, "flow_created");
 
         Ok(())
+    }
+
+    fn spawn_flow_maintenance(
+        &self,
+        key: TcpFlowKey,
+        flow: Arc<Mutex<TcpFlowState>>,
+        mut close_rx: watch::Receiver<bool>,
+    ) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let maintenance_notify = { flow.lock().await.maintenance_notify.clone() };
+            loop {
+                let plan = {
+                    let mut state = flow.lock().await;
+                    if state.status == TcpFlowStatus::Closed {
+                        return;
+                    }
+                    plan_flow_maintenance(
+                        &mut state,
+                        &engine.inner.tcp,
+                        engine.inner.idle_timeout,
+                        Instant::now(),
+                    )
+                };
+
+                match plan {
+                    Ok(FlowMaintenancePlan::Abort(reason)) => {
+                        engine.abort_flow_with_rst(&key, reason).await;
+                        return;
+                    }
+                    Ok(FlowMaintenancePlan::Close(reason)) => {
+                        engine.close_flow(&key, reason).await;
+                        return;
+                    }
+                    Ok(FlowMaintenancePlan::SendPacket {
+                        packet,
+                        packet_metric,
+                        event,
+                    }) => {
+                        let ip_family = ip_family_from_version(key.version);
+                        if let Err(error) = engine.inner.writer.write_packet(&packet).await {
+                            warn!(
+                                error = %format!("{error:#}"),
+                                "failed to write maintenance TUN TCP packet"
+                            );
+                            engine.close_flow(&key, "write_tun_error").await;
+                            return;
+                        }
+                        let uplink_name = key_uplink_name(&flow).await;
+                        metrics::record_tun_tcp_event(&uplink_name, event);
+                        metrics::record_tun_packet("upstream_to_tun", ip_family, packet_metric);
+                    }
+                    Ok(FlowMaintenancePlan::Wait(deadline)) => match deadline {
+                        Some(deadline) if deadline <= Instant::now() => continue,
+                        Some(deadline) => {
+                            tokio::select! {
+                                changed = close_rx.changed() => {
+                                    if changed.is_err() || *close_rx.borrow() {
+                                        return;
+                                    }
+                                }
+                                _ = maintenance_notify.notified() => {}
+                                _ = sleep_until(tokio::time::Instant::from_std(deadline)) => {}
+                            }
+                        }
+                        None => {
+                            tokio::select! {
+                                changed = close_rx.changed() => {
+                                    if changed.is_err() || *close_rx.borrow() {
+                                        return;
+                                    }
+                                }
+                                _ = maintenance_notify.notified() => {}
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        warn!(
+                            error = %format!("{error:#}"),
+                            "failed to plan TUN TCP flow maintenance"
+                        );
+                        engine
+                            .abort_flow_with_rst(&key, "retransmit_build_error")
+                            .await;
+                        return;
+                    }
+                }
+            }
+        });
     }
 
     fn spawn_upstream_connect(
@@ -438,8 +673,8 @@ impl TunTcpEngine {
                 state.uplink_name = candidate.uplink.name.clone();
                 state.upstream_writer = Some(Arc::clone(&upstream_writer));
                 let pending_payloads = state.pending_client_data.drain(..).collect::<Vec<_>>();
-                let should_close_client_half = matches!(state.status, TcpFlowStatus::ClientClosed);
-                sync_flow_metrics(&mut state);
+                let should_close_client_half = client_fin_seen(state.status);
+                sync_flow_metrics_and_wake(&mut state);
                 (pending_payloads, should_close_client_half)
             };
             metrics::record_tun_tcp_async_connect("connected");
@@ -525,7 +760,7 @@ impl TunTcpEngine {
         if state.client_window > 0 {
             reset_zero_window_persist(&mut state);
         }
-        sync_flow_metrics(&mut state);
+        sync_flow_metrics_and_wake(&mut state);
 
         if state.status == TcpFlowStatus::SynReceived {
             if is_duplicate_syn(&packet, state.client_next_seq) {
@@ -547,6 +782,7 @@ impl TunTcpEngine {
                 && packet.sequence_number == state.client_next_seq
             {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
+                sync_flow_metrics_and_wake(&mut state);
             } else {
                 let syn_ack = build_flow_syn_ack_packet(
                     &state,
@@ -572,16 +808,20 @@ impl TunTcpEngine {
         } = ack_effect
         {
             note_ack_progress(&mut state, bytes_acked, rtt_sample);
+            sync_flow_metrics_and_wake(&mut state);
         }
 
         if (packet.flags & TCP_FLAG_ACK) != 0
-            && state.status == TcpFlowStatus::ServerClosed
+            && server_fin_awaiting_ack(state.status)
             && packet.acknowledgement_number >= state.server_seq
         {
-            let key = state.key.clone();
-            drop(state);
-            self.close_flow(&key, "server_closed_acked").await;
-            return Ok(());
+            if transition_on_server_fin_ack(&mut state) {
+                let key = state.key.clone();
+                drop(state);
+                self.close_flow(&key, "last_ack_acked").await;
+                return Ok(());
+            }
+            sync_flow_metrics_and_wake(&mut state);
         }
 
         if matches!(ack_effect, AckEffect::DuplicateThresholdReached) {
@@ -595,7 +835,7 @@ impl TunTcpEngine {
                         .await;
                     return Ok(());
                 }
-                sync_flow_metrics(&mut state);
+                sync_flow_metrics_and_wake(&mut state);
                 let key = state.key.clone();
                 drop(state);
                 self.write_tun_packet_or_close_flow(&key, &packet).await?;
@@ -604,7 +844,7 @@ impl TunTcpEngine {
             }
         }
 
-        if state.status == TcpFlowStatus::ServerClosed
+        if server_fin_awaiting_ack(state.status)
             && (packet.flags & TCP_FLAG_ACK) != 0
             && seq_lt(packet.acknowledgement_number, state.server_seq)
         {
@@ -622,6 +862,24 @@ impl TunTcpEngine {
             return Ok(());
         }
 
+        if client_fin_seen(state.status)
+            && (!packet.payload.is_empty()
+                || (packet.flags & TCP_FLAG_FIN) != 0
+                || seq_lt(packet.sequence_number, state.client_next_seq))
+        {
+            let ack = build_flow_ack_packet(
+                &state,
+                state.server_seq,
+                state.client_next_seq,
+                TCP_FLAG_ACK,
+            )?;
+            let key = state.key.clone();
+            drop(state);
+            self.write_tun_packet_or_close_flow(&key, &ack).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+            return Ok(());
+        }
+
         if seq_gt(packet.sequence_number, state.client_next_seq) {
             queue_future_segment_with_recv_window(&mut state, &packet);
             if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
@@ -631,7 +889,7 @@ impl TunTcpEngine {
                     .await;
                 return Ok(());
             }
-            sync_flow_metrics(&mut state);
+            sync_flow_metrics_and_wake(&mut state);
             let ack = build_flow_ack_packet(
                 &state,
                 state.server_seq,
@@ -687,10 +945,10 @@ impl TunTcpEngine {
                     drain_ready_buffered_segments_from_state(&mut state, &mut pending_payload);
             }
             ack_number = state.client_next_seq;
-            sync_flow_metrics(&mut state);
+            sync_flow_metrics_and_wake(&mut state);
         } else if (packet.flags & TCP_FLAG_ACK) != 0 && packet.payload.is_empty() {
             let flush = flush_server_output(&mut state)?;
-            sync_flow_metrics(&mut state);
+            sync_flow_metrics_and_wake(&mut state);
             drop(state);
             if flush.window_stalled {
                 metrics::record_tun_tcp_event(&key_uplink_name(&flow).await, "window_stall");
@@ -712,7 +970,7 @@ impl TunTcpEngine {
         }
 
         let flush = flush_server_output(&mut state)?;
-        sync_flow_metrics(&mut state);
+        sync_flow_metrics_and_wake(&mut state);
 
         drop(state);
 
@@ -739,7 +997,7 @@ impl TunTcpEngine {
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
                 state.pending_client_data.push_back(pending_payload.clone());
-                sync_flow_metrics(&mut state);
+                sync_flow_metrics_and_wake(&mut state);
             }
             should_send_ack = true;
         }
@@ -773,24 +1031,12 @@ impl TunTcpEngine {
         }
 
         if should_close_client_half {
-            let should_close = {
+            {
                 let mut state = flow.lock().await;
-                let should_close = state.status == TcpFlowStatus::ServerClosed;
-                set_flow_status(
-                    &mut state,
-                    if should_close {
-                        TcpFlowStatus::Closed
-                    } else {
-                        TcpFlowStatus::ClientClosed
-                    },
-                );
-                sync_flow_metrics(&mut state);
-                should_close
-            };
-            close_upstream_writer(upstream_writer).await;
-            if should_close {
-                self.close_flow(&key, "fin_exchange_complete").await;
+                transition_on_client_fin(&mut state);
+                sync_flow_metrics_and_wake(&mut state);
             }
+            close_upstream_writer(upstream_writer).await;
         }
 
         Ok(())
@@ -860,7 +1106,7 @@ impl TunTcpEngine {
                                     .map(|flush| flush.window_stalled)
                                     .unwrap_or(false),
                             );
-                            sync_flow_metrics(&mut state);
+                            sync_flow_metrics_and_wake(&mut state);
                             (
                                 flush,
                                 ip_family_from_version(key.version),
@@ -1014,14 +1260,15 @@ impl TunTcpEngine {
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
                         let flush = {
                             let mut state = flow.lock().await;
-                            if matches!(
-                                state.status,
-                                TcpFlowStatus::Closed | TcpFlowStatus::ServerClosed
-                            ) {
+                            if state.status == TcpFlowStatus::Closed
+                                || server_fin_sent(state.status)
+                            {
                                 Ok(ServerFlush::default())
                             } else {
                                 state.server_fin_pending = true;
-                                flush_server_output(&mut state)
+                                let flush = flush_server_output(&mut state);
+                                sync_flow_metrics_and_wake(&mut state);
+                                flush
                             }
                         };
 
@@ -1128,124 +1375,8 @@ impl TunTcpEngine {
             close_upstream_writer(upstream_writer).await;
             metrics::record_tun_tcp_event(&uplink_name, reason);
             debug!(flow_id, uplink = %uplink_name, reason, "closed TUN TCP flow");
+            self.maybe_shrink_flow_table().await;
         }
-    }
-
-    async fn cleanup_idle_flows(&self) {
-        let cutoff = Instant::now() - self.inner.idle_timeout;
-        let flows = {
-            let guard = self.inner.flows.lock().await;
-            guard
-                .iter()
-                .map(|(key, flow)| (key.clone(), Arc::clone(flow)))
-                .collect::<Vec<_>>()
-        };
-        let mut expired = Vec::new();
-        for (key, flow) in flows {
-            let state = flow.lock().await;
-            let handshake_expired = state.status == TcpFlowStatus::SynReceived
-                && state.status_since.elapsed() >= self.inner.tcp.handshake_timeout;
-            let half_close_expired = matches!(
-                state.status,
-                TcpFlowStatus::ClientClosed | TcpFlowStatus::ServerClosed
-            ) && state.status_since.elapsed()
-                >= self.inner.tcp.half_close_timeout;
-            let idle_expired = state.last_seen <= cutoff;
-            drop(state);
-            if handshake_expired || half_close_expired || idle_expired {
-                expired.push(key);
-            }
-        }
-
-        for key in expired {
-            let reason = if let Some(flow) = self.lookup_flow(&key).await {
-                let state = flow.lock().await;
-                if state.status == TcpFlowStatus::SynReceived
-                    && state.status_since.elapsed() >= self.inner.tcp.handshake_timeout
-                {
-                    "handshake_timeout"
-                } else if matches!(
-                    state.status,
-                    TcpFlowStatus::ClientClosed | TcpFlowStatus::ServerClosed
-                ) && state.status_since.elapsed() >= self.inner.tcp.half_close_timeout
-                {
-                    "half_close_timeout"
-                } else {
-                    "idle_timeout"
-                }
-            } else {
-                continue;
-            };
-            self.abort_flow_with_rst(&key, reason).await;
-        }
-
-        let flows = {
-            let guard = self.inner.flows.lock().await;
-            guard
-                .iter()
-                .map(|(key, flow)| (key.clone(), Arc::clone(flow)))
-                .collect::<Vec<_>>()
-        };
-        for (key, flow) in flows {
-            let packet_result = {
-                let mut state = flow.lock().await;
-                match retransmit_due_segment(&mut state) {
-                    Ok(Some(packet)) => {
-                        note_congestion_event(&mut state, true);
-                        sync_flow_metrics(&mut state);
-                        Ok(Some((packet, "tcp_retransmit")))
-                    }
-                    Ok(None) => match maybe_emit_zero_window_probe(&mut state) {
-                        Ok(Some(packet)) => {
-                            sync_flow_metrics(&mut state);
-                            Ok(Some((packet, "tcp_window_probe")))
-                        }
-                        Ok(None) => Ok(None),
-                        Err(error) => Err(error),
-                    },
-                    Err(error) => Err(error),
-                }
-            };
-            let packet = match packet_result {
-                Ok(packet) => packet,
-                Err(error) => {
-                    warn!(error = %format!("{error:#}"), "failed to build retransmitted TUN TCP packet");
-                    self.abort_flow_with_rst(&key, "retransmit_build_error")
-                        .await;
-                    continue;
-                }
-            };
-            if let Some((packet, outcome)) = packet {
-                if let Some(flow) = self.lookup_flow(&key).await {
-                    let state = flow.lock().await;
-                    if retransmit_budget_exhausted(&state, &self.inner.tcp) {
-                        drop(state);
-                        self.abort_flow_with_rst(&key, "retransmit_budget_exhausted")
-                            .await;
-                        continue;
-                    }
-                }
-                let ip_family = ip_family_from_version(key.version);
-                if let Err(error) = self.inner.writer.write_packet(&packet).await {
-                    warn!(error = %format!("{error:#}"), "failed to retransmit TUN TCP packet");
-                    self.close_flow(&key, "write_tun_error").await;
-                } else {
-                    let uplink_name = key_uplink_name(&flow).await;
-                    metrics::record_tun_tcp_event(
-                        &uplink_name,
-                        if outcome == "tcp_retransmit" {
-                            "timeout_retransmit"
-                        } else {
-                            "zero_window_probe"
-                        },
-                    );
-                    metrics::record_tun_packet("upstream_to_tun", ip_family, outcome);
-                }
-            }
-        }
-
-        let mut guard = self.inner.flows.lock().await;
-        maybe_shrink_hash_map(&mut guard);
     }
 
     async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {
@@ -1268,6 +1399,11 @@ impl TunTcpEngine {
             }
         }
         oldest.map(|(key, _)| key)
+    }
+
+    async fn maybe_shrink_flow_table(&self) {
+        let mut guard = self.inner.flows.lock().await;
+        maybe_shrink_hash_map(&mut guard);
     }
 }
 
@@ -1882,7 +2018,7 @@ mod tests {
     use futures_util::StreamExt;
     use tokio::fs::File;
     use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::{Mutex, mpsc};
+    use tokio::sync::{Mutex, Notify, mpsc};
     use tokio_tungstenite::{MaybeTlsStream, accept_async, connect_async};
     use url::Url;
 
@@ -2263,6 +2399,336 @@ mod tests {
         let fin = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
         assert_eq!(fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
         assert!(fin.payload.is_empty());
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40004;
+        let remote_port = 443;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1000,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                1001,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        upstream.send_chunk(b"AB").await;
+        let first_data = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(first_data.payload, b"AB");
+
+        let key = super::TcpFlowKey {
+            version: super::IpVersion::V4,
+            client_ip: client_ip.into(),
+            client_port,
+            remote_ip: remote_ip.into(),
+            remote_port,
+        };
+        let flow = engine
+            .inner
+            .flows
+            .lock()
+            .await
+            .get(&key)
+            .cloned()
+            .expect("flow must exist");
+        {
+            let mut state = flow.lock().await;
+            state.retransmission_timeout = Duration::from_millis(200);
+            state.maintenance_notify.notify_one();
+        }
+
+        let retransmitted = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(retransmitted.sequence_number, first_data.sequence_number);
+        assert_eq!(retransmitted.payload, b"AB");
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_client_fin_transitions_through_last_ack() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40005;
+        let remote_port = 80;
+
+        let key = super::TcpFlowKey {
+            version: super::IpVersion::V4,
+            client_ip: client_ip.into(),
+            client_port,
+            remote_ip: remote_ip.into(),
+            remote_port,
+        };
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                500,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                501,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                501,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK | TCP_FLAG_FIN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let fin_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(fin_ack.flags, TCP_FLAG_ACK);
+        assert_eq!(fin_ack.acknowledgement_number, 502);
+        let flow = engine
+            .inner
+            .flows
+            .lock()
+            .await
+            .get(&key)
+            .cloned()
+            .expect("flow must remain after client FIN");
+        assert_eq!(flow.lock().await.status, super::TcpFlowStatus::CloseWait);
+
+        upstream.close().await;
+        let server_fin = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(server_fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
+        let flow = engine
+            .inner
+            .flows
+            .lock()
+            .await
+            .get(&key)
+            .cloned()
+            .expect("flow must remain in LAST_ACK");
+        assert_eq!(flow.lock().await.status, super::TcpFlowStatus::LastAck);
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                502,
+                server_next_seq.wrapping_add(1),
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(engine.inner.flows.lock().await.get(&key).is_none());
+    }
+
+    #[tokio::test]
+    async fn tun_tcp_server_fin_transitions_through_time_wait() {
+        let upstream = TestTcpUpstream::start().await;
+        let manager = build_test_manager(upstream.url()).await;
+        let (writer, mut capture) = TunCapture::new().await;
+        let engine = super::TunTcpEngine::new(
+            writer,
+            manager,
+            128,
+            Duration::from_secs(60),
+            test_tun_tcp_config(),
+        );
+
+        let client_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let remote_ip = Ipv4Addr::new(8, 8, 8, 8);
+        let client_port = 40006;
+        let remote_port = 80;
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                700,
+                0,
+                4096,
+                TCP_FLAG_SYN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let syn_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        let server_next_seq = syn_ack.sequence_number.wrapping_add(1);
+        let _ = upstream.expect_target().await;
+
+        let time_wait_key = super::TcpFlowKey {
+            version: super::IpVersion::V4,
+            client_ip: client_ip.into(),
+            client_port,
+            remote_ip: remote_ip.into(),
+            remote_port,
+        };
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                701,
+                server_next_seq,
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+
+        upstream.close().await;
+        let server_fin = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(server_fin.flags, TCP_FLAG_FIN | TCP_FLAG_ACK);
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                701,
+                server_next_seq.wrapping_add(1),
+                4096,
+                TCP_FLAG_ACK,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let flow = engine
+            .inner
+            .flows
+            .lock()
+            .await
+            .get(&time_wait_key)
+            .cloned()
+            .expect("flow must remain in FIN_WAIT_2");
+        assert_eq!(flow.lock().await.status, super::TcpFlowStatus::FinWait2);
+
+        engine
+            .handle_packet(&build_client_packet(
+                client_ip,
+                remote_ip,
+                client_port,
+                remote_port,
+                701,
+                server_next_seq.wrapping_add(1),
+                4096,
+                TCP_FLAG_ACK | TCP_FLAG_FIN,
+                &[],
+            ))
+            .await
+            .unwrap();
+        let final_ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
+        assert_eq!(final_ack.flags, TCP_FLAG_ACK);
+        assert_eq!(final_ack.acknowledgement_number, 702);
+
+        let flow = engine
+            .inner
+            .flows
+            .lock()
+            .await
+            .get(&time_wait_key)
+            .cloned()
+            .expect("flow must stay alive in TIME_WAIT");
+        {
+            let mut state = flow.lock().await;
+            assert_eq!(state.status, super::TcpFlowStatus::TimeWait);
+            state.status_since =
+                Instant::now() - super::TCP_TIME_WAIT_TIMEOUT - Duration::from_millis(1);
+            state.maintenance_notify.notify_one();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            engine
+                .inner
+                .flows
+                .lock()
+                .await
+                .get(&time_wait_key)
+                .is_none()
+        );
     }
 
     #[test]
@@ -3102,6 +3568,7 @@ mod tests {
                 writer
             }))),
             close_signal,
+            maintenance_notify: Arc::new(Notify::new()),
             status: super::TcpFlowStatus::Established,
             client_next_seq: 100,
             client_window_scale: 0,
