@@ -1,10 +1,10 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     fs,
     net::SocketAddr,
     path::Path,
     sync::{
-        Arc, OnceLock,
+        Arc, OnceLock, RwLock,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
 };
@@ -22,7 +22,7 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use futures_util::{SinkExt, StreamExt, stream::FuturesUnordered};
+use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder as HyperBuilder,
@@ -37,7 +37,7 @@ use sockudo_ws::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
-    sync::{Semaphore, mpsc},
+    sync::mpsc,
     task::JoinSet,
     time::{Duration, timeout},
 };
@@ -78,6 +78,7 @@ const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
 const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
+const UDP_DNS_CACHE_TTL_SECS: u64 = 30;
 const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
 
@@ -87,6 +88,7 @@ struct AppState {
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 }
 
@@ -94,6 +96,78 @@ struct AppState {
 struct TransportRoute {
     users: Arc<[UserKey]>,
     candidate_users: Arc<[String]>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct UdpDnsCacheKey {
+    host: String,
+    port: u16,
+    prefer_ipv4_upstream: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct UdpDnsCacheEntry {
+    resolved: SocketAddr,
+    expires_at: std::time::Instant,
+}
+
+struct UdpDnsCache {
+    entries: RwLock<HashMap<UdpDnsCacheKey, UdpDnsCacheEntry>>,
+    ttl: Duration,
+}
+
+impl UdpDnsCache {
+    fn new(ttl: Duration) -> Arc<Self> {
+        Arc::new(Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl,
+        })
+    }
+
+    fn lookup(&self, host: &str, port: u16, prefer_ipv4_upstream: bool) -> Option<SocketAddr> {
+        let key = UdpDnsCacheKey {
+            host: host.to_owned(),
+            port,
+            prefer_ipv4_upstream,
+        };
+        let now = std::time::Instant::now();
+        if let Some(entry) = self
+            .entries
+            .read()
+            .expect("udp dns cache poisoned")
+            .get(&key)
+            .copied()
+        {
+            if entry.expires_at > now {
+                return Some(entry.resolved);
+            }
+        }
+
+        let mut entries = self.entries.write().expect("udp dns cache poisoned");
+        if let Some(entry) = entries.get(&key).copied() {
+            if entry.expires_at > now {
+                return Some(entry.resolved);
+            }
+            entries.remove(&key);
+        }
+        None
+    }
+
+    fn store(&self, host: &str, port: u16, prefer_ipv4_upstream: bool, resolved: SocketAddr) {
+        let key = UdpDnsCacheKey {
+            host: host.to_owned(),
+            port,
+            prefer_ipv4_upstream,
+        };
+        let entry = UdpDnsCacheEntry {
+            resolved,
+            expires_at: std::time::Instant::now() + self.ttl,
+        };
+        self.entries
+            .write()
+            .expect("udp dns cache poisoned")
+            .insert(key, entry);
+    }
 }
 
 pub async fn run(config: Config) -> Result<()> {
@@ -104,11 +178,13 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
+    let udp_dns_cache = UdpDnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let app = build_app(
         tcp_routes.clone(),
         udp_routes.clone(),
         metrics.clone(),
         Arc::clone(&nat_table),
+        Arc::clone(&udp_dns_cache),
         config.prefer_ipv4_upstream,
     );
     let listener = if let Some(listen) = config.listen {
@@ -198,6 +274,7 @@ pub async fn run(config: Config) -> Result<()> {
         let udp_routes = udp_routes.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
+        let udp_dns_cache = Arc::clone(&udp_dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         tasks.spawn(async move {
             serve_h3_server(
@@ -206,6 +283,7 @@ pub async fn run(config: Config) -> Result<()> {
                 udp_routes,
                 metrics,
                 nat_table,
+                udp_dns_cache,
                 prefer_ipv4_upstream,
             )
             .await
@@ -227,9 +305,18 @@ pub async fn run(config: Config) -> Result<()> {
         let users = users.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
+        let udp_dns_cache = Arc::clone(&udp_dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         tasks.spawn(async move {
-            serve_ss_udp_socket(socket, users, metrics, nat_table, prefer_ipv4_upstream).await
+            serve_ss_udp_socket(
+                socket,
+                users,
+                metrics,
+                nat_table,
+                udp_dns_cache,
+                prefer_ipv4_upstream,
+            )
+            .await
         });
     }
 
@@ -323,6 +410,7 @@ async fn udp_websocket_upgrade(
             path.clone(),
             route.candidate_users,
             nat_table,
+            state.udp_dns_cache.clone(),
             state.prefer_ipv4_upstream,
         )
         .await
@@ -598,6 +686,7 @@ async fn handle_udp_connection(
     path: String,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
@@ -605,7 +694,7 @@ async fn handle_udp_connection(
     let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<Message>(8);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
     let cached_user_index = Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY));
-    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
+    let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         let mut ctrl_open = true;
@@ -653,67 +742,84 @@ async fn handle_udp_connection(
         Ok::<(), anyhow::Error>(())
     });
 
-    while let Some(message) = ws_receiver.next().await {
-        match message.context("websocket receive failure")? {
-            Message::Binary(data) => {
-                metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
-                let permit = match task_limit.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        warn!("udp concurrent relay limit reached, dropping datagram");
-                        continue;
+    let mut loop_result = Ok(());
+    loop {
+        tokio::select! {
+            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
+            message = ws_receiver.next() => {
+                let Some(message) = message else { break };
+                match message.context("websocket receive failure") {
+                    Ok(Message::Binary(data)) => {
+                        metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
+                        if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            warn!("udp concurrent relay limit reached, dropping datagram");
+                            continue;
+                        }
+                        let tx = outbound_data_tx.clone();
+                        let users = users.clone();
+                        let metrics = metrics.clone();
+                        let path = path.clone();
+                        let candidate_users = candidate_users.clone();
+                        let udp_session_recorded = udp_session_recorded.clone();
+                        let cached_user_index = Arc::clone(&cached_user_index);
+                        let nat_table = Arc::clone(&nat_table);
+                        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                        in_flight.push(async move {
+                            if let Err(error) = handle_udp_datagram(
+                                nat_table,
+                                users,
+                                data,
+                                tx,
+                                metrics,
+                                protocol,
+                                path,
+                                candidate_users,
+                                udp_session_recorded,
+                                cached_user_index,
+                                udp_dns_cache,
+                                prefer_ipv4_upstream,
+                            )
+                            .await
+                            {
+                                warn!(?error, "udp datagram relay failed");
+                            }
+                        }.boxed());
                     }
-                };
-                let tx = outbound_data_tx.clone();
-                let users = users.clone();
-                let metrics = metrics.clone();
-                let path = path.clone();
-                let candidate_users = candidate_users.clone();
-                let udp_session_recorded = udp_session_recorded.clone();
-                let cached_user_index = Arc::clone(&cached_user_index);
-                let nat_table = Arc::clone(&nat_table);
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(error) = handle_udp_datagram(
-                        nat_table,
-                        users,
-                        data,
-                        tx,
-                        metrics,
-                        protocol,
-                        path,
-                        candidate_users,
-                        udp_session_recorded,
-                        cached_user_index,
-                        prefer_ipv4_upstream,
-                    )
-                    .await
-                    {
-                        warn!(?error, "udp datagram relay failed");
+                    Ok(Message::Close(_)) => {
+                        debug!("client closed udp websocket");
+                        break;
                     }
-                });
+                    Ok(Message::Ping(payload)) => {
+                        if let Err(error) = outbound_ctrl_tx
+                            .send(Message::Pong(payload))
+                            .await
+                            .context("failed to queue websocket pong")
+                        {
+                            loop_result = Err(error);
+                            break;
+                        }
+                    }
+                    Ok(Message::Pong(_)) => {}
+                    Ok(Message::Text(_)) => {
+                        loop_result = Err(anyhow!("text websocket frames are not supported"));
+                        break;
+                    }
+                    Err(error) => {
+                        loop_result = Err(error);
+                        break;
+                    }
+                }
             }
-            Message::Close(_) => {
-                debug!("client closed udp websocket");
-                break;
-            }
-            Message::Ping(payload) => {
-                outbound_ctrl_tx
-                    .send(Message::Pong(payload))
-                    .await
-                    .context("failed to queue websocket pong")?;
-            }
-            Message::Pong(_) => {}
-            Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }
 
+    while in_flight.next().await.is_some() {}
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
-    Ok(())
+    loop_result
 }
 
 async fn handle_tcp_h3_connection(
@@ -948,6 +1054,7 @@ async fn handle_udp_h3_connection(
     path: String,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
@@ -955,7 +1062,7 @@ async fn handle_udp_h3_connection(
     let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
     let cached_user_index = Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY));
-    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
+    let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
         let mut ctrl_open = true;
@@ -1004,71 +1111,88 @@ async fn handle_udp_h3_connection(
         Ok::<(), anyhow::Error>(())
     });
 
-    while let Some(message) = ws_reader.next().await {
-        match message.context("websocket receive failure")? {
-            H3Message::Binary(data) => {
-                metrics.record_websocket_binary_frame(
-                    Transport::Udp,
-                    Protocol::Http3,
-                    "in",
-                    data.len(),
-                );
-                let permit = match task_limit.clone().try_acquire_owned() {
-                    Ok(p) => p,
-                    Err(_) => {
-                        warn!("udp concurrent relay limit reached, dropping datagram");
-                        continue;
+    let mut loop_result = Ok(());
+    loop {
+        tokio::select! {
+            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
+            message = ws_reader.next() => {
+                let Some(message) = message else { break };
+                match message.context("websocket receive failure") {
+                    Ok(H3Message::Binary(data)) => {
+                        metrics.record_websocket_binary_frame(
+                            Transport::Udp,
+                            Protocol::Http3,
+                            "in",
+                            data.len(),
+                        );
+                        if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            warn!("udp concurrent relay limit reached, dropping datagram");
+                            continue;
+                        }
+                        let tx = outbound_data_tx.clone();
+                        let users = users.clone();
+                        let metrics = metrics.clone();
+                        let path = path.clone();
+                        let candidate_users = candidate_users.clone();
+                        let udp_session_recorded = udp_session_recorded.clone();
+                        let cached_user_index = Arc::clone(&cached_user_index);
+                        let nat_table = Arc::clone(&nat_table);
+                        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                        in_flight.push(async move {
+                            if let Err(error) = handle_udp_h3_datagram(
+                                nat_table,
+                                users,
+                                data,
+                                tx,
+                                metrics,
+                                path,
+                                candidate_users,
+                                udp_session_recorded,
+                                cached_user_index,
+                                udp_dns_cache,
+                                prefer_ipv4_upstream,
+                            )
+                            .await
+                            {
+                                warn!(?error, "udp datagram relay failed");
+                            }
+                        }.boxed());
                     }
-                };
-                let tx = outbound_data_tx.clone();
-                let users = users.clone();
-                let metrics = metrics.clone();
-                let path = path.clone();
-                let candidate_users = candidate_users.clone();
-                let udp_session_recorded = udp_session_recorded.clone();
-                let cached_user_index = Arc::clone(&cached_user_index);
-                let nat_table = Arc::clone(&nat_table);
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(error) = handle_udp_h3_datagram(
-                        nat_table,
-                        users,
-                        data,
-                        tx,
-                        metrics,
-                        path,
-                        candidate_users,
-                        udp_session_recorded,
-                        cached_user_index,
-                        prefer_ipv4_upstream,
-                    )
-                    .await
-                    {
-                        warn!(?error, "udp datagram relay failed");
+                    Ok(H3Message::Close(_)) => {
+                        debug!("client closed udp websocket");
+                        break;
                     }
-                });
+                    Ok(H3Message::Ping(payload)) => {
+                        if let Err(error) = outbound_ctrl_tx
+                            .send(H3Message::Pong(payload))
+                            .await
+                            .context("failed to queue websocket pong")
+                        {
+                            loop_result = Err(error);
+                            break;
+                        }
+                    }
+                    Ok(H3Message::Pong(_)) => {}
+                    Ok(H3Message::Text(_)) => {
+                        loop_result = Err(anyhow!("text websocket frames are not supported"));
+                        break;
+                    }
+                    Err(error) => {
+                        loop_result = Err(error);
+                        break;
+                    }
+                }
             }
-            H3Message::Close(_) => {
-                debug!("client closed udp websocket");
-                break;
-            }
-            H3Message::Ping(payload) => {
-                outbound_ctrl_tx
-                    .send(H3Message::Pong(payload))
-                    .await
-                    .context("failed to queue websocket pong")?;
-            }
-            H3Message::Pong(_) => {}
-            H3Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }
 
+    while in_flight.next().await.is_some() {}
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
     writer_task
         .await
         .context("websocket writer task join failed")??;
-    Ok(())
+    loop_result
 }
 
 async fn relay_upstream_to_client(
@@ -1141,6 +1265,7 @@ async fn handle_udp_datagram(
     candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
     cached_user_index: Arc<AtomicUsize>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -1184,7 +1309,8 @@ async fn handle_udp_datagram(
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
+    let resolved =
+        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -1273,6 +1399,7 @@ async fn handle_udp_h3_datagram(
     candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
     cached_user_index: Arc<AtomicUsize>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -1316,7 +1443,8 @@ async fn handle_udp_h3_datagram(
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
+    let resolved =
+        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -1405,6 +1533,24 @@ async fn resolve_target(target: &TargetAddr, prefer_ipv4_upstream: bool) -> Resu
                 target.display_host_port()
             )
         })
+}
+
+async fn resolve_udp_target(
+    udp_dns_cache: &UdpDnsCache,
+    target: &TargetAddr,
+    prefer_ipv4_upstream: bool,
+) -> Result<SocketAddr> {
+    match target {
+        TargetAddr::Domain(host, port) => {
+            if let Some(resolved) = udp_dns_cache.lookup(host, *port, prefer_ipv4_upstream) {
+                return Ok(resolved);
+            }
+            let resolved = resolve_target(target, prefer_ipv4_upstream).await?;
+            udp_dns_cache.store(host, *port, prefer_ipv4_upstream, resolved);
+            Ok(resolved)
+        }
+        TargetAddr::Socket(_) => resolve_target(target, prefer_ipv4_upstream).await,
+    }
 }
 
 async fn resolve_target_addrs(
@@ -1806,48 +1952,49 @@ async fn serve_ss_udp_socket(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
-    let task_limit = Arc::new(Semaphore::new(UDP_MAX_CONCURRENT_RELAY_TASKS));
+    let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let mut buffer = vec![0_u8; 65_535];
     loop {
-        let (read, client_addr) = socket
-            .recv_from(&mut buffer)
-            .await
-            .context("failed to receive shadowsocks udp packet")?;
-        debug!(
-            client_addr = %client_addr,
-            encrypted_bytes = read,
-            "socket udp received encrypted datagram"
-        );
-        let permit = match task_limit.clone().try_acquire_owned() {
-            Ok(p) => p,
-            Err(_) => {
-                warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
-                continue;
+        tokio::select! {
+            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
+            recv = socket.recv_from(&mut buffer) => {
+                let (read, client_addr) = recv.context("failed to receive shadowsocks udp packet")?;
+                debug!(
+                    client_addr = %client_addr,
+                    encrypted_bytes = read,
+                    "socket udp received encrypted datagram"
+                );
+                if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                    warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
+                    continue;
+                }
+                let data = Bytes::copy_from_slice(&buffer[..read]);
+                let users = users.clone();
+                let metrics = metrics.clone();
+                let nat_table = Arc::clone(&nat_table);
+                let socket = Arc::clone(&socket);
+                let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                in_flight.push(async move {
+                    if let Err(error) = handle_ss_udp_datagram(
+                        nat_table,
+                        users,
+                        data,
+                        client_addr,
+                        socket,
+                        metrics,
+                        udp_dns_cache,
+                        prefer_ipv4_upstream,
+                    )
+                    .await
+                    {
+                        warn!(%client_addr, ?error, "socket udp datagram relay failed");
+                    }
+                }.boxed());
             }
-        };
-        let data = Bytes::copy_from_slice(&buffer[..read]);
-        let users = users.clone();
-        let metrics = metrics.clone();
-        let nat_table = Arc::clone(&nat_table);
-        let socket = Arc::clone(&socket);
-        tokio::spawn(async move {
-            let _permit = permit;
-            if let Err(error) = handle_ss_udp_datagram(
-                nat_table,
-                users,
-                data,
-                client_addr,
-                socket,
-                metrics,
-                prefer_ipv4_upstream,
-            )
-            .await
-            {
-                warn!(%client_addr, ?error, "socket udp datagram relay failed");
-            }
-        });
+        }
     }
 }
 
@@ -1858,6 +2005,7 @@ async fn handle_ss_udp_datagram(
     client_addr: SocketAddr,
     outbound_socket: Arc<UdpSocket>,
     metrics: Arc<Metrics>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -1890,7 +2038,8 @@ async fn handle_ss_udp_datagram(
         "socket udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_target(&target, prefer_ipv4_upstream).await?;
+    let resolved =
+        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
     debug!(
         user = packet.user.id(),
         client_addr = %client_addr,
@@ -2095,6 +2244,7 @@ fn build_app(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Router {
     let state = AppState {
@@ -2102,6 +2252,7 @@ fn build_app(
         udp_routes: udp_routes.clone(),
         metrics,
         nat_table,
+        udp_dns_cache,
         prefer_ipv4_upstream,
     };
     let mut router = Router::new();
@@ -2254,6 +2405,7 @@ async fn serve_h3_server(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
@@ -2273,6 +2425,7 @@ async fn serve_h3_server(
                 let tcp_paths = tcp_paths.clone();
                 let udp_paths = udp_paths.clone();
                 let nat_table = Arc::clone(&nat_table);
+                let udp_dns_cache = Arc::clone(&udp_dns_cache);
                 async move {
                     if tcp_paths.contains(req.path.as_str()) {
                         let route = tcp_routes
@@ -2322,6 +2475,7 @@ async fn serve_h3_server(
                             req.path.clone(),
                             route.candidate_users,
                             nat_table,
+                            udp_dns_cache,
                             prefer_ipv4_upstream,
                         )
                         .await
@@ -2527,9 +2681,9 @@ mod tests {
     use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
 
     use super::{
-        build_app, build_transport_route_map, build_users, connect_tcp_addrs, connect_tcp_target,
-        order_tcp_connect_addrs, serve_h3_server, serve_listener, serve_ss_tcp_listener,
-        serve_ss_udp_socket,
+        UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_addrs,
+        connect_tcp_target, order_tcp_connect_addrs, serve_h3_server, serve_listener,
+        serve_ss_tcp_listener, serve_ss_udp_socket,
     };
     use crate::config::{CipherKind, Config, UserEntry};
     use crate::crypto::{
@@ -2590,6 +2744,18 @@ mod tests {
                 SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
             ]
         );
+    }
+
+    #[test]
+    fn udp_dns_cache_returns_fresh_entries_and_expires() {
+        let cache = UdpDnsCache::new(std::time::Duration::from_millis(5));
+        let resolved = SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53));
+
+        cache.store("dns.google", 53, false, resolved);
+        assert_eq!(cache.lookup("dns.google", 53, false), Some(resolved));
+
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        assert_eq!(cache.lookup("dns.google", 53, false), None);
     }
 
     #[tokio::test]
@@ -2658,11 +2824,13 @@ mod tests {
         let config = sample_config(addr);
         let users = build_users(&config)?;
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let app = build_app(
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
+            udp_dns_cache,
             false,
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
@@ -2759,8 +2927,18 @@ mod tests {
         let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let server = tokio::spawn(async move {
-            serve_h3_server(server, tcp_routes, udp_routes, metrics, nat_table, false).await
+            serve_h3_server(
+                server,
+                tcp_routes,
+                udp_routes,
+                metrics,
+                nat_table,
+                udp_dns_cache,
+                false,
+            )
+            .await
         });
 
         let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -2816,8 +2994,9 @@ mod tests {
         let user = users[0].clone();
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let server = tokio::spawn(async move {
-            serve_ss_udp_socket(listener, users, metrics, nat_table, false).await
+            serve_ss_udp_socket(listener, users, metrics, nat_table, udp_dns_cache, false).await
         });
 
         let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
