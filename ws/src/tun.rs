@@ -12,19 +12,12 @@ use crate::config::TunConfig;
 use crate::metrics;
 use crate::tun_tcp::TunTcpEngine;
 use crate::tun_udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
+use crate::tun_wire::{
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_ICMPV6,
+    IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16, ipv6_payload_checksum,
+    locate_ipv6_upper_layer,
+};
 use crate::uplink::UplinkManager;
-
-const IPV4_HEADER_LEN: usize = 20;
-const IPV6_HEADER_LEN: usize = 40;
-const IPV6_NEXT_HEADER_HOP_BY_HOP: u8 = 0;
-const IPV6_NEXT_HEADER_TCP: u8 = 6;
-const IPV6_NEXT_HEADER_ROUTING: u8 = 43;
-const IPV6_NEXT_HEADER_FRAGMENT: u8 = 44;
-const IPV6_NEXT_HEADER_AUTH: u8 = 51;
-const IPV6_NEXT_HEADER_ICMPV6: u8 = 58;
-const IPV6_NEXT_HEADER_DESTINATION_OPTIONS: u8 = 60;
-const IPV6_NEXT_HEADER_NONE: u8 = 59;
-const IPV6_NEXT_HEADER_UDP: u8 = 17;
 
 #[derive(Clone)]
 pub(crate) struct SharedTunWriter {
@@ -303,56 +296,6 @@ fn classify_ipv4_icmp_packet(packet: &[u8], header_len: usize) -> Result<PacketD
     })
 }
 
-fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize)> {
-    if packet.len() < IPV6_HEADER_LEN {
-        bail!("short IPv6 packet");
-    }
-    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    let total_len = IPV6_HEADER_LEN + payload_len;
-    if packet.len() < total_len {
-        bail!("truncated IPv6 packet");
-    }
-
-    let mut next_header = packet[6];
-    let mut offset = IPV6_HEADER_LEN;
-    loop {
-        match next_header {
-            IPV6_NEXT_HEADER_TCP
-            | IPV6_NEXT_HEADER_UDP
-            | IPV6_NEXT_HEADER_ICMPV6
-            | IPV6_NEXT_HEADER_FRAGMENT
-            | IPV6_NEXT_HEADER_NONE => return Ok((next_header, offset, total_len)),
-            IPV6_NEXT_HEADER_HOP_BY_HOP
-            | IPV6_NEXT_HEADER_ROUTING
-            | IPV6_NEXT_HEADER_DESTINATION_OPTIONS => {
-                if offset + 2 > total_len {
-                    bail!("truncated IPv6 extension header");
-                }
-                let header_len = (usize::from(packet[offset + 1]) + 1) * 8;
-                if header_len < 8 || offset + header_len > total_len {
-                    bail!("invalid IPv6 extension header length");
-                }
-                next_header = packet[offset];
-                offset += header_len;
-            }
-            IPV6_NEXT_HEADER_AUTH => {
-                if offset + 2 > total_len {
-                    bail!("truncated IPv6 authentication header");
-                }
-                let header_len = (usize::from(packet[offset + 1]) + 2) * 4;
-                if header_len < 8 || offset + header_len > total_len {
-                    bail!("invalid IPv6 authentication header length");
-                }
-                next_header = packet[offset];
-                offset += header_len;
-            }
-            _ => {
-                return Ok((next_header, offset, total_len));
-            }
-        }
-    }
-}
-
 fn classify_ipv6_icmp_packet(packet: &[u8], payload_offset: usize) -> Result<PacketDisposition> {
     let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
     let total_len = IPV6_HEADER_LEN + payload_len;
@@ -444,30 +387,8 @@ fn build_ipv6_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
     Ok(reply)
 }
 
-fn checksum16(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    for chunk in data.chunks(2) {
-        let value = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]]) as u32
-        } else {
-            u16::from_be_bytes([chunk[0], 0]) as u32
-        };
-        sum = sum.wrapping_add(value);
-    }
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
 fn icmpv6_checksum(source: Ipv6Addr, destination: Ipv6Addr, icmp_packet: &[u8]) -> u16 {
-    let mut pseudo = Vec::with_capacity(40 + icmp_packet.len() + 1);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination.octets());
-    pseudo.extend_from_slice(&(icmp_packet.len() as u32).to_be_bytes());
-    pseudo.extend_from_slice(&[0, 0, 0, 58]);
-    pseudo.extend_from_slice(icmp_packet);
-    checksum16(&pseudo)
+    ipv6_payload_checksum(source, destination, IPV6_NEXT_HEADER_ICMPV6, icmp_packet)
 }
 
 fn ip_family_name(version: u8) -> &'static str {

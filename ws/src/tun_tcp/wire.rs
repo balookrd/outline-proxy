@@ -3,23 +3,16 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use anyhow::{Result, anyhow, bail};
 
 use super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN};
+use crate::tun_wire::{
+    checksum16, ipv4_payload_checksum, ipv6_payload_checksum, locate_ipv6_upper_layer,
+};
 
-pub(crate) const IPV4_HEADER_LEN: usize = 20;
-pub(crate) const IPV6_HEADER_LEN: usize = 40;
 const TCP_HEADER_LEN: usize = 20;
-pub(super) const IPV6_NEXT_HEADER_HOP_BY_HOP: u8 = 0;
-pub(super) const IPV6_NEXT_HEADER_TCP: u8 = 6;
-pub(super) const IPV6_NEXT_HEADER_ROUTING: u8 = 43;
-pub(super) const IPV6_NEXT_HEADER_FRAGMENT: u8 = 44;
-pub(super) const IPV6_NEXT_HEADER_AUTH: u8 = 51;
-pub(super) const IPV6_NEXT_HEADER_DESTINATION_OPTIONS: u8 = 60;
-pub(super) const IPV6_NEXT_HEADER_NONE: u8 = 59;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum IpVersion {
-    V4,
-    V6,
-}
+#[cfg(test)]
+pub(super) use crate::tun_wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
+pub(super) use crate::tun_wire::{
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_TCP, IpVersion,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct ParsedTcpPacket {
@@ -100,12 +93,10 @@ fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
     if packet.len() < IPV6_HEADER_LEN + TCP_HEADER_LEN {
         bail!("short IPv6 TCP packet");
     }
-    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    let total_len = IPV6_HEADER_LEN + payload_len;
-    if packet.len() < total_len {
-        bail!("truncated IPv6 TCP packet");
+    let (next_header, segment_offset, total_len) = locate_ipv6_upper_layer(packet)?;
+    if next_header == IPV6_NEXT_HEADER_FRAGMENT {
+        bail!("IPv6 fragments are not supported on TUN TCP path");
     }
-    let (next_header, segment_offset) = locate_ipv6_tcp_segment(packet, total_len)?;
     if next_header != IPV6_NEXT_HEADER_TCP {
         bail!("expected IPv6 TCP packet");
     }
@@ -119,50 +110,6 @@ fn parse_ipv6_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
         IpAddr::V6(Ipv6Addr::from(dst)),
         &packet[segment_offset..total_len],
     )
-}
-
-fn locate_ipv6_tcp_segment(packet: &[u8], total_len: usize) -> Result<(u8, usize)> {
-    let mut next_header = packet[6];
-    let mut offset = IPV6_HEADER_LEN;
-
-    loop {
-        match next_header {
-            IPV6_NEXT_HEADER_TCP => return Ok((next_header, offset)),
-            IPV6_NEXT_HEADER_HOP_BY_HOP
-            | IPV6_NEXT_HEADER_ROUTING
-            | IPV6_NEXT_HEADER_DESTINATION_OPTIONS => {
-                if offset + 2 > total_len {
-                    bail!("truncated IPv6 extension header");
-                }
-                let header_len = (usize::from(packet[offset + 1]) + 1) * 8;
-                if header_len < 8 || offset + header_len > total_len {
-                    bail!("invalid IPv6 extension header length");
-                }
-                next_header = packet[offset];
-                offset += header_len;
-            }
-            IPV6_NEXT_HEADER_AUTH => {
-                if offset + 2 > total_len {
-                    bail!("truncated IPv6 authentication header");
-                }
-                let header_len = (usize::from(packet[offset + 1]) + 2) * 4;
-                if header_len < 8 || offset + header_len > total_len {
-                    bail!("invalid IPv6 authentication header length");
-                }
-                next_header = packet[offset];
-                offset += header_len;
-            }
-            IPV6_NEXT_HEADER_FRAGMENT => {
-                bail!("IPv6 fragments are not supported on TUN TCP path");
-            }
-            IPV6_NEXT_HEADER_NONE => {
-                bail!("expected IPv6 TCP packet");
-            }
-            _ => {
-                bail!("IPv6 extension headers are not supported on TUN TCP path");
-            }
-        }
-    }
 }
 
 fn parse_tcp_segment(
@@ -214,10 +161,10 @@ fn validate_tcp_checksum(
 ) -> Result<()> {
     let checksum_valid = match (version, source_ip, destination_ip) {
         (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
-            tcp_checksum_ipv4(source_ip, destination_ip, segment) == 0
+            ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
         }
         (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
-            tcp_checksum_ipv6(source_ip, destination_ip, segment) == 0
+            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
         }
         _ => bail!("unexpected address family while validating TCP checksum"),
     };
@@ -423,7 +370,7 @@ fn build_ipv4_tcp_packet(
         payload,
     );
 
-    let tcp_checksum = tcp_checksum_ipv4(source_ip, destination_ip, tcp);
+    let tcp_checksum = ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp);
     tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
     let header_checksum = checksum16(&packet[..IPV4_HEADER_LEN]);
     packet[10..12].copy_from_slice(&header_checksum.to_be_bytes());
@@ -468,7 +415,7 @@ fn build_ipv6_tcp_packet(
         payload,
     );
 
-    let tcp_checksum = tcp_checksum_ipv6(source_ip, destination_ip, tcp);
+    let tcp_checksum = ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, tcp);
     tcp[16..18].copy_from_slice(&tcp_checksum.to_be_bytes());
     Ok(packet)
 }
@@ -498,52 +445,6 @@ fn build_tcp_segment(
     }
     tcp[header_len..header_len + payload.len()].copy_from_slice(payload);
 }
-
-pub(super) fn checksum16(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    for chunk in data.chunks(2) {
-        let value = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]]) as u32
-        } else {
-            u16::from_be_bytes([chunk[0], 0]) as u32
-        };
-        sum = sum.wrapping_add(value);
-    }
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-pub(super) fn tcp_checksum_ipv4(
-    source: Ipv4Addr,
-    destination: Ipv4Addr,
-    tcp_segment: &[u8],
-) -> u16 {
-    let mut pseudo = Vec::with_capacity(12 + tcp_segment.len() + 1);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination.octets());
-    pseudo.push(0);
-    pseudo.push(6);
-    pseudo.extend_from_slice(&(tcp_segment.len() as u16).to_be_bytes());
-    pseudo.extend_from_slice(tcp_segment);
-    checksum16(&pseudo)
-}
-
-pub(super) fn tcp_checksum_ipv6(
-    source: Ipv6Addr,
-    destination: Ipv6Addr,
-    tcp_segment: &[u8],
-) -> u16 {
-    let mut pseudo = Vec::with_capacity(40 + tcp_segment.len() + 1);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination.octets());
-    pseudo.extend_from_slice(&(tcp_segment.len() as u32).to_be_bytes());
-    pseudo.extend_from_slice(&[0, 0, 0, 6]);
-    pseudo.extend_from_slice(tcp_segment);
-    checksum16(&pseudo)
-}
-
 fn seq_lt(lhs: u32, rhs: u32) -> bool {
     (lhs.wrapping_sub(rhs) as i32) < 0
 }
