@@ -25,7 +25,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
@@ -467,6 +467,7 @@ pub struct UdpWsTransport {
     cipher: CipherKind,
     master_key: Vec<u8>,
     ss2022: Option<Mutex<Ss2022UdpState>>,
+    close_signal: watch::Sender<bool>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -1019,6 +1020,7 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Self {
+        let (close_signal, _close_rx) = watch::channel(false);
         let (sink, stream) = ws_stream.split();
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
@@ -1097,6 +1099,7 @@ impl UdpWsTransport {
                     last_server_packet_id: None,
                 })
             }),
+            close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
@@ -1107,6 +1110,7 @@ impl UdpWsTransport {
         password: &str,
         source: &'static str,
     ) -> Self {
+        let (close_signal, _close_rx) = watch::channel(false);
         Self {
             transport: UdpTransport::Socket { socket },
             cipher,
@@ -1121,6 +1125,7 @@ impl UdpWsTransport {
                     last_server_packet_id: None,
                 })
             }),
+            close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
@@ -1190,23 +1195,46 @@ impl UdpWsTransport {
     pub async fn read_packet(&self) -> Result<Vec<u8>> {
         match &self.transport {
             UdpTransport::Socket { socket } => {
+                let mut close_rx = self.close_signal.subscribe();
                 let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD + 128];
-                let len = socket
-                    .recv(&mut buf)
-                    .await
-                    .context("failed to read UDP shadowsocks packet")?;
+                if *close_rx.borrow() {
+                    bail!("udp transport closed");
+                }
+                let len = tokio::select! {
+                    _ = close_rx.changed() => {
+                        if *close_rx.borrow() {
+                            bail!("udp transport closed");
+                        }
+                        bail!("udp transport close state changed unexpectedly");
+                    }
+                    len = socket.recv(&mut buf) => {
+                        len.context("failed to read UDP shadowsocks packet")?
+                    }
+                };
                 self.decrypt_udp_bytes(&buf[..len]).await
             }
             UdpTransport::Websocket {
                 stream, ctrl_tx, ..
             } => {
+                let mut close_rx = self.close_signal.subscribe();
                 let mut stream = stream.lock().await;
                 loop {
-                    let message = stream
-                        .next()
-                        .await
-                        .ok_or_else(|| anyhow!("websocket closed"))?
-                        .context("websocket read failed")?;
+                    if *close_rx.borrow() {
+                        bail!("udp transport closed");
+                    }
+                    let message = tokio::select! {
+                        _ = close_rx.changed() => {
+                            if *close_rx.borrow() {
+                                bail!("udp transport closed");
+                            }
+                            continue;
+                        }
+                        message = stream.next() => {
+                            message
+                                .ok_or_else(|| anyhow!("websocket closed"))?
+                                .context("websocket read failed")?
+                        }
+                    };
                     match message {
                         Message::Binary(bytes) => return self.decrypt_udp_bytes(&bytes).await,
                         Message::Close(_) => bail!("websocket closed"),
@@ -1223,6 +1251,7 @@ impl UdpWsTransport {
     }
 
     pub async fn close(&self) -> Result<()> {
+        self.close_signal.send_replace(true);
         if let UdpTransport::Websocket { data_tx, .. } = &self.transport {
             let _ = data_tx.send(Message::Close(None)).await;
         }
@@ -1813,7 +1842,8 @@ impl tokio::io::AsyncWrite for H2Io {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::net::TcpListener;
+    use std::sync::Arc;
+    use tokio::net::{TcpListener, UdpSocket};
 
     #[tokio::test]
     async fn tcp_writer_splits_large_aead_payload_into_multiple_chunks() {
@@ -1848,5 +1878,26 @@ mod tests {
 
         let total = server.await.unwrap();
         assert!(total > payload.len());
+    }
+
+    #[tokio::test]
+    async fn udp_socket_transport_close_wakes_blocked_reader() {
+        let transport = Arc::new(UdpWsTransport::from_socket(
+            UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
+            CipherKind::Chacha20IetfPoly1305,
+            "password",
+            "test",
+        ));
+        let reader_transport = Arc::clone(&transport);
+        let read_task = tokio::spawn(async move { reader_transport.read_packet().await });
+
+        transport.close().await.unwrap();
+
+        let error = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            read_task.await.unwrap().unwrap_err()
+        })
+        .await
+        .unwrap();
+        assert!(format!("{error:#}").contains("udp transport closed"));
     }
 }
