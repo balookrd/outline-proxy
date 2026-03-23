@@ -1,6 +1,7 @@
 use std::{
-    collections::BTreeMap,
+    collections::HashMap,
     fmt::Write,
+    hash::Hash,
     sync::{
         Arc, Mutex, RwLock,
         atomic::{AtomicI64, AtomicU64, Ordering},
@@ -88,7 +89,7 @@ pub fn trim_allocator() -> Result<bool> {
     jemalloc_trim_allocator()
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub enum Transport {
     Tcp,
     Udp,
@@ -103,7 +104,7 @@ impl Transport {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub enum Protocol {
     Http1,
     Http2,
@@ -122,7 +123,7 @@ impl Protocol {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub enum DisconnectReason {
     Normal,
     ClientDisconnect,
@@ -241,32 +242,40 @@ impl Metrics {
         self.websocket_bytes_total.inc(labels, bytes as u64);
     }
 
-    pub fn record_tcp_authenticated_session(&self, user: &str, protocol: Protocol) {
-        self.record_client_session(user, protocol, Transport::Tcp);
+    pub fn record_tcp_authenticated_session(&self, user: impl Into<Arc<str>>, protocol: Protocol) {
+        let user = user.into();
+        self.record_client_session(Arc::clone(&user), protocol, Transport::Tcp);
         self.tcp_authenticated_sessions_total
             .inc(UserProtocolLabels::new(user, protocol), 1);
     }
 
-    pub fn record_client_session(&self, user: &str, protocol: Protocol, transport: Transport) {
+    pub fn record_client_session(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+        transport: Transport,
+    ) {
+        let user = user.into();
         self.client_sessions_total.inc(
-            UserProtocolTransportLabels::new(user, protocol, transport),
+            UserProtocolTransportLabels::new(Arc::clone(&user), protocol, transport),
             1,
         );
         self.record_client_last_seen(user);
     }
 
-    pub fn record_client_last_seen(&self, user: &str) {
+    pub fn record_client_last_seen(&self, user: impl Into<Arc<str>>) {
         self.client_last_seen_seconds
-            .set(UserLabels::new(user), unix_timestamp_seconds());
+            .set(UserLabels::new(user.into()), unix_timestamp_seconds());
     }
 
     pub fn record_tcp_connect(
         &self,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
         result: &'static str,
         duration_seconds: f64,
     ) {
+        let user = user.into();
         let labels = UserProtocolResultLabels::new(user, protocol, result);
         self.tcp_upstream_connects_total.inc(labels.clone(), 1);
         self.tcp_upstream_connect_duration_seconds
@@ -275,9 +284,10 @@ impl Metrics {
 
     pub fn open_tcp_upstream_connection(
         self: &Arc<Self>,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
     ) -> TcpUpstreamGuard {
+        let user = user.into();
         let labels = UserProtocolLabels::new(user, protocol);
         self.active_tcp_upstream_connections.inc(labels.clone(), 1);
         TcpUpstreamGuard {
@@ -289,13 +299,14 @@ impl Metrics {
 
     pub fn record_tcp_payload_bytes(
         &self,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
         direction: &'static str,
         bytes: usize,
     ) {
+        let user = user.into();
         self.tcp_payload_bytes_total.inc(
-            UserProtocolDirectionLabels::new(user, protocol, direction),
+            UserProtocolDirectionLabels::new(Arc::clone(&user), protocol, direction),
             bytes as u64,
         );
         self.client_payload_bytes_total.inc(
@@ -306,11 +317,12 @@ impl Metrics {
 
     pub fn record_udp_request(
         &self,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
         result: &'static str,
         duration_seconds: f64,
     ) {
+        let user = user.into();
         let labels = UserProtocolResultLabels::new(user, protocol, result);
         self.udp_requests_total.inc(labels.clone(), 1);
         self.udp_relay_duration_seconds
@@ -319,13 +331,14 @@ impl Metrics {
 
     pub fn record_udp_payload_bytes(
         &self,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
         direction: &'static str,
         bytes: usize,
     ) {
+        let user = user.into();
         self.udp_payload_bytes_total.inc(
-            UserProtocolDirectionLabels::new(user, protocol, direction),
+            UserProtocolDirectionLabels::new(Arc::clone(&user), protocol, direction),
             bytes as u64,
         );
         self.client_payload_bytes_total.inc(
@@ -334,19 +347,24 @@ impl Metrics {
         );
     }
 
-    pub fn record_udp_response_datagrams(&self, user: &str, protocol: Protocol, count: usize) {
+    pub fn record_udp_response_datagrams(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+        count: usize,
+    ) {
         self.udp_response_datagrams_total
-            .inc(UserProtocolLabels::new(user, protocol), count as u64);
+            .inc(UserProtocolLabels::new(user.into(), protocol), count as u64);
     }
 
     pub fn record_udp_oversized_datagram_dropped(
         &self,
-        user: &str,
+        user: impl Into<Arc<str>>,
         protocol: Protocol,
         direction: &'static str,
     ) {
         self.udp_oversized_datagrams_dropped_total.inc(
-            UserProtocolDirectionLabels::new(user, protocol, direction),
+            UserProtocolDirectionLabels::new(user.into(), protocol, direction),
             1,
         );
     }
@@ -716,17 +734,19 @@ impl Metrics {
             "Unix timestamp of the most recent successful client activity by user.",
             &self.client_last_seen_seconds,
         );
+        let client_active =
+            client_active_snapshots(&self.client_last_seen_seconds, self.client_active_ttl_secs);
         render_gauge_snapshots(
             &mut out,
             "outline_ss_client_active",
             "Client active state by user using the configured TTL.",
-            client_active_snapshots(&self.client_last_seen_seconds, self.client_active_ttl_secs),
+            client_active.clone(),
         );
         render_gauge_snapshots(
             &mut out,
             "outline_ss_client_up",
             "Alias of outline_ss_client_active for online-state dashboards.",
-            client_active_snapshots(&self.client_last_seen_seconds, self.client_active_ttl_secs),
+            client_active,
         );
         render_counter_family(
             &mut out,
@@ -944,7 +964,7 @@ impl Drop for TcpUpstreamGuard {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct WsLabels {
     transport: Transport,
     protocol: Protocol,
@@ -959,7 +979,7 @@ impl PrometheusLabels for WsLabels {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct WsDisconnectLabels {
     transport: Transport,
     protocol: Protocol,
@@ -976,7 +996,7 @@ impl PrometheusLabels for WsDisconnectLabels {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct WsDirectionLabels {
     transport: Transport,
     protocol: Protocol,
@@ -993,60 +1013,55 @@ impl PrometheusLabels for WsDirectionLabels {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserProtocolLabels {
-    user: String,
+    user: Arc<str>,
     protocol: Protocol,
 }
 
 impl UserProtocolLabels {
-    fn new(user: &str, protocol: Protocol) -> Self {
-        Self {
-            user: user.to_owned(),
-            protocol,
-        }
+    fn new(user: Arc<str>, protocol: Protocol) -> Self {
+        Self { user, protocol }
     }
 }
 
 impl PrometheusLabels for UserProtocolLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("user", self.user.clone()),
+            ("user", self.user.to_string()),
             ("protocol", self.protocol.as_str().to_owned()),
         ]
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserLabels {
-    user: String,
+    user: Arc<str>,
 }
 
 impl UserLabels {
-    fn new(user: &str) -> Self {
-        Self {
-            user: user.to_owned(),
-        }
+    fn new(user: Arc<str>) -> Self {
+        Self { user }
     }
 }
 
 impl PrometheusLabels for UserLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
-        vec![("user", self.user.clone())]
+        vec![("user", self.user.to_string())]
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserProtocolTransportLabels {
-    user: String,
+    user: Arc<str>,
     protocol: Protocol,
     transport: Transport,
 }
 
 impl UserProtocolTransportLabels {
-    fn new(user: &str, protocol: Protocol, transport: Transport) -> Self {
+    fn new(user: Arc<str>, protocol: Protocol, transport: Transport) -> Self {
         Self {
-            user: user.to_owned(),
+            user,
             protocol,
             transport,
         }
@@ -1056,24 +1071,24 @@ impl UserProtocolTransportLabels {
 impl PrometheusLabels for UserProtocolTransportLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("user", self.user.clone()),
+            ("user", self.user.to_string()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("transport", self.transport.as_str().to_owned()),
         ]
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserProtocolResultLabels {
-    user: String,
+    user: Arc<str>,
     protocol: Protocol,
     result: &'static str,
 }
 
 impl UserProtocolResultLabels {
-    fn new(user: &str, protocol: Protocol, result: &'static str) -> Self {
+    fn new(user: Arc<str>, protocol: Protocol, result: &'static str) -> Self {
         Self {
-            user: user.to_owned(),
+            user,
             protocol,
             result,
         }
@@ -1083,24 +1098,24 @@ impl UserProtocolResultLabels {
 impl PrometheusLabels for UserProtocolResultLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("user", self.user.clone()),
+            ("user", self.user.to_string()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("result", self.result.to_owned()),
         ]
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserProtocolDirectionLabels {
-    user: String,
+    user: Arc<str>,
     protocol: Protocol,
     direction: &'static str,
 }
 
 impl UserProtocolDirectionLabels {
-    fn new(user: &str, protocol: Protocol, direction: &'static str) -> Self {
+    fn new(user: Arc<str>, protocol: Protocol, direction: &'static str) -> Self {
         Self {
-            user: user.to_owned(),
+            user,
             protocol,
             direction,
         }
@@ -1110,25 +1125,30 @@ impl UserProtocolDirectionLabels {
 impl PrometheusLabels for UserProtocolDirectionLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("user", self.user.clone()),
+            ("user", self.user.to_string()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("direction", self.direction.to_owned()),
         ]
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 struct UserProtocolTransportDirectionLabels {
-    user: String,
+    user: Arc<str>,
     protocol: Protocol,
     transport: Transport,
     direction: &'static str,
 }
 
 impl UserProtocolTransportDirectionLabels {
-    fn new(user: &str, protocol: Protocol, transport: Transport, direction: &'static str) -> Self {
+    fn new(
+        user: Arc<str>,
+        protocol: Protocol,
+        transport: Transport,
+        direction: &'static str,
+    ) -> Self {
         Self {
-            user: user.to_owned(),
+            user,
             protocol,
             transport,
             direction,
@@ -1139,7 +1159,7 @@ impl UserProtocolTransportDirectionLabels {
 impl PrometheusLabels for UserProtocolTransportDirectionLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
         vec![
-            ("user", self.user.clone()),
+            ("user", self.user.to_string()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("transport", self.transport.as_str().to_owned()),
             ("direction", self.direction.to_owned()),
@@ -1152,20 +1172,20 @@ trait PrometheusLabels {
 }
 
 struct CounterVec<L> {
-    values: RwLock<BTreeMap<L, Arc<AtomicU64>>>,
+    values: RwLock<HashMap<L, Arc<AtomicU64>>>,
 }
 
 impl<L> Default for CounterVec<L> {
     fn default() -> Self {
         Self {
-            values: RwLock::new(BTreeMap::new()),
+            values: RwLock::new(HashMap::new()),
         }
     }
 }
 
 impl<L> CounterVec<L>
 where
-    L: Clone + Ord,
+    L: Clone + Eq + Hash + Ord,
 {
     fn inc(&self, labels: L, value: u64) {
         {
@@ -1186,30 +1206,33 @@ where
     }
 
     fn snapshot(&self) -> Vec<(L, u64)> {
-        self.values
+        let mut snapshot = self
+            .values
             .read()
             .expect("counter vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
-            .collect()
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+        snapshot
     }
 }
 
 struct GaugeVec<L> {
-    values: RwLock<BTreeMap<L, Arc<AtomicI64>>>,
+    values: RwLock<HashMap<L, Arc<AtomicI64>>>,
 }
 
 impl<L> Default for GaugeVec<L> {
     fn default() -> Self {
         Self {
-            values: RwLock::new(BTreeMap::new()),
+            values: RwLock::new(HashMap::new()),
         }
     }
 }
 
 impl<L> GaugeVec<L>
 where
-    L: Clone + Ord,
+    L: Clone + Eq + Hash + Ord,
 {
     fn set(&self, labels: L, value: i64) {
         {
@@ -1248,28 +1271,31 @@ where
     }
 
     fn snapshot(&self) -> Vec<(L, i64)> {
-        self.values
+        let mut snapshot = self
+            .values
             .read()
             .expect("gauge vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
-            .collect()
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+        snapshot
     }
 }
 
 struct HistogramVec<L> {
     buckets: &'static [f64],
-    values: RwLock<BTreeMap<L, Arc<Mutex<HistogramState>>>>,
+    values: RwLock<HashMap<L, Arc<Mutex<HistogramState>>>>,
 }
 
 impl<L> HistogramVec<L>
 where
-    L: Clone + Ord,
+    L: Clone + Eq + Hash + Ord,
 {
     fn new(buckets: &'static [f64]) -> Self {
         Self {
             buckets,
-            values: RwLock::new(BTreeMap::new()),
+            values: RwLock::new(HashMap::new()),
         }
     }
 
@@ -1298,7 +1324,8 @@ where
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
-        self.values
+        let mut snapshot = self
+            .values
             .read()
             .expect("histogram vec poisoned")
             .iter()
@@ -1309,7 +1336,9 @@ where
                     .snapshot(self.buckets);
                 (labels.clone(), snapshot)
             })
-            .collect()
+            .collect::<Vec<_>>();
+        snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+        snapshot
     }
 }
 
@@ -1358,7 +1387,7 @@ struct HistogramSnapshot {
 
 fn render_counter_family<L>(out: &mut String, name: &str, help: &str, metric: &CounterVec<L>)
 where
-    L: PrometheusLabels + Clone + Ord,
+    L: PrometheusLabels + Clone + Eq + Hash + Ord,
 {
     write_help(out, name, help);
     write_type(out, name, "counter");
@@ -1369,7 +1398,7 @@ where
 
 fn render_gauge_family<L>(out: &mut String, name: &str, help: &str, metric: &GaugeVec<L>)
 where
-    L: PrometheusLabels + Clone + Ord,
+    L: PrometheusLabels + Clone + Eq + Hash + Ord,
 {
     write_help(out, name, help);
     write_type(out, name, "gauge");
@@ -1380,7 +1409,7 @@ where
 
 fn render_gauge_snapshots<L>(out: &mut String, name: &str, help: &str, snapshots: Vec<(L, i64)>)
 where
-    L: PrometheusLabels + Clone + Ord,
+    L: PrometheusLabels + Clone + Eq + Hash + Ord,
 {
     write_help(out, name, help);
     write_type(out, name, "gauge");
@@ -1391,7 +1420,7 @@ where
 
 fn render_histogram_family<L>(out: &mut String, name: &str, help: &str, metric: &HistogramVec<L>)
 where
-    L: PrometheusLabels + Clone + Ord,
+    L: PrometheusLabels + Clone + Eq + Hash + Ord,
 {
     write_help(out, name, help);
     write_type(out, name, "histogram");

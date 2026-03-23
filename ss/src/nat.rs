@@ -63,11 +63,13 @@ pub(crate) struct NatKey {
 /// session. Wraps both WebSocket transports and plain UDP sockets so the NAT
 /// reader task can deliver upstream responses without knowing the transport
 /// layer.
+#[derive(Clone)]
 pub(crate) struct UdpResponseSender {
     inner: UdpResponseSenderInner,
     protocol: Protocol,
 }
 
+#[derive(Clone)]
 enum UdpResponseSenderInner {
     Ws(mpsc::Sender<Message>),
     H3(mpsc::Sender<H3Message>),
@@ -314,13 +316,14 @@ async fn nat_reader_task(
             }
         };
 
-        let protocol = {
-            let guard = session_tx.lock().await;
-            guard.as_ref().map(UdpResponseSender::protocol)
-        };
-        if matches!(protocol, Some(Protocol::Socket)) && ciphertext.len() > MAX_UDP_PAYLOAD_SIZE {
+        let sender = { session_tx.lock().await.clone() };
+        if matches!(
+            sender.as_ref().map(UdpResponseSender::protocol),
+            Some(Protocol::Socket)
+        ) && ciphertext.len() > MAX_UDP_PAYLOAD_SIZE
+        {
             metrics.record_udp_oversized_datagram_dropped(
-                user.id(),
+                user.id_arc(),
                 Protocol::Socket,
                 "target_to_client",
             );
@@ -335,11 +338,11 @@ async fn nat_reader_task(
         }
 
         // Deliver to the currently registered client session.
-        let guard = session_tx.lock().await;
-        if let Some(sender) = guard.as_ref() {
+        if let Some(sender) = sender {
             let protocol = sender.protocol();
-            metrics.record_udp_payload_bytes(user.id(), protocol, "target_to_client", n);
-            metrics.record_udp_response_datagrams(user.id(), protocol, 1);
+            let user_id = user.id_arc();
+            metrics.record_udp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", n);
+            metrics.record_udp_response_datagrams(user_id, protocol, 1);
             if !sender.send_bytes(Bytes::from(ciphertext)).await {
                 debug!(%target, "NAT response dropped: client session disconnected");
             }

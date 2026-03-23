@@ -85,7 +85,7 @@ impl From<ring::error::Unspecified> for CryptoError {
 pub struct UserKey {
     id: Arc<str>,
     cipher: CipherKind,
-    master_key: Vec<u8>,
+    master_key: Arc<[u8]>,
     fwmark: Option<u32>,
     ws_path_tcp: Arc<str>,
     ws_path_udp: Arc<str>,
@@ -109,7 +109,7 @@ impl UserKey {
         Ok(Self {
             id: Arc::from(id.into()),
             cipher,
-            master_key: password_to_master_key(password, cipher)?,
+            master_key: Arc::from(password_to_master_key(password, cipher)?),
             fwmark,
             ws_path_tcp: Arc::from(ws_path_tcp.into()),
             ws_path_udp: Arc::from(ws_path_udp.into()),
@@ -118,6 +118,10 @@ impl UserKey {
 
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    pub fn id_arc(&self) -> Arc<str> {
+        Arc::clone(&self.id)
     }
 
     pub fn fwmark(&self) -> Option<u32> {
@@ -134,6 +138,10 @@ impl UserKey {
 
     pub fn ws_path_udp(&self) -> &str {
         &self.ws_path_udp
+    }
+
+    fn master_key(&self) -> &[u8] {
+        self.master_key.as_ref()
     }
 }
 
@@ -316,7 +324,7 @@ impl AeadStreamDecryptor {
                 let salt = &self.buffer[..salt_len];
                 let request_salt = salt.to_vec();
                 let mut encrypted_fixed = self.buffer[salt_len..salt_len + fixed_len].to_vec();
-                let session_key = derive_subkey(user.cipher, &user.master_key, salt)?;
+                let session_key = derive_subkey(user.cipher, user.master_key(), salt)?;
                 let algorithm = cipher_algorithm(user.cipher);
                 let key =
                     UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
@@ -350,7 +358,7 @@ impl AeadStreamDecryptor {
 
                 let salt = &self.buffer[..salt_len];
                 let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
-                let session_key = derive_subkey(user.cipher, &user.master_key, salt)?;
+                let session_key = derive_subkey(user.cipher, user.master_key(), salt)?;
                 let algorithm = cipher_algorithm(user.cipher);
                 let key =
                     UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
@@ -423,7 +431,7 @@ impl AeadStreamEncryptor {
         SystemRandom::new()
             .fill(&mut salt)
             .map_err(|_| CryptoError::Random)?;
-        let session_key = derive_subkey(user.cipher, &user.master_key, &salt)?;
+        let session_key = derive_subkey(user.cipher, user.master_key(), &salt)?;
         let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
         let key = LessSafeKey::new(key);
@@ -518,8 +526,8 @@ fn try_decrypt_udp_packet_for_user(
         }
 
         let (nonce_bytes, ciphertext) = packet.split_at(XNONCE_LEN);
-        let cipher =
-            XChaCha20Poly1305::new_from_slice(&user.master_key).map_err(|_| CryptoError::Cipher)?;
+        let cipher = XChaCha20Poly1305::new_from_slice(user.master_key())
+            .map_err(|_| CryptoError::Cipher)?;
         let mut candidate = ciphertext.to_vec();
         if cipher
             .decrypt_in_place(XNonce::from_slice(nonce_bytes), b"", &mut candidate)
@@ -545,7 +553,7 @@ fn try_decrypt_udp_packet_for_user(
         let client_session_id = separate_header[..8]
             .try_into()
             .map_err(|_| CryptoError::InvalidHeader)?;
-        let session_key = derive_subkey(user.cipher, &user.master_key, &separate_header[..8])?;
+        let session_key = derive_subkey(user.cipher, user.master_key(), &separate_header[..8])?;
         let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
         let less_safe = LessSafeKey::new(key);
@@ -568,7 +576,7 @@ fn try_decrypt_udp_packet_for_user(
     }
 
     let (salt, ciphertext) = packet.split_at(salt_len);
-    let session_key = derive_subkey(user.cipher, &user.master_key, salt)?;
+    let session_key = derive_subkey(user.cipher, user.master_key(), salt)?;
     let algorithm = cipher_algorithm(user.cipher);
     let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
     let less_safe = LessSafeKey::new(key);
@@ -590,7 +598,7 @@ pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, C
         .fill(&mut salt)
         .map_err(|_| CryptoError::Random)?;
 
-    let session_key = derive_subkey(user.cipher, &user.master_key, &salt)?;
+    let session_key = derive_subkey(user.cipher, user.master_key(), &salt)?;
     let algorithm = cipher_algorithm(user.cipher);
     let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
     let less_safe = LessSafeKey::new(key);
@@ -632,7 +640,7 @@ pub fn encrypt_udp_packet_for_response(
             let mut separate_header = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
             separate_header[..8].copy_from_slice(&server_session_id);
             separate_header[8..].copy_from_slice(&packet_id.to_be_bytes());
-            let session_key = derive_subkey(user.cipher, &user.master_key, &server_session_id)?;
+            let session_key = derive_subkey(user.cipher, user.master_key(), &server_session_id)?;
             let algorithm = cipher_algorithm(user.cipher);
             let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
             let less_safe = LessSafeKey::new(key);
@@ -666,7 +674,7 @@ pub fn encrypt_udp_packet_for_response(
             SystemRandom::new()
                 .fill(&mut nonce)
                 .map_err(|_| CryptoError::Random)?;
-            let cipher = XChaCha20Poly1305::new_from_slice(&user.master_key)
+            let cipher = XChaCha20Poly1305::new_from_slice(user.master_key())
                 .map_err(|_| CryptoError::Cipher)?;
             cipher
                 .encrypt_in_place(XNonce::from_slice(&nonce), b"", &mut body)
@@ -697,7 +705,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                 }
                 let salt = &buffer[..salt_len];
                 let mut candidate = buffer[salt_len..salt_len + fixed_len].to_vec();
-                let session_key = match derive_subkey(user.cipher, &user.master_key, salt) {
+                let session_key = match derive_subkey(user.cipher, user.master_key(), salt) {
                     Ok(key) => key,
                     Err(error) => {
                         return format!(
@@ -764,7 +772,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
 
                 let salt = &buffer[..salt_len];
                 let encrypted_len = &buffer[salt_len..salt_len + 2 + TAG_LEN];
-                let session_key = match derive_subkey(user.cipher, &user.master_key, salt) {
+                let session_key = match derive_subkey(user.cipher, user.master_key(), salt) {
                     Ok(key) => key,
                     Err(error) => {
                         return format!(
@@ -832,7 +840,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     );
                 }
                 let (nonce, ciphertext) = packet.split_at(XNONCE_LEN);
-                let cipher = match XChaCha20Poly1305::new_from_slice(&user.master_key) {
+                let cipher = match XChaCha20Poly1305::new_from_slice(user.master_key()) {
                     Ok(cipher) => cipher,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher.as_str());
@@ -879,7 +887,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     }
                 };
                 let session_key =
-                    match derive_subkey(user.cipher, &user.master_key, &separate_header[..8]) {
+                    match derive_subkey(user.cipher, user.master_key(), &separate_header[..8]) {
                         Ok(key) => key,
                         Err(error) => {
                             return format!(
@@ -933,7 +941,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 }
 
                 let (salt, ciphertext) = packet.split_at(salt_len);
-                let session_key = match derive_subkey(user.cipher, &user.master_key, salt) {
+                let session_key = match derive_subkey(user.cipher, user.master_key(), salt) {
                     Ok(key) => key,
                     Err(error) => {
                         return format!(
@@ -1383,12 +1391,12 @@ fn encrypt_ss2022_separate_header(
     match user.cipher {
         CipherKind::Aes128Gcm2022 => {
             let cipher =
-                Aes128::new_from_slice(&user.master_key).map_err(|_| CryptoError::Cipher)?;
+                Aes128::new_from_slice(user.master_key()).map_err(|_| CryptoError::Cipher)?;
             cipher.encrypt_block(&mut block);
         }
         CipherKind::Aes256Gcm2022 => {
             let cipher =
-                Aes256::new_from_slice(&user.master_key).map_err(|_| CryptoError::Cipher)?;
+                Aes256::new_from_slice(user.master_key()).map_err(|_| CryptoError::Cipher)?;
             cipher.encrypt_block(&mut block);
         }
         _ => return Err(CryptoError::InvalidHeader),
@@ -1406,12 +1414,12 @@ fn decrypt_ss2022_separate_header(
     match user.cipher {
         CipherKind::Aes128Gcm2022 => {
             let cipher =
-                Aes128::new_from_slice(&user.master_key).map_err(|_| CryptoError::Cipher)?;
+                Aes128::new_from_slice(user.master_key()).map_err(|_| CryptoError::Cipher)?;
             cipher.decrypt_block(&mut block);
         }
         CipherKind::Aes256Gcm2022 => {
             let cipher =
-                Aes256::new_from_slice(&user.master_key).map_err(|_| CryptoError::Cipher)?;
+                Aes256::new_from_slice(user.master_key()).map_err(|_| CryptoError::Cipher)?;
             cipher.decrypt_block(&mut block);
         }
         _ => return Err(CryptoError::InvalidHeader),
@@ -1628,7 +1636,7 @@ mod tests {
 
         let session_key = super::derive_subkey(
             CipherKind::Aes128Gcm2022,
-            &users[0].master_key,
+            users[0].master_key(),
             &request_salt,
         )
         .unwrap();
@@ -1689,7 +1697,7 @@ mod tests {
 
         let session_key = super::derive_subkey(
             CipherKind::Chacha20Poly13052022,
-            &users[0].master_key,
+            users[0].master_key(),
             &request_salt,
         )
         .unwrap();
