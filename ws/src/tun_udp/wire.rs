@@ -2,17 +2,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
 
+use crate::tun_wire::{
+    IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_UDP, checksum16, ipv4_payload_checksum,
+    ipv6_payload_checksum,
+};
 use crate::types::TargetAddr;
 
 const UDP_HEADER_LEN: usize = 8;
-pub(super) const IPV4_HEADER_LEN: usize = 20;
-pub(super) const IPV6_HEADER_LEN: usize = 40;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum IpVersion {
-    V4,
-    V6,
-}
+pub(super) use crate::tun_wire::IpVersion;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedUdpPacket {
@@ -45,7 +42,7 @@ fn parse_ipv4_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
     if packet.len() < total_len {
         bail!("truncated IPv4 packet");
     }
-    if packet[9] != 17 {
+    if packet[9] != IPV6_NEXT_HEADER_UDP {
         bail!("expected IPv4 UDP packet");
     }
     let src = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
@@ -74,7 +71,7 @@ fn parse_ipv6_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
     if packet.len() < total_len {
         bail!("truncated IPv6 packet");
     }
-    if packet[6] != 17 {
+    if packet[6] != IPV6_NEXT_HEADER_UDP {
         bail!("expected IPv6 UDP packet");
     }
     let mut src = [0u8; 16];
@@ -127,7 +124,7 @@ pub(super) fn build_ipv4_udp_packet(
     packet[0] = 0x45;
     packet[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
     packet[8] = 64;
-    packet[9] = 17;
+    packet[9] = IPV6_NEXT_HEADER_UDP;
     packet[12..16].copy_from_slice(&source_ip.octets());
     packet[16..20].copy_from_slice(&destination_ip.octets());
 
@@ -137,9 +134,10 @@ pub(super) fn build_ipv4_udp_packet(
     packet[udp_offset + 4..udp_offset + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
     packet[udp_offset + UDP_HEADER_LEN..].copy_from_slice(payload);
 
-    let udp_checksum = udp_checksum_ipv4(
+    let udp_checksum = ipv4_payload_checksum(
         source_ip,
         destination_ip,
+        IPV6_NEXT_HEADER_UDP,
         &packet[udp_offset..udp_offset + udp_len],
     );
     packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
@@ -160,7 +158,7 @@ pub(super) fn build_ipv6_udp_packet(
     let mut packet = vec![0u8; total_len];
     packet[0] = 0x60;
     packet[4..6].copy_from_slice(&(udp_len as u16).to_be_bytes());
-    packet[6] = 17;
+    packet[6] = IPV6_NEXT_HEADER_UDP;
     packet[7] = 64;
     packet[8..24].copy_from_slice(&source_ip.octets());
     packet[24..40].copy_from_slice(&destination_ip.octets());
@@ -171,56 +169,12 @@ pub(super) fn build_ipv6_udp_packet(
     packet[udp_offset + 4..udp_offset + 6].copy_from_slice(&(udp_len as u16).to_be_bytes());
     packet[udp_offset + UDP_HEADER_LEN..].copy_from_slice(payload);
 
-    let udp_checksum = udp_checksum_ipv6(
+    let udp_checksum = ipv6_payload_checksum(
         source_ip,
         destination_ip,
+        IPV6_NEXT_HEADER_UDP,
         &packet[udp_offset..udp_offset + udp_len],
     );
     packet[udp_offset + 6..udp_offset + 8].copy_from_slice(&udp_checksum.to_be_bytes());
     Ok(packet)
-}
-
-pub(super) fn checksum16(data: &[u8]) -> u16 {
-    let mut sum = 0u32;
-    for chunk in data.chunks(2) {
-        let value = if chunk.len() == 2 {
-            u16::from_be_bytes([chunk[0], chunk[1]]) as u32
-        } else {
-            u16::from_be_bytes([chunk[0], 0]) as u32
-        };
-        sum = sum.wrapping_add(value);
-    }
-    while (sum >> 16) != 0 {
-        sum = (sum & 0xffff) + (sum >> 16);
-    }
-    !(sum as u16)
-}
-
-pub(super) fn udp_checksum_ipv4(
-    source: Ipv4Addr,
-    destination: Ipv4Addr,
-    udp_segment: &[u8],
-) -> u16 {
-    let mut pseudo = Vec::with_capacity(12 + udp_segment.len() + 1);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination.octets());
-    pseudo.push(0);
-    pseudo.push(17);
-    pseudo.extend_from_slice(&(udp_segment.len() as u16).to_be_bytes());
-    pseudo.extend_from_slice(udp_segment);
-    checksum16(&pseudo)
-}
-
-pub(super) fn udp_checksum_ipv6(
-    source: Ipv6Addr,
-    destination: Ipv6Addr,
-    udp_segment: &[u8],
-) -> u16 {
-    let mut pseudo = Vec::with_capacity(40 + udp_segment.len() + 1);
-    pseudo.extend_from_slice(&source.octets());
-    pseudo.extend_from_slice(&destination.octets());
-    pseudo.extend_from_slice(&(udp_segment.len() as u32).to_be_bytes());
-    pseudo.extend_from_slice(&[0, 0, 0, 17]);
-    pseudo.extend_from_slice(udp_segment);
-    checksum16(&pseudo)
 }

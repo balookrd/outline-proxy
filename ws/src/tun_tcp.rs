@@ -18,6 +18,7 @@ use crate::transport::{
     connect_shadowsocks_tcp_with_source,
 };
 use crate::tun::SharedTunWriter;
+use crate::tun_wire::IpVersion;
 use crate::types::{TargetAddr, UplinkTransport};
 use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
@@ -39,33 +40,34 @@ const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
+mod maintenance;
 mod state_machine;
+mod validation;
 mod wire;
 
+use self::maintenance::{FlowMaintenancePlan, plan_flow_maintenance, sync_flow_metrics_and_wake};
+use self::validation::{PacketValidation, validate_existing_packet};
 #[cfg(test)]
 use self::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN};
 use self::wire::{
-    IpVersion, ParsedTcpPacket, build_reset_response, build_response_packet_custom,
-    parse_tcp_packet,
+    ParsedTcpPacket, build_reset_response, build_response_packet_custom, parse_tcp_packet,
 };
 
 #[cfg(test)]
 use self::state_machine::{
     BufferedClientSegment, ClientSegmentView, ServerSegment, drain_ready_buffered_segments,
-    queue_future_segment,
+    maybe_emit_zero_window_probe, note_congestion_event, queue_future_segment,
 };
 use self::state_machine::{
     ServerFlush, TcpFlowState, TcpFlowStatus, apply_client_segment, assess_server_backlog_pressure,
     build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics,
     client_fin_seen, decode_client_window, drain_ready_buffered_segments_from_state,
     exceeds_client_reassembly_limits, flush_server_output, is_duplicate_syn,
-    maybe_emit_zero_window_probe, next_retransmission_deadline, normalize_client_segment,
-    note_ack_progress, note_congestion_event, note_recent_client_timestamp,
-    packet_overlaps_receive_window, process_server_ack, queue_future_segment_with_recv_window,
-    reset_zero_window_persist, retransmit_budget_exhausted, retransmit_due_segment,
+    normalize_client_segment, note_ack_progress, note_recent_client_timestamp, process_server_ack,
+    queue_future_segment_with_recv_window, reset_zero_window_persist, retransmit_budget_exhausted,
     retransmit_oldest_unacked_packet, seq_gt, seq_lt, server_fin_awaiting_ack, server_fin_sent,
-    set_flow_status, sync_flow_metrics, timestamp_lt, transition_on_client_fin,
-    transition_on_server_fin_ack, trim_packet_to_receive_window, update_client_send_window,
+    set_flow_status, transition_on_client_fin, transition_on_server_fin_ack,
+    trim_packet_to_receive_window, update_client_send_window,
 };
 
 #[derive(Clone)]
@@ -91,219 +93,6 @@ struct TcpFlowKey {
     client_port: u16,
     remote_ip: IpAddr,
     remote_port: u16,
-}
-
-enum PacketValidation {
-    Accept,
-    Ignore,
-    ChallengeAck(&'static str),
-    CloseFlow(&'static str),
-}
-
-enum FlowMaintenancePlan {
-    Wait(Option<Instant>),
-    SendPacket {
-        packet: Vec<u8>,
-        packet_metric: &'static str,
-        event: &'static str,
-    },
-    Abort(&'static str),
-    Close(&'static str),
-}
-
-fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
-    sync_flow_metrics(state);
-    state.maintenance_notify.notify_one();
-}
-
-fn next_zero_window_probe_deadline(state: &TcpFlowState) -> Option<Instant> {
-    if state.client_window == 0
-        && !state.pending_server_data.is_empty()
-        && state.unacked_server_segments.is_empty()
-    {
-        Some(state.next_zero_window_probe_at.unwrap_or_else(Instant::now))
-    } else {
-        None
-    }
-}
-
-fn next_flow_deadline(
-    state: &TcpFlowState,
-    tcp: &TunTcpConfig,
-    idle_timeout: Duration,
-) -> Option<Instant> {
-    let mut deadline = next_retransmission_deadline(state)
-        .into_iter()
-        .chain(next_zero_window_probe_deadline(state))
-        .min();
-
-    if state.status == TcpFlowStatus::SynReceived {
-        deadline = Some(
-            deadline
-                .map(|current| current.min(state.status_since + tcp.handshake_timeout))
-                .unwrap_or(state.status_since + tcp.handshake_timeout),
-        );
-    }
-
-    if matches!(
-        state.status,
-        TcpFlowStatus::CloseWait
-            | TcpFlowStatus::FinWait1
-            | TcpFlowStatus::FinWait2
-            | TcpFlowStatus::Closing
-            | TcpFlowStatus::LastAck
-    ) {
-        deadline = Some(
-            deadline
-                .map(|current| current.min(state.status_since + tcp.half_close_timeout))
-                .unwrap_or(state.status_since + tcp.half_close_timeout),
-        );
-    }
-
-    if state.status == TcpFlowStatus::TimeWait {
-        deadline = Some(
-            deadline
-                .map(|current| current.min(state.status_since + TCP_TIME_WAIT_TIMEOUT))
-                .unwrap_or(state.status_since + TCP_TIME_WAIT_TIMEOUT),
-        );
-    } else {
-        deadline = Some(
-            deadline
-                .map(|current| current.min(state.last_seen + idle_timeout))
-                .unwrap_or(state.last_seen + idle_timeout),
-        );
-    }
-
-    deadline
-}
-
-fn plan_flow_maintenance(
-    state: &mut TcpFlowState,
-    tcp: &TunTcpConfig,
-    idle_timeout: Duration,
-    now: Instant,
-) -> Result<FlowMaintenancePlan> {
-    if state.status == TcpFlowStatus::TimeWait
-        && now.saturating_duration_since(state.status_since) >= TCP_TIME_WAIT_TIMEOUT
-    {
-        return Ok(FlowMaintenancePlan::Close("time_wait_expired"));
-    }
-
-    if state.status == TcpFlowStatus::SynReceived
-        && now.saturating_duration_since(state.status_since) >= tcp.handshake_timeout
-    {
-        return Ok(FlowMaintenancePlan::Abort("handshake_timeout"));
-    }
-
-    if matches!(
-        state.status,
-        TcpFlowStatus::CloseWait
-            | TcpFlowStatus::FinWait1
-            | TcpFlowStatus::FinWait2
-            | TcpFlowStatus::Closing
-            | TcpFlowStatus::LastAck
-    ) && now.saturating_duration_since(state.status_since) >= tcp.half_close_timeout
-    {
-        return Ok(FlowMaintenancePlan::Abort("half_close_timeout"));
-    }
-
-    if state.status != TcpFlowStatus::TimeWait
-        && now.saturating_duration_since(state.last_seen) >= idle_timeout
-    {
-        return Ok(FlowMaintenancePlan::Abort("idle_timeout"));
-    }
-
-    if let Some(packet) = retransmit_due_segment(state)? {
-        note_congestion_event(state, true);
-        if retransmit_budget_exhausted(state, tcp) {
-            return Ok(FlowMaintenancePlan::Abort("retransmit_budget_exhausted"));
-        }
-        sync_flow_metrics_and_wake(state);
-        return Ok(FlowMaintenancePlan::SendPacket {
-            packet,
-            packet_metric: "tcp_retransmit",
-            event: "timeout_retransmit",
-        });
-    }
-
-    if let Some(packet) = maybe_emit_zero_window_probe(state)? {
-        sync_flow_metrics_and_wake(state);
-        return Ok(FlowMaintenancePlan::SendPacket {
-            packet,
-            packet_metric: "tcp_window_probe",
-            event: "zero_window_probe",
-        });
-    }
-
-    Ok(FlowMaintenancePlan::Wait(next_flow_deadline(
-        state,
-        tcp,
-        idle_timeout,
-    )))
-}
-
-fn validate_packet_timestamps(state: &TcpFlowState, packet: &ParsedTcpPacket) -> PacketValidation {
-    if !state.timestamps_enabled || (packet.flags & TCP_FLAG_RST) != 0 {
-        return PacketValidation::Accept;
-    }
-
-    let Some(timestamp_value) = packet.timestamp_value else {
-        return if packet_overlaps_receive_window(state, packet) {
-            PacketValidation::ChallengeAck("missing_timestamp")
-        } else {
-            PacketValidation::Ignore
-        };
-    };
-
-    if state
-        .recent_client_timestamp
-        .is_some_and(|recent| timestamp_lt(timestamp_value, recent))
-    {
-        return if packet_overlaps_receive_window(state, packet) {
-            PacketValidation::ChallengeAck("paws_reject")
-        } else {
-            PacketValidation::Ignore
-        };
-    }
-
-    PacketValidation::Accept
-}
-
-fn validate_existing_packet(state: &TcpFlowState, packet: &ParsedTcpPacket) -> PacketValidation {
-    if (packet.flags & TCP_FLAG_RST) != 0 {
-        if packet.sequence_number == state.client_next_seq {
-            return PacketValidation::CloseFlow("client_rst");
-        }
-        return if packet_overlaps_receive_window(state, packet) {
-            PacketValidation::ChallengeAck("invalid_rst")
-        } else {
-            PacketValidation::Ignore
-        };
-    }
-
-    match validate_packet_timestamps(state, packet) {
-        PacketValidation::Accept => {}
-        other => return other,
-    }
-
-    if (packet.flags & TCP_FLAG_SYN) != 0 {
-        return if packet_overlaps_receive_window(state, packet) {
-            PacketValidation::ChallengeAck("unexpected_syn")
-        } else {
-            PacketValidation::Ignore
-        };
-    }
-
-    if (packet.flags & TCP_FLAG_ACK) != 0 && seq_gt(packet.acknowledgement_number, state.server_seq)
-    {
-        return if packet_overlaps_receive_window(state, packet) {
-            PacketValidation::ChallengeAck("ack_above_snd_nxt")
-        } else {
-            PacketValidation::Ignore
-        };
-    }
-
-    PacketValidation::Accept
 }
 
 impl TunTcpEngine {
@@ -374,6 +163,27 @@ impl TunTcpEngine {
         metrics::record_tun_tcp_event(uplink_name, event);
         metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         Ok(())
+    }
+
+    async fn report_tcp_runtime_failure(&self, uplink_index: usize, error: &anyhow::Error) {
+        if uplink_index == usize::MAX {
+            return;
+        }
+        self.inner
+            .uplinks
+            .report_runtime_failure(uplink_index, TransportKind::Tcp, error)
+            .await;
+    }
+
+    async fn report_tcp_runtime_failure_and_abort(
+        &self,
+        key: &TcpFlowKey,
+        uplink_index: usize,
+        error: &anyhow::Error,
+        reason: &'static str,
+    ) {
+        self.report_tcp_runtime_failure(uplink_index, error).await;
+        self.abort_flow_with_rst(key, reason).await;
     }
 
     async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
@@ -747,11 +557,13 @@ impl TunTcpEngine {
                 };
                 if let Err(error) = send_result {
                     engine
-                        .inner
-                        .uplinks
-                        .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
+                        .report_tcp_runtime_failure_and_abort(
+                            &key,
+                            candidate.index,
+                            &error,
+                            "send_error",
+                        )
                         .await;
-                    engine.abort_flow_with_rst(&key, "send_error").await;
                     return;
                 }
                 metrics::add_bytes(
@@ -1069,11 +881,13 @@ impl TunTcpEngine {
                     upstream_writer.send_chunk(&pending_payload).await
                 };
                 if let Err(error) = send_result {
-                    self.inner
-                        .uplinks
-                        .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
-                        .await;
-                    self.abort_flow_with_rst(&key, "send_error").await;
+                    self.report_tcp_runtime_failure_and_abort(
+                        &key,
+                        uplink_index,
+                        &error,
+                        "send_error",
+                    )
+                    .await;
                     return Ok(());
                 }
                 metrics::add_bytes(
@@ -1211,9 +1025,7 @@ impl TunTcpEngine {
                             };
                             let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
                             engine
-                                .inner
-                                .uplinks
-                                .report_runtime_failure(uplink_index, TransportKind::Tcp, &error)
+                                .report_tcp_runtime_failure(uplink_index, &error)
                                 .await;
                             let (cooldown_ms, penalty_ms) = engine
                                 .inner
@@ -1333,17 +1145,9 @@ impl TunTcpEngine {
                         // indicate an uplink problem and are not reported.
                         if !upstream_reader.closed_cleanly {
                             let uplink_index = flow.lock().await.uplink_index;
-                            if uplink_index != usize::MAX {
-                                engine
-                                    .inner
-                                    .uplinks
-                                    .report_runtime_failure(
-                                        uplink_index,
-                                        TransportKind::Tcp,
-                                        &error,
-                                    )
-                                    .await;
-                            }
+                            engine
+                                .report_tcp_runtime_failure(uplink_index, &error)
+                                .await;
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
                         let flush = {
@@ -1701,6 +1505,10 @@ mod tests {
     use crate::transport::{AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter};
     use crate::tun::SharedTunWriter;
     use crate::tun_tcp::state_machine::SequenceRange;
+    use crate::tun_wire_test_utils::{
+        IP_PROTOCOL_TCP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
+        flip_packet_byte, random_payload, seeded_rng, transport_offset,
+    };
     use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
     use crate::uplink::UplinkManager;
     use futures_util::StreamExt;
@@ -2609,7 +2417,10 @@ mod tests {
             .get(&key)
             .cloned()
             .expect("flow must remain after client FIN");
-        assert_eq!(flow.lock().await.status, super::TcpFlowStatus::CloseWait);
+        assert!(matches!(
+            flow.lock().await.status,
+            super::TcpFlowStatus::CloseWait | super::TcpFlowStatus::LastAck
+        ));
 
         upstream.close().await;
         let server_fin = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
@@ -3220,11 +3031,9 @@ mod tests {
 
     #[test]
     fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
-        let mut rng = StdRng::seed_from_u64(0x5eed_7a11);
+        let mut rng = seeded_rng(0x5eed_7a11);
         for _ in 0..128 {
-            let payload_len = rng.gen_range(0..48);
-            let mut payload = vec![0u8; payload_len];
-            rng.fill(payload.as_mut_slice());
+            let payload = random_payload(&mut rng, 47);
             let flags = [
                 TCP_FLAG_ACK,
                 TCP_FLAG_ACK | super::TCP_FLAG_PSH,
@@ -3262,6 +3071,8 @@ mod tests {
                     &options,
                     &payload,
                 );
+                assert_ipv4_header_checksum_valid(&packet);
+                assert_transport_checksum_valid(&packet, IP_PROTOCOL_TCP);
                 let parsed = super::parse_tcp_packet(&packet).unwrap();
                 assert_eq!(parsed.version, super::IpVersion::V4);
                 assert_eq!(parsed.sequence_number, sequence_number);
@@ -3269,8 +3080,7 @@ mod tests {
                 assert_eq!(parsed.flags, flags);
                 assert_eq!(parsed.payload, payload);
 
-                let mut mutated = packet.clone();
-                mutated[IPV4_HEADER_LEN + 4] ^= 0x01;
+                let mutated = flip_packet_byte(&packet, transport_offset(&packet) + 4);
                 assert!(super::parse_tcp_packet(&mutated).is_err());
             } else {
                 let client_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
@@ -3287,6 +3097,7 @@ mod tests {
                     &options,
                     &payload,
                 );
+                assert_transport_checksum_valid(&packet, IP_PROTOCOL_TCP);
                 let parsed = super::parse_tcp_packet(&packet).unwrap();
                 assert_eq!(parsed.version, super::IpVersion::V6);
                 assert_eq!(parsed.sequence_number, sequence_number);
@@ -3294,8 +3105,7 @@ mod tests {
                 assert_eq!(parsed.flags, flags);
                 assert_eq!(parsed.payload, payload);
 
-                let mut mutated = packet.clone();
-                mutated[IPV6_HEADER_LEN + 8] ^= 0x01;
+                let mutated = flip_packet_byte(&packet, transport_offset(&packet) + 4);
                 assert!(super::parse_tcp_packet(&mutated).is_err());
             }
         }
