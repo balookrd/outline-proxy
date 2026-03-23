@@ -331,7 +331,11 @@ mod tests {
                 .contains("url: \"wss://vpn.example.com/alice/udp\"")
         );
         assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
-        assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
+        assert!(
+            artifacts[1]
+                .yaml
+                .contains("cipher: \"chacha20-ietf-poly1305\"")
+        );
     }
 
     #[test]

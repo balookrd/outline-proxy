@@ -83,20 +83,26 @@ fn start_memory_reclaimer(config: &Config) {
 
                     if release_event {
                         tracing::info!(
-                            rss_before_bytes = before.map(|snapshot| snapshot.resident_memory_bytes),
+                            rss_before_bytes =
+                                before.map(|snapshot| snapshot.resident_memory_bytes),
                             rss_after_bytes = after.map(|snapshot| snapshot.resident_memory_bytes),
-                            heap_before_bytes = before.and_then(|snapshot| snapshot.heap_allocated_bytes),
-                            heap_after_bytes = after.and_then(|snapshot| snapshot.heap_allocated_bytes),
+                            heap_before_bytes =
+                                before.and_then(|snapshot| snapshot.heap_allocated_bytes),
+                            heap_after_bytes =
+                                after.and_then(|snapshot| snapshot.heap_allocated_bytes),
                             rss_released_bytes = released_bytes,
                             trim_hint,
                             "allocator memory trim released memory"
                         );
                     } else {
                         tracing::debug!(
-                            rss_before_bytes = before.map(|snapshot| snapshot.resident_memory_bytes),
+                            rss_before_bytes =
+                                before.map(|snapshot| snapshot.resident_memory_bytes),
                             rss_after_bytes = after.map(|snapshot| snapshot.resident_memory_bytes),
-                            heap_before_bytes = before.and_then(|snapshot| snapshot.heap_allocated_bytes),
-                            heap_after_bytes = after.and_then(|snapshot| snapshot.heap_allocated_bytes),
+                            heap_before_bytes =
+                                before.and_then(|snapshot| snapshot.heap_allocated_bytes),
+                            heap_after_bytes =
+                                after.and_then(|snapshot| snapshot.heap_allocated_bytes),
                             trim_hint,
                             "allocator memory trim completed without observable RSS reduction"
                         );
