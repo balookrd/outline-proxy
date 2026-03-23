@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, Notify, watch};
 
 use crate::config::TunTcpConfig;
 use crate::metrics;
@@ -20,8 +20,12 @@ use super::{
 pub(super) enum TcpFlowStatus {
     SynReceived,
     Established,
-    ClientClosed,
-    ServerClosed,
+    CloseWait,
+    FinWait1,
+    FinWait2,
+    Closing,
+    LastAck,
+    TimeWait,
     Closed,
 }
 
@@ -32,6 +36,7 @@ pub(super) struct TcpFlowState {
     pub(super) uplink_name: String,
     pub(super) upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
     pub(super) close_signal: watch::Sender<bool>,
+    pub(super) maintenance_notify: Arc<Notify>,
     pub(super) status: TcpFlowStatus,
     pub(super) client_next_seq: u32,
     pub(super) client_window_scale: u8,
@@ -328,6 +333,78 @@ pub(super) fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
     if state.status != status {
         state.status = status;
         state.status_since = Instant::now();
+    }
+}
+
+pub(super) fn client_fin_seen(status: TcpFlowStatus) -> bool {
+    matches!(
+        status,
+        TcpFlowStatus::CloseWait
+            | TcpFlowStatus::Closing
+            | TcpFlowStatus::LastAck
+            | TcpFlowStatus::TimeWait
+            | TcpFlowStatus::Closed
+    )
+}
+
+pub(super) fn server_fin_sent(status: TcpFlowStatus) -> bool {
+    matches!(
+        status,
+        TcpFlowStatus::FinWait1
+            | TcpFlowStatus::FinWait2
+            | TcpFlowStatus::Closing
+            | TcpFlowStatus::LastAck
+            | TcpFlowStatus::TimeWait
+            | TcpFlowStatus::Closed
+    )
+}
+
+pub(super) fn server_fin_awaiting_ack(status: TcpFlowStatus) -> bool {
+    matches!(
+        status,
+        TcpFlowStatus::FinWait1 | TcpFlowStatus::Closing | TcpFlowStatus::LastAck
+    )
+}
+
+pub(super) fn transition_on_client_fin(state: &mut TcpFlowState) {
+    match state.status {
+        TcpFlowStatus::SynReceived | TcpFlowStatus::Established => {
+            set_flow_status(state, TcpFlowStatus::CloseWait);
+        }
+        TcpFlowStatus::FinWait1 => {
+            set_flow_status(state, TcpFlowStatus::Closing);
+        }
+        TcpFlowStatus::FinWait2 => {
+            set_flow_status(state, TcpFlowStatus::TimeWait);
+        }
+        TcpFlowStatus::CloseWait
+        | TcpFlowStatus::Closing
+        | TcpFlowStatus::LastAck
+        | TcpFlowStatus::TimeWait
+        | TcpFlowStatus::Closed => {}
+    }
+}
+
+pub(super) fn transition_on_server_fin_ack(state: &mut TcpFlowState) -> bool {
+    match state.status {
+        TcpFlowStatus::FinWait1 => {
+            set_flow_status(state, TcpFlowStatus::FinWait2);
+            false
+        }
+        TcpFlowStatus::Closing => {
+            set_flow_status(state, TcpFlowStatus::TimeWait);
+            false
+        }
+        TcpFlowStatus::LastAck => {
+            set_flow_status(state, TcpFlowStatus::Closed);
+            true
+        }
+        TcpFlowStatus::SynReceived
+        | TcpFlowStatus::Established
+        | TcpFlowStatus::CloseWait
+        | TcpFlowStatus::FinWait2
+        | TcpFlowStatus::TimeWait
+        | TcpFlowStatus::Closed => false,
     }
 }
 
@@ -829,7 +906,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         || !state.unacked_server_segments.is_empty()
         || matches!(
             state.status,
-            TcpFlowStatus::Closed | TcpFlowStatus::ServerClosed
+            TcpFlowStatus::Closed | TcpFlowStatus::TimeWait
         )
     {
         return Ok(None);
@@ -845,14 +922,18 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     let sequence_number = state.server_seq;
     state.server_seq = state.server_seq.wrapping_add(1);
     state.server_fin_pending = false;
-    set_flow_status(
-        state,
-        if state.status == TcpFlowStatus::ClientClosed {
-            TcpFlowStatus::Closed
-        } else {
-            TcpFlowStatus::ServerClosed
-        },
-    );
+    match state.status {
+        TcpFlowStatus::CloseWait => set_flow_status(state, TcpFlowStatus::LastAck),
+        TcpFlowStatus::SynReceived | TcpFlowStatus::Established => {
+            set_flow_status(state, TcpFlowStatus::FinWait1);
+        }
+        TcpFlowStatus::FinWait1
+        | TcpFlowStatus::FinWait2
+        | TcpFlowStatus::Closing
+        | TcpFlowStatus::LastAck
+        | TcpFlowStatus::TimeWait
+        | TcpFlowStatus::Closed => {}
+    }
     state.unacked_server_segments.push_back(ServerSegment {
         sequence_number,
         acknowledgement_number: state.client_next_seq,
