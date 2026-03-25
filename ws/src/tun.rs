@@ -10,12 +10,13 @@ use tracing::{debug, info, warn};
 
 use crate::config::TunConfig;
 use crate::metrics;
+use crate::tun_defrag::{DefragmentedPacket, TunDefragmenter};
 use crate::tun_tcp::TunTcpEngine;
 use crate::tun_udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
 use crate::tun_wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_ICMPV6,
-    IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16, ipv6_payload_checksum,
-    locate_ipv6_upper_layer,
+    IPV6_NEXT_HEADER_NONE, IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16,
+    ipv6_payload_checksum, locate_ipv6_upper_layer,
 };
 use crate::uplink::UplinkManager;
 
@@ -84,6 +85,7 @@ async fn tun_read_loop(
     mtu: usize,
 ) -> Result<()> {
     let mut buf = vec![0u8; mtu + 256];
+    let mut defragmenter = TunDefragmenter::default();
     loop {
         let read = reader
             .read(&mut buf)
@@ -92,7 +94,56 @@ async fn tun_read_loop(
         if read == 0 {
             bail!("TUN device returned EOF");
         }
-        let packet = &buf[..read];
+        let input_packet = &buf[..read];
+        let version_nibble = input_packet[0] >> 4;
+        let owned_packet = match defragmenter.push(input_packet) {
+            Ok(DefragmentedPacket::ReadyBorrowed) => None,
+            Ok(DefragmentedPacket::ReadyOwned(packet)) => {
+                metrics::record_tun_packet(
+                    "tun_to_upstream",
+                    ip_family_name(version_nibble),
+                    "fragment_reassembled",
+                );
+                Some(packet)
+            }
+            Ok(DefragmentedPacket::Pending) => {
+                metrics::record_tun_packet(
+                    "tun_to_upstream",
+                    ip_family_name(version_nibble),
+                    "fragment_buffered",
+                );
+                continue;
+            }
+            Ok(DefragmentedPacket::Dropped(reason)) => {
+                metrics::record_tun_packet(
+                    "tun_to_upstream",
+                    ip_family_name(version_nibble),
+                    "fragment_drop",
+                );
+                debug!(reason, packet_len = read, "dropping fragmented TUN packet");
+                continue;
+            }
+            Err(error) => {
+                metrics::record_tun_packet(
+                    "tun_to_upstream",
+                    ip_family_name(version_nibble),
+                    "error",
+                );
+                debug!(
+                    error = %format!("{error:#}"),
+                    packet_len = read,
+                    "dropping malformed fragmented TUN packet"
+                );
+                continue;
+            }
+        };
+        let packet_storage;
+        let packet = if let Some(packet) = owned_packet {
+            packet_storage = packet;
+            packet_storage.as_slice()
+        } else {
+            input_packet
+        };
         let version_nibble = packet[0] >> 4;
         let disposition = match classify_packet(packet) {
             Ok(disposition) => disposition,
@@ -262,22 +313,16 @@ fn classify_ipv4_packet(packet: &[u8]) -> Result<PacketDisposition> {
 }
 
 fn classify_ipv6_packet(packet: &[u8]) -> Result<PacketDisposition> {
-    let direct_next_header = *packet.get(6).ok_or_else(|| anyhow!("short IPv6 packet"))?;
-    if direct_next_header == IPV6_NEXT_HEADER_UDP {
-        return Ok(PacketDisposition::Udp);
-    }
-    if direct_next_header == IPV6_NEXT_HEADER_TCP {
-        return Ok(PacketDisposition::Tcp);
-    }
-    if direct_next_header == IPV6_NEXT_HEADER_ICMPV6 {
-        return classify_ipv6_icmp_packet(packet, IPV6_HEADER_LEN);
-    }
-
-    let (next_header, _payload_offset, _) = locate_ipv6_upper_layer(packet)?;
+    let (next_header, payload_offset, _) = locate_ipv6_upper_layer(packet)?;
     Ok(match next_header {
+        IPV6_NEXT_HEADER_UDP => PacketDisposition::Udp,
         IPV6_NEXT_HEADER_TCP => PacketDisposition::Tcp,
+        IPV6_NEXT_HEADER_ICMPV6 => classify_ipv6_icmp_packet(packet, payload_offset)?,
         IPV6_NEXT_HEADER_FRAGMENT => {
             PacketDisposition::Unsupported("IPv6 fragments are not supported on TUN")
+        }
+        IPV6_NEXT_HEADER_NONE => {
+            PacketDisposition::Unsupported("IPv6 no-next-header packets are not supported on TUN")
         }
         _ => PacketDisposition::Unsupported(
             "unsupported IPv6 payload protocol or extension header path on TUN",
@@ -308,7 +353,7 @@ fn classify_ipv6_icmp_packet(packet: &[u8], payload_offset: usize) -> Result<Pac
     })
 }
 
-fn build_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn build_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
     let version = packet.first().ok_or_else(|| anyhow!("empty TUN packet"))? >> 4;
     match version {
         4 => build_ipv4_icmp_echo_reply(packet),
@@ -355,15 +400,14 @@ fn build_ipv6_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
     if packet.len() < IPV6_HEADER_LEN + 8 {
         bail!("short IPv6 ICMP packet");
     }
-    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    let total_len = IPV6_HEADER_LEN + payload_len;
-    if payload_len < 8 || packet.len() < total_len {
+    let (next_header, payload_offset, total_len) = locate_ipv6_upper_layer(packet)?;
+    if total_len < payload_offset + 8 || packet.len() < total_len {
         bail!("invalid IPv6 ICMP packet lengths");
     }
-    if packet[6] != 58 {
+    if next_header != IPV6_NEXT_HEADER_ICMPV6 {
         bail!("expected IPv6 ICMP packet");
     }
-    if packet[IPV6_HEADER_LEN] != 128 {
+    if packet[payload_offset] != 128 {
         bail!("expected IPv6 ICMP echo request");
     }
 
@@ -375,15 +419,15 @@ fn build_ipv6_icmp_echo_reply(packet: &[u8]) -> Result<Vec<u8>> {
     reply[7] = 64;
     reply[8..24].copy_from_slice(&destination);
     reply[24..40].copy_from_slice(&source);
-    reply[IPV6_HEADER_LEN] = 129;
-    reply[IPV6_HEADER_LEN + 2] = 0;
-    reply[IPV6_HEADER_LEN + 3] = 0;
+    reply[payload_offset] = 129;
+    reply[payload_offset + 2] = 0;
+    reply[payload_offset + 3] = 0;
     let icmp_checksum = icmpv6_checksum(
         Ipv6Addr::from(destination),
         Ipv6Addr::from(source),
-        &reply[IPV6_HEADER_LEN..total_len],
+        &reply[payload_offset..total_len],
     );
-    reply[IPV6_HEADER_LEN + 2..IPV6_HEADER_LEN + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
+    reply[payload_offset + 2..payload_offset + 4].copy_from_slice(&icmp_checksum.to_be_bytes());
     Ok(reply)
 }
 
@@ -481,6 +525,12 @@ mod tests {
     }
 
     #[test]
+    fn ipv6_udp_packets_with_destination_options_are_classified_for_tun_udp_path() {
+        let packet = build_ipv6_udp_packet_with_extension_header();
+        assert_eq!(classify_packet(&packet).unwrap(), PacketDisposition::Udp);
+    }
+
+    #[test]
     fn ipv6_fragmented_packets_are_reported_as_unsupported() {
         let packet = build_ipv6_tcp_packet_with_extension_header(44, 6);
         assert_eq!(
@@ -544,6 +594,38 @@ mod tests {
         );
         assert_eq!(&reply[IPV6_HEADER_LEN + 8..], b"pong");
         let checksum = icmpv6_checksum(destination, source, &reply[IPV6_HEADER_LEN..]);
+        assert_eq!(checksum, 0);
+    }
+
+    #[test]
+    fn ipv6_icmp_echo_request_with_destination_options_gets_local_reply() {
+        let source = Ipv6Addr::LOCALHOST;
+        let destination = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let packet = build_ipv6_icmp_echo_request_with_extension_header(
+            source,
+            destination,
+            0xabcd,
+            0x0002,
+            b"pong",
+        );
+
+        assert_eq!(
+            classify_packet(&packet).unwrap(),
+            PacketDisposition::IcmpEchoRequest
+        );
+        let reply = build_icmp_echo_reply(&packet).unwrap();
+        let (_, payload_offset, total_len) =
+            crate::tun_wire::locate_ipv6_upper_layer(&reply).unwrap();
+
+        assert_eq!(reply[8..24], destination.octets());
+        assert_eq!(reply[24..40], source.octets());
+        assert_eq!(reply[payload_offset], 129);
+        assert_eq!(
+            reply[payload_offset + 4..payload_offset + 8],
+            [0xab, 0xcd, 0x00, 0x02]
+        );
+        assert_eq!(&reply[payload_offset + 8..total_len], b"pong");
+        let checksum = icmpv6_checksum(destination, source, &reply[payload_offset..total_len]);
         assert_eq!(checksum, 0);
     }
 
@@ -623,6 +705,57 @@ mod tests {
         }
         packet[IPV6_HEADER_LEN + extension_len + 12] = 0x50;
         packet[IPV6_HEADER_LEN + extension_len + 13] = 0x10;
+        packet
+    }
+
+    fn build_ipv6_udp_packet_with_extension_header() -> Vec<u8> {
+        let source = Ipv6Addr::LOCALHOST;
+        let destination = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let udp_len = 8usize;
+        let extension_len = 8usize;
+        let total_len = IPV6_HEADER_LEN + extension_len + udp_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&((extension_len + udp_len) as u16).to_be_bytes());
+        packet[6] = 60;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&source.octets());
+        packet[24..40].copy_from_slice(&destination.octets());
+        packet[40] = 17;
+        packet[48..50].copy_from_slice(&53u16.to_be_bytes());
+        packet[50..52].copy_from_slice(&40000u16.to_be_bytes());
+        packet[52..54].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        let checksum =
+            crate::tun_wire::ipv6_payload_checksum(source, destination, 17, &packet[48..]);
+        packet[54..56].copy_from_slice(&checksum.to_be_bytes());
+        packet
+    }
+
+    fn build_ipv6_icmp_echo_request_with_extension_header(
+        source_ip: Ipv6Addr,
+        destination_ip: Ipv6Addr,
+        identifier: u16,
+        sequence: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let icmp_len = 8 + payload.len();
+        let extension_len = 8usize;
+        let total_len = IPV6_HEADER_LEN + extension_len + icmp_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&((extension_len + icmp_len) as u16).to_be_bytes());
+        packet[6] = 60;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&source_ip.octets());
+        packet[24..40].copy_from_slice(&destination_ip.octets());
+        packet[40] = 58;
+        let icmp_offset = IPV6_HEADER_LEN + extension_len;
+        packet[icmp_offset] = 128;
+        packet[icmp_offset + 4..icmp_offset + 6].copy_from_slice(&identifier.to_be_bytes());
+        packet[icmp_offset + 6..icmp_offset + 8].copy_from_slice(&sequence.to_be_bytes());
+        packet[icmp_offset + 8..].copy_from_slice(payload);
+        let checksum = icmpv6_checksum(source_ip, destination_ip, &packet[icmp_offset..]);
+        packet[icmp_offset + 2..icmp_offset + 4].copy_from_slice(&checksum.to_be_bytes());
         packet
     }
 }

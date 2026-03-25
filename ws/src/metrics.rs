@@ -70,6 +70,9 @@ struct Metrics {
     tun_flows_active: IntGaugeVec,
     tun_icmp_local_replies_total: IntCounterVec,
     tun_udp_forward_errors_total: IntCounterVec,
+    tun_ip_fragments_total: IntCounterVec,
+    tun_ip_reassemblies_total: IntCounterVec,
+    tun_ip_fragment_sets_active: IntGaugeVec,
     tun_max_flows: IntGauge,
     tun_idle_timeout_seconds: Gauge,
     tun_tcp_events_total: IntCounterVec,
@@ -483,6 +486,30 @@ impl Metrics {
             &["reason"],
         )
         .expect("tun_udp_forward_errors_total metric");
+        let tun_ip_fragments_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_ip_fragments_total",
+                "IP fragments observed on the TUN path by IP family.",
+            ),
+            &["ip_family"],
+        )
+        .expect("tun_ip_fragments_total metric");
+        let tun_ip_reassemblies_total = IntCounterVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_ip_reassemblies_total",
+                "IP fragment reassembly outcomes on the TUN path by IP family and result.",
+            ),
+            &["ip_family", "result"],
+        )
+        .expect("tun_ip_reassemblies_total metric");
+        let tun_ip_fragment_sets_active = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_tun_ip_fragment_sets_active",
+                "Currently buffered IP fragment sets on the TUN path by IP family.",
+            ),
+            &["ip_family"],
+        )
+        .expect("tun_ip_fragment_sets_active metric");
         let tun_max_flows = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_max_flows",
             "Configured maximum number of TUN UDP flows.",
@@ -886,6 +913,15 @@ impl Metrics {
             .register(Box::new(tun_udp_forward_errors_total.clone()))
             .expect("register tun_udp_forward_errors_total");
         registry
+            .register(Box::new(tun_ip_fragments_total.clone()))
+            .expect("register tun_ip_fragments_total");
+        registry
+            .register(Box::new(tun_ip_reassemblies_total.clone()))
+            .expect("register tun_ip_reassemblies_total");
+        registry
+            .register(Box::new(tun_ip_fragment_sets_active.clone()))
+            .expect("register tun_ip_fragment_sets_active");
+        registry
             .register(Box::new(tun_max_flows.clone()))
             .expect("register tun_max_flows");
         registry
@@ -1048,6 +1084,9 @@ impl Metrics {
             tun_flows_active,
             tun_icmp_local_replies_total,
             tun_udp_forward_errors_total,
+            tun_ip_fragments_total,
+            tun_ip_reassemblies_total,
+            tun_ip_fragment_sets_active,
             tun_max_flows,
             tun_idle_timeout_seconds,
             tun_tcp_events_total,
@@ -1270,6 +1309,9 @@ pub fn init() {
         initial_sample.open_fds,
         initial_sample.fd_snapshot,
     );
+    METRICS.tun_ip_fragments_total.reset();
+    METRICS.tun_ip_reassemblies_total.reset();
+    METRICS.tun_ip_fragment_sets_active.reset();
     for kind in ["socket", "pipe", "anon_inode", "regular_file", "other"] {
         METRICS
             .process_fd_by_type
@@ -1400,9 +1442,30 @@ pub fn init() {
             .with_label_values(&[reason]);
     }
     for ip_family in ["ipv4", "ipv6"] {
-        let _ = METRICS
+        METRICS
             .tun_icmp_local_replies_total
-            .with_label_values(&[ip_family]);
+            .with_label_values(&[ip_family])
+            .inc_by(0);
+        METRICS
+            .tun_ip_fragments_total
+            .with_label_values(&[ip_family])
+            .inc_by(0);
+        METRICS
+            .tun_ip_fragment_sets_active
+            .with_label_values(&[ip_family])
+            .set(0);
+        for result in [
+            "success",
+            "timeout",
+            "overlap",
+            "inconsistent",
+            "resource_limit",
+        ] {
+            METRICS
+                .tun_ip_reassemblies_total
+                .with_label_values(&[ip_family, result])
+                .inc_by(0);
+        }
     }
 }
 
@@ -1792,6 +1855,27 @@ pub fn record_tun_udp_forward_error(reason: &'static str) {
         .tun_udp_forward_errors_total
         .with_label_values(&[reason])
         .inc();
+}
+
+pub fn record_tun_ip_fragment_received(ip_family: &'static str) {
+    METRICS
+        .tun_ip_fragments_total
+        .with_label_values(&[ip_family])
+        .inc();
+}
+
+pub fn record_tun_ip_reassembly(ip_family: &'static str, result: &'static str) {
+    METRICS
+        .tun_ip_reassemblies_total
+        .with_label_values(&[ip_family, result])
+        .inc();
+}
+
+pub fn set_tun_ip_fragment_sets_active(ip_family: &'static str, count: usize) {
+    METRICS
+        .tun_ip_fragment_sets_active
+        .with_label_values(&[ip_family])
+        .set(i64::try_from(count).unwrap_or(i64::MAX));
 }
 
 pub fn set_tun_config(max_flows: usize, idle_timeout: Duration) {
@@ -2269,6 +2353,40 @@ mod tests {
         );
         assert!(
             rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0")
+        );
+        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"} 0"));
+        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"} 0"));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"} 0"
+        ));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"} 0"
+        ));
+        assert!(
+            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"} 0")
+        );
+        assert!(
+            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"} 0")
+        );
+    }
+
+    #[test]
+    fn render_prometheus_exports_ipv6_fragment_activity_counters() {
+        let _guard = test_guard();
+        init();
+
+        record_tun_ip_fragment_received("ipv6");
+        record_tun_ip_fragment_received("ipv6");
+        record_tun_ip_reassembly("ipv6", "success");
+        set_tun_ip_fragment_sets_active("ipv6", 1);
+
+        let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"} 2"));
+        assert!(rendered.contains(
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"success\"} 1"
+        ));
+        assert!(
+            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"} 1")
         );
     }
 

@@ -21,6 +21,14 @@ pub(crate) enum IpVersion {
     V6,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Ipv6PayloadInfo {
+    pub(crate) next_header: u8,
+    pub(crate) payload_offset: usize,
+    pub(crate) total_len: usize,
+    pub(crate) next_header_field_offset: usize,
+}
+
 pub(crate) fn checksum16(data: &[u8]) -> u16 {
     checksum16_parts(&[data])
 }
@@ -76,7 +84,7 @@ pub(crate) fn ipv6_payload_checksum(
     checksum16_parts(&[&source, &destination, &length, &next_header, payload])
 }
 
-pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize)> {
+pub(crate) fn locate_ipv6_payload(packet: &[u8]) -> Result<Ipv6PayloadInfo> {
     if packet.len() < IPV6_HEADER_LEN {
         bail!("short IPv6 packet");
     }
@@ -87,6 +95,7 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
     }
 
     let mut next_header = packet[6];
+    let mut next_header_field_offset = 6usize;
     let mut offset = IPV6_HEADER_LEN;
     loop {
         match next_header {
@@ -94,7 +103,14 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
             | IPV6_NEXT_HEADER_UDP
             | IPV6_NEXT_HEADER_ICMPV6
             | IPV6_NEXT_HEADER_FRAGMENT
-            | IPV6_NEXT_HEADER_NONE => return Ok((next_header, offset, total_len)),
+            | IPV6_NEXT_HEADER_NONE => {
+                return Ok(Ipv6PayloadInfo {
+                    next_header,
+                    payload_offset: offset,
+                    total_len,
+                    next_header_field_offset,
+                });
+            }
             IPV6_NEXT_HEADER_HOP_BY_HOP
             | IPV6_NEXT_HEADER_ROUTING
             | IPV6_NEXT_HEADER_DESTINATION_OPTIONS => {
@@ -105,6 +121,7 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
                 if header_len < 8 || offset + header_len > total_len {
                     bail!("invalid IPv6 extension header length");
                 }
+                next_header_field_offset = offset;
                 next_header = packet[offset];
                 offset += header_len;
             }
@@ -116,12 +133,25 @@ pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize
                 if header_len < 8 || offset + header_len > total_len {
                     bail!("invalid IPv6 authentication header length");
                 }
+                next_header_field_offset = offset;
                 next_header = packet[offset];
                 offset += header_len;
             }
-            _ => return Ok((next_header, offset, total_len)),
+            _ => {
+                return Ok(Ipv6PayloadInfo {
+                    next_header,
+                    payload_offset: offset,
+                    total_len,
+                    next_header_field_offset,
+                });
+            }
         }
     }
+}
+
+pub(crate) fn locate_ipv6_upper_layer(packet: &[u8]) -> Result<(u8, usize, usize)> {
+    let info = locate_ipv6_payload(packet)?;
+    Ok((info.next_header, info.payload_offset, info.total_len))
 }
 
 #[cfg(test)]
