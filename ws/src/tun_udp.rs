@@ -20,6 +20,8 @@ mod lifecycle;
 mod wire;
 
 use self::wire::ParsedUdpPacket;
+#[cfg(test)]
+pub(crate) use self::wire::build_ipv4_udp_packet;
 pub(crate) use self::wire::parse_udp_packet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -267,6 +269,43 @@ mod tests {
         assert_eq!(parsed.source_port, 5353);
         assert_eq!(parsed.destination_port, 41000);
         assert_eq!(parsed.payload, b"world");
+    }
+
+    #[test]
+    fn ipv6_udp_roundtrip_with_destination_options() {
+        let source_ip = Ipv6Addr::LOCALHOST;
+        let destination_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
+        let payload = b"world";
+        let udp_len = 8 + payload.len();
+        let extension_len = 8usize;
+        let total_len = crate::tun_wire::IPV6_HEADER_LEN + extension_len + udp_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&((extension_len + udp_len) as u16).to_be_bytes());
+        packet[6] = crate::tun_wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&source_ip.octets());
+        packet[24..40].copy_from_slice(&destination_ip.octets());
+        packet[40] = IP_PROTOCOL_UDP;
+        packet[48..50].copy_from_slice(&5353u16.to_be_bytes());
+        packet[50..52].copy_from_slice(&41000u16.to_be_bytes());
+        packet[52..54].copy_from_slice(&(udp_len as u16).to_be_bytes());
+        packet[56..].copy_from_slice(payload);
+        let checksum = crate::tun_wire::ipv6_payload_checksum(
+            source_ip,
+            destination_ip,
+            IP_PROTOCOL_UDP,
+            &packet[48..],
+        );
+        packet[54..56].copy_from_slice(&checksum.to_be_bytes());
+
+        let parsed = parse_udp_packet(&packet).unwrap();
+        assert_eq!(parsed.version, IpVersion::V6);
+        assert_eq!(parsed.source_ip, IpAddr::V6(source_ip));
+        assert_eq!(parsed.destination_ip, IpAddr::V6(destination_ip));
+        assert_eq!(parsed.source_port, 5353);
+        assert_eq!(parsed.destination_port, 41000);
+        assert_eq!(parsed.payload, payload);
     }
 
     #[test]

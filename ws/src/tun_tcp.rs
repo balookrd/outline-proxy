@@ -48,6 +48,8 @@ mod wire;
 use self::maintenance::{FlowMaintenancePlan, plan_flow_maintenance, sync_flow_metrics_and_wake};
 use self::validation::{PacketValidation, validate_existing_packet};
 #[cfg(test)]
+pub(crate) use self::wire::parse_tcp_packet as parse_tcp_packet_for_tests;
+#[cfg(test)]
 use self::wire::{IPV4_HEADER_LEN, IPV6_HEADER_LEN};
 use self::wire::{
     ParsedTcpPacket, build_reset_response, build_response_packet_custom, parse_tcp_packet,

@@ -144,7 +144,7 @@ tun2udp + tun2tcp"]
 ### TUN
 
 - existing TUN device integration only
-- `tun2udp` with flow lifecycle management and local ICMP echo replies
+- `tun2udp` with flow lifecycle management, IPv4/IPv6 IP fragment reassembly, and local ICMP echo replies
 - stateful `tun2tcp` relay with retransmit, zero-window persist/backoff, SACK-aware receive/send behavior, adaptive RTO, and bounded buffering
 
 ### Operations
@@ -162,7 +162,7 @@ The project is intentionally practical, but there are still boundaries:
 
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
-- IPv4 fragments, IPv6 extension-header paths, and non-echo ICMP traffic on TUN are not supported.
+- Non-echo ICMP traffic on TUN is not supported.
 - HTTP probe supports `http://` today, not `https://`.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
@@ -525,8 +525,10 @@ The process attaches only to an already existing TUN device. Interface creation,
 Capabilities:
 
 - IPv4 and IPv6 UDP packet forwarding
+- IPv4 and IPv6 IP fragment reassembly on the TUN ingress path
 - local IPv4 ICMP echo reply (`ping`) handling
 - local IPv6 ICMPv6 echo reply handling
+- IPv6 UDP and ICMPv6 handling across supported extension-header paths
 - per-flow uplink transport
 - flow idle cleanup
 - bounded flow count

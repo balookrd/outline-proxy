@@ -144,7 +144,7 @@ tun2udp + tun2tcp"]
 ### TUN
 
 - только интеграция с существующим TUN-устройством
-- `tun2udp` с управлением жизненным циклом потоков и локальными ICMP echo replies
+- `tun2udp` с управлением жизненным циклом потоков, сборкой IPv4/IPv6 IP-фрагментов и локальными ICMP echo replies
 - stateful `tun2tcp`-реле с ретрансмитом, zero-window persist/backoff, SACK-aware логикой приёма/отправки, adaptive RTO и bounded buffering
 
 ### Операционная поддержка
@@ -162,7 +162,7 @@ tun2udp + tun2tcp"]
 
 - Shadowsocks 2022 не реализован.
 - `tun2tcp` ориентирован на production, но всё ещё не эквивалентен ядерному TCP-стеку.
-- IPv4-фрагменты, пути с extension headers в IPv6 и не-echo ICMP на TUN не поддерживаются.
+- Не-echo ICMP на TUN не поддерживаются.
 - HTTP-проба поддерживает только `http://`, не `https://`.
 - TCP failover безопасен до начала полезного обмена данными; живые установленные TCP-туннели не мигрируют прозрачно между аплинками.
 
@@ -525,8 +525,10 @@ Runtime failover:
 Возможности:
 
 - перенаправление UDP-пакетов IPv4 и IPv6
+- сборка IPv4 и IPv6 IP-фрагментов на входе с TUN
 - локальная обработка ICMP echo reply (`ping`) для IPv4
 - локальная обработка ICMPv6 echo reply для IPv6
+- поддержка UDP и ICMPv6 через поддерживаемые IPv6 extension-header paths
 - per-flow uplink transport
 - очистка idle-потоков
 - ограниченное количество потоков

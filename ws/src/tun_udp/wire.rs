@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::tun_wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_UDP, checksum16, ipv4_payload_checksum,
-    ipv6_payload_checksum,
+    ipv6_payload_checksum, locate_ipv6_upper_layer,
 };
 use crate::types::TargetAddr;
 
@@ -13,12 +13,12 @@ pub(super) use crate::tun_wire::IpVersion;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedUdpPacket {
-    pub(super) version: IpVersion,
-    pub(super) source_ip: IpAddr,
-    pub(super) destination_ip: IpAddr,
-    pub(super) source_port: u16,
-    pub(super) destination_port: u16,
-    pub(super) payload: Vec<u8>,
+    pub(crate) version: IpVersion,
+    pub(crate) source_ip: IpAddr,
+    pub(crate) destination_ip: IpAddr,
+    pub(crate) source_port: u16,
+    pub(crate) destination_port: u16,
+    pub(crate) payload: Vec<u8>,
 }
 
 pub(crate) fn parse_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
@@ -66,19 +66,15 @@ fn parse_ipv6_udp_packet(packet: &[u8]) -> Result<ParsedUdpPacket> {
     if packet.len() < IPV6_HEADER_LEN + UDP_HEADER_LEN {
         bail!("short IPv6 UDP packet");
     }
-    let payload_len = usize::from(u16::from_be_bytes([packet[4], packet[5]]));
-    let total_len = IPV6_HEADER_LEN + payload_len;
-    if packet.len() < total_len {
-        bail!("truncated IPv6 packet");
-    }
-    if packet[6] != IPV6_NEXT_HEADER_UDP {
+    let (next_header, udp_offset, total_len) = locate_ipv6_upper_layer(packet)?;
+    if next_header != IPV6_NEXT_HEADER_UDP {
         bail!("expected IPv6 UDP packet");
     }
     let mut src = [0u8; 16];
     src.copy_from_slice(&packet[8..24]);
     let mut dst = [0u8; 16];
     dst.copy_from_slice(&packet[24..40]);
-    let udp = &packet[IPV6_HEADER_LEN..total_len];
+    let udp = &packet[udp_offset..total_len];
     let udp_len = usize::from(u16::from_be_bytes([udp[4], udp[5]]));
     if udp_len < UDP_HEADER_LEN || udp.len() < udp_len {
         bail!("truncated IPv6 UDP payload");
@@ -111,7 +107,7 @@ pub(super) fn build_response_packet(
     }
 }
 
-pub(super) fn build_ipv4_udp_packet(
+pub(crate) fn build_ipv4_udp_packet(
     source_ip: Ipv4Addr,
     destination_ip: Ipv4Addr,
     source_port: u16,
@@ -146,7 +142,7 @@ pub(super) fn build_ipv4_udp_packet(
     Ok(packet)
 }
 
-pub(super) fn build_ipv6_udp_packet(
+pub(crate) fn build_ipv6_udp_packet(
     source_ip: Ipv6Addr,
     destination_ip: Ipv6Addr,
     source_port: u16,

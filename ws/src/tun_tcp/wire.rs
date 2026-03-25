@@ -15,24 +15,24 @@ pub(super) use crate::tun_wire::{
 };
 
 #[derive(Debug, Clone)]
-pub(super) struct ParsedTcpPacket {
-    pub(super) version: IpVersion,
-    pub(super) source_ip: IpAddr,
-    pub(super) destination_ip: IpAddr,
-    pub(super) source_port: u16,
-    pub(super) destination_port: u16,
-    pub(super) sequence_number: u32,
-    pub(super) acknowledgement_number: u32,
-    pub(super) window_size: u16,
-    pub(super) max_segment_size: Option<u16>,
-    pub(super) window_scale: Option<u8>,
-    pub(super) sack_permitted: bool,
-    pub(super) sack_blocks: Vec<(u32, u32)>,
+pub(crate) struct ParsedTcpPacket {
+    pub(crate) version: IpVersion,
+    pub(crate) source_ip: IpAddr,
+    pub(crate) destination_ip: IpAddr,
+    pub(crate) source_port: u16,
+    pub(crate) destination_port: u16,
+    pub(crate) sequence_number: u32,
+    pub(crate) acknowledgement_number: u32,
+    pub(crate) window_size: u16,
+    pub(crate) max_segment_size: Option<u16>,
+    pub(crate) window_scale: Option<u8>,
+    pub(crate) sack_permitted: bool,
+    pub(crate) sack_blocks: Vec<(u32, u32)>,
     pub(super) timestamp_value: Option<u32>,
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) timestamp_echo_reply: Option<u32>,
-    pub(super) flags: u8,
-    pub(super) payload: Vec<u8>,
+    pub(crate) flags: u8,
+    pub(crate) payload: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
@@ -45,7 +45,7 @@ struct ParsedTcpOptions {
     timestamp_echo_reply: Option<u32>,
 }
 
-pub(super) fn parse_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
+pub(crate) fn parse_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
     let version = packet
         .first()
         .ok_or_else(|| anyhow!("empty TUN TCP packet"))?

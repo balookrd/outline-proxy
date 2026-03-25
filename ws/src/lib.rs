@@ -7,6 +7,7 @@ pub mod proxy;
 pub mod socks5;
 pub mod transport;
 pub mod tun;
+pub(crate) mod tun_defrag;
 pub mod tun_tcp;
 pub mod tun_udp;
 pub(crate) mod tun_wire;
