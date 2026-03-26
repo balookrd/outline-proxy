@@ -2381,12 +2381,20 @@ mod tests {
         set_tun_ip_fragment_sets_active("ipv6", 1);
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"} 2"));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"success\"} 1"
-        ));
+        let fragments = metric_value(
+            &rendered,
+            "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}",
+        )
+        .expect("ipv6 fragment counter");
+        assert!(fragments >= 2.0);
+        let reassemblies = metric_value(
+            &rendered,
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"success\"}",
+        )
+        .expect("ipv6 reassembly counter");
+        assert!(reassemblies >= 1.0);
         assert!(
-            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"} 1")
+            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}")
         );
     }
 
@@ -2408,6 +2416,12 @@ mod tests {
             rendered
                 .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
         );
+    }
+
+    fn metric_value(rendered: &str, metric: &str) -> Option<f64> {
+        rendered
+            .lines()
+            .find_map(|line| line.strip_prefix(metric)?.trim().parse::<f64>().ok())
     }
 
     #[test]

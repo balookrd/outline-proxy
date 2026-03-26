@@ -815,6 +815,43 @@ mod tests {
     }
 
     #[test]
+    fn reassembles_ipv6_icmp_fragments_and_builds_local_reply() {
+        let packet = build_ipv6_icmp_echo_request(
+            Ipv6Addr::LOCALHOST,
+            Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            0x3701,
+            0x0044,
+            &[0x5a; 1452],
+        );
+        let fragments = fragment_ipv6_packet(&packet, 1368);
+
+        assert_eq!(fragments.len(), 2);
+        assert_eq!(fragments[0].len(), IPV6_HEADER_LEN + 8 + 1368);
+        assert_eq!(fragments[1].len(), IPV6_HEADER_LEN + 8 + 92);
+
+        let mut defrag = TunDefragmenter::default();
+        assert!(matches!(
+            defrag.push(&fragments[0]).unwrap(),
+            DefragmentedPacket::Pending
+        ));
+        let reassembled = match defrag.push(&fragments[1]).unwrap() {
+            DefragmentedPacket::ReadyOwned(packet) => packet,
+            other => panic!("unexpected result: {other:?}"),
+        };
+
+        let reply = build_icmp_echo_reply(&reassembled).unwrap();
+        let (_, payload_offset, total_len) = locate_ipv6_upper_layer(&reply).unwrap();
+
+        assert_eq!(reply[payload_offset], 129);
+        assert_eq!(
+            reply[payload_offset + 4..payload_offset + 8],
+            [0x37, 0x01, 0x00, 0x44]
+        );
+        assert_eq!(total_len, IPV6_HEADER_LEN + 1460);
+        assert_transport_checksum_valid(&reply, IPV6_NEXT_HEADER_ICMPV6);
+    }
+
+    #[test]
     fn reassembles_ipv6_tcp_fragments() {
         let packet = build_ipv6_tcp_packet(
             Ipv6Addr::LOCALHOST,
@@ -973,6 +1010,36 @@ mod tests {
             &packet[48..],
         );
         packet[50..52].copy_from_slice(&checksum.to_be_bytes());
+        packet
+    }
+
+    fn build_ipv6_icmp_echo_request(
+        source_ip: Ipv6Addr,
+        destination_ip: Ipv6Addr,
+        identifier: u16,
+        sequence: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let icmp_len = 8 + payload.len();
+        let total_len = IPV6_HEADER_LEN + icmp_len;
+        let mut packet = vec![0u8; total_len];
+        packet[0] = 0x60;
+        packet[4..6].copy_from_slice(&(icmp_len as u16).to_be_bytes());
+        packet[6] = IPV6_NEXT_HEADER_ICMPV6;
+        packet[7] = 64;
+        packet[8..24].copy_from_slice(&source_ip.octets());
+        packet[24..40].copy_from_slice(&destination_ip.octets());
+        packet[40] = 128;
+        packet[44..46].copy_from_slice(&identifier.to_be_bytes());
+        packet[46..48].copy_from_slice(&sequence.to_be_bytes());
+        packet[48..].copy_from_slice(payload);
+        let checksum = ipv6_payload_checksum(
+            source_ip,
+            destination_ip,
+            IPV6_NEXT_HEADER_ICMPV6,
+            &packet[40..],
+        );
+        packet[42..44].copy_from_slice(&checksum.to_be_bytes());
         packet
     }
 

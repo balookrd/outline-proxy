@@ -527,7 +527,7 @@ Capabilities:
 - IPv4 and IPv6 UDP packet forwarding
 - IPv4 and IPv6 IP fragment reassembly on the TUN ingress path
 - local IPv4 ICMP echo reply (`ping`) handling
-- local IPv6 ICMPv6 echo reply handling
+- local IPv6 ICMPv6 echo reply handling, with source fragmentation to the IPv6 minimum MTU when needed
 - IPv6 UDP and ICMPv6 handling across supported extension-header paths
 - per-flow uplink transport
 - flow idle cleanup
