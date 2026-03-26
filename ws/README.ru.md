@@ -527,7 +527,7 @@ Runtime failover:
 - перенаправление UDP-пакетов IPv4 и IPv6
 - сборка IPv4 и IPv6 IP-фрагментов на входе с TUN
 - локальная обработка ICMP echo reply (`ping`) для IPv4
-- локальная обработка ICMPv6 echo reply для IPv6
+- локальная обработка ICMPv6 echo reply для IPv6, с source fragmentation до минимального IPv6 MTU при необходимости
 - поддержка UDP и ICMPv6 через поддерживаемые IPv6 extension-header paths
 - per-flow uplink transport
 - очистка idle-потоков
