@@ -119,12 +119,13 @@ impl Default for TunDefragmenter {
 }
 
 impl TunDefragmenter {
+    pub(crate) fn cleanup_interval() -> Duration {
+        CLEANUP_INTERVAL
+    }
+
     pub(crate) fn push(&mut self, packet: &[u8]) -> Result<DefragmentedPacket> {
         let now = Instant::now();
-        if now >= self.next_cleanup_at {
-            self.sweep_expired(now);
-            self.next_cleanup_at = now + CLEANUP_INTERVAL;
-        }
+        self.run_maintenance_at(now);
 
         match inspect_packet(packet)? {
             PacketInspection::Passthrough => Ok(DefragmentedPacket::ReadyBorrowed),
@@ -136,6 +137,17 @@ impl TunDefragmenter {
                 metrics::record_tun_ip_fragment_received("ipv6");
                 self.handle_ipv6_fragment(now, fragment)
             }
+        }
+    }
+
+    pub(crate) fn run_maintenance(&mut self) {
+        self.run_maintenance_at(Instant::now());
+    }
+
+    fn run_maintenance_at(&mut self, now: Instant) {
+        if now >= self.next_cleanup_at {
+            self.sweep_expired(now);
+            self.next_cleanup_at = now + CLEANUP_INTERVAL;
         }
     }
 
@@ -693,6 +705,7 @@ mod tests {
     };
     use crate::tun_wire_test_utils::{assert_transport_checksum_valid, transport_offset};
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn passes_through_non_fragmented_ipv4_packets() {
@@ -849,6 +862,39 @@ mod tests {
         );
         assert_eq!(total_len, IPV6_HEADER_LEN + 1460);
         assert_transport_checksum_valid(&reply, IPV6_NEXT_HEADER_ICMPV6);
+    }
+
+    #[test]
+    fn maintenance_sweeps_expired_fragment_sets_without_new_fragments() {
+        let packet = build_ipv6_icmp_echo_request(
+            Ipv6Addr::LOCALHOST,
+            Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2),
+            0x3701,
+            0x0044,
+            &[0x5a; 1452],
+        );
+        let fragments = fragment_ipv6_packet(&packet, 1368);
+
+        let mut defrag = TunDefragmenter::default();
+        assert!(matches!(
+            defrag.push(&fragments[0]).unwrap(),
+            DefragmentedPacket::Pending
+        ));
+        assert_eq!(defrag.ipv6_sets.len(), 1);
+        assert!(defrag.total_buffered_bytes > 0);
+
+        let key = *defrag.ipv6_sets.keys().next().expect("fragment set");
+        defrag
+            .ipv6_sets
+            .get_mut(&key)
+            .expect("fragment set")
+            .deadline = Instant::now() - Duration::from_secs(1);
+        defrag.next_cleanup_at = Instant::now() - Duration::from_secs(1);
+
+        defrag.run_maintenance();
+
+        assert!(defrag.ipv6_sets.is_empty());
+        assert_eq!(defrag.total_buffered_bytes, 0);
     }
 
     #[test]

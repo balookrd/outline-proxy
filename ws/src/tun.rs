@@ -1,6 +1,7 @@
 use std::fs::OpenOptions;
 use std::net::Ipv6Addr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rand::random;
@@ -22,6 +23,9 @@ use crate::tun_wire::{
 use crate::uplink::UplinkManager;
 
 const IPV6_MIN_PATH_MTU: usize = 1280;
+const EBUSY_OS_ERROR: i32 = 16;
+const TUN_OPEN_BUSY_RETRIES: usize = 20;
+const TUN_OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 #[derive(Clone)]
 pub(crate) struct SharedTunWriter {
@@ -41,7 +45,8 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
     let tun_path_for_task = tun_path.clone();
-    let device = open_tun_device(&config)
+    let device = open_tun_device_with_retry(&config)
+        .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
     let reader = File::from_std(
         device
@@ -88,7 +93,8 @@ async fn tun_read_loop(
     mtu: usize,
 ) -> Result<()> {
     let mut buf = vec![0u8; mtu + 256];
-    let mut defragmenter = TunDefragmenter::default();
+    let defragmenter = Arc::new(Mutex::new(TunDefragmenter::default()));
+    spawn_tun_defragmenter_cleanup(Arc::downgrade(&defragmenter));
     loop {
         let read = reader
             .read(&mut buf)
@@ -99,45 +105,48 @@ async fn tun_read_loop(
         }
         let input_packet = &buf[..read];
         let version_nibble = input_packet[0] >> 4;
-        let owned_packet = match defragmenter.push(input_packet) {
-            Ok(DefragmentedPacket::ReadyBorrowed) => None,
-            Ok(DefragmentedPacket::ReadyOwned(packet)) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "fragment_reassembled",
-                );
-                Some(packet)
-            }
-            Ok(DefragmentedPacket::Pending) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "fragment_buffered",
-                );
-                continue;
-            }
-            Ok(DefragmentedPacket::Dropped(reason)) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "fragment_drop",
-                );
-                debug!(reason, packet_len = read, "dropping fragmented TUN packet");
-                continue;
-            }
-            Err(error) => {
-                metrics::record_tun_packet(
-                    "tun_to_upstream",
-                    ip_family_name(version_nibble),
-                    "error",
-                );
-                debug!(
-                    error = %format!("{error:#}"),
-                    packet_len = read,
-                    "dropping malformed fragmented TUN packet"
-                );
-                continue;
+        let owned_packet = {
+            let mut defragmenter = defragmenter.lock().await;
+            match defragmenter.push(input_packet) {
+                Ok(DefragmentedPacket::ReadyBorrowed) => None,
+                Ok(DefragmentedPacket::ReadyOwned(packet)) => {
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(version_nibble),
+                        "fragment_reassembled",
+                    );
+                    Some(packet)
+                }
+                Ok(DefragmentedPacket::Pending) => {
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(version_nibble),
+                        "fragment_buffered",
+                    );
+                    continue;
+                }
+                Ok(DefragmentedPacket::Dropped(reason)) => {
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(version_nibble),
+                        "fragment_drop",
+                    );
+                    debug!(reason, packet_len = read, "dropping fragmented TUN packet");
+                    continue;
+                }
+                Err(error) => {
+                    metrics::record_tun_packet(
+                        "tun_to_upstream",
+                        ip_family_name(version_nibble),
+                        "error",
+                    );
+                    debug!(
+                        error = %format!("{error:#}"),
+                        packet_len = read,
+                        "dropping malformed fragmented TUN packet"
+                    );
+                    continue;
+                }
             }
         };
         let packet_storage;
@@ -270,6 +279,21 @@ async fn tun_read_loop(
             }
         }
     }
+}
+
+fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(TunDefragmenter::cleanup_interval());
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let Some(defragmenter) = defragmenter.upgrade() else {
+                break;
+            };
+            defragmenter.lock().await.run_maintenance();
+        }
+    });
 }
 
 impl SharedTunWriter {
@@ -545,6 +569,40 @@ fn ip_family_name(version: u8) -> &'static str {
     }
 }
 
+async fn open_tun_device_with_retry(config: &TunConfig) -> Result<std::fs::File> {
+    for attempt in 0..=TUN_OPEN_BUSY_RETRIES {
+        match open_tun_device(config) {
+            Ok(file) => return Ok(file),
+            Err(error) if is_tun_device_busy_error(&error) && attempt < TUN_OPEN_BUSY_RETRIES => {
+                warn!(
+                    name = config.name.as_deref().unwrap_or("n/a"),
+                    path = %config.path.display(),
+                    attempt = attempt + 1,
+                    retry_in_ms = TUN_OPEN_BUSY_RETRY_DELAY.as_millis(),
+                    "TUN interface is busy, retrying attach"
+                );
+                tokio::time::sleep(TUN_OPEN_BUSY_RETRY_DELAY).await;
+            }
+            Err(error) if is_tun_device_busy_error(&error) => {
+                bail!(
+                    "TUN interface {} remained busy after {} retries; another process may still own it: {error:#}",
+                    config.name.as_deref().unwrap_or("n/a"),
+                    TUN_OPEN_BUSY_RETRIES
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("retry loop always returns");
+}
+
+fn is_tun_device_busy_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|source| source.downcast_ref::<std::io::Error>())
+        .any(|io_error| io_error.raw_os_error() == Some(EBUSY_OS_ERROR))
+}
+
 #[cfg(target_os = "linux")]
 fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
     use std::os::fd::AsRawFd;
@@ -606,9 +664,10 @@ fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
 #[cfg(test)]
 mod tests {
     use super::{
-        IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU, IPV6_NEXT_HEADER_FRAGMENT,
-        PacketDisposition, build_icmp_echo_reply, build_icmp_echo_reply_packets, checksum16,
-        classify_packet, icmpv6_checksum,
+        EBUSY_OS_ERROR, IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_MIN_PATH_MTU,
+        IPV6_NEXT_HEADER_FRAGMENT, PacketDisposition, build_icmp_echo_reply,
+        build_icmp_echo_reply_packets, checksum16, classify_packet, icmpv6_checksum,
+        is_tun_device_busy_error,
     };
     use crate::tun_defrag::{DefragmentedPacket, TunDefragmenter};
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -775,6 +834,13 @@ mod tests {
         let checksum =
             icmpv6_checksum(destination, source, &reassembled[payload_offset..total_len]);
         assert_eq!(checksum, 0);
+    }
+
+    #[test]
+    fn detects_busy_tun_attach_errors_from_context_chain() {
+        let error = anyhow::Error::from(std::io::Error::from_raw_os_error(EBUSY_OS_ERROR))
+            .context("TUNSETIFF failed");
+        assert!(is_tun_device_busy_error(&error));
     }
 
     fn build_ipv4_icmp_echo_request(
