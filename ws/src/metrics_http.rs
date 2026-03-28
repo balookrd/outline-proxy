@@ -1,11 +1,22 @@
+use std::convert::Infallible;
+
 use anyhow::{Context, Result};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use bytes::Bytes;
+use http::header::{CONTENT_TYPE, HeaderValue};
+use http::{Request, Response, StatusCode};
+use http_body_util::Full;
+use hyper::body::Incoming;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
 use crate::metrics::{record_metrics_http_request, render_prometheus};
 use crate::uplink::UplinkManager;
+
+type MetricsResponse = Response<Full<Bytes>>;
 
 pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkManager) {
     tokio::spawn(async move {
@@ -32,70 +43,66 @@ async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkManager) -> Re
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, uplinks: UplinkManager) -> Result<()> {
-    let mut buf = [0u8; 4096];
-    let read = stream
-        .read(&mut buf)
+async fn handle_connection(stream: TcpStream, uplinks: UplinkManager) -> Result<()> {
+    let io = TokioIo::new(stream);
+    http1::Builder::new()
+        .serve_connection(
+            io,
+            service_fn(move |request: Request<Incoming>| {
+                let uplinks = uplinks.clone();
+                async move { Ok::<_, Infallible>(handle_request(request, uplinks).await) }
+            }),
+        )
         .await
-        .context("failed to read metrics request")?;
-    if read == 0 {
-        return Ok(());
-    }
-
-    let request = String::from_utf8_lossy(&buf[..read]);
-    let first_line = request.lines().next().unwrap_or_default();
-    let path = first_line.split_whitespace().nth(1).unwrap_or("/");
-
-    match path {
-        "/metrics" => {
-            let snapshot = uplinks.snapshot().await;
-            let body = render_prometheus(&snapshot)?;
-            write_response(
-                &mut stream,
-                200,
-                "text/plain; version=0.0.4",
-                body.as_bytes(),
-            )
-            .await?;
-            record_metrics_http_request("/metrics", 200);
-        }
-        _ => {
-            write_response(
-                &mut stream,
-                404,
-                "text/plain; charset=utf-8",
-                b"not found\n",
-            )
-            .await?;
-            record_metrics_http_request(path, 404);
-        }
-    }
-
+        .context("failed to serve metrics HTTP connection")?;
     Ok(())
 }
 
-async fn write_response(
-    stream: &mut TcpStream,
-    status: u16,
-    content_type: &str,
-    body: &[u8],
-) -> Result<()> {
-    let status_text = match status {
-        200 => "OK",
-        404 => "Not Found",
-        _ => "Internal Server Error",
-    };
-    let headers = format!(
-        "HTTP/1.1 {status} {status_text}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    stream
-        .write_all(headers.as_bytes())
-        .await
-        .context("failed to write metrics headers")?;
-    stream
-        .write_all(body)
-        .await
-        .context("failed to write metrics body")?;
-    Ok(())
+async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> MetricsResponse {
+    let path = request.uri().path();
+
+    match path {
+        "/metrics" => match render_metrics_response(uplinks).await {
+            Ok(response) => {
+                record_metrics_http_request("/metrics", 200);
+                response
+            }
+            Err(error) => {
+                warn!(error = %format!("{error:#}"), "failed to render metrics response");
+                record_metrics_http_request("/metrics", 500);
+                plain_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "text/plain; charset=utf-8",
+                    Bytes::from_static(b"internal server error\n"),
+                )
+            }
+        },
+        _ => {
+            record_metrics_http_request(path, 404);
+            plain_response(
+                StatusCode::NOT_FOUND,
+                "text/plain; charset=utf-8",
+                Bytes::from_static(b"not found\n"),
+            )
+        }
+    }
+}
+
+async fn render_metrics_response(uplinks: UplinkManager) -> Result<MetricsResponse> {
+    let snapshot = uplinks.snapshot().await;
+    let body = render_prometheus(&snapshot)?;
+    Ok(plain_response(
+        StatusCode::OK,
+        "text/plain; version=0.0.4",
+        Bytes::from(body),
+    ))
+}
+
+fn plain_response(status: StatusCode, content_type: &'static str, body: Bytes) -> MetricsResponse {
+    let mut response = Response::new(Full::new(body));
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response
 }
