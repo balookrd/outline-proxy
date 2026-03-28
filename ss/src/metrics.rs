@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::config::Config;
+use tokio::time::{Duration, MissedTickBehavior};
 
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
@@ -21,6 +22,7 @@ const UDP_RELAY_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
 ];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
+const PROCESS_MEMORY_SAMPLING_INTERVAL_SECS: u64 = 15;
 static ALLOCATOR_TRIM_RUNS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR_TRIM_ERRORS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -146,6 +148,7 @@ pub struct Metrics {
     tcp_tls_enabled: bool,
     h3_enabled: bool,
     client_active_ttl_secs: u64,
+    process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
     scrapes_total: AtomicU64,
     websocket_upgrades_total: CounterVec<WsLabels>,
     websocket_disconnects_total: CounterVec<WsDisconnectLabels>,
@@ -165,6 +168,7 @@ pub struct Metrics {
     udp_relay_duration_seconds: HistogramVec<UserProtocolResultLabels>,
     udp_payload_bytes_total: CounterVec<UserProtocolDirectionLabels>,
     udp_response_datagrams_total: CounterVec<UserProtocolLabels>,
+    udp_relay_drops_total: CounterVec<ProtocolTransportReasonLabels>,
     udp_oversized_datagrams_dropped_total: CounterVec<UserProtocolDirectionLabels>,
     udp_nat_active_entries: AtomicI64,
     udp_nat_entries_created_total: AtomicU64,
@@ -180,6 +184,7 @@ impl Metrics {
             tcp_tls_enabled: config.tcp_tls_enabled(),
             h3_enabled: config.h3_enabled(),
             client_active_ttl_secs: config.client_active_ttl_secs,
+            process_memory_snapshot: RwLock::new(process_memory_snapshot()),
             scrapes_total: AtomicU64::new(0),
             websocket_upgrades_total: CounterVec::default(),
             websocket_disconnects_total: CounterVec::default(),
@@ -199,6 +204,7 @@ impl Metrics {
             udp_relay_duration_seconds: HistogramVec::new(UDP_RELAY_BUCKETS),
             udp_payload_bytes_total: CounterVec::default(),
             udp_response_datagrams_total: CounterVec::default(),
+            udp_relay_drops_total: CounterVec::default(),
             udp_oversized_datagrams_dropped_total: CounterVec::default(),
             udp_nat_active_entries: AtomicI64::new(0),
             udp_nat_entries_created_total: AtomicU64::new(0),
@@ -224,6 +230,20 @@ impl Metrics {
             started_at: Instant::now(),
             finished: false,
         }
+    }
+
+    pub fn start_process_memory_sampler(self: &Arc<Self>) {
+        let metrics = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(PROCESS_MEMORY_SAMPLING_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                metrics.refresh_process_memory_snapshot().await;
+            }
+        });
     }
 
     pub fn record_websocket_binary_frame(
@@ -357,6 +377,22 @@ impl Metrics {
             .inc(UserProtocolLabels::new(user.into(), protocol), count as u64);
     }
 
+    pub fn record_udp_relay_drop(
+        &self,
+        transport: Transport,
+        protocol: Protocol,
+        reason: &'static str,
+    ) {
+        self.udp_relay_drops_total.inc(
+            ProtocolTransportReasonLabels {
+                transport,
+                protocol,
+                reason,
+            },
+            1,
+        );
+    }
+
     pub fn record_udp_oversized_datagram_dropped(
         &self,
         user: impl Into<Arc<str>>,
@@ -385,6 +421,29 @@ impl Metrics {
     pub fn record_udp_nat_response_dropped(&self) {
         self.udp_nat_responses_dropped_total
             .fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn cached_process_memory_snapshot(&self) -> Option<ProcessMemorySnapshot> {
+        *self
+            .process_memory_snapshot
+            .read()
+            .expect("process memory snapshot poisoned")
+    }
+
+    async fn refresh_process_memory_snapshot(self: &Arc<Self>) {
+        #[cfg(target_os = "linux")]
+        let snapshot = match tokio::task::spawn_blocking(process_memory_snapshot).await {
+            Ok(snapshot) => snapshot,
+            Err(_) => return,
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let snapshot = process_memory_snapshot();
+
+        *self
+            .process_memory_snapshot
+            .write()
+            .expect("process memory snapshot poisoned") = snapshot;
     }
 
     pub fn render_prometheus(&self) -> String {
@@ -475,7 +534,7 @@ impl Metrics {
         )
         .ok();
 
-        if let Some(snapshot) = process_memory_snapshot() {
+        if let Some(snapshot) = self.cached_process_memory_snapshot() {
             write_help(
                 &mut out,
                 "outline_ss_process_resident_memory_bytes",
@@ -810,6 +869,12 @@ impl Metrics {
         );
         render_counter_family(
             &mut out,
+            "outline_ss_udp_relay_drops_total",
+            "UDP datagrams dropped before relay because of transport backpressure or concurrency limits.",
+            &self.udp_relay_drops_total,
+        );
+        render_counter_family(
+            &mut out,
             "outline_ss_udp_oversized_datagrams_dropped_total",
             "UDP datagrams dropped because they exceeded the maximum payload size supported by the transport path.",
             &self.udp_oversized_datagrams_dropped_total,
@@ -1009,6 +1074,23 @@ impl PrometheusLabels for WsDirectionLabels {
             ("transport", self.transport.as_str().to_owned()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("direction", self.direction.to_owned()),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+struct ProtocolTransportReasonLabels {
+    transport: Transport,
+    protocol: Protocol,
+    reason: &'static str,
+}
+
+impl PrometheusLabels for ProtocolTransportReasonLabels {
+    fn labels(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("transport", self.transport.as_str().to_owned()),
+            ("protocol", self.protocol.as_str().to_owned()),
+            ("reason", self.reason.to_owned()),
         ]
     }
 }
@@ -1704,6 +1786,7 @@ mod tests {
         metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
         metrics.record_tcp_payload_bytes("default", Protocol::Http2, "client_to_target", 32);
         metrics.record_udp_payload_bytes("default", Protocol::Http2, "target_to_client", 16);
+        metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
         metrics.record_client_session("default", Protocol::Http2, Transport::Udp);
         record_allocator_trim_run(None, None, false);
         session.finish(DisconnectReason::Normal);
@@ -1719,6 +1802,10 @@ mod tests {
         assert!(rendered.contains("outline_ss_client_active"));
         assert!(rendered.contains("outline_ss_client_up"));
         assert!(rendered.contains("outline_ss_allocator_trim_runs_total"));
+        assert!(rendered.contains("outline_ss_udp_relay_drops_total"));
+        assert!(rendered.contains(
+            "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
+        ));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
