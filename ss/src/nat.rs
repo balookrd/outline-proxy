@@ -369,8 +369,10 @@ fn record_oversized_socket_response_drop(
     source: SocketAddr,
     ciphertext_len: usize,
 ) -> bool {
-    if !matches!(sender.map(UdpResponseSender::protocol), Some(Protocol::Socket))
-        || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
+    if !matches!(
+        sender.map(UdpResponseSender::protocol),
+        Some(Protocol::Socket)
+    ) || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
     {
         return false;
     }
@@ -446,10 +448,8 @@ mod tests {
             "/udp",
         )?;
         let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
-        let sender = UdpResponseSender::datagram(
-            socket,
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 40000)),
-        );
+        let sender =
+            UdpResponseSender::datagram(socket, SocketAddr::from((Ipv4Addr::LOCALHOST, 40000)));
 
         assert!(record_oversized_socket_response_drop(
             Some(&sender),
