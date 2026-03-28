@@ -1004,6 +1004,7 @@ async fn handle_udp_connection(
                     Ok(Message::Binary(data)) => {
                         metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            metrics.record_udp_relay_drop(Transport::Udp, protocol, "concurrency_limit");
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -1279,6 +1280,11 @@ async fn handle_udp_h3_connection(
                             data.len(),
                         );
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            metrics.record_udp_relay_drop(
+                                Transport::Udp,
+                                Protocol::Http3,
+                                "concurrency_limit",
+                            );
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -1801,6 +1807,11 @@ async fn serve_ss_udp_socket(
                     "socket udp received encrypted datagram"
                 );
                 if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                    metrics.record_udp_relay_drop(
+                        Transport::Udp,
+                        Protocol::Socket,
+                        "concurrency_limit",
+                    );
                     warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
                     continue;
                 }
