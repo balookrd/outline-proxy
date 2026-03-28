@@ -174,6 +174,7 @@ pub async fn run(config: Config) -> Result<()> {
     ensure_rustls_provider_installed();
     let config = Arc::new(config);
     let metrics = Metrics::new(config.as_ref());
+    metrics.start_process_memory_sampler();
     let users = build_users(&config)?;
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));

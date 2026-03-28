@@ -10,6 +10,7 @@ use std::{
 };
 
 use crate::config::Config;
+use tokio::time::{Duration, MissedTickBehavior};
 
 #[cfg(target_os = "linux")]
 use anyhow::{Context, Result};
@@ -21,6 +22,7 @@ const UDP_RELAY_BUCKETS: &[f64] = &[
     0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
 ];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
+const PROCESS_MEMORY_SAMPLING_INTERVAL_SECS: u64 = 15;
 static ALLOCATOR_TRIM_RUNS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR_TRIM_RELEASE_EVENTS_TOTAL: AtomicU64 = AtomicU64::new(0);
 static ALLOCATOR_TRIM_ERRORS_TOTAL: AtomicU64 = AtomicU64::new(0);
@@ -146,6 +148,7 @@ pub struct Metrics {
     tcp_tls_enabled: bool,
     h3_enabled: bool,
     client_active_ttl_secs: u64,
+    process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
     scrapes_total: AtomicU64,
     websocket_upgrades_total: CounterVec<WsLabels>,
     websocket_disconnects_total: CounterVec<WsDisconnectLabels>,
@@ -181,6 +184,7 @@ impl Metrics {
             tcp_tls_enabled: config.tcp_tls_enabled(),
             h3_enabled: config.h3_enabled(),
             client_active_ttl_secs: config.client_active_ttl_secs,
+            process_memory_snapshot: RwLock::new(process_memory_snapshot()),
             scrapes_total: AtomicU64::new(0),
             websocket_upgrades_total: CounterVec::default(),
             websocket_disconnects_total: CounterVec::default(),
@@ -226,6 +230,20 @@ impl Metrics {
             started_at: Instant::now(),
             finished: false,
         }
+    }
+
+    pub fn start_process_memory_sampler(self: &Arc<Self>) {
+        let metrics = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(PROCESS_MEMORY_SAMPLING_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                metrics.refresh_process_memory_snapshot().await;
+            }
+        });
     }
 
     pub fn record_websocket_binary_frame(
@@ -405,6 +423,29 @@ impl Metrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    fn cached_process_memory_snapshot(&self) -> Option<ProcessMemorySnapshot> {
+        *self
+            .process_memory_snapshot
+            .read()
+            .expect("process memory snapshot poisoned")
+    }
+
+    async fn refresh_process_memory_snapshot(self: &Arc<Self>) {
+        #[cfg(target_os = "linux")]
+        let snapshot = match tokio::task::spawn_blocking(process_memory_snapshot).await {
+            Ok(snapshot) => snapshot,
+            Err(_) => return,
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        let snapshot = process_memory_snapshot();
+
+        *self
+            .process_memory_snapshot
+            .write()
+            .expect("process memory snapshot poisoned") = snapshot;
+    }
+
     pub fn render_prometheus(&self) -> String {
         self.scrapes_total.fetch_add(1, Ordering::Relaxed);
         let mut out = String::with_capacity(32 * 1024);
@@ -493,7 +534,7 @@ impl Metrics {
         )
         .ok();
 
-        if let Some(snapshot) = process_memory_snapshot() {
+        if let Some(snapshot) = self.cached_process_memory_snapshot() {
             write_help(
                 &mut out,
                 "outline_ss_process_resident_memory_bytes",
