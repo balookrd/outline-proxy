@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::{sleep_until, timeout};
 use tracing::{debug, info, warn};
 
@@ -80,7 +80,7 @@ pub struct TunTcpEngine {
 struct TunTcpEngineInner {
     writer: SharedTunWriter,
     uplinks: UplinkManager,
-    flows: Mutex<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
+    flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
     pending_connects: Mutex<HashSet<TcpFlowKey>>,
     next_flow_id: AtomicU64,
     max_flows: usize,
@@ -109,7 +109,7 @@ impl TunTcpEngine {
             inner: Arc::new(TunTcpEngineInner {
                 writer,
                 uplinks,
-                flows: Mutex::new(HashMap::new()),
+                flows: RwLock::new(HashMap::new()),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: AtomicU64::new(1),
                 max_flows,
@@ -142,7 +142,7 @@ impl TunTcpEngine {
     }
 
     async fn lookup_flow(&self, key: &TcpFlowKey) -> Option<Arc<Mutex<TcpFlowState>>> {
-        self.inner.flows.lock().await.get(key).cloned()
+        self.inner.flows.read().await.get(key).cloned()
     }
 
     async fn write_tun_packet_or_close_flow(&self, key: &TcpFlowKey, packet: &[u8]) -> Result<()> {
@@ -189,7 +189,7 @@ impl TunTcpEngine {
     }
 
     async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.lock().await.remove(key);
+        let flow = self.inner.flows.write().await.remove(key);
         let Some(flow) = flow else {
             return;
         };
@@ -361,7 +361,7 @@ impl TunTcpEngine {
     }
 
     async fn insert_flow(&self, key: TcpFlowKey, flow: Arc<Mutex<TcpFlowState>>) -> Result<()> {
-        if self.inner.flows.lock().await.len() >= self.inner.max_flows {
+        if self.inner.flows.read().await.len() >= self.inner.max_flows {
             if let Some(evicted_key) = self.oldest_flow_key().await {
                 self.abort_flow_with_rst(&evicted_key, "evicted").await;
             } else {
@@ -374,7 +374,7 @@ impl TunTcpEngine {
             state.uplink_name.clone()
         };
         {
-            let mut guard = self.inner.flows.lock().await;
+            let mut guard = self.inner.flows.write().await;
             guard.insert(key, flow);
         }
         metrics::record_tun_tcp_event(&uplink_name, "flow_created");
@@ -900,7 +900,9 @@ impl TunTcpEngine {
                 );
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
-                state.pending_client_data.push_back(pending_payload.clone());
+                state
+                    .pending_client_data
+                    .push_back(std::mem::take(&mut pending_payload).into());
                 sync_flow_metrics_and_wake(&mut state);
             }
             should_send_ack = true;
@@ -993,13 +995,14 @@ impl TunTcpEngine {
                         if chunk.is_empty() {
                             continue;
                         }
+                        let chunk_len = chunk.len();
                         let (flush, ip_family, backlog_pressure, uplink_name) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
                             }
                             state.last_seen = Instant::now();
-                            state.pending_server_data.push_back(chunk.clone());
+                            state.pending_server_data.push_back(chunk.into());
                             let flush = flush_server_output(&mut state);
                             let backlog_pressure = assess_server_backlog_pressure(
                                 &mut state,
@@ -1128,7 +1131,7 @@ impl TunTcpEngine {
                                     "tcp",
                                     "upstream_to_client",
                                     &uplink_name,
-                                    chunk.len(),
+                                    chunk_len,
                                 );
                             }
                             Err(error) => {
@@ -1251,7 +1254,7 @@ impl TunTcpEngine {
     }
 
     async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.lock().await.remove(key);
+        let flow = self.inner.flows.write().await.remove(key);
         if let Some(flow) = flow {
             let (flow_id, uplink_name, _duration, upstream_writer, close_signal) = {
                 let mut state = flow.lock().await;
@@ -1275,7 +1278,7 @@ impl TunTcpEngine {
 
     async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {
         let flows = {
-            let guard = self.inner.flows.lock().await;
+            let guard = self.inner.flows.read().await;
             guard
                 .iter()
                 .map(|(key, flow)| (key.clone(), Arc::clone(flow)))
@@ -1296,7 +1299,7 @@ impl TunTcpEngine {
     }
 
     async fn maybe_shrink_flow_table(&self) {
-        let mut guard = self.inner.flows.lock().await;
+        let mut guard = self.inner.flows.write().await;
         maybe_shrink_hash_map(&mut guard);
     }
 }
@@ -1966,7 +1969,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2129,7 +2132,7 @@ mod tests {
         let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
         assert_eq!(ack.flags, TCP_FLAG_ACK);
         assert_eq!(ack.acknowledgement_number, 1001);
-        assert!(engine.inner.flows.lock().await.get(&key).is_some());
+        assert!(engine.inner.flows.read().await.get(&key).is_some());
     }
 
     #[tokio::test]
@@ -2414,7 +2417,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2430,7 +2433,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2452,7 +2455,7 @@ mod tests {
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(engine.inner.flows.lock().await.get(&key).is_none());
+        assert!(engine.inner.flows.read().await.get(&key).is_none());
     }
 
     #[tokio::test]
@@ -2535,7 +2538,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&time_wait_key)
             .cloned()
@@ -2563,7 +2566,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&time_wait_key)
             .cloned()
@@ -2580,7 +2583,7 @@ mod tests {
             engine
                 .inner
                 .flows
-                .lock()
+                .read()
                 .await
                 .get(&time_wait_key)
                 .is_none()
@@ -2682,7 +2685,7 @@ mod tests {
         };
 
         let segment = normalize_client_segment(&packet, 103);
-        assert_eq!(segment.payload, b"def");
+        assert_eq!(segment.payload.as_ref(), b"def");
         assert!(!segment.fin);
     }
 
@@ -2834,7 +2837,7 @@ mod tests {
         let mut pending = VecDeque::from([BufferedClientSegment {
             sequence_number: 106,
             flags: TCP_FLAG_ACK,
-            payload: b"ghi".to_vec(),
+            payload: b"ghi".to_vec().into(),
         }]);
         let mut payload = Vec::new();
 
@@ -2852,7 +2855,7 @@ mod tests {
         let mut pending = VecDeque::from([BufferedClientSegment {
             sequence_number: 103,
             flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
-            payload: b"def".to_vec(),
+            payload: b"def".to_vec().into(),
         }]);
         let mut payload = Vec::new();
 
@@ -3206,7 +3209,7 @@ mod tests {
                 sequence_number: 1000,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"AAAA".to_vec(),
+                payload: b"AAAA".to_vec().into(),
                 last_sent: Instant::now(),
                 first_sent: Instant::now(),
                 retransmits: 0,
@@ -3215,7 +3218,7 @@ mod tests {
                 sequence_number: 1004,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"BBBB".to_vec(),
+                payload: b"BBBB".to_vec().into(),
                 last_sent: Instant::now(),
                 first_sent: Instant::now(),
                 retransmits: 0,
@@ -3251,7 +3254,7 @@ mod tests {
                 sequence_number: 1000,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"AAAA".to_vec(),
+                payload: b"AAAA".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_millis(200),
                 retransmits: 0,
@@ -3260,7 +3263,7 @@ mod tests {
                 sequence_number: 1004,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"BBBB".to_vec(),
+                payload: b"BBBB".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 1,
@@ -3269,7 +3272,7 @@ mod tests {
                 sequence_number: 1008,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"CCCC".to_vec(),
+                payload: b"CCCC".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3278,7 +3281,7 @@ mod tests {
                 sequence_number: 1012,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"DDDD".to_vec(),
+                payload: b"DDDD".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3309,7 +3312,7 @@ mod tests {
                 sequence_number: 1000,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"AAAA".to_vec(),
+                payload: b"AAAA".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_millis(200),
                 retransmits: 1,
@@ -3318,7 +3321,7 @@ mod tests {
                 sequence_number: 1004,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"BBBB".to_vec(),
+                payload: b"BBBB".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 1,
@@ -3380,7 +3383,7 @@ mod tests {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_window = 0;
         state.client_window_end = state.server_seq;
-        state.pending_server_data.push_back(b"ABC".to_vec());
+        state.pending_server_data.push_back(b"ABC".to_vec().into());
 
         let first = super::maybe_emit_zero_window_probe(&mut state).unwrap();
         assert!(first.is_some());
@@ -3411,12 +3414,12 @@ mod tests {
             BufferedClientSegment {
                 sequence_number: 120,
                 flags: TCP_FLAG_ACK,
-                payload: b"efgh".to_vec(),
+                payload: b"efgh".to_vec().into(),
             },
             BufferedClientSegment {
                 sequence_number: 112,
                 flags: TCP_FLAG_ACK,
-                payload: b"abcd".to_vec(),
+                payload: b"abcd".to_vec().into(),
             },
         ]);
         let packet = super::build_flow_ack_packet(
@@ -3440,22 +3443,22 @@ mod tests {
             BufferedClientSegment {
                 sequence_number: 112,
                 flags: TCP_FLAG_ACK,
-                payload: b"aaaa".to_vec(),
+                payload: b"aaaa".to_vec().into(),
             },
             BufferedClientSegment {
                 sequence_number: 120,
                 flags: TCP_FLAG_ACK,
-                payload: b"bbbb".to_vec(),
+                payload: b"bbbb".to_vec().into(),
             },
             BufferedClientSegment {
                 sequence_number: 128,
                 flags: TCP_FLAG_ACK,
-                payload: b"cccc".to_vec(),
+                payload: b"cccc".to_vec().into(),
             },
             BufferedClientSegment {
                 sequence_number: 136,
                 flags: TCP_FLAG_ACK,
-                payload: b"dddd".to_vec(),
+                payload: b"dddd".to_vec().into(),
             },
         ]);
 
@@ -3484,7 +3487,7 @@ mod tests {
                 sequence_number: 1000,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"AAAA".to_vec(),
+                payload: b"AAAA".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3493,7 +3496,7 @@ mod tests {
                 sequence_number: 1004,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"BBBB".to_vec(),
+                payload: b"BBBB".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3502,7 +3505,7 @@ mod tests {
                 sequence_number: 1008,
                 acknowledgement_number: 500,
                 flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-                payload: b"CCCC".to_vec(),
+                payload: b"CCCC".to_vec().into(),
                 last_sent: Instant::now() - Duration::from_secs(2),
                 first_sent: Instant::now() - Duration::from_secs(2),
                 retransmits: 0,
@@ -3542,7 +3545,7 @@ mod tests {
             sequence_number: 1000,
             acknowledgement_number: 500,
             flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
-            payload: b"AAAA".to_vec(),
+            payload: b"AAAA".to_vec().into(),
             last_sent: Instant::now() - Duration::from_secs(2),
             first_sent: Instant::now() - Duration::from_secs(2),
             retransmits: 0,
@@ -3561,12 +3564,12 @@ mod tests {
             super::BufferedClientSegment {
                 sequence_number: 150,
                 flags: TCP_FLAG_ACK,
-                payload: vec![1; 32],
+                payload: vec![1; 32].into(),
             },
             super::BufferedClientSegment {
                 sequence_number: 182,
                 flags: TCP_FLAG_ACK,
-                payload: vec![2; 32],
+                payload: vec![2; 32].into(),
             },
         ]);
         let config = TunTcpConfig {
@@ -3580,7 +3583,7 @@ mod tests {
     #[tokio::test]
     async fn server_backlog_limit_detects_pending_bytes() {
         let mut state = tcp_flow_state_for_tests().await;
-        state.pending_server_data = VecDeque::from([vec![1; 128], vec![2; 128]]);
+        state.pending_server_data = VecDeque::from([vec![1; 128].into(), vec![2; 128].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
@@ -3595,7 +3598,7 @@ mod tests {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_window = 0;
         state.client_window_end = state.server_seq;
-        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
@@ -3612,7 +3615,7 @@ mod tests {
     #[tokio::test]
     async fn server_backlog_pressure_aborts_after_grace_even_without_window_stall() {
         let mut state = tcp_flow_state_for_tests().await;
-        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
@@ -3631,7 +3634,7 @@ mod tests {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_window = 0;
         state.client_window_end = state.server_seq;
-        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
@@ -3650,7 +3653,7 @@ mod tests {
         let mut state = tcp_flow_state_for_tests().await;
         state.client_window = 0;
         state.client_window_end = state.server_seq;
-        state.pending_server_data = VecDeque::from([vec![1; 256]]);
+        state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             backlog_abort_grace: Duration::from_secs(60),
@@ -3673,7 +3676,7 @@ mod tests {
     #[tokio::test]
     async fn server_backlog_pressure_aborts_immediately_above_hard_limit() {
         let mut state = tcp_flow_state_for_tests().await;
-        state.pending_server_data = VecDeque::from([vec![1; 512]]);
+        state.pending_server_data = VecDeque::from([vec![1; 512].into()]);
         let config = TunTcpConfig {
             max_pending_server_bytes: 200,
             ..test_tun_tcp_config()
@@ -3730,7 +3733,7 @@ mod tests {
                 || error_text.contains("failed to flush TUN packet"),
             "{error_text}"
         );
-        assert!(engine.inner.flows.lock().await.is_empty());
+        assert!(engine.inner.flows.read().await.is_empty());
         assert!(engine.inner.pending_connects.lock().await.is_empty());
 
         let _ = std::fs::remove_file(path);
