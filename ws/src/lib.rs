@@ -1,5 +1,6 @@
 pub mod config;
 pub mod crypto;
+pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
 pub mod metrics_http;
@@ -26,6 +27,7 @@ use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
 use crate::config::{AppConfig, Args, load_config};
+use crate::memory::spawn_periodic_trim_loop;
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
@@ -43,6 +45,9 @@ pub async fn run(args: Args) -> Result<()> {
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
+    if let Some(interval) = config.memory_trim_interval {
+        spawn_periodic_trim_loop(interval);
+    }
     run_with_config(config).await
 }
 
@@ -94,7 +99,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
         let uplinks = uplinks.clone();
         tokio::spawn(async move {
             if let Err(error) = proxy::handle_client(stream, peer, config, uplinks).await {
-                if is_expected_client_disconnect(&error) {
+                if crate::error_text::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
                 } else {
                     warn!(%peer, error = %format!("{error:#}"), "connection failed");
@@ -102,15 +107,4 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
             }
         });
     }
-}
-
-fn is_expected_client_disconnect(error: &anyhow::Error) -> bool {
-    let lower = format!("{error:#}").to_lowercase();
-    let client_side = lower.contains("client read failed") || lower.contains("client write failed");
-    let disconnect = lower.contains("connection reset by peer")
-        || lower.contains("broken pipe")
-        || lower.contains("os error 104")
-        || lower.contains("os error 54")
-        || lower.contains("os error 32");
-    client_side && disconnect
 }

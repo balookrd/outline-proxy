@@ -1,9 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 
-use outline_ws_rust::config::{Args, load_config};
-use outline_ws_rust::memory::spawn_periodic_trim_loop;
-use outline_ws_rust::metrics::{init as init_metrics, spawn_process_metrics_sampler};
+use outline_ws_rust::config::Args;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,13 +14,5 @@ async fn main() -> Result<()> {
         )
         .init();
 
-    init_metrics();
-    spawn_process_metrics_sampler();
-
-    let args = Args::parse();
-    let config = load_config(&args.config, &args).await?;
-    if let Some(interval) = config.memory_trim_interval {
-        spawn_periodic_trim_loop(interval);
-    }
-    outline_ws_rust::run_with_config(config).await
+    outline_ws_rust::run(Args::parse()).await
 }
