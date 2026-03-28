@@ -2305,24 +2305,7 @@ async fn run_udp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>)
 }
 
 fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
-    let lower = format!("{error:#}").to_lowercase();
-    // TCP / H1 / H2 expected close reasons
-    lower.contains("websocket probe received close frame")
-        || lower.contains("websocket probe stream closed before pong")
-        || lower.contains("connection reset by peer")
-        || lower.contains("broken pipe")
-        || lower.contains("os error 104")
-        || lower.contains("os error 54")
-        || lower.contains("os error 32")
-        // Ping/pong timed out — stream went stale in the standby pool
-        || lower.contains("websocket ping/pong timed out")
-        // H3 / QUIC expected close reasons (errors are stringified via
-        // sockudo_to_ws_error, so we match on substrings of the message)
-        || lower.contains("timed out")
-        || lower.contains("application closed")
-        || lower.contains("connection lost")
-        || lower.contains("stream reset")
-        || lower.contains("transport error")
+    crate::error_text::is_expected_standby_probe_failure(error)
 }
 
 fn build_http_probe_request(host: &str, port: u16, path: &str) -> String {
@@ -2896,89 +2879,11 @@ fn mark_probe_wakeup(
 }
 
 fn classify_runtime_failure_cause(error_text: &str) -> &'static str {
-    let lower = error_text.to_ascii_lowercase();
-    if lower.contains("timed out") || lower.contains("timeout") {
-        "timeout"
-    } else if lower.contains("connection reset")
-        || lower.contains("broken pipe")
-        || lower.contains("connection lost")
-        || lower.contains("stream reset")
-    {
-        "reset"
-    } else if lower.contains("websocket closed")
-        || lower.contains("stream ended")
-        || lower.contains("eof")
-        || lower.contains("closed by server")
-    {
-        "closed"
-    } else if lower.contains("failed to connect")
-        || lower.contains("connection refused")
-        || lower.contains("dns resolution")
-        || lower.contains("resolve")
-    {
-        "connect"
-    } else if lower.contains("decrypt")
-        || lower.contains("encrypt")
-        || lower.contains("aead")
-        || lower.contains("salt")
-        || lower.contains("nonce")
-        || lower.contains("ss2022")
-    {
-        "crypto"
-    } else {
-        "other"
-    }
+    crate::error_text::classify_runtime_failure_cause(error_text)
 }
 
 fn classify_runtime_failure_signature(error_text: &str) -> &'static str {
-    let lower = error_text.to_ascii_lowercase();
-    if lower.contains("failed to read") {
-        "read_failed"
-    } else if lower.contains("failed to send") || lower.contains("failed to write") {
-        "write_failed"
-    } else if lower.contains("websocket read failed") {
-        "ws_read_failed"
-    } else if lower.contains("websocket closed") {
-        "ws_closed"
-    } else if lower.contains("control connection read failed") {
-        "control_read_failed"
-    } else if lower.contains("udp relay receive failed") {
-        "udp_relay_receive_failed"
-    } else if lower.contains("socket shutdown failed") {
-        "socket_shutdown_failed"
-    } else if lower.contains("invalid ss2022") {
-        "invalid_ss2022"
-    } else if lower.contains("duplicate or out-of-order") {
-        "udp_out_of_order"
-    } else if lower.contains("request salt mismatch") {
-        "request_salt_mismatch"
-    } else if lower.contains("oversized udp") {
-        "oversized_udp"
-    } else if lower.contains("failed to connect") {
-        "connect_failed"
-    } else if lower.contains("dns resolution returned no addresses") {
-        "dns_no_addresses"
-    } else if lower.contains("timed out") || lower.contains("timeout") {
-        "timeout"
-    } else if lower.contains("connection reset") {
-        "connection_reset"
-    } else if lower.contains("broken pipe") {
-        "broken_pipe"
-    } else if lower.contains("connection lost") {
-        "connection_lost"
-    } else if lower.contains("stream reset") {
-        "stream_reset"
-    } else if lower.contains("application closed") {
-        "application_closed"
-    } else if lower.contains("transport error") {
-        "transport_error"
-    } else if lower.contains("decrypt") {
-        "decrypt_failed"
-    } else if lower.contains("encrypt") {
-        "encrypt_failed"
-    } else {
-        "other"
-    }
+    crate::error_text::classify_runtime_failure_signature(error_text)
 }
 
 fn normalize_other_runtime_failure_detail(error_text: &str) -> String {

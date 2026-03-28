@@ -199,16 +199,11 @@ async fn handle_tcp_connect(
         // rather than waiting for the next connection attempt to fail.
         // Client-side disconnects and intentional uplink switches are excluded.
         if let Err(ref err) = result {
-            let msg = format!("{err:#}");
-            let is_upstream_failure = !msg.contains("client read failed")
-                && !msg.contains("client write failed")
-                && !msg.contains("active uplink switched")
-                && !msg.contains("websocket closed");
-            if is_upstream_failure {
+            if crate::error_text::is_upstream_runtime_failure(err) {
                 uplinks
                     .report_runtime_failure(selected_index, TransportKind::Tcp, err)
                     .await;
-            } else if msg.contains("websocket closed") {
+            } else if crate::error_text::is_websocket_closed(err) {
                 // The upstream server closed the WebSocket connection
                 // mid-stream (server-initiated close, not a client
                 // disconnect).  We do not set a full runtime-failure

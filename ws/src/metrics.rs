@@ -2334,39 +2334,53 @@ mod tests {
         init();
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"} 0"
-        ));
-        assert!(
-            rendered.contains(
-                "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"} 0"
-            )
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
         );
-        assert!(
-            rendered.contains("outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"}",
         );
-        assert!(
-            rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
         );
-        assert!(
-            rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",
         );
-        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"} 0"));
-        assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"} 0"));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"} 0"
-        ));
-        assert!(rendered.contains(
-            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"} 0"
-        ));
-        assert!(
-            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"}",
         );
-        assert!(
-            rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}",
         );
     }
 
@@ -2404,17 +2418,29 @@ mod tests {
         init();
 
         let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-        assert!(rendered.contains("outline_ws_rust_requests_total{command=\"connect\"} 0"));
-        assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
-        assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"tcp\"} 0"));
-        assert!(rendered.contains("outline_ws_rust_sessions_active{protocol=\"udp\"} 0"));
-        assert!(
-            rendered
-                .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_requests_total{command=\"connect\"}",
         );
-        assert!(
-            rendered
-                .contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_requests_total{command=\"udp_associate\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_sessions_active{protocol=\"tcp\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_sessions_active{protocol=\"udp\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"}",
+        );
+        assert_metric_present(
+            &rendered,
+            "outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"}",
         );
     }
 
@@ -2422,6 +2448,13 @@ mod tests {
         rendered
             .lines()
             .find_map(|line| line.strip_prefix(metric)?.trim().parse::<f64>().ok())
+    }
+
+    fn assert_metric_present(rendered: &str, metric: &str) {
+        assert!(
+            metric_value(rendered, metric).is_some(),
+            "metric {metric} missing from rendered output"
+        );
     }
 
     #[test]
