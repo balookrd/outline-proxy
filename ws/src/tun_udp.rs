@@ -179,19 +179,7 @@ impl TunUdpEngine {
 }
 
 pub(crate) fn classify_tun_udp_forward_error(error: &anyhow::Error) -> &'static str {
-    let text = format!("{error:#}");
-    let lower = text.to_ascii_lowercase();
-    if lower.contains("all udp uplinks failed") {
-        "all_uplinks_failed"
-    } else if lower.contains("failed to send udp websocket frame")
-        || lower.contains("websocket read failed")
-    {
-        "transport_error"
-    } else if lower.contains("failed to connect to") {
-        "connect_failed"
-    } else {
-        "other"
-    }
+    crate::error_text::classify_tun_udp_forward_error(error)
 }
 
 fn build_udp_payload(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
