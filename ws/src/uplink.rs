@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -101,13 +102,37 @@ pub struct UplinkCandidate {
     pub uplink: Arc<UplinkConfig>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TransportKind {
     Tcp,
     Udp,
 }
 
-type RoutingKey = String;
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum RoutingKey {
+    Global,
+    TransportGlobal(TransportKind),
+    Target {
+        transport: TransportKind,
+        target: TargetAddr,
+    },
+    Default(TransportKind),
+}
+
+impl fmt::Display for RoutingKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Global => write!(f, "global"),
+            Self::TransportGlobal(transport) => {
+                write!(f, "{}:global", transport_key_prefix(*transport))
+            }
+            Self::Target { transport, target } => {
+                write!(f, "{}:{target}", transport_key_prefix(*transport))
+            }
+            Self::Default(transport) => write!(f, "{}:default", transport_key_prefix(*transport)),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UplinkManagerSnapshot {
@@ -301,7 +326,6 @@ impl UplinkManager {
     pub async fn snapshot(&self) -> UplinkManagerSnapshot {
         let now = Instant::now();
         let statuses = self.inner.statuses.read().await.clone();
-        let sticky = self.inner.sticky_routes.read().await.clone();
         let global_active_index = *self.inner.global_active_uplink.read().await;
         let tcp_active_index = *self.inner.tcp_active_uplink.read().await;
         let udp_active_index = *self.inner.udp_active_uplink.read().await;
@@ -397,20 +421,23 @@ impl UplinkManager {
             })
             .flatten();
 
-        let sticky_routes = sticky
-            .into_iter()
-            .filter_map(|(key, route)| {
-                route
-                    .expires_at
-                    .checked_duration_since(now)
-                    .map(|remaining| StickyRouteSnapshot {
-                        key,
-                        uplink_index: route.uplink_index,
-                        uplink_name: self.inner.uplinks[route.uplink_index].name.clone(),
-                        expires_in_ms: remaining.as_millis(),
-                    })
-            })
-            .collect();
+        let sticky_routes = {
+            let sticky = self.inner.sticky_routes.read().await;
+            sticky
+                .iter()
+                .filter_map(|(key, route)| {
+                    route
+                        .expires_at
+                        .checked_duration_since(now)
+                        .map(|remaining| StickyRouteSnapshot {
+                            key: key.to_string(),
+                            uplink_index: route.uplink_index,
+                            uplink_name: self.inner.uplinks[route.uplink_index].name.clone(),
+                            expires_in_ms: remaining.as_millis(),
+                        })
+                })
+                .collect()
+        };
 
         UplinkManagerSnapshot {
             generated_at_unix_ms: std::time::SystemTime::now()
@@ -1657,7 +1684,7 @@ impl UplinkManager {
 
     async fn preferred_sticky_index(
         &self,
-        routing_key: &str,
+        routing_key: &RoutingKey,
         transport: TransportKind,
         candidates: &[CandidateState],
         statuses: &[UplinkStatus],
@@ -1724,10 +1751,10 @@ impl UplinkManager {
         }
     }
 
-    async fn store_sticky_route(&self, routing_key: &str, uplink_index: usize) {
+    async fn store_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {
         let mut sticky = self.inner.sticky_routes.write().await;
         sticky.insert(
-            routing_key.to_owned(),
+            routing_key.clone(),
             StickyRoute {
                 uplink_index,
                 expires_at: if self.strict_pinned_route_key(routing_key) {
@@ -1751,12 +1778,14 @@ impl UplinkManager {
         maybe_shrink_hash_map(&mut sticky);
     }
 
-    fn strict_pinned_route_key(&self, key: &str) -> bool {
+    fn strict_pinned_route_key(&self, key: &RoutingKey) -> bool {
         match self.inner.load_balancing.routing_scope {
-            RoutingScope::Global => self.strict_global_active_uplink() && key == "global",
+            RoutingScope::Global => {
+                self.strict_global_active_uplink() && *key == RoutingKey::Global
+            }
             RoutingScope::PerUplink => {
                 self.strict_per_uplink_active_uplink()
-                    && (key == "Tcp:global" || key == "Udp:global")
+                    && matches!(key, RoutingKey::TransportGlobal(_))
             }
             RoutingScope::PerFlow => false,
         }
@@ -2832,18 +2861,28 @@ fn routing_key(
     scope: RoutingScope,
 ) -> RoutingKey {
     match target {
-        _ if matches!(scope, RoutingScope::Global) => "global".to_string(),
-        _ if matches!(scope, RoutingScope::PerUplink) => format!("{transport:?}:global"),
-        Some(target) => format!("{transport:?}:{target}"),
-        None => format!("{transport:?}:default"),
+        _ if matches!(scope, RoutingScope::Global) => RoutingKey::Global,
+        _ if matches!(scope, RoutingScope::PerUplink) => RoutingKey::TransportGlobal(transport),
+        Some(target) => RoutingKey::Target {
+            transport,
+            target: target.clone(),
+        },
+        None => RoutingKey::Default(transport),
     }
 }
 
 fn strict_route_key(transport: TransportKind, scope: RoutingScope) -> RoutingKey {
     match scope {
-        RoutingScope::Global => "global".to_string(),
-        RoutingScope::PerUplink => format!("{transport:?}:global"),
-        RoutingScope::PerFlow => format!("{transport:?}:default"),
+        RoutingScope::Global => RoutingKey::Global,
+        RoutingScope::PerUplink => RoutingKey::TransportGlobal(transport),
+        RoutingScope::PerFlow => RoutingKey::Default(transport),
+    }
+}
+
+fn transport_key_prefix(transport: TransportKind) -> &'static str {
+    match transport {
+        TransportKind::Tcp => "Tcp",
+        TransportKind::Udp => "Udp",
     }
 }
 
