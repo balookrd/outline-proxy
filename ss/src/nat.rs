@@ -31,7 +31,7 @@ use bytes::Bytes;
 use sockudo_ws::Message as H3Message;
 use tokio::{
     net::UdpSocket,
-    sync::{Mutex, mpsc},
+    sync::{Mutex, OnceCell, mpsc},
 };
 use tracing::{debug, warn};
 
@@ -165,7 +165,7 @@ impl NatEntry {
 
 /// Process-wide NAT table.  Shared via `Arc` in `AppState`.
 pub(crate) struct NatTable {
-    entries: Mutex<HashMap<NatKey, Arc<NatEntry>>>,
+    entries: Mutex<HashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>>,
     idle_timeout: Duration,
 }
 
@@ -187,13 +187,47 @@ impl NatTable {
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
-        if let Some(entry) = {
-            let entries = self.entries.lock().await;
-            entries.get(&key).cloned()
-        } {
-            return Ok(entry);
-        }
+        let cell = {
+            let mut entries = self.entries.lock().await;
+            Arc::clone(
+                entries
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(OnceCell::new())),
+            )
+        };
 
+        let create_key = key.clone();
+        let create_user = user.clone();
+        let create_metrics = Arc::clone(&metrics);
+        let create_udp_session = udp_session.clone();
+
+        match cell
+            .get_or_try_init(|| async move {
+                Self::create_entry(&create_key, create_user, create_udp_session, create_metrics)
+                    .await
+            })
+            .await
+        {
+            Ok(entry) => Ok(Arc::clone(entry)),
+            Err(error) => {
+                let mut entries = self.entries.lock().await;
+                if entries
+                    .get(&key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &cell) && current.get().is_none())
+                {
+                    entries.remove(&key);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    async fn create_entry(
+        key: &NatKey,
+        user: UserKey,
+        udp_session: UdpSession,
+        metrics: Arc<Metrics>,
+    ) -> Result<Arc<NatEntry>> {
         let bind_addr: &str = if key.target.is_ipv4() {
             "0.0.0.0:0"
         } else {
@@ -215,11 +249,6 @@ impl NatTable {
                 Some(random_session_id()?)
             }
         };
-
-        let mut entries = self.entries.lock().await;
-        if let Some(entry) = entries.get(&key).cloned() {
-            return Ok(entry);
-        }
 
         let reader_task = tokio::spawn(nat_reader_task(
             Arc::clone(&socket),
@@ -245,7 +274,6 @@ impl NatTable {
             "created UDP NAT entry"
         );
         metrics.record_udp_nat_entry_created();
-        entries.insert(key, Arc::clone(&entry));
         Ok(entry)
     }
 
@@ -256,7 +284,10 @@ impl NatTable {
         let threshold = unix_secs_now().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
         let before = entries.len();
-        entries.retain(|_, entry| entry.last_active_secs.load(Ordering::Relaxed) >= threshold);
+        entries.retain(|_, cell| {
+            cell.get()
+                .is_none_or(|entry| entry.last_active_secs.load(Ordering::Relaxed) >= threshold)
+        });
         let evicted = before - entries.len();
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
@@ -271,7 +302,12 @@ impl NatTable {
     /// Current number of active NAT entries (informational).
     #[allow(dead_code)]
     pub(crate) async fn len(&self) -> usize {
-        self.entries.lock().await.len()
+        self.entries
+            .lock()
+            .await
+            .values()
+            .filter(|cell| cell.get().is_some())
+            .count()
     }
 }
 
@@ -317,23 +353,13 @@ async fn nat_reader_task(
         };
 
         let sender = { session_tx.lock().await.clone() };
-        if matches!(
-            sender.as_ref().map(UdpResponseSender::protocol),
-            Some(Protocol::Socket)
-        ) && ciphertext.len() > MAX_UDP_PAYLOAD_SIZE
-        {
-            metrics.record_udp_oversized_datagram_dropped(
-                user.id_arc(),
-                Protocol::Socket,
-                "target_to_client",
-            );
-            warn!(
-                user = user.id(),
-                %source,
-                encrypted_bytes = ciphertext.len(),
-                max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
-                "dropping oversized socket udp response datagram"
-            );
+        if record_oversized_socket_response_drop(
+            sender.as_ref(),
+            metrics.as_ref(),
+            &user,
+            source,
+            ciphertext.len(),
+        ) {
             continue;
         }
 
@@ -370,4 +396,246 @@ fn unix_secs_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn record_oversized_socket_response_drop(
+    sender: Option<&UdpResponseSender>,
+    metrics: &Metrics,
+    user: &UserKey,
+    source: SocketAddr,
+    ciphertext_len: usize,
+) -> bool {
+    if !matches!(
+        sender.map(UdpResponseSender::protocol),
+        Some(Protocol::Socket)
+    ) || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
+    {
+        return false;
+    }
+
+    metrics.record_udp_oversized_datagram_dropped(
+        user.id_arc(),
+        Protocol::Socket,
+        "target_to_client",
+    );
+    warn!(
+        user = user.id(),
+        %source,
+        encrypted_bytes = ciphertext_len,
+        max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+        "dropping oversized socket udp response datagram"
+    );
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        sync::Arc,
+        time::Duration,
+    };
+
+    use anyhow::Result;
+    use tokio::{net::UdpSocket, sync::mpsc};
+
+    use super::{
+        MAX_UDP_PAYLOAD_SIZE, NatKey, NatTable, UdpResponseSender,
+        record_oversized_socket_response_drop,
+    };
+    use crate::{
+        config::{CipherKind, Config},
+        crypto::{UdpSession, UserKey},
+        metrics::{Metrics, Protocol},
+    };
+
+    #[tokio::test]
+    async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> {
+        let config = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: None,
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        };
+        let metrics = Metrics::new(&config);
+        let user = UserKey::new(
+            "bob",
+            "secret-b",
+            None,
+            CipherKind::Chacha20IetfPoly1305,
+            "/tcp",
+            "/udp",
+        )?;
+        let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+        let sender =
+            UdpResponseSender::datagram(socket, SocketAddr::from((Ipv4Addr::LOCALHOST, 40000)));
+
+        assert!(record_oversized_socket_response_drop(
+            Some(&sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53)),
+            MAX_UDP_PAYLOAD_SIZE + 1,
+        ));
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains(
+            "outline_ss_udp_oversized_datagrams_dropped_total{user=\"bob\",protocol=\"socket\",direction=\"target_to_client\"} 1"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
+        let config = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: None,
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        };
+        let metrics = Metrics::new(&config);
+        let user = UserKey::new(
+            "bob",
+            "secret-b",
+            None,
+            CipherKind::Chacha20IetfPoly1305,
+            "/tcp",
+            "/udp",
+        )?;
+        let (tx, _rx) = mpsc::channel(1);
+        let ws_sender = UdpResponseSender::ws(tx, Protocol::Http2);
+
+        assert!(!record_oversized_socket_response_drop(
+            Some(&ws_sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
+            MAX_UDP_PAYLOAD_SIZE + 1,
+        ));
+        assert!(!record_oversized_socket_response_drop(
+            Some(&ws_sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
+            MAX_UDP_PAYLOAD_SIZE,
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn deduplicates_concurrent_nat_entry_creation() -> Result<()> {
+        let config = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: None,
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        };
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(Duration::from_secs(300));
+        let user = UserKey::new(
+            "bob",
+            "secret-b",
+            None,
+            CipherKind::Chacha20IetfPoly1305,
+            "/tcp",
+            "/udp",
+        )?;
+        let key = NatKey {
+            user_id: user.id().to_owned(),
+            fwmark: None,
+            target: SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
+            udp_client_session_id: None,
+        };
+
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let nat_table = Arc::clone(&nat_table);
+            let user = user.clone();
+            let key = key.clone();
+            let metrics = Arc::clone(&metrics);
+            tasks.push(tokio::spawn(async move {
+                nat_table
+                    .get_or_create(key, &user, UdpSession::Legacy, metrics)
+                    .await
+            }));
+        }
+
+        let mut entries = Vec::new();
+        for task in tasks {
+            entries.push(task.await??);
+        }
+
+        assert_eq!(nat_table.len().await, 1);
+        for entry in entries.iter().skip(1) {
+            assert!(Arc::ptr_eq(&entries[0], entry));
+        }
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains("outline_ss_udp_nat_entries_created_total 1"));
+        assert!(rendered.contains("outline_ss_udp_nat_active_entries 1"));
+        Ok(())
+    }
 }

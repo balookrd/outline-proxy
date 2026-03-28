@@ -52,7 +52,7 @@ use crate::{
         diagnose_udp_packet,
     },
     fwmark::apply_fwmark_if_needed,
-    metrics::{DisconnectReason, Metrics, Protocol, Transport},
+    metrics::{DisconnectReason, Metrics, Protocol, TcpUpstreamGuard, Transport},
     nat::{NatKey, NatTable, UdpResponseSender},
     protocol::{TargetAddr, parse_target_addr},
 };
@@ -174,6 +174,7 @@ pub async fn run(config: Config) -> Result<()> {
     ensure_rustls_provider_installed();
     let config = Arc::new(config);
     let metrics = Metrics::new(config.as_ref());
+    metrics.start_process_memory_sampler();
     let users = build_users(&config)?;
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
@@ -440,6 +441,362 @@ fn protocol_from_http_version(version: Version) -> Protocol {
     }
 }
 
+struct TcpRelayState {
+    upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
+    upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
+    authenticated_user: Option<UserKey>,
+    upstream_guard: Option<TcpUpstreamGuard>,
+}
+
+impl TcpRelayState {
+    fn new() -> Self {
+        Self {
+            upstream_writer: None,
+            upstream_to_client: None,
+            authenticated_user: None,
+            upstream_guard: None,
+        }
+    }
+}
+
+fn ws_binary_message(data: Bytes) -> Message {
+    Message::Binary(data)
+}
+
+fn ws_pong_message(payload: Bytes) -> Message {
+    Message::Pong(payload)
+}
+
+fn ws_close_message() -> Message {
+    Message::Close(None)
+}
+
+fn h3_binary_message(data: Bytes) -> H3Message {
+    H3Message::Binary(data)
+}
+
+fn h3_pong_message(payload: Bytes) -> H3Message {
+    H3Message::Pong(payload)
+}
+
+fn h3_close_message() -> H3Message {
+    H3Message::Close(None)
+}
+
+fn make_ws_udp_response_sender(tx: mpsc::Sender<Message>, protocol: Protocol) -> UdpResponseSender {
+    UdpResponseSender::ws(tx, protocol)
+}
+
+fn make_h3_udp_response_sender(
+    tx: mpsc::Sender<H3Message>,
+    _protocol: Protocol,
+) -> UdpResponseSender {
+    UdpResponseSender::h3(tx)
+}
+
+async fn relay_upstream_to_client_generic<Msg>(
+    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
+    outbound_tx: mpsc::Sender<Msg>,
+    encryptor: &mut AeadStreamEncryptor,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    user_id: Arc<str>,
+    make_binary: fn(Bytes) -> Msg,
+    make_close: fn() -> Msg,
+) -> Result<()>
+where
+    Msg: Send + 'static,
+{
+    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    loop {
+        let read = upstream_reader
+            .read(&mut buffer)
+            .await
+            .context("failed to read from upstream")?;
+        if read == 0 {
+            break;
+        }
+
+        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
+        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
+        outbound_tx
+            .send(make_binary(ciphertext.into()))
+            .await
+            .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))?;
+    }
+
+    outbound_tx.send(make_close()).await.ok();
+    Ok(())
+}
+
+async fn handle_tcp_binary_frame<Msg>(
+    state: &mut TcpRelayState,
+    decryptor: &mut AeadStreamDecryptor,
+    plaintext_buffer: &mut Vec<u8>,
+    data: Bytes,
+    outbound_data_tx: &mpsc::Sender<Msg>,
+    users: &[UserKey],
+    metrics: &Arc<Metrics>,
+    protocol: Protocol,
+    path: &str,
+    candidate_users: &[String],
+    prefer_ipv4_upstream: bool,
+    make_binary: fn(Bytes) -> Msg,
+    make_close: fn() -> Msg,
+) -> Result<()>
+where
+    Msg: Send + 'static,
+{
+    metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "in", data.len());
+    decryptor.push(&data);
+    match decryptor.pull_plaintext(plaintext_buffer) {
+        Ok(()) => {}
+        Err(CryptoError::UnknownUser) => {
+            debug!(
+                path = %path,
+                candidates = ?candidate_users,
+                buffered = decryptor.buffered_data().len(),
+                attempts = ?diagnose_stream_handshake(users, decryptor.buffered_data()),
+                "tcp authentication failed for all path candidates"
+            );
+            return Err(anyhow!(
+                "no configured key matched the incoming data on tcp path {path} candidates={candidate_users:?}",
+            ));
+        }
+        Err(error) => return Err(anyhow!(error)),
+    }
+
+    if state.upstream_writer.is_none() {
+        let Some((target, consumed)) = parse_target_addr(plaintext_buffer)? else {
+            return Ok(());
+        };
+        let Some(user) = decryptor.user().cloned() else {
+            return Ok(());
+        };
+        debug!(
+            user = user.id(),
+            cipher = user.cipher().as_str(),
+            path = %path,
+            "tcp shadowsocks user authenticated"
+        );
+        let user_id = user.id_arc();
+        let target_display = target.display_host_port();
+        let connect_started = std::time::Instant::now();
+        let stream = match connect_tcp_target(&target, user.fwmark(), prefer_ipv4_upstream).await {
+            Ok(stream) => {
+                metrics.record_tcp_connect(
+                    Arc::clone(&user_id),
+                    protocol,
+                    "success",
+                    connect_started.elapsed().as_secs_f64(),
+                );
+                stream
+            }
+            Err(error) => {
+                metrics.record_tcp_connect(
+                    Arc::clone(&user_id),
+                    protocol,
+                    "error",
+                    connect_started.elapsed().as_secs_f64(),
+                );
+                return Err(error)
+                    .with_context(|| format!("failed to connect to {target_display}"));
+            }
+        };
+        info!(
+            user = user.id(),
+            fwmark = ?user.fwmark(),
+            path = %path,
+            target = %target_display,
+            "tcp upstream connected"
+        );
+
+        let (upstream_reader, writer) = stream.into_split();
+        let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())?;
+        let tx = outbound_data_tx.clone();
+        let relay_metrics = Arc::clone(metrics);
+        let relay_user_id = Arc::clone(&user_id);
+        state.upstream_to_client = Some(tokio::spawn(async move {
+            relay_upstream_to_client_generic(
+                upstream_reader,
+                tx,
+                &mut encryptor,
+                relay_metrics,
+                protocol,
+                relay_user_id,
+                make_binary,
+                make_close,
+            )
+            .await
+        }));
+        metrics.record_tcp_authenticated_session(Arc::clone(&user_id), protocol);
+        state.upstream_guard = Some(metrics.open_tcp_upstream_connection(user_id, protocol));
+        state.authenticated_user = Some(user);
+        state.upstream_writer = Some(writer);
+        plaintext_buffer.drain(..consumed);
+    }
+
+    if let Some(writer) = &mut state.upstream_writer
+        && !plaintext_buffer.is_empty()
+    {
+        if let Some(user) = &state.authenticated_user {
+            metrics.record_tcp_payload_bytes(
+                user.id_arc(),
+                protocol,
+                "client_to_target",
+                plaintext_buffer.len(),
+            );
+        }
+        writer
+            .write_all(plaintext_buffer)
+            .await
+            .context("failed to write decrypted data upstream")?;
+        plaintext_buffer.clear();
+    }
+
+    Ok(())
+}
+
+async fn handle_udp_datagram_common<Msg>(
+    nat_table: Arc<NatTable>,
+    users: Arc<[UserKey]>,
+    data: Bytes,
+    outbound_tx: mpsc::Sender<Msg>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: String,
+    candidate_users: Arc<[String]>,
+    udp_session_recorded: Arc<AtomicBool>,
+    cached_user_index: Arc<AtomicUsize>,
+    udp_dns_cache: Arc<UdpDnsCache>,
+    prefer_ipv4_upstream: bool,
+    make_response_sender: fn(mpsc::Sender<Msg>, Protocol) -> UdpResponseSender,
+) -> Result<()>
+where
+    Msg: Send + 'static,
+{
+    let started_at = std::time::Instant::now();
+    let preferred_user_index = match cached_user_index.load(Ordering::Relaxed) {
+        UDP_CACHED_USER_INDEX_EMPTY => None,
+        index => Some(index),
+    };
+    let (packet, user_index) = match decrypt_udp_packet_with_hint(
+        users.as_ref(),
+        &data,
+        preferred_user_index,
+    ) {
+        Ok(result) => result,
+        Err(CryptoError::UnknownUser) => {
+            debug!(
+                path = %path,
+                candidates = ?candidate_users,
+                attempts = ?diagnose_udp_packet(users.as_ref(), &data),
+                "udp authentication failed for all path candidates"
+            );
+            return Err(anyhow!(
+                "no configured key matched the incoming udp data on path {path} candidates={candidate_users:?}",
+            ));
+        }
+        Err(error) => return Err(anyhow!(error)),
+    };
+    cached_user_index.store(user_index, Ordering::Relaxed);
+    let user_id = packet.user.id_arc();
+    let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
+        return Err(anyhow!("udp packet is missing a complete target address"));
+    };
+    let payload = &packet.payload[consumed..];
+    let target_display = target.display_host_port();
+    if udp_session_recorded.swap(true, Ordering::Relaxed) {
+        metrics.record_client_last_seen(Arc::clone(&user_id));
+    } else {
+        metrics.record_client_session(Arc::clone(&user_id), protocol, Transport::Udp);
+    }
+    debug!(
+        user = packet.user.id(),
+        cipher = packet.user.cipher().as_str(),
+        path = %path,
+        "udp shadowsocks user authenticated"
+    );
+
+    let resolved =
+        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
+    info!(
+        user = packet.user.id(),
+        fwmark = ?packet.user.fwmark(),
+        path = %path,
+        target = %target_display,
+        resolved = %resolved,
+        "udp datagram relay"
+    );
+
+    let nat_key = NatKey {
+        user_id: packet.user.id().to_owned(),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+        udp_client_session_id: packet.session.client_session_id(),
+    };
+    let entry = nat_table
+        .get_or_create(
+            nat_key,
+            &packet.user,
+            packet.session.clone(),
+            Arc::clone(&metrics),
+        )
+        .await
+        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
+
+    entry
+        .register_session(make_response_sender(outbound_tx, protocol))
+        .await;
+
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        metrics.record_udp_oversized_datagram_dropped(
+            Arc::clone(&user_id),
+            protocol,
+            "client_to_target",
+        );
+        warn!(
+            user = packet.user.id(),
+            path = %path,
+            target = %resolved,
+            plaintext_bytes = payload.len(),
+            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+            "dropping oversized udp datagram before upstream send"
+        );
+        metrics.record_udp_request(
+            Arc::clone(&user_id),
+            protocol,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
+    metrics.record_udp_payload_bytes(
+        Arc::clone(&user_id),
+        protocol,
+        "client_to_target",
+        payload.len(),
+    );
+    if let Err(error) = entry.socket().send_to(payload, resolved).await {
+        metrics.record_udp_request(
+            Arc::clone(&user_id),
+            protocol,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
+    }
+    entry.touch();
+    metrics.record_udp_request(
+        user_id,
+        protocol,
+        "success",
+        started_at.elapsed().as_secs_f64(),
+    );
+
+    Ok(())
+}
+
 async fn handle_tcp_connection(
     socket: WebSocket,
     users: Arc<[UserKey]>,
@@ -500,131 +857,28 @@ async fn handle_tcp_connection(
     });
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut upstream_writer = None;
-    let mut upstream_to_client = None;
-    let mut authenticated_user = None;
-    let mut upstream_guard = None;
+    let mut state = TcpRelayState::new();
     let mut client_closed = false;
 
     while let Some(message) = ws_receiver.next().await {
         match message.context("websocket receive failure")? {
             Message::Binary(data) => {
-                metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "in", data.len());
-                decryptor.push(&data);
-                match decryptor.pull_plaintext(&mut plaintext_buffer) {
-                    Ok(()) => {}
-                    Err(CryptoError::UnknownUser) => {
-                        debug!(
-                            path = %path,
-                            candidates = ?candidate_users,
-                            buffered = decryptor.buffered_data().len(),
-                            attempts = ?diagnose_stream_handshake(
-                                users.as_ref(),
-                                decryptor.buffered_data()
-                            ),
-                            "tcp authentication failed for all path candidates"
-                        );
-                        return Err(anyhow!(
-                            "no configured key matched the incoming data on tcp path {} candidates={:?}",
-                            path,
-                            candidate_users
-                        ));
-                    }
-                    Err(error) => return Err(anyhow!(error)),
-                }
-
-                if upstream_writer.is_none() {
-                    let Some((target, consumed)) = parse_target_addr(&plaintext_buffer)? else {
-                        continue;
-                    };
-                    let Some(user) = decryptor.user().cloned() else {
-                        continue;
-                    };
-                    debug!(
-                        user = user.id(),
-                        cipher = user.cipher().as_str(),
-                        path = %path,
-                        "tcp shadowsocks user authenticated"
-                    );
-                    let target_display = target.display_host_port();
-                    let connect_started = std::time::Instant::now();
-                    let stream = match connect_tcp_target(
-                        &target,
-                        user.fwmark(),
-                        prefer_ipv4_upstream,
-                    )
-                    .await
-                    {
-                        Ok(stream) => {
-                            metrics.record_tcp_connect(
-                                user.id_arc(),
-                                protocol,
-                                "success",
-                                connect_started.elapsed().as_secs_f64(),
-                            );
-                            stream
-                        }
-                        Err(error) => {
-                            metrics.record_tcp_connect(
-                                user.id_arc(),
-                                protocol,
-                                "error",
-                                connect_started.elapsed().as_secs_f64(),
-                            );
-                            return Err(error)
-                                .with_context(|| format!("failed to connect to {target_display}"));
-                        }
-                    };
-                    info!(
-                        user = user.id(),
-                        fwmark = ?user.fwmark(),
-                        path = %path,
-                        target = %target_display,
-                        "tcp upstream connected"
-                    );
-
-                    let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor =
-                        AeadStreamEncryptor::new(&user, decryptor.response_context())?;
-                    let tx = outbound_data_tx.clone();
-                    let relay_metrics = metrics.clone();
-                    let user_id = user.id_arc();
-                    upstream_to_client = Some(tokio::spawn(async move {
-                        relay_upstream_to_client(
-                            upstream_reader,
-                            tx,
-                            &mut encryptor,
-                            relay_metrics,
-                            protocol,
-                            user_id,
-                        )
-                        .await
-                    }));
-                    metrics.record_tcp_authenticated_session(user.id_arc(), protocol);
-                    upstream_guard =
-                        Some(metrics.open_tcp_upstream_connection(user.id_arc(), protocol));
-                    authenticated_user = Some(user);
-                    upstream_writer = Some(writer);
-                    plaintext_buffer.drain(..consumed);
-                }
-
-                if let Some(writer) = &mut upstream_writer {
-                    if !plaintext_buffer.is_empty() {
-                        if let Some(user) = &authenticated_user {
-                            metrics.record_tcp_payload_bytes(
-                                user.id_arc(),
-                                protocol,
-                                "client_to_target",
-                                plaintext_buffer.len(),
-                            );
-                        }
-                        writer
-                            .write_all(&plaintext_buffer)
-                            .await
-                            .context("failed to write decrypted data upstream")?;
-                        plaintext_buffer.clear();
-                    }
-                }
+                handle_tcp_binary_frame(
+                    &mut state,
+                    &mut decryptor,
+                    &mut plaintext_buffer,
+                    data,
+                    &outbound_data_tx,
+                    users.as_ref(),
+                    &metrics,
+                    protocol,
+                    &path,
+                    candidate_users.as_ref(),
+                    prefer_ipv4_upstream,
+                    ws_binary_message,
+                    ws_close_message,
+                )
+                .await?;
             }
             Message::Close(_) => {
                 debug!("client closed tcp websocket");
@@ -633,7 +887,7 @@ async fn handle_tcp_connection(
             }
             Message::Ping(payload) => {
                 outbound_ctrl_tx
-                    .send(Message::Pong(payload))
+                    .send(ws_pong_message(payload))
                     .await
                     .context("failed to queue websocket pong")?;
             }
@@ -642,7 +896,7 @@ async fn handle_tcp_connection(
         }
     }
 
-    if let Some(mut writer) = upstream_writer {
+    if let Some(mut writer) = state.upstream_writer.take() {
         writer.shutdown().await.ok();
     }
 
@@ -652,21 +906,21 @@ async fn handle_tcp_connection(
         // task so it cannot queue additional data that the writer can never
         // deliver, then let the writer drain and exit without propagating its
         // error.
-        if let Some(task) = upstream_to_client {
+        if let Some(task) = state.upstream_to_client.take() {
             task.abort();
         }
-        if let Some(guard) = upstream_guard {
+        if let Some(guard) = state.upstream_guard.take() {
             guard.finish();
         }
         drop(outbound_ctrl_tx);
         drop(outbound_data_tx);
         let _ = writer_task.await;
     } else {
-        if let Some(task) = upstream_to_client {
+        if let Some(task) = state.upstream_to_client.take() {
             task.await
                 .context("tcp upstream relay task join failed")??;
         }
-        if let Some(guard) = upstream_guard {
+        if let Some(guard) = state.upstream_guard.take() {
             guard.finish();
         }
         drop(outbound_ctrl_tx);
@@ -741,7 +995,6 @@ async fn handle_udp_connection(
         }
         Ok::<(), anyhow::Error>(())
     });
-
     let mut loop_result = Ok(());
     loop {
         tokio::select! {
@@ -752,6 +1005,7 @@ async fn handle_udp_connection(
                     Ok(Message::Binary(data)) => {
                         metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            metrics.record_udp_relay_drop(Transport::Udp, protocol, "concurrency_limit");
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -765,7 +1019,7 @@ async fn handle_udp_connection(
                         let nat_table = Arc::clone(&nat_table);
                         let udp_dns_cache = Arc::clone(&udp_dns_cache);
                         in_flight.push(async move {
-                            if let Err(error) = handle_udp_datagram(
+                            if let Err(error) = handle_udp_datagram_common(
                                 nat_table,
                                 users,
                                 data,
@@ -778,6 +1032,7 @@ async fn handle_udp_connection(
                                 cached_user_index,
                                 udp_dns_cache,
                                 prefer_ipv4_upstream,
+                                make_ws_udp_response_sender,
                             )
                             .await
                             {
@@ -791,7 +1046,7 @@ async fn handle_udp_connection(
                     }
                     Ok(Message::Ping(payload)) => {
                         if let Err(error) = outbound_ctrl_tx
-                            .send(Message::Pong(payload))
+                            .send(ws_pong_message(payload))
                             .await
                             .context("failed to queue websocket pong")
                         {
@@ -835,181 +1090,78 @@ async fn handle_tcp_h3_connection(
     let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        let mut ctrl_open = true;
-        loop {
-            if ctrl_open {
-                tokio::select! {
-                    biased;
-                    msg = outbound_ctrl_rx.recv() => match msg {
-                        Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
-                        None => ctrl_open = false,
-                    },
-                    msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => {
-                            if let H3Message::Binary(data) = &m {
-                                writer_metrics.record_websocket_binary_frame(
-                                    Transport::Tcp,
-                                    Protocol::Http3,
-                                    "out",
-                                    data.len(),
-                                );
+        let result = async {
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = outbound_ctrl_rx.recv() => match msg {
+                            Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
+                            None => ctrl_open = false,
+                        },
+                        msg = outbound_data_rx.recv() => match msg {
+                            Some(m) => {
+                                if let H3Message::Binary(data) = &m {
+                                    writer_metrics.record_websocket_binary_frame(
+                                        Transport::Tcp,
+                                        Protocol::Http3,
+                                        "out",
+                                        data.len(),
+                                    );
+                                }
+                                ws_writer.send(m).await.context("failed to write websocket frame")?;
                             }
-                            ws_writer.send(m).await.context("failed to write websocket frame")?;
-                        }
-                        None => break,
-                    },
+                            None => break,
+                        },
+                    }
+                } else {
+                    let Some(m) = outbound_data_rx.recv().await else {
+                        break;
+                    };
+                    if let H3Message::Binary(data) = &m {
+                        writer_metrics.record_websocket_binary_frame(
+                            Transport::Tcp,
+                            Protocol::Http3,
+                            "out",
+                            data.len(),
+                        );
+                    }
+                    ws_writer
+                        .send(m)
+                        .await
+                        .context("failed to write websocket frame")?;
                 }
-            } else {
-                let Some(m) = outbound_data_rx.recv().await else {
-                    break;
-                };
-                if let H3Message::Binary(data) = &m {
-                    writer_metrics.record_websocket_binary_frame(
-                        Transport::Tcp,
-                        Protocol::Http3,
-                        "out",
-                        data.len(),
-                    );
-                }
-                ws_writer
-                    .send(m)
-                    .await
-                    .context("failed to write websocket frame")?;
             }
+            Ok::<(), anyhow::Error>(())
         }
+        .await;
         let _ = ws_writer.close(1000, "").await;
-        Ok::<(), anyhow::Error>(())
+        result
     });
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut upstream_writer = None;
-    let mut upstream_to_client = None;
-    let mut authenticated_user = None;
-    let mut upstream_guard = None;
+    let mut state = TcpRelayState::new();
 
     while let Some(message) = ws_reader.next().await {
         match message.context("websocket receive failure")? {
             H3Message::Binary(data) => {
-                metrics.record_websocket_binary_frame(
-                    Transport::Tcp,
+                handle_tcp_binary_frame(
+                    &mut state,
+                    &mut decryptor,
+                    &mut plaintext_buffer,
+                    data,
+                    &outbound_data_tx,
+                    users.as_ref(),
+                    &metrics,
                     Protocol::Http3,
-                    "in",
-                    data.len(),
-                );
-                decryptor.push(&data);
-                match decryptor.pull_plaintext(&mut plaintext_buffer) {
-                    Ok(()) => {}
-                    Err(CryptoError::UnknownUser) => {
-                        debug!(
-                            path = %path,
-                            candidates = ?candidate_users,
-                            buffered = decryptor.buffered_data().len(),
-                            attempts = ?diagnose_stream_handshake(
-                                users.as_ref(),
-                                decryptor.buffered_data()
-                            ),
-                            "tcp authentication failed for all path candidates"
-                        );
-                        return Err(anyhow!(
-                            "no configured key matched the incoming data on tcp path {} candidates={:?}",
-                            path,
-                            candidate_users
-                        ));
-                    }
-                    Err(error) => return Err(anyhow!(error)),
-                }
-
-                if upstream_writer.is_none() {
-                    let Some((target, consumed)) = parse_target_addr(&plaintext_buffer)? else {
-                        continue;
-                    };
-                    let Some(user) = decryptor.user().cloned() else {
-                        continue;
-                    };
-                    debug!(
-                        user = user.id(),
-                        cipher = user.cipher().as_str(),
-                        path = %path,
-                        "tcp shadowsocks user authenticated"
-                    );
-                    let target_display = target.display_host_port();
-                    let connect_started = std::time::Instant::now();
-                    let stream = match connect_tcp_target(
-                        &target,
-                        user.fwmark(),
-                        prefer_ipv4_upstream,
-                    )
-                    .await
-                    {
-                        Ok(stream) => {
-                            metrics.record_tcp_connect(
-                                user.id_arc(),
-                                Protocol::Http3,
-                                "success",
-                                connect_started.elapsed().as_secs_f64(),
-                            );
-                            stream
-                        }
-                        Err(error) => {
-                            metrics.record_tcp_connect(
-                                user.id_arc(),
-                                Protocol::Http3,
-                                "error",
-                                connect_started.elapsed().as_secs_f64(),
-                            );
-                            return Err(error)
-                                .with_context(|| format!("failed to connect to {target_display}"));
-                        }
-                    };
-                    info!(
-                        user = user.id(),
-                        fwmark = ?user.fwmark(),
-                        path = %path,
-                        target = %target_display,
-                        "tcp upstream connected"
-                    );
-
-                    let (upstream_reader, writer) = stream.into_split();
-                    let mut encryptor =
-                        AeadStreamEncryptor::new(&user, decryptor.response_context())?;
-                    let tx = outbound_data_tx.clone();
-                    let relay_metrics = metrics.clone();
-                    let user_id = user.id_arc();
-                    upstream_to_client = Some(tokio::spawn(async move {
-                        relay_upstream_to_h3_client(
-                            upstream_reader,
-                            tx,
-                            &mut encryptor,
-                            relay_metrics,
-                            user_id,
-                        )
-                        .await
-                    }));
-                    metrics.record_tcp_authenticated_session(user.id_arc(), Protocol::Http3);
-                    upstream_guard =
-                        Some(metrics.open_tcp_upstream_connection(user.id_arc(), Protocol::Http3));
-                    authenticated_user = Some(user);
-                    upstream_writer = Some(writer);
-                    plaintext_buffer.drain(..consumed);
-                }
-
-                if let Some(writer) = &mut upstream_writer {
-                    if !plaintext_buffer.is_empty() {
-                        if let Some(user) = &authenticated_user {
-                            metrics.record_tcp_payload_bytes(
-                                user.id_arc(),
-                                Protocol::Http3,
-                                "client_to_target",
-                                plaintext_buffer.len(),
-                            );
-                        }
-                        writer
-                            .write_all(&plaintext_buffer)
-                            .await
-                            .context("failed to write decrypted data upstream")?;
-                        plaintext_buffer.clear();
-                    }
-                }
+                    &path,
+                    candidate_users.as_ref(),
+                    prefer_ipv4_upstream,
+                    h3_binary_message,
+                    h3_close_message,
+                )
+                .await?;
             }
             H3Message::Close(_) => {
                 debug!("client closed tcp websocket");
@@ -1017,7 +1169,7 @@ async fn handle_tcp_h3_connection(
             }
             H3Message::Ping(payload) => {
                 outbound_ctrl_tx
-                    .send(H3Message::Pong(payload))
+                    .send(h3_pong_message(payload))
                     .await
                     .context("failed to queue websocket pong")?;
             }
@@ -1026,16 +1178,16 @@ async fn handle_tcp_h3_connection(
         }
     }
 
-    if let Some(mut writer) = upstream_writer {
+    if let Some(mut writer) = state.upstream_writer.take() {
         writer.shutdown().await.ok();
     }
 
-    if let Some(task) = upstream_to_client {
+    if let Some(task) = state.upstream_to_client.take() {
         task.await
             .context("tcp upstream relay task join failed")??;
     }
 
-    if let Some(guard) = upstream_guard {
+    if let Some(guard) = state.upstream_guard.take() {
         guard.finish();
     }
 
@@ -1065,52 +1217,55 @@ async fn handle_udp_h3_connection(
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        let mut ctrl_open = true;
-        loop {
-            if ctrl_open {
-                tokio::select! {
-                    biased;
-                    msg = outbound_ctrl_rx.recv() => match msg {
-                        Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
-                        None => ctrl_open = false,
-                    },
-                    msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => {
-                            if let H3Message::Binary(data) = &m {
-                                writer_metrics.record_websocket_binary_frame(
-                                    Transport::Udp,
-                                    Protocol::Http3,
-                                    "out",
-                                    data.len(),
-                                );
+        let result = async {
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = outbound_ctrl_rx.recv() => match msg {
+                            Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
+                            None => ctrl_open = false,
+                        },
+                        msg = outbound_data_rx.recv() => match msg {
+                            Some(m) => {
+                                if let H3Message::Binary(data) = &m {
+                                    writer_metrics.record_websocket_binary_frame(
+                                        Transport::Udp,
+                                        Protocol::Http3,
+                                        "out",
+                                        data.len(),
+                                    );
+                                }
+                                ws_writer.send(m).await.context("failed to write websocket frame")?;
                             }
-                            ws_writer.send(m).await.context("failed to write websocket frame")?;
-                        }
-                        None => break,
-                    },
+                            None => break,
+                        },
+                    }
+                } else {
+                    let Some(m) = outbound_data_rx.recv().await else {
+                        break;
+                    };
+                    if let H3Message::Binary(data) = &m {
+                        writer_metrics.record_websocket_binary_frame(
+                            Transport::Udp,
+                            Protocol::Http3,
+                            "out",
+                            data.len(),
+                        );
+                    }
+                    ws_writer
+                        .send(m)
+                        .await
+                        .context("failed to write websocket frame")?;
                 }
-            } else {
-                let Some(m) = outbound_data_rx.recv().await else {
-                    break;
-                };
-                if let H3Message::Binary(data) = &m {
-                    writer_metrics.record_websocket_binary_frame(
-                        Transport::Udp,
-                        Protocol::Http3,
-                        "out",
-                        data.len(),
-                    );
-                }
-                ws_writer
-                    .send(m)
-                    .await
-                    .context("failed to write websocket frame")?;
             }
+            Ok::<(), anyhow::Error>(())
         }
+        .await;
         let _ = ws_writer.close(1000, "").await;
-        Ok::<(), anyhow::Error>(())
+        result
     });
-
     let mut loop_result = Ok(());
     loop {
         tokio::select! {
@@ -1126,6 +1281,11 @@ async fn handle_udp_h3_connection(
                             data.len(),
                         );
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                            metrics.record_udp_relay_drop(
+                                Transport::Udp,
+                                Protocol::Http3,
+                                "concurrency_limit",
+                            );
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -1139,18 +1299,20 @@ async fn handle_udp_h3_connection(
                         let nat_table = Arc::clone(&nat_table);
                         let udp_dns_cache = Arc::clone(&udp_dns_cache);
                         in_flight.push(async move {
-                            if let Err(error) = handle_udp_h3_datagram(
+                            if let Err(error) = handle_udp_datagram_common(
                                 nat_table,
                                 users,
                                 data,
                                 tx,
                                 metrics,
+                                Protocol::Http3,
                                 path,
                                 candidate_users,
                                 udp_session_recorded,
                                 cached_user_index,
                                 udp_dns_cache,
                                 prefer_ipv4_upstream,
+                                make_h3_udp_response_sender,
                             )
                             .await
                             {
@@ -1164,7 +1326,7 @@ async fn handle_udp_h3_connection(
                     }
                     Ok(H3Message::Ping(payload)) => {
                         if let Err(error) = outbound_ctrl_tx
-                            .send(H3Message::Pong(payload))
+                            .send(h3_pong_message(payload))
                             .await
                             .context("failed to queue websocket pong")
                         {
@@ -1193,340 +1355,6 @@ async fn handle_udp_h3_connection(
         .await
         .context("websocket writer task join failed")??;
     loop_result
-}
-
-async fn relay_upstream_to_client(
-    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
-    outbound_tx: mpsc::Sender<Message>,
-    encryptor: &mut AeadStreamEncryptor,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    user_id: Arc<str>,
-) -> Result<()> {
-    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
-    loop {
-        let read = upstream_reader
-            .read(&mut buffer)
-            .await
-            .context("failed to read from upstream")?;
-        if read == 0 {
-            break;
-        }
-
-        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
-        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
-        outbound_tx
-            .send(Message::Binary(ciphertext.into()))
-            .await
-            .context("failed to queue encrypted websocket frame")?;
-    }
-
-    outbound_tx.send(Message::Close(None)).await.ok();
-    Ok(())
-}
-
-async fn relay_upstream_to_h3_client(
-    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
-    outbound_tx: mpsc::Sender<H3Message>,
-    encryptor: &mut AeadStreamEncryptor,
-    metrics: Arc<Metrics>,
-    user_id: Arc<str>,
-) -> Result<()> {
-    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
-    loop {
-        let read = upstream_reader
-            .read(&mut buffer)
-            .await
-            .context("failed to read from upstream")?;
-        if read == 0 {
-            break;
-        }
-
-        metrics.record_tcp_payload_bytes(
-            Arc::clone(&user_id),
-            Protocol::Http3,
-            "target_to_client",
-            read,
-        );
-        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
-        outbound_tx
-            .send(H3Message::Binary(ciphertext.into()))
-            .await
-            .context("failed to queue encrypted websocket frame")?;
-    }
-
-    outbound_tx.send(H3Message::Close(None)).await.ok();
-    Ok(())
-}
-
-async fn handle_udp_datagram(
-    nat_table: Arc<NatTable>,
-    users: Arc<[UserKey]>,
-    data: Bytes,
-    outbound_tx: mpsc::Sender<Message>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: String,
-    candidate_users: Arc<[String]>,
-    udp_session_recorded: Arc<AtomicBool>,
-    cached_user_index: Arc<AtomicUsize>,
-    udp_dns_cache: Arc<UdpDnsCache>,
-    prefer_ipv4_upstream: bool,
-) -> Result<()> {
-    let started_at = std::time::Instant::now();
-    let preferred_user_index = match cached_user_index.load(Ordering::Relaxed) {
-        UDP_CACHED_USER_INDEX_EMPTY => None,
-        index => Some(index),
-    };
-    let (packet, user_index) =
-        match decrypt_udp_packet_with_hint(users.as_ref(), &data, preferred_user_index) {
-            Ok(result) => result,
-            Err(CryptoError::UnknownUser) => {
-                debug!(
-                    path = %path,
-                    candidates = ?candidate_users,
-                    attempts = ?diagnose_udp_packet(users.as_ref(), &data),
-                    "udp authentication failed for all path candidates"
-                );
-                return Err(anyhow!(
-                    "no configured key matched the incoming udp data on path {} candidates={:?}",
-                    path,
-                    candidate_users
-                ));
-            }
-            Err(error) => return Err(anyhow!(error)),
-        };
-    cached_user_index.store(user_index, Ordering::Relaxed);
-    let user_id = packet.user.id_arc();
-    let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
-        return Err(anyhow!("udp packet is missing a complete target address"));
-    };
-    let payload = &packet.payload[consumed..];
-    let target_display = target.display_host_port();
-    if !udp_session_recorded.swap(true, Ordering::Relaxed) {
-        metrics.record_client_session(Arc::clone(&user_id), protocol, Transport::Udp);
-    } else {
-        metrics.record_client_last_seen(Arc::clone(&user_id));
-    }
-    debug!(
-        user = packet.user.id(),
-        cipher = packet.user.cipher().as_str(),
-        path = %path,
-        "udp shadowsocks user authenticated"
-    );
-
-    let resolved =
-        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
-    info!(
-        user = packet.user.id(),
-        fwmark = ?packet.user.fwmark(),
-        path = %path,
-        target = %target_display,
-        resolved = %resolved,
-        "udp datagram relay"
-    );
-
-    let nat_key = NatKey {
-        user_id: packet.user.id().to_owned(),
-        fwmark: packet.user.fwmark(),
-        target: resolved,
-        udp_client_session_id: packet.session.client_session_id(),
-    };
-    let entry = nat_table
-        .get_or_create(
-            nat_key,
-            &packet.user,
-            packet.session.clone(),
-            Arc::clone(&metrics),
-        )
-        .await
-        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
-
-    // Register this session so the reader task knows where to deliver responses.
-    entry
-        .register_session(UdpResponseSender::ws(outbound_tx, protocol))
-        .await;
-
-    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        metrics.record_udp_oversized_datagram_dropped(
-            Arc::clone(&user_id),
-            protocol,
-            "client_to_target",
-        );
-        warn!(
-            user = packet.user.id(),
-            path = %path,
-            target = %resolved,
-            plaintext_bytes = payload.len(),
-            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
-            "dropping oversized udp datagram before upstream send"
-        );
-        metrics.record_udp_request(
-            Arc::clone(&user_id),
-            protocol,
-            "error",
-            started_at.elapsed().as_secs_f64(),
-        );
-        return Ok(());
-    }
-    metrics.record_udp_payload_bytes(
-        Arc::clone(&user_id),
-        protocol,
-        "client_to_target",
-        payload.len(),
-    );
-    if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        metrics.record_udp_request(
-            Arc::clone(&user_id),
-            protocol,
-            "error",
-            started_at.elapsed().as_secs_f64(),
-        );
-        return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
-    }
-    entry.touch();
-    metrics.record_udp_request(
-        user_id,
-        protocol,
-        "success",
-        started_at.elapsed().as_secs_f64(),
-    );
-
-    Ok(())
-}
-
-async fn handle_udp_h3_datagram(
-    nat_table: Arc<NatTable>,
-    users: Arc<[UserKey]>,
-    data: Bytes,
-    outbound_tx: mpsc::Sender<H3Message>,
-    metrics: Arc<Metrics>,
-    path: String,
-    candidate_users: Arc<[String]>,
-    udp_session_recorded: Arc<AtomicBool>,
-    cached_user_index: Arc<AtomicUsize>,
-    udp_dns_cache: Arc<UdpDnsCache>,
-    prefer_ipv4_upstream: bool,
-) -> Result<()> {
-    let started_at = std::time::Instant::now();
-    let preferred_user_index = match cached_user_index.load(Ordering::Relaxed) {
-        UDP_CACHED_USER_INDEX_EMPTY => None,
-        index => Some(index),
-    };
-    let (packet, user_index) =
-        match decrypt_udp_packet_with_hint(users.as_ref(), &data, preferred_user_index) {
-            Ok(result) => result,
-            Err(CryptoError::UnknownUser) => {
-                debug!(
-                    path = %path,
-                    candidates = ?candidate_users,
-                    attempts = ?diagnose_udp_packet(users.as_ref(), &data),
-                    "udp authentication failed for all path candidates"
-                );
-                return Err(anyhow!(
-                    "no configured key matched the incoming udp data on path {} candidates={:?}",
-                    path,
-                    candidate_users
-                ));
-            }
-            Err(error) => return Err(anyhow!(error)),
-        };
-    cached_user_index.store(user_index, Ordering::Relaxed);
-    let user_id = packet.user.id_arc();
-    let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
-        return Err(anyhow!("udp packet is missing a complete target address"));
-    };
-    let payload = &packet.payload[consumed..];
-    let target_display = target.display_host_port();
-    if !udp_session_recorded.swap(true, Ordering::Relaxed) {
-        metrics.record_client_session(Arc::clone(&user_id), Protocol::Http3, Transport::Udp);
-    } else {
-        metrics.record_client_last_seen(Arc::clone(&user_id));
-    }
-    debug!(
-        user = packet.user.id(),
-        cipher = packet.user.cipher().as_str(),
-        path = %path,
-        "udp shadowsocks user authenticated"
-    );
-
-    let resolved =
-        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
-    info!(
-        user = packet.user.id(),
-        fwmark = ?packet.user.fwmark(),
-        path = %path,
-        target = %target_display,
-        resolved = %resolved,
-        "udp datagram relay"
-    );
-
-    let nat_key = NatKey {
-        user_id: packet.user.id().to_owned(),
-        fwmark: packet.user.fwmark(),
-        target: resolved,
-        udp_client_session_id: packet.session.client_session_id(),
-    };
-    let entry = nat_table
-        .get_or_create(
-            nat_key,
-            &packet.user,
-            packet.session.clone(),
-            Arc::clone(&metrics),
-        )
-        .await
-        .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
-
-    entry
-        .register_session(UdpResponseSender::h3(outbound_tx))
-        .await;
-
-    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        metrics.record_udp_oversized_datagram_dropped(
-            Arc::clone(&user_id),
-            Protocol::Http3,
-            "client_to_target",
-        );
-        warn!(
-            user = packet.user.id(),
-            path = %path,
-            target = %resolved,
-            plaintext_bytes = payload.len(),
-            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
-            "dropping oversized udp datagram before upstream send"
-        );
-        metrics.record_udp_request(
-            Arc::clone(&user_id),
-            Protocol::Http3,
-            "error",
-            started_at.elapsed().as_secs_f64(),
-        );
-        return Ok(());
-    }
-    metrics.record_udp_payload_bytes(
-        Arc::clone(&user_id),
-        Protocol::Http3,
-        "client_to_target",
-        payload.len(),
-    );
-    if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        metrics.record_udp_request(
-            Arc::clone(&user_id),
-            Protocol::Http3,
-            "error",
-            started_at.elapsed().as_secs_f64(),
-        );
-        return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
-    }
-    entry.touch();
-    metrics.record_udp_request(
-        user_id,
-        Protocol::Http3,
-        "success",
-        started_at.elapsed().as_secs_f64(),
-    );
-
-    Ok(())
 }
 
 async fn resolve_target(target: &TargetAddr, prefer_ipv4_upstream: bool) -> Result<SocketAddr> {
@@ -1980,6 +1808,11 @@ async fn serve_ss_udp_socket(
                     "socket udp received encrypted datagram"
                 );
                 if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
+                    metrics.record_udp_relay_drop(
+                        Transport::Udp,
+                        Protocol::Socket,
+                        "concurrency_limit",
+                    );
                     warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
                     continue;
                 }
@@ -2672,7 +2505,7 @@ mod tests {
     use anyhow::Result;
     use axum::http::{Method, Request, StatusCode, Version, header};
     use bytes::Bytes;
-    use futures_util::SinkExt;
+    use futures_util::{SinkExt, StreamExt};
     use h3::ext::Protocol as H3Protocol;
     use http_body_util::Empty;
     use hyper::ext::Protocol;
@@ -2691,7 +2524,10 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream, UdpSocket},
     };
-    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
+    use tokio_tungstenite::{
+        WebSocketStream, connect_async,
+        tungstenite::{Message as WsMessage, protocol},
+    };
 
     use super::{
         UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_addrs,
@@ -2876,6 +2712,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config_with_users(
+            listen_addr,
+            vec![
+                UserEntry {
+                    id: "alice".into(),
+                    password: "secret-a".into(),
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: Some("/alice-tcp".into()),
+                    ws_path_udp: Some("/alice-udp".into()),
+                },
+                UserEntry {
+                    id: "bob".into(),
+                    password: "secret-b".into(),
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: Some("/bob-tcp".into()),
+                    ws_path_udp: Some("/bob-udp".into()),
+                },
+            ],
+        );
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let bob = users
+            .iter()
+            .find(|user| user.id() == "bob")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing bob user"))?;
+        let (mut socket, _) = connect_async(format!("ws://{listen_addr}/alice-tcp")).await?;
+        let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+        request.extend_from_slice(b"ping");
+        let mut encryptor = AeadStreamEncryptor::new(&bob, None)?;
+        let ciphertext = encryptor.encrypt_chunk(&request)?;
+        socket.send(WsMessage::Binary(ciphertext.into())).await?;
+
+        let client_outcome =
+            tokio::time::timeout(std::time::Duration::from_secs(1), socket.next()).await;
+        assert!(
+            matches!(
+                client_outcome,
+                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) | Ok(None)
+            ),
+            "unexpected websocket outcome: {client_outcome:?}"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), upstream.accept())
+                .await
+                .is_err(),
+            "bob key on alice path must not reach upstream"
+        );
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
         let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let upstream_addr = upstream.local_addr()?;
@@ -3037,6 +2947,62 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Result<()> {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let mut peers = Vec::new();
+            let mut buf = [0_u8; 64];
+            for expected in [b"ping-1".as_slice(), b"ping-2".as_slice()] {
+                let (read, peer) = upstream.recv_from(&mut buf).await?;
+                peers.push(peer);
+                assert_eq!(&buf[..read], expected);
+                let reply = if expected == b"ping-1" {
+                    b"pong-1".as_slice()
+                } else {
+                    b"pong-2".as_slice()
+                };
+                upstream.send_to(reply, peer).await?;
+            }
+            Result::<_, anyhow::Error>::Ok(peers)
+        });
+
+        let listener = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)));
+        let users = build_users(&config)?;
+        let user = users[0].clone();
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let server = tokio::spawn(async move {
+            serve_ss_udp_socket(listener, users, metrics, nat_table, udp_dns_cache, false).await
+        });
+
+        let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        send_encrypted_udp_request(&client1, listen_addr, upstream_addr, b"ping-1", &user).await?;
+        let response1 = recv_decrypted_udp_response(&client1, &user).await?;
+        assert_eq!(response1, b"pong-1");
+        drop(client1);
+
+        let client2 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        send_encrypted_udp_request(&client2, listen_addr, upstream_addr, b"ping-2", &user).await?;
+        let response2 = recv_decrypted_udp_response(&client2, &user).await?;
+        assert_eq!(response2, b"pong-2");
+
+        let peers = upstream_task.await??;
+        assert_eq!(peers.len(), 2);
+        assert_eq!(
+            peers[0], peers[1],
+            "NAT socket source port should stay stable across reconnect"
+        );
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
     fn ipv6_unavailable(error: &std::io::Error) -> bool {
         matches!(
             error.kind(),
@@ -3045,6 +3011,20 @@ mod tests {
     }
 
     fn sample_config(listen: SocketAddr) -> Config {
+        sample_config_with_users(
+            listen,
+            vec![UserEntry {
+                id: "bob".into(),
+                password: "secret-b".into(),
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+            }],
+        )
+    }
+
+    fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config {
         Config {
             listen: Some(listen),
             ss_listen: None,
@@ -3069,16 +3049,40 @@ mod tests {
             write_access_keys_dir: None,
             password: None,
             fwmark: None,
-            users: vec![UserEntry {
-                id: "bob".into(),
-                password: "secret-b".into(),
-                fwmark: None,
-                method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-            }],
+            users,
             method: CipherKind::Chacha20IetfPoly1305,
         }
+    }
+
+    async fn send_encrypted_udp_request(
+        client: &UdpSocket,
+        listen_addr: SocketAddr,
+        target: SocketAddr,
+        payload: &[u8],
+        user: &crate::crypto::UserKey,
+    ) -> Result<()> {
+        let mut plaintext = TargetAddr::Socket(target).encode()?;
+        plaintext.extend_from_slice(payload);
+        let ciphertext = encrypt_udp_packet(user, &plaintext)?;
+        client.send_to(&ciphertext, listen_addr).await?;
+        Ok(())
+    }
+
+    async fn recv_decrypted_udp_response(
+        client: &UdpSocket,
+        user: &crate::crypto::UserKey,
+    ) -> Result<Vec<u8>> {
+        let mut encrypted_reply = [0_u8; 65_535];
+        let (read, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut encrypted_reply),
+        )
+        .await??;
+
+        let packet = decrypt_udp_packet(std::slice::from_ref(user), &encrypted_reply[..read])?;
+        let (_, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
+            .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
+        Ok(packet.payload[consumed..].to_vec())
     }
 
     fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {
