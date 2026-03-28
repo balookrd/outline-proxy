@@ -600,6 +600,191 @@ impl DnsProbeConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ResolvedUplinkInput {
+    name: String,
+    transport: UplinkTransport,
+    tcp_ws_url: Option<Url>,
+    tcp_ws_mode: Option<WsTransportMode>,
+    udp_ws_url: Option<Url>,
+    udp_ws_mode: Option<WsTransportMode>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
+    cipher: Option<CipherKind>,
+    password: Option<String>,
+    weight: Option<f64>,
+    fwmark: Option<u32>,
+    ipv6_first: Option<bool>,
+}
+
+impl ResolvedUplinkInput {
+    fn from_cli(args: &Args, outline: Option<&OutlineSection>) -> Self {
+        Self {
+            name: "cli".to_string(),
+            transport: args
+                .transport
+                .or_else(|| outline.and_then(|section| section.transport))
+                .unwrap_or_default(),
+            tcp_ws_url: args
+                .tcp_ws_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.tcp_ws_url.clone())),
+            tcp_ws_mode: args
+                .tcp_ws_mode
+                .or_else(|| outline.and_then(|section| section.tcp_ws_mode)),
+            udp_ws_url: args
+                .udp_ws_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.udp_ws_url.clone())),
+            udp_ws_mode: args
+                .udp_ws_mode
+                .or_else(|| outline.and_then(|section| section.udp_ws_mode)),
+            tcp_addr: args
+                .tcp_addr
+                .clone()
+                .or_else(|| outline.and_then(|section| section.tcp_addr.clone())),
+            udp_addr: args
+                .udp_addr
+                .clone()
+                .or_else(|| outline.and_then(|section| section.udp_addr.clone())),
+            cipher: args
+                .method
+                .or_else(|| outline.and_then(|section| section.method)),
+            password: args
+                .password
+                .clone()
+                .or_else(|| outline.and_then(|section| section.password.clone())),
+            weight: Some(1.0),
+            fwmark: args
+                .fwmark
+                .or_else(|| outline.and_then(|section| section.fwmark)),
+            ipv6_first: args
+                .ipv6_first
+                .or_else(|| outline.and_then(|section| section.ipv6_first)),
+        }
+    }
+
+    fn from_section(index: usize, uplink: &UplinkSection) -> Self {
+        Self {
+            name: uplink
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("uplink-{}", index + 1)),
+            transport: uplink.transport.unwrap_or_default(),
+            tcp_ws_url: uplink.tcp_ws_url.clone(),
+            tcp_ws_mode: uplink.tcp_ws_mode,
+            udp_ws_url: uplink.udp_ws_url.clone(),
+            udp_ws_mode: uplink.udp_ws_mode,
+            tcp_addr: uplink.tcp_addr.clone(),
+            udp_addr: uplink.udp_addr.clone(),
+            cipher: uplink.method,
+            password: uplink.password.clone(),
+            weight: uplink.weight,
+            fwmark: uplink.fwmark,
+            ipv6_first: uplink.ipv6_first,
+        }
+    }
+
+    fn from_outline_default(outline: Option<&OutlineSection>) -> Self {
+        Self {
+            name: "default".to_string(),
+            transport: outline
+                .and_then(|section| section.transport)
+                .unwrap_or_default(),
+            tcp_ws_url: outline.and_then(|section| section.tcp_ws_url.clone()),
+            tcp_ws_mode: outline.and_then(|section| section.tcp_ws_mode),
+            udp_ws_url: outline.and_then(|section| section.udp_ws_url.clone()),
+            udp_ws_mode: outline.and_then(|section| section.udp_ws_mode),
+            tcp_addr: outline.and_then(|section| section.tcp_addr.clone()),
+            udp_addr: outline.and_then(|section| section.udp_addr.clone()),
+            cipher: outline.and_then(|section| section.method),
+            password: outline.and_then(|section| section.password.clone()),
+            weight: Some(1.0),
+            fwmark: outline.and_then(|section| section.fwmark),
+            ipv6_first: outline.and_then(|section| section.ipv6_first),
+        }
+    }
+}
+
+impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
+    type Error = anyhow::Error;
+
+    fn try_from(input: ResolvedUplinkInput) -> Result<Self> {
+        let ResolvedUplinkInput {
+            name,
+            transport,
+            tcp_ws_url,
+            tcp_ws_mode,
+            udp_ws_url,
+            udp_ws_mode,
+            tcp_addr,
+            udp_addr,
+            cipher,
+            password,
+            weight,
+            fwmark,
+            ipv6_first,
+        } = input;
+
+        let weight = weight.unwrap_or(1.0);
+        if !weight.is_finite() || weight <= 0.0 {
+            bail!("uplink weight must be a finite positive number");
+        }
+        let cipher = cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305);
+        let password = password
+            .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?;
+        cipher
+            .derive_master_key(&password)
+            .with_context(|| format!("invalid password/PSK for cipher {cipher}"))?;
+
+        Ok(UplinkConfig {
+            name,
+            transport,
+            tcp_ws_url: match transport {
+                UplinkTransport::Websocket => Some(tcp_ws_url.ok_or_else(|| {
+                    anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
+                })?),
+                UplinkTransport::Shadowsocks => {
+                    if tcp_ws_url.is_some() || udp_ws_url.is_some() {
+                        bail!(
+                            "websocket uplink fields are not valid for transport=shadowsocks; use tcp_addr/udp_addr"
+                        );
+                    }
+                    None
+                }
+            },
+            tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
+            udp_ws_url: match transport {
+                UplinkTransport::Websocket => udp_ws_url,
+                UplinkTransport::Shadowsocks => None,
+            },
+            udp_ws_mode: udp_ws_mode.unwrap_or_default(),
+            tcp_addr: match transport {
+                UplinkTransport::Websocket => {
+                    if tcp_addr.is_some() || udp_addr.is_some() {
+                        bail!(
+                            "socket uplink fields are not valid for transport=websocket; use tcp_ws_url/udp_ws_url"
+                        );
+                    }
+                    None
+                }
+                UplinkTransport::Shadowsocks => Some(tcp_addr.ok_or_else(|| {
+                    anyhow!("missing tcp_addr: set it in config.toml or pass --tcp-addr")
+                })?),
+            },
+            udp_addr: match transport {
+                UplinkTransport::Websocket => None,
+                UplinkTransport::Shadowsocks => udp_addr,
+            },
+            cipher,
+            password,
+            weight,
+            fwmark,
+            ipv6_first: ipv6_first.unwrap_or(false),
+        })
+    }
+}
+
 fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<UplinkConfig>> {
     let cli_override_requested = args.tcp_ws_url.is_some()
         || args.transport.is_some()
@@ -614,154 +799,26 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         || args.ipv6_first.is_some();
 
     if cli_override_requested {
-        return Ok(vec![build_uplink(
-            "cli".to_string(),
-            args.transport
-                .or_else(|| outline.and_then(|o| o.transport))
-                .unwrap_or_default(),
-            args.tcp_ws_url
-                .clone()
-                .or_else(|| outline.and_then(|o| o.tcp_ws_url.clone())),
-            args.tcp_ws_mode
-                .or_else(|| outline.and_then(|o| o.tcp_ws_mode)),
-            args.udp_ws_url
-                .clone()
-                .or_else(|| outline.and_then(|o| o.udp_ws_url.clone())),
-            args.udp_ws_mode
-                .or_else(|| outline.and_then(|o| o.udp_ws_mode)),
-            args.tcp_addr
-                .clone()
-                .or_else(|| outline.and_then(|o| o.tcp_addr.clone())),
-            args.udp_addr
-                .clone()
-                .or_else(|| outline.and_then(|o| o.udp_addr.clone())),
-            args.method.or_else(|| outline.and_then(|o| o.method)),
-            args.password
-                .clone()
-                .or_else(|| outline.and_then(|o| o.password.clone())),
-            Some(1.0),
-            args.fwmark.or_else(|| outline.and_then(|o| o.fwmark)),
-            args.ipv6_first
-                .or_else(|| outline.and_then(|o| o.ipv6_first)),
-        )?]);
+        return Ok(vec![
+            ResolvedUplinkInput::from_cli(args, outline).try_into()?,
+        ]);
     }
 
     if let Some(uplinks) = outline.and_then(|o| o.uplinks.as_ref()) {
-        let mut resolved = Vec::with_capacity(uplinks.len());
-        for (index, uplink) in uplinks.iter().enumerate() {
-            resolved.push(build_uplink(
-                uplink
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| format!("uplink-{}", index + 1)),
-                uplink.transport.unwrap_or_default(),
-                uplink.tcp_ws_url.clone(),
-                uplink.tcp_ws_mode,
-                uplink.udp_ws_url.clone(),
-                uplink.udp_ws_mode,
-                uplink.tcp_addr.clone(),
-                uplink.udp_addr.clone(),
-                uplink.method,
-                uplink.password.clone(),
-                uplink.weight,
-                uplink.fwmark,
-                uplink.ipv6_first,
-            )?);
-        }
+        let resolved = uplinks
+            .iter()
+            .enumerate()
+            .map(|(index, uplink)| ResolvedUplinkInput::from_section(index, uplink).try_into())
+            .collect::<Result<Vec<_>>>()?;
         if resolved.is_empty() {
             bail!("uplinks is present but empty");
         }
         return Ok(resolved);
     }
 
-    Ok(vec![build_uplink(
-        "default".to_string(),
-        outline.and_then(|o| o.transport).unwrap_or_default(),
-        outline.and_then(|o| o.tcp_ws_url.clone()),
-        outline.and_then(|o| o.tcp_ws_mode),
-        outline.and_then(|o| o.udp_ws_url.clone()),
-        outline.and_then(|o| o.udp_ws_mode),
-        outline.and_then(|o| o.tcp_addr.clone()),
-        outline.and_then(|o| o.udp_addr.clone()),
-        outline.and_then(|o| o.method),
-        outline.and_then(|o| o.password.clone()),
-        Some(1.0),
-        outline.and_then(|o| o.fwmark),
-        outline.and_then(|o| o.ipv6_first),
-    )?])
-}
-
-fn build_uplink(
-    name: String,
-    transport: UplinkTransport,
-    tcp_ws_url: Option<Url>,
-    tcp_ws_mode: Option<WsTransportMode>,
-    udp_ws_url: Option<Url>,
-    udp_ws_mode: Option<WsTransportMode>,
-    tcp_addr: Option<ServerAddr>,
-    udp_addr: Option<ServerAddr>,
-    cipher: Option<CipherKind>,
-    password: Option<String>,
-    weight: Option<f64>,
-    fwmark: Option<u32>,
-    ipv6_first: Option<bool>,
-) -> Result<UplinkConfig> {
-    let weight = weight.unwrap_or(1.0);
-    if !weight.is_finite() || weight <= 0.0 {
-        bail!("uplink weight must be a finite positive number");
-    }
-    let cipher = cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305);
-    let password = password
-        .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?;
-    cipher
-        .derive_master_key(&password)
-        .with_context(|| format!("invalid password/PSK for cipher {cipher}"))?;
-
-    Ok(UplinkConfig {
-        name,
-        transport,
-        tcp_ws_url: match transport {
-            UplinkTransport::Websocket => Some(tcp_ws_url.ok_or_else(|| {
-                anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
-            })?),
-            UplinkTransport::Shadowsocks => {
-                if tcp_ws_url.is_some() || udp_ws_url.is_some() {
-                    bail!(
-                        "websocket uplink fields are not valid for transport=shadowsocks; use tcp_addr/udp_addr"
-                    );
-                }
-                None
-            }
-        },
-        tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
-        udp_ws_url: match transport {
-            UplinkTransport::Websocket => udp_ws_url,
-            UplinkTransport::Shadowsocks => None,
-        },
-        udp_ws_mode: udp_ws_mode.unwrap_or_default(),
-        tcp_addr: match transport {
-            UplinkTransport::Websocket => {
-                if tcp_addr.is_some() || udp_addr.is_some() {
-                    bail!(
-                        "socket uplink fields are not valid for transport=websocket; use tcp_ws_url/udp_ws_url"
-                    );
-                }
-                None
-            }
-            UplinkTransport::Shadowsocks => Some(tcp_addr.ok_or_else(|| {
-                anyhow!("missing tcp_addr: set it in config.toml or pass --tcp-addr")
-            })?),
-        },
-        udp_addr: match transport {
-            UplinkTransport::Websocket => None,
-            UplinkTransport::Shadowsocks => udp_addr,
-        },
-        cipher,
-        password,
-        weight,
-        fwmark,
-        ipv6_first: ipv6_first.unwrap_or(false),
-    })
+    Ok(vec![
+        ResolvedUplinkInput::from_outline_default(outline).try_into()?,
+    ])
 }
 
 fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
@@ -803,7 +860,7 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
 fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalancingConfig> {
     let lb = outline.and_then(|o| o.load_balancing.as_ref());
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
-    if !rtt_ewma_alpha.is_finite() || !(0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
+    if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
     }
     Ok(LoadBalancingConfig {
