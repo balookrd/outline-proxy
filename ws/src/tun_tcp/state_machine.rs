@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
 
 use crate::config::TunTcpConfig;
@@ -59,10 +60,10 @@ pub(super) struct TcpFlowState {
     pub(super) retransmission_timeout: Duration,
     pub(super) congestion_window: usize,
     pub(super) slow_start_threshold: usize,
-    pub(super) pending_server_data: VecDeque<Vec<u8>>,
+    pub(super) pending_server_data: VecDeque<Bytes>,
     pub(super) backlog_limit_exceeded_since: Option<Instant>,
     pub(super) last_ack_progress_at: Instant,
-    pub(super) pending_client_data: VecDeque<Vec<u8>>,
+    pub(super) pending_client_data: VecDeque<Bytes>,
     pub(super) unacked_server_segments: VecDeque<ServerSegment>,
     pub(super) sack_scoreboard: Vec<SequenceRange>,
     pub(super) pending_client_segments: VecDeque<BufferedClientSegment>,
@@ -90,7 +91,7 @@ pub(super) struct TcpFlowState {
 
 #[derive(Debug)]
 pub(super) struct ClientSegmentView {
-    pub(super) payload: Vec<u8>,
+    pub(super) payload: Bytes,
     pub(super) fin: bool,
 }
 
@@ -98,7 +99,7 @@ pub(super) struct ClientSegmentView {
 pub(super) struct BufferedClientSegment {
     pub(super) sequence_number: u32,
     pub(super) flags: u8,
-    pub(super) payload: Vec<u8>,
+    pub(super) payload: Bytes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,7 +113,7 @@ pub(super) struct ServerSegment {
     pub(super) sequence_number: u32,
     pub(super) acknowledgement_number: u32,
     pub(super) flags: u8,
-    pub(super) payload: Vec<u8>,
+    pub(super) payload: Bytes,
     pub(super) last_sent: Instant,
     pub(super) first_sent: Instant,
     pub(super) retransmits: u32,
@@ -396,7 +397,7 @@ fn buffered_client_bytes(state: &TcpFlowState) -> usize {
         + state
             .pending_client_data
             .iter()
-            .map(Vec::len)
+            .map(Bytes::len)
             .sum::<usize>()
 }
 
@@ -550,9 +551,9 @@ fn normalize_client_segment_parts(
     };
 
     let payload = if overlap >= payload.len() {
-        Vec::new()
+        Bytes::new()
     } else {
-        payload[overlap..].to_vec()
+        Bytes::copy_from_slice(&payload[overlap..])
     };
 
     let fin = if (flags & TCP_FLAG_FIN) == 0 {
@@ -624,7 +625,7 @@ pub(super) fn queue_future_segment(
                 BufferedClientSegment {
                     sequence_number: cursor,
                     flags: packet.flags & TCP_FLAG_ACK,
-                    payload: packet.payload[start_offset..end_offset].to_vec(),
+                    payload: Bytes::copy_from_slice(&packet.payload[start_offset..end_offset]),
                 },
                 expected_seq,
             );
@@ -643,7 +644,7 @@ pub(super) fn queue_future_segment(
             BufferedClientSegment {
                 sequence_number: cursor,
                 flags: packet.flags & TCP_FLAG_ACK,
-                payload: packet.payload[start_offset..].to_vec(),
+                payload: Bytes::copy_from_slice(&packet.payload[start_offset..]),
             },
             expected_seq,
         );
@@ -660,7 +661,7 @@ pub(super) fn queue_future_segment(
                 BufferedClientSegment {
                     sequence_number: fin_sequence,
                     flags: packet.flags & (TCP_FLAG_FIN | TCP_FLAG_ACK),
-                    payload: Vec::new(),
+                    payload: Bytes::new(),
                 },
                 expected_seq,
             );
@@ -1187,7 +1188,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
             .len()
             .min(max_payload_per_segment)
             .min(available_window as usize);
-        let payload = front.drain(..payload_len).collect::<Vec<_>>();
+        let payload = front.split_to(payload_len);
         if front.is_empty() {
             state.pending_server_data.pop_front();
         }
@@ -1282,7 +1283,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         sequence_number,
         acknowledgement_number: state.client_next_seq,
         flags: TCP_FLAG_FIN | TCP_FLAG_ACK,
-        payload: Vec::new(),
+        payload: Bytes::new(),
         last_sent: Instant::now(),
         first_sent: Instant::now(),
         retransmits: 0,
@@ -1396,7 +1397,7 @@ fn server_segment_len(segment: &ServerSegment) -> usize {
 }
 
 fn pending_server_bytes(state: &TcpFlowState) -> usize {
-    state.pending_server_data.iter().map(Vec::len).sum()
+    state.pending_server_data.iter().map(Bytes::len).sum()
 }
 
 pub(super) fn sync_flow_metrics(state: &mut TcpFlowState) {
