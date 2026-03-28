@@ -45,7 +45,7 @@ pub struct ServerAddr {
     port: u16,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TargetAddr {
     IpV4(Ipv4Addr, u16),
     IpV6(Ipv6Addr, u16),
