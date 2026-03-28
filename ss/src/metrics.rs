@@ -165,6 +165,7 @@ pub struct Metrics {
     udp_relay_duration_seconds: HistogramVec<UserProtocolResultLabels>,
     udp_payload_bytes_total: CounterVec<UserProtocolDirectionLabels>,
     udp_response_datagrams_total: CounterVec<UserProtocolLabels>,
+    udp_relay_drops_total: CounterVec<ProtocolTransportReasonLabels>,
     udp_oversized_datagrams_dropped_total: CounterVec<UserProtocolDirectionLabels>,
     udp_nat_active_entries: AtomicI64,
     udp_nat_entries_created_total: AtomicU64,
@@ -199,6 +200,7 @@ impl Metrics {
             udp_relay_duration_seconds: HistogramVec::new(UDP_RELAY_BUCKETS),
             udp_payload_bytes_total: CounterVec::default(),
             udp_response_datagrams_total: CounterVec::default(),
+            udp_relay_drops_total: CounterVec::default(),
             udp_oversized_datagrams_dropped_total: CounterVec::default(),
             udp_nat_active_entries: AtomicI64::new(0),
             udp_nat_entries_created_total: AtomicU64::new(0),
@@ -355,6 +357,22 @@ impl Metrics {
     ) {
         self.udp_response_datagrams_total
             .inc(UserProtocolLabels::new(user.into(), protocol), count as u64);
+    }
+
+    pub fn record_udp_relay_drop(
+        &self,
+        transport: Transport,
+        protocol: Protocol,
+        reason: &'static str,
+    ) {
+        self.udp_relay_drops_total.inc(
+            ProtocolTransportReasonLabels {
+                transport,
+                protocol,
+                reason,
+            },
+            1,
+        );
     }
 
     pub fn record_udp_oversized_datagram_dropped(
@@ -810,6 +828,12 @@ impl Metrics {
         );
         render_counter_family(
             &mut out,
+            "outline_ss_udp_relay_drops_total",
+            "UDP datagrams dropped before relay because of transport backpressure or concurrency limits.",
+            &self.udp_relay_drops_total,
+        );
+        render_counter_family(
+            &mut out,
             "outline_ss_udp_oversized_datagrams_dropped_total",
             "UDP datagrams dropped because they exceeded the maximum payload size supported by the transport path.",
             &self.udp_oversized_datagrams_dropped_total,
@@ -1009,6 +1033,23 @@ impl PrometheusLabels for WsDirectionLabels {
             ("transport", self.transport.as_str().to_owned()),
             ("protocol", self.protocol.as_str().to_owned()),
             ("direction", self.direction.to_owned()),
+        ]
+    }
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+struct ProtocolTransportReasonLabels {
+    transport: Transport,
+    protocol: Protocol,
+    reason: &'static str,
+}
+
+impl PrometheusLabels for ProtocolTransportReasonLabels {
+    fn labels(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("transport", self.transport.as_str().to_owned()),
+            ("protocol", self.protocol.as_str().to_owned()),
+            ("reason", self.reason.to_owned()),
         ]
     }
 }
@@ -1704,6 +1745,7 @@ mod tests {
         metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
         metrics.record_tcp_payload_bytes("default", Protocol::Http2, "client_to_target", 32);
         metrics.record_udp_payload_bytes("default", Protocol::Http2, "target_to_client", 16);
+        metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
         metrics.record_client_session("default", Protocol::Http2, Transport::Udp);
         record_allocator_trim_run(None, None, false);
         session.finish(DisconnectReason::Normal);
@@ -1719,6 +1761,10 @@ mod tests {
         assert!(rendered.contains("outline_ss_client_active"));
         assert!(rendered.contains("outline_ss_client_up"));
         assert!(rendered.contains("outline_ss_allocator_trim_runs_total"));
+        assert!(rendered.contains("outline_ss_udp_relay_drops_total"));
+        assert!(rendered.contains(
+            "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
+        ));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
