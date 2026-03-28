@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio::time::{sleep_until, timeout};
 use tracing::{debug, info, warn};
 
@@ -80,7 +80,7 @@ pub struct TunTcpEngine {
 struct TunTcpEngineInner {
     writer: SharedTunWriter,
     uplinks: UplinkManager,
-    flows: Mutex<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
+    flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
     pending_connects: Mutex<HashSet<TcpFlowKey>>,
     next_flow_id: AtomicU64,
     max_flows: usize,
@@ -109,7 +109,7 @@ impl TunTcpEngine {
             inner: Arc::new(TunTcpEngineInner {
                 writer,
                 uplinks,
-                flows: Mutex::new(HashMap::new()),
+                flows: RwLock::new(HashMap::new()),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: AtomicU64::new(1),
                 max_flows,
@@ -142,7 +142,7 @@ impl TunTcpEngine {
     }
 
     async fn lookup_flow(&self, key: &TcpFlowKey) -> Option<Arc<Mutex<TcpFlowState>>> {
-        self.inner.flows.lock().await.get(key).cloned()
+        self.inner.flows.read().await.get(key).cloned()
     }
 
     async fn write_tun_packet_or_close_flow(&self, key: &TcpFlowKey, packet: &[u8]) -> Result<()> {
@@ -189,7 +189,7 @@ impl TunTcpEngine {
     }
 
     async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.lock().await.remove(key);
+        let flow = self.inner.flows.write().await.remove(key);
         let Some(flow) = flow else {
             return;
         };
@@ -361,7 +361,7 @@ impl TunTcpEngine {
     }
 
     async fn insert_flow(&self, key: TcpFlowKey, flow: Arc<Mutex<TcpFlowState>>) -> Result<()> {
-        if self.inner.flows.lock().await.len() >= self.inner.max_flows {
+        if self.inner.flows.read().await.len() >= self.inner.max_flows {
             if let Some(evicted_key) = self.oldest_flow_key().await {
                 self.abort_flow_with_rst(&evicted_key, "evicted").await;
             } else {
@@ -374,7 +374,7 @@ impl TunTcpEngine {
             state.uplink_name.clone()
         };
         {
-            let mut guard = self.inner.flows.lock().await;
+            let mut guard = self.inner.flows.write().await;
             guard.insert(key, flow);
         }
         metrics::record_tun_tcp_event(&uplink_name, "flow_created");
@@ -1254,7 +1254,7 @@ impl TunTcpEngine {
     }
 
     async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.lock().await.remove(key);
+        let flow = self.inner.flows.write().await.remove(key);
         if let Some(flow) = flow {
             let (flow_id, uplink_name, _duration, upstream_writer, close_signal) = {
                 let mut state = flow.lock().await;
@@ -1278,7 +1278,7 @@ impl TunTcpEngine {
 
     async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {
         let flows = {
-            let guard = self.inner.flows.lock().await;
+            let guard = self.inner.flows.read().await;
             guard
                 .iter()
                 .map(|(key, flow)| (key.clone(), Arc::clone(flow)))
@@ -1299,7 +1299,7 @@ impl TunTcpEngine {
     }
 
     async fn maybe_shrink_flow_table(&self) {
-        let mut guard = self.inner.flows.lock().await;
+        let mut guard = self.inner.flows.write().await;
         maybe_shrink_hash_map(&mut guard);
     }
 }
@@ -1969,7 +1969,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2132,7 +2132,7 @@ mod tests {
         let ack = super::parse_tcp_packet(&capture.next_packet().await).unwrap();
         assert_eq!(ack.flags, TCP_FLAG_ACK);
         assert_eq!(ack.acknowledgement_number, 1001);
-        assert!(engine.inner.flows.lock().await.get(&key).is_some());
+        assert!(engine.inner.flows.read().await.get(&key).is_some());
     }
 
     #[tokio::test]
@@ -2417,7 +2417,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2433,7 +2433,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&key)
             .cloned()
@@ -2455,7 +2455,7 @@ mod tests {
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
-        assert!(engine.inner.flows.lock().await.get(&key).is_none());
+        assert!(engine.inner.flows.read().await.get(&key).is_none());
     }
 
     #[tokio::test]
@@ -2538,7 +2538,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&time_wait_key)
             .cloned()
@@ -2566,7 +2566,7 @@ mod tests {
         let flow = engine
             .inner
             .flows
-            .lock()
+            .read()
             .await
             .get(&time_wait_key)
             .cloned()
@@ -2583,7 +2583,7 @@ mod tests {
             engine
                 .inner
                 .flows
-                .lock()
+                .read()
                 .await
                 .get(&time_wait_key)
                 .is_none()
@@ -3733,7 +3733,7 @@ mod tests {
                 || error_text.contains("failed to flush TUN packet"),
             "{error_text}"
         );
-        assert!(engine.inner.flows.lock().await.is_empty());
+        assert!(engine.inner.flows.read().await.is_empty());
         assert!(engine.inner.pending_connects.lock().await.is_empty());
 
         let _ = std::fs::remove_file(path);
