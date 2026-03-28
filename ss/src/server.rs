@@ -2672,7 +2672,7 @@ mod tests {
     use anyhow::Result;
     use axum::http::{Method, Request, StatusCode, Version, header};
     use bytes::Bytes;
-    use futures_util::SinkExt;
+    use futures_util::{SinkExt, StreamExt};
     use h3::ext::Protocol as H3Protocol;
     use http_body_util::Empty;
     use hyper::ext::Protocol;
@@ -2691,7 +2691,10 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream, UdpSocket},
     };
-    use tokio_tungstenite::{WebSocketStream, tungstenite::protocol};
+    use tokio_tungstenite::{
+        WebSocketStream, connect_async,
+        tungstenite::{Message as WsMessage, protocol},
+    };
 
     use super::{
         UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_addrs,
@@ -2876,6 +2879,83 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config_with_users(
+            listen_addr,
+            vec![
+                UserEntry {
+                    id: "alice".into(),
+                    password: "secret-a".into(),
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: Some("/alice-tcp".into()),
+                    ws_path_udp: Some("/alice-udp".into()),
+                },
+                UserEntry {
+                    id: "bob".into(),
+                    password: "secret-b".into(),
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: Some("/bob-tcp".into()),
+                    ws_path_udp: Some("/bob-udp".into()),
+                },
+            ],
+        );
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let bob = users
+            .iter()
+            .find(|user| user.id() == "bob")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("missing bob user"))?;
+        let (mut socket, _) = connect_async(format!("ws://{listen_addr}/alice-tcp")).await?;
+        let mut request = TargetAddr::Socket(upstream_addr).encode()?;
+        request.extend_from_slice(b"ping");
+        let mut encryptor = AeadStreamEncryptor::new(&bob, None)?;
+        let ciphertext = encryptor.encrypt_chunk(&request)?;
+        socket.send(WsMessage::Binary(ciphertext.into())).await?;
+
+        let client_outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            socket.next(),
+        )
+        .await;
+        assert!(
+            matches!(
+                client_outcome,
+                Ok(Some(Ok(WsMessage::Close(_)))) | Ok(Some(Err(_))) | Ok(None)
+            ),
+            "unexpected websocket outcome: {client_outcome:?}"
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), upstream.accept())
+                .await
+                .is_err(),
+            "bob key on alice path must not reach upstream"
+        );
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
         let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
         let upstream_addr = upstream.local_addr()?;
@@ -3037,6 +3117,62 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Result<()> {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let mut peers = Vec::new();
+            let mut buf = [0_u8; 64];
+            for expected in [b"ping-1".as_slice(), b"ping-2".as_slice()] {
+                let (read, peer) = upstream.recv_from(&mut buf).await?;
+                peers.push(peer);
+                assert_eq!(&buf[..read], expected);
+                let reply = if expected == b"ping-1" {
+                    b"pong-1".as_slice()
+                } else {
+                    b"pong-2".as_slice()
+                };
+                upstream.send_to(reply, peer).await?;
+            }
+            Result::<_, anyhow::Error>::Ok(peers)
+        });
+
+        let listener = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+        let listen_addr = listener.local_addr()?;
+        let config = sample_config(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000)));
+        let users = build_users(&config)?;
+        let user = users[0].clone();
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let server = tokio::spawn(async move {
+            serve_ss_udp_socket(listener, users, metrics, nat_table, udp_dns_cache, false).await
+        });
+
+        let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        send_encrypted_udp_request(&client1, listen_addr, upstream_addr, b"ping-1", &user).await?;
+        let response1 = recv_decrypted_udp_response(&client1, &user).await?;
+        assert_eq!(response1, b"pong-1");
+        drop(client1);
+
+        let client2 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        send_encrypted_udp_request(&client2, listen_addr, upstream_addr, b"ping-2", &user).await?;
+        let response2 = recv_decrypted_udp_response(&client2, &user).await?;
+        assert_eq!(response2, b"pong-2");
+
+        let peers = upstream_task.await??;
+        assert_eq!(peers.len(), 2);
+        assert_eq!(
+            peers[0], peers[1],
+            "NAT socket source port should stay stable across reconnect"
+        );
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
     fn ipv6_unavailable(error: &std::io::Error) -> bool {
         matches!(
             error.kind(),
@@ -3045,6 +3181,20 @@ mod tests {
     }
 
     fn sample_config(listen: SocketAddr) -> Config {
+        sample_config_with_users(
+            listen,
+            vec![UserEntry {
+                id: "bob".into(),
+                password: "secret-b".into(),
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+            }],
+        )
+    }
+
+    fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config {
         Config {
             listen: Some(listen),
             ss_listen: None,
@@ -3069,16 +3219,40 @@ mod tests {
             write_access_keys_dir: None,
             password: None,
             fwmark: None,
-            users: vec![UserEntry {
-                id: "bob".into(),
-                password: "secret-b".into(),
-                fwmark: None,
-                method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-            }],
+            users,
             method: CipherKind::Chacha20IetfPoly1305,
         }
+    }
+
+    async fn send_encrypted_udp_request(
+        client: &UdpSocket,
+        listen_addr: SocketAddr,
+        target: SocketAddr,
+        payload: &[u8],
+        user: &crate::crypto::UserKey,
+    ) -> Result<()> {
+        let mut plaintext = TargetAddr::Socket(target).encode()?;
+        plaintext.extend_from_slice(payload);
+        let ciphertext = encrypt_udp_packet(user, &plaintext)?;
+        client.send_to(&ciphertext, listen_addr).await?;
+        Ok(())
+    }
+
+    async fn recv_decrypted_udp_response(
+        client: &UdpSocket,
+        user: &crate::crypto::UserKey,
+    ) -> Result<Vec<u8>> {
+        let mut encrypted_reply = [0_u8; 65_535];
+        let (read, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            client.recv_from(&mut encrypted_reply),
+        )
+        .await??;
+
+        let packet = decrypt_udp_packet(std::slice::from_ref(user), &encrypted_reply[..read])?;
+        let (_, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
+            .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
+        Ok(packet.payload[consumed..].to_vec())
     }
 
     fn test_h3_server_tls() -> Result<(rustls::ServerConfig, CertificateDer<'static>)> {

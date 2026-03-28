@@ -317,23 +317,13 @@ async fn nat_reader_task(
         };
 
         let sender = { session_tx.lock().await.clone() };
-        if matches!(
-            sender.as_ref().map(UdpResponseSender::protocol),
-            Some(Protocol::Socket)
-        ) && ciphertext.len() > MAX_UDP_PAYLOAD_SIZE
-        {
-            metrics.record_udp_oversized_datagram_dropped(
-                user.id_arc(),
-                Protocol::Socket,
-                "target_to_client",
-            );
-            warn!(
-                user = user.id(),
-                %source,
-                encrypted_bytes = ciphertext.len(),
-                max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
-                "dropping oversized socket udp response datagram"
-            );
+        if record_oversized_socket_response_drop(
+            sender.as_ref(),
+            metrics.as_ref(),
+            &user,
+            source,
+            ciphertext.len(),
+        ) {
             continue;
         }
 
@@ -370,4 +360,167 @@ fn unix_secs_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn record_oversized_socket_response_drop(
+    sender: Option<&UdpResponseSender>,
+    metrics: &Metrics,
+    user: &UserKey,
+    source: SocketAddr,
+    ciphertext_len: usize,
+) -> bool {
+    if !matches!(sender.map(UdpResponseSender::protocol), Some(Protocol::Socket))
+        || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
+    {
+        return false;
+    }
+
+    metrics.record_udp_oversized_datagram_dropped(
+        user.id_arc(),
+        Protocol::Socket,
+        "target_to_client",
+    );
+    warn!(
+        user = user.id(),
+        %source,
+        encrypted_bytes = ciphertext_len,
+        max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+        "dropping oversized socket udp response datagram"
+    );
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
+
+    use anyhow::Result;
+    use tokio::{net::UdpSocket, sync::mpsc};
+
+    use super::{MAX_UDP_PAYLOAD_SIZE, UdpResponseSender, record_oversized_socket_response_drop};
+    use crate::{
+        config::{CipherKind, Config},
+        crypto::UserKey,
+        metrics::{Metrics, Protocol},
+    };
+
+    #[tokio::test]
+    async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> {
+        let config = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: None,
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        };
+        let metrics = Metrics::new(&config);
+        let user = UserKey::new(
+            "bob",
+            "secret-b",
+            None,
+            CipherKind::Chacha20IetfPoly1305,
+            "/tcp",
+            "/udp",
+        )?;
+        let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
+        let sender = UdpResponseSender::datagram(
+            socket,
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 40000)),
+        );
+
+        assert!(record_oversized_socket_response_drop(
+            Some(&sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53)),
+            MAX_UDP_PAYLOAD_SIZE + 1,
+        ));
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains(
+            "outline_ss_udp_oversized_datagrams_dropped_total{user=\"bob\",protocol=\"socket\",direction=\"target_to_client\"} 1"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_non_socket_or_in_range_udp_response_sizes() -> Result<()> {
+        let config = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            memory_trim_interval_secs: 60,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "ws".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: None,
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        };
+        let metrics = Metrics::new(&config);
+        let user = UserKey::new(
+            "bob",
+            "secret-b",
+            None,
+            CipherKind::Chacha20IetfPoly1305,
+            "/tcp",
+            "/udp",
+        )?;
+        let (tx, _rx) = mpsc::channel(1);
+        let ws_sender = UdpResponseSender::ws(tx, Protocol::Http2);
+
+        assert!(!record_oversized_socket_response_drop(
+            Some(&ws_sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
+            MAX_UDP_PAYLOAD_SIZE + 1,
+        ));
+        assert!(!record_oversized_socket_response_drop(
+            Some(&ws_sender),
+            metrics.as_ref(),
+            &user,
+            SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)),
+            MAX_UDP_PAYLOAD_SIZE,
+        ));
+        Ok(())
+    }
 }
