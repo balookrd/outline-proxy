@@ -84,7 +84,7 @@ fn render_prometheus_exports_process_memory_metrics() {
         Some(5678),
         Some(5678),
         Some(256),
-        "exact",
+        "estimated",
         Some(42),
         Some(9),
         Some(ProcessFdSnapshot {
@@ -96,16 +96,6 @@ fn render_prometheus_exports_process_memory_metrics() {
             other: 1,
         }),
     );
-    record_malloc_trim(
-        "periodic",
-        true,
-        Some(4096),
-        Some(3072),
-        Some(1024),
-        Some(8192),
-        Some(6144),
-        Some(2048),
-    );
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
@@ -113,32 +103,11 @@ fn render_prometheus_exports_process_memory_metrics() {
     assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
     assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
     assert!(rendered.contains("outline_ws_rust_process_heap_free_bytes 256"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"exact\"} 1"));
+    assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"estimated\"} 1"));
     assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
     assert!(rendered.contains("outline_ws_rust_process_threads 9"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
-    assert!(rendered.contains(
-        "outline_ws_rust_process_malloc_trim_total{reason=\"periodic\",result=\"success\"} 1"
-    ));
-    assert!(
-        rendered
-            .contains("outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"rss\"} 1024")
-    );
-    assert!(
-        rendered.contains(
-            "outline_ws_rust_process_malloc_trim_last_released_bytes{kind=\"heap\"} 2048"
-        )
-    );
-    assert!(rendered.contains(
-        "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"before\"} 4096"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"after\"} 3072"
-    ));
-    assert!(rendered.contains(
-        "outline_ws_rust_process_malloc_trim_last_bytes{kind=\"rss\",stage=\"released\"} 1024"
-    ));
     assert!(rendered.contains(&format!(
         "outline_ws_rust_allocator_info{{allocator=\"{}\"}} 1",
         ACTIVE_ALLOCATOR

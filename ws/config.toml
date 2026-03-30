@@ -14,10 +14,6 @@ listen = "[::]:1080"
 [metrics]
 listen = "[::1]:9090"
 
-# Linux/glibc only. Periodically calls malloc_trim(0) to return free pages to the OS.
-# Enabled by default at 60 seconds. Set to 0 to disable periodic trimming.
-memory_trim_interval_secs = 60
-
 [tun]
 # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
 # Linux example:

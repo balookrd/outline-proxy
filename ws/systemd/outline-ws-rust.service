@@ -8,6 +8,7 @@ Wants=network-online.target
 Type=simple
 Environment=RUST_LOG=info
 Environment=NO_COLOR=1
+Environment=MIMALLOC_ARENA_RESERVE=262144
 ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config.toml
 Restart=on-failure
 RestartSec=3s
@@ -16,6 +17,11 @@ RestartSec=3s
 # lines can be removed.
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
+
+# Reasonable production limits.
+LimitNOFILE=1048576
+LimitSTACK=8M
+TasksMax=infinity
 
 NoNewPrivileges=true
 DynamicUser=true

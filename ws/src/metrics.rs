@@ -14,11 +14,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use self::session::RecentSessionWindow;
+pub(crate) use crate::memory::ACTIVE_ALLOCATOR;
 
-pub use self::process::{
-    init, record_malloc_trim, record_malloc_trim_error, spawn_process_metrics_sampler,
-    update_process_memory,
-};
+pub use self::process::{init, spawn_process_metrics_sampler, update_process_memory};
 pub use self::session::{SessionTracker, track_session};
 pub use self::snapshot::render_prometheus;
 pub use self::transport::{
@@ -47,8 +45,6 @@ pub use self::tun::{
 static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
 const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
-
-const ACTIVE_ALLOCATOR: &str = "system";
 
 struct Metrics {
     registry: Registry,
@@ -90,10 +86,6 @@ struct Metrics {
     transport_connects_active: IntGaugeVec,
     upstream_transports_total: IntCounterVec,
     upstream_transports_active: IntGaugeVec,
-    process_malloc_trim_total: IntCounterVec,
-    process_malloc_trim_errors_total: IntCounterVec,
-    process_malloc_trim_last_released_bytes: GaugeVec,
-    process_malloc_trim_last_bytes: GaugeVec,
     tun_packets_total: IntCounterVec,
     tun_flows_total: IntCounterVec,
     tun_flow_duration_seconds: HistogramVec,

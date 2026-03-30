@@ -353,7 +353,6 @@ password = "Secret0"
 - Флаги CLI и переменные окружения переопределяют настройки из файла.
 - `--metrics-listen` включает метрики даже без секции `[metrics]` в конфиге.
 - `--tun-path` включает TUN даже без секции `[tun]` в конфиге.
-- `memory_trim_interval_secs` по умолчанию `60`. На Linux/glibc проект использует системный аллокатор и запускает периодический `malloc_trim(0)` для возврата свободных страниц ОС после пиков. Установите `0`, чтобы отключить.
 
 ### Полезные переопределения через CLI и переменные окружения
 
@@ -368,7 +367,6 @@ password = "Secret0"
 - `--method` / `SHADOWSOCKS_METHOD`
 - `--password` / `SHADOWSOCKS_PASSWORD`
 - `--metrics-listen` / `METRICS_LISTEN`
-- `--memory-trim-interval-secs` / `MEMORY_TRIM_INTERVAL_SECS`
 - `--tun-path` / `TUN_PATH`
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
@@ -599,33 +597,16 @@ scrape_configs:
 - `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
-- `outline_ws_rust_process_malloc_trim_total{reason,result}`
-- `outline_ws_rust_process_malloc_trim_errors_total{reason}`
-- `outline_ws_rust_process_malloc_trim_last_released_bytes{kind="rss|heap"}`
-- `outline_ws_rust_process_malloc_trim_last_bytes{kind="rss|heap",stage="before|after|released"}`
 
-На Linux/glibc метрики heap берутся из статистики аллокатора glibc (семейство `mallinfo`):
-
-- `heap_memory_bytes` — `uordblks + fordblks`
-- `heap_allocated_bytes` — `uordblks`
-- `heap_free_bytes` — `fordblks`
-- `heap_mode_info{mode="exact"}` — подтверждение allocator-aware семплинга через статистику glibc
-
-На Linux-целях без этой статистики аллокатора метрики heap откатываются к оценке через `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
-
-С системным аллокатором периодическое и оппортунистическое обслуживание использует `malloc_trim(0)`.
-
-На Linux с glibc и системным аллокатором оппортунистический trim также создаёт запись в логе:
-
-- `malloc_trim invoked`
+С `mimalloc` метрики heap на Linux откатываются к оценке через `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
+`heap_free_bytes` остаётся `0`, если активный аллокатор не предоставляет отдельную статистику свободного heap.
 
 На Linux процесс также периодически выводит в лог inventory дескрипторов:
 
 - `process fd snapshot`
 
-При включённом trimming лог включает RSS и heap до и после trimming.
 Snapshot дескрипторов включает общее количество открытых FD и разбивку на сокеты, pipes, anon inodes, обычные файлы и прочее.
-Основной дашборд содержит секцию `Memory & Allocator` с панелями `Current RSS`, `Last RSS Released`, `Trim Errors`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Allocator Trim Activity` и `Allocator Trim Effect`.
+Основной дашборд содержит секцию `Memory & Allocator` с панелями `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Heap to RSS Ratio` и `RSS to Virtual Ratio`.
 
 При подавлении runtime failure storms из-за уже активного cooldown метрика `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` и панель `Suppressed Runtime Failures` показывают, сколько дублирующих failure-событий было намеренно проигнорировано.
 

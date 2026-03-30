@@ -353,7 +353,6 @@ password = "Secret0"
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
-- `memory_trim_interval_secs` defaults to `60`. On Linux/glibc the project uses the system allocator and keeps periodic `malloc_trim(0)` enabled to return free pages to the OS after traffic spikes. Set it to `0` to disable periodic trimming.
 
 ### Useful CLI and env overrides
 
@@ -368,7 +367,6 @@ password = "Secret0"
 - `--method` / `SHADOWSOCKS_METHOD`
 - `--password` / `SHADOWSOCKS_PASSWORD`
 - `--metrics-listen` / `METRICS_LISTEN`
-- `--memory-trim-interval-secs` / `MEMORY_TRIM_INTERVAL_SECS`
 - `--tun-path` / `TUN_PATH`
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
@@ -599,33 +597,16 @@ On Linux, the process memory sampler updates:
 - `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
-- `outline_ws_rust_process_malloc_trim_total{reason,result}`
-- `outline_ws_rust_process_malloc_trim_errors_total{reason}`
-- `outline_ws_rust_process_malloc_trim_last_released_bytes{kind="rss|heap"}`
-- `outline_ws_rust_process_malloc_trim_last_bytes{kind="rss|heap",stage="before|after|released"}`
 
-On Linux/glibc, heap metrics come from glibc allocator statistics (`mallinfo` family):
-
-- `heap_memory_bytes` reflects `uordblks + fordblks`
-- `heap_allocated_bytes` reflects `uordblks`
-- `heap_free_bytes` reflects `fordblks`
-- `heap_mode_info{mode="exact"}` marks allocator-aware sampling via glibc heap stats
-
-On Linux targets without those allocator stats, heap metrics fall back to `VmData`-based estimation and export `heap_mode_info{mode="estimated"}`.
-
-With the system allocator, periodic and opportunistic trim maintenance uses `malloc_trim(0)`.
-
-On Linux with glibc and the system allocator, opportunistic allocator trimming also emits a dedicated log entry:
-
-- `malloc_trim invoked`
+With `mimalloc`, heap metrics fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
+`heap_free_bytes` remains `0` unless the active allocator exposes free-heap accounting.
 
 On Linux, the process also emits a periodic descriptor inventory log:
 
 - `process fd snapshot`
 
-When allocator trimming is supported, the log includes RSS and heap before and after trimming so you can verify whether memory is actually being returned on your host.
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Last RSS Released`, `Trim Errors`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Allocator Trim Activity`, and `Allocator Trim Effect`. FD, thread, and transport pressure remain in a separate section so allocator behavior is visible without mixing it with descriptor churn.
+The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Heap to RSS Ratio`, and `RSS to Virtual Ratio`. FD, thread, and transport pressure remain in a separate section so allocator behavior is visible without mixing it with descriptor churn.
 
 When runtime failure storms are suppressed because an uplink is already in cooldown, `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` and the `Suppressed Runtime Failures` panel show how much duplicate failure churn was intentionally ignored.
 `outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` feed the `Selection Mode`, `Routing Scope`, `Global Active Uplink`, and `Global Sticky Routes` stat panels so you can confirm how the selector is configured and, in `global` scope, whether a sticky active uplink is currently pinned.
@@ -668,7 +649,7 @@ The `tun2tcp` dashboard is grouped into:
 
 Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
 Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
-`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm that an instance is running with the system allocator.
+`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm that an instance is running with `mimalloc`.
 
 Alert rules:
 

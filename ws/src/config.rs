@@ -62,9 +62,6 @@ pub struct Args {
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
-    #[arg(long, env = "MEMORY_TRIM_INTERVAL_SECS")]
-    pub memory_trim_interval_secs: Option<u64>,
-
     #[arg(long, env = "TUN_PATH")]
     pub tun_path: Option<PathBuf>,
 
@@ -83,7 +80,6 @@ pub struct AppConfig {
     pub probe: ProbeConfig,
     pub load_balancing: LoadBalancingConfig,
     pub metrics: Option<MetricsConfig>,
-    pub memory_trim_interval: Option<Duration>,
     pub tun: Option<TunConfig>,
 }
 
@@ -249,7 +245,6 @@ struct ConfigFile {
     load_balancing: Option<LoadBalancingSection>,
     outline: Option<OutlineSection>,
     metrics: Option<MetricsSection>,
-    memory_trim_interval_secs: Option<u64>,
     tun: Option<TunSection>,
 }
 
@@ -408,7 +403,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .metrics_listen
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
-    let memory_trim_interval = load_memory_trim_interval(file.as_ref(), args)?;
     let tun = load_tun_config(tun_section, args)?;
 
     if listen.is_none() && tun.is_none() {
@@ -422,7 +416,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         probe,
         load_balancing,
         metrics,
-        memory_trim_interval,
         tun,
     })
 }
@@ -1031,18 +1024,6 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
     }))
 }
 
-fn load_memory_trim_interval(file: Option<&ConfigFile>, args: &Args) -> Result<Option<Duration>> {
-    let interval_secs = args
-        .memory_trim_interval_secs
-        .or_else(|| file.and_then(|config| config.memory_trim_interval_secs))
-        .or(Some(60));
-    match interval_secs {
-        None => Ok(None),
-        Some(0) => Ok(None),
-        Some(seconds) => Ok(Some(Duration::from_secs(seconds))),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
@@ -1345,77 +1326,6 @@ mod tests {
         assert_eq!(tcp.max_buffered_client_segments, Some(1024));
         assert_eq!(tcp.max_buffered_client_bytes, Some(131072));
         assert_eq!(tcp.max_retransmits, Some(9));
-    }
-
-    #[tokio::test]
-    async fn load_config_enables_periodic_memory_trim() {
-        let path = std::env::temp_dir().join("outline-ws-rust-memory-trim.toml");
-        std::fs::write(
-            &path,
-            r#"
-            tcp_ws_url = "wss://example.com/secret/tcp"
-            method = "chacha20-ietf-poly1305"
-            password = "Secret0"
-            memory_trim_interval_secs = 45
-
-            [socks5]
-            listen = "127.0.0.1:1080"
-            "#,
-        )
-        .unwrap();
-
-        let args = super::Args::parse_from(["test"]);
-        let config = load_config(&path, &args).await.unwrap();
-        assert_eq!(config.memory_trim_interval, Some(Duration::from_secs(45)));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn load_config_defaults_periodic_memory_trim_to_60_seconds() {
-        let path = std::env::temp_dir().join("outline-ws-rust-memory-trim-default.toml");
-        std::fs::write(
-            &path,
-            r#"
-            tcp_ws_url = "wss://example.com/secret/tcp"
-            method = "chacha20-ietf-poly1305"
-            password = "Secret0"
-
-            [socks5]
-            listen = "127.0.0.1:1080"
-            "#,
-        )
-        .unwrap();
-
-        let args = super::Args::parse_from(["test"]);
-        let config = load_config(&path, &args).await.unwrap();
-        assert_eq!(config.memory_trim_interval, Some(Duration::from_secs(60)));
-
-        let _ = std::fs::remove_file(path);
-    }
-
-    #[tokio::test]
-    async fn load_config_disables_periodic_memory_trim_when_set_to_zero() {
-        let path = std::env::temp_dir().join("outline-ws-rust-memory-trim-disabled.toml");
-        std::fs::write(
-            &path,
-            r#"
-            tcp_ws_url = "wss://example.com/secret/tcp"
-            method = "chacha20-ietf-poly1305"
-            password = "Secret0"
-            memory_trim_interval_secs = 0
-
-            [socks5]
-            listen = "127.0.0.1:1080"
-            "#,
-        )
-        .unwrap();
-
-        let args = super::Args::parse_from(["test"]);
-        let config = load_config(&path, &args).await.unwrap();
-        assert_eq!(config.memory_trim_interval, None);
-
-        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

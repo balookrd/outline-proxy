@@ -73,32 +73,7 @@ pub fn init() {
                 let _ = METRICS
                     .upstream_transports_total
                     .with_label_values(&[source, protocol, result]);
-            }
-        }
-    }
-    for (reason, result) in [
-        ("opportunistic", "success"),
-        ("opportunistic", "noop"),
-        ("periodic", "success"),
-        ("periodic", "noop"),
-    ] {
-        let _ = METRICS
-            .process_malloc_trim_total
-            .with_label_values(&[reason, result]);
-        let _ = METRICS
-            .process_malloc_trim_errors_total
-            .with_label_values(&[reason]);
-    }
-    for kind in ["rss", "heap"] {
-        METRICS
-            .process_malloc_trim_last_released_bytes
-            .with_label_values(&[kind])
-            .set(0.0);
-        for stage in ["before", "after", "released"] {
-            METRICS
-                .process_malloc_trim_last_bytes
-                .with_label_values(&[kind, stage])
-                .set(0.0);
+                }
         }
     }
     for command in ["connect", "udp_associate"] {
@@ -263,59 +238,4 @@ pub fn update_process_memory(
         .process_fd_by_type
         .with_label_values(&["other"])
         .set(snapshot.other as f64);
-}
-
-pub fn record_malloc_trim(
-    reason: &'static str,
-    trimmed: bool,
-    rss_before_bytes: Option<u64>,
-    rss_after_bytes: Option<u64>,
-    rss_released_bytes: Option<u64>,
-    heap_before_bytes: Option<u64>,
-    heap_after_bytes: Option<u64>,
-    heap_released_bytes: Option<u64>,
-) {
-    METRICS
-        .process_malloc_trim_total
-        .with_label_values(&[reason, if trimmed { "success" } else { "noop" }])
-        .inc();
-    METRICS
-        .process_malloc_trim_last_released_bytes
-        .with_label_values(&["rss"])
-        .set(rss_released_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["rss", "before"])
-        .set(rss_before_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["rss", "after"])
-        .set(rss_after_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["rss", "released"])
-        .set(rss_released_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_released_bytes
-        .with_label_values(&["heap"])
-        .set(heap_released_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["heap", "before"])
-        .set(heap_before_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["heap", "after"])
-        .set(heap_after_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_malloc_trim_last_bytes
-        .with_label_values(&["heap", "released"])
-        .set(heap_released_bytes.unwrap_or(0) as f64);
-}
-
-pub fn record_malloc_trim_error(reason: &'static str) {
-    METRICS
-        .process_malloc_trim_errors_total
-        .with_label_values(&[reason])
-        .inc();
 }
