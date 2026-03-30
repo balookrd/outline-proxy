@@ -12,9 +12,6 @@ use std::{
 use crate::config::Config;
 use tokio::time::{Duration, MissedTickBehavior};
 
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-use anyhow::{Context, Result};
-
 const TCP_CONNECT_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
 ];
@@ -33,21 +30,36 @@ static ALLOCATOR_TRIM_LAST_RSS_RELEASED_BYTES: AtomicI64 = AtomicI64::new(0);
 static ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_BEFORE_BYTES: AtomicI64 = AtomicI64::new(0);
 static ALLOCATOR_TRIM_LAST_HEAP_ALLOCATED_AFTER_BYTES: AtomicI64 = AtomicI64::new(0);
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct ProcessMemorySnapshot {
     pub resident_memory_bytes: u64,
     pub virtual_memory_bytes: u64,
+    pub thread_count: Option<u64>,
     pub heap_allocated_bytes: Option<u64>,
     pub heap_free_bytes: Option<u64>,
-    pub allocator_resident_bytes: Option<u64>,
-    pub allocator_mapped_bytes: Option<u64>,
-    pub allocator_retained_bytes: Option<u64>,
+    pub virtual_heap_bytes: Option<u64>,
+    pub virtual_stack_bytes: Option<u64>,
+    pub virtual_anon_private_bytes: Option<u64>,
+    pub virtual_anon_shared_bytes: Option<u64>,
+    pub virtual_file_private_bytes: Option<u64>,
+    pub virtual_file_shared_bytes: Option<u64>,
+    pub virtual_special_bytes: Option<u64>,
+    pub top_virtual_mappings: Vec<TopVirtualMapping>,
 }
 
-#[cfg_attr(any(not(target_os = "linux"), target_env = "musl"), allow(dead_code))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TopVirtualMapping {
+    pub kind: &'static str,
+    pub perms: String,
+    pub name: String,
+    pub size_bytes: u64,
+    pub rss_bytes: u64,
+}
+
+#[allow(dead_code)]
 pub fn record_allocator_trim_run(
-    before: Option<ProcessMemorySnapshot>,
-    after: Option<ProcessMemorySnapshot>,
+    before: Option<&ProcessMemorySnapshot>,
+    after: Option<&ProcessMemorySnapshot>,
     release_event: bool,
 ) {
     ALLOCATOR_TRIM_RUNS_TOTAL.fetch_add(1, Ordering::Relaxed);
@@ -57,9 +69,11 @@ pub fn record_allocator_trim_run(
     ALLOCATOR_TRIM_LAST_RUN_SECONDS.store(unix_timestamp_seconds(), Ordering::Relaxed);
 
     let rss_before = before
+        .as_ref()
         .map(|snapshot| snapshot.resident_memory_bytes)
         .unwrap_or(0);
     let rss_after = after
+        .as_ref()
         .map(|snapshot| snapshot.resident_memory_bytes)
         .unwrap_or(0);
     let released = rss_before.saturating_sub(rss_after);
@@ -80,18 +94,13 @@ pub fn record_allocator_trim_run(
     );
 }
 
-#[cfg_attr(any(not(target_os = "linux"), target_env = "musl"), allow(dead_code))]
+#[allow(dead_code)]
 pub fn record_allocator_trim_error() {
     ALLOCATOR_TRIM_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
     process_memory_snapshot_impl()
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-pub fn trim_allocator() -> Result<bool> {
-    jemalloc_trim_allocator()
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
@@ -427,10 +436,10 @@ impl Metrics {
     }
 
     fn cached_process_memory_snapshot(&self) -> Option<ProcessMemorySnapshot> {
-        *self
-            .process_memory_snapshot
+        self.process_memory_snapshot
             .read()
             .expect("process memory snapshot poisoned")
+            .clone()
     }
 
     async fn refresh_process_memory_snapshot(self: &Arc<Self>) {
@@ -510,7 +519,7 @@ impl Metrics {
         write_help(
             &mut out,
             "outline_ss_allocator_heap_metrics_supported",
-            "Allocator heap metrics mode: 0=unsupported, 1=exact allocator metrics.",
+            "Heap metrics mode: 0=unsupported, 1=estimated from /proc.",
         );
         write_type(
             &mut out,
@@ -568,11 +577,213 @@ impl Metrics {
             )
             .ok();
 
+            if let Some(thread_count) = snapshot.thread_count {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_threads",
+                    "Thread count of the outline-ss-rust process.",
+                );
+                write_type(&mut out, "outline_ss_process_threads", "gauge");
+                writeln!(out, "outline_ss_process_threads {}", thread_count).ok();
+            }
+
+            if let Some(virtual_heap_bytes) = snapshot.virtual_heap_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_heap_bytes",
+                    "Virtual memory bytes currently mapped as [heap].",
+                );
+                write_type(&mut out, "outline_ss_process_virtual_heap_bytes", "gauge");
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_heap_bytes {}",
+                    virtual_heap_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_stack_bytes) = snapshot.virtual_stack_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_stack_bytes",
+                    "Virtual memory bytes currently reserved by process stacks.",
+                );
+                write_type(&mut out, "outline_ss_process_virtual_stack_bytes", "gauge");
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_stack_bytes {}",
+                    virtual_stack_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_anon_private_bytes) = snapshot.virtual_anon_private_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_anon_private_bytes",
+                    "Virtual memory bytes in anonymous private mappings.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_anon_private_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_anon_private_bytes {}",
+                    virtual_anon_private_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_anon_shared_bytes) = snapshot.virtual_anon_shared_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_anon_shared_bytes",
+                    "Virtual memory bytes in anonymous shared mappings.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_anon_shared_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_anon_shared_bytes {}",
+                    virtual_anon_shared_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_file_private_bytes) = snapshot.virtual_file_private_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_file_private_bytes",
+                    "Virtual memory bytes in file-backed private mappings.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_file_private_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_file_private_bytes {}",
+                    virtual_file_private_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_file_shared_bytes) = snapshot.virtual_file_shared_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_file_shared_bytes",
+                    "Virtual memory bytes in file-backed shared mappings.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_file_shared_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_file_shared_bytes {}",
+                    virtual_file_shared_bytes
+                )
+                .ok();
+            }
+
+            if let Some(virtual_special_bytes) = snapshot.virtual_special_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_special_bytes",
+                    "Virtual memory bytes in special kernel/runtime mappings such as [vdso] or [vvar].",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_special_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_virtual_special_bytes {}",
+                    virtual_special_bytes
+                )
+                .ok();
+            }
+
+            if !snapshot.top_virtual_mappings.is_empty() {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_size_bytes",
+                    "Top virtual memory mappings by reserved size from /proc/self/smaps.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_size_bytes",
+                    "gauge",
+                );
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_rss_bytes",
+                    "RSS contribution of the top virtual memory mappings from /proc/self/smaps.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_rss_bytes",
+                    "gauge",
+                );
+                write_help(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_gap_bytes",
+                    "Reserved but currently non-resident bytes of the top virtual memory mappings from /proc/self/smaps.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_virtual_top_mapping_gap_bytes",
+                    "gauge",
+                );
+
+                for (index, mapping) in snapshot.top_virtual_mappings.iter().enumerate() {
+                    let rank = index + 1;
+                    writeln!(
+                        out,
+                        "outline_ss_process_virtual_top_mapping_size_bytes{{rank=\"{}\",kind=\"{}\",perms=\"{}\",name=\"{}\"}} {}",
+                        rank,
+                        escape_label_value(mapping.kind),
+                        escape_label_value(&mapping.perms),
+                        escape_label_value(&mapping.name),
+                        mapping.size_bytes
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "outline_ss_process_virtual_top_mapping_rss_bytes{{rank=\"{}\",kind=\"{}\",perms=\"{}\",name=\"{}\"}} {}",
+                        rank,
+                        escape_label_value(mapping.kind),
+                        escape_label_value(&mapping.perms),
+                        escape_label_value(&mapping.name),
+                        mapping.rss_bytes
+                    )
+                    .ok();
+                    writeln!(
+                        out,
+                        "outline_ss_process_virtual_top_mapping_gap_bytes{{rank=\"{}\",kind=\"{}\",perms=\"{}\",name=\"{}\"}} {}",
+                        rank,
+                        escape_label_value(mapping.kind),
+                        escape_label_value(&mapping.perms),
+                        escape_label_value(&mapping.name),
+                        mapping.size_bytes.saturating_sub(mapping.rss_bytes)
+                    )
+                    .ok();
+                }
+            }
+
             if let Some(heap_allocated_bytes) = snapshot.heap_allocated_bytes {
                 write_help(
                     &mut out,
                     "outline_ss_process_heap_allocated_bytes",
-                    "Bytes currently allocated by the active allocator, when available.",
+                    "Estimated resident bytes currently attributed to the [heap] mapping.",
                 );
                 write_type(&mut out, "outline_ss_process_heap_allocated_bytes", "gauge");
                 writeln!(
@@ -587,89 +798,13 @@ impl Metrics {
                 write_help(
                     &mut out,
                     "outline_ss_process_heap_free_bytes",
-                    "Bytes currently reserved but free inside the active allocator, when available.",
+                    "Estimated non-resident bytes reserved by the [heap] mapping.",
                 );
                 write_type(&mut out, "outline_ss_process_heap_free_bytes", "gauge");
                 writeln!(
                     out,
                     "outline_ss_process_heap_free_bytes {}",
                     heap_free_bytes
-                )
-                .ok();
-            }
-
-            if let Some(allocator_resident_bytes) = snapshot.allocator_resident_bytes {
-                write_help(
-                    &mut out,
-                    "outline_ss_process_allocator_resident_bytes",
-                    "Resident bytes currently owned by jemalloc.",
-                );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_allocator_resident_bytes",
-                    "gauge",
-                );
-                writeln!(
-                    out,
-                    "outline_ss_process_allocator_resident_bytes {}",
-                    allocator_resident_bytes
-                )
-                .ok();
-
-                write_help(
-                    &mut out,
-                    "outline_ss_process_non_allocator_resident_estimate_bytes",
-                    "Estimated resident bytes not currently attributed to jemalloc.",
-                );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_non_allocator_resident_estimate_bytes",
-                    "gauge",
-                );
-                writeln!(
-                    out,
-                    "outline_ss_process_non_allocator_resident_estimate_bytes {}",
-                    snapshot
-                        .resident_memory_bytes
-                        .saturating_sub(allocator_resident_bytes)
-                )
-                .ok();
-            }
-
-            if let Some(allocator_mapped_bytes) = snapshot.allocator_mapped_bytes {
-                write_help(
-                    &mut out,
-                    "outline_ss_process_allocator_mapped_bytes",
-                    "Mapped bytes currently owned by jemalloc active extents.",
-                );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_allocator_mapped_bytes",
-                    "gauge",
-                );
-                writeln!(
-                    out,
-                    "outline_ss_process_allocator_mapped_bytes {}",
-                    allocator_mapped_bytes
-                )
-                .ok();
-            }
-
-            if let Some(allocator_retained_bytes) = snapshot.allocator_retained_bytes {
-                write_help(
-                    &mut out,
-                    "outline_ss_process_allocator_retained_bytes",
-                    "Virtual bytes retained by jemalloc instead of being fully unmapped.",
-                );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_allocator_retained_bytes",
-                    "gauge",
-                );
-                writeln!(
-                    out,
-                    "outline_ss_process_allocator_retained_bytes {}",
-                    allocator_retained_bytes
                 )
                 .ok();
             }
@@ -1696,15 +1831,11 @@ fn escape_label_value(value: &str) -> String {
 }
 
 const fn allocator_heap_metrics_support_level() -> i64 {
-    if cfg!(all(target_os = "linux", not(target_env = "musl"))) {
-        1
-    } else {
-        0
-    }
+    if cfg!(target_os = "linux") { 1 } else { 0 }
 }
 
 const fn allocator_trim_supported() -> bool {
-    cfg!(all(target_os = "linux", not(target_env = "musl")))
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -1712,9 +1843,25 @@ const fn allocator_trim_supported() -> bool {
 struct AllocatorMemorySnapshot {
     heap_allocated_bytes: Option<u64>,
     heap_free_bytes: Option<u64>,
-    resident_bytes: Option<u64>,
-    mapped_bytes: Option<u64>,
-    retained_bytes: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default)]
+struct VirtualMemoryBreakdown {
+    heap_bytes: Option<u64>,
+    stack_bytes: Option<u64>,
+    anon_private_bytes: Option<u64>,
+    anon_shared_bytes: Option<u64>,
+    file_private_bytes: Option<u64>,
+    file_shared_bytes: Option<u64>,
+    special_bytes: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Default)]
+struct VirtualMemoryDiagnostics {
+    breakdown: VirtualMemoryBreakdown,
+    top_mappings: Vec<TopVirtualMapping>,
 }
 
 #[cfg(target_os = "linux")]
@@ -1722,15 +1869,24 @@ fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let resident_memory_bytes = proc_status_value_bytes(&status, "VmRSS:")?;
     let virtual_memory_bytes = proc_status_value_bytes(&status, "VmSize:")?;
+    let thread_count = proc_status_value_u64(&status, "Threads:");
     let allocator_snapshot = allocator_memory_snapshot();
+    let virtual_diagnostics = procfs_virtual_memory_diagnostics();
+    let virtual_breakdown = &virtual_diagnostics.breakdown;
     Some(ProcessMemorySnapshot {
         resident_memory_bytes,
         virtual_memory_bytes,
+        thread_count,
         heap_allocated_bytes: allocator_snapshot.heap_allocated_bytes,
         heap_free_bytes: allocator_snapshot.heap_free_bytes,
-        allocator_resident_bytes: allocator_snapshot.resident_bytes,
-        allocator_mapped_bytes: allocator_snapshot.mapped_bytes,
-        allocator_retained_bytes: allocator_snapshot.retained_bytes,
+        virtual_heap_bytes: virtual_breakdown.heap_bytes,
+        virtual_stack_bytes: virtual_breakdown.stack_bytes,
+        virtual_anon_private_bytes: virtual_breakdown.anon_private_bytes,
+        virtual_anon_shared_bytes: virtual_breakdown.anon_shared_bytes,
+        virtual_file_private_bytes: virtual_breakdown.file_private_bytes,
+        virtual_file_shared_bytes: virtual_breakdown.file_shared_bytes,
+        virtual_special_bytes: virtual_breakdown.special_bytes,
+        top_virtual_mappings: virtual_diagnostics.top_mappings,
     })
 }
 
@@ -1749,28 +1905,72 @@ fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn allocator_memory_snapshot() -> AllocatorMemorySnapshot {
-    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-    {
-        jemalloc_allocator_snapshot().unwrap_or_else(|_| {
-            let (heap_allocated_bytes, heap_free_bytes) = procfs_heap_snapshot();
-            AllocatorMemorySnapshot {
-                heap_allocated_bytes,
-                heap_free_bytes,
-                resident_bytes: None,
-                mapped_bytes: None,
-                retained_bytes: None,
-            }
-        })
-    }
+fn proc_status_value_u64(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|line| {
+        let rest = line.strip_prefix(key)?.trim();
+        rest.split_whitespace().next()?.parse::<u64>().ok()
+    })
+}
 
-    #[cfg(target_env = "musl")]
-    {
-        AllocatorMemorySnapshot::default()
+#[cfg(target_os = "linux")]
+fn allocator_memory_snapshot() -> AllocatorMemorySnapshot {
+    let (heap_allocated_bytes, heap_free_bytes) = procfs_heap_snapshot();
+    AllocatorMemorySnapshot {
+        heap_allocated_bytes,
+        heap_free_bytes,
     }
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+#[cfg(target_os = "linux")]
+fn procfs_virtual_memory_diagnostics() -> VirtualMemoryDiagnostics {
+    let smaps = match std::fs::read_to_string("/proc/self/smaps") {
+        Ok(smaps) => smaps,
+        Err(_) => return VirtualMemoryDiagnostics::default(),
+    };
+
+    let mut diagnostics = VirtualMemoryDiagnostics::default();
+    let mut current_mapping = None;
+    let mut current_size_kib = 0_u64;
+    let mut current_rss_kib = 0_u64;
+
+    for line in smaps.lines() {
+        if is_smaps_mapping_header(line) {
+            finalize_virtual_mapping(
+                &mut diagnostics,
+                current_mapping.take(),
+                current_size_kib,
+                current_rss_kib,
+            );
+            current_mapping = parse_smaps_mapping_header(line);
+            current_size_kib = 0;
+            current_rss_kib = 0;
+            continue;
+        }
+
+        if smaps_value_kib(line, "Size:").is_some() {
+            current_size_kib = smaps_value_kib(line, "Size:").unwrap_or(0);
+        } else if smaps_value_kib(line, "Rss:").is_some() {
+            current_rss_kib = smaps_value_kib(line, "Rss:").unwrap_or(0);
+        }
+    }
+
+    finalize_virtual_mapping(
+        &mut diagnostics,
+        current_mapping,
+        current_size_kib,
+        current_rss_kib,
+    );
+    diagnostics.top_mappings.sort_by(|left, right| {
+        right
+            .size_bytes
+            .cmp(&left.size_bytes)
+            .then_with(|| right.rss_bytes.cmp(&left.rss_bytes))
+    });
+    diagnostics.top_mappings.truncate(8);
+    diagnostics
+}
+
+#[cfg(target_os = "linux")]
 fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
     let smaps = match std::fs::read_to_string("/proc/self/smaps") {
         Ok(smaps) => smaps,
@@ -1809,93 +2009,172 @@ fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
     )
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-fn jemalloc_allocator_snapshot() -> Result<AllocatorMemorySnapshot> {
-    let epoch = tikv_jemalloc_ctl::epoch::mib().context("failed to create jemalloc epoch MIB")?;
-    epoch
-        .advance()
-        .context("failed to advance jemalloc epoch")?;
-
-    let allocated = tikv_jemalloc_ctl::stats::allocated::mib()
-        .context("failed to create jemalloc allocated MIB")?
-        .read()
-        .context("failed to read jemalloc allocated stats")?;
-    let active = tikv_jemalloc_ctl::stats::active::mib()
-        .context("failed to create jemalloc active MIB")?
-        .read()
-        .context("failed to read jemalloc active stats")?;
-    let resident = tikv_jemalloc_ctl::stats::resident::mib()
-        .context("failed to create jemalloc resident MIB")?
-        .read()
-        .context("failed to read jemalloc resident stats")?;
-    let mapped = tikv_jemalloc_ctl::stats::mapped::mib()
-        .context("failed to create jemalloc mapped MIB")?
-        .read()
-        .context("failed to read jemalloc mapped stats")?;
-    let retained = tikv_jemalloc_ctl::stats::retained::mib()
-        .context("failed to create jemalloc retained MIB")?
-        .read()
-        .context("failed to read jemalloc retained stats")?;
-    let allocated = allocated as u64;
-    let active = active as u64;
-    let resident = resident as u64;
-    let mapped = mapped as u64;
-    let retained = retained as u64;
-
-    Ok(AllocatorMemorySnapshot {
-        heap_allocated_bytes: Some(allocated),
-        heap_free_bytes: Some(active.saturating_sub(allocated)),
-        resident_bytes: Some(resident),
-        mapped_bytes: Some(mapped),
-        retained_bytes: Some(retained),
-    })
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-fn jemalloc_trim_allocator() -> Result<bool> {
-    let background_threads_enabled = tikv_jemalloc_ctl::background_thread::read()
-        .context("failed to read jemalloc background_thread state")?;
-    if !background_threads_enabled {
-        tikv_jemalloc_ctl::background_thread::write(true)
-            .context("failed to enable jemalloc background_thread")?;
-    }
-
-    tikv_jemalloc_ctl::epoch::advance().context("failed to advance jemalloc epoch")?;
-    purge_all_jemalloc_arenas().context("failed to purge jemalloc arenas")?;
-    tikv_jemalloc_ctl::epoch::advance().context("failed to advance jemalloc epoch after purge")?;
-    Ok(false)
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-fn purge_all_jemalloc_arenas() -> Result<()> {
-    let narenas = tikv_jemalloc_ctl::arenas::narenas::read()
-        .context("failed to read jemalloc arena count")? as usize;
-    for arena in 0..narenas {
-        purge_jemalloc_arena(arena)?;
-    }
-    Ok(())
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
-fn purge_jemalloc_arena(arena: usize) -> Result<()> {
-    let name = std::ffi::CString::new(format!("arena.{arena}.purge"))
-        .context("failed to build jemalloc purge control name")?;
-    unsafe { tikv_jemalloc_ctl::raw::write::<()>(name.as_bytes_with_nul(), ()) }
-        .with_context(|| format!("failed to purge jemalloc arena {arena}"))
-}
-
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+#[cfg(target_os = "linux")]
 fn is_smaps_mapping_header(line: &str) -> bool {
     line.split_once('-')
         .and_then(|(start, _)| start.chars().next())
         .is_some_and(|ch| ch.is_ascii_hexdigit())
 }
 
-#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+#[cfg(target_os = "linux")]
 fn smaps_value_kib(line: &str, key: &str) -> Option<u64> {
     let rest = line.strip_prefix(key)?.trim();
     let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
     Some(kib)
+}
+
+#[cfg(target_os = "linux")]
+fn add_optional_u64(slot: &mut Option<u64>, value: u64) {
+    *slot = Some(slot.unwrap_or(0).saturating_add(value));
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+enum MappingKind {
+    Heap,
+    Stack,
+    AnonPrivate,
+    AnonShared,
+    FilePrivate,
+    FileShared,
+    Special,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug)]
+struct SmapsMappingHeader<'a> {
+    kind: MappingKind,
+    perms: &'a str,
+    pathname: Option<&'a str>,
+}
+
+#[cfg(target_os = "linux")]
+impl<'a> SmapsMappingHeader<'a> {
+    fn classify(shared: bool, pathname: Option<&str>) -> MappingKind {
+        match pathname {
+            Some("[heap]") => MappingKind::Heap,
+            Some(path) if path.starts_with("[stack") => MappingKind::Stack,
+            Some(path) if path.starts_with("[anon") => {
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
+            }
+            Some(path) if path.starts_with('[') => MappingKind::Special,
+            Some(_) => {
+                if shared {
+                    MappingKind::FileShared
+                } else {
+                    MappingKind::FilePrivate
+                }
+            }
+            None => {
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
+            }
+        }
+    }
+
+    fn kind_label(self) -> &'static str {
+        match self.kind {
+            MappingKind::Heap => "heap",
+            MappingKind::Stack => "stack",
+            MappingKind::AnonPrivate => "anon_private",
+            MappingKind::AnonShared => "anon_shared",
+            MappingKind::FilePrivate => "file_private",
+            MappingKind::FileShared => "file_shared",
+            MappingKind::Special => "special",
+        }
+    }
+
+    fn display_name(self) -> String {
+        match self.pathname {
+            Some(path) => truncate_metric_label_value(path, 96),
+            None => "[anonymous]".to_owned(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn parse_smaps_mapping_header(line: &str) -> Option<SmapsMappingHeader<'_>> {
+    let mut fields = line.split_whitespace();
+    fields.next()?;
+    let perms = fields.next()?;
+    fields.next()?;
+    fields.next()?;
+    fields.next()?;
+    let pathname = fields.next();
+    let shared = perms.contains('s');
+
+    Some(SmapsMappingHeader {
+        kind: SmapsMappingHeader::classify(shared, pathname),
+        perms,
+        pathname,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn finalize_virtual_mapping(
+    diagnostics: &mut VirtualMemoryDiagnostics,
+    mapping: Option<SmapsMappingHeader<'_>>,
+    size_kib: u64,
+    rss_kib: u64,
+) {
+    let Some(mapping) = mapping else {
+        return;
+    };
+    if size_kib == 0 {
+        return;
+    }
+
+    let size_bytes = size_kib.saturating_mul(1024);
+    let rss_bytes = rss_kib.saturating_mul(1024);
+
+    match mapping.kind {
+        MappingKind::Heap => add_optional_u64(&mut diagnostics.breakdown.heap_bytes, size_bytes),
+        MappingKind::Stack => add_optional_u64(&mut diagnostics.breakdown.stack_bytes, size_bytes),
+        MappingKind::AnonPrivate => {
+            add_optional_u64(&mut diagnostics.breakdown.anon_private_bytes, size_bytes)
+        }
+        MappingKind::AnonShared => {
+            add_optional_u64(&mut diagnostics.breakdown.anon_shared_bytes, size_bytes)
+        }
+        MappingKind::FilePrivate => {
+            add_optional_u64(&mut diagnostics.breakdown.file_private_bytes, size_bytes)
+        }
+        MappingKind::FileShared => {
+            add_optional_u64(&mut diagnostics.breakdown.file_shared_bytes, size_bytes)
+        }
+        MappingKind::Special => {
+            add_optional_u64(&mut diagnostics.breakdown.special_bytes, size_bytes)
+        }
+    }
+
+    diagnostics.top_mappings.push(TopVirtualMapping {
+        kind: mapping.kind_label(),
+        perms: mapping.perms.to_owned(),
+        name: mapping.display_name(),
+        size_bytes,
+        rss_bytes,
+    });
+}
+
+#[cfg(target_os = "linux")]
+fn truncate_metric_label_value(value: &str, limit: usize) -> String {
+    if value.chars().count() <= limit {
+        return value.to_owned();
+    }
+
+    let mut truncated = String::new();
+    for ch in value.chars().take(limit.saturating_sub(3)) {
+        truncated.push(ch);
+    }
+    truncated.push_str("...");
+    truncated
 }
 
 #[cfg(test)]
@@ -1918,7 +2197,6 @@ mod tests {
             metrics_path: "/metrics".to_owned(),
             prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
-            memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
@@ -1960,16 +2238,18 @@ mod tests {
         assert!(rendered.contains(
             "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
         ));
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        assert!(rendered.contains("outline_ss_process_allocator_resident_bytes"));
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        assert!(rendered.contains("outline_ss_process_allocator_mapped_bytes"));
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        assert!(rendered.contains("outline_ss_process_allocator_retained_bytes"));
-        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
-        assert!(rendered.contains("outline_ss_process_non_allocator_resident_estimate_bytes"));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_threads"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_virtual_anon_private_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_virtual_file_private_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_virtual_top_mapping_size_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_virtual_top_mapping_gap_bytes"));
         assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
     }
 }

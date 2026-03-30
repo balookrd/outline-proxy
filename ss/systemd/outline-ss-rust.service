@@ -27,6 +27,7 @@ NoNewPrivileges=true
 
 # Reasonable production limits.
 LimitNOFILE=1048576
+LimitSTACK=8M
 TasksMax=infinity
 
 # Sandboxing that still allows outbound networking, TLS cert reads and QUIC.

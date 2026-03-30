@@ -23,7 +23,6 @@ pub struct Config {
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,
     pub client_active_ttl_secs: u64,
-    pub memory_trim_interval_secs: u64,
     pub udp_nat_idle_timeout_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
@@ -70,10 +69,6 @@ impl Config {
                 .client_active_ttl_secs
                 .or(file.client_active_ttl_secs)
                 .unwrap_or(300),
-            memory_trim_interval_secs: args
-                .memory_trim_interval_secs
-                .or(file.memory_trim_interval_secs)
-                .unwrap_or(60),
             udp_nat_idle_timeout_secs: args
                 .udp_nat_idle_timeout_secs
                 .or(file.udp_nat_idle_timeout_secs)
@@ -284,9 +279,6 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
     client_active_ttl_secs: Option<u64>,
 
-    #[arg(long, env = "OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS")]
-    memory_trim_interval_secs: Option<u64>,
-
     #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
     udp_nat_idle_timeout_secs: Option<u64>,
 
@@ -361,7 +353,6 @@ struct FileConfig {
     metrics_path: Option<String>,
     prefer_ipv4_upstream: Option<bool>,
     client_active_ttl_secs: Option<u64>,
-    memory_trim_interval_secs: Option<u64>,
     udp_nat_idle_timeout_secs: Option<u64>,
     #[serde(default)]
     ws_path_tcp: Option<String>,
@@ -585,7 +576,6 @@ udp_ws_path = "/alice-legacy-udp"
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
-            memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
@@ -621,7 +611,6 @@ udp_ws_path = "/alice-legacy-udp"
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
-            memory_trim_interval_secs: 60,
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),

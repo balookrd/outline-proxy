@@ -165,7 +165,6 @@ Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_lis
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
 | `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
-| `memory_trim_interval_secs` | On Linux, periodically refreshes jemalloc stats and enables jemalloc background purging if needed; default is `60`, `0` disables it |
 | `udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram; default is `300` (5 minutes) |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
@@ -206,7 +205,6 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
 - `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
-- `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
@@ -226,8 +224,6 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
 Per-user `method`, `fwmark`, `ws_path_tcp`, and `ws_path_udp` are configured in TOML rather than inside `OUTLINE_SS_USERS`.
-
-`memory_trim_interval_secs` is a process-level setting rather than a per-user setting. It is most useful on Linux systems using glibc, where a long-running proxy can keep a high RSS after peak traffic even though the memory is already free inside the allocator.
 
 If `ss_listen` is set, the server also exposes a classic Shadowsocks service on that address. It binds both TCP and UDP on the same port and reuses the same users, ciphers, `fwmark`, and UDP NAT behavior as the WebSocket transports.
 
@@ -358,9 +354,8 @@ The metrics set includes:
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
 - Process RSS / virtual memory gauges
-- Heap allocated / free gauges from jemalloc allocator stats on Linux
-- Allocator trim counters and last trim before/after RSS gauges
-- Allocator support gauges so dashboards can distinguish unsupported features from real zero values
+- Heap resident / non-resident estimates from the Linux `[heap]` mapping
+- Legacy allocator trim/support gauges so dashboards can distinguish unsupported features from real zero values
 - Build and configuration info
 
 ### Grafana
@@ -446,10 +441,13 @@ The unit includes:
 - automatic restart on failure
 - journald logging
 - elevated `LimitNOFILE`
+- `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
 - `CAP_NET_BIND_SERVICE` and `CAP_NET_ADMIN`
 - conservative systemd hardening flags
 
 If you do not use privileged ports or `fwmark`, you can reduce the capability set.
+
+On Linux, the bundled runtime also pins Tokio worker and blocking thread stacks to 2 MiB so the process does not inherit very large per-thread virtual stack mappings from the host environment.
 
 ### Logging
 

@@ -28,9 +28,6 @@ metrics_path = "/metrics"
 # prefer_ipv4_upstream = true
 
 client_active_ttl_secs = 300
-# On Linux with glibc, periodically returns free allocator pages to the OS after traffic spikes.
-# Set to 0 to disable.
-memory_trim_interval_secs = 60
 
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
