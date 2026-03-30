@@ -21,6 +21,7 @@ use axum::{
     http::{Method, StatusCode, Version},
     response::IntoResponse,
     routing::any,
+    serve::ListenerExt,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use hyper_util::{
@@ -59,6 +60,9 @@ use crate::{
 
 const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
 const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
+const H2_STREAM_WINDOW_BYTES: u32 = 16 * 1024 * 1024; // 16 MB
+const H2_CONNECTION_WINDOW_BYTES: u32 = 64 * 1024 * 1024; // 64 MB
+const H2_MAX_SEND_BUF_SIZE: usize = 16 * 1024 * 1024; // 16 MB
 const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 // Flow control windows: larger values allow higher throughput at high RTT.
@@ -390,6 +394,8 @@ async fn udp_websocket_upgrade(
     method: Method,
     version: Version,
 ) -> axum::response::Response {
+    // UDP over WebSocket is latency-sensitive, so avoid tungstenite-side batching.
+    let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
     let route = state
@@ -2437,6 +2443,11 @@ fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
 }
 
 async fn serve_listener(listener: TcpListener, app: Router) -> Result<()> {
+    let listener = listener.tap_io(|stream| {
+        if let Err(error) = configure_tcp_stream(stream) {
+            warn!(?error, "failed to configure accepted http connection");
+        }
+    });
     axum::serve(listener, app)
         .await
         .context("server exited unexpectedly")
@@ -2458,6 +2469,9 @@ async fn serve_tls_listener(
             .accept()
             .await
             .context("failed to accept TLS tcp connection")?;
+        configure_tcp_stream(&stream).with_context(|| {
+            format!("failed to configure accepted TLS tcp connection from {peer_addr}")
+        })?;
         let acceptor = acceptor.clone();
         let app = app.clone();
 
@@ -2472,15 +2486,10 @@ async fn serve_tls_listener(
 
             let io = TokioIo::new(tls_stream);
             let service = TowerToHyperService::new(app);
-            let mut builder = HyperBuilder::new(TokioExecutor::new());
-            builder
-                .http2()
-                .enable_connect_protocol()
-                .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
-                .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
+            let builder = build_http_server_builder();
 
             if let Err(error) = builder.serve_connection_with_upgrades(io, service).await {
-                if !is_benign_tls_serve_error(error.as_ref()) {
+                if !is_benign_http_serve_error(error.as_ref()) {
                     warn!(?error, %peer_addr, "tls http server connection terminated with error");
                 }
             }
@@ -2488,7 +2497,20 @@ async fn serve_tls_listener(
     }
 }
 
-fn is_benign_tls_serve_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
+fn build_http_server_builder() -> HyperBuilder<TokioExecutor> {
+    let mut builder = HyperBuilder::new(TokioExecutor::new());
+    builder
+        .http2()
+        .enable_connect_protocol()
+        .initial_stream_window_size(Some(H2_STREAM_WINDOW_BYTES))
+        .initial_connection_window_size(Some(H2_CONNECTION_WINDOW_BYTES))
+        .max_send_buf_size(H2_MAX_SEND_BUF_SIZE)
+        .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
+        .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
+    builder
+}
+
+fn is_benign_http_serve_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
     let message = error.to_string();
     message.contains("connection closed")
         || message.contains("closed before message completed")
@@ -2706,6 +2728,79 @@ mod tests {
             WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
         socket.close(None).await?;
 
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
+        let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let mut buf = [0_u8; 64];
+            let (read, peer) = upstream.recv_from(&mut buf).await?;
+            upstream.send_to(&buf[..read], peer).await?;
+            Result::<_, anyhow::Error>::Ok(buf[..read].to_vec())
+        });
+
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let config = sample_config(addr);
+        let users = build_users(&config)?;
+        let user = users[0].clone();
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build_http::<Empty<Bytes>>();
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("http://{addr}/udp"))
+            .version(Version::HTTP_2)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(Protocol::from_static("websocket"))
+            .body(Empty::<Bytes>::new())?;
+
+        let mut response = client.request(req).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), Version::HTTP_2);
+
+        let upgraded = hyper::upgrade::on(&mut response).await?;
+        let upgraded = TokioIo::new(upgraded);
+        let mut socket =
+            WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
+
+        let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+        plaintext.extend_from_slice(b"ping");
+        let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+        socket.send(WsMessage::Binary(ciphertext.into())).await?;
+
+        let reply = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await?;
+        let Some(Ok(WsMessage::Binary(encrypted_reply))) = reply else {
+            anyhow::bail!("expected binary websocket reply, got {reply:?}");
+        };
+
+        let packet = decrypt_udp_packet(std::slice::from_ref(&user), &encrypted_reply)?;
+        let (target, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
+            .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
+        assert_eq!(target, TargetAddr::Socket(upstream_addr));
+        assert_eq!(&packet.payload[consumed..], b"ping");
+        assert_eq!(upstream_task.await??, b"ping");
+
+        socket.close(None).await?;
         server.abort();
         let _ = server.await;
         Ok(())
