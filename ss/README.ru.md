@@ -167,7 +167,6 @@ cargo run -- --config ./config.toml
 | `metrics_path` | Путь Prometheus-эндпоинта |
 | `prefer_ipv4_upstream` | Предпочитать IPv4 для upstream DNS и connect; полезно, если IPv6-путь ломает трафик |
 | `client_active_ttl_secs` | TTL в секундах для вычисления `client_active` / `client_up` |
-| `memory_trim_interval_secs` | На Linux периодически обновляет статистику jemalloc и включает фоновую очистку; по умолчанию `60`, `0` — отключить |
 | `udp_nat_idle_timeout_secs` | Время жизни UDP NAT-записи после последней исходящей датаграммы; по умолчанию `300` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
@@ -208,7 +207,6 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
 - `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
-- `OUTLINE_SS_MEMORY_TRIM_INTERVAL_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
@@ -228,8 +226,6 @@ OUTLINE_SS_USERS=alice=secret1,bob=secret2
 ```
 
 Параметры `method`, `fwmark`, `ws_path_tcp` и `ws_path_udp` на уровне пользователя задаются только в TOML.
-
-`memory_trim_interval_secs` — параметр уровня процесса. Полезен на Linux-системах с glibc, где долгоживущий прокси сохраняет высокий RSS после пиковой нагрузки.
 
 Если задан `ss_listen`, сервер поднимает ещё и классический Shadowsocks-сервис на этом адресе. Он слушает и TCP, и UDP на одном порту и использует тех же пользователей, шифры, `fwmark` и тот же UDP NAT, что и WebSocket-транспорты.
 
@@ -391,9 +387,8 @@ scrape_configs:
 - Агрегированная пропускная способность на клиента по TCP и UDP
 - Счётчики ответных UDP-датаграмм
 - RSS/виртуальная память процесса
-- Статистика кучи аллокатора jemalloc (Linux)
-- Счётчики trim аллокатора и метрики RSS до/после trim
-- Служебные метрики для разграничения неподдерживаемых функций от реальных нулевых значений на дашбордах
+- Оценка resident/non-resident памяти для Linux `[heap]` mapping
+- Legacy-метрики trim/support аллокатора, чтобы дашборды различали неподдерживаемые функции и реальные нули
 - Информация о сборке и конфигурации
 
 ### Grafana
@@ -436,10 +431,13 @@ Unit включает:
 - автоматический перезапуск при сбое
 - логирование через journald
 - увеличенный `LimitNOFILE`
+- `LimitSTACK=8M`, чтобы не раздувать anonymous thread-stack mappings
 - `CAP_NET_BIND_SERVICE` и `CAP_NET_ADMIN`
 - консервативные флаги hardening systemd
 
 Если привилегированные порты и `fwmark` не используются, набор capabilities можно уменьшить.
+
+На Linux bundled runtime также фиксирует размер стеков Tokio worker- и blocking-потоков на уровне 2 MiB, чтобы процесс не наследовал слишком большие виртуальные stack mappings от окружения хоста.
 
 ### Логирование
 
