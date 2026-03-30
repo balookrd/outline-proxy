@@ -39,6 +39,9 @@ pub struct ProcessMemorySnapshot {
     pub virtual_memory_bytes: u64,
     pub heap_allocated_bytes: Option<u64>,
     pub heap_free_bytes: Option<u64>,
+    pub allocator_resident_bytes: Option<u64>,
+    pub allocator_mapped_bytes: Option<u64>,
+    pub allocator_retained_bytes: Option<u64>,
 }
 
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -591,6 +594,82 @@ impl Metrics {
                     out,
                     "outline_ss_process_heap_free_bytes {}",
                     heap_free_bytes
+                )
+                .ok();
+            }
+
+            if let Some(allocator_resident_bytes) = snapshot.allocator_resident_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_allocator_resident_bytes",
+                    "Resident bytes currently owned by jemalloc.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_allocator_resident_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_allocator_resident_bytes {}",
+                    allocator_resident_bytes
+                )
+                .ok();
+
+                write_help(
+                    &mut out,
+                    "outline_ss_process_non_allocator_resident_estimate_bytes",
+                    "Estimated resident bytes not currently attributed to jemalloc.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_non_allocator_resident_estimate_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_non_allocator_resident_estimate_bytes {}",
+                    snapshot
+                        .resident_memory_bytes
+                        .saturating_sub(allocator_resident_bytes)
+                )
+                .ok();
+            }
+
+            if let Some(allocator_mapped_bytes) = snapshot.allocator_mapped_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_allocator_mapped_bytes",
+                    "Mapped bytes currently owned by jemalloc active extents.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_allocator_mapped_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_allocator_mapped_bytes {}",
+                    allocator_mapped_bytes
+                )
+                .ok();
+            }
+
+            if let Some(allocator_retained_bytes) = snapshot.allocator_retained_bytes {
+                write_help(
+                    &mut out,
+                    "outline_ss_process_allocator_retained_bytes",
+                    "Virtual bytes retained by jemalloc instead of being fully unmapped.",
+                );
+                write_type(
+                    &mut out,
+                    "outline_ss_process_allocator_retained_bytes",
+                    "gauge",
+                );
+                writeln!(
+                    out,
+                    "outline_ss_process_allocator_retained_bytes {}",
+                    allocator_retained_bytes
                 )
                 .ok();
             }
@@ -1625,16 +1704,29 @@ const fn allocator_trim_supported() -> bool {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Default)]
+struct AllocatorMemorySnapshot {
+    heap_allocated_bytes: Option<u64>,
+    heap_free_bytes: Option<u64>,
+    resident_bytes: Option<u64>,
+    mapped_bytes: Option<u64>,
+    retained_bytes: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
 fn process_memory_snapshot_impl() -> Option<ProcessMemorySnapshot> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     let resident_memory_bytes = proc_status_value_bytes(&status, "VmRSS:")?;
     let virtual_memory_bytes = proc_status_value_bytes(&status, "VmSize:")?;
-    let (heap_allocated_bytes, heap_free_bytes) = allocator_heap_snapshot();
+    let allocator_snapshot = allocator_memory_snapshot();
     Some(ProcessMemorySnapshot {
         resident_memory_bytes,
         virtual_memory_bytes,
-        heap_allocated_bytes,
-        heap_free_bytes,
+        heap_allocated_bytes: allocator_snapshot.heap_allocated_bytes,
+        heap_free_bytes: allocator_snapshot.heap_free_bytes,
+        allocator_resident_bytes: allocator_snapshot.resident_bytes,
+        allocator_mapped_bytes: allocator_snapshot.mapped_bytes,
+        allocator_retained_bytes: allocator_snapshot.retained_bytes,
     })
 }
 
@@ -1653,8 +1745,17 @@ fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn allocator_heap_snapshot() -> (Option<u64>, Option<u64>) {
-    jemalloc_heap_snapshot().unwrap_or_else(|_| procfs_heap_snapshot())
+fn allocator_memory_snapshot() -> AllocatorMemorySnapshot {
+    jemalloc_allocator_snapshot().unwrap_or_else(|_| {
+        let (heap_allocated_bytes, heap_free_bytes) = procfs_heap_snapshot();
+        AllocatorMemorySnapshot {
+            heap_allocated_bytes,
+            heap_free_bytes,
+            resident_bytes: None,
+            mapped_bytes: None,
+            retained_bytes: None,
+        }
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1697,7 +1798,7 @@ fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
 }
 
 #[cfg(target_os = "linux")]
-fn jemalloc_heap_snapshot() -> Result<(Option<u64>, Option<u64>)> {
+fn jemalloc_allocator_snapshot() -> Result<AllocatorMemorySnapshot> {
     let epoch = tikv_jemalloc_ctl::epoch::mib().context("failed to create jemalloc epoch MIB")?;
     epoch
         .advance()
@@ -1711,10 +1812,31 @@ fn jemalloc_heap_snapshot() -> Result<(Option<u64>, Option<u64>)> {
         .context("failed to create jemalloc active MIB")?
         .read()
         .context("failed to read jemalloc active stats")?;
+    let resident = tikv_jemalloc_ctl::stats::resident::mib()
+        .context("failed to create jemalloc resident MIB")?
+        .read()
+        .context("failed to read jemalloc resident stats")?;
+    let mapped = tikv_jemalloc_ctl::stats::mapped::mib()
+        .context("failed to create jemalloc mapped MIB")?
+        .read()
+        .context("failed to read jemalloc mapped stats")?;
+    let retained = tikv_jemalloc_ctl::stats::retained::mib()
+        .context("failed to create jemalloc retained MIB")?
+        .read()
+        .context("failed to read jemalloc retained stats")?;
     let allocated = allocated as u64;
     let active = active as u64;
+    let resident = resident as u64;
+    let mapped = mapped as u64;
+    let retained = retained as u64;
 
-    Ok((Some(allocated), Some(active.saturating_sub(allocated))))
+    Ok(AllocatorMemorySnapshot {
+        heap_allocated_bytes: Some(allocated),
+        heap_free_bytes: Some(active.saturating_sub(allocated)),
+        resident_bytes: Some(resident),
+        mapped_bytes: Some(mapped),
+        retained_bytes: Some(retained),
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -1727,7 +1849,27 @@ fn jemalloc_trim_allocator() -> Result<bool> {
     }
 
     tikv_jemalloc_ctl::epoch::advance().context("failed to advance jemalloc epoch")?;
+    purge_all_jemalloc_arenas().context("failed to purge jemalloc arenas")?;
+    tikv_jemalloc_ctl::epoch::advance().context("failed to advance jemalloc epoch after purge")?;
     Ok(false)
+}
+
+#[cfg(target_os = "linux")]
+fn purge_all_jemalloc_arenas() -> Result<()> {
+    let narenas = tikv_jemalloc_ctl::arenas::narenas::read()
+        .context("failed to read jemalloc arena count")? as usize;
+    for arena in 0..narenas {
+        purge_jemalloc_arena(arena)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn purge_jemalloc_arena(arena: usize) -> Result<()> {
+    let name = std::ffi::CString::new(format!("arena.{arena}.purge"))
+        .context("failed to build jemalloc purge control name")?;
+    unsafe { tikv_jemalloc_ctl::raw::write::<()>(name.as_bytes_with_nul(), ()) }
+        .with_context(|| format!("failed to purge jemalloc arena {arena}"))
 }
 
 #[cfg(target_os = "linux")]
@@ -1806,6 +1948,14 @@ mod tests {
         assert!(rendered.contains(
             "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
         ));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_allocator_resident_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_allocator_mapped_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_allocator_retained_bytes"));
+        #[cfg(target_os = "linux")]
+        assert!(rendered.contains("outline_ss_process_non_allocator_resident_estimate_bytes"));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
