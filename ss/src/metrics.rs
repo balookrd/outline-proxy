@@ -12,7 +12,7 @@ use std::{
 use crate::config::Config;
 use tokio::time::{Duration, MissedTickBehavior};
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 use anyhow::{Context, Result};
 
 const TCP_CONNECT_BUCKETS: &[f64] = &[
@@ -44,7 +44,7 @@ pub struct ProcessMemorySnapshot {
     pub allocator_retained_bytes: Option<u64>,
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(any(not(target_os = "linux"), target_env = "musl"), allow(dead_code))]
 pub fn record_allocator_trim_run(
     before: Option<ProcessMemorySnapshot>,
     after: Option<ProcessMemorySnapshot>,
@@ -80,7 +80,7 @@ pub fn record_allocator_trim_run(
     );
 }
 
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(any(not(target_os = "linux"), target_env = "musl"), allow(dead_code))]
 pub fn record_allocator_trim_error() {
     ALLOCATOR_TRIM_ERRORS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }
@@ -89,7 +89,7 @@ pub fn process_memory_snapshot() -> Option<ProcessMemorySnapshot> {
     process_memory_snapshot_impl()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 pub fn trim_allocator() -> Result<bool> {
     jemalloc_trim_allocator()
 }
@@ -572,7 +572,7 @@ impl Metrics {
                 write_help(
                     &mut out,
                     "outline_ss_process_heap_allocated_bytes",
-                    "Bytes currently allocated from the glibc heap arenas.",
+                    "Bytes currently allocated by the active allocator, when available.",
                 );
                 write_type(&mut out, "outline_ss_process_heap_allocated_bytes", "gauge");
                 writeln!(
@@ -587,7 +587,7 @@ impl Metrics {
                 write_help(
                     &mut out,
                     "outline_ss_process_heap_free_bytes",
-                    "Bytes currently free inside the glibc heap arenas.",
+                    "Bytes currently reserved but free inside the active allocator, when available.",
                 );
                 write_type(&mut out, "outline_ss_process_heap_free_bytes", "gauge");
                 writeln!(
@@ -1696,11 +1696,15 @@ fn escape_label_value(value: &str) -> String {
 }
 
 const fn allocator_heap_metrics_support_level() -> i64 {
-    if cfg!(target_os = "linux") { 1 } else { 0 }
+    if cfg!(all(target_os = "linux", not(target_env = "musl"))) {
+        1
+    } else {
+        0
+    }
 }
 
 const fn allocator_trim_supported() -> bool {
-    cfg!(target_os = "linux")
+    cfg!(all(target_os = "linux", not(target_env = "musl")))
 }
 
 #[cfg(target_os = "linux")]
@@ -1746,19 +1750,27 @@ fn proc_status_value_bytes(status: &str, key: &str) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 fn allocator_memory_snapshot() -> AllocatorMemorySnapshot {
-    jemalloc_allocator_snapshot().unwrap_or_else(|_| {
-        let (heap_allocated_bytes, heap_free_bytes) = procfs_heap_snapshot();
-        AllocatorMemorySnapshot {
-            heap_allocated_bytes,
-            heap_free_bytes,
-            resident_bytes: None,
-            mapped_bytes: None,
-            retained_bytes: None,
-        }
-    })
+    #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+    {
+        jemalloc_allocator_snapshot().unwrap_or_else(|_| {
+            let (heap_allocated_bytes, heap_free_bytes) = procfs_heap_snapshot();
+            AllocatorMemorySnapshot {
+                heap_allocated_bytes,
+                heap_free_bytes,
+                resident_bytes: None,
+                mapped_bytes: None,
+                retained_bytes: None,
+            }
+        })
+    }
+
+    #[cfg(target_env = "musl")]
+    {
+        AllocatorMemorySnapshot::default()
+    }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
     let smaps = match std::fs::read_to_string("/proc/self/smaps") {
         Ok(smaps) => smaps,
@@ -1797,7 +1809,7 @@ fn procfs_heap_snapshot() -> (Option<u64>, Option<u64>) {
     )
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn jemalloc_allocator_snapshot() -> Result<AllocatorMemorySnapshot> {
     let epoch = tikv_jemalloc_ctl::epoch::mib().context("failed to create jemalloc epoch MIB")?;
     epoch
@@ -1839,7 +1851,7 @@ fn jemalloc_allocator_snapshot() -> Result<AllocatorMemorySnapshot> {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn jemalloc_trim_allocator() -> Result<bool> {
     let background_threads_enabled = tikv_jemalloc_ctl::background_thread::read()
         .context("failed to read jemalloc background_thread state")?;
@@ -1854,7 +1866,7 @@ fn jemalloc_trim_allocator() -> Result<bool> {
     Ok(false)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn purge_all_jemalloc_arenas() -> Result<()> {
     let narenas = tikv_jemalloc_ctl::arenas::narenas::read()
         .context("failed to read jemalloc arena count")? as usize;
@@ -1864,7 +1876,7 @@ fn purge_all_jemalloc_arenas() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn purge_jemalloc_arena(arena: usize) -> Result<()> {
     let name = std::ffi::CString::new(format!("arena.{arena}.purge"))
         .context("failed to build jemalloc purge control name")?;
@@ -1872,14 +1884,14 @@ fn purge_jemalloc_arena(arena: usize) -> Result<()> {
         .with_context(|| format!("failed to purge jemalloc arena {arena}"))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn is_smaps_mapping_header(line: &str) -> bool {
     line.split_once('-')
         .and_then(|(start, _)| start.chars().next())
         .is_some_and(|ch| ch.is_ascii_hexdigit())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn smaps_value_kib(line: &str, key: &str) -> Option<u64> {
     let rest = line.strip_prefix(key)?.trim();
     let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
@@ -1948,13 +1960,13 @@ mod tests {
         assert!(rendered.contains(
             "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
         ));
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         assert!(rendered.contains("outline_ss_process_allocator_resident_bytes"));
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         assert!(rendered.contains("outline_ss_process_allocator_mapped_bytes"));
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         assert!(rendered.contains("outline_ss_process_allocator_retained_bytes"));
-        #[cfg(target_os = "linux")]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
         assert!(rendered.contains("outline_ss_process_non_allocator_resident_estimate_bytes"));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));

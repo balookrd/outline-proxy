@@ -16,7 +16,7 @@ use crate::access_key::{
 };
 use crate::config::Config;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -49,7 +49,7 @@ fn init_tracing() {
     fmt().with_env_filter(filter).compact().init();
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
 fn start_memory_reclaimer(config: &Config) {
     if config.memory_trim_interval_secs == 0 {
         return;
@@ -121,12 +121,12 @@ fn start_memory_reclaimer(config: &Config) {
     });
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(not(target_os = "linux"), target_env = "musl"))]
 fn start_memory_reclaimer(config: &Config) {
     if config.memory_trim_interval_secs > 0 {
         tracing::warn!(
             memory_trim_interval_secs = config.memory_trim_interval_secs,
-            "periodic allocator trimming is only supported on Linux"
+            "periodic allocator trimming is only supported on non-musl Linux builds"
         );
     }
 }
