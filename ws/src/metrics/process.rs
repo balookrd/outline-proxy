@@ -73,7 +73,7 @@ pub fn init() {
                 let _ = METRICS
                     .upstream_transports_total
                     .with_label_values(&[source, protocol, result]);
-                }
+            }
         }
     }
     for command in ["connect", "udp_associate"] {
@@ -216,7 +216,9 @@ pub fn update_process_memory(
             .set(if mode == heap_mode { 1 } else { 0 });
     }
     METRICS.process_open_fds.set(open_fds.unwrap_or(0) as f64);
-    METRICS.process_threads.set(thread_count.unwrap_or(0) as f64);
+    METRICS
+        .process_threads
+        .set(thread_count.unwrap_or(0) as f64);
     let snapshot = fd_snapshot.unwrap_or_default();
     METRICS
         .process_fd_by_type
