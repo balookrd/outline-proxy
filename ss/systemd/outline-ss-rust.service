@@ -8,7 +8,9 @@ Wants=network-online.target
 Type=simple
 User=outline-ss-rust
 Group=outline-ss-rust
-WorkingDirectory=/var/lib/outline-ss-rust
+Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
+Environment=NO_COLOR=1
+Environment=MIMALLOC_ARENA_RESERVE=262144
 ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.toml
 Restart=on-failure
 RestartSec=3
@@ -24,6 +26,7 @@ Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
 AmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
 NoNewPrivileges=true
+WorkingDirectory=/var/lib/outline-ss-rust
 
 # Reasonable production limits.
 LimitNOFILE=1048576
