@@ -53,6 +53,11 @@ type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
+// Match the HTTP/2 flow-control sizing used by sockudo-ws so the long-lived
+// CONNECT stream carrying UDP datagrams does not stall on the small RFC
+// default window under sustained downstream traffic.
+const H2_INITIAL_STREAM_WINDOW_SIZE: u32 = 1024 * 1024;
+const H2_INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 * 1024 * 1024;
 
 pin_project! {
     struct H2WsStream {
@@ -1346,6 +1351,8 @@ async fn connect_websocket_h2(
 
     let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
+        .initial_stream_window_size(Some(H2_INITIAL_STREAM_WINDOW_SIZE))
+        .initial_connection_window_size(Some(H2_INITIAL_CONNECTION_WINDOW_SIZE))
         .keep_alive_interval(Some(Duration::from_secs(20)))
         .keep_alive_timeout(Duration::from_secs(20))
         .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
@@ -1555,9 +1562,11 @@ async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<Tcp
     // For connections without fwmark use tokio's async connector so we never
     // block a Tokio worker thread waiting for the TCP handshake to complete.
     if fwmark.is_none() {
-        return TcpStream::connect(addr)
+        let stream = TcpStream::connect(addr)
             .await
-            .with_context(|| format!("failed to connect TCP socket to {addr}"));
+            .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
+        configure_tcp_stream_low_latency(&stream, addr)?;
+        return Ok(stream);
     }
     connect_tcp_socket_with_fwmark(addr, fwmark).await
 }
@@ -1608,6 +1617,7 @@ async fn connect_tcp_socket_with_fwmark(
     {
         return Err(err).with_context(|| format!("TCP connection to {addr} failed"));
     }
+    configure_tcp_stream_low_latency(&stream, addr)?;
     Ok(stream)
 }
 
@@ -1637,6 +1647,12 @@ fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std::ne
         .bind(&bind_addr.into())
         .with_context(|| format!("failed to bind UDP socket on {bind_addr}"))?;
     Ok(socket.into())
+}
+
+fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Result<()> {
+    stream
+        .set_nodelay(true)
+        .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))
 }
 
 fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
@@ -1899,5 +1915,20 @@ mod tests {
         .await
         .unwrap();
         assert!(format!("{error:#}").contains("udp transport closed"));
+    }
+
+    #[tokio::test]
+    async fn connect_tcp_socket_enables_nodelay() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+        });
+
+        let stream = connect_tcp_socket(addr, None).await.unwrap();
+        assert!(stream.nodelay().unwrap());
+
+        drop(stream);
+        server.await.unwrap();
     }
 }
