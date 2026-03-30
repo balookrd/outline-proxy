@@ -10,6 +10,9 @@ mod server;
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
+#[cfg(all(target_os = "linux", not(target_env = "musl")))]
+use tikv_jemalloc_sys as _;
+
 use crate::access_key::{
     build_access_key_artifacts, render_access_key_report, render_written_access_key_report,
     write_access_key_artifacts,

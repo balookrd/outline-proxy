@@ -1,0 +1,3 @@
+[env]
+AR = "zig ar"
+RANLIB = "zig ranlib"
