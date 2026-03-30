@@ -20,6 +20,7 @@ pub fn init() {
         initial_sample.heap_free_bytes,
         initial_sample.heap_mode,
         initial_sample.open_fds,
+        initial_sample.thread_count,
         initial_sample.fd_snapshot,
     );
     METRICS.tun_ip_fragments_total.reset();
@@ -195,6 +196,7 @@ pub fn spawn_process_metrics_sampler() {
                 sample.heap_free_bytes,
                 sample.heap_mode,
                 sample.open_fds,
+                sample.thread_count,
                 sample.fd_snapshot,
             );
             sample_count = sample_count.saturating_add(1);
@@ -214,6 +216,7 @@ pub fn update_process_memory(
     heap_free_bytes: Option<u64>,
     heap_mode: &'static str,
     open_fds: Option<u64>,
+    thread_count: Option<u64>,
     fd_snapshot: Option<ProcessFdSnapshot>,
 ) {
     METRICS
@@ -231,13 +234,14 @@ pub fn update_process_memory(
     METRICS
         .process_heap_free_bytes
         .set(heap_free_bytes.unwrap_or(0) as f64);
-    for mode in ["jemalloc", "exact", "estimated", "unavailable"] {
+    for mode in ["exact", "estimated", "unavailable"] {
         METRICS
             .process_heap_mode_info
             .with_label_values(&[mode])
             .set(if mode == heap_mode { 1 } else { 0 });
     }
     METRICS.process_open_fds.set(open_fds.unwrap_or(0) as f64);
+    METRICS.process_threads.set(thread_count.unwrap_or(0) as f64);
     let snapshot = fd_snapshot.unwrap_or_default();
     METRICS
         .process_fd_by_type

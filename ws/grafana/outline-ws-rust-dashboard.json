@@ -2715,7 +2715,7 @@
       },
       "id": 126,
       "panels": [],
-      "title": "FD & Transport Pressure",
+      "title": "FD, Threads & Transport Pressure",
       "type": "row"
     },
     {
@@ -2811,6 +2811,89 @@
           "color": {
             "mode": "thresholds"
           },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#33A02C",
+                "value": 0
+              },
+              {
+                "color": "#EAB839",
+                "value": 32
+              },
+              {
+                "color": "#C15C17",
+                "value": 128
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* threads$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 77
+      },
+      "id": 152,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} threads",
+          "refId": "A"
+        }
+      ],
+      "title": "Current Threads",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
           "decimals": 0,
           "mappings": [],
           "max": 100,
@@ -2854,7 +2937,7 @@
       "gridPos": {
         "h": 4,
         "w": 4,
-        "x": 4,
+        "x": 8,
         "y": 77
       },
       "id": 124,
@@ -3026,8 +3109,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 8,
+        "w": 6,
+        "x": 12,
         "y": 77
       },
       "id": 31,
@@ -3150,8 +3233,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 8,
-        "x": 16,
+        "w": 6,
+        "x": 18,
         "y": 77
       },
       "id": 121,
@@ -3177,6 +3260,115 @@
         }
       ],
       "title": "Upstream Transports Active by Source",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".* threads$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5794F2",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 8,
+        "x": 0,
+        "y": 81
+      },
+      "id": 153,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.3.2",
+      "targets": [
+        {
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_threads{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} threads",
+          "refId": "A"
+        }
+      ],
+      "title": "Process Threads",
       "type": "timeseries"
     },
     {
@@ -3289,8 +3481,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
-        "x": 0,
+        "w": 8,
+        "x": 8,
         "y": 81
       },
       "id": 29,
@@ -3428,8 +3620,8 @@
       },
       "gridPos": {
         "h": 4,
-        "w": 12,
-        "x": 12,
+        "w": 8,
+        "x": 16,
         "y": 81
       },
       "id": 32,

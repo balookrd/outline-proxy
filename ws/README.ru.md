@@ -184,24 +184,6 @@ tun2udp + tun2tcp"]
 cargo build --release
 ```
 
-Выбор аллокатора:
-
-- по умолчанию: `allocator-jemalloc`
-- опционально: `allocator-system`
-
-Примеры:
-
-```bash
-# Стандартная production-сборка (jemalloc)
-cargo build --release
-
-# Явная сборка с jemalloc
-cargo build --release --no-default-features --features allocator-jemalloc
-
-# Сборка с системным аллокатором
-cargo build --release --no-default-features --features allocator-system
-```
-
 Пример статической сборки под Linux с musl:
 
 ```bash
@@ -371,7 +353,7 @@ password = "Secret0"
 - Флаги CLI и переменные окружения переопределяют настройки из файла.
 - `--metrics-listen` включает метрики даже без секции `[metrics]` в конфиге.
 - `--tun-path` включает TUN даже без секции `[tun]` в конфиге.
-- `memory_trim_interval_secs` по умолчанию `60`. При сборке с jemalloc поддерживает активность фонового обслуживания аллокатора. С системным аллокатором на Linux/glibc запускает периодический `malloc_trim(0)` для возврата свободных страниц ОС. Установите `0`, чтобы отключить.
+- `memory_trim_interval_secs` по умолчанию `60`. На Linux/glibc проект использует системный аллокатор и запускает периодический `malloc_trim(0)` для возврата свободных страниц ОС после пиков. Установите `0`, чтобы отключить.
 
 ### Полезные переопределения через CLI и переменные окружения
 
@@ -616,19 +598,22 @@ scrape_configs:
 - `outline_ws_rust_process_heap_free_bytes`
 - `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
+- `outline_ws_rust_process_threads`
 - `outline_ws_rust_process_malloc_trim_total{reason,result}`
 - `outline_ws_rust_process_malloc_trim_errors_total{reason}`
 - `outline_ws_rust_process_malloc_trim_last_released_bytes{kind="rss|heap"}`
 - `outline_ws_rust_process_malloc_trim_last_bytes{kind="rss|heap",stage="before|after|released"}`
 
-При сборке по умолчанию с `jemalloc` метрики heap берутся из статистики аллокатора:
+На Linux/glibc метрики heap берутся из статистики аллокатора glibc (семейство `mallinfo`):
 
-- `heap_memory_bytes` — jemalloc active bytes
-- `heap_allocated_bytes` — jemalloc allocated bytes
-- `heap_free_bytes` — `active - allocated`
-- `heap_mode_info{mode="jemalloc"}` — подтверждение активного allocator-aware семплинга
+- `heap_memory_bytes` — `uordblks + fordblks`
+- `heap_allocated_bytes` — `uordblks`
+- `heap_free_bytes` — `fordblks`
+- `heap_mode_info{mode="exact"}` — подтверждение allocator-aware семплинга через статистику glibc
 
-При сборке с jemalloc периодическое обслуживание включает `background_thread` при необходимости и продвигает `epoch`.
+На Linux-целях без этой статистики аллокатора метрики heap откатываются к оценке через `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
+
+С системным аллокатором периодическое и оппортунистическое обслуживание использует `malloc_trim(0)`.
 
 На Linux с glibc и системным аллокатором оппортунистический trim также создаёт запись в логе:
 
@@ -668,7 +653,7 @@ Snapshot дескрипторов включает общее количеств
 - Latency
 - Health & Routing
 - Memory & Allocator
-- FD & Transport Pressure
+- FD, Threads & Transport Pressure
 - Probes & Standby
 - TUN
 
