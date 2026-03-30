@@ -19,6 +19,7 @@ hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 libc = "0.2"
 md-5 = "0.10"
+mimalloc = { version = "0.1", default-features = false }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

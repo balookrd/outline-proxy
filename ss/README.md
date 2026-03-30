@@ -354,8 +354,11 @@ The metrics set includes:
 - Aggregate per-client payload throughput across TCP and UDP
 - UDP response datagram counts
 - Process RSS / virtual memory gauges
-- Heap resident / non-resident estimates from the Linux `[heap]` mapping
-- Legacy allocator trim/support gauges so dashboards can distinguish unsupported features from real zero values
+- Process thread count
+- Virtual memory category gauges for anonymous, file-backed, stack, and special mappings
+- Top virtual mapping size / gap gauges from `/proc/self/smaps`
+
+The bundled binary uses `mimalloc` as its global allocator. On Linux this usually moves allocator-managed memory into anonymous mappings instead of the traditional `[heap]` region, so allocator-focused `[heap]` and trim metrics are not exported. Use RSS plus the anonymous mapping gauges for allocator-related memory tracking.
 - Build and configuration info
 
 ### Grafana

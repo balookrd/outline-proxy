@@ -16,6 +16,11 @@ use crate::access_key::{
 };
 use crate::config::Config;
 
+// The binary owns the global allocator; keep dependency-level allocator
+// features such as sockudo-ws/mimalloc disabled to avoid duplicate definitions.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_THREAD_STACK_SIZE_BYTES: usize = 2 * 1024 * 1024;
 

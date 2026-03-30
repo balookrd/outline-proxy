@@ -1933,7 +1933,7 @@
       },
       "id": 31,
       "panels": [],
-      "title": "Memory & Allocator",
+      "title": "Memory",
       "type": "row"
     },
     {
@@ -2020,16 +2020,16 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "red",
+                "color": "green",
                 "value": 0
               },
               {
                 "color": "orange",
-                "value": 1
+                "value": 2147483648
               },
               {
-                "color": "green",
-                "value": 1048576
+                "color": "red",
+                "value": 4294967296
               }
             ]
           },
@@ -2065,13 +2065,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_trim_last_rss_released_bytes{instance=~\"$instance\"}",
-          "legendFormat": "released",
+          "expr": "outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"}",
+          "legendFormat": "virtual",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Last RSS Released",
+      "title": "Current Virtual Memory",
       "type": "stat"
     },
     {
@@ -2093,8 +2093,12 @@
                 "value": 0
               },
               {
+                "color": "orange",
+                "value": 16
+              },
+              {
                 "color": "red",
-                "value": 1
+                "value": 64
               }
             ]
           },
@@ -2130,13 +2134,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_trim_errors_total{instance=~\"$instance\"}",
-          "legendFormat": "errors",
+          "expr": "outline_ss_process_threads{instance=~\"$instance\"}",
+          "legendFormat": "threads",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Trim Errors",
+      "title": "Current Threads",
       "type": "stat"
     },
     {
@@ -2149,36 +2153,25 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "#E24D42",
-                  "index": 0,
-                  "text": "unsupported"
-                },
-                "1": {
-                  "color": "#73BF69",
-                  "index": 1,
-                  "text": "exact"
-                }
-              },
-              "type": "value"
-            }
-          ],
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               {
-                "color": "#E24D42",
+                "color": "green",
                 "value": 0
               },
               {
-                "color": "#73BF69",
-                "value": 1
+                "color": "orange",
+                "value": 2147483648
+              },
+              {
+                "color": "red",
+                "value": 4294967296
               }
             ]
-          }
+          },
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -2210,13 +2203,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"}",
-          "legendFormat": "heap metrics mode",
+          "expr": "(outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"} - outline_ss_process_resident_memory_bytes{instance=~\"$instance\"})",
+          "legendFormat": "virtual-rss gap",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "Allocator Heap Mode",
+      "title": "Virtual-RSS Gap",
       "type": "stat"
     },
     {
@@ -2391,585 +2384,13 @@
           },
           "unit": "bytes"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* heap free$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 64
-      },
-      "id": 21,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_heap_allocated_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} heap allocated",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_heap_free_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} heap free",
-          "range": true,
-          "refId": "B"
-        }
-      ],
-      "title": "Allocator Heap State",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "fixedColor": "#FFB357",
-            "mode": "fixed"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "ops"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "release events"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "trim errors"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#E24D42",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 7,
         "w": 12,
         "x": 0,
         "y": 71
-      },
-      "id": 22,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((rate(outline_ss_allocator_trim_runs_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim runs",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((rate(outline_ss_allocator_trim_release_events_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim release events",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((rate(outline_ss_allocator_trim_errors_total{instance=~\"$instance\"}[5m]) or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim errors",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Allocator Trim Activity",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "fixedColor": "#FFB357",
-            "mode": "fixed"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* trim rss after$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* trim rss released$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 71
-      },
-      "id": 23,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_allocator_trim_last_rss_before_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim rss before",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_allocator_trim_last_rss_after_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim rss after",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_allocator_trim_last_rss_released_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_trim_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} trim rss released",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Allocator Trim Effect",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "fixedColor": "#FFB357",
-            "mode": "fixed"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* allocator resident$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* non-allocator resident$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 0,
-        "y": 78
-      },
-      "id": 36,
-      "options": {
-        "legend": {
-          "calcs": [],
-          "displayMode": "list",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "hideZeros": false,
-          "mode": "multi",
-          "sort": "none"
-        }
-      },
-      "pluginVersion": "12.4.1",
-      "targets": [
-        {
-          "editorMode": "code",
-          "expr": "label_replace(outline_ss_process_resident_memory_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} process rss",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_allocator_resident_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} allocator resident",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_non_allocator_resident_estimate_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} non-allocator resident",
-          "range": true,
-          "refId": "C"
-        }
-      ],
-      "title": "Resident Memory Breakdown",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${DS_PROMETHEUS}"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "fixedColor": "#FFB357",
-            "mode": "fixed"
-          },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "barWidthFactor": 0.6,
-            "drawStyle": "line",
-            "fillOpacity": 10,
-            "gradientMode": "none",
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            },
-            "insertNulls": false,
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "pointSize": 4,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "showValues": false,
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              }
-            ]
-          },
-          "unit": "bytes"
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* allocator mapped$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* allocator retained$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#E0B400",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* virtual-rss gap$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 12,
-        "x": 12,
-        "y": 78
       },
       "id": 37,
       "options": {
@@ -2989,34 +2410,13 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "label_replace(outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"}, \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} process virtual",
-          "range": true,
-          "refId": "A"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_allocator_mapped_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} allocator mapped",
-          "range": true,
-          "refId": "B"
-        },
-        {
-          "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_allocator_retained_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_allocator_heap_metrics_supported{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} allocator retained",
-          "range": true,
-          "refId": "C"
-        },
-        {
-          "editorMode": "code",
           "expr": "label_replace(((outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"} - outline_ss_process_resident_memory_bytes{instance=~\"$instance\"}) or on(instance) vector(0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
           "legendFormat": "{{short_instance}} virtual-rss gap",
           "range": true,
-          "refId": "D"
+          "refId": "A"
         }
       ],
-      "title": "Virtual Memory Retention",
+      "title": "Virtual-RSS Gap",
       "type": "timeseries"
     },
     {
@@ -3127,8 +2527,8 @@
       "gridPos": {
         "h": 7,
         "w": 12,
-        "x": 0,
-        "y": 85
+        "x": 12,
+        "y": 64
       },
       "id": 38,
       "options": {
@@ -3183,17 +2583,10 @@
         },
         {
           "editorMode": "code",
-          "expr": "label_replace((outline_ss_process_virtual_heap_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
-          "legendFormat": "{{short_instance}} heap",
-          "range": true,
-          "refId": "F"
-        },
-        {
-          "editorMode": "code",
           "expr": "label_replace((outline_ss_process_virtual_special_bytes{instance=~\"$instance\"} or on(instance) (outline_ss_process_virtual_memory_bytes{instance=~\"$instance\"} * 0)), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")",
           "legendFormat": "{{short_instance}} special",
           "range": true,
-          "refId": "G"
+          "refId": "F"
         }
       ],
       "title": "Virtual Memory Categories",
@@ -3254,7 +2647,7 @@
               }
             ]
           },
-          "unit": "none"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -3262,7 +2655,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 85
+        "y": 71
       },
       "id": 39,
       "options": {
@@ -3353,7 +2746,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 110
+        "y": 78
       },
       "id": 40,
       "options": {
@@ -3444,7 +2837,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 110
+        "y": 78
       },
       "id": 41,
       "options": {
