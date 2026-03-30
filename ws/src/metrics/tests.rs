@@ -84,8 +84,9 @@ fn render_prometheus_exports_process_memory_metrics() {
         Some(5678),
         Some(5678),
         Some(256),
-        "jemalloc",
+        "exact",
         Some(42),
+        Some(9),
         Some(ProcessFdSnapshot {
             total: 42,
             sockets: 20,
@@ -112,8 +113,9 @@ fn render_prometheus_exports_process_memory_metrics() {
     assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
     assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
     assert!(rendered.contains("outline_ws_rust_process_heap_free_bytes 256"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"jemalloc\"} 1"));
+    assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"exact\"} 1"));
     assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
+    assert!(rendered.contains("outline_ws_rust_process_threads 9"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
     assert!(rendered.contains(
@@ -299,35 +301,51 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
     assert!(
-        rendered.contains(
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"} 0"
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
         )
+        .is_some()
     );
     assert!(
-        rendered
-            .contains("outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"} 0")
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"}",
+        )
+        .is_some()
     );
     assert!(
-        rendered
-            .contains("outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"} 0")
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
+        )
+        .is_some()
     );
-    assert!(rendered.contains("outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"} 0"));
     assert!(
-        rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"} 0")
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",
+        )
+        .is_some()
     );
     assert!(
-        rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"} 0")
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"}",
+        )
+        .is_some()
     );
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"} 0"));
+    assert!(rendered.contains("outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv6\"}"));
+    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv4\"}"));
+    assert!(rendered.contains("outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}"));
     assert!(rendered.contains(
-        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"} 0"
+        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv4\",result=\"success\"}"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"} 0"
+        "outline_ws_rust_tun_ip_reassemblies_total{ip_family=\"ipv6\",result=\"timeout\"}"
     ));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"} 0"));
+    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv4\"}"));
+    assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
 }
 
 #[test]

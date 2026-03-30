@@ -252,6 +252,11 @@ impl Metrics {
             "Current number of open file descriptors used by the process.",
         ))
         .expect("process_open_fds metric");
+        let process_threads = Gauge::with_opts(Opts::new(
+            "outline_ws_rust_process_threads",
+            "Current number of threads used by the process.",
+        ))
+        .expect("process_threads metric");
         let process_fd_by_type = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_process_fd_by_type",
@@ -755,6 +760,9 @@ impl Metrics {
             .register(Box::new(process_open_fds.clone()))
             .expect("register process_open_fds");
         registry
+            .register(Box::new(process_threads.clone()))
+            .expect("register process_threads");
+        registry
             .register(Box::new(process_fd_by_type.clone()))
             .expect("register process_fd_by_type");
         registry
@@ -956,6 +964,7 @@ impl Metrics {
             process_heap_free_bytes,
             process_heap_mode_info,
             process_open_fds,
+            process_threads,
             process_fd_by_type,
             transport_connects_total,
             transport_connects_active,

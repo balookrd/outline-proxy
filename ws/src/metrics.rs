@@ -48,9 +48,6 @@ static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
 const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 
-#[cfg(feature = "allocator-jemalloc")]
-const ACTIVE_ALLOCATOR: &str = "jemalloc";
-#[cfg(not(feature = "allocator-jemalloc"))]
 const ACTIVE_ALLOCATOR: &str = "system";
 
 struct Metrics {
@@ -87,6 +84,7 @@ struct Metrics {
     process_heap_free_bytes: Gauge,
     process_heap_mode_info: IntGaugeVec,
     process_open_fds: Gauge,
+    process_threads: Gauge,
     process_fd_by_type: GaugeVec,
     transport_connects_total: IntCounterVec,
     transport_connects_active: IntGaugeVec,

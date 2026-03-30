@@ -17,10 +17,6 @@ pub(crate) mod tun_wire_test_utils;
 pub mod types;
 pub mod uplink;
 
-#[cfg(feature = "allocator-jemalloc")]
-#[global_allocator]
-static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
 use anyhow::{Context, Result, anyhow};
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
