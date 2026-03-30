@@ -21,6 +21,7 @@ http-body-util = "0.1"
 hyper = { version = "1.7", features = ["client", "server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 md5 = "0.7"
+mimalloc = "0.1"
 pin-project-lite = "0.2"
 once_cell = "1.21"
 prometheus = "0.13"

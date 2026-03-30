@@ -2029,12 +2029,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance) (outline_ws_rust_process_malloc_trim_last_bytes{job=~\"$job\",instance=~\"$instance\",kind=\"rss\",stage=\"released\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
       ],
-      "title": "Last RSS Released",
+      "title": "Current Virtual",
       "type": "stat"
     },
     {
@@ -2056,12 +2056,16 @@
                 "value": 0
               },
               {
+                "color": "#EAB839",
+                "value": 67108864
+              },
+              {
                 "color": "#E24D42",
-                "value": 1
+                "value": 536870912
               }
             ]
           },
-          "unit": "short"
+          "unit": "bytes"
         },
         "overrides": []
       },
@@ -2092,12 +2096,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (increase(outline_ws_rust_process_malloc_trim_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_allocated_bytes{job=~\"$job\",instance=~\"$instance\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}}",
           "refId": "A"
         }
       ],
-      "title": "Trim Errors",
+      "title": "Heap Allocated",
       "type": "stat"
     },
     {
@@ -2471,59 +2475,13 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.9
               }
             ]
           },
-          "unit": "ops"
+          "unit": "percentunit"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* trim runs$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FF9830",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* trim release events$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#EAB839",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* trim errors$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#E24D42",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -2548,22 +2506,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} trim runs",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_heap_allocated_bytes{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} heap/rss",
           "refId": "A"
-        },
-        {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_total{job=~\"$job\",instance=~\"$instance\",result=\"success\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} trim release events",
-          "refId": "B"
-        },
-        {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_process_malloc_trim_errors_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} trim errors",
-          "refId": "C"
         }
       ],
-      "title": "Allocator Trim Activity",
+      "title": "Heap to RSS Ratio",
       "type": "timeseries"
     },
     {
@@ -2620,59 +2568,13 @@
               },
               {
                 "color": "red",
-                "value": 80
+                "value": 0.9
               }
             ]
           },
-          "unit": "bytes"
+          "unit": "percentunit"
         },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* before$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#FF9830",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* after$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#5794F2",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byRegexp",
-              "options": ".* released$"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "#73BF69",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
+        "overrides": []
       },
       "gridPos": {
         "h": 8,
@@ -2697,12 +2599,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((max by (instance, stage) (outline_ws_rust_process_malloc_trim_last_bytes{job=~\"$job\",instance=~\"$instance\",kind=\"rss\"})), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
-          "legendFormat": "{{instance_short}} trim rss {{stage}}",
+          "expr": "label_replace((max by (instance) (outline_ws_rust_process_resident_memory_bytes{job=~\"$job\",instance=~\"$instance\"}) / clamp_min(max by (instance) (outline_ws_rust_process_virtual_memory_bytes{job=~\"$job\",instance=~\"$instance\"}), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "legendFormat": "{{instance_short}} rss/virtual",
           "refId": "A"
         }
       ],
-      "title": "Allocator Trim Effect",
+      "title": "RSS to Virtual Ratio",
       "type": "timeseries"
     },
     {

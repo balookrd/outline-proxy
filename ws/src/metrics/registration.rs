@@ -231,12 +231,12 @@ impl Metrics {
         .expect("process_heap_memory_bytes metric");
         let process_heap_allocated_bytes = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_heap_allocated_bytes",
-            "Current allocator-reported allocated heap bytes.",
+            "Current allocated heap bytes when available; may be estimated from process memory maps.",
         ))
         .expect("process_heap_allocated_bytes metric");
         let process_heap_free_bytes = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_heap_free_bytes",
-            "Current allocator-reported free heap bytes.",
+            "Current free heap bytes when reported by the active allocator.",
         ))
         .expect("process_heap_free_bytes metric");
         let process_heap_mode_info = IntGaugeVec::new(
@@ -297,38 +297,6 @@ impl Metrics {
             &["source", "protocol"],
         )
         .expect("upstream_transports_active metric");
-        let process_malloc_trim_total = IntCounterVec::new(
-            Opts::new(
-                "outline_ws_rust_process_malloc_trim_total",
-                "malloc_trim invocations by reason and result.",
-            ),
-            &["reason", "result"],
-        )
-        .expect("process_malloc_trim_total metric");
-        let process_malloc_trim_errors_total = IntCounterVec::new(
-            Opts::new(
-                "outline_ws_rust_process_malloc_trim_errors_total",
-                "malloc_trim errors by reason.",
-            ),
-            &["reason"],
-        )
-        .expect("process_malloc_trim_errors_total metric");
-        let process_malloc_trim_last_released_bytes = GaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_process_malloc_trim_last_released_bytes",
-                "Last observed bytes released by malloc_trim for each memory kind.",
-            ),
-            &["kind"],
-        )
-        .expect("process_malloc_trim_last_released_bytes metric");
-        let process_malloc_trim_last_bytes = GaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_process_malloc_trim_last_bytes",
-                "Last observed malloc_trim values by memory kind and stage.",
-            ),
-            &["kind", "stage"],
-        )
-        .expect("process_malloc_trim_last_bytes metric");
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -778,18 +746,6 @@ impl Metrics {
             .register(Box::new(upstream_transports_active.clone()))
             .expect("register upstream_transports_active");
         registry
-            .register(Box::new(process_malloc_trim_total.clone()))
-            .expect("register process_malloc_trim_total");
-        registry
-            .register(Box::new(process_malloc_trim_errors_total.clone()))
-            .expect("register process_malloc_trim_errors_total");
-        registry
-            .register(Box::new(process_malloc_trim_last_released_bytes.clone()))
-            .expect("register process_malloc_trim_last_released_bytes");
-        registry
-            .register(Box::new(process_malloc_trim_last_bytes.clone()))
-            .expect("register process_malloc_trim_last_bytes");
-        registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
         registry
@@ -970,10 +926,6 @@ impl Metrics {
             transport_connects_active,
             upstream_transports_total,
             upstream_transports_active,
-            process_malloc_trim_total,
-            process_malloc_trim_errors_total,
-            process_malloc_trim_last_released_bytes,
-            process_malloc_trim_last_bytes,
             tun_packets_total,
             tun_flows_total,
             tun_flow_duration_seconds,

@@ -18,15 +18,18 @@ pub mod types;
 pub mod uplink;
 
 use anyhow::{Context, Result, anyhow};
+use mimalloc::MiMalloc;
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
 
 use crate::config::{AppConfig, Args, load_config};
-use crate::memory::spawn_periodic_trim_loop;
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
+
+#[global_allocator]
+static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
 pub fn init_rustls_crypto_provider() -> Result<()> {
     let provider = ring::default_provider();
@@ -41,9 +44,6 @@ pub async fn run(args: Args) -> Result<()> {
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
-    if let Some(interval) = config.memory_trim_interval {
-        spawn_periodic_trim_loop(interval);
-    }
     run_with_config(config).await
 }
 
