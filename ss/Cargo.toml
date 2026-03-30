@@ -35,6 +35,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [target.'cfg(all(target_os = "linux", not(target_env = "musl")))'.dependencies]
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
+tikv-jemalloc-sys = "0.6"
 tikv-jemallocator = "0.6"
 
 [dev-dependencies]
