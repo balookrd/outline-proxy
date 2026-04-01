@@ -330,7 +330,7 @@ impl AeadStreamDecryptor {
                     UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
                 let less_safe = LessSafeKey::new(key);
                 if let Ok(header) =
-                    less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut encrypted_fixed)
+                    less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut encrypted_fixed)
                 {
                     if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN {
                         let header_len = validate_ss2022_request_fixed_header(header)?;
@@ -366,7 +366,7 @@ impl AeadStreamDecryptor {
 
                 let mut candidate = encrypted_len.to_vec();
                 if let Ok(plaintext_len) =
-                    less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate)
+                    less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate)
                 {
                     if plaintext_len.len() == 2 {
                         let chunk_len =
@@ -581,7 +581,7 @@ fn try_decrypt_udp_packet_for_user(
     let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
     let less_safe = LessSafeKey::new(key);
     let mut candidate = ciphertext.to_vec();
-    if let Ok(plaintext) = less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+    if let Ok(plaintext) = less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate) {
         return Ok(Some(UdpPacket {
             user: user.clone(),
             payload: plaintext.to_vec(),
@@ -606,7 +606,7 @@ pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, C
     let mut output = salt;
     let mut ciphertext = plaintext.to_vec();
     less_safe
-        .seal_in_place_append_tag(udp_nonce_zero(), Aad::empty(), &mut ciphertext)
+        .seal_in_place_append_tag(nonce_zero(), Aad::empty(), &mut ciphertext)
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(&ciphertext);
     Ok(output)
@@ -724,7 +724,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                     }
                 };
                 let less_safe = LessSafeKey::new(key);
-                match less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+                match less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate) {
                     Ok(header) if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN => {
                         match validate_ss2022_request_fixed_header(header) {
                             Ok(header_len) => format!(
@@ -792,7 +792,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                 };
                 let less_safe = LessSafeKey::new(key);
                 let mut candidate = encrypted_len.to_vec();
-                match less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+                match less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate) {
                     Ok(plaintext_len) if plaintext_len.len() == 2 => {
                         let chunk_len =
                             u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
@@ -908,7 +908,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 let less_safe = LessSafeKey::new(key);
                 let mut candidate = ciphertext.to_vec();
                 match less_safe.open_in_place(
-                    ss2022_udp_nonce(&separate_header).unwrap_or_else(|_| udp_nonce_zero()),
+                    ss2022_udp_nonce(&separate_header).unwrap_or_else(|_| nonce_zero()),
                     Aad::empty(),
                     &mut candidate,
                 ) {
@@ -961,7 +961,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 };
                 let less_safe = LessSafeKey::new(key);
                 let mut candidate = ciphertext.to_vec();
-                match less_safe.open_in_place(udp_nonce_zero(), Aad::empty(), &mut candidate) {
+                match less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate) {
                     Ok(plaintext) => format!(
                         "{}:{} packet_ok(payload_len={})",
                         user.id(),
@@ -1431,14 +1431,14 @@ fn decrypt_ss2022_separate_header(
 
 fn next_stream_nonce(counter: &mut u64) -> Nonce {
     let current = *counter;
-    *counter = counter.saturating_add(1);
+    *counter = counter.wrapping_add(1);
 
     let mut nonce = [0_u8; NONCE_LEN];
     nonce[..8].copy_from_slice(&current.to_le_bytes());
     Nonce::assume_unique_for_key(nonce)
 }
 
-fn udp_nonce_zero() -> Nonce {
+fn nonce_zero() -> Nonce {
     Nonce::assume_unique_for_key([0_u8; NONCE_LEN])
 }
 

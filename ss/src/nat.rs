@@ -129,7 +129,7 @@ pub(crate) struct NatEntry {
     /// Updated every time a new outbound datagram arrives so responses are
     /// delivered to the right session even after a reconnect.
     session_tx: Arc<Mutex<Option<UdpResponseSender>>>,
-    /// Unix timestamp (seconds) of the last outbound datagram, for idle eviction.
+    /// Unix timestamp (seconds) of the last datagram in either direction, for idle eviction.
     last_active_secs: Arc<AtomicU64>,
     /// Dropped when the entry is evicted, which aborts the background reader task.
     _reader: AbortOnDrop,
