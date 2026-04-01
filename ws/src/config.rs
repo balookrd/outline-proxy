@@ -70,6 +70,11 @@ pub struct Args {
 
     #[arg(long, env = "TUN_MTU")]
     pub tun_mtu: Option<usize>,
+
+    /// Number of tokio worker threads (default: number of CPU cores).
+    /// Set to 1 on weak/single-core routers.
+    #[arg(long, env = "WORKER_THREADS")]
+    pub worker_threads: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +86,16 @@ pub struct AppConfig {
     pub load_balancing: LoadBalancingConfig,
     pub metrics: Option<MetricsConfig>,
     pub tun: Option<TunConfig>,
+    pub h2: H2Config,
+}
+
+/// HTTP/2 flow-control window sizes for WebSocket transports.
+#[derive(Debug, Clone)]
+pub struct H2Config {
+    /// Per-stream initial window size in bytes (default: 1 MiB).
+    pub initial_stream_window_size: u32,
+    /// Per-connection initial window size in bytes (default: 2 MiB).
+    pub initial_connection_window_size: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +225,12 @@ pub struct TunConfig {
     pub max_flows: usize,
     pub idle_timeout: Duration,
     pub tcp: TunTcpConfig,
+    /// Max bytes buffered across all in-progress IP fragment reassembly sets.
+    /// Default: 16 MiB (VM). Reduce to 2 MiB or less on routers.
+    pub defrag_max_total_bytes: usize,
+    /// Max bytes buffered per individual fragment set.
+    /// Default: 128 KiB. Reduce to 16 KiB on routers.
+    pub defrag_max_bytes_per_set: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +267,7 @@ struct ConfigFile {
     outline: Option<OutlineSection>,
     metrics: Option<MetricsSection>,
     tun: Option<TunSection>,
+    h2: Option<H2Section>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +315,14 @@ struct TunSection {
     max_flows: Option<usize>,
     idle_timeout_secs: Option<u64>,
     tcp: Option<TunTcpSection>,
+    defrag_max_total_bytes: Option<usize>,
+    defrag_max_bytes_per_set: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct H2Section {
+    initial_stream_window_size: Option<u32>,
+    initial_connection_window_size: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -392,6 +422,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let outline = file.as_ref().and_then(resolve_outline_section);
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
+    let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
 
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
@@ -404,6 +435,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
     let tun = load_tun_config(tun_section, args)?;
+    let h2 = load_h2_config(h2_section);
 
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
@@ -417,6 +449,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         load_balancing,
         metrics,
         tun,
+        h2,
     })
 }
 
@@ -1014,6 +1047,22 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("missing tun.name: Linux TUN attach requires --tun-name or [tun].name");
     }
 
+    let defrag_max_total_bytes = tun
+        .and_then(|section| section.defrag_max_total_bytes)
+        .unwrap_or(16 * 1024 * 1024);
+    let defrag_max_bytes_per_set = tun
+        .and_then(|section| section.defrag_max_bytes_per_set)
+        .unwrap_or(128 * 1024);
+    if defrag_max_total_bytes < 64 * 1024 {
+        bail!("tun.defrag_max_total_bytes must be at least 65536");
+    }
+    if defrag_max_bytes_per_set < 1500 {
+        bail!("tun.defrag_max_bytes_per_set must be at least 1500");
+    }
+    if defrag_max_bytes_per_set > defrag_max_total_bytes {
+        bail!("tun.defrag_max_bytes_per_set must not exceed tun.defrag_max_total_bytes");
+    }
+
     Ok(Some(TunConfig {
         path,
         name,
@@ -1021,7 +1070,20 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         max_flows,
         idle_timeout,
         tcp,
+        defrag_max_total_bytes,
+        defrag_max_bytes_per_set,
     }))
+}
+
+fn load_h2_config(h2: Option<&H2Section>) -> H2Config {
+    H2Config {
+        initial_stream_window_size: h2
+            .and_then(|s| s.initial_stream_window_size)
+            .unwrap_or(1024 * 1024),
+        initial_connection_window_size: h2
+            .and_then(|s| s.initial_connection_window_size)
+            .unwrap_or(2 * 1024 * 1024),
+    }
 }
 
 #[cfg(test)]

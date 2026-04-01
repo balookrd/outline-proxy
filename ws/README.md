@@ -178,16 +178,132 @@ The project is intentionally practical, but there are still boundaries:
 
 ## Build
 
-Standard build:
+### Prerequisites
+
+- Rust toolchain (stable): `rustup update stable`
+- For cross-compilation: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) — wraps the Zig C compiler to eliminate the need for a dedicated cross-linker per target.
+
+```bash
+cargo install cargo-zigbuild
+```
+
+Install the required Rust targets:
+
+```bash
+# VMs / servers
+rustup target add x86_64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl
+
+# Routers (OpenWrt MIPS little-endian, e.g. TP-Link, Netgear, ASUS)
+rustup target add mipsel-unknown-linux-musl
+# Routers (OpenWrt MIPS big-endian, e.g. older D-Link, ZTE)
+rustup target add mips-unknown-linux-musl
+# Routers (ARM, e.g. Raspberry Pi, many modern home routers)
+rustup target add armv7-unknown-linux-musleabihf
+# Routers (AArch64, e.g. newer Raspberry Pi, Banana Pi, routers with Cortex-A53+)
+rustup target add aarch64-unknown-linux-musl
+```
+
+---
+
+### Virtual machines and servers
+
+Native build for the current machine (fastest, uses all CPU features):
 
 ```bash
 cargo build --release
 ```
 
-Example static-ish Linux build with musl:
+Static x86-64 binary (runs on any Linux x86-64 without glibc dependency):
 
 ```bash
 cargo zigbuild --release --target x86_64-unknown-linux-musl
+```
+
+Static AArch64 binary (ARM64 servers, AWS Graviton, Ampere):
+
+```bash
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+```
+
+---
+
+### Routers (cross-compilation)
+
+All router builds use `musl` libc for a fully static binary with no runtime dependencies.
+Use `config-router.toml` on the device — see [Router Configuration](#router-configuration).
+
+**OpenWrt / MIPS little-endian** (most TP-Link, Netgear, ASUS, GL.iNet routers):
+
+```bash
+cargo zigbuild --release --target mipsel-unknown-linux-musl
+```
+
+**OpenWrt / MIPS big-endian** (older D-Link, ZTE, some Huawei CPE):
+
+```bash
+cargo zigbuild --release --target mips-unknown-linux-musl
+```
+
+**ARM soft-float** (minimal ARM routers without FPU, e.g. older D-Link DIR, Linksys WRT):
+
+```bash
+cargo zigbuild --release --target arm-unknown-linux-musleabi
+```
+
+**ARMv7 hard-float** (Raspberry Pi 2/3 in 32-bit mode, many mid-range routers):
+
+```bash
+cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+```
+
+**AArch64 / ARM64** (Raspberry Pi 3/4/5 in 64-bit mode, Banana Pi R3/R4, NanoPi R5S, routers with MT7986/MT7988, IPQ8074):
+
+```bash
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+```
+
+The compiled binary is placed in `target/<target>/release/outline-ws-rust`.
+Copy it to the router and make it executable:
+
+```bash
+scp target/mipsel-unknown-linux-musl/release/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
+```
+
+> **Note on `mimalloc`:** The default allocator is `mimalloc`. It compiles and runs on all supported targets, but on MIPS it adds ~200 KB to the binary. If binary size is critical, you can switch the allocator in `src/lib.rs` to the system allocator (`#[global_allocator] static GLOBAL_ALLOCATOR: std::alloc::System = std::alloc::System;`).
+
+---
+
+### Router Configuration
+
+Use `config-router.toml` as a starting point for memory-constrained devices.
+Key differences from the default VM config:
+
+| Parameter | VM default | Router example |
+|---|---|---|
+| `--worker-threads` | CPU count | 1 |
+| `tun.max_flows` | 4096 | 128 |
+| `tun.defrag_max_total_bytes` | 16 MiB | 2 MiB |
+| `tun.defrag_max_bytes_per_set` | 128 KiB | 16 KiB |
+| `tun.tcp.max_pending_server_bytes` | 4 MiB | 64 KiB |
+| `tun.tcp.max_buffered_client_bytes` | 256 KiB | 64 KiB |
+| `[h2] initial_stream_window_size` | 1 MiB | 256 KiB |
+| `[h2] initial_connection_window_size` | 2 MiB | 512 KiB |
+| Warm standby | 1 TCP + 1 UDP | disabled |
+| Load balancing mode | `active_active` | `active_passive` |
+| Transport mode | `h3` | `h2` (QUIC is heavy on MIPS/ARM) |
+
+Run with the router config:
+
+```bash
+outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-threads 1
+```
+
+Or via environment variable:
+
+```bash
+PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
 ```
 
 ## Quick Start

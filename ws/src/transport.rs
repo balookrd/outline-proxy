@@ -53,11 +53,28 @@ type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
-// Match the HTTP/2 flow-control sizing used by sockudo-ws so the long-lived
-// CONNECT stream carrying UDP datagrams does not stall on the small RFC
-// default window under sustained downstream traffic.
-const H2_INITIAL_STREAM_WINDOW_SIZE: u32 = 1024 * 1024;
-const H2_INITIAL_CONNECTION_WINDOW_SIZE: u32 = 2 * 1024 * 1024;
+// HTTP/2 flow-control window sizes. Defaults match the sizing used by
+// sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
+// stall on the small RFC default window under sustained downstream traffic.
+// On memory-constrained routers these can be reduced via [h2] in config.toml.
+static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+
+/// Initialise H2 window sizes from config. Must be called before the first
+/// outbound H2 connection is opened. Safe to call multiple times with the same
+/// values; panics if called with different values after initialization.
+pub fn init_h2_window_sizes(stream: u32, connection: u32) {
+    H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
+    H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
+}
+
+fn h2_stream_window_size() -> u32 {
+    *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
+}
+
+fn h2_connection_window_size() -> u32 {
+    *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
+}
 
 pin_project! {
     struct H2WsStream {
@@ -1360,8 +1377,8 @@ async fn connect_websocket_h2(
 
     let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
-        .initial_stream_window_size(Some(H2_INITIAL_STREAM_WINDOW_SIZE))
-        .initial_connection_window_size(Some(H2_INITIAL_CONNECTION_WINDOW_SIZE))
+        .initial_stream_window_size(Some(h2_stream_window_size()))
+        .initial_connection_window_size(Some(h2_connection_window_size()))
         .keep_alive_interval(Some(Duration::from_secs(20)))
         .keep_alive_timeout(Duration::from_secs(20))
         .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
