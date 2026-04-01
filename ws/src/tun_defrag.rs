@@ -31,6 +31,8 @@ pub(crate) struct TunDefragmenter {
     ipv6_sets: HashMap<Ipv6Key, Ipv6FragmentSet>,
     total_buffered_bytes: usize,
     next_cleanup_at: Instant,
+    max_bytes_per_set: usize,
+    max_total_buffered_bytes: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -109,16 +111,22 @@ enum ChunkInsertOutcome {
 
 impl Default for TunDefragmenter {
     fn default() -> Self {
+        Self::new(MAX_TOTAL_BUFFERED_BYTES, MAX_BYTES_PER_SET)
+    }
+}
+
+impl TunDefragmenter {
+    pub(crate) fn new(max_total_buffered_bytes: usize, max_bytes_per_set: usize) -> Self {
         Self {
             ipv4_sets: HashMap::new(),
             ipv6_sets: HashMap::new(),
             total_buffered_bytes: 0,
             next_cleanup_at: Instant::now() + CLEANUP_INTERVAL,
+            max_bytes_per_set,
+            max_total_buffered_bytes,
         }
     }
-}
 
-impl TunDefragmenter {
     pub(crate) fn cleanup_interval() -> Duration {
         CLEANUP_INTERVAL
     }
@@ -212,8 +220,8 @@ impl TunDefragmenter {
 
                 if should_remove.is_none()
                     && (set.chunks.len() > MAX_FRAGMENTS_PER_SET
-                        || set.estimated_bytes() > MAX_BYTES_PER_SET
-                        || self.total_buffered_bytes > MAX_TOTAL_BUFFERED_BYTES)
+                        || set.estimated_bytes() > self.max_bytes_per_set
+                        || self.total_buffered_bytes > self.max_total_buffered_bytes)
                 {
                     should_remove = Some("resource_limit");
                 }
@@ -321,8 +329,8 @@ impl TunDefragmenter {
 
                 if should_remove.is_none()
                     && (set.chunks.len() > MAX_FRAGMENTS_PER_SET
-                        || set.estimated_bytes() > MAX_BYTES_PER_SET
-                        || self.total_buffered_bytes > MAX_TOTAL_BUFFERED_BYTES)
+                        || set.estimated_bytes() > self.max_bytes_per_set
+                        || self.total_buffered_bytes > self.max_total_buffered_bytes)
                 {
                     should_remove = Some("resource_limit");
                 }

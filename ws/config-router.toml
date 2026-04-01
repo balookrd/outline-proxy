@@ -1,0 +1,112 @@
+# Router / embedded device configuration example.
+#
+# Tuned for devices with limited RAM (32–128 MB free) and a single slow CPU
+# core (MIPS/ARM ~500 MHz). Start with these values and adjust based on your
+# device's actual free memory.
+#
+# Key differences from the VM default (config.toml):
+#   - worker_threads = 1           (single tokio thread, avoids scheduler overhead)
+#   - tun.max_flows = 128          (reduce flow table from 4096)
+#   - tun.defrag_max_total_bytes   (IP fragment buffer: 2 MB vs 16 MB)
+#   - tun.defrag_max_bytes_per_set (per-source fragment buffer: 16 KB vs 128 KB)
+#   - tun.tcp.max_pending_server_bytes (64 KB vs 4 MB)
+#   - tun.tcp.max_buffered_client_bytes (64 KB, max allowed by protocol)
+#   - h2 flow-control windows      (256 KB / 512 KB vs 1 MB / 2 MB)
+#   - load_balancing: no warm standby, single uplink
+#   - probe: reduced concurrency
+
+# ── Worker threads ──────────────────────────────────────────────────────────
+# Can also be set via env: WORKER_THREADS=1
+# (must be set before runtime starts, so this is CLI/env only, not in [tun])
+# Pass --worker-threads 1 on the command line or set the env var.
+
+[socks5]
+listen = "127.0.0.1:1080"
+# No auth needed on a trusted local network.
+
+[tun]
+# Adjust path and name for your platform:
+# Linux: path = "/dev/net/tun", name = "tun0"
+# OpenWrt: path = "/dev/tun0"  (after opkg install kmod-tun)
+# path = "/dev/tun0"
+# name = "tun0"
+mtu = 1500
+
+# Reduced flow table — 128 concurrent TCP flows is enough for a household.
+max_flows = 128
+idle_timeout_secs = 120
+
+# IP fragment reassembly buffers.
+# 2 MiB total, 16 KiB per reassembly set (vs 16 MiB / 128 KiB on VM).
+defrag_max_total_bytes = 2097152
+defrag_max_bytes_per_set = 16384
+
+[tun.tcp]
+connect_timeout_secs = 10
+handshake_timeout_secs = 15
+half_close_timeout_secs = 30
+
+# Downstream send buffer per TCP flow. Keep small on routers.
+# Protocol maximum is 262144; 65536 is a good balance.
+max_pending_server_bytes = 65536
+
+# Client receive buffer. Maximum allowed by the TCP window scale is 262144.
+# 65536 is fine for interactive and streaming traffic on slow links.
+max_buffered_client_bytes = 65536
+max_buffered_client_segments = 512
+
+backlog_abort_grace_secs = 3
+backlog_hard_limit_multiplier = 2
+backlog_no_progress_abort_secs = 8
+max_retransmits = 8
+
+# ── HTTP/2 flow-control windows ──────────────────────────────────────────────
+# Smaller windows reduce peak memory at the cost of throughput on high-RTT
+# links. 256 KB stream / 512 KB connection is comfortable for typical traffic.
+[h2]
+initial_stream_window_size = 262144
+initial_connection_window_size = 524288
+
+# ── Probing ──────────────────────────────────────────────────────────────────
+[probe]
+interval_secs = 60
+timeout_secs = 10
+max_concurrent = 1
+max_dials = 1
+min_failures = 2
+attempts = 1
+
+[probe.ws]
+enabled = true
+
+# ── Load balancing ───────────────────────────────────────────────────────────
+[load_balancing]
+mode = "active_passive"         # single active uplink, fail over on error
+routing_scope = "global"
+# No warm standby connections — saves RAM and CPU.
+warm_standby_tcp = 0
+warm_standby_udp = 0
+sticky_ttl_secs = 300
+hysteresis_ms = 100
+failure_cooldown_secs = 30
+rtt_ewma_alpha = 0.3
+failure_penalty_ms = 1000
+failure_penalty_max_ms = 60000
+failure_penalty_halflife_secs = 120
+# Keepalive on the active UDP path to prevent NAT timeouts.
+udp_ws_keepalive_secs = 60
+
+# ── Uplinks ──────────────────────────────────────────────────────────────────
+# Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that
+# is expensive on low-end MIPS/ARM. h2 over TLS is lighter.
+[[uplinks]]
+name = "primary"
+transport = "websocket"
+tcp_ws_url = "wss://your-server.example.com/SECRET/tcp"
+tcp_ws_mode = "h2"
+udp_ws_url = "wss://your-server.example.com/SECRET/udp"
+udp_ws_mode = "h2"
+method = "chacha20-ietf-poly1305"
+password = "YourPasswordHere"
+# ChaCha20-Poly1305 is preferred over AES-GCM on MIPS/ARM cores that lack
+# hardware AES acceleration. On routers with AES-NI use aes-256-gcm instead.

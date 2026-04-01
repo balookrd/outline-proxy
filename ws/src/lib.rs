@@ -44,6 +44,10 @@ pub async fn run(args: Args) -> Result<()> {
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
+    transport::init_h2_window_sizes(
+        config.h2.initial_stream_window_size,
+        config.h2.initial_connection_window_size,
+    );
     run_with_config(config).await
 }
 

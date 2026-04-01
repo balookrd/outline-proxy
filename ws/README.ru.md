@@ -178,16 +178,132 @@ tun2udp + tun2tcp"]
 
 ## Сборка
 
-Стандартная сборка:
+### Требования
+
+- Rust toolchain (stable): `rustup update stable`
+- Для кросс-компиляции: [`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) — использует компилятор Zig в качестве C-линкера, что избавляет от необходимости ставить отдельный cross-toolchain для каждой платформы.
+
+```bash
+cargo install cargo-zigbuild
+```
+
+Добавить нужные Rust-таргеты:
+
+```bash
+# Виртуалки / серверы
+rustup target add x86_64-unknown-linux-musl
+rustup target add aarch64-unknown-linux-musl
+
+# Роутеры (OpenWrt MIPS little-endian, напр. TP-Link, Netgear, ASUS)
+rustup target add mipsel-unknown-linux-musl
+# Роутеры (OpenWrt MIPS big-endian, напр. старые D-Link, ZTE)
+rustup target add mips-unknown-linux-musl
+# Роутеры (ARM, напр. Raspberry Pi, большинство современных домашних роутеров)
+rustup target add armv7-unknown-linux-musleabihf
+# Роутеры (AArch64, напр. новые Raspberry Pi, Banana Pi, роутеры с Cortex-A53+)
+rustup target add aarch64-unknown-linux-musl
+```
+
+---
+
+### Виртуальные машины и серверы
+
+Нативная сборка для текущей машины (быстрее всего, использует все CPU-расширения):
 
 ```bash
 cargo build --release
 ```
 
-Пример статической сборки под Linux с musl:
+Статический бинарь x86-64 (работает на любом Linux x86-64 без зависимости от glibc):
 
 ```bash
 cargo zigbuild --release --target x86_64-unknown-linux-musl
+```
+
+Статический бинарь AArch64 (ARM64-серверы, AWS Graviton, Ampere):
+
+```bash
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+```
+
+---
+
+### Роутеры (кросс-компиляция)
+
+Все сборки для роутеров используют `musl` libc — полностью статический бинарь без runtime-зависимостей.
+На устройстве используйте `config-router.toml` — см. [Конфигурация для роутера](#конфигурация-для-роутера).
+
+**OpenWrt / MIPS little-endian** (большинство роутеров TP-Link, Netgear, ASUS, GL.iNet):
+
+```bash
+cargo zigbuild --release --target mipsel-unknown-linux-musl
+```
+
+**OpenWrt / MIPS big-endian** (старые D-Link, ZTE, некоторые Huawei CPE):
+
+```bash
+cargo zigbuild --release --target mips-unknown-linux-musl
+```
+
+**ARM soft-float** (минималистичные ARM-роутеры без FPU, напр. старые Linksys WRT):
+
+```bash
+cargo zigbuild --release --target arm-unknown-linux-musleabi
+```
+
+**ARMv7 hard-float** (Raspberry Pi 2/3 в 32-битном режиме, многие mid-range роутеры):
+
+```bash
+cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+```
+
+**AArch64 / ARM64** (Raspberry Pi 3/4/5 в 64-битном режиме, Banana Pi R3/R4, NanoPi R5S, роутеры с MT7986/MT7988, IPQ8074):
+
+```bash
+cargo zigbuild --release --target aarch64-unknown-linux-musl
+```
+
+Скомпилированный бинарь находится в `target/<target>/release/outline-ws-rust`.
+Скопировать на роутер и сделать исполняемым:
+
+```bash
+scp target/mipsel-unknown-linux-musl/release/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
+```
+
+> **Примечание о `mimalloc`:** По умолчанию используется аллокатор `mimalloc`. Он компилируется и работает на всех поддерживаемых платформах, но на MIPS добавляет ~200 КБ к бинарю. Если размер бинаря критичен — можно переключить аллокатор в `src/lib.rs` на системный: `#[global_allocator] static GLOBAL_ALLOCATOR: std::alloc::System = std::alloc::System;`.
+
+---
+
+### Конфигурация для роутера
+
+Используйте `config-router.toml` как отправную точку для устройств с ограниченной памятью.
+Ключевые отличия от конфига для ВМ по умолчанию:
+
+| Параметр | ВМ (по умолчанию) | Роутер (пример) |
+|---|---|---|
+| `--worker-threads` | кол-во CPU | 1 |
+| `tun.max_flows` | 4096 | 128 |
+| `tun.defrag_max_total_bytes` | 16 МБ | 2 МБ |
+| `tun.defrag_max_bytes_per_set` | 128 КБ | 16 КБ |
+| `tun.tcp.max_pending_server_bytes` | 4 МБ | 64 КБ |
+| `tun.tcp.max_buffered_client_bytes` | 256 КБ | 64 КБ |
+| `[h2] initial_stream_window_size` | 1 МБ | 256 КБ |
+| `[h2] initial_connection_window_size` | 2 МБ | 512 КБ |
+| Warm standby | 1 TCP + 1 UDP | отключено |
+| Режим балансировки | `active_active` | `active_passive` |
+| Транспорт | `h3` | `h2` (QUIC тяжелее для MIPS/ARM) |
+
+Запуск с роутерным конфигом:
+
+```bash
+outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-threads 1
+```
+
+Или через переменные окружения:
+
+```bash
+PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
 ```
 
 ## Быстрый старт
