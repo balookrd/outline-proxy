@@ -39,7 +39,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 use crate::crypto::{
     SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet,
     decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet, encrypt_udp_packet_2022,
-    increment_nonce,
+    increment_nonce, validate_ss2022_timestamp,
 };
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
@@ -147,7 +147,21 @@ impl Drop for H3ConnectionGuard {
     }
 }
 
+static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+
+/// Returns a shared, lazily-initialised TLS config for H2 connections.
+fn h2_client_tls_config() -> Arc<ClientConfig> {
+    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| {
+        let mut roots = RootCertStore::empty();
+        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        Arc::new(config)
+    }))
+}
 
 /// Returns a shared, lazily-initialised TLS config for H3 connections.
 /// Building the config (parsing root certificates) is expensive; doing it once
@@ -665,6 +679,9 @@ fn parse_ss2022_response_header(
     if plaintext[0] != 1 {
         bail!("invalid ss2022 response header type: {}", plaintext[0]);
     }
+    let mut timestamp_bytes = [0u8; 8];
+    timestamp_bytes.copy_from_slice(&plaintext[1..9]);
+    validate_ss2022_timestamp(u64::from_be_bytes(timestamp_bytes))?;
 
     let request_salt_start = 9;
     let request_salt_end = request_salt_start + cipher.salt_len();
@@ -1024,7 +1041,8 @@ impl UdpWsTransport {
         password: &str,
         source: &'static str,
         keepalive_interval: Option<Duration>,
-    ) -> Self {
+    ) -> Result<Self> {
+        let master_key = cipher.derive_master_key(password)?;
         let (close_signal, _close_rx) = watch::channel(false);
         let (sink, stream) = ws_stream.split();
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
@@ -1084,7 +1102,7 @@ impl UdpWsTransport {
                 }
             }))
         });
-        Self {
+        Ok(Self {
             transport: UdpTransport::Websocket {
                 data_tx,
                 ctrl_tx,
@@ -1093,9 +1111,7 @@ impl UdpWsTransport {
                 _keepalive_task: keepalive_task,
             },
             cipher,
-            master_key: cipher
-                .derive_master_key(password)
-                .expect("validated cipher password"),
+            master_key,
             ss2022: cipher.is_ss2022().then(|| {
                 Mutex::new(Ss2022UdpState {
                     client_session_id: rand::random::<u64>(),
@@ -1106,7 +1122,7 @@ impl UdpWsTransport {
             }),
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
-        }
+        })
     }
 
     pub(crate) fn from_socket(
@@ -1114,14 +1130,13 @@ impl UdpWsTransport {
         cipher: CipherKind,
         password: &str,
         source: &'static str,
-    ) -> Self {
+    ) -> Result<Self> {
         let (close_signal, _close_rx) = watch::channel(false);
-        Self {
+        let master_key = cipher.derive_master_key(password)?;
+        Ok(Self {
             transport: UdpTransport::Socket { socket },
             cipher,
-            master_key: cipher
-                .derive_master_key(password)
-                .expect("validated cipher password"),
+            master_key,
             ss2022: cipher.is_ss2022().then(|| {
                 Mutex::new(Ss2022UdpState {
                     client_session_id: rand::random::<u64>(),
@@ -1132,7 +1147,7 @@ impl UdpWsTransport {
             }),
             close_signal,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
-        }
+        })
     }
 
     pub async fn connect(
@@ -1148,13 +1163,7 @@ impl UdpWsTransport {
         let ws_stream = connect_websocket_with_source(url, mode, fwmark, ipv6_first, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
-        Ok(Self::from_websocket(
-            ws_stream,
-            cipher,
-            password,
-            source,
-            keepalive_interval,
-        ))
+        Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
@@ -1536,16 +1545,7 @@ async fn connect_tls_h2(
     fwmark: Option<u32>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let tcp = connect_tcp_socket(addr, fwmark).await?;
-
-    let mut roots = RootCertStore::empty();
-    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-
-    let mut tls_config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    tls_config.alpn_protocols = vec![b"h2".to_vec()];
-
-    let connector = TlsConnector::from(std::sync::Arc::new(tls_config));
+    let connector = TlsConnector::from(h2_client_tls_config());
     let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
         ServerName::IpAddress(ip.into())
     } else {
@@ -1898,12 +1898,15 @@ mod tests {
 
     #[tokio::test]
     async fn udp_socket_transport_close_wakes_blocked_reader() {
-        let transport = Arc::new(UdpWsTransport::from_socket(
-            UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
-            CipherKind::Chacha20IetfPoly1305,
-            "password",
-            "test",
-        ));
+        let transport = Arc::new(
+            UdpWsTransport::from_socket(
+                UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
+                CipherKind::Chacha20IetfPoly1305,
+                "password",
+                "test",
+            )
+            .unwrap(),
+        );
         let reader_transport = Arc::clone(&transport);
         let read_task = tokio::spawn(async move { reader_transport.read_packet().await });
 
