@@ -22,6 +22,7 @@ use crate::transport::{
 use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
+#[derive(Clone)]
 struct ActiveUdpTransport {
     index: usize,
     uplink_name: String,
@@ -169,7 +170,9 @@ async fn handle_tcp_connect(
                 }
                 let chunk = reader.read_chunk().await?;
                 if chunk.is_empty() {
-                    continue;
+                    // An empty decrypted payload is not valid in Shadowsocks;
+                    // treat it as EOF rather than busy-looping without any await.
+                    break;
                 }
                 metrics::add_bytes(
                     "tcp",
@@ -600,6 +603,12 @@ async fn failover_udp_transport(
         "runtime UDP failover activated"
     );
     let mut active = active_transport.lock().await;
+    // Guard against concurrent failovers: if another task already replaced the
+    // transport while we were selecting, return whatever is current instead of
+    // overwriting with a potentially different replacement.
+    if active.index != failed {
+        return Ok(active.clone());
+    }
     metrics::record_failover("udp", &active.uplink_name, &replacement.uplink_name);
     metrics::record_uplink_selected("udp", &replacement.uplink_name);
     *active = ActiveUdpTransport {
@@ -630,6 +639,11 @@ async fn reconcile_global_udp_transport(
 
     let replacement = select_udp_transport(uplinks, target).await?;
     let mut active = active_transport.lock().await;
+    // Guard against concurrent reconciliations: if another task already updated
+    // the active transport while we were selecting, skip the overwrite.
+    if active.index != selected {
+        return Ok(());
+    }
     metrics::record_failover("udp", &active.uplink_name, &replacement.uplink_name);
     metrics::record_uplink_selected("udp", &replacement.uplink_name);
     *active = ActiveUdpTransport {

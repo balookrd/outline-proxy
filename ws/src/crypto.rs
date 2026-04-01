@@ -22,6 +22,24 @@ pub const SHADOWSOCKS_MAX_PAYLOAD: usize = 0xffff;
 const UDP_ZERO_NONCE: [u8; 12] = [0u8; 12];
 const SS2022_UDP_CLIENT_PACKET: u8 = 0;
 const SS2022_UDP_SERVER_PACKET: u8 = 1;
+/// Maximum allowed clock skew for SS2022 timestamp validation (seconds).
+const SS2022_TIMESTAMP_WINDOW_SECS: u64 = 30;
+
+/// Validates that an SS2022 timestamp is within the acceptable clock-skew window.
+/// Timestamps outside ±30 s of the current time are rejected to prevent replay attacks.
+pub fn validate_ss2022_timestamp(timestamp_secs: u64) -> Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_secs();
+    let diff = now.abs_diff(timestamp_secs);
+    if diff > SS2022_TIMESTAMP_WINDOW_SECS {
+        bail!(
+            "ss2022 timestamp out of acceptable window: diff={diff}s (limit={SS2022_TIMESTAMP_WINDOW_SECS}s)"
+        );
+    }
+    Ok(())
+}
 
 impl CipherKind {
     pub fn derive_master_key(self, password: &str) -> Result<Vec<u8>> {
@@ -270,8 +288,14 @@ fn decrypt_udp_packet_2022_aes(
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
     let plaintext = decrypt(cipher, &key, &nonce, &packet[16..])?;
 
-    let session_id = u64::from_be_bytes(separate_header[..8].try_into().unwrap());
-    let packet_id = u64::from_be_bytes(separate_header[8..].try_into().unwrap());
+    let mut session_bytes = [0u8; 8];
+    session_bytes.copy_from_slice(&separate_header[..8]);
+    let session_id = u64::from_be_bytes(session_bytes);
+
+    let mut packet_id_bytes = [0u8; 8];
+    packet_id_bytes.copy_from_slice(&separate_header[8..]);
+    let packet_id = u64::from_be_bytes(packet_id_bytes);
+
     let payload = parse_ss2022_udp_server_plaintext(expected_client_session_id, &plaintext)?;
     Ok((session_id, packet_id, payload))
 }
@@ -406,13 +430,16 @@ fn parse_ss2022_udp_server_plaintext(
     if plaintext[0] != SS2022_UDP_SERVER_PACKET {
         bail!("invalid ss2022 UDP server packet type: {}", plaintext[0]);
     }
+    let mut timestamp_bytes = [0u8; 8];
+    timestamp_bytes.copy_from_slice(&plaintext[1..9]);
+    validate_ss2022_timestamp(u64::from_be_bytes(timestamp_bytes))?;
+
     let client_session_offset = 9;
     let client_session_end = client_session_offset + 8;
-    let client_session_id = u64::from_be_bytes(
-        plaintext[client_session_offset..client_session_end]
-            .try_into()
-            .unwrap(),
-    );
+    let mut session_bytes = [0u8; 8];
+    session_bytes.copy_from_slice(&plaintext[client_session_offset..client_session_end]);
+    let client_session_id = u64::from_be_bytes(session_bytes);
+
     if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
         bail!("ss2022 UDP client session id mismatch");
     }
@@ -436,21 +463,30 @@ fn parse_ss2022_udp_server_chacha_plaintext(
     if plaintext.len() < min_len {
         bail!("ss2022 chacha UDP payload is too short");
     }
-    let server_session_id = u64::from_be_bytes(plaintext[..8].try_into().unwrap());
-    let server_packet_id = u64::from_be_bytes(plaintext[8..16].try_into().unwrap());
+    let mut session_bytes = [0u8; 8];
+    session_bytes.copy_from_slice(&plaintext[..8]);
+    let server_session_id = u64::from_be_bytes(session_bytes);
+
+    let mut packet_id_bytes = [0u8; 8];
+    packet_id_bytes.copy_from_slice(&plaintext[8..16]);
+    let server_packet_id = u64::from_be_bytes(packet_id_bytes);
+
     if plaintext[16] != SS2022_UDP_SERVER_PACKET {
         bail!(
             "invalid ss2022 chacha UDP server packet type: {}",
             plaintext[16]
         );
     }
+    let mut timestamp_bytes = [0u8; 8];
+    timestamp_bytes.copy_from_slice(&plaintext[17..25]);
+    validate_ss2022_timestamp(u64::from_be_bytes(timestamp_bytes))?;
+
     let client_session_offset = 25;
     let client_session_end = client_session_offset + 8;
-    let client_session_id = u64::from_be_bytes(
-        plaintext[client_session_offset..client_session_end]
-            .try_into()
-            .unwrap(),
-    );
+    let mut client_session_bytes = [0u8; 8];
+    client_session_bytes.copy_from_slice(&plaintext[client_session_offset..client_session_end]);
+    let client_session_id = u64::from_be_bytes(client_session_bytes);
+
     if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
         bail!("ss2022 chacha UDP client session id mismatch");
     }

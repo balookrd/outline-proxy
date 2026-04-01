@@ -175,10 +175,26 @@ async fn read_auth_field(stream: &mut TcpStream, field_name: &str) -> Result<Vec
     Ok(value)
 }
 
+/// Constant-time byte-slice equality to prevent timing side-channel attacks on
+/// credential comparison.  Length is compared first (non-constant-time), but an
+/// attacker controlling the client already knows the length they submitted, so
+/// this leaks no additional information.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn matches_socks5_user(users: &[Socks5AuthUserConfig], username: &[u8], password: &[u8]) -> bool {
-    users
-        .iter()
-        .any(|user| username == user.username.as_bytes() && password == user.password.as_bytes())
+    users.iter().any(|user| {
+        constant_time_eq(username, user.username.as_bytes())
+            && constant_time_eq(password, user.password.as_bytes())
+    })
 }
 
 pub async fn send_reply(stream: &mut TcpStream, status: u8, bound_addr: &TargetAddr) -> Result<()> {

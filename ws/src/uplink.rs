@@ -1084,7 +1084,7 @@ impl UplinkManager {
                 candidate.uplink.cipher,
                 &candidate.uplink.password,
                 source,
-            ));
+            )?);
         }
 
         let pool = &self.inner.standby_pools[candidate.index];
@@ -1098,7 +1098,7 @@ impl UplinkManager {
                 &candidate.uplink.password,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
-            ));
+            )?);
         }
 
         metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
@@ -2566,7 +2566,7 @@ async fn run_dns_probe(
                         uplink.name
                     )
                 })?;
-                UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")
+                UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")?
             }
         }
     };
