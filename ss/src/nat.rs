@@ -280,6 +280,17 @@ impl NatTable {
     /// Remove entries that have had no outbound traffic for longer than
     /// `self.idle_timeout`.  The reader task for each evicted entry is aborted
     /// when the `Arc<NatEntry>` refcount reaches zero.
+    /// Current number of active NAT entries (informational).
+    #[cfg(test)]
+    pub(crate) async fn len(&self) -> usize {
+        self.entries
+            .lock()
+            .await
+            .values()
+            .filter(|cell| cell.get().is_some())
+            .count()
+    }
+
     pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
         let threshold = unix_secs_now().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
@@ -299,16 +310,6 @@ impl NatTable {
         }
     }
 
-    /// Current number of active NAT entries (informational).
-    #[allow(dead_code)]
-    pub(crate) async fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .await
-            .values()
-            .filter(|cell| cell.get().is_some())
-            .count()
-    }
 }
 
 // ── Background reader task ────────────────────────────────────────────────────

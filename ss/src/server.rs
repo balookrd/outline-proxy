@@ -2110,23 +2110,20 @@ fn build_app(
     let mut router = Router::new();
 
     for path in tcp_routes.keys() {
-        let route: &'static str = Box::leak(path.clone().into_boxed_str());
         // HTTP/1.1 WebSocket uses GET, while RFC 8441 over HTTP/2 uses CONNECT.
-        router = router.route(route, any(tcp_websocket_upgrade));
+        router = router.route(path, any(tcp_websocket_upgrade));
     }
 
     for path in udp_routes.keys() {
-        let route: &'static str = Box::leak(path.clone().into_boxed_str());
-        router = router.route(route, any(udp_websocket_upgrade));
+        router = router.route(path, any(udp_websocket_upgrade));
     }
 
     router.with_state(state)
 }
 
 fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
-    let route: &'static str = Box::leak(metrics_path.into_boxed_str());
     Router::new()
-        .route(route, any(metrics_handler))
+        .route(&metrics_path, any(metrics_handler))
         .with_state(metrics)
 }
 

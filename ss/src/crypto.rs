@@ -1150,10 +1150,13 @@ fn encrypt_ss2022_chunk(
         return Err(CryptoError::InvalidChunkSize(plaintext.len()));
     }
 
-    let mut output = Vec::new();
+    let capacity = if !*sent_header {
+        salt.len() + (1 + 8 + request_salt.len() + 2) + TAG_LEN + plaintext.len() + TAG_LEN
+    } else {
+        2 + TAG_LEN + plaintext.len() + TAG_LEN
+    };
+    let mut output = Vec::with_capacity(capacity);
     if !*sent_header {
-        let fixed_header_len = 1 + 8 + request_salt.len() + 2;
-        output.reserve(salt.len() + fixed_header_len + TAG_LEN + plaintext.len() + TAG_LEN);
         output.extend_from_slice(salt);
         let header_start = output.len();
         output.push(SS2022_TCP_RESPONSE_TYPE);
@@ -1179,7 +1182,6 @@ fn encrypt_ss2022_chunk(
         return Ok(output);
     }
 
-    output.reserve(2 + TAG_LEN + plaintext.len() + TAG_LEN);
     let len_start = output.len();
     output.extend_from_slice(
         &u16::try_from(plaintext.len())
