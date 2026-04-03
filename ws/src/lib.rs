@@ -25,8 +25,6 @@ pub mod types;
 pub mod uplink;
 
 use anyhow::{Context, Result, anyhow};
-#[cfg(feature = "mimalloc")]
-use mimalloc::MiMalloc;
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
 use tracing::{debug, info, warn};
@@ -36,10 +34,6 @@ use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 #[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
-
-#[cfg(feature = "mimalloc")]
-#[global_allocator]
-static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
 pub fn init_rustls_crypto_provider() -> Result<()> {
     let provider = ring::default_provider();

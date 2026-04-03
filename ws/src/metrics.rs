@@ -14,7 +14,6 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use self::session::RecentSessionWindow;
-pub(crate) use crate::memory::ACTIVE_ALLOCATOR;
 
 pub use self::process::{init, spawn_process_metrics_sampler, update_process_memory};
 pub use self::session::{SessionTracker, track_session};
@@ -49,7 +48,7 @@ const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 struct Metrics {
     registry: Registry,
     build_info: IntGaugeVec,
-    allocator_info: IntGaugeVec,
+
     start_time_seconds: Gauge,
     socks_requests_total: IntCounterVec,
     sessions_active: IntGaugeVec,

@@ -1,4 +1,4 @@
-use super::{ACTIVE_ALLOCATOR, Metrics};
+use super::Metrics;
 use prometheus::{
     Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
     Registry,
@@ -19,14 +19,7 @@ impl Metrics {
             &["version"],
         )
         .expect("build_info metric");
-        let allocator_info = IntGaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_allocator_info",
-                "Allocator info for outline-ws-rust.",
-            ),
-            &["allocator"],
-        )
-        .expect("allocator_info metric");
+
         let start_time_seconds = Gauge::with_opts(Opts::new(
             "outline_ws_rust_start_time_seconds",
             "Process start time in unix seconds.",
@@ -635,9 +628,6 @@ impl Metrics {
             .register(Box::new(build_info.clone()))
             .expect("register build_info");
         registry
-            .register(Box::new(allocator_info.clone()))
-            .expect("register allocator_info");
-        registry
             .register(Box::new(start_time_seconds.clone()))
             .expect("register start_time_seconds");
         registry
@@ -878,7 +868,7 @@ impl Metrics {
         build_info
             .with_label_values(&[env!("CARGO_PKG_VERSION")])
             .set(1);
-        allocator_info.with_label_values(&[ACTIVE_ALLOCATOR]).set(1);
+
         start_time_seconds.set(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -889,7 +879,6 @@ impl Metrics {
         Self {
             registry,
             build_info,
-            allocator_info,
             start_time_seconds,
             socks_requests_total,
             sessions_active,
