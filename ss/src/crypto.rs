@@ -36,7 +36,6 @@ const SS2022_TCP_RESPONSE_TYPE: u8 = 1;
 const SS2022_UDP_CLIENT_TYPE: u8 = 0;
 const SS2022_UDP_SERVER_TYPE: u8 = 1;
 const SS2022_REQUEST_FIXED_HEADER_LEN: usize = 11;
-const SS2022_RESPONSE_FIXED_HEADER_LEN: usize = 27;
 const SS2022_UDP_SEPARATE_HEADER_LEN: usize = 16;
 const SS2022_MAX_PADDING_LEN: usize = 900;
 const SS2022_MAX_TIME_DIFF_SECS: u64 = 30;
@@ -322,7 +321,6 @@ impl AeadStreamDecryptor {
                 any_candidate = true;
 
                 let salt = &self.buffer[..salt_len];
-                let request_salt = salt.to_vec();
                 let mut encrypted_fixed = self.buffer[salt_len..salt_len + fixed_len].to_vec();
                 let session_key = derive_subkey(user.cipher, user.master_key(), salt)?;
                 let algorithm = cipher_algorithm(user.cipher);
@@ -334,6 +332,7 @@ impl AeadStreamDecryptor {
                 {
                     if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN {
                         let header_len = validate_ss2022_request_fixed_header(header)?;
+                        let request_salt = self.buffer[..salt_len].to_vec();
                         self.buffer.advance(salt_len + fixed_len);
                         self.active = Some(ActiveStream {
                             user: user.clone(),
@@ -1122,24 +1121,19 @@ fn encrypt_legacy_chunk(
     let length = u16::try_from(plaintext.len())
         .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
         .to_be_bytes();
-    let mut encrypted_len = Vec::with_capacity(2 + TAG_LEN);
-    encrypted_len.extend_from_slice(&length);
-    key.seal_in_place_append_tag(
-        next_stream_nonce(nonce_counter),
-        Aad::empty(),
-        &mut encrypted_len,
-    )
-    .map_err(|_| CryptoError::Cipher)?;
-    output.extend_from_slice(&encrypted_len);
+    let len_start = output.len();
+    output.extend_from_slice(&length);
+    let tag = key
+        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[len_start..])
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
 
-    let mut encrypted_payload = plaintext.to_vec();
-    key.seal_in_place_append_tag(
-        next_stream_nonce(nonce_counter),
-        Aad::empty(),
-        &mut encrypted_payload,
-    )
-    .map_err(|_| CryptoError::Cipher)?;
-    output.extend_from_slice(&encrypted_payload);
+    let payload_start = output.len();
+    output.extend_from_slice(plaintext);
+    let tag = key
+        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
 
     Ok(output)
 }
@@ -1158,58 +1152,51 @@ fn encrypt_ss2022_chunk(
 
     let mut output = Vec::new();
     if !*sent_header {
+        let fixed_header_len = 1 + 8 + request_salt.len() + 2;
+        output.reserve(salt.len() + fixed_header_len + TAG_LEN + plaintext.len() + TAG_LEN);
         output.extend_from_slice(salt);
-        let mut fixed_header = Vec::with_capacity(SS2022_RESPONSE_FIXED_HEADER_LEN + TAG_LEN);
-        fixed_header.push(SS2022_TCP_RESPONSE_TYPE);
-        fixed_header.extend_from_slice(&current_unix_secs().to_be_bytes());
-        fixed_header.extend_from_slice(request_salt);
-        fixed_header.extend_from_slice(
+        let header_start = output.len();
+        output.push(SS2022_TCP_RESPONSE_TYPE);
+        output.extend_from_slice(&current_unix_secs().to_be_bytes());
+        output.extend_from_slice(request_salt);
+        output.extend_from_slice(
             &u16::try_from(plaintext.len())
                 .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
                 .to_be_bytes(),
         );
-        key.seal_in_place_append_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut fixed_header,
-        )
-        .map_err(|_| CryptoError::Cipher)?;
-        output.extend_from_slice(&fixed_header);
+        let tag = key
+            .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[header_start..])
+            .map_err(|_| CryptoError::Cipher)?;
+        output.extend_from_slice(tag.as_ref());
 
-        let mut encrypted_payload = plaintext.to_vec();
-        key.seal_in_place_append_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut encrypted_payload,
-        )
-        .map_err(|_| CryptoError::Cipher)?;
-        output.extend_from_slice(&encrypted_payload);
+        let payload_start = output.len();
+        output.extend_from_slice(plaintext);
+        let tag = key
+            .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+            .map_err(|_| CryptoError::Cipher)?;
+        output.extend_from_slice(tag.as_ref());
         *sent_header = true;
         return Ok(output);
     }
 
-    let mut encrypted_len = Vec::with_capacity(2 + TAG_LEN);
-    encrypted_len.extend_from_slice(
+    output.reserve(2 + TAG_LEN + plaintext.len() + TAG_LEN);
+    let len_start = output.len();
+    output.extend_from_slice(
         &u16::try_from(plaintext.len())
             .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
             .to_be_bytes(),
     );
-    key.seal_in_place_append_tag(
-        next_stream_nonce(nonce_counter),
-        Aad::empty(),
-        &mut encrypted_len,
-    )
-    .map_err(|_| CryptoError::Cipher)?;
-    output.extend_from_slice(&encrypted_len);
+    let tag = key
+        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[len_start..])
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
 
-    let mut encrypted_payload = plaintext.to_vec();
-    key.seal_in_place_append_tag(
-        next_stream_nonce(nonce_counter),
-        Aad::empty(),
-        &mut encrypted_payload,
-    )
-    .map_err(|_| CryptoError::Cipher)?;
-    output.extend_from_slice(&encrypted_payload);
+    let payload_start = output.len();
+    output.extend_from_slice(plaintext);
+    let tag = key
+        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
     Ok(output)
 }
 
@@ -1373,6 +1360,7 @@ fn derive_subkey(
     }
 }
 
+#[inline]
 fn cipher_algorithm(cipher: CipherKind) -> &'static aead::Algorithm {
     match cipher {
         CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => &aead::AES_128_GCM,
@@ -1429,6 +1417,7 @@ fn decrypt_ss2022_separate_header(
     Ok(out)
 }
 
+#[inline]
 fn next_stream_nonce(counter: &mut u64) -> Nonce {
     let current = *counter;
     *counter = counter.wrapping_add(1);
@@ -1438,10 +1427,12 @@ fn next_stream_nonce(counter: &mut u64) -> Nonce {
     Nonce::assume_unique_for_key(nonce)
 }
 
+#[inline]
 fn nonce_zero() -> Nonce {
     Nonce::assume_unique_for_key([0_u8; NONCE_LEN])
 }
 
+#[inline]
 fn ss2022_udp_nonce(separate_header: &[u8]) -> Result<Nonce, CryptoError> {
     if separate_header.len() != SS2022_UDP_SEPARATE_HEADER_LEN {
         return Err(CryptoError::InvalidHeader);
