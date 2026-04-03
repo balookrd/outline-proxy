@@ -1,4 +1,4 @@
-use super::{ACTIVE_ALLOCATOR, METRICS};
+use super::METRICS;
 use crate::memory::{ProcessFdSnapshot, sample_process_memory};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -7,9 +7,6 @@ pub fn init() {
     let _ = METRICS
         .build_info
         .with_label_values(&[env!("CARGO_PKG_VERSION")]);
-    let _ = METRICS
-        .allocator_info
-        .with_label_values(&[ACTIVE_ALLOCATOR]);
     let _ = METRICS.start_time_seconds.get();
     let initial_sample = sample_process_memory();
     update_process_memory(

@@ -6,8 +6,6 @@ use std::time::Duration;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::UplinkManagerSnapshot;
 
-pub use crate::memory::ACTIVE_ALLOCATOR;
-
 // ── Process ──────────────────────────────────────────────────────────────────
 
 pub fn init() {}

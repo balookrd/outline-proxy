@@ -255,7 +255,6 @@ cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x
 На устройстве используйте `config-router.toml` — см. [Конфигурация для роутера](#конфигурация-для-роутера).
 
 Все роутерные сборки используют `--no-default-features --features router`, что отключает:
-- `mimalloc` → системный/musl malloc (возвращает память ОС, нет overhead на поток)
 - `h3` → убирает quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 МБ меньше на MIPS)
 - `metrics` → убирает prometheus, serde_json, фоновый process sampler
 
@@ -311,7 +310,6 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 
 | Фича | ВМ | Роутер (`--no-default-features --features router`) |
 |---|---|---|
-| `mimalloc` | ✓ | ✗ → системный/musl malloc |
 | `h3` | ✓ | ✗ → H3 тихо падает на H2 |
 | `metrics` | ✓ | ✗ → все вызовы метрик — no-op, `/metrics` не работает |
 | `env-filter` | ✓ | ✗ → уровень логирования жёстко `WARN` (экономия ~300 КБ, без regex) |

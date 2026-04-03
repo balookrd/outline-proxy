@@ -10,8 +10,7 @@ edition = "2024"
 #          disables mimalloc, H3/QUIC, and Prometheus metrics
 #          build with: cargo zigbuild --release --no-default-features --features router --target mipsel-unknown-linux-musl
 [features]
-default = ["mimalloc", "h3", "metrics", "env-filter", "multi-thread"]
-mimalloc = ["dep:mimalloc"]
+default = ["h3", "metrics", "env-filter", "multi-thread"]
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
 metrics = ["dep:prometheus", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
@@ -40,7 +39,6 @@ http-body-util = "0.1"
 hyper = { version = "1.7", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 md5 = "0.7"
-mimalloc = { version = "0.1", optional = true }
 pin-project-lite = "0.2"
 once_cell = { version = "1.21", optional = true }
 prometheus = { version = "0.13", optional = true }

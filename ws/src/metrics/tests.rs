@@ -107,10 +107,6 @@ fn render_prometheus_exports_process_memory_metrics() {
     assert!(rendered.contains("outline_ws_rust_process_threads 9"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
-    assert!(rendered.contains(&format!(
-        "outline_ws_rust_allocator_info{{allocator=\"{}\"}} 1",
-        ACTIVE_ALLOCATOR
-    )));
 }
 
 #[test]

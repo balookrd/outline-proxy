@@ -255,7 +255,6 @@ All router builds use `musl` libc for a fully static binary with no runtime depe
 Use `config-router.toml` on the device — see [Router Configuration](#router-configuration).
 
 All router builds use `--no-default-features --features router` which disables:
-- `mimalloc` → system/musl malloc (returns memory to OS, zero overhead per thread)
 - `h3` → removes quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 MB smaller on MIPS)
 - `metrics` → removes prometheus, serde_json, background process sampler
 
@@ -312,7 +311,6 @@ Key differences from the default VM config:
 
 | Feature | VM default | Router (`--no-default-features --features router`) |
 |---|---|---|
-| `mimalloc` | ✓ enabled | ✗ → system/musl malloc |
 | `h3` | ✓ enabled | ✗ → H3 silently falls back to H2 |
 | `metrics` | ✓ enabled | ✗ → all metrics calls are no-ops, no `/metrics` endpoint |
 | `env-filter` | ✓ enabled | ✗ → log level hardcoded to `WARN` (saves ~300 KB, no regex) |
