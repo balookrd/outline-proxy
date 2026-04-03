@@ -59,6 +59,8 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
+    let defrag_max_fragment_sets = config.defrag_max_fragment_sets;
+    let defrag_max_fragments_per_set = config.defrag_max_fragments_per_set;
     let defrag_max_total_bytes = config.defrag_max_total_bytes;
     let defrag_max_bytes_per_set = config.defrag_max_bytes_per_set;
     let udp_engine = TunUdpEngine::new(writer.clone(), uplinks.clone(), max_flows, idle_timeout);
@@ -71,7 +73,7 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     );
     metrics::set_tun_config(max_flows, idle_timeout);
     tokio::spawn(async move {
-        if let Err(error) = tun_read_loop(reader, writer, udp_engine, tcp_engine, tun_mtu, defrag_max_total_bytes, defrag_max_bytes_per_set).await {
+        if let Err(error) = tun_read_loop(reader, writer, udp_engine, tcp_engine, tun_mtu, defrag_max_total_bytes, defrag_max_bytes_per_set, defrag_max_fragment_sets, defrag_max_fragments_per_set).await {
             warn!(path = %tun_path_for_task.display(), error = %format!("{error:#}"), "TUN loop stopped");
         }
     });
@@ -95,11 +97,15 @@ async fn tun_read_loop(
     mtu: usize,
     defrag_max_total_bytes: usize,
     defrag_max_bytes_per_set: usize,
+    defrag_max_fragment_sets: usize,
+    defrag_max_fragments_per_set: usize,
 ) -> Result<()> {
     let mut buf = vec![0u8; mtu + 256];
     let defragmenter = Arc::new(Mutex::new(TunDefragmenter::new(
         defrag_max_total_bytes,
         defrag_max_bytes_per_set,
+        defrag_max_fragment_sets,
+        defrag_max_fragments_per_set,
     )));
     spawn_tun_defragmenter_cleanup(Arc::downgrade(&defragmenter));
     loop {

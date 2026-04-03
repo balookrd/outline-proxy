@@ -7,7 +7,10 @@ use tracing::debug;
 use tracing::info;
 
 const SHRINK_MIN_CAPACITY: usize = 256;
+#[cfg(feature = "mimalloc")]
 pub const ACTIVE_ALLOCATOR: &str = "mimalloc";
+#[cfg(not(feature = "mimalloc"))]
+pub const ACTIVE_ALLOCATOR: &str = "system";
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProcessMemorySnapshot {

@@ -31,6 +31,8 @@ pub(crate) struct TunDefragmenter {
     ipv6_sets: HashMap<Ipv6Key, Ipv6FragmentSet>,
     total_buffered_bytes: usize,
     next_cleanup_at: Instant,
+    max_fragment_sets: usize,
+    max_fragments_per_set: usize,
     max_bytes_per_set: usize,
     max_total_buffered_bytes: usize,
 }
@@ -111,17 +113,29 @@ enum ChunkInsertOutcome {
 
 impl Default for TunDefragmenter {
     fn default() -> Self {
-        Self::new(MAX_TOTAL_BUFFERED_BYTES, MAX_BYTES_PER_SET)
+        Self::new(
+            MAX_TOTAL_BUFFERED_BYTES,
+            MAX_BYTES_PER_SET,
+            MAX_FRAGMENT_SETS,
+            MAX_FRAGMENTS_PER_SET,
+        )
     }
 }
 
 impl TunDefragmenter {
-    pub(crate) fn new(max_total_buffered_bytes: usize, max_bytes_per_set: usize) -> Self {
+    pub(crate) fn new(
+        max_total_buffered_bytes: usize,
+        max_bytes_per_set: usize,
+        max_fragment_sets: usize,
+        max_fragments_per_set: usize,
+    ) -> Self {
         Self {
             ipv4_sets: HashMap::new(),
             ipv6_sets: HashMap::new(),
             total_buffered_bytes: 0,
             next_cleanup_at: Instant::now() + CLEANUP_INTERVAL,
+            max_fragment_sets,
+            max_fragments_per_set,
             max_bytes_per_set,
             max_total_buffered_bytes,
         }
@@ -165,7 +179,7 @@ impl TunDefragmenter {
         fragment: Ipv4Fragment<'_>,
     ) -> Result<DefragmentedPacket> {
         if !self.ipv4_sets.contains_key(&fragment.key)
-            && self.fragment_set_count() >= MAX_FRAGMENT_SETS
+            && self.fragment_set_count() >= self.max_fragment_sets
         {
             metrics::record_tun_ip_reassembly("ipv4", "resource_limit");
             return Ok(DefragmentedPacket::Dropped("fragment resource limit"));
@@ -219,7 +233,7 @@ impl TunDefragmenter {
                 set.deadline = now + REASSEMBLY_TIMEOUT;
 
                 if should_remove.is_none()
-                    && (set.chunks.len() > MAX_FRAGMENTS_PER_SET
+                    && (set.chunks.len() > self.max_fragments_per_set
                         || set.estimated_bytes() > self.max_bytes_per_set
                         || self.total_buffered_bytes > self.max_total_buffered_bytes)
                 {
@@ -262,7 +276,7 @@ impl TunDefragmenter {
         fragment: Ipv6Fragment<'_>,
     ) -> Result<DefragmentedPacket> {
         if !self.ipv6_sets.contains_key(&fragment.key)
-            && self.fragment_set_count() >= MAX_FRAGMENT_SETS
+            && self.fragment_set_count() >= self.max_fragment_sets
         {
             metrics::record_tun_ip_reassembly("ipv6", "resource_limit");
             return Ok(DefragmentedPacket::Dropped("fragment resource limit"));
@@ -328,7 +342,7 @@ impl TunDefragmenter {
                 set.deadline = now + REASSEMBLY_TIMEOUT;
 
                 if should_remove.is_none()
-                    && (set.chunks.len() > MAX_FRAGMENTS_PER_SET
+                    && (set.chunks.len() > self.max_fragments_per_set
                         || set.estimated_bytes() > self.max_bytes_per_set
                         || self.total_buffered_bytes > self.max_total_buffered_bytes)
                 {

@@ -7,7 +7,7 @@ mod tests;
 mod transport;
 mod tun;
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -42,7 +42,7 @@ pub use self::tun::{
     set_tun_ip_fragment_sets_active,
 };
 
-static METRICS: Lazy<Metrics> = Lazy::new(Metrics::new);
+static METRICS: LazyLock<Metrics> = LazyLock::new(Metrics::new);
 const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
 const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 

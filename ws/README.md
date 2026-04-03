@@ -206,6 +206,21 @@ rustup target add aarch64-unknown-linux-musl
 
 ---
 
+### Feature flags
+
+The binary is controlled by Cargo feature flags. Mix and match as needed:
+
+| Feature | Default | Effect |
+|---|---|---|
+| `mimalloc` | ✓ | Use mimalloc allocator (faster on servers, uses more RAM) |
+| `h3` | ✓ | Include H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
+| `metrics` | ✓ | Include Prometheus metrics endpoint (pulls in prometheus + serde_json) |
+| `router` | — | Convenience alias for `--no-default-features --features router` (disables all three above) |
+
+> **Why disable for routers:** `mimalloc` holds 4 MiB arenas and provides zero benefit on a single-threaded process. `h3`/QUIC adds ~1–2 MB binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes all three at once.
+
+---
+
 ### Virtual machines and servers
 
 Native build for the current machine (fastest, uses all CPU features):
@@ -226,6 +241,12 @@ Static AArch64 binary (ARM64 servers, AWS Graviton, Ampere):
 cargo zigbuild --release --target aarch64-unknown-linux-musl
 ```
 
+To disable only one feature while keeping others (e.g. strip metrics but keep H3):
+
+```bash
+cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x86_64-unknown-linux-musl
+```
+
 ---
 
 ### Routers (cross-compilation)
@@ -233,45 +254,52 @@ cargo zigbuild --release --target aarch64-unknown-linux-musl
 All router builds use `musl` libc for a fully static binary with no runtime dependencies.
 Use `config-router.toml` on the device — see [Router Configuration](#router-configuration).
 
+All router builds use `--no-default-features --features router` which disables:
+- `mimalloc` → system/musl malloc (returns memory to OS, zero overhead per thread)
+- `h3` → removes quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 MB smaller on MIPS)
+- `metrics` → removes prometheus, serde_json, background process sampler
+
+Router builds use the `release-router` cargo profile (`opt-level = "z"`) which prioritises binary size over throughput. The default `release` profile uses `opt-level = 3` (maximum speed) and is the right choice for VMs.
+
 **OpenWrt / MIPS little-endian** (most TP-Link, Netgear, ASUS, GL.iNet routers):
 
 ```bash
-cargo zigbuild --release --target mipsel-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
 ```
 
 **OpenWrt / MIPS big-endian** (older D-Link, ZTE, some Huawei CPE):
 
 ```bash
-cargo zigbuild --release --target mips-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
 ```
 
 **ARM soft-float** (minimal ARM routers without FPU, e.g. older D-Link DIR, Linksys WRT):
 
 ```bash
-cargo zigbuild --release --target arm-unknown-linux-musleabi
+cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
 ```
 
 **ARMv7 hard-float** (Raspberry Pi 2/3 in 32-bit mode, many mid-range routers):
 
 ```bash
-cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 ```
 
 **AArch64 / ARM64** (Raspberry Pi 3/4/5 in 64-bit mode, Banana Pi R3/R4, NanoPi R5S, routers with MT7986/MT7988, IPQ8074):
 
 ```bash
-cargo zigbuild --release --target aarch64-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
 ```
 
-The compiled binary is placed in `target/<target>/release/outline-ws-rust`.
+The compiled binary is placed in `target/<target>/release-router/outline-ws-rust`.
 Copy it to the router and make it executable:
 
 ```bash
-scp target/mipsel-unknown-linux-musl/release/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+scp target/mipsel-unknown-linux-musl/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
 ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 ```
 
-> **Note on `mimalloc`:** The default allocator is `mimalloc`. It compiles and runs on all supported targets, but on MIPS it adds ~200 KB to the binary. If binary size is critical, you can switch the allocator in `src/lib.rs` to the system allocator (`#[global_allocator] static GLOBAL_ALLOCATOR: std::alloc::System = std::alloc::System;`).
+> The `router` feature is a convenience alias — it sets no flags itself; it just exists so `--features router` is a memorable shorthand for `--no-default-features`.
 
 ---
 
@@ -280,10 +308,28 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 Use `config-router.toml` as a starting point for memory-constrained devices.
 Key differences from the default VM config:
 
+**Compile-time (feature flags):**
+
+| Feature | VM default | Router (`--no-default-features --features router`) |
+|---|---|---|
+| `mimalloc` | ✓ enabled | ✗ → system/musl malloc |
+| `h3` | ✓ enabled | ✗ → H3 silently falls back to H2 |
+| `metrics` | ✓ enabled | ✗ → all metrics calls are no-ops, no `/metrics` endpoint |
+| `env-filter` | ✓ enabled | ✗ → log level hardcoded to `WARN` (saves ~300 KB, no regex) |
+| `multi-thread` | ✓ enabled | ✗ → always `current_thread` scheduler (saves ~100–200 KB) |
+
+**Runtime (config / CLI):**
+
 | Parameter | VM default | Router example |
 |---|---|---|
-| `--worker-threads` | CPU count | 1 |
+| `RUST_LOG` env | configurable (default: `info,outline_ws_rust=debug`) | hardcoded `WARN` (no regex) |
+| `--worker-threads` | CPU count | N/A (always `current_thread`) |
+| `--thread-stack-size-kb` | 2048 KiB | N/A (`multi-thread` disabled) |
+| `udp_recv_buf_bytes` | kernel default | e.g. `212992` (208 KiB) |
+| `udp_send_buf_bytes` | kernel default | e.g. `212992` (208 KiB) |
 | `tun.max_flows` | 4096 | 128 |
+| `tun.defrag_max_fragment_sets` | 1024 | 64 |
+| `tun.defrag_max_fragments_per_set` | 64 | 16 |
 | `tun.defrag_max_total_bytes` | 16 MiB | 2 MiB |
 | `tun.defrag_max_bytes_per_set` | 128 KiB | 16 KiB |
 | `tun.tcp.max_pending_server_bytes` | 4 MiB | 64 KiB |
@@ -300,11 +346,13 @@ Run with the router config:
 outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-threads 1
 ```
 
-Or via environment variable:
+Or via environment variables:
 
 ```bash
 PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
 ```
+
+> Router builds log at `WARN` level unconditionally — `RUST_LOG` is ignored. To get dynamic log levels, add `--features env-filter` to the build command (at the cost of ~300 KB on MIPS).
 
 ## Quick Start
 
