@@ -102,21 +102,16 @@ struct TransportRoute {
     candidate_users: Arc<[String]>,
 }
 
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-struct UdpDnsCacheKey {
-    host: String,
-    port: u16,
-    prefer_ipv4_upstream: bool,
-}
-
 #[derive(Clone, Copy, Debug)]
 struct UdpDnsCacheEntry {
     resolved: SocketAddr,
     expires_at: std::time::Instant,
 }
 
+// Outer key: (port, prefer_ipv4_upstream) — cheap to construct without allocation.
+// Inner key: host String — supports &str lookup via String: Borrow<str>.
 struct UdpDnsCache {
-    entries: RwLock<HashMap<UdpDnsCacheKey, UdpDnsCacheEntry>>,
+    entries: RwLock<HashMap<(u16, bool), HashMap<String, UdpDnsCacheEntry>>>,
     ttl: Duration,
 }
 
@@ -129,40 +124,32 @@ impl UdpDnsCache {
     }
 
     fn lookup(&self, host: &str, port: u16, prefer_ipv4_upstream: bool) -> Option<SocketAddr> {
-        let key = UdpDnsCacheKey {
-            host: host.to_owned(),
-            port,
-            prefer_ipv4_upstream,
-        };
         let now = std::time::Instant::now();
-        if let Some(entry) = self
-            .entries
-            .read()
-            .expect("udp dns cache poisoned")
-            .get(&key)
-            .copied()
         {
-            if entry.expires_at > now {
-                return Some(entry.resolved);
+            let entries = self.entries.read().expect("udp dns cache poisoned");
+            if let Some(entry) = entries
+                .get(&(port, prefer_ipv4_upstream))
+                .and_then(|inner| inner.get(host))
+                .copied()
+            {
+                if entry.expires_at > now {
+                    return Some(entry.resolved);
+                }
+            } else {
+                return None;
             }
         }
-
+        // Entry exists but is expired — acquire write lock to evict it.
         let mut entries = self.entries.write().expect("udp dns cache poisoned");
-        if let Some(entry) = entries.get(&key).copied() {
-            if entry.expires_at > now {
-                return Some(entry.resolved);
+        if let Some(inner) = entries.get_mut(&(port, prefer_ipv4_upstream)) {
+            if inner.get(host).is_some_and(|e| e.expires_at <= now) {
+                inner.remove(host);
             }
-            entries.remove(&key);
         }
         None
     }
 
     fn store(&self, host: &str, port: u16, prefer_ipv4_upstream: bool, resolved: SocketAddr) {
-        let key = UdpDnsCacheKey {
-            host: host.to_owned(),
-            port,
-            prefer_ipv4_upstream,
-        };
         let entry = UdpDnsCacheEntry {
             resolved,
             expires_at: std::time::Instant::now() + self.ttl,
@@ -170,7 +157,9 @@ impl UdpDnsCache {
         self.entries
             .write()
             .expect("udp dns cache poisoned")
-            .insert(key, entry);
+            .entry((port, prefer_ipv4_upstream))
+            .or_default()
+            .insert(host.to_owned(), entry);
     }
 }
 
