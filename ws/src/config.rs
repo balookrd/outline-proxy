@@ -75,6 +75,12 @@ pub struct Args {
     /// Set to 1 on weak/single-core routers.
     #[arg(long, env = "WORKER_THREADS")]
     pub worker_threads: Option<usize>,
+
+    /// Stack size per tokio worker thread in KiB (default: 2048 KiB = 2 MiB).
+    /// Reduce to 512 on memory-constrained routers with multiple worker threads.
+    /// Has no effect when worker_threads=1 (current_thread scheduler has no extra threads).
+    #[arg(long, env = "THREAD_STACK_SIZE_KB")]
+    pub thread_stack_size_kb: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +93,10 @@ pub struct AppConfig {
     pub metrics: Option<MetricsConfig>,
     pub tun: Option<TunConfig>,
     pub h2: H2Config,
+    /// Override kernel UDP receive buffer size (SO_RCVBUF). None = kernel default.
+    pub udp_recv_buf_bytes: Option<usize>,
+    /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
+    pub udp_send_buf_bytes: Option<usize>,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.
@@ -225,6 +235,12 @@ pub struct TunConfig {
     pub max_flows: usize,
     pub idle_timeout: Duration,
     pub tcp: TunTcpConfig,
+    /// Max concurrent IP fragment reassembly sets (distinct flows being reassembled).
+    /// Default: 1024 (VM). Reduce to 64 on routers.
+    pub defrag_max_fragment_sets: usize,
+    /// Max fragment chunks per reassembly set before the set is dropped.
+    /// Default: 64 (VM). Reduce to 16 on routers.
+    pub defrag_max_fragments_per_set: usize,
     /// Max bytes buffered across all in-progress IP fragment reassembly sets.
     /// Default: 16 MiB (VM). Reduce to 2 MiB or less on routers.
     pub defrag_max_total_bytes: usize,
@@ -268,6 +284,8 @@ struct ConfigFile {
     metrics: Option<MetricsSection>,
     tun: Option<TunSection>,
     h2: Option<H2Section>,
+    udp_recv_buf_bytes: Option<usize>,
+    udp_send_buf_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +333,8 @@ struct TunSection {
     max_flows: Option<usize>,
     idle_timeout_secs: Option<u64>,
     tcp: Option<TunTcpSection>,
+    defrag_max_fragment_sets: Option<usize>,
+    defrag_max_fragments_per_set: Option<usize>,
     defrag_max_total_bytes: Option<usize>,
     defrag_max_bytes_per_set: Option<usize>,
 }
@@ -423,6 +443,8 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
     let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
+    let udp_recv_buf_bytes = file.as_ref().and_then(|f| f.udp_recv_buf_bytes);
+    let udp_send_buf_bytes = file.as_ref().and_then(|f| f.udp_send_buf_bytes);
 
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
@@ -450,6 +472,8 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         metrics,
         tun,
         h2,
+        udp_recv_buf_bytes,
+        udp_send_buf_bytes,
     })
 }
 
@@ -1047,12 +1071,24 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("missing tun.name: Linux TUN attach requires --tun-name or [tun].name");
     }
 
+    let defrag_max_fragment_sets = tun
+        .and_then(|section| section.defrag_max_fragment_sets)
+        .unwrap_or(1024);
+    let defrag_max_fragments_per_set = tun
+        .and_then(|section| section.defrag_max_fragments_per_set)
+        .unwrap_or(64);
     let defrag_max_total_bytes = tun
         .and_then(|section| section.defrag_max_total_bytes)
         .unwrap_or(16 * 1024 * 1024);
     let defrag_max_bytes_per_set = tun
         .and_then(|section| section.defrag_max_bytes_per_set)
         .unwrap_or(128 * 1024);
+    if defrag_max_fragment_sets == 0 {
+        bail!("tun.defrag_max_fragment_sets must be greater than zero");
+    }
+    if defrag_max_fragments_per_set == 0 {
+        bail!("tun.defrag_max_fragments_per_set must be greater than zero");
+    }
     if defrag_max_total_bytes < 64 * 1024 {
         bail!("tun.defrag_max_total_bytes must be at least 65536");
     }
@@ -1070,6 +1106,8 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         max_flows,
         idle_timeout,
         tcp,
+        defrag_max_fragment_sets,
+        defrag_max_fragments_per_set,
         defrag_max_total_bytes,
         defrag_max_bytes_per_set,
     }))

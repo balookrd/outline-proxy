@@ -2,11 +2,18 @@ pub mod config;
 pub mod crypto;
 pub(crate) mod error_text;
 pub mod memory;
+#[cfg(feature = "metrics")]
 pub mod metrics;
+#[cfg(not(feature = "metrics"))]
+#[path = "metrics_stub.rs"]
+pub mod metrics;
+#[cfg(feature = "metrics")]
 pub mod metrics_http;
 pub mod proxy;
 pub mod socks5;
 pub mod transport;
+#[cfg(feature = "h3")]
+pub(crate) mod transport_h3;
 pub mod tun;
 pub(crate) mod tun_defrag;
 pub mod tun_tcp;
@@ -18,6 +25,7 @@ pub mod types;
 pub mod uplink;
 
 use anyhow::{Context, Result, anyhow};
+#[cfg(feature = "mimalloc")]
 use mimalloc::MiMalloc;
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
@@ -25,9 +33,11 @@ use tracing::{debug, info, warn};
 
 use crate::config::{AppConfig, Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
+#[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
 
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL_ALLOCATOR: MiMalloc = MiMalloc;
 
@@ -48,6 +58,7 @@ pub async fn run(args: Args) -> Result<()> {
         config.h2.initial_stream_window_size,
         config.h2.initial_connection_window_size,
     );
+    transport::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
     run_with_config(config).await
 }
 
@@ -84,6 +95,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
         "proxy started"
     );
     log_uplink_summary(&uplinks);
+    #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
         spawn_metrics_server(metrics, uplinks.clone());
     }

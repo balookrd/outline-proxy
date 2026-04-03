@@ -2,11 +2,10 @@ use super::session::{RecentSessionWindow, session_window_p95};
 use super::*;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
-use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 use std::time::Instant;
 
-static METRICS_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     match METRICS_TEST_GUARD.lock() {

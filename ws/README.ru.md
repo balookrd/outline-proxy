@@ -206,6 +206,21 @@ rustup target add aarch64-unknown-linux-musl
 
 ---
 
+### Feature flags
+
+Бинарь управляется Cargo feature flags. Комбинируйте по необходимости:
+
+| Фича | По умолч. | Эффект |
+|---|---|---|
+| `mimalloc` | ✓ | Аллокатор mimalloc (быстрее на серверах, занимает больше RAM) |
+| `h3` | ✓ | Транспорт H3/QUIC (тянет quinn + sockudo-ws/http3) |
+| `metrics` | ✓ | Prometheus-метрики (тянет prometheus + serde_json) |
+| `router` | — | Удобный псевдоним для `--no-default-features` (отключает все три выше) |
+
+> **Почему отключать на роутерах:** `mimalloc` держит арены по 4 МБ и не даёт выигрыша на однопоточном процессе. `h3`/QUIC добавляет ~1–2 МБ к бинарю и накладные расходы на MIPS/ARM. `metrics` добавляет prometheus + serde_json и фоновый sampler. `router` убирает всё это одной флагом.
+
+---
+
 ### Виртуальные машины и серверы
 
 Нативная сборка для текущей машины (быстрее всего, использует все CPU-расширения):
@@ -226,6 +241,12 @@ cargo zigbuild --release --target x86_64-unknown-linux-musl
 cargo zigbuild --release --target aarch64-unknown-linux-musl
 ```
 
+Отключить только одну фичу, сохранив остальные (напр. убрать метрики, оставив H3):
+
+```bash
+cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x86_64-unknown-linux-musl
+```
+
 ---
 
 ### Роутеры (кросс-компиляция)
@@ -233,57 +254,81 @@ cargo zigbuild --release --target aarch64-unknown-linux-musl
 Все сборки для роутеров используют `musl` libc — полностью статический бинарь без runtime-зависимостей.
 На устройстве используйте `config-router.toml` — см. [Конфигурация для роутера](#конфигурация-для-роутера).
 
+Все роутерные сборки используют `--no-default-features --features router`, что отключает:
+- `mimalloc` → системный/musl malloc (возвращает память ОС, нет overhead на поток)
+- `h3` → убирает quinn, h3, h3-quinn, sockudo-ws/http3 (~1–2 МБ меньше на MIPS)
+- `metrics` → убирает prometheus, serde_json, фоновый process sampler
+
+Роутерные сборки используют профиль `release-router` (`opt-level = "z"`) — оптимизация по размеру бинаря вместо скорости. Для ВМ используется `release` (`opt-level = 3`).
+
 **OpenWrt / MIPS little-endian** (большинство роутеров TP-Link, Netgear, ASUS, GL.iNet):
 
 ```bash
-cargo zigbuild --release --target mipsel-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
 ```
 
 **OpenWrt / MIPS big-endian** (старые D-Link, ZTE, некоторые Huawei CPE):
 
 ```bash
-cargo zigbuild --release --target mips-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
 ```
 
 **ARM soft-float** (минималистичные ARM-роутеры без FPU, напр. старые Linksys WRT):
 
 ```bash
-cargo zigbuild --release --target arm-unknown-linux-musleabi
+cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
 ```
 
 **ARMv7 hard-float** (Raspberry Pi 2/3 в 32-битном режиме, многие mid-range роутеры):
 
 ```bash
-cargo zigbuild --release --target armv7-unknown-linux-musleabihf
+cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 ```
 
 **AArch64 / ARM64** (Raspberry Pi 3/4/5 в 64-битном режиме, Banana Pi R3/R4, NanoPi R5S, роутеры с MT7986/MT7988, IPQ8074):
 
 ```bash
-cargo zigbuild --release --target aarch64-unknown-linux-musl
+cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
 ```
 
-Скомпилированный бинарь находится в `target/<target>/release/outline-ws-rust`.
+Скомпилированный бинарь находится в `target/<target>/release-router/outline-ws-rust`.
 Скопировать на роутер и сделать исполняемым:
 
 ```bash
-scp target/mipsel-unknown-linux-musl/release/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+scp target/mipsel-unknown-linux-musl/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
 ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 ```
 
-> **Примечание о `mimalloc`:** По умолчанию используется аллокатор `mimalloc`. Он компилируется и работает на всех поддерживаемых платформах, но на MIPS добавляет ~200 КБ к бинарю. Если размер бинаря критичен — можно переключить аллокатор в `src/lib.rs` на системный: `#[global_allocator] static GLOBAL_ALLOCATOR: std::alloc::System = std::alloc::System;`.
+> `router` — просто псевдоним: сам по себе не устанавливает флагов, просто позволяет написать `--features router` вместо `--no-default-features`.
 
 ---
 
 ### Конфигурация для роутера
 
 Используйте `config-router.toml` как отправную точку для устройств с ограниченной памятью.
-Ключевые отличия от конфига для ВМ по умолчанию:
+
+**Фичи сборки:**
+
+| Фича | ВМ | Роутер (`--no-default-features --features router`) |
+|---|---|---|
+| `mimalloc` | ✓ | ✗ → системный/musl malloc |
+| `h3` | ✓ | ✗ → H3 тихо падает на H2 |
+| `metrics` | ✓ | ✗ → все вызовы метрик — no-op, `/metrics` не работает |
+| `env-filter` | ✓ | ✗ → уровень логирования жёстко `WARN` (экономия ~300 КБ, без regex) |
+| `multi-thread` | ✓ | ✗ → всегда планировщик `current_thread` (экономия ~100–200 КБ) |
+
+**Runtime-параметры (конфиг / CLI):**
 
 | Параметр | ВМ (по умолчанию) | Роутер (пример) |
 |---|---|---|
-| `--worker-threads` | кол-во CPU | 1 |
+| `RUST_LOG` (env) | настраивается (по умолч.: `info,outline_ws_rust=debug`) | жёстко `WARN` (без regex) |
+| `--worker-threads` | кол-во CPU | N/A (всегда `current_thread`) |
+| `--thread-stack-size-kb` | 2048 КБ | N/A (`multi-thread` отключён) |
+| `udp_recv_buf_bytes` | дефолт ядра | напр. `212992` (208 КБ) |
+| `udp_send_buf_bytes` | дефолт ядра | напр. `212992` (208 КБ) |
 | `tun.max_flows` | 4096 | 128 |
+| `tun.defrag_max_fragment_sets` | 1024 | 64 |
+| `tun.defrag_max_fragments_per_set` | 64 | 16 |
 | `tun.defrag_max_total_bytes` | 16 МБ | 2 МБ |
 | `tun.defrag_max_bytes_per_set` | 128 КБ | 16 КБ |
 | `tun.tcp.max_pending_server_bytes` | 4 МБ | 64 КБ |
@@ -305,6 +350,8 @@ outline-ws-rust --config /etc/outline-ws-rust/config-router.toml --worker-thread
 ```bash
 PROXY_CONFIG=/etc/outline-ws-rust/config-router.toml WORKER_THREADS=1 outline-ws-rust
 ```
+
+> Роутерные сборки логируют только на уровне `WARN` — `RUST_LOG` игнорируется. Чтобы получить динамический уровень, добавьте `--features env-filter` к команде сборки (ценой ~300 КБ на MIPS).
 
 ## Быстрый старт
 

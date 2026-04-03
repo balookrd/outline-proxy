@@ -5,20 +5,39 @@
 # device's actual free memory.
 #
 # Key differences from the VM default (config.toml):
-#   - worker_threads = 1           (single tokio thread, avoids scheduler overhead)
-#   - tun.max_flows = 128          (reduce flow table from 4096)
-#   - tun.defrag_max_total_bytes   (IP fragment buffer: 2 MB vs 16 MB)
-#   - tun.defrag_max_bytes_per_set (per-source fragment buffer: 16 KB vs 128 KB)
+#   - worker_threads = 1              (single tokio thread, avoids scheduler overhead)
+#   - tun.max_flows = 128             (reduce flow table from 4096)
+#   - tun.defrag_max_fragment_sets    (concurrent reassembly sets: 64 vs 1024)
+#   - tun.defrag_max_fragments_per_set (chunks per set: 16 vs 64)
+#   - tun.defrag_max_total_bytes      (IP fragment buffer: 2 MB vs 16 MB)
+#   - tun.defrag_max_bytes_per_set    (per-source fragment buffer: 16 KB vs 128 KB)
 #   - tun.tcp.max_pending_server_bytes (64 KB vs 4 MB)
 #   - tun.tcp.max_buffered_client_bytes (64 KB, max allowed by protocol)
-#   - h2 flow-control windows      (256 KB / 512 KB vs 1 MB / 2 MB)
+#   - h2 flow-control windows         (256 KB / 512 KB vs 1 MB / 2 MB)
 #   - load_balancing: no warm standby, single uplink
 #   - probe: reduced concurrency
 
+# ── Log level ───────────────────────────────────────────────────────────────
+# Router builds (--no-default-features --features router) compile without the
+# env-filter feature, so RUST_LOG is ignored and the level is fixed at WARN.
+# This saves ~300 KB on MIPS by eliminating the regex engine.
+#
+# To get dynamic RUST_LOG support at the cost of binary size, add
+# --features env-filter to the build command.
+
+# ── UDP socket buffers ──────────────────────────────────────────────────────
+# Override SO_RCVBUF / SO_SNDBUF for every outbound UDP socket (shadowsocks
+# and QUIC). OpenWrt defaults are often 87–130 KiB which can cause drops under
+# bursts. 208 KiB is a reasonable ceiling for 32 MB RAM devices.
+# The kernel silently caps requests above /proc/sys/net/core/rmem_max (Linux);
+# set rmem_max/wmem_max in /etc/sysctl.conf if you need larger values.
+# Comment out to leave kernel defaults unchanged.
+udp_recv_buf_bytes = 212992   # 208 KiB
+udp_send_buf_bytes = 212992   # 208 KiB
+
 # ── Worker threads ──────────────────────────────────────────────────────────
-# Can also be set via env: WORKER_THREADS=1
-# (must be set before runtime starts, so this is CLI/env only, not in [tun])
-# Pass --worker-threads 1 on the command line or set the env var.
+# Router builds compiled without --features multi-thread always use the
+# current_thread scheduler regardless. --worker-threads has no effect.
 
 [socks5]
 listen = "127.0.0.1:1080"
@@ -36,10 +55,14 @@ mtu = 1500
 max_flows = 128
 idle_timeout_secs = 120
 
-# IP fragment reassembly buffers.
-# 2 MiB total, 16 KiB per reassembly set (vs 16 MiB / 128 KiB on VM).
-defrag_max_total_bytes = 2097152
-defrag_max_bytes_per_set = 16384
+# IP fragment reassembly limits.
+# Sets: how many concurrent flows can be reassembled simultaneously.
+# Fragments per set: max chunks before a set is dropped.
+# Bytes limits cap peak memory usage.
+defrag_max_fragment_sets = 64        # vs 1024 on VM
+defrag_max_fragments_per_set = 16    # vs 64 on VM
+defrag_max_total_bytes = 2097152     # 2 MiB vs 16 MiB on VM
+defrag_max_bytes_per_set = 16384     # 16 KiB vs 128 KiB on VM
 
 [tun.tcp]
 connect_timeout_secs = 10
