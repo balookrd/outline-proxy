@@ -167,13 +167,11 @@ cargo build-musl-arm
 cargo release-musl-arm
 cargo build-musl-armv7
 cargo release-musl-armv7
-cargo build-musl-mipsel
-cargo release-musl-mipsel
-cargo build-musl-mips
-cargo release-musl-mips
 ```
 
-The aliases expand to the corresponding `cargo zigbuild --target ...` commands for `x86_64`, `aarch64`, `arm`, `armv7`, `mipsel`, and `mips`.
+The aliases expand to the corresponding `cargo zigbuild --target ...` commands for the musl targets currently available on stable via Rustup: `x86_64`, `aarch64`, `arm`, and `armv7`.
+
+Legacy MIPS note: `mips` and `mipsel` are no longer available through the current stable Rustup target set. If you still need those builds, use a pinned older toolchain or a dedicated `build-std`-based flow instead of the default stable shortcuts and release workflows.
 
 ### Top-Level Settings
 

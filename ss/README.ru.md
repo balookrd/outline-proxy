@@ -169,13 +169,11 @@ cargo build-musl-arm
 cargo release-musl-arm
 cargo build-musl-armv7
 cargo release-musl-armv7
-cargo build-musl-mipsel
-cargo release-musl-mipsel
-cargo build-musl-mips
-cargo release-musl-mips
 ```
 
-Эти команды разворачиваются в соответствующие вызовы `cargo zigbuild --target ...` для `x86_64`, `aarch64`, `arm`, `armv7`, `mipsel` и `mips`.
+Эти команды разворачиваются в соответствующие вызовы `cargo zigbuild --target ...` для musl-таргетов, которые сейчас доступны на stable через Rustup: `x86_64`, `aarch64`, `arm` и `armv7`.
+
+Примечание про legacy MIPS: таргеты `mips` и `mipsel` больше не входят в текущий stable-набор Rustup. Если они всё ещё нужны, используйте pinned старый toolchain или отдельный flow на базе `build-std`, а не стандартные stable-shortcuts и release-workflows.
 
 ### Параметры верхнего уровня
 
