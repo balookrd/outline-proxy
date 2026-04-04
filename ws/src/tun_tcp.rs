@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use crate::atomic_counter::CounterU64;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::StreamExt;
 use tokio::sync::{Mutex, Notify, RwLock, watch};
@@ -82,7 +83,7 @@ struct TunTcpEngineInner {
     uplinks: UplinkManager,
     flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
     pending_connects: Mutex<HashSet<TcpFlowKey>>,
-    next_flow_id: AtomicU64,
+    next_flow_id: CounterU64,
     max_flows: usize,
     idle_timeout: Duration,
     tcp: TunTcpConfig,
@@ -111,7 +112,7 @@ impl TunTcpEngine {
                 uplinks,
                 flows: RwLock::new(HashMap::new()),
                 pending_connects: Mutex::new(HashSet::new()),
-                next_flow_id: AtomicU64::new(1),
+                next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
                 tcp,

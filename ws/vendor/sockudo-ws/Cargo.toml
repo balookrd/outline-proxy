@@ -1,0 +1,215 @@
+[package]
+name = "sockudo-ws"
+version = "1.7.5"
+edition = "2024"
+authors = ["Diaconu Radu-Mihai"]
+repository = "https://github.com/sockudo/sockudo-ws"
+description = "Ultra-low latency WebSocket library for HFT applications"
+license = "MIT"
+
+[lib]
+name = "sockudo_ws"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sockudo-bench"
+path = "src/bin/bench.rs"
+
+[[bin]]
+name = "autobahn-server"
+path = "autobahn/server.rs"
+
+[features]
+default = ["simd", "tokio-runtime", "permessage-deflate", "fastrand"]
+
+# SIMD acceleration features
+simd = []
+avx2 = ["simd"]
+avx512 = ["simd"]
+neon = ["simd"]
+
+# Nightly-only features: enables additional SIMD on arm, loongarch64, powerpc, s390x
+# Also enables std::random for cryptographically secure mask generation
+nightly = []
+
+# Async runtime
+tokio-runtime = ["tokio", "tokio-util"]
+
+# Framework integrations
+axum-integration = ["axum", "hyper", "hyper-util", "tokio-runtime"]
+
+# Compression (permessage-deflate, RFC 7692)
+permessage-deflate = ["flate2"]
+
+# TLS support via native-tls
+native-tls = ["dep:native-tls", "dep:tokio-native-tls", "tokio-runtime"]
+
+# TLS support via rustls with webpki-roots
+rustls-webpki-roots = ["dep:rustls", "dep:tokio-rustls", "dep:webpki-roots", "tokio-runtime"]
+
+# TLS support via rustls with native roots
+rustls-native-roots = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-native-certs", "tokio-runtime"]
+
+# TLS support via rustls with platform verifier
+rustls-platform-verifier = ["dep:rustls", "dep:tokio-rustls", "dep:rustls-platform-verifier", "tokio-runtime"]
+
+# SHA-1 implementations (at least one required)
+# ring or aws_lc_rs are recommended when using rustls
+ring = ["dep:ring"]
+aws_lc_rs = ["dep:aws-lc-rs"]
+# openssl is usually preferred on Linux/BSD with native-tls
+openssl = ["dep:openssl"]
+# sha1_smol is a pure Rust fallback when no TLS is needed
+sha1_smol = ["dep:sha1_smol"]
+
+# Random number generators for client mask generation
+# fastrand: fast PRNG (default, same as tokio-websockets)
+fastrand = ["dep:fastrand"]
+# getrandom: cryptographically secure RNG
+getrandom = ["dep:getrandom"]
+# rand: alternative to fastrand, prefer if already in dependency tree
+rand_rng = ["dep:rand"]
+
+# HTTP/2 WebSocket support (RFC 8441)
+http2 = ["h2", "http", "tokio-runtime"]
+
+# HTTP/3 WebSocket support (RFC 9220)
+http3 = ["quinn", "h3", "h3-quinn", "http", "dep:rustls", "tokio-runtime"]
+
+# io_uring support (Linux only)
+io-uring = ["tokio-uring"]
+
+# All transport features
+all-transports = ["http2", "http3", "io-uring"]
+
+# High-performance allocator
+mimalloc = ["dep:mimalloc"]
+
+# Full feature set
+full = ["simd", "tokio-runtime", "axum-integration", "permessage-deflate", "all-transports", "fastrand"]
+
+[dependencies]
+# Tokio async runtime
+tokio = { version = "^1.48", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time"], optional = true }
+tokio-util = { version = "^0.7", features = ["codec"], optional = true }
+
+# Fast synchronization primitives for pub/sub
+parking_lot = "^0.12"
+
+# High-performance concurrent hash maps for pub/sub
+dashmap = "^6.1"
+
+# Axum integration
+axum = { version = "^0.8", optional = true }
+hyper = { version = "^1.0", optional = true }
+hyper-util = { version = "^0.1", features = ["tokio"], optional = true }
+
+# HTTP parsing
+httparse = "^1.9"
+
+# Base64 for WebSocket handshake
+base64 = "^0.22"
+
+# SHA-1 for WebSocket handshake (default, pure Rust)
+sha1 = "^0.10"
+
+# Alternative SHA-1 implementations (optional)
+ring = { version = "^0.17", optional = true }
+aws-lc-rs = { version = "^1.0", optional = true }
+openssl = { version = "^0.10", optional = true }
+sha1_smol = { version = "^1.0", optional = true }
+
+# For benchmarking
+criterion = { version = "^0.5", optional = true }
+
+# Bytes for zero-copy buffers
+bytes = "^1.9"
+
+# Pin utilities
+pin-project-lite = "^0.2"
+
+# Futures traits
+futures-core = "^0.3"
+futures-sink = "^0.3"
+
+# Compression (permessage-deflate, RFC 7692)
+flate2 = { version = "^1.0", default-features = false, features = ["zlib-rs"], optional = true }
+
+# Socket options (SO_REUSEPORT, TCP_NODELAY)
+socket2 = { version = "^0.5", features = ["all"] }
+
+# SIMD-accelerated UTF-8 validation (battle-tested, used by simd-json, polars, arrow)
+simdutf8 = "^0.1"
+
+# Random number generators for mask generation
+fastrand = { version = "^2.3", optional = true }
+getrandom = { version = "^0.2", optional = true }
+rand = { version = "^0.9", optional = true }
+
+# TLS support via native-tls
+native-tls = { version = "^0.2", optional = true }
+tokio-native-tls = { version = "^0.3", optional = true }
+
+# TLS support via rustls
+tokio-rustls = { version = "^0.26", default-features = false, features = ["ring", "tls12"], optional = true }
+webpki-roots = { version = "^1.0", optional = true }
+rustls-native-certs = { version = "^0.8", optional = true }
+rustls-platform-verifier = { version = "^0.6", optional = true }
+
+# HTTP/2 support (RFC 8441)
+h2 = { version = "^0.4", optional = true }
+http = { version = "^1.0", optional = true }
+
+# HTTP/3 support (RFC 9220)
+quinn = { version = "^0.11", optional = true }
+h3 = { version = "^0.0.8", optional = true }
+h3-quinn = { version = "^0.0.10", optional = true }
+rustls = { version = "^0.23", default-features = false, features = ["ring", "std"], optional = true }
+
+# io_uring support (Linux only)
+tokio-uring = { version = "^0.5", optional = true }
+
+# High-performance allocator
+mimalloc = { version = "^0.1", default-features = false, optional = true }
+
+[dev-dependencies]
+criterion = "^0.5"
+rand = "^0.9"
+tokio = { version = "^1.48", features = ["full"] }
+tokio-tungstenite = "^0.26"
+tokio-websockets = { version = "^0.10", features = ["client", "server", "sha1_smol", "fastrand"] }
+futures-util = "^0.3"
+axum = "^0.8"
+hyper = { version = "^1.0", features = ["full"] }
+hyper-util = { version = "^0.1", features = ["tokio"] }
+rcgen = "^0.13"
+rustls-pemfile = "^2.0"
+
+[[example]]
+name = "http2_echo"
+required-features = ["http2"]
+
+[[example]]
+name = "http3_echo"
+required-features = ["http3"]
+
+[[bench]]
+name = "websocket_bench"
+harness = false
+
+[[bench]]
+name = "comparison_bench"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = false
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
+debug = true

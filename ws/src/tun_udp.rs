@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use crate::atomic_counter::CounterU64;
 use crate::metrics;
 use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::tun::SharedTunWriter;
@@ -54,7 +54,7 @@ struct TunUdpEngineInner {
     writer: SharedTunWriter,
     uplinks: UplinkManager,
     flows: FlowTable,
-    next_flow_id: AtomicU64,
+    next_flow_id: CounterU64,
     max_flows: usize,
     idle_timeout: Duration,
 }
@@ -71,7 +71,7 @@ impl TunUdpEngine {
                 writer,
                 uplinks,
                 flows: Arc::new(Mutex::new(HashMap::new())),
-                next_flow_id: AtomicU64::new(1),
+                next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
             }),

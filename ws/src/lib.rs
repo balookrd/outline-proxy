@@ -1,3 +1,4 @@
+pub(crate) mod atomic_counter;
 pub mod config;
 pub mod crypto;
 pub(crate) mod error_text;
