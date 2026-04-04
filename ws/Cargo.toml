@@ -8,7 +8,7 @@ edition = "2024"
 # default: VM/server build — H3/QUIC + Prometheus metrics
 # router:  stripped build for memory-constrained devices
 #          disables H3/QUIC and Prometheus metrics
-#          build with: cargo zigbuild --release --no-default-features --features router --target mipsel-unknown-linux-musl
+#          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 [features]
 default = ["h3", "metrics", "env-filter", "multi-thread"]
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]

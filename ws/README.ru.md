@@ -192,8 +192,6 @@ cargo install cargo-zigbuild
 ```bash
 cargo release-musl-x86_64
 cargo release-musl-aarch64
-cargo release-router-musl-mipsel
-cargo release-router-musl-mips
 cargo release-router-musl-arm
 cargo release-router-musl-armv7
 cargo release-router-musl-aarch64
@@ -215,15 +213,13 @@ cargo release-router-musl-aarch64
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
 
-# Роутеры (OpenWrt MIPS little-endian, напр. TP-Link, Netgear, ASUS)
-rustup target add mipsel-unknown-linux-musl
-# Роутеры (OpenWrt MIPS big-endian, напр. старые D-Link, ZTE)
-rustup target add mips-unknown-linux-musl
 # Роутеры (ARM, напр. Raspberry Pi, большинство современных домашних роутеров)
 rustup target add armv7-unknown-linux-musleabihf
 # Роутеры (AArch64, напр. новые Raspberry Pi, Banana Pi, роутеры с Cortex-A53+)
 rustup target add aarch64-unknown-linux-musl
 ```
+
+Текущий stable Rust больше не отдает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` как скачиваемые `rust-std` targets, поэтому CI и shortcuts в документации покрывают только цели, которые еще доступны на stable. Для legacy MIPS-сборок теперь нужен либо pinned старый toolchain, либо кастомный `build-std` flow.
 
 ---
 
@@ -284,22 +280,6 @@ cargo zigbuild --release --no-default-features --features h3 --target x86_64-unk
 
 Роутерные сборки используют профиль `release-router` (`opt-level = "z"`) — оптимизация по размеру бинаря вместо скорости. Для ВМ используется `release` (`opt-level = 3`).
 
-**OpenWrt / MIPS little-endian** (большинство роутеров TP-Link, Netgear, ASUS, GL.iNet):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
-# или короче
-cargo release-router-musl-mipsel
-```
-
-**OpenWrt / MIPS big-endian** (старые D-Link, ZTE, некоторые Huawei CPE):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
-# или короче
-cargo release-router-musl-mips
-```
-
 **ARM soft-float** (минималистичные ARM-роутеры без FPU, напр. старые Linksys WRT):
 
 ```bash
@@ -328,7 +308,7 @@ cargo release-router-musl-aarch64
 Скопировать на роутер и сделать исполняемым:
 
 ```bash
-scp target/mipsel-unknown-linux-musl/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+scp target/armv7-unknown-linux-musleabihf/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
 ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 ```
 
