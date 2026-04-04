@@ -19,7 +19,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       release_name: ${{ steps.meta.outputs.release_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -59,7 +59,7 @@ jobs:
             flavor: server
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
         with:
