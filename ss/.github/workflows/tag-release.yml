@@ -30,7 +30,7 @@ jobs:
             target: mips-unknown-linux-musl
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -57,7 +57,7 @@ jobs:
           tar -C dist -czf "dist/${artifact_base}.tar.gz" "${artifact_base}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: tag-release-${{ github.ref_name }}-${{ matrix.target }}
           path: dist/outline-ss-rust-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
@@ -69,7 +69,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: tag-release-*
           merge-multiple: true

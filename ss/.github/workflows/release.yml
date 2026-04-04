@@ -23,7 +23,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -113,7 +113,7 @@ jobs:
             target: armv7-unknown-linux-musleabihf
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
@@ -142,7 +142,7 @@ jobs:
           tar -C dist -czf "dist/${artifact_base}.tar.gz" "${artifact_base}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: release-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}
           path: dist/outline-ss-rust-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz
@@ -155,7 +155,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           pattern: release-*
           merge-multiple: true
