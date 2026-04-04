@@ -152,6 +152,29 @@ A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents
 
 Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_listen` is configured, the server exits with a configuration error. Only the listeners you set are started.
 
+## Build Shortcuts
+
+For musl cross-builds the repository uses `cargo-zigbuild` via predefined Cargo aliases in `.cargo/config.toml`. This avoids the more fragile "plain `cargo build --target ...`" path and keeps the working setup explicit.
+
+Available short aliases:
+
+```bash
+cargo build-musl-x86_64
+cargo release-musl-x86_64
+cargo build-musl-aarch64
+cargo release-musl-aarch64
+cargo build-musl-arm
+cargo release-musl-arm
+cargo build-musl-armv7
+cargo release-musl-armv7
+cargo build-musl-mipsel
+cargo release-musl-mipsel
+cargo build-musl-mips
+cargo release-musl-mips
+```
+
+The aliases expand to the corresponding `cargo zigbuild --target ...` commands for `x86_64`, `aarch64`, `arm`, `armv7`, `mipsel`, and `mips`.
+
 ### Top-Level Settings
 
 | Key | Purpose |

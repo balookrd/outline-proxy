@@ -1,3 +1,17 @@
 [env]
 AR = "zig ar"
 RANLIB = "zig ranlib"
+
+[alias]
+build-musl-x86_64 = "zigbuild --target x86_64-unknown-linux-musl"
+release-musl-x86_64 = "zigbuild --target x86_64-unknown-linux-musl --release"
+build-musl-aarch64 = "zigbuild --target aarch64-unknown-linux-musl"
+release-musl-aarch64 = "zigbuild --target aarch64-unknown-linux-musl --release"
+build-musl-arm = "zigbuild --target arm-unknown-linux-musleabi"
+release-musl-arm = "zigbuild --target arm-unknown-linux-musleabi --release"
+build-musl-armv7 = "zigbuild --target armv7-unknown-linux-musleabihf"
+release-musl-armv7 = "zigbuild --target armv7-unknown-linux-musleabihf --release"
+build-musl-mipsel = "zigbuild --target mipsel-unknown-linux-musl"
+release-musl-mipsel = "zigbuild --target mipsel-unknown-linux-musl --release"
+build-musl-mips = "zigbuild --target mips-unknown-linux-musl"
+release-musl-mips = "zigbuild --target mips-unknown-linux-musl --release"
