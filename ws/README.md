@@ -318,7 +318,7 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 
 ### Legacy MIPS Builds
 
-Stable Rust no longer provides prebuilt `rust-std` for `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, so these builds now need nightly plus `build-std`.
+Stable Rust no longer provides prebuilt `rust-std` for `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, so these builds now need nightly plus `build-std`, and in CI they use a dedicated musl cross-compiler instead of Zig.
 
 Local example:
 
@@ -332,6 +332,7 @@ CI example:
 - Run the `MIPS Legacy Release` workflow manually.
 - Pass only the `ref` to build.
 - The workflow reads `version` from `Cargo.toml` and publishes a normal GitHub Release named/tagged like `mips-legacy-v1.0.1`.
+- Under the hood it uses nightly `build-std` plus `musl.cc` cross toolchains for `mips` and `mipsel`.
 - The workflow publishes GitHub release assets for both `mips` and `mipsel`.
 
 ---
