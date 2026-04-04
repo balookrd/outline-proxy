@@ -330,7 +330,8 @@ cargo +nightly zigbuild -Z build-std=std,panic_abort --profile release-router --
 Пример через CI:
 
 - вручную запускаете workflow `MIPS Legacy Release`
-- передаете `ref`, который нужно собрать, и `tag_name`, например `mips-nightly-2026-04-04`
+- передаете только `ref`, который нужно собрать
+- workflow читает `version` из `Cargo.toml` и публикует обычный GitHub Release с именем/тегом вида `mips-legacy-v1.0.1`
 - workflow публикует GitHub release assets сразу для `mips` и `mipsel`
 
 ---
