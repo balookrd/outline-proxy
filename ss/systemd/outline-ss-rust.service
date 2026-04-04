@@ -1,6 +1,6 @@
 [Unit]
 Description=outline-ss-rust Shadowsocks WebSocket relay
-Documentation=https://github.com/Jigsaw-Code/outline-ss-server
+Documentation=https://github.com/balookrd/outline-ss-rust
 After=network-online.target
 Wants=network-online.target
 
