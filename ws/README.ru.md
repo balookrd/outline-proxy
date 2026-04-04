@@ -332,7 +332,7 @@ cargo +nightly build -Z build-std=std,panic_abort --profile release-router --no-
 - вручную запускаете workflow `MIPS Legacy Release`
 - передаете только `ref`, который нужно собрать
 - workflow читает `version` из `Cargo.toml` и публикует обычный GitHub Release с именем/тегом вида `mips-legacy-v1.0.1`
-- внутри он использует nightly `build-std`, Zig и генерируемые wrapper-скрипты для `mips` и `mipsel`, без загрузки внешнего toolchain-архива
+- внутри он использует nightly `build-std`, Zig и генерируемые wrapper-скрипты для `mips` и `mipsel`, которые мапятся на Zig musl EABI targets, без загрузки внешнего toolchain-архива
 - workflow публикует GitHub release assets сразу для `mips` и `mipsel`
 
 ---
