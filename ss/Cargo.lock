@@ -1114,7 +1114,7 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "outline-ss-rust"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "aes",
  "anyhow",
