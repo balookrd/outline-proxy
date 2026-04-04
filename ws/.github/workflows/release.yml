@@ -64,31 +64,36 @@ jobs:
 
       - name: Update crate version
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 -c '
           from pathlib import Path
           import re
+          import os
 
-          version = "${{ steps.version.outputs.version }}"
+          version = os.environ["VERSION"]
           path = Path("Cargo.toml")
           text = path.read_text()
           new_text, count = re.subn(r'^version = "[^"]+"$', f'version = "{version}"', text, count=1, flags=re.M)
           if count != 1:
               raise SystemExit("failed to update package version in Cargo.toml")
           path.write_text(new_text)
-          PY
+          '
 
       - name: Update Cargo.lock root package version
         shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          version="${{ steps.version.outputs.version }}"
-          python3 - <<'PY'
+          python3 -c '
           from pathlib import Path
           import re
+          import os
 
-          version = "${{ steps.version.outputs.version }}"
+          version = os.environ["VERSION"]
           path = Path("Cargo.lock")
           text = path.read_text()
           pattern = r'(\[\[package\]\]\nname = "outline-ws-rust"\nversion = ")([^"]+)(")'
@@ -96,14 +101,34 @@ jobs:
           if count != 1:
               raise SystemExit("failed to update outline-ws-rust version in Cargo.lock")
           path.write_text(new_text)
-          PY
+          '
+
+      - name: Show release version state
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          echo "Target tag: ${TAG}"
+          echo "Target version: ${VERSION}"
+          echo "Cargo.toml version line:"
+          rg -n '^version = ' Cargo.toml
+          echo "Cargo.lock root package block:"
+          sed -n '/^\[\[package\]\]$/,/^$/p' Cargo.lock | sed -n '/name = "outline-ws-rust"/,/^$/p'
 
       - name: Commit version bump
         shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           set -euo pipefail
           git add Cargo.toml Cargo.lock
-          git commit -m "release: cut ${{ steps.version.outputs.tag }}"
+          if git diff --cached --quiet; then
+            echo "No staged version bump changes found for ${TAG}" >&2
+            exit 1
+          fi
+          git commit -m "release: cut ${TAG}"
 
       - name: Create and push tag
         shell: bash
