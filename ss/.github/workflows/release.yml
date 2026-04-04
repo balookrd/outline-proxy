@@ -119,6 +119,9 @@ jobs:
         with:
           version: 0.15.1
 
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild --locked
 
