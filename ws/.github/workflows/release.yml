@@ -22,7 +22,7 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -171,7 +171,7 @@ jobs:
             flavor: server
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.prepare.outputs.tag }}
 
@@ -179,11 +179,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: goto-bus-stop/setup-zig@v2
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
 
-      - uses: taiki-e/install-action@cargo-zigbuild
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
 
       - uses: Swatinem/rust-cache@v2
 
@@ -197,7 +199,7 @@ jobs:
             "${{ matrix.flavor }}" \
             dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ matrix.target }}-${{ matrix.profile }}
           path: dist/*.tar.gz
@@ -209,7 +211,7 @@ jobs:
       - prepare
       - build
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           merge-multiple: true

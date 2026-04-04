@@ -24,7 +24,7 @@ jobs:
       tag: ${{ steps.meta.outputs.tag }}
       release_name: ${{ steps.meta.outputs.release_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.ref }}
 
@@ -58,11 +58,11 @@ jobs:
             zig_target: mips-linux-musleabi
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
         with:
           ref: ${{ github.event.inputs.ref }}
 
-      - uses: goto-bus-stop/setup-zig@v2
+      - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
 
@@ -80,8 +80,10 @@ jobs:
         with:
           components: rust-src
 
-      - uses: taiki-e/install-action@cargo-zigbuild
+      - uses: taiki-e/install-action@v2
         if: ${{ matrix.build_kind == 'zigbuild' }}
+        with:
+          tool: cargo-zigbuild
 
       - uses: Swatinem/rust-cache@v2
 
@@ -187,7 +189,7 @@ jobs:
           tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"
           rm -f "dist/${dest_name}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: router-release-${{ matrix.target }}
           path: dist/*.tar.gz
@@ -199,7 +201,7 @@ jobs:
       - prepare
       - build
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: router-release-*
           merge-multiple: true
