@@ -192,8 +192,6 @@ Shortcuts available in this repository:
 ```bash
 cargo release-musl-x86_64
 cargo release-musl-aarch64
-cargo release-router-musl-mipsel
-cargo release-router-musl-mips
 cargo release-router-musl-arm
 cargo release-router-musl-armv7
 cargo release-router-musl-aarch64
@@ -215,15 +213,13 @@ Install the required Rust targets:
 rustup target add x86_64-unknown-linux-musl
 rustup target add aarch64-unknown-linux-musl
 
-# Routers (OpenWrt MIPS little-endian, e.g. TP-Link, Netgear, ASUS)
-rustup target add mipsel-unknown-linux-musl
-# Routers (OpenWrt MIPS big-endian, e.g. older D-Link, ZTE)
-rustup target add mips-unknown-linux-musl
 # Routers (ARM, e.g. Raspberry Pi, many modern home routers)
 rustup target add armv7-unknown-linux-musleabihf
 # Routers (AArch64, e.g. newer Raspberry Pi, Banana Pi, routers with Cortex-A53+)
 rustup target add aarch64-unknown-linux-musl
 ```
+
+Current stable Rust no longer ships `mips-unknown-linux-musl` or `mipsel-unknown-linux-musl` as downloadable `rust-std` targets, so CI and the documented shortcuts only cover the targets still available on stable. Legacy MIPS builds now require a pinned older toolchain or a custom `build-std` flow.
 
 ---
 
@@ -284,22 +280,6 @@ All router builds use `--no-default-features --features router` which disables:
 
 Router builds use the `release-router` cargo profile (`opt-level = "z"`) which prioritises binary size over throughput. The default `release` profile uses `opt-level = 3` (maximum speed) and is the right choice for VMs.
 
-**OpenWrt / MIPS little-endian** (most TP-Link, Netgear, ASUS, GL.iNet routers):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
-# or shorter
-cargo release-router-musl-mipsel
-```
-
-**OpenWrt / MIPS big-endian** (older D-Link, ZTE, some Huawei CPE):
-
-```bash
-cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
-# or shorter
-cargo release-router-musl-mips
-```
-
 **ARM soft-float** (minimal ARM routers without FPU, e.g. older D-Link DIR, Linksys WRT):
 
 ```bash
@@ -328,7 +308,7 @@ The compiled binary is placed in `target/<target>/release-router/outline-ws-rust
 Copy it to the router and make it executable:
 
 ```bash
-scp target/mipsel-unknown-linux-musl/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
+scp target/armv7-unknown-linux-musleabihf/release-router/outline-ws-rust root@192.168.1.1:/usr/local/bin/
 ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 ```
 

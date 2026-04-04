@@ -127,12 +127,6 @@ jobs:
           - target: aarch64-unknown-linux-musl
             profile: release
             flavor: server
-          - target: mipsel-unknown-linux-musl
-            profile: release-router
-            flavor: router
-          - target: mips-unknown-linux-musl
-            profile: release-router
-            flavor: router
           - target: arm-unknown-linux-musleabi
             profile: release-router
             flavor: router
