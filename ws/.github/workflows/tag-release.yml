@@ -26,15 +26,6 @@ jobs:
           - target: aarch64-unknown-linux-musl
             profile: release
             flavor: server
-          - target: arm-unknown-linux-musleabi
-            profile: release-router
-            flavor: router
-          - target: armv7-unknown-linux-musleabihf
-            profile: release-router
-            flavor: router
-          - target: aarch64-unknown-linux-musl
-            profile: release-router
-            flavor: router
 
     steps:
       - uses: actions/checkout@v4
