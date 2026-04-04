@@ -100,9 +100,10 @@ jobs:
             --features router \
             --target "${{ matrix.target }}"
 
+          version="${{ needs.prepare.outputs.version }}"
           mkdir -p dist
           binary_name="outline-ws-rust"
-          dest_name="${binary_name}-${{ matrix.target }}"
+          dest_name="${binary_name}-v${version}-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release-router/${binary_name}" "dist/${dest_name}"
           chmod +x "dist/${dest_name}"
           tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"

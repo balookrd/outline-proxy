@@ -12,6 +12,7 @@ profile="$2"
 flavor="$3"
 output_dir="$4"
 binary_name="outline-ws-rust"
+version="$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from Cargo.toml")))' )"
 
 case "$flavor" in
   server)
@@ -37,7 +38,7 @@ case "$flavor" in
 esac
 
 src_path="target/${target}/${artifact_dir}/${binary_name}"
-dest_name="${binary_name}-${target}"
+dest_name="${binary_name}-v${version}-${target}"
 
 mkdir -p "$output_dir"
 cp "$src_path" "${output_dir}/${dest_name}"
