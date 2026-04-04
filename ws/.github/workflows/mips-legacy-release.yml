@@ -48,15 +48,17 @@ jobs:
         include:
           - target: mipsel-unknown-linux-musl
             cc_prefix: mipsel-linux-musl
-            toolchain_url: https://musl.cc/mipsel-linux-musl-cross.tgz
+            zig_target: mipsel-linux-musl
           - target: mips-unknown-linux-musl
             cc_prefix: mips-linux-musl
-            toolchain_url: https://musl.cc/mips-linux-musl-cross.tgz
+            zig_target: mips-linux-musl
 
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref }}
+
+      - uses: goto-bus-stop/setup-zig@v2
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
@@ -64,19 +66,39 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install musl cross toolchain
+      - name: Create Zig MIPS toolchain wrappers
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/muslcc"
-          curl -fsSL "${{ matrix.toolchain_url }}" -o "$RUNNER_TEMP/muslcc/toolchain.tgz"
-          tar -xzf "$RUNNER_TEMP/muslcc/toolchain.tgz" -C "$RUNNER_TEMP/muslcc"
-          toolchain_dir="$(find "$RUNNER_TEMP/muslcc" -maxdepth 1 -type d -name '*-cross' | head -n 1)"
-          if [[ -z "$toolchain_dir" ]]; then
-            echo "failed to locate extracted musl.cc toolchain" >&2
-            exit 1
-          fi
-          echo "$toolchain_dir/bin" >> "$GITHUB_PATH"
+          wrapper_dir="$RUNNER_TEMP/zig-cross"
+          mkdir -p "$wrapper_dir"
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-gcc" <<EOF
+          #!/usr/bin/env bash
+          exec zig cc -target ${{ matrix.zig_target }} "\$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-g++" <<EOF
+          #!/usr/bin/env bash
+          exec zig c++ -target ${{ matrix.zig_target }} "\$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ar" <<'EOF'
+          #!/usr/bin/env bash
+          exec zig ar "$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ranlib" <<'EOF'
+          #!/usr/bin/env bash
+          exec zig ranlib "$@"
+          EOF
+
+          chmod +x \
+            "$wrapper_dir/${{ matrix.cc_prefix }}-gcc" \
+            "$wrapper_dir/${{ matrix.cc_prefix }}-g++" \
+            "$wrapper_dir/${{ matrix.cc_prefix }}-ar" \
+            "$wrapper_dir/${{ matrix.cc_prefix }}-ranlib"
+          echo "$wrapper_dir" >> "$GITHUB_PATH"
 
       - name: Build legacy MIPS release asset
         shell: bash
@@ -89,6 +111,8 @@ jobs:
           CXX_mipsel_unknown_linux_musl: mipsel-linux-musl-g++
           AR_mips_unknown_linux_musl: mips-linux-musl-ar
           AR_mipsel_unknown_linux_musl: mipsel-linux-musl-ar
+          RANLIB_mips_unknown_linux_musl: mips-linux-musl-ranlib
+          RANLIB_mipsel_unknown_linux_musl: mipsel-linux-musl-ranlib
           CARGO_BUILD_TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail

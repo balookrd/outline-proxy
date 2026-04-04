@@ -318,13 +318,13 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 
 ### Legacy MIPS-сборки
 
-Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`, а в CI используют отдельный musl cross-compiler вместо Zig.
+Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`. Для локальной сборки по-прежнему нужен рабочий MIPS musl toolchain или эквивалентная схема с Zig-обертками; самый простой и надежный путь сейчас — отдельный CI workflow.
 
-Локальный пример:
+Локальный пример, если такой toolchain уже есть:
 
 ```bash
 rustup toolchain install nightly --component rust-src
-cargo +nightly zigbuild -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
+cargo +nightly build -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
 ```
 
 Пример через CI:
@@ -332,7 +332,7 @@ cargo +nightly zigbuild -Z build-std=std,panic_abort --profile release-router --
 - вручную запускаете workflow `MIPS Legacy Release`
 - передаете только `ref`, который нужно собрать
 - workflow читает `version` из `Cargo.toml` и публикует обычный GitHub Release с именем/тегом вида `mips-legacy-v1.0.1`
-- внутри он использует nightly `build-std` и `musl.cc` cross toolchains для `mips` и `mipsel`
+- внутри он использует nightly `build-std`, Zig и генерируемые wrapper-скрипты для `mips` и `mipsel`, без загрузки внешнего toolchain-архива
 - workflow публикует GitHub release assets сразу для `mips` и `mipsel`
 
 ---
