@@ -59,6 +59,12 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
 
       - uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Show Zig version
+        shell: bash
+        run: zig version
 
       - uses: dtolnay/rust-toolchain@nightly
         with:
