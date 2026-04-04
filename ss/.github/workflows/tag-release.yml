@@ -48,16 +48,19 @@ jobs:
         run: cargo ${{ matrix.alias }}
 
       - name: Package artifact
+        env:
+          ARTIFACT_VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/outline-ss-rust" "dist/outline-ss-rust-${{ matrix.target }}"
-          tar -C dist -czf "dist/outline-ss-rust-${{ matrix.target }}.tar.gz" "outline-ss-rust-${{ matrix.target }}"
+          artifact_base="outline-ss-rust-${ARTIFACT_VERSION}-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/outline-ss-rust" "dist/${artifact_base}"
+          tar -C dist -czf "dist/${artifact_base}.tar.gz" "${artifact_base}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: tag-release-${{ matrix.target }}
-          path: dist/outline-ss-rust-${{ matrix.target }}.tar.gz
+          name: tag-release-${{ github.ref_name }}-${{ matrix.target }}
+          path: dist/outline-ss-rust-${{ github.ref_name }}-${{ matrix.target }}.tar.gz
 
   publish:
     if: github.actor != 'github-actions[bot]'

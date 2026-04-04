@@ -47,16 +47,19 @@ jobs:
         run: cargo ${{ matrix.alias }}
 
       - name: Package artifact
+        env:
+          ARTIFACT_VERSION: nightly-${{ github.sha }}
         run: |
           mkdir -p dist
-          cp "target/${{ matrix.target }}/release/outline-ss-rust" "dist/outline-ss-rust-${{ matrix.target }}"
-          tar -C dist -czf "dist/outline-ss-rust-${{ matrix.target }}.tar.gz" "outline-ss-rust-${{ matrix.target }}"
+          artifact_base="outline-ss-rust-${ARTIFACT_VERSION}-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/outline-ss-rust" "dist/${artifact_base}"
+          tar -C dist -czf "dist/${artifact_base}.tar.gz" "${artifact_base}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: nightly-${{ matrix.target }}
-          path: dist/outline-ss-rust-${{ matrix.target }}.tar.gz
+          name: nightly-${{ github.sha }}-${{ matrix.target }}
+          path: dist/outline-ss-rust-nightly-${{ github.sha }}-${{ matrix.target }}.tar.gz
 
   publish:
     runs-on: ubuntu-latest
