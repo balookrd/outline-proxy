@@ -1,0 +1,49 @@
+[package]
+name = "sockudo-ws-fuzz"
+version = "0.0.0"
+authors = ["Automated"]
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+libfuzzer-sys = "0.4"
+bytes = "1.9"
+
+[dependencies.sockudo-ws]
+path = ".."
+features = ["simd", "permessage-deflate", "fastrand"]
+
+[[bin]]
+name = "parse_frame"
+path = "fuzz_targets/parse_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unmask"
+path = "fuzz_targets/unmask.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "utf8_validation"
+path = "fuzz_targets/utf8_validation.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "protocol"
+path = "fuzz_targets/protocol.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]
+members = ["."]
