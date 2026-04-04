@@ -1,4 +1,4 @@
-name: MIPS Legacy Release
+name: Router Release
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: mips-legacy-release-${{ github.event.inputs.ref }}
+  group: router-release-${{ github.event.inputs.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -33,10 +33,10 @@ jobs:
         run: |
           set -euo pipefail
           version="$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from Cargo.toml")))' )"
-          tag="mips-legacy-v${version}"
+          tag="router-v${version}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "release_name=Legacy MIPS v${version}" >> "$GITHUB_OUTPUT"
+          echo "release_name=Router Release v${version}" >> "$GITHUB_OUTPUT"
 
   build:
     name: Build ${{ matrix.target }}
@@ -46,10 +46,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - target: aarch64-unknown-linux-musl
+            build_kind: zigbuild
           - target: mipsel-unknown-linux-musl
+            build_kind: build-std
             cc_prefix: mipsel-linux-musl
             zig_target: mipsel-linux-musleabi
           - target: mips-unknown-linux-musl
+            build_kind: build-std
             cc_prefix: mips-linux-musl
             zig_target: mips-linux-musleabi
 
@@ -66,13 +70,23 @@ jobs:
         shell: bash
         run: zig version
 
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ matrix.build_kind == 'zigbuild' }}
+        with:
+          targets: ${{ matrix.target }}
+
       - uses: dtolnay/rust-toolchain@nightly
+        if: ${{ matrix.build_kind == 'build-std' }}
         with:
           components: rust-src
+
+      - uses: taiki-e/install-action@cargo-zigbuild
+        if: ${{ matrix.build_kind == 'zigbuild' }}
 
       - uses: Swatinem/rust-cache@v2
 
       - name: Create Zig MIPS toolchain wrappers
+        if: ${{ matrix.build_kind == 'build-std' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -128,7 +142,19 @@ jobs:
             "$wrapper_dir/${{ matrix.cc_prefix }}-ranlib"
           echo "$wrapper_dir" >> "$GITHUB_PATH"
 
-      - name: Build legacy MIPS release asset
+      - name: Build router release asset with cargo-zigbuild
+        if: ${{ matrix.build_kind == 'zigbuild' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.github/scripts/build-release-asset.sh \
+            "${{ matrix.target }}" \
+            "release-router" \
+            "router" \
+            dist
+
+      - name: Build router release asset with build-std
+        if: ${{ matrix.build_kind == 'build-std' }}
         shell: bash
         env:
           CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER: mips-linux-musl-gcc
@@ -163,7 +189,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: mips-legacy-${{ matrix.target }}
+          name: router-release-${{ matrix.target }}
           path: dist/*.tar.gz
           if-no-files-found: error
 
@@ -175,7 +201,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: mips-legacy-*
+          pattern: router-release-*
           merge-multiple: true
           path: dist
 
@@ -186,7 +212,7 @@ jobs:
           cd dist
           sha256sum *.tar.gz > SHA256SUMS.txt
 
-      - name: Publish legacy MIPS release
+      - name: Publish router release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare.outputs.tag }}
