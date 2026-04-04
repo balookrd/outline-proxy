@@ -1,0 +1,205 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      major_minor:
+        description: "Release series in MAJOR.MINOR format (example: 1.7)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.major_minor }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git identity
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          series="${{ github.event.inputs.major_minor }}"
+          if [[ ! "$series" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "major_minor must match MAJOR.MINOR, got: $series" >&2
+            exit 1
+          fi
+
+          git fetch --tags --force
+          latest_tag="$(git tag --list "v${series}.*" --sort=-v:refname | head -n 1)"
+          if [[ -n "$latest_tag" ]]; then
+            patch="${latest_tag##*.}"
+            next_patch=$((patch + 1))
+          else
+            next_patch=0
+          fi
+
+          version="${series}.${next_patch}"
+          tag="v${version}"
+
+          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "Tag ${tag} already exists" >&2
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - name: Update crate version
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          version = "${{ steps.version.outputs.version }}"
+          path = Path("Cargo.toml")
+          text = path.read_text()
+          new_text, count = re.subn(r'^version = "[^"]+"$', f'version = "{version}"', text, count=1, flags=re.M)
+          if count != 1:
+              raise SystemExit("failed to update package version in Cargo.toml")
+          path.write_text(new_text)
+          PY
+
+      - name: Update Cargo.lock root package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          version = "${{ steps.version.outputs.version }}"
+          path = Path("Cargo.lock")
+          text = path.read_text()
+          pattern = r'(\[\[package\]\]\nname = "outline-ws-rust"\nversion = ")([^"]+)(")'
+          new_text, count = re.subn(pattern, r'\g<1>' + version + r'\3', text, count=1)
+          if count != 1:
+              raise SystemExit("failed to update outline-ws-rust version in Cargo.lock")
+          path.write_text(new_text)
+          PY
+
+      - name: Commit version bump
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add Cargo.toml Cargo.lock
+          git commit -m "release: cut ${{ steps.version.outputs.tag }}"
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git tag "${{ steps.version.outputs.tag }}"
+          git push origin HEAD:main
+          git push origin "refs/tags/${{ steps.version.outputs.tag }}"
+
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            profile: release
+            flavor: server
+          - target: aarch64-unknown-linux-musl
+            profile: release
+            flavor: server
+          - target: mipsel-unknown-linux-musl
+            profile: release-router
+            flavor: router
+          - target: mips-unknown-linux-musl
+            profile: release-router
+            flavor: router
+          - target: arm-unknown-linux-musleabi
+            profile: release-router
+            flavor: router
+          - target: armv7-unknown-linux-musleabihf
+            profile: release-router
+            flavor: router
+          - target: aarch64-unknown-linux-musl
+            profile: release-router
+            flavor: router
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: goto-bus-stop/setup-zig@v2
+
+      - uses: taiki-e/install-action@cargo-zigbuild
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.github/scripts/build-release-asset.sh \
+            "${{ matrix.target }}" \
+            "${{ matrix.profile }}" \
+            "${{ matrix.flavor }}" \
+            dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}-${{ matrix.profile }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare
+      - build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          name: Release ${{ needs.prepare.outputs.tag }}
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
