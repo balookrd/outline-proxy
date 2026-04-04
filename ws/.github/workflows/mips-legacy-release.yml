@@ -75,12 +75,34 @@ jobs:
 
           cat > "$wrapper_dir/${{ matrix.cc_prefix }}-gcc" <<EOF
           #!/usr/bin/env bash
-          exec zig cc -target ${{ matrix.zig_target }} "\$@"
+          set -euo pipefail
+          filtered=()
+          for arg in "\$@"; do
+            case "\$arg" in
+              --target=mips-unknown-linux-musl|--target=mipsel-unknown-linux-musl)
+                ;;
+              *)
+                filtered+=("\$arg")
+                ;;
+            esac
+          done
+          exec zig cc -target ${{ matrix.zig_target }} "\${filtered[@]}"
           EOF
 
           cat > "$wrapper_dir/${{ matrix.cc_prefix }}-g++" <<EOF
           #!/usr/bin/env bash
-          exec zig c++ -target ${{ matrix.zig_target }} "\$@"
+          set -euo pipefail
+          filtered=()
+          for arg in "\$@"; do
+            case "\$arg" in
+              --target=mips-unknown-linux-musl|--target=mipsel-unknown-linux-musl)
+                ;;
+              *)
+                filtered+=("\$arg")
+                ;;
+            esac
+          done
+          exec zig c++ -target ${{ matrix.zig_target }} "\${filtered[@]}"
           EOF
 
           cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ar" <<'EOF'
