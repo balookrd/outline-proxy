@@ -221,6 +221,8 @@ rustup target add aarch64-unknown-linux-musl
 
 Текущий stable Rust больше не отдает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` как скачиваемые `rust-std` targets, поэтому CI и shortcuts в документации покрывают только цели, которые еще доступны на stable. Для legacy MIPS-сборок теперь нужен либо pinned старый toolchain, либо кастомный `build-std` flow.
 
+Для этого случая в репозитории добавлен отдельный manual workflow `MIPS Legacy Release`, который собирает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` через nightly + `rust-src` + `-Z build-std`.
+
 ---
 
 ### Feature flags
@@ -313,6 +315,23 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 ```
 
 > `router` — просто псевдоним: сам по себе не устанавливает флагов, просто позволяет написать `--features router` вместо `--no-default-features`.
+
+### Legacy MIPS-сборки
+
+Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`.
+
+Локальный пример:
+
+```bash
+rustup toolchain install nightly --component rust-src
+cargo +nightly zigbuild -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
+```
+
+Пример через CI:
+
+- вручную запускаете workflow `MIPS Legacy Release`
+- передаете `ref`, который нужно собрать, и `tag_name`, например `mips-nightly-2026-04-04`
+- workflow публикует GitHub release assets сразу для `mips` и `mipsel`
 
 ---
 
