@@ -332,7 +332,7 @@ CI example:
 - Run the `MIPS Legacy Release` workflow manually.
 - Pass only the `ref` to build.
 - The workflow reads `version` from `Cargo.toml` and publishes a normal GitHub Release named/tagged like `mips-legacy-v1.0.1`.
-- Under the hood it uses nightly `build-std`, Zig, and generated `mips` / `mipsel` compiler wrapper scripts instead of downloading an external toolchain archive.
+- Under the hood it uses nightly `build-std`, Zig, and generated `mips` / `mipsel` compiler wrapper scripts mapped to Zig's musl EABI targets instead of downloading an external toolchain archive.
 - The workflow publishes GitHub release assets for both `mips` and `mipsel`.
 
 ---

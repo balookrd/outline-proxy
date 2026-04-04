@@ -48,10 +48,10 @@ jobs:
         include:
           - target: mipsel-unknown-linux-musl
             cc_prefix: mipsel-linux-musl
-            zig_target: mipsel-linux-musl
+            zig_target: mipsel-linux-musleabi
           - target: mips-unknown-linux-musl
             cc_prefix: mips-linux-musl
-            zig_target: mips-linux-musl
+            zig_target: mips-linux-musleabi
 
     steps:
       - uses: actions/checkout@v4
