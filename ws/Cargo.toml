@@ -48,7 +48,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 sha1 = "0.10"
-sockudo-ws = { git = "https://github.com/RustNSparks/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
+sockudo-ws = { path = "vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
 socket2 = "0.5"
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
@@ -77,6 +77,3 @@ opt-level = "z"
 
 [patch.crates-io]
 h3 = { path = "vendor/h3" }
-
-[patch."https://github.com/RustNSparks/sockudo-ws"]
-sockudo-ws = { path = "vendor/sockudo-ws" }
