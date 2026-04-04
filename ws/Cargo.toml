@@ -5,9 +5,9 @@ edition = "2024"
 
 # Feature flags
 # -------------
-# default: VM/server build — mimalloc + H3/QUIC + Prometheus metrics
+# default: VM/server build — H3/QUIC + Prometheus metrics
 # router:  stripped build for memory-constrained devices
-#          disables mimalloc, H3/QUIC, and Prometheus metrics
+#          disables H3/QUIC and Prometheus metrics
 #          build with: cargo zigbuild --release --no-default-features --features router --target mipsel-unknown-linux-musl
 [features]
 default = ["h3", "metrics", "env-filter", "multi-thread"]
