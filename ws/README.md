@@ -187,6 +187,18 @@ The project is intentionally practical, but there are still boundaries:
 cargo install cargo-zigbuild
 ```
 
+Shortcuts available in this repository:
+
+```bash
+cargo release-musl-x86_64
+cargo release-musl-aarch64
+cargo release-router-musl-mipsel
+cargo release-router-musl-mips
+cargo release-router-musl-arm
+cargo release-router-musl-armv7
+cargo release-router-musl-aarch64
+```
+
 Install the required Rust targets:
 
 ```bash
@@ -212,12 +224,11 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 
 | Feature | Default | Effect |
 |---|---|---|
-| `mimalloc` | ✓ | Use mimalloc allocator (faster on servers, uses more RAM) |
 | `h3` | ✓ | Include H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
 | `metrics` | ✓ | Include Prometheus metrics endpoint (pulls in prometheus + serde_json) |
-| `router` | — | Convenience alias for `--no-default-features --features router` (disables all three above) |
+| `router` | — | Convenience alias for `--no-default-features --features router` (disables the default optional features above) |
 
-> **Why disable for routers:** `mimalloc` holds 4 MiB arenas and provides zero benefit on a single-threaded process. `h3`/QUIC adds ~1–2 MB binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes all three at once.
+> **Why disable for routers:** `h3`/QUIC adds ~1–2 MB of binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes both at once.
 
 ---
 
@@ -233,18 +244,22 @@ Static x86-64 binary (runs on any Linux x86-64 without glibc dependency):
 
 ```bash
 cargo zigbuild --release --target x86_64-unknown-linux-musl
+# or shorter
+cargo release-musl-x86_64
 ```
 
 Static AArch64 binary (ARM64 servers, AWS Graviton, Ampere):
 
 ```bash
 cargo zigbuild --release --target aarch64-unknown-linux-musl
+# or shorter
+cargo release-musl-aarch64
 ```
 
 To disable only one feature while keeping others (e.g. strip metrics but keep H3):
 
 ```bash
-cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x86_64-unknown-linux-musl
+cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
 ```
 
 ---
@@ -264,30 +279,40 @@ Router builds use the `release-router` cargo profile (`opt-level = "z"`) which p
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
+# or shorter
+cargo release-router-musl-mipsel
 ```
 
 **OpenWrt / MIPS big-endian** (older D-Link, ZTE, some Huawei CPE):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
+# or shorter
+cargo release-router-musl-mips
 ```
 
 **ARM soft-float** (minimal ARM routers without FPU, e.g. older D-Link DIR, Linksys WRT):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
+# or shorter
+cargo release-router-musl-arm
 ```
 
 **ARMv7 hard-float** (Raspberry Pi 2/3 in 32-bit mode, many mid-range routers):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
+# or shorter
+cargo release-router-musl-armv7
 ```
 
 **AArch64 / ARM64** (Raspberry Pi 3/4/5 in 64-bit mode, Banana Pi R3/R4, NanoPi R5S, routers with MT7986/MT7988, IPQ8074):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
+# or shorter
+cargo release-router-musl-aarch64
 ```
 
 The compiled binary is placed in `target/<target>/release-router/outline-ws-rust`.
@@ -760,8 +785,8 @@ On Linux, the process memory sampler updates:
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
 
-With `mimalloc`, heap metrics fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
-`heap_free_bytes` remains `0` unless the active allocator exposes free-heap accounting.
+Heap metrics currently fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
+`heap_free_bytes` remains `0` because the current sampling path does not expose allocator-specific free-heap accounting.
 
 On Linux, the process also emits a periodic descriptor inventory log:
 
@@ -811,7 +836,7 @@ The `tun2tcp` dashboard is grouped into:
 
 Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
 Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
-`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm that an instance is running with `mimalloc`.
+`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm which allocator build is running.
 
 Alert rules:
 

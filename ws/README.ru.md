@@ -187,6 +187,18 @@ tun2udp + tun2tcp"]
 cargo install cargo-zigbuild
 ```
 
+Доступные shortcuts в этом репозитории:
+
+```bash
+cargo release-musl-x86_64
+cargo release-musl-aarch64
+cargo release-router-musl-mipsel
+cargo release-router-musl-mips
+cargo release-router-musl-arm
+cargo release-router-musl-armv7
+cargo release-router-musl-aarch64
+```
+
 Добавить нужные Rust-таргеты:
 
 ```bash
@@ -212,12 +224,11 @@ rustup target add aarch64-unknown-linux-musl
 
 | Фича | По умолч. | Эффект |
 |---|---|---|
-| `mimalloc` | ✓ | Аллокатор mimalloc (быстрее на серверах, занимает больше RAM) |
 | `h3` | ✓ | Транспорт H3/QUIC (тянет quinn + sockudo-ws/http3) |
 | `metrics` | ✓ | Prometheus-метрики (тянет prometheus + serde_json) |
-| `router` | — | Удобный псевдоним для `--no-default-features` (отключает все три выше) |
+| `router` | — | Удобный псевдоним для `--no-default-features --features router` (отключает optional-фичи по умолчанию) |
 
-> **Почему отключать на роутерах:** `mimalloc` держит арены по 4 МБ и не даёт выигрыша на однопоточном процессе. `h3`/QUIC добавляет ~1–2 МБ к бинарю и накладные расходы на MIPS/ARM. `metrics` добавляет prometheus + serde_json и фоновый sampler. `router` убирает всё это одной флагом.
+> **Почему отключать на роутерах:** `h3`/QUIC добавляет ~1–2 МБ к бинарю и накладные расходы на MIPS/ARM. `metrics` добавляет prometheus + serde_json и фоновый sampler. `router` отключает оба сразу.
 
 ---
 
@@ -233,18 +244,22 @@ cargo build --release
 
 ```bash
 cargo zigbuild --release --target x86_64-unknown-linux-musl
+# или короче
+cargo release-musl-x86_64
 ```
 
 Статический бинарь AArch64 (ARM64-серверы, AWS Graviton, Ampere):
 
 ```bash
 cargo zigbuild --release --target aarch64-unknown-linux-musl
+# или короче
+cargo release-musl-aarch64
 ```
 
 Отключить только одну фичу, сохранив остальные (напр. убрать метрики, оставив H3):
 
 ```bash
-cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x86_64-unknown-linux-musl
+cargo zigbuild --release --no-default-features --features h3 --target x86_64-unknown-linux-musl
 ```
 
 ---
@@ -264,30 +279,40 @@ cargo zigbuild --release --no-default-features --features mimalloc,h3 --target x
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
+# или короче
+cargo release-router-musl-mipsel
 ```
 
 **OpenWrt / MIPS big-endian** (старые D-Link, ZTE, некоторые Huawei CPE):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl
+# или короче
+cargo release-router-musl-mips
 ```
 
 **ARM soft-float** (минималистичные ARM-роутеры без FPU, напр. старые Linksys WRT):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi
+# или короче
+cargo release-router-musl-arm
 ```
 
 **ARMv7 hard-float** (Raspberry Pi 2/3 в 32-битном режиме, многие mid-range роутеры):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
+# или короче
+cargo release-router-musl-armv7
 ```
 
 **AArch64 / ARM64** (Raspberry Pi 3/4/5 в 64-битном режиме, Banana Pi R3/R4, NanoPi R5S, роутеры с MT7986/MT7988, IPQ8074):
 
 ```bash
 cargo zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl
+# или короче
+cargo release-router-musl-aarch64
 ```
 
 Скомпилированный бинарь находится в `target/<target>/release-router/outline-ws-rust`.
@@ -759,8 +784,8 @@ scrape_configs:
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
 
-С `mimalloc` метрики heap на Linux откатываются к оценке через `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
-`heap_free_bytes` остаётся `0`, если активный аллокатор не предоставляет отдельную статистику свободного heap.
+Метрики heap на Linux сейчас рассчитываются через оценку по `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
+`heap_free_bytes` остаётся `0`, потому что текущий путь семплирования не предоставляет отдельную статистику свободного heap от аллокатора.
 
 На Linux процесс также периодически выводит в лог inventory дескрипторов:
 

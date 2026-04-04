@@ -1,3 +1,12 @@
 [env]
 AR = { value = "zig ar", force = true }
 RANLIB = { value = "zig ranlib", force = true }
+
+[alias]
+release-musl-x86_64 = "zigbuild --release --target x86_64-unknown-linux-musl"
+release-musl-aarch64 = "zigbuild --release --target aarch64-unknown-linux-musl"
+release-router-musl-mipsel = "zigbuild --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl"
+release-router-musl-mips = "zigbuild --profile release-router --no-default-features --features router --target mips-unknown-linux-musl"
+release-router-musl-arm = "zigbuild --profile release-router --no-default-features --features router --target arm-unknown-linux-musleabi"
+release-router-musl-armv7 = "zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf"
+release-router-musl-aarch64 = "zigbuild --profile release-router --no-default-features --features router --target aarch64-unknown-linux-musl"
