@@ -68,7 +68,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          python3 -c '
+          python3 <<'PY'
           from pathlib import Path
           import re
           import os
@@ -80,7 +80,7 @@ jobs:
           if count != 1:
               raise SystemExit("failed to update package version in Cargo.toml")
           path.write_text(new_text)
-          '
+          PY
 
       - name: Update Cargo.lock root package version
         shell: bash
@@ -88,7 +88,7 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
-          python3 -c '
+          python3 <<'PY'
           from pathlib import Path
           import re
           import os
@@ -101,7 +101,7 @@ jobs:
           if count != 1:
               raise SystemExit("failed to update outline-ws-rust version in Cargo.lock")
           path.write_text(new_text)
-          '
+          PY
 
       - name: Show release version state
         shell: bash
