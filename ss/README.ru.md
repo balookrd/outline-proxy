@@ -154,6 +154,29 @@ cargo run -- --config ./config.toml
 
 Модель листенеров теперь явная: если не задан ни один из `listen`, `h3_listen` или `ss_listen`, сервер завершится с ошибкой конфигурации. Поднимаются только те листенеры, которые явно указаны.
 
+## Короткие команды сборки
+
+Для musl cross-build в репозитории используются готовые Cargo aliases из `.cargo/config.toml`, которые запускают `cargo-zigbuild`. Это делает рабочий путь явным и не завязывает сборку на более хрупкий сценарий с обычным `cargo build --target ...`.
+
+Доступные короткие aliases:
+
+```bash
+cargo build-musl-x86_64
+cargo release-musl-x86_64
+cargo build-musl-aarch64
+cargo release-musl-aarch64
+cargo build-musl-arm
+cargo release-musl-arm
+cargo build-musl-armv7
+cargo release-musl-armv7
+cargo build-musl-mipsel
+cargo release-musl-mipsel
+cargo build-musl-mips
+cargo release-musl-mips
+```
+
+Эти команды разворачиваются в соответствующие вызовы `cargo zigbuild --target ...` для `x86_64`, `aarch64`, `arm`, `armv7`, `mipsel` и `mips`.
+
 ### Параметры верхнего уровня
 
 | Ключ | Назначение |
