@@ -43,17 +43,17 @@ jobs:
             exit 1
           fi
 
-          git fetch origin --tags --force
+          series_pattern="^v${series//./\\.}\\.[0-9]+$"
+          git fetch origin '+refs/tags/*:refs/tags/*' --force
           latest_tag="$(
-            git ls-remote --tags --refs origin "v${series}.*" \
-              | sed 's#.*refs/tags/##' \
-              | sort -V \
-              | tail -n 1
+            {
+              git tag --list | grep -E "${series_pattern}" || true
+            } | sort -V | tail -n 1
           )"
           current_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
 
-          echo "Remote release tags for ${series}:"
-          git ls-remote --tags --refs origin "v${series}.*" | sed 's#.*refs/tags/##' || true
+          echo "Fetched release tags for ${series}:"
+          git tag --list | grep -E "${series_pattern}" || true
           echo "Current Cargo.toml version: ${current_version}"
 
           if [[ -n "$latest_tag" ]]; then
@@ -71,7 +71,7 @@ jobs:
             exit 1
           fi
 
-          if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+          if git show-ref --verify --quiet "refs/tags/${tag}"; then
             echo "Tag ${tag} already exists" >&2
             exit 1
           fi
@@ -142,8 +142,8 @@ jobs:
           set -euo pipefail
           git add Cargo.toml Cargo.lock
           if git diff --cached --quiet; then
-            echo "No staged version bump changes found for ${TAG}" >&2
-            exit 1
+            echo "No version file changes for ${TAG}; tagging current HEAD"
+            exit 0
           fi
           git commit -m "release: cut ${TAG}"
 
