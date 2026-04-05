@@ -205,40 +205,6 @@ download_unit_files() {
   curl -fsSL -o "$tpl_tmp" "$RAW_TEMPLATE_URL"
 }
 
-patch_downloaded_units() {
-  local svc_tmp="$1"
-  local tpl_tmp="$2"
-
-  # 1) Чиним Documentation= на outline-ws-rust
-  sed -i \
-    's#Documentation=https://github\.com/balookrd/outline-ss-rust#Documentation=https://github.com/'"${REPO_OWNER}"'/'"${REPO_NAME}"'#g' \
-    "$svc_tmp" "$tpl_tmp"
-
-  # 2) Гарантируем путь к бинарнику
-  sed -i \
-    's#^ExecStart=/usr/local/bin/outline-ws-rust .*#ExecStart='"${INSTALL_PATH//\//\\/}"' --config /etc/outline-ws-rust/config.toml#' \
-    "$svc_tmp"
-
-  # 3) Для шаблона переводим на отдельные конфиги в instances/
-  sed -i \
-    's#^ExecStart=/usr/local/bin/outline-ws-rust .*#ExecStart='"${INSTALL_PATH//\//\\/}"' --config /etc/outline-ws-rust/instances/%i.toml#' \
-    "$tpl_tmp"
-
-  # 4) Для шаблона делаем отдельные state/runtime/workdir на инстанс
-  sed -i \
-    's#^StateDirectory=.*#StateDirectory=outline-ws-rust/%i#' \
-    "$tpl_tmp"
-  sed -i \
-    's#^RuntimeDirectory=.*#RuntimeDirectory=outline-ws-rust-%i#' \
-    "$tpl_tmp"
-  sed -i \
-    's#^WorkingDirectory=.*#WorkingDirectory=/var/lib/outline-ws-rust/%i#' \
-    "$tpl_tmp"
-  sed -i \
-    's#^ReadWritePaths=.*#ReadWritePaths=/var/lib/outline-ws-rust/%i /var/log/outline-ws-rust#' \
-    "$tpl_tmp"
-}
-
 install_unit_files() {
   local svc_tmp="$1"
   local tpl_tmp="$2"
@@ -416,7 +382,6 @@ main() {
   log "Бинарник установлен: ${INSTALL_PATH}"
 
   download_unit_files "$svc_tmp" "$tpl_tmp"
-  patch_downloaded_units "$svc_tmp" "$tpl_tmp"
   install_unit_files "$svc_tmp" "$tpl_tmp"
 
   write_default_config_if_missing
