@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   build:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     name: Build ${{ matrix.artifact_name }}
     runs-on: ubuntu-latest
     strategy:
@@ -187,6 +188,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     needs: build
     steps:
