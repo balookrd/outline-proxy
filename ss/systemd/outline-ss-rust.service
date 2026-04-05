@@ -19,7 +19,6 @@ RestartSec=3
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=outline-ss-rust
-Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
 
 # Needed for low ports and per-user fwmark.
 # If you only use high ports and do not configure fwmark, you can remove both.
