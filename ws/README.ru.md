@@ -201,8 +201,8 @@ cargo release-router-musl-aarch64
 ### CI-релизы
 
 - Каждый push в `main` запускает workflow `Nightly Release`.
-- CI автоматически создает тег вида `nightly-<commit-sha>`.
-- Этот workflow публикует GitHub `prerelease` с `release`-артефактами для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, плюс `SHA256SUMS.txt`.
+- CI автоматически создает тег вида `nightly-v<current-version>-<commit-sha>`, чтобы было сразу видно, после какой release-линейки собран nightly.
+- Этот workflow публикует GitHub `prerelease` с server-артефактами `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также router-артефактом `release-router` для `aarch64-unknown-linux-musl`, плюс `SHA256SUMS.txt`.
 - Для стабильного релиза запускайте вручную workflow `Release` и передавайте `major_minor`, например `1.7`.
 - CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит, пушит тег `v1.7.Z` и публикует полноценный GitHub Release в рамках того же workflow.
 - В результате один стабильный GitHub Release содержит и server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, и router-артефакты `release-router` для `aarch64-unknown-linux-musl`, `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl`.

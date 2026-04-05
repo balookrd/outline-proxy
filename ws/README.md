@@ -201,8 +201,8 @@ cargo release-router-musl-aarch64
 ### CI Releases
 
 - Every push to `main` triggers the `Nightly Release` workflow.
-- CI auto-creates a tag in the form `nightly-<commit-sha>`.
-- That workflow publishes a GitHub `prerelease` with `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus `SHA256SUMS.txt`.
+- CI auto-creates a tag in the form `nightly-v<current-version>-<commit-sha>`, so it is obvious which release line the nightly follows.
+- That workflow publishes a GitHub `prerelease` with server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus a router `release-router` artifact for `aarch64-unknown-linux-musl`, and `SHA256SUMS.txt`.
 - To cut a stable release, run the manual `Release` workflow and pass `major_minor` such as `1.7`.
 - CI finds the latest `v1.7.*` tag, increments the patch automatically, updates `Cargo.toml` and `Cargo.lock`, creates a release commit, pushes tag `v1.7.Z`, and publishes a full GitHub Release in the same workflow run.
 - The stable release now includes both server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and router `release-router` assets for `aarch64-unknown-linux-musl`, `mips-unknown-linux-musl`, and `mipsel-unknown-linux-musl`.
