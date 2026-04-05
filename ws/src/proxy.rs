@@ -174,7 +174,11 @@ async fn handle_tcp_connect(
                 {
                     return Err(anyhow!("active uplink switched for SOCKS TCP session"));
                 }
-                let chunk = reader.read_chunk().await?;
+                let chunk = match reader.read_chunk().await {
+                    Ok(chunk) => chunk,
+                    Err(_err) if reader.closed_cleanly => break,
+                    Err(err) => return Err(err),
+                };
                 if chunk.is_empty() {
                     // An empty decrypted payload is not valid in Shadowsocks;
                     // treat it as EOF rather than busy-looping without any await.
@@ -194,14 +198,14 @@ async fn handle_tcp_connect(
                     .report_active_traffic(selected_index, TransportKind::Tcp)
                     .await;
             }
-            #[allow(unreachable_code)]
+            client_write
+                .shutdown()
+                .await
+                .context("client shutdown failed")?;
             Ok::<(), anyhow::Error>(())
         };
 
-        let result = tokio::select! {
-            result = uplink => result,
-            result = downlink => result,
-        };
+        let result = tokio::try_join!(uplink, downlink).map(|_| ());
         // Report mid-stream upstream transport failures so that broken transports
         // (e.g. H3 APPLICATION_CLOSE received after session establishment) trigger
         // the H3→H2 downgrade and flush stale warm-standby connections immediately,
@@ -567,10 +571,7 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
         Ok::<(), anyhow::Error>(())
     };
 
-    tokio::select! {
-        result = c2u => result,
-        result = u2c => result,
-    }
+    tokio::try_join!(c2u, u2c).map(|_| ())
 }
 
 async fn connect_tcp_uplink(
