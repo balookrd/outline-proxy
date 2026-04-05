@@ -26,6 +26,8 @@ pub(crate) mod tun_wire_test_utils;
 pub mod types;
 pub mod uplink;
 
+use std::time::Duration;
+
 use anyhow::{Context, Result, anyhow};
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
@@ -102,7 +104,27 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     };
 
     loop {
-        let (stream, peer) = listener.accept().await.context("accept failed")?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(v) => v,
+            Err(e) => {
+                // ECONNABORTED: the client withdrew the connection before
+                // accept() returned.  This is harmless; just try again.
+                if e.kind() == std::io::ErrorKind::ConnectionAborted {
+                    continue;
+                }
+                // EMFILE / ENFILE: process or system FD limit reached.
+                // Sleep briefly so that pending cleanup tasks (H2 driver
+                // tasks, writer tasks) have a chance to run and free FDs,
+                // then retry rather than propagating and killing the process.
+                let raw = e.raw_os_error();
+                if raw == Some(libc::EMFILE) || raw == Some(libc::ENFILE) {
+                    warn!(error = %e, "accept failed (FD limit hit), backing off");
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                return Err(e).context("accept failed");
+            }
+        };
         let config = config.clone();
         let uplinks = uplinks.clone();
         tokio::spawn(async move {
