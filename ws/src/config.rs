@@ -9,6 +9,10 @@ use serde::Deserialize;
 use tokio::fs;
 use url::Url;
 
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use crate::bypass::BypassList;
 use crate::types::{CipherKind, ServerAddr, UplinkTransport, WsTransportMode};
 
 #[derive(Debug, Clone, Parser)]
@@ -97,6 +101,8 @@ pub struct AppConfig {
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
+    /// Optional bypass list for SOCKS5 connections. Shared + hot-reloadable.
+    pub bypass: Option<Arc<RwLock<BypassList>>>,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.
@@ -286,6 +292,7 @@ struct ConfigFile {
     h2: Option<H2Section>,
     udp_recv_buf_bytes: Option<usize>,
     udp_send_buf_bytes: Option<usize>,
+    bypass: Option<BypassSection>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -323,6 +330,18 @@ struct OutlineSection {
 #[derive(Debug, Deserialize)]
 struct MetricsSection {
     listen: Option<SocketAddr>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BypassSection {
+    /// Inline CIDR prefixes (combined with `file` if both are set).
+    prefixes: Option<Vec<String>>,
+    /// Path to a file with one CIDR per line (`#` comments and blank lines ignored).
+    file: Option<PathBuf>,
+    /// How often to poll `file` for mtime changes, in seconds (default: 60).
+    file_poll_secs: Option<u64>,
+    /// If true, bypass IPs NOT in the prefix list (tunnel only the listed prefixes).
+    invert: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -458,6 +477,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .map(|listen| MetricsConfig { listen });
     let tun = load_tun_config(tun_section, args)?;
     let h2 = load_h2_config(h2_section);
+    let bypass = load_bypass_config(file.as_ref().and_then(|f| f.bypass.as_ref())).await?;
 
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
@@ -474,6 +494,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         h2,
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
+        bypass,
     })
 }
 
@@ -1122,6 +1143,44 @@ fn load_h2_config(h2: Option<&H2Section>) -> H2Config {
             .and_then(|s| s.initial_connection_window_size)
             .unwrap_or(2 * 1024 * 1024),
     }
+}
+
+async fn load_bypass_config(
+    bypass: Option<&BypassSection>,
+) -> Result<Option<Arc<RwLock<BypassList>>>> {
+    let Some(section) = bypass else {
+        return Ok(None);
+    };
+    let invert = section.invert.unwrap_or(false);
+
+    let mut prefixes: Vec<String> = section.prefixes.clone().unwrap_or_default();
+
+    if let Some(ref file) = section.file {
+        let content = tokio::fs::read_to_string(file)
+            .await
+            .with_context(|| format!("failed to read bypass file {}", file.display()))?;
+        prefixes.extend(
+            content
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_string),
+        );
+    }
+
+    if prefixes.is_empty() {
+        return Ok(None);
+    }
+
+    let list = BypassList::parse(&prefixes, invert)?;
+    let shared = Arc::new(RwLock::new(list));
+
+    if let Some(ref file) = section.file {
+        let poll = Duration::from_secs(section.file_poll_secs.unwrap_or(60));
+        crate::bypass::spawn_file_watcher(file.clone(), Arc::clone(&shared), invert, poll);
+    }
+
+    Ok(Some(shared))
 }
 
 #[cfg(test)]
