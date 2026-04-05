@@ -1,6 +1,6 @@
 [Unit]
 Description=SOCKS5 to Outline-over-WebSocket proxy
-Documentation=https://github.com/balookrd/outline-ss-rust
+Documentation=https://github.com/balookrd/outline-ws-rust
 After=network-online.target
 Wants=network-online.target
 
@@ -22,8 +22,8 @@ CapabilityBoundingSet=CAP_NET_ADMIN
 LimitNOFILE=1048576
 LimitSTACK=8M
 TasksMax=infinity
-
 NoNewPrivileges=true
+
 DynamicUser=true
 StateDirectory=outline-ws-rust
 LogsDirectory=outline-ws-rust
@@ -52,6 +52,7 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
+
 ReadWritePaths=/var/lib/outline-ws-rust /var/log/outline-ws-rust
 
 [Install]
