@@ -107,10 +107,6 @@ jobs:
             target: x86_64-unknown-linux-musl
           - alias: release-musl-aarch64
             target: aarch64-unknown-linux-musl
-          - alias: release-musl-arm
-            target: arm-unknown-linux-musleabi
-          - alias: release-musl-armv7
-            target: armv7-unknown-linux-musleabihf
 
     steps:
       - uses: actions/checkout@v5
