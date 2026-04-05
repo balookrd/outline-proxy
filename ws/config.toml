@@ -37,6 +37,21 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
+# [bypass]
+# Bypass (direct connection, not through the tunnel) for SOCKS5 traffic.
+# Only IP targets are matched; domain names always go through the tunnel.
+#
+# Load from a file (one CIDR per line, # comments and blank lines are ignored):
+# file = "/etc/outline/bypass.txt"
+# file_poll_secs = 60   # how often to check the file for changes (default: 60)
+#
+# Inline prefixes (combined with file if both are set):
+# prefixes = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "fc00::/7"]
+#
+# Inverted (bypass everything NOT in the list; listed prefixes go through tunnel):
+# prefixes = ["8.8.8.8/32"]
+# invert = true
+
 [probe]
 interval_secs = 30
 timeout_secs = 10
