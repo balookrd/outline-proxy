@@ -1,6 +1,6 @@
 [Unit]
-Description=SOCKS5 to Outline-over-WebSocket proxy
-Documentation=https://github.com/balookrd/outline-ss-rust
+Description=SOCKS5 to Outline-over-WebSocket proxy instance %i
+Documentation=https://github.com/balookrd/outline-ws-rust
 After=network-online.target
 Wants=network-online.target
 
@@ -9,7 +9,7 @@ Type=simple
 Environment=RUST_LOG=info
 Environment=NO_COLOR=1
 Environment=MIMALLOC_ARENA_RESERVE=262144
-ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config-%i.toml
+ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/instances/%i.toml
 Restart=on-failure
 RestartSec=3s
 
@@ -22,13 +22,13 @@ CapabilityBoundingSet=CAP_NET_ADMIN
 LimitNOFILE=1048576
 LimitSTACK=8M
 TasksMax=infinity
-
 NoNewPrivileges=true
+
 DynamicUser=true
-StateDirectory=outline-ws-rust
+StateDirectory=outline-ws-rust/%i
 LogsDirectory=outline-ws-rust
-RuntimeDirectory=outline-ws-rust
-WorkingDirectory=/var/lib/outline-ws-rust
+RuntimeDirectory=outline-ws-rust-%i
+WorkingDirectory=/var/lib/outline-ws-rust/%i
 UMask=0077
 
 PrivateTmp=true
@@ -52,7 +52,8 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-ReadWritePaths=/var/lib/outline-ws-rust /var/log/outline-ws-rust
+
+ReadWritePaths=/var/lib/outline-ws-rust/%i /var/log/outline-ws-rust
 
 [Install]
 WantedBy=multi-user.target
