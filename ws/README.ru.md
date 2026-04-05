@@ -204,9 +204,10 @@ cargo release-router-musl-aarch64
 - CI автоматически создает тег вида `nightly-<commit-sha>`.
 - Этот workflow публикует GitHub `prerelease` с `release`-артефактами для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, плюс `SHA256SUMS.txt`.
 - Для стабильного релиза запускайте вручную workflow `Release` и передавайте `major_minor`, например `1.7`.
-- CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит, ставит тег `v1.7.Z` и публикует полноценный GitHub Release с `release`-артефактами для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
-- Если нужно, push тега вида `v1.2.3` по-прежнему запускает workflow `Tag Release` как внешний tag-driven путь публикации для тех же двух server-таргетов.
-- Роутерные бинарники публикуются отдельным manual workflow: `Router Release`.
+- CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит и пушит тег `v1.7.Z`.
+- Этот тег запускает workflow `Tag Release`, который теперь является единственным publisher'ом стабильного релиза.
+- В результате один GitHub Release содержит и server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, и router-артефакты `release-router` для `aarch64-unknown-linux-musl`, `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl`.
+- Router-архивы называются `outline-ws-rust-router-v<version>-<target>.tar.gz`, чтобы не пересекаться с обычными server-артефактами.
 
 Добавить нужные Rust-таргеты:
 
@@ -221,9 +222,7 @@ rustup target add armv7-unknown-linux-musleabihf
 rustup target add aarch64-unknown-linux-musl
 ```
 
-Текущий stable Rust больше не отдает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` как скачиваемые `rust-std` targets, поэтому CI и shortcuts в документации покрывают только цели, которые еще доступны на stable. Для legacy MIPS-сборок теперь нужен либо pinned старый toolchain, либо кастомный `build-std` flow.
-
-Для этого случая в репозитории добавлен отдельный manual workflow `Router Release`. Он собирает `release-router` для `aarch64-unknown-linux-musl`, а также legacy `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` через nightly + `rust-src` + `-Z build-std`.
+Текущий stable Rust больше не отдает `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl` как скачиваемые `rust-std` targets, поэтому локальные shortcuts в документации покрывают только цели, которые еще доступны на stable. Для legacy MIPS-сборок теперь нужен либо pinned старый toolchain, либо кастомный `build-std` flow; официальные release-артефакты для этих целей собираются в CI через стабильный workflow `Tag Release`.
 
 ---
 
@@ -318,9 +317,9 @@ ssh root@192.168.1.1 chmod +x /usr/local/bin/outline-ws-rust
 
 > `router` — просто псевдоним: сам по себе не устанавливает флагов, просто позволяет написать `--features router` вместо `--no-default-features`.
 
-### Workflow Router Release
+### Release-артефакты для роутеров
 
-Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`. Для локальной сборки по-прежнему нужен рабочий MIPS musl toolchain или эквивалентная схема с Zig-обертками; самый простой и надежный путь сейчас — отдельный CI workflow.
+Stable Rust больше не поставляет готовый `rust-std` для `mips-unknown-linux-musl` / `mipsel-unknown-linux-musl`, поэтому такие сборки теперь требуют nightly и `build-std`. Для локальной сборки по-прежнему нужен рабочий MIPS musl toolchain или эквивалентная схема с Zig-обертками; самый простой и надежный путь для официальных артефактов сейчас — стандартный CI release flow.
 
 Локальный пример, если такой toolchain уже есть:
 
@@ -329,14 +328,13 @@ rustup toolchain install nightly --component rust-src
 cargo +nightly build -Z build-std=std,panic_abort --profile release-router --no-default-features --features router --target mipsel-unknown-linux-musl
 ```
 
-Пример через CI:
+Пример через CI / релиз:
 
-- вручную запускаете workflow `Router Release`
-- передаете только `ref`, который нужно собрать
-- workflow читает `version` из `Cargo.toml` и публикует обычный GitHub Release с именем/тегом вида `router-v1.0.1`
-- для `aarch64-unknown-linux-musl` он собирает `release-router` через `cargo-zigbuild`
+- вручную запускаете workflow `Release` или пушите тег вида `v1.2.3`
+- тег запускает `Tag Release`, который публикует один GitHub Release и для server, и для router-артефактов
+- для `aarch64-unknown-linux-musl` router-бинарь собирается через `cargo-zigbuild`
 - для `mips` и `mipsel` внутри используется nightly `build-std`, Zig и генерируемые wrapper-скрипты, которые мапятся на Zig musl EABI targets, без загрузки внешнего toolchain-архива
-- workflow публикует GitHub release assets для `aarch64`, `mips` и `mipsel`
+- опубликованные router-архивы называются `outline-ws-rust-router-v<version>-<target>.tar.gz`
 
 ---
 

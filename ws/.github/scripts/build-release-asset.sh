@@ -16,6 +16,7 @@ version="$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").rea
 
 case "$flavor" in
   server)
+    dest_prefix="$binary_name"
     if [[ "$profile" == "release" ]]; then
       cargo zigbuild --locked --release --target "$target"
     else
@@ -24,10 +25,12 @@ case "$flavor" in
     artifact_dir="$profile"
     ;;
   router)
+    dest_prefix="${binary_name}-router"
     cargo zigbuild --locked --profile "$profile" --no-default-features --features router --target "$target"
     artifact_dir="$profile"
     ;;
   router-build-std)
+    dest_prefix="${binary_name}-router"
     cargo zigbuild --locked -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router --target "$target"
     artifact_dir="$profile"
     ;;
@@ -38,7 +41,7 @@ case "$flavor" in
 esac
 
 src_path="target/${target}/${artifact_dir}/${binary_name}"
-dest_name="${binary_name}-v${version}-${target}"
+dest_name="${dest_prefix}-v${version}-${target}"
 
 mkdir -p "$output_dir"
 cp "$src_path" "${output_dir}/${dest_name}"
