@@ -35,9 +35,7 @@ die() {
 }
 
 need_root() {
-  if [[ "${EUID}" -ne 0 ]]; then
-    die "Запусти скрипт от root"
-  fi
+  [[ "${EUID}" -eq 0 ]] || die "Запусти скрипт от root"
 }
 
 have_cmd() {
@@ -49,15 +47,15 @@ fetch() {
   local out="$2"
 
   if have_cmd curl; then
-    curl -fsSL --retry 3 --connect-timeout 15 -o "$out" "$url"
+    curl -fL --retry 3 --connect-timeout 15 -o "$out" "$url"
   elif have_cmd wget; then
-    wget -qO "$out" "$url"
+    wget -O "$out" "$url"
   else
     die "Нужен curl или wget"
   fi
 }
 
-fetch_to_stdout() {
+fetch_stdout() {
   local url="$1"
 
   if have_cmd curl; then
@@ -71,10 +69,18 @@ fetch_to_stdout() {
 
 require_tools() {
   have_cmd tar || die "Не найден tar"
-  have_cmd systemctl || die "Не найден systemctl"
   have_cmd uname || die "Не найден uname"
-  have_cmd grep || die "Не найден grep"
-  have_cmd sed || die "Не найден sed"
+  have_cmd install || die "Не найден install"
+  have_cmd find || die "Не найден find"
+  have_cmd systemctl || die "Не найден systemctl"
+  have_cmd mktemp || die "Не найден mktemp"
+  have_cmd getent || die "Не найден getent"
+  have_cmd useradd || die "Не найден useradd"
+  have_cmd groupadd || die "Не найден groupadd"
+
+  if ! have_cmd systemd-analyze; then
+    warn "systemd-analyze не найден, проверка unit будет пропущена"
+  fi
 }
 
 detect_arch() {
@@ -97,39 +103,54 @@ detect_arch() {
   esac
 }
 
-github_api_latest_release() {
-  fetch_to_stdout "https://api.github.com/repos/${REPO}/releases/latest"
+resolve_latest_tag() {
+  local url final_url
+  url="https://github.com/${REPO}/releases/latest"
+
+  if have_cmd curl; then
+    final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$url")"
+  elif have_cmd wget; then
+    final_url="$(wget -qSO- "$url" 2>&1 | awk '/^  Location: /{print $2}' | tail -n1 | tr -d '\r')"
+  else
+    die "Нужен curl или wget"
+  fi
+
+  LATEST_TAG="${final_url##*/}"
+  [[ -n "${LATEST_TAG}" && "${LATEST_TAG}" != "latest" ]] || die "Не удалось определить latest release tag"
 }
 
-extract_release_tag() {
-  sed -n 's/.*"tag_name":[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1
+release_asset_url() {
+  local tag="$1"
+  local triple="$2"
+  printf 'https://github.com/%s/releases/download/%s/%s-%s-%s.tar.gz' \
+    "$REPO" "$tag" "$BINARY_NAME" "$tag" "$triple"
 }
 
-extract_asset_url() {
-  local triple="$1"
-  grep -o '"browser_download_url":[[:space:]]*"[^"]*"' \
-    | sed 's/.*"browser_download_url":[[:space:]]*"\([^"]*\)"/\1/' \
-    | grep "/${BINARY_NAME}-.*-${triple}\.tar\.gz$" \
-    | head -n1
+tag_raw_url() {
+  local tag="$1"
+  local path="$2"
+  printf 'https://raw.githubusercontent.com/%s/%s/%s' "$REPO" "$tag" "$path"
 }
 
-extract_raw_binary() {
+extract_binary() {
   local archive="$1"
-  local dest="$2"
+  local dest_tmp="$2"
+  local extract_dir="${TMP_DIR}/extract"
 
-  tar -xzf "$archive" -C "$TMP_DIR"
+  rm -rf "$extract_dir"
+  mkdir -p "$extract_dir"
+  tar -xzf "$archive" -C "$extract_dir"
 
   local found=""
   while IFS= read -r -d '' f; do
-    if [[ "$(basename "$f")" == "$BINARY_NAME" ]] && [[ -x "$f" ]]; then
+    if [[ "$(basename "$f")" == "$BINARY_NAME" ]] && [[ -f "$f" ]]; then
       found="$f"
       break
     fi
-  done < <(find "$TMP_DIR" -type f -perm -111 -print0)
+  done < <(find "$extract_dir" -type f -print0)
 
   [[ -n "$found" ]] || die "Не удалось найти бинарь ${BINARY_NAME} в архиве"
-
-  install -m 0755 "$found" "$dest"
+  install -m 0755 "$found" "$dest_tmp"
 }
 
 ensure_user_group() {
@@ -162,44 +183,72 @@ install_config_if_missing() {
     return
   fi
 
-  local raw_url="https://raw.githubusercontent.com/${REPO}/main/config.toml"
-  log "Скачиваю пример конфига ${raw_url}"
-  fetch "$raw_url" "$CONFIG_PATH"
+  local cfg_url
+  cfg_url="$(tag_raw_url "$LATEST_TAG" "config.toml")"
+
+  log "Скачиваю пример конфига ${cfg_url}"
+  fetch "$cfg_url" "$CONFIG_PATH"
   chmod 0640 "$CONFIG_PATH"
   chown root:"$SERVICE_GROUP" "$CONFIG_PATH"
 }
 
 install_systemd_unit() {
-  local raw_url="https://raw.githubusercontent.com/${REPO}/main/systemd/${SERVICE_NAME}"
-  log "Скачиваю systemd unit ${raw_url}"
-  fetch "$raw_url" "$SERVICE_PATH"
-  chmod 0644 "$SERVICE_PATH"
+  local unit_url tmp_unit
+  unit_url="$(tag_raw_url "$LATEST_TAG" "systemd/${SERVICE_NAME}")"
+  tmp_unit="${TMP_DIR}/${SERVICE_NAME}"
+
+  log "Скачиваю systemd unit ${unit_url}"
+  fetch "$unit_url" "$tmp_unit"
+  chmod 0644 "$tmp_unit"
+
+  if have_cmd systemd-analyze; then
+    log "Проверяю unit через systemd-analyze verify"
+    systemd-analyze verify "$tmp_unit" >/dev/null
+  fi
+
+  install -m 0644 "$tmp_unit" "$SERVICE_PATH"
 }
 
-service_exists() {
-  systemctl list-unit-files --type=service --no-legend 2>/dev/null | awk '{print $1}' | grep -Fxq "$SERVICE_NAME"
+install_binary() {
+  local asset_url archive tmp_bin backup_path=""
+  asset_url="$(release_asset_url "$LATEST_TAG" "$TARGET_TRIPLE")"
+  archive="${TMP_DIR}/${BINARY_NAME}.tar.gz"
+  tmp_bin="${TMP_DIR}/${BINARY_NAME}.new"
+
+  log "Скачиваю архив ${asset_url}"
+  fetch "$asset_url" "$archive"
+
+  log "Распаковываю бинарь"
+  extract_binary "$archive" "$tmp_bin"
+
+  if [[ -f "$INSTALL_BIN_PATH" ]]; then
+    backup_path="${INSTALL_BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+    log "Делаю backup старого бинаря: ${backup_path}"
+    cp -a "$INSTALL_BIN_PATH" "$backup_path"
+  fi
+
+  log "Устанавливаю бинарь в ${INSTALL_BIN_PATH}"
+  install -m 0755 "$tmp_bin" "${INSTALL_BIN_PATH}.tmp"
+  mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
 }
 
-service_active() {
-  systemctl is-active --quiet "$SERVICE_NAME"
-}
-
-restart_service() {
+reload_and_restart_service() {
   systemctl daemon-reload
   systemctl enable "$SERVICE_NAME" >/dev/null
 
-  if service_active; then
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
     log "Перезапускаю ${SERVICE_NAME}"
-    systemctl restart "$SERVICE_NAME"
+    systemctl try-restart "$SERVICE_NAME"
   else
     log "Запускаю ${SERVICE_NAME}"
-    systemctl restart "$SERVICE_NAME"
+    systemctl start "$SERVICE_NAME"
   fi
 }
 
 show_summary() {
   echo
   echo "Готово."
+  echo "Release: ${LATEST_TAG}"
   echo "Binary : ${INSTALL_BIN_PATH}"
   echo "Service: ${SERVICE_PATH}"
   echo "Config : ${CONFIG_PATH}"
@@ -213,41 +262,17 @@ main() {
   need_root
   require_tools
   detect_arch
+  resolve_latest_tag
 
   log "Архитектура: ${TARGET_TRIPLE}"
-  log "Получаю latest release для ${REPO}"
-
-  local release_json
-  release_json="$(github_api_latest_release)"
-
-  local tag
-  tag="$(printf '%s\n' "$release_json" | extract_release_tag)"
-  [[ -n "$tag" ]] || die "Не удалось определить tag latest release"
-
-  local asset_url
-  asset_url="$(printf '%s\n' "$release_json" | extract_asset_url "$TARGET_TRIPLE")"
-  [[ -n "$asset_url" ]] || die "Не найден asset для ${TARGET_TRIPLE} в релизе ${tag}"
-
-  log "Latest release: ${tag}"
-  log "Asset: ${asset_url}"
-
-  local archive="${TMP_DIR}/${BINARY_NAME}.tar.gz"
-  fetch "$asset_url" "$archive"
-
-  if [[ -f "$INSTALL_BIN_PATH" ]]; then
-    local backup="${INSTALL_BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
-    log "Делаю backup старого бинаря: ${backup}"
-    cp -a "$INSTALL_BIN_PATH" "$backup"
-  fi
-
-  log "Устанавливаю бинарь в ${INSTALL_BIN_PATH}"
-  extract_raw_binary "$archive" "$INSTALL_BIN_PATH"
+  log "Latest release: ${LATEST_TAG}"
 
   ensure_user_group
   install_dirs
+  install_binary
   install_config_if_missing
   install_systemd_unit
-  restart_service
+  reload_and_restart_service
   show_summary
 }
 
