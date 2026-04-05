@@ -56,10 +56,16 @@ pub async fn handle_client(
 
 async fn handle_tcp_connect(
     mut client: TcpStream,
-    _config: AppConfig,
+    config: AppConfig,
     uplinks: UplinkManager,
     target: TargetAddr,
 ) -> Result<()> {
+    if let Some(ref bypass) = config.bypass {
+        if bypass.read().await.is_bypassed(&target) {
+            info!(target = %target, "TCP bypass: direct connection");
+            return handle_tcp_direct(client, target).await;
+        }
+    }
     let session = metrics::track_session("tcp");
     let result = async {
         let mut last_error = None;
@@ -229,7 +235,7 @@ async fn handle_tcp_connect(
 
 async fn handle_udp_associate(
     mut client: TcpStream,
-    _config: AppConfig,
+    config: AppConfig,
     uplinks: UplinkManager,
     _client_hint: TargetAddr,
 ) -> Result<()> {
@@ -243,6 +249,17 @@ async fn handle_udp_associate(
         let relay_addr = udp_socket
             .local_addr()
             .context("failed to read UDP relay address")?;
+
+        // Optional socket for direct (bypass) UDP packets.
+        let bypass_socket = if config.bypass.is_some() {
+            let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
+                .await
+                .with_context(|| format!("failed to bind bypass UDP socket on {}", bind_ip))?;
+            Some(Arc::new(sock))
+        } else {
+            None
+        };
+        let bypass = config.bypass.clone();
 
         let active_transport = Arc::new(Mutex::new(select_udp_transport(&uplinks, None).await?));
         let (initial_uplink_name, initial_weight) = {
@@ -268,6 +285,8 @@ async fn handle_udp_associate(
         let socket_uplink = Arc::clone(&udp_socket);
         let active_transport_uplink = Arc::clone(&active_transport);
         let uplinks_uplink = uplinks.clone();
+        let bypass_socket_uplink = bypass_socket.clone();
+        let bypass_uplink = bypass.clone();
         let uplink = async move {
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
@@ -282,6 +301,27 @@ async fn handle_udp_associate(
                 let Some(packet) = reassembler.push_fragment(packet)? else {
                     continue;
                 };
+
+                // Bypass: send directly without going through the uplink.
+                if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
+                    if bl.read().await.is_bypassed(&packet.target) {
+                        let target_addr = match &packet.target {
+                            crate::types::TargetAddr::IpV4(ip, port) => {
+                                SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
+                            }
+                            crate::types::TargetAddr::IpV6(ip, port) => {
+                                SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
+                            }
+                            crate::types::TargetAddr::Domain(_, _) => {
+                                unreachable!("domains return false from is_bypassed")
+                            }
+                        };
+                        sock.send_to(&packet.payload, target_addr)
+                            .await
+                            .context("bypass UDP send failed")?;
+                        continue;
+                    }
+                }
 
                 let mut payload = packet.target.to_wire_bytes()?;
                 payload.extend_from_slice(&packet.payload);
@@ -443,15 +483,94 @@ async fn handle_udp_associate(
             Ok::<(), anyhow::Error>(())
         };
 
+        // Receive responses from directly-contacted servers and forward to the client.
+        let client_udp_addr_direct = Arc::clone(&client_udp_addr);
+        let socket_direct = Arc::clone(&udp_socket);
+        let direct_downlink = async move {
+            let Some(sock) = bypass_socket else {
+                std::future::pending::<()>().await;
+                unreachable!()
+            };
+            let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
+            loop {
+                let (len, src_addr) = sock
+                    .recv_from(&mut buf)
+                    .await
+                    .context("bypass UDP recv failed")?;
+                let client_addr =
+                    client_udp_addr_direct.lock().await.ok_or_else(|| {
+                        anyhow!("received bypass UDP response before client sent any packet")
+                    })?;
+                let target = socket_addr_to_target(src_addr);
+                let packet = build_udp_packet(&target, &buf[..len])?;
+                if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
+                    warn!(
+                        %client_addr,
+                        target = %target,
+                        packet_len = packet.len(),
+                        limit = MAX_UDP_RELAY_PACKET_SIZE,
+                        "dropping oversized bypass UDP response"
+                    );
+                    metrics::record_dropped_oversized_udp_packet("outgoing");
+                    continue;
+                }
+                socket_direct
+                    .send_to(&packet, client_addr)
+                    .await
+                    .context("bypass UDP relay send failed")?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
         tokio::select! {
             result = uplink => result,
             result = downlink => result,
             result = control => result,
+            result = direct_downlink => result,
         }
     }
     .await;
     session.finish(result.is_ok());
     result
+}
+
+async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<()> {
+    let addr = match &target {
+        TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
+        TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
+        TargetAddr::Domain(host, port) => tokio::net::lookup_host(format!("{host}:{port}"))
+            .await
+            .with_context(|| format!("failed to resolve {target}"))?
+            .next()
+            .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
+    };
+
+    let upstream = TcpStream::connect(addr)
+        .await
+        .with_context(|| format!("direct TCP connect to {target} failed"))?;
+
+    let bound_addr = socket_addr_to_target(client.local_addr()?);
+    send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
+
+    let (mut client_read, mut client_write) = client.into_split();
+    let (mut upstream_read, mut upstream_write) = upstream.into_split();
+
+    let c2u = async {
+        tokio::io::copy(&mut client_read, &mut upstream_write).await?;
+        upstream_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    };
+    let u2c = async {
+        tokio::io::copy(&mut upstream_read, &mut client_write).await?;
+        client_write.shutdown().await?;
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::select! {
+        result = c2u => result,
+        result = u2c => result,
+    }
 }
 
 async fn connect_tcp_uplink(
