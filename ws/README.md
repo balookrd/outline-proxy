@@ -90,6 +90,7 @@ tun2udp + tun2tcp"]
 - UDP `ASSOCIATE`
 - SOCKS5 UDP fragmentation reassembly on inbound client traffic
 - IPv4, IPv6, and domain-name targets
+- optional bypass list for direct (non-tunneled) connections by IP prefix, file-backed with hot-reload
 
 ### Outline transports
 
@@ -570,6 +571,57 @@ password = "Secret0"
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
 - `--fwmark` / `OUTLINE_FWMARK`
+
+## SOCKS5 Bypass
+
+The `[bypass]` section lets you route selected SOCKS5 TCP and UDP connections directly to the internet instead of through the tunnel. Matching is done on the resolved IP address; domain-name targets are never bypassed.
+
+### Bypass config
+
+```toml
+[bypass]
+# Load prefixes from a file (one CIDR per line; # comments and blank lines ignored).
+file = "/etc/outline-ws-rust/bypass.txt"
+# How often to poll the file for mtime changes and reload it (default: 60 s).
+file_poll_secs = 60
+
+# Inline prefixes — combined with `file` if both are set.
+# prefixes = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "fc00::/7"]
+
+# Inverted mode: bypass everything NOT in the list (only listed prefixes go through the tunnel).
+# invert = false  # default
+```
+
+### Bypass file format
+
+One CIDR per line. `#` comments and blank lines are ignored. Both IPv4 and IPv6 prefixes are accepted.
+
+```
+# RFC 1918 private ranges
+10.0.0.0/8
+172.16.0.0/12
+192.168.0.0/16
+
+# IPv6 ULA
+fc00::/7
+
+# Country-level blocks (example)
+100.43.72.0/24
+2001:1428::/32
+2001:1900:5:2:2::4841/128
+```
+
+### How hot-reload works
+
+A background tokio task polls the file's `mtime` every `file_poll_secs` seconds. When a change is detected the file is re-read and the in-memory prefix list is atomically replaced via `Arc<RwLock<>>`. Read-side lookup (per new SOCKS5 connection) holds a shared read-lock for the duration of a single `is_bypassed` call — typically a few microseconds. On reload error the previous list is kept and a warning is logged.
+
+### Prefix matching
+
+Internally prefixes are converted to sorted `[start, end]` integer ranges (IPv4 as `u32`, IPv6 as `u128`), with overlapping and adjacent ranges merged. Lookup uses `partition_point` (binary search) — O(log n), no extra dependencies, cache-friendly linear memory.
+
+### Inverted mode
+
+Set `invert = true` to tunnel only the listed prefixes and bypass everything else. Useful when the tunnel list is small and the bypass list is the majority of traffic.
 
 ## Transport Modes
 
