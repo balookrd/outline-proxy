@@ -24,8 +24,8 @@ RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/systemd/outline-ws-rust.service}
 RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/systemd/outline-ws-rust@.service}"
 
 # Откуда качать config-файлы
-RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.example.toml}"
-RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.example.toml}"
+RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.toml}"
+RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.toml}"
 
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
