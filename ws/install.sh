@@ -23,6 +23,10 @@ RAW_BASE="${RAW_BASE:-https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAM
 RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/systemd/outline-ws-rust.service}"
 RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/systemd/outline-ws-rust@.service}"
 
+# Откуда качать config-файлы
+RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.example.toml}"
+RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.example.toml}"
+
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
 
@@ -213,113 +217,25 @@ install_unit_files() {
   install -m 0644 "$tpl_tmp" "${SYSTEMD_DIR}/${TEMPLATE_NAME}"
 }
 
-write_default_config_if_missing() {
+download_default_config_if_missing() {
   if [[ ! -f "${CONFIG_DIR}/config.toml" ]]; then
-    cat > "${CONFIG_DIR}/config.toml" <<'EOF'
-[socks5]
-listen = "[::]:1080"
-
-[metrics]
-listen = "[::1]:9090"
-
-[probe]
-interval_secs = 30
-timeout_secs = 10
-max_concurrent = 4
-max_dials = 2
-
-[probe.ws]
-enabled = true
-
-[probe.http]
-url = "http://example.com/"
-
-[probe.dns]
-server = "1.1.1.1"
-port = 53
-name = "example.com"
-
-[load_balancing]
-mode = "active_active"
-routing_scope = "per_flow"
-warm_standby_tcp = 1
-warm_standby_udp = 1
-sticky_ttl_secs = 300
-hysteresis_ms = 50
-failure_cooldown_secs = 10
-rtt_ewma_alpha = 0.3
-failure_penalty_ms = 500
-failure_penalty_max_ms = 30000
-failure_penalty_halflife_secs = 60
-
-[[uplinks]]
-name = "primary"
-transport = "websocket"
-tcp_ws_url = "wss://example.com/SECRET/tcp"
-weight = 1.0
-tcp_ws_mode = "h3"
-udp_ws_url = "wss://example.com/SECRET/udp"
-udp_ws_mode = "h3"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
-EOF
+    log "Скачивание default config"
+    curl -fsSL -o "${CONFIG_DIR}/config.toml" "$RAW_CONFIG_URL"
     chmod 600 "${CONFIG_DIR}/config.toml"
+  else
+    log "config.toml уже существует — не перезаписываем"
   fi
 }
 
-write_instance_example_if_missing() {
+download_instance_example_if_missing() {
   mkdir -p "${CONFIG_DIR}/instances"
 
   if [[ ! -f "${CONFIG_DIR}/instances/example.toml" ]]; then
-    cat > "${CONFIG_DIR}/instances/example.toml" <<'EOF'
-[socks5]
-listen = "[::]:1081"
-
-[metrics]
-listen = "[::1]:9091"
-
-[probe]
-interval_secs = 30
-timeout_secs = 10
-max_concurrent = 4
-max_dials = 2
-
-[probe.ws]
-enabled = true
-
-[probe.http]
-url = "http://example.com/"
-
-[probe.dns]
-server = "1.1.1.1"
-port = 53
-name = "example.com"
-
-[load_balancing]
-mode = "active_active"
-routing_scope = "per_flow"
-warm_standby_tcp = 1
-warm_standby_udp = 1
-sticky_ttl_secs = 300
-hysteresis_ms = 50
-failure_cooldown_secs = 10
-rtt_ewma_alpha = 0.3
-failure_penalty_ms = 500
-failure_penalty_max_ms = 30000
-failure_penalty_halflife_secs = 60
-
-[[uplinks]]
-name = "primary"
-transport = "websocket"
-tcp_ws_url = "wss://example.com/SECRET/tcp"
-weight = 1.0
-tcp_ws_mode = "h3"
-udp_ws_url = "wss://example.com/SECRET/udp"
-udp_ws_mode = "h3"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
-EOF
+    log "Скачивание example instance config"
+    curl -fsSL -o "${CONFIG_DIR}/instances/example.toml" "$RAW_INSTANCE_CONFIG_URL"
     chmod 600 "${CONFIG_DIR}/instances/example.toml"
+  else
+    log "instance example уже существует — не перезаписываем"
   fi
 }
 
@@ -384,8 +300,8 @@ main() {
   download_unit_files "$svc_tmp" "$tpl_tmp"
   install_unit_files "$svc_tmp" "$tpl_tmp"
 
-  write_default_config_if_missing
-  write_instance_example_if_missing
+  download_default_config_if_missing
+  download_instance_example_if_missing
 
   systemctl daemon-reload
   systemctl enable outline-ws-rust.service >/dev/null 2>&1 || true
