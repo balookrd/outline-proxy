@@ -6,9 +6,6 @@ on:
       tag:
         required: true
         type: string
-      version:
-        required: true
-        type: string
 
 permissions:
   contents: write
@@ -57,6 +54,16 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
+
+      - name: Derive version from tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag }}"
+          version="${tag#v}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -129,6 +136,7 @@ jobs:
         if: ${{ matrix.build_kind == 'build-std' }}
         shell: bash
         env:
+          VERSION: ${{ steps.meta.outputs.version }}
           CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER: mips-linux-musl-gcc
           CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER: mipsel-linux-musl-gcc
           CC_mips_unknown_linux_musl: mips-linux-musl-gcc
@@ -151,7 +159,7 @@ jobs:
 
           mkdir -p dist
           binary_name="outline-ws-rust"
-          dest_name="${binary_name}-router-v${{ inputs.version }}-${{ matrix.target }}"
+          dest_name="${binary_name}-router-v${VERSION}-${{ matrix.target }}"
           cp "target/${{ matrix.target }}/release-router/${binary_name}" "dist/${dest_name}"
           chmod +x "dist/${dest_name}"
           tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"
