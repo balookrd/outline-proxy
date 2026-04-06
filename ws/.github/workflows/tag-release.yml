@@ -17,3 +17,6 @@ jobs:
     uses: ./.github/workflows/_release-build.yml
     with:
       tag: ${{ github.ref_name }}
+      release_name: Release ${{ github.ref_name }}
+      prerelease: false
+      make_latest: "true"

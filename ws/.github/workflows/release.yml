@@ -23,7 +23,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -145,7 +145,24 @@ jobs:
           echo "Cargo.toml version line:"
           grep -nE '^version = ' Cargo.toml
           echo "Cargo.lock root package block:"
-          sed -n '/^\[\[package\]\]$/,/^$/p' Cargo.lock | sed -n '/name = "outline-ws-rust"/,/^$/p'
+          awk '
+            BEGIN { in_pkg=0; found=0 }
+            /^\[\[package\]\]$/ {
+              if (in_pkg && found) exit
+              in_pkg=1
+              found=0
+              block=$0 ORS
+              next
+            }
+            in_pkg {
+              block = block $0 ORS
+              if ($0 == "name = \"outline-ws-rust\"") found=1
+              if ($0 == "" && found) {
+                printf "%s", block
+                exit
+              }
+            }
+          ' Cargo.lock
 
       - name: Commit version bump
         shell: bash
