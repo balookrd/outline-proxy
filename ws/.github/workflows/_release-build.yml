@@ -1,0 +1,192 @@
+name: Release Build
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.artifact_name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            artifact_name: server-x86_64-unknown-linux-musl
+            build_kind: zigbuild
+            profile: release
+            flavor: server
+
+          - target: aarch64-unknown-linux-musl
+            artifact_name: server-aarch64-unknown-linux-musl
+            build_kind: zigbuild
+            profile: release
+            flavor: server
+
+          - target: aarch64-unknown-linux-musl
+            artifact_name: router-aarch64-unknown-linux-musl
+            build_kind: zigbuild
+            profile: release-router
+            flavor: router
+
+          - target: mipsel-unknown-linux-musl
+            artifact_name: router-mipsel-unknown-linux-musl
+            build_kind: build-std
+            profile: release-router
+            flavor: router
+            cc_prefix: mipsel-linux-musl
+
+          - target: mips-unknown-linux-musl
+            artifact_name: router-mips-unknown-linux-musl
+            build_kind: build-std
+            profile: release-router
+            flavor: router
+            cc_prefix: mips-linux-musl
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Show Zig version
+        shell: bash
+        run: zig version
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: ${{ matrix.build_kind == 'zigbuild' }}
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: dtolnay/rust-toolchain@nightly
+        if: ${{ matrix.build_kind == 'build-std' }}
+        with:
+          components: rust-src
+
+      - uses: taiki-e/install-action@v2
+        if: ${{ matrix.build_kind == 'zigbuild' }}
+        with:
+          tool: cargo-zigbuild
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Create Zig MIPS toolchain wrappers
+        if: ${{ matrix.build_kind == 'build-std' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          wrapper_dir="$RUNNER_TEMP/zig-cross"
+          mkdir -p "$wrapper_dir"
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-gcc" <<EOF
+          #!/usr/bin/env bash
+          exec zig cc -target ${{ matrix.target }} "\$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-g++" <<EOF
+          #!/usr/bin/env bash
+          exec zig c++ -target ${{ matrix.target }} "\$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ar" <<'EOF'
+          #!/usr/bin/env bash
+          exec zig ar "$@"
+          EOF
+
+          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ranlib" <<'EOF'
+          #!/usr/bin/env bash
+          exec zig ranlib "$@"
+          EOF
+
+          chmod +x "$wrapper_dir/"*
+          echo "$wrapper_dir" >> "$GITHUB_PATH"
+
+      - name: Build release asset
+        if: ${{ matrix.build_kind == 'zigbuild' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./.github/scripts/build-release-asset.sh \
+            "${{ matrix.target }}" \
+            "${{ matrix.profile }}" \
+            "${{ matrix.flavor }}" \
+            dist
+
+      - name: Build router release asset with build-std
+        if: ${{ matrix.build_kind == 'build-std' }}
+        shell: bash
+        env:
+          CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER: mips-linux-musl-gcc
+          CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER: mipsel-linux-musl-gcc
+          CC_mips_unknown_linux_musl: mips-linux-musl-gcc
+          CC_mipsel_unknown_linux_musl: mipsel-linux-musl-gcc
+          CXX_mips_unknown_linux_musl: mips-linux-musl-g++
+          CXX_mipsel_unknown_linux_musl: mipsel-linux-musl-g++
+          AR_mips_unknown_linux_musl: mips-linux-musl-ar
+          AR_mipsel_unknown_linux_musl: mipsel-linux-musl-ar
+          RANLIB_mips_unknown_linux_musl: mips-linux-musl-ranlib
+          RANLIB_mipsel_unknown_linux_musl: mipsel-linux-musl-ranlib
+        run: |
+          set -euo pipefail
+          cargo +nightly build \
+            -Z build-std=std,panic_abort \
+            --locked \
+            --profile release-router \
+            --no-default-features \
+            --features router \
+            --target "${{ matrix.target }}"
+
+          mkdir -p dist
+          binary_name="outline-ws-rust"
+          dest_name="${binary_name}-router-v${{ inputs.version }}-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release-router/${binary_name}" "dist/${dest_name}"
+          chmod +x "dist/${dest_name}"
+          tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"
+          rm -f "dist/${dest_name}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.artifact_name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS.txt
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: Release ${{ inputs.tag }}
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
