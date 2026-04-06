@@ -18,20 +18,20 @@ case "$flavor" in
   server)
     dest_prefix="$binary_name"
     if [[ "$profile" == "release" ]]; then
-      cargo zigbuild --locked --release --target "$target"
+      cargo zigbuild --release --target "$target"
     else
-      cargo zigbuild --locked --profile "$profile" --target "$target"
+      cargo zigbuild --profile "$profile" --target "$target"
     fi
     artifact_dir="$profile"
     ;;
   router)
     dest_prefix="${binary_name}-router"
-    cargo zigbuild --locked --profile "$profile" --no-default-features --features router --target "$target"
+    cargo zigbuild --profile "$profile" --no-default-features --features router --target "$target"
     artifact_dir="$profile"
     ;;
   router-build-std)
     dest_prefix="${binary_name}-router"
-    cargo zigbuild --locked -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router --target "$target"
+    cargo zigbuild -Z build-std=std,panic_abort --profile "$profile" --no-default-features --features router --target "$target"
     artifact_dir="$profile"
     ;;
   *)
