@@ -6,14 +6,86 @@ on:
       tag:
         required: true
         type: string
+      release_name:
+        required: false
+        type: string
+        default: ""
+      prerelease:
+        required: false
+        type: boolean
+        default: false
+      make_latest:
+        required: false
+        type: string
+        default: "true"
 
 permissions:
   contents: write
 
 jobs:
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      release_name: ${{ steps.meta.outputs.release_name }}
+      is_nightly: ${{ steps.meta.outputs.is_nightly }}
+      release_body: ${{ steps.meta.outputs.release_body }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 1
+
+      - name: Derive metadata
+        id: meta
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
+        run: |
+          set -euo pipefail
+
+          tag="${INPUT_TAG}"
+
+          if [[ "${tag}" == "nightly" ]]; then
+            version="nightly"
+            is_nightly="true"
+            release_name="${INPUT_RELEASE_NAME:-Nightly}"
+
+            commit_sha="$(git rev-parse HEAD)"
+            commit_short="$(git rev-parse --short=12 HEAD)"
+            commit_date="$(git show -s --date=iso-strict --format=%cd HEAD)"
+            build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+            {
+              echo 'release_body<<EOF'
+              echo "Rolling nightly build from the latest main branch commit."
+              echo
+              echo "- Commit: ${commit_sha}"
+              echo "- Short SHA: ${commit_short}"
+              echo "- Commit date: ${commit_date}"
+              echo "- Build date (UTC): ${build_date}"
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          else
+            version="${tag#v}"
+            is_nightly="false"
+            release_name="${INPUT_RELEASE_NAME:-Release ${tag}}"
+            {
+              echo 'release_body<<EOF'
+              echo ""
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
+          echo "is_nightly=${is_nightly}" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.artifact_name }}
     runs-on: ubuntu-latest
+    needs: meta
     strategy:
       fail-fast: false
       matrix:
@@ -30,32 +102,30 @@ jobs:
             profile: release
             flavor: server
 
-          - target: x86_64-unknown-linux-musl
-            artifact_name: router-x86_64-unknown-linux-musl
-            build_kind: zigbuild
-            profile: release-router
-            flavor: router
-
           - target: aarch64-unknown-linux-musl
             artifact_name: router-aarch64-unknown-linux-musl
             build_kind: zigbuild
             profile: release-router
             flavor: router
 
+          - target: mipsel-unknown-linux-musl
+            artifact_name: router-mipsel-unknown-linux-musl
+            build_kind: build-std
+            profile: release-router
+            flavor: router
+            cc_prefix: mipsel-linux-musl
+
+          - target: mips-unknown-linux-musl
+            artifact_name: router-mips-unknown-linux-musl
+            build_kind: build-std
+            profile: release-router
+            flavor: router
+            cc_prefix: mips-linux-musl
+
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag }}
-
-      - name: Derive version from tag
-        id: meta
-        shell: bash
-        run: |
-          set -euo pipefail
-          tag="${{ inputs.tag }}"
-          version="${tag#v}"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: mlugg/setup-zig@v2
         with:
@@ -128,7 +198,7 @@ jobs:
         if: ${{ matrix.build_kind == 'build-std' }}
         shell: bash
         env:
-          VERSION: ${{ steps.meta.outputs.version }}
+          VERSION: ${{ needs.meta.outputs.version }}
           CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER: mips-linux-musl-gcc
           CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER: mipsel-linux-musl-gcc
           CC_mips_unknown_linux_musl: mips-linux-musl-gcc
@@ -157,7 +227,7 @@ jobs:
           tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"
           rm -f "dist/${dest_name}"
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.artifact_name }}
           path: dist/*.tar.gz
@@ -165,9 +235,9 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [meta, build]
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           merge-multiple: true
@@ -180,13 +250,40 @@ jobs:
           cd dist
           sha256sum *.tar.gz > SHA256SUMS.txt
 
+      - name: Delete old nightly assets
+        if: ${{ needs.meta.outputs.is_nightly == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Nightly release does not exist yet, nothing to clean."
+            exit 0
+          fi
+
+          mapfile -t assets < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "No old assets to delete."
+            exit 0
+          fi
+
+          for asset in "${assets[@]}"; do
+            echo "Deleting old asset: $asset"
+            gh release delete-asset "$TAG" "$asset" --yes
+          done
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: Release ${{ inputs.tag }}
-          prerelease: false
-          generate_release_notes: true
+          name: ${{ needs.meta.outputs.release_name }}
+          prerelease: ${{ inputs.prerelease }}
+          make_latest: ${{ inputs.make_latest }}
+          generate_release_notes: ${{ needs.meta.outputs.is_nightly != 'true' }}
+          body: ${{ needs.meta.outputs.release_body }}
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS.txt
