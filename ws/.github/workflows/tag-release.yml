@@ -17,4 +17,3 @@ jobs:
     uses: ./.github/workflows/_release-build.yml
     with:
       tag: ${{ github.ref_name }}
-      version: ${{ github.ref_name[1:] }}
