@@ -30,25 +30,17 @@ jobs:
             profile: release
             flavor: server
 
+          - target: x86_64-unknown-linux-musl
+            artifact_name: router-x86_64-unknown-linux-musl
+            build_kind: zigbuild
+            profile: release-router
+            flavor: router
+
           - target: aarch64-unknown-linux-musl
             artifact_name: router-aarch64-unknown-linux-musl
             build_kind: zigbuild
             profile: release-router
             flavor: router
-
-          - target: mipsel-unknown-linux-musl
-            artifact_name: router-mipsel-unknown-linux-musl
-            build_kind: build-std
-            profile: release-router
-            flavor: router
-            cc_prefix: mipsel-linux-musl
-
-          - target: mips-unknown-linux-musl
-            artifact_name: router-mips-unknown-linux-musl
-            build_kind: build-std
-            profile: release-router
-            flavor: router
-            cc_prefix: mips-linux-musl
 
     steps:
       - uses: actions/checkout@v6
