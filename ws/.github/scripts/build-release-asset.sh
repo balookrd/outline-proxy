@@ -12,7 +12,7 @@ profile="$2"
 flavor="$3"
 output_dir="$4"
 binary_name="outline-ws-rust"
-version="$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from Cargo.toml")))' )"
+version="${VERSION:-$(python3 -c 'import re, pathlib; text = pathlib.Path("Cargo.toml").read_text(); match = re.search(r"^version = \"([^\"]+)\"$", text, flags=re.M); print(match.group(1) if match else (_ for _ in ()).throw(SystemExit("failed to read package version from Cargo.toml")))' )}"
 
 case "$flavor" in
   server)
