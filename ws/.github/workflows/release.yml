@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       major_minor:
-        description: "Release series in MAJOR.MINOR format (example: 1.7)"
+        description: "MAJOR.MINOR (например 1.7)"
         required: true
         type: string
 
@@ -23,67 +23,51 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Configure git identity
-        shell: bash
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - id: version
         name: Compute next version
-        shell: bash
+        env:
+          SERIES: ${{ github.event.inputs.major_minor }}
         run: |
           set -euo pipefail
 
-          series="${{ github.event.inputs.major_minor }}"
-          if [[ ! "$series" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "major_minor must match MAJOR.MINOR, got: $series" >&2
+          if [[ ! "$SERIES" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "invalid format, expected 1.7" >&2
             exit 1
           fi
 
-          series_pattern="^v${series//./\\.}\\.[0-9]+$"
           git fetch origin '+refs/tags/*:refs/tags/*' --force
 
-          latest_tag="$(
-            { git tag --list | grep -E "${series_pattern}" || true; } | sort -V | tail -n 1
-          )"
+          latest="$(git tag -l "v${SERIES}.*" --sort=-v:refname | head -n1)"
 
-          current_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-
-          echo "Fetched release tags for ${series}:"
-          git tag --list | grep -E "${series_pattern}" || true
-          echo "Current Cargo.toml version: ${current_version}"
-
-          if [[ -n "$latest_tag" ]]; then
-            patch="${latest_tag##*.}"
-            next_patch=$((patch + 1))
+          if [[ -n "$latest" ]]; then
+            patch="${latest##*.}"
+            next=$((patch+1))
           else
-            next_patch=0
+            next=0
           fi
 
-          version="${series}.${next_patch}"
+          version="${SERIES}.${next}"
           tag="v${version}"
 
-          if [[ "$(printf '%s\n%s\n' "$current_version" "$version" | sort -V | tail -n 1)" != "$version" ]]; then
-            echo "Computed release version ${version} is older than current Cargo.toml version ${current_version}" >&2
-            exit 1
-          fi
-
           if git show-ref --verify --quiet "refs/tags/${tag}"; then
-            echo "Tag ${tag} already exists" >&2
+            echo "tag ${tag} already exists" >&2
             exit 1
           fi
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
-      - name: Update crate version
-        shell: bash
+      - name: Update Cargo.toml
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -110,8 +94,7 @@ jobs:
           path.write_text(new_text)
           PY
 
-      - name: Update Cargo.lock root package version
-        shell: bash
+      - name: Update Cargo.lock
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -133,39 +116,7 @@ jobs:
           path.write_text(new_text)
           PY
 
-      - name: Show release version state
-        shell: bash
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          set -euo pipefail
-          echo "Target tag: ${TAG}"
-          echo "Target version: ${VERSION}"
-          echo "Cargo.toml version line:"
-          grep -nE '^version = ' Cargo.toml
-          echo "Cargo.lock root package block:"
-          awk '
-            BEGIN { in_pkg=0; found=0 }
-            /^\[\[package\]\]$/ {
-              if (in_pkg && found) exit
-              in_pkg=1
-              found=0
-              block=$0 ORS
-              next
-            }
-            in_pkg {
-              block = block $0 ORS
-              if ($0 == "name = \"outline-ws-rust\"") found=1
-              if ($0 == "" && found) {
-                printf "%s", block
-                exit
-              }
-            }
-          ' Cargo.lock
-
-      - name: Commit version bump
-        shell: bash
+      - name: Commit
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
@@ -173,25 +124,24 @@ jobs:
           git add Cargo.toml Cargo.lock
           if git diff --cached --quiet; then
             echo "No version file changes for ${TAG}; release will use current HEAD"
-            exit 0
+          else
+            git commit -m "release: cut ${TAG}"
           fi
-          git commit -m "release: cut ${TAG}"
 
-      - name: Push release commit to main
-        shell: bash
+      - name: Push
         run: |
           set -euo pipefail
           git push origin HEAD:main
 
-      - name: Print next steps
-        shell: bash
+      - name: Next steps
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
           cat <<EOF
+
           Release commit pushed to main.
 
-          Create and push a signed tag locally:
+          Create a signed tag locally:
 
             git fetch origin
             git checkout main
@@ -200,4 +150,5 @@ jobs:
             git push origin ${TAG}
 
           After that, workflow "Tag Release" will build and publish the release.
+
           EOF

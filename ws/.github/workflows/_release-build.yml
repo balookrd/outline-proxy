@@ -6,7 +6,7 @@ on:
       tag:
         required: true
         type: string
-      release_name:
+      checkout_ref:
         required: false
         type: string
         default: ""
@@ -18,166 +18,102 @@ on:
         required: false
         type: string
         default: "true"
+      release_name:
+        required: false
+        type: string
+        default: ""
+      artifact_version:
+        required: false
+        type: string
+        default: ""
+      rolling_tag:
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 jobs:
-  meta:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      release_name: ${{ steps.meta.outputs.release_name }}
-      is_nightly: ${{ steps.meta.outputs.is_nightly }}
-      release_body: ${{ steps.meta.outputs.release_body }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.tag }}
-          fetch-depth: 1
-
-      - name: Derive metadata
-        id: meta
-        shell: bash
-        env:
-          INPUT_TAG: ${{ inputs.tag }}
-          INPUT_RELEASE_NAME: ${{ inputs.release_name }}
-        run: |
-          set -euo pipefail
-
-          tag="${INPUT_TAG}"
-
-          if [[ "${tag}" == "nightly" ]]; then
-            version="nightly"
-            is_nightly="true"
-            release_name="${INPUT_RELEASE_NAME:-Nightly}"
-
-            commit_sha="$(git rev-parse HEAD)"
-            commit_short="$(git rev-parse --short=12 HEAD)"
-            commit_date="$(git show -s --date=iso-strict --format=%cd HEAD)"
-            build_date="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-
-            {
-              echo 'release_body<<EOF'
-              echo "Rolling nightly build from the latest main branch commit."
-              echo
-              echo "- Commit: ${commit_sha}"
-              echo "- Short SHA: ${commit_short}"
-              echo "- Commit date: ${commit_date}"
-              echo "- Build date (UTC): ${build_date}"
-              echo 'EOF'
-            } >> "$GITHUB_OUTPUT"
-          else
-            version="${tag#v}"
-            is_nightly="false"
-            release_name="${INPUT_RELEASE_NAME:-Release ${tag}}"
-            {
-              echo 'release_body<<EOF'
-              echo ""
-              echo 'EOF'
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "release_name=${release_name}" >> "$GITHUB_OUTPUT"
-          echo "is_nightly=${is_nightly}" >> "$GITHUB_OUTPUT"
-
   build:
     name: Build ${{ matrix.artifact_name }}
     runs-on: ubuntu-latest
-    needs: meta
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-musl
             artifact_name: server-x86_64-unknown-linux-musl
-            build_kind: zigbuild
             profile: release
             flavor: server
 
           - target: aarch64-unknown-linux-musl
             artifact_name: server-aarch64-unknown-linux-musl
-            build_kind: zigbuild
             profile: release
             flavor: server
 
           - target: x86_64-unknown-linux-musl
             artifact_name: router-x86_64-unknown-linux-musl
-            build_kind: zigbuild
-            profile: release
+            profile: release-router
             flavor: router
 
           - target: aarch64-unknown-linux-musl
             artifact_name: router-aarch64-unknown-linux-musl
-            build_kind: zigbuild
             profile: release-router
             flavor: router
 
     steps:
-      - uses: actions/checkout@v4
+      - id: vars
+        name: Resolve workflow variables
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ inputs.tag }}"
+          checkout_ref="${{ inputs.checkout_ref }}"
+          release_name="${{ inputs.release_name }}"
+          artifact_version="${{ inputs.artifact_version }}"
+
+          if [[ -z "$checkout_ref" ]]; then
+            checkout_ref="$tag"
+          fi
+
+          if [[ -z "$release_name" ]]; then
+            release_name="Release $tag"
+          fi
+
+          if [[ -z "$artifact_version" ]]; then
+            if [[ "$tag" == v* ]]; then
+              artifact_version="${tag#v}"
+            else
+              artifact_version="$tag"
+            fi
+          fi
+
+          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          echo "release_name=$release_name" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ steps.vars.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.15.1
 
-      - name: Show Zig version
-        shell: bash
-        run: zig version
-
-      - uses: dtolnay/rust-toolchain@stable
-        if: ${{ matrix.build_kind == 'zigbuild' }}
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: dtolnay/rust-toolchain@nightly
-        if: ${{ matrix.build_kind == 'build-std' }}
-        with:
-          components: rust-src
-
-      - uses: taiki-e/install-action@v2
-        if: ${{ matrix.build_kind == 'zigbuild' }}
-        with:
-          tool: cargo-zigbuild
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Create Zig MIPS toolchain wrappers
-        if: ${{ matrix.build_kind == 'build-std' }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          wrapper_dir="$RUNNER_TEMP/zig-cross"
-          mkdir -p "$wrapper_dir"
-
-          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-gcc" <<EOF
-          #!/usr/bin/env bash
-          exec zig cc -target ${{ matrix.target }} "\$@"
-          EOF
-
-          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-g++" <<EOF
-          #!/usr/bin/env bash
-          exec zig c++ -target ${{ matrix.target }} "\$@"
-          EOF
-
-          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ar" <<'EOF'
-          #!/usr/bin/env bash
-          exec zig ar "$@"
-          EOF
-
-          cat > "$wrapper_dir/${{ matrix.cc_prefix }}-ranlib" <<'EOF'
-          #!/usr/bin/env bash
-          exec zig ranlib "$@"
-          EOF
-
-          chmod +x "$wrapper_dir/"*
-          echo "$wrapper_dir" >> "$GITHUB_PATH"
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild --locked
 
       - name: Build release asset
-        if: ${{ matrix.build_kind == 'zigbuild' }}
         shell: bash
+        env:
+          VERSION: ${{ steps.vars.outputs.artifact_version }}
         run: |
           set -euo pipefail
           ./.github/scripts/build-release-asset.sh \
@@ -186,40 +122,7 @@ jobs:
             "${{ matrix.flavor }}" \
             dist
 
-      - name: Build router release asset with build-std
-        if: ${{ matrix.build_kind == 'build-std' }}
-        shell: bash
-        env:
-          VERSION: ${{ needs.meta.outputs.version }}
-          CARGO_TARGET_MIPS_UNKNOWN_LINUX_MUSL_LINKER: mips-linux-musl-gcc
-          CARGO_TARGET_MIPSEL_UNKNOWN_LINUX_MUSL_LINKER: mipsel-linux-musl-gcc
-          CC_mips_unknown_linux_musl: mips-linux-musl-gcc
-          CC_mipsel_unknown_linux_musl: mipsel-linux-musl-gcc
-          CXX_mips_unknown_linux_musl: mips-linux-musl-g++
-          CXX_mipsel_unknown_linux_musl: mipsel-linux-musl-g++
-          AR_mips_unknown_linux_musl: mips-linux-musl-ar
-          AR_mipsel_unknown_linux_musl: mipsel-linux-musl-ar
-          RANLIB_mips_unknown_linux_musl: mips-linux-musl-ranlib
-          RANLIB_mipsel_unknown_linux_musl: mipsel-linux-musl-ranlib
-        run: |
-          set -euo pipefail
-          cargo +nightly build \
-            -Z build-std=std,panic_abort \
-            --locked \
-            --profile release-router \
-            --no-default-features \
-            --features router \
-            --target "${{ matrix.target }}"
-
-          mkdir -p dist
-          binary_name="outline-ws-rust"
-          dest_name="${binary_name}-router-v${VERSION}-${{ matrix.target }}"
-          cp "target/${{ matrix.target }}/release-router/${binary_name}" "dist/${dest_name}"
-          chmod +x "dist/${dest_name}"
-          tar -C dist -czf "dist/${dest_name}.tar.gz" "${dest_name}"
-          rm -f "dist/${dest_name}"
-
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: release-${{ matrix.artifact_name }}
           path: dist/*.tar.gz
@@ -227,23 +130,41 @@ jobs:
 
   publish:
     runs-on: ubuntu-latest
-    needs: [meta, build]
+    needs: build
+
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+        if: ${{ inputs.rolling_tag }}
+        with:
+          fetch-depth: 0
+
+      - name: Move rolling tag
+        if: ${{ inputs.rolling_tag }}
+        env:
+          TAG: ${{ inputs.tag }}
+          REF: ${{ inputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin --tags --force
+          git tag -f "$TAG" "$REF"
+          git push origin "refs/tags/$TAG" --force
+
+      - uses: actions/download-artifact@v7
         with:
           pattern: release-*
           merge-multiple: true
           path: dist
 
       - name: Generate checksums
-        shell: bash
         run: |
           set -euo pipefail
           cd dist
           sha256sum *.tar.gz > SHA256SUMS.txt
 
       - name: Delete old nightly assets
-        if: ${{ needs.meta.outputs.is_nightly == 'true' }}
+        if: ${{ inputs.rolling_tag }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -271,11 +192,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag }}
-          name: ${{ needs.meta.outputs.release_name }}
+          name: ${{ inputs.release_name != '' && inputs.release_name || format('Release {0}', inputs.tag) }}
           prerelease: ${{ inputs.prerelease }}
           make_latest: ${{ inputs.make_latest }}
-          generate_release_notes: ${{ needs.meta.outputs.is_nightly != 'true' }}
-          body: ${{ needs.meta.outputs.release_body }}
+          generate_release_notes: ${{ !inputs.rolling_tag }}
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS.txt
