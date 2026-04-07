@@ -923,7 +923,13 @@ impl TcpShadowsocksReader {
                 if let Some(state) = &mut self.ss2022 {
                     state.response_header_read = true;
                 }
-                return Ok(payload);
+                if !payload.is_empty() {
+                    return Ok(payload);
+                }
+                // Empty initial payload is valid in SS2022 (the server had no
+                // target data to bundle yet).  Fall through to read the first
+                // real data frame so callers never see an empty-payload return
+                // that would be misinterpreted as EOF.
             }
         }
 
