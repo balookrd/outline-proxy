@@ -135,6 +135,7 @@ async fn handle_tcp_connect(
         let uplink = async move {
             let mut writer = writer;
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
+            let mut chunks_sent: u64 = 0;
             loop {
                 if strict_transport
                     && uplinks_uplink
@@ -154,6 +155,10 @@ async fn handle_tcp_connect(
                 }
                 metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
                 writer.send_chunk(&buf[..read]).await?;
+                chunks_sent += 1;
+                if chunks_sent == 1 {
+                    debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
+                }
                 uplinks_uplink
                     .report_active_traffic(selected_index, TransportKind::Tcp)
                     .await;
@@ -165,6 +170,7 @@ async fn handle_tcp_connect(
         let uplinks_downlink = uplinks.clone();
         let downlink = async move {
             let mut reader = reader;
+            let mut chunks_forwarded: u64 = 0;
             loop {
                 if strict_transport
                     && uplinks_downlink
@@ -176,7 +182,15 @@ async fn handle_tcp_connect(
                 }
                 let chunk = match reader.read_chunk().await {
                     Ok(chunk) => chunk,
-                    Err(_err) if reader.closed_cleanly => break,
+                    Err(_err) if reader.closed_cleanly => {
+                        if chunks_forwarded == 0 {
+                            debug!(
+                                uplink = %downlink_uplink_name,
+                                "upstream closed before sending any data"
+                            );
+                        }
+                        break;
+                    }
                     Err(err) => return Err(err),
                 };
                 if chunk.is_empty() {
@@ -184,6 +198,7 @@ async fn handle_tcp_connect(
                     // treat it as EOF rather than busy-looping without any await.
                     break;
                 }
+                chunks_forwarded += 1;
                 metrics::add_bytes(
                     "tcp",
                     "upstream_to_client",
