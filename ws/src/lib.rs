@@ -1,4 +1,5 @@
 pub(crate) mod atomic_counter;
+pub(crate) mod dns_cache;
 pub mod bypass;
 pub mod config;
 pub mod crypto;

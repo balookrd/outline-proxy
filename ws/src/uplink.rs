@@ -834,12 +834,20 @@ impl UplinkManager {
     /// Called when real traffic successfully flows through an uplink.
     ///
     /// Updates the activity timestamp (rate-limited to once per 5 s to keep
-    /// write-lock contention low for high-frequency UDP callers), marks the
-    /// transport as healthy, resets consecutive-failure counters, and clears
-    /// any active failure cooldown.  A successful data transfer is stronger
-    /// evidence of liveness than a probe ping/pong, so we treat it
-    /// accordingly.
-    pub async fn report_active_traffic(&self, index: usize, transport: TransportKind) {
+    /// write-lock contention low for high-frequency UDP callers).  When
+    /// `clears_cooldown` is true it also marks the transport as healthy,
+    /// resets consecutive-failure counters, and clears any active failure
+    /// cooldown — use this only when data has been *received back* from the
+    /// upstream, confirming the full data path works.  Pass `false` when
+    /// recording outbound traffic (client → upstream) before the upstream has
+    /// responded; doing so at that point would incorrectly clear a cooldown
+    /// that was set because the upstream failed to respond.
+    pub async fn report_active_traffic(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        clears_cooldown: bool,
+    ) {
         let now = Instant::now();
         // Fast path: skip the write lock when we recently reported for this transport.
         {
@@ -875,21 +883,27 @@ impl UplinkManager {
         // Some(true), preventing the failover from taking effect in
         // active-passive / global scope.  When probe is disabled there is no
         // other health signal, so we update the health state from traffic.
-        let probe_enabled = self.inner.probe.enabled();
-        match transport {
-            TransportKind::Tcp => {
-                if !probe_enabled {
-                    status.tcp_healthy = Some(true);
-                    status.tcp_consecutive_failures = 0;
+        // Only update health state and clear cooldown when the caller confirms
+        // that the upstream has actually responded (clears_cooldown=true).
+        // Outbound-only traffic (client → upstream, clears_cooldown=false) must
+        // not clear the cooldown because the upstream may still fail to respond.
+        if clears_cooldown {
+            let probe_enabled = self.inner.probe.enabled();
+            match transport {
+                TransportKind::Tcp => {
+                    if !probe_enabled {
+                        status.tcp_healthy = Some(true);
+                        status.tcp_consecutive_failures = 0;
+                    }
+                    status.cooldown_until_tcp = None;
                 }
-                status.cooldown_until_tcp = None;
-            }
-            TransportKind::Udp => {
-                if !probe_enabled {
-                    status.udp_healthy = Some(true);
-                    status.udp_consecutive_failures = 0;
+                TransportKind::Udp => {
+                    if !probe_enabled {
+                        status.udp_healthy = Some(true);
+                        status.udp_consecutive_failures = 0;
+                    }
+                    status.cooldown_until_udp = None;
                 }
-                status.cooldown_until_udp = None;
             }
         }
     }
@@ -1291,19 +1305,25 @@ impl UplinkManager {
                 } else {
                     true
                 };
-                // Global + probe enabled: probe is the sole gate — do not also require
-                // !cooldown, because cooldown is not set by probe failures and we want
-                // probe-confirmed health to immediately re-allow the primary.
-                // All other cases (PerUplink / probe disabled): combine probe health with
-                // cooldown so that transient runtime failures still trigger a temporary
-                // switch while persistent probe failures cause a permanent switch.
-                let should_keep = if self.inner.load_balancing.routing_scope == RoutingScope::Global
-                    && self.inner.probe.enabled()
-                {
-                    probe_healthy
-                } else {
-                    probe_healthy && !cooldown_active(&statuses[active_index], gate_transport, now)
-                };
+                // An active cooldown means recent connections to this uplink timed out
+                // or errored.  Probe tests only SS-server reachability, not the full
+                // data path (SS server → target).  A healthy probe therefore does NOT
+                // mean that user traffic will succeed; the cooldown from runtime
+                // failures is the only signal that the data path is broken.
+                // We require both: probe-confirmed health AND no active runtime-failure
+                // cooldown.  This lets the probe remain the sole source for permanent
+                // failover (probe failure → tcp_healthy=Some(false) → stays switched
+                // even after cooldown expires), while runtime failures cause a
+                // temporary switch that lasts at most failure_cooldown_secs.
+                let active_cooldown = cooldown_active(&statuses[active_index], gate_transport, now);
+                let should_keep = probe_healthy && !active_cooldown;
+                debug!(
+                    uplink = %self.inner.uplinks[active_index].name,
+                    probe_healthy,
+                    active_cooldown,
+                    should_keep,
+                    "strict_transport_candidates: keep decision"
+                );
                 if should_keep {
                     // When auto_failback is disabled (default), never switch away
                     // from a healthy active uplink — only failure triggers a switch.
@@ -1819,23 +1839,17 @@ impl UplinkManager {
                 // We must run the probe so it can detect the failure and
                 // trigger failover.
                 let tcp_no_cooldown = !cooldown_active(s, TransportKind::Tcp, now);
-                // In global scope with probe enabled the probe is the sole
-                // health gate — the cooldown from a runtime failure does NOT
-                // affect the switch decision (see strict_transport_candidates).
-                // Running a probe immediately after a runtime failure under
-                // load is counterproductive: the server is busy, the new QUIC
-                // handshake competes with existing traffic, and the probe is
-                // likely to fail → false negative → spurious failover.
-                // Active traffic is already stronger evidence of liveness than
-                // a probe ping, so we skip the probe cycle whenever traffic is
-                // flowing and the uplink is probe-confirmed healthy, regardless
-                // of any active runtime-failure cooldown.
-                // For non-global scopes the cooldown gate is used for candidate
-                // selection, so we must still probe to confirm recovery before
-                // the cooldown expires and re-admits the uplink.
-                let global_probe = self.inner.load_balancing.routing_scope == RoutingScope::Global
-                    && self.inner.probe.enabled();
-                let skip_allowed = tcp_no_cooldown || global_probe;
+                // Skip the probe cycle only when there is no active runtime-failure
+                // cooldown.  An active cooldown means a recent connection to this
+                // uplink timed out or errored; we must run the probe so it can
+                // confirm whether the failure is persistent and, if so, set
+                // tcp_healthy = Some(false) to trigger failover.
+                // NOTE: report_active_traffic fires as soon as the first chunk is
+                // forwarded *to* the upstream — before we know whether the upstream
+                // will reply.  A failing connection therefore still records activity,
+                // so tcp_active alone is not a reliable liveness signal when a
+                // cooldown is present.
+                let skip_allowed = tcp_no_cooldown;
                 if tcp_active && tcp_currently_healthy && skip_allowed {
                     let udp_active = s
                         .last_active_udp
@@ -1969,10 +1983,14 @@ impl UplinkManager {
                             status.tcp_consecutive_successes =
                                 status.tcp_consecutive_successes.saturating_add(1);
                             status.tcp_healthy = Some(true);
-                            // Only clear runtime-failure cooldown when the probe confirms TCP is
-                            // healthy. Clearing unconditionally would make a recently-failed
-                            // uplink immediately eligible again, causing oscillation under load.
-                            status.cooldown_until_tcp = None;
+                            // Do NOT clear the runtime-failure cooldown here.  The probe only
+                            // tests SS-server reachability (TCP/WS handshake), not the full
+                            // data path to the actual target.  A healthy probe therefore does
+                            // not mean user connections will succeed.  The cooldown is the only
+                            // signal that the data path is broken; it must expire naturally
+                            // (failure_cooldown_secs) so that candidate selection has a chance
+                            // to switch away.  Clearing it here would let the probe immediately
+                            // re-admit a broken uplink on every cycle.
                             // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
                             // effective (possibly downgraded) WS mode, so a successful probe
                             // only confirms H2 connectivity during a downgrade window — it does
@@ -1997,7 +2015,10 @@ impl UplinkManager {
                                 status.udp_consecutive_successes =
                                     status.udp_consecutive_successes.saturating_add(1);
                                 status.udp_healthy = Some(true);
-                                status.cooldown_until_udp = None;
+                                // Do NOT clear the runtime-failure cooldown here.  The probe only
+                                // tests SS-server reachability, not the full data path to the
+                                // actual target.  The cooldown must expire naturally so that
+                                // candidate selection can switch away from a broken uplink.
                             }
                         }
                         if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
@@ -3430,21 +3451,21 @@ mod tests {
             // tcp_healthy is still Some(true) — probe has not fired yet
         }
 
-        // Must keep primary: probe hasn't confirmed it is down.
+        // Active cooldown means the data path is broken; should switch to backup
+        // even though the probe has not fired yet.
         let second = manager.tcp_candidates(&target).await;
         assert_eq!(
-            second[0].uplink.name, "primary",
-            "should not switch on cooldown alone"
+            second[0].uplink.name, "backup",
+            "should switch on active cooldown"
         );
 
-        // Now the probe confirms primary is down.
+        // Confirming primary is down via probe keeps backup selected.
         set_tcp_status(&manager, 0, false, 20).await;
 
-        // Must switch to backup.
         let third = manager.tcp_candidates(&target).await;
         assert_eq!(
             third[0].uplink.name, "backup",
-            "should switch when probe confirms failure"
+            "should stay on backup when probe confirms failure"
         );
     }
 

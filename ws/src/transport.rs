@@ -43,6 +43,7 @@ use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
+use crate::dns_cache::DnsCache;
 use crate::types::{CipherKind, ServerAddr, TargetAddr, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -58,6 +59,12 @@ static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 static UDP_RECV_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 static UDP_SEND_BUF_BYTES: OnceLock<usize> = OnceLock::new();
+static DNS_CACHE: OnceLock<DnsCache> = OnceLock::new();
+
+/// Maximum time to wait for a TCP handshake to the upstream server to complete.
+/// Prevents connections from hanging for the OS default (~2 min) when the server
+/// is unreachable or the router's conntrack table is exhausted.
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Initialise H2 window sizes from config. Must be called before the first
 /// outbound H2 connection is opened. Safe to call multiple times with the same
@@ -584,20 +591,44 @@ pub(crate) async fn resolve_host_with_preference(
     context: &str,
     ipv6_first: bool,
 ) -> Result<Vec<SocketAddr>> {
-    let mut server_addrs = lookup_host((host, port))
-        .await
-        .with_context(|| context.to_string())?
-        .collect::<Vec<_>>();
-    server_addrs.sort_by_key(|addr| {
+    let cache = DNS_CACHE.get_or_init(DnsCache::new);
+
+    if let Some(addrs) = cache.get(host, port) {
+        return Ok(sort_addrs(addrs, ipv6_first));
+    }
+
+    match lookup_host((host, port)).await {
+        Ok(resolved) => {
+            let addrs: Vec<SocketAddr> = resolved.collect();
+            cache.insert(host, port, addrs.clone());
+            Ok(sort_addrs(addrs, ipv6_first))
+        }
+        Err(err) => {
+            if let Some(stale) = cache.get_stale(host, port) {
+                warn!(
+                    host,
+                    port,
+                    error = %err,
+                    "DNS lookup failed, using stale cached addresses"
+                );
+                return Ok(sort_addrs(stale, ipv6_first));
+            }
+            Err(err).with_context(|| context.to_string())
+        }
+    }
+}
+
+fn sort_addrs(mut addrs: Vec<SocketAddr>, ipv6_first: bool) -> Vec<SocketAddr> {
+    addrs.sort_by_key(|addr| {
         if ipv6_first {
-            if addr.is_ipv6() { 0 } else { 1 }
+            if addr.is_ipv6() { 0u8 } else { 1u8 }
         } else if addr.is_ipv4() {
-            0
+            0u8
         } else {
-            1
+            1u8
         }
     });
-    Ok(server_addrs)
+    addrs
 }
 
 fn unix_timestamp_secs() -> Result<u64> {
@@ -1393,8 +1424,9 @@ async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<Tcp
     // For connections without fwmark use tokio's async connector so we never
     // block a Tokio worker thread waiting for the TCP handshake to complete.
     if fwmark.is_none() {
-        let stream = TcpStream::connect(addr)
+        let stream = tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr))
             .await
+            .with_context(|| format!("TCP connect to {addr} timed out"))?
             .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
         configure_tcp_stream_low_latency(&stream, addr)?;
         return Ok(stream);
@@ -1437,9 +1469,9 @@ async fn connect_tcp_socket_with_fwmark(
         TcpStream::from_std(socket.into()).context("failed to adopt TCP socket into tokio")?;
     // Yield to the runtime until the OS signals that the socket is writable,
     // which means the three-way handshake completed (or failed).
-    stream
-        .writable()
+    tokio::time::timeout(TCP_CONNECT_TIMEOUT, stream.writable())
         .await
+        .with_context(|| format!("TCP connect to {addr} timed out"))?
         .with_context(|| format!("failed waiting for TCP connect to {addr}"))?;
     // Retrieve the actual connect result via getsockopt(SO_ERROR).
     if let Some(err) = stream
