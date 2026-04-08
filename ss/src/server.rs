@@ -1537,13 +1537,17 @@ async fn serve_ss_tcp_listener(
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     loop {
-        let (stream, peer) = listener
-            .accept()
-            .await
-            .context("failed to accept shadowsocks tcp connection")?;
-        configure_tcp_stream(&stream).with_context(|| {
-            format!("failed to configure accepted shadowsocks tcp connection from {peer}")
-        })?;
+        let (stream, peer) = match listener.accept().await {
+            Ok(v) => v,
+            Err(error) => {
+                warn!(?error, "failed to accept shadowsocks tcp connection");
+                continue;
+            }
+        };
+        if let Err(error) = configure_tcp_stream(&stream) {
+            warn!(%peer, ?error, "failed to configure shadowsocks tcp connection");
+            continue;
+        }
         let users = users.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
@@ -1796,7 +1800,13 @@ async fn serve_ss_udp_socket(
         tokio::select! {
             Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
             recv = socket.recv_from(&mut buffer) => {
-                let (read, client_addr) = recv.context("failed to receive shadowsocks udp packet")?;
+                let (read, client_addr) = match recv {
+                    Ok(v) => v,
+                    Err(error) => {
+                        warn!(?error, "failed to receive shadowsocks udp packet");
+                        continue;
+                    }
+                };
                 debug!(
                     client_addr = %client_addr,
                     encrypted_bytes = read,
