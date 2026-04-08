@@ -38,7 +38,7 @@ use sockudo_ws::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
-    sync::mpsc,
+    sync::{Semaphore, mpsc},
     task::JoinSet,
     time::{Duration, timeout},
 };
@@ -80,8 +80,10 @@ const H3_MAX_BACKPRESSURE_BYTES: usize = 16 * 1024 * 1024; // 16 MB (was 8 MB)
 const H3_UDP_SOCKET_BUFFER_BYTES: usize = 32 * 1024 * 1024; // 32 MB (was 8 MB)
 const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
+const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;
+const SS_MAX_CONCURRENT_TCP_CONNECTIONS: usize = 4_096;
 const UDP_DNS_CACHE_TTL_SECS: u64 = 30;
 const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
@@ -315,7 +317,11 @@ pub async fn run(config: Config) -> Result<()> {
     }
 
     while let Some(result) = tasks.join_next().await {
-        result.context("server task join failed")??;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => warn!(?error, "server task exited with error"),
+            Err(join_error) => warn!(?join_error, "server task panicked"),
+        }
     }
     Ok(())
 }
@@ -1536,6 +1542,7 @@ async fn serve_ss_tcp_listener(
     metrics: Arc<Metrics>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
+    let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
     loop {
         let (stream, peer) = match listener.accept().await {
             Ok(v) => v,
@@ -1548,9 +1555,17 @@ async fn serve_ss_tcp_listener(
             warn!(%peer, ?error, "failed to configure shadowsocks tcp connection");
             continue;
         }
+        let permit = match semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                warn!(%peer, "shadowsocks tcp concurrent connection limit reached, dropping connection");
+                continue;
+            }
+        };
         let users = users.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) =
                 handle_ss_tcp_connection(stream, users, metrics, prefer_ipv4_upstream).await
             {
@@ -1583,10 +1598,20 @@ async fn handle_ss_tcp_connection(
     let client_sent_eof;
 
     loop {
-        let read = client_reader
-            .read(&mut read_buffer)
+        let read_fut = client_reader.read(&mut read_buffer);
+        let read = if upstream_writer.is_none() {
+            timeout(
+                Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS),
+                read_fut,
+            )
             .await
-            .context("failed to read from shadowsocks client")?;
+            .context("shadowsocks tcp handshake timed out")?
+            .context("failed to read from shadowsocks client")?
+        } else {
+            read_fut
+                .await
+                .context("failed to read from shadowsocks client")?
+        };
         if read == 0 {
             debug!(peer_addr = ?peer_addr, "socket tcp client closed connection");
             client_sent_eof = true;
@@ -2461,13 +2486,17 @@ async fn serve_tls_listener(
     acceptor: TlsAcceptor,
 ) -> Result<()> {
     loop {
-        let (stream, peer_addr) = listener
-            .accept()
-            .await
-            .context("failed to accept TLS tcp connection")?;
-        configure_tcp_stream(&stream).with_context(|| {
-            format!("failed to configure accepted TLS tcp connection from {peer_addr}")
-        })?;
+        let (stream, peer_addr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(error) => {
+                warn!(?error, "failed to accept TLS tcp connection");
+                continue;
+            }
+        };
+        if let Err(error) = configure_tcp_stream(&stream) {
+            warn!(%peer_addr, ?error, "failed to configure TLS tcp connection");
+            continue;
+        }
         let acceptor = acceptor.clone();
         let app = app.clone();
 
