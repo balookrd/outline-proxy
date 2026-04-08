@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
@@ -32,6 +33,15 @@ struct ActiveUdpTransport {
 
 const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
 const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
+/// How long to wait for each upstream chunk during the early phase of a
+/// session.  Guards against SS servers that accept the TCP connection but
+/// stall indefinitely (conntrack exhaustion, dead target, etc.) and against
+/// connections that stall mid-TLS-handshake after the first chunk.
+const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+/// Number of upstream chunks covered by UPSTREAM_RESPONSE_TIMEOUT.
+/// A TLS 1.3 handshake fits in ~4 flight records; TLS 1.2 needs up to ~6.
+/// Using 10 gives a safe margin without touching long-lived idle data streams.
+const UPSTREAM_RESPONSE_TIMEOUT_CHUNKS: u64 = 10;
 
 pub async fn handle_client(
     mut client: TcpStream,
@@ -159,8 +169,9 @@ async fn handle_tcp_connect(
                 if chunks_sent == 1 {
                     debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
                 }
+                // Outbound only — upstream has not responded yet; do not clear cooldown.
                 uplinks_uplink
-                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .report_active_traffic(selected_index, TransportKind::Tcp, false)
                     .await;
             }
             Ok::<(), anyhow::Error>(())
@@ -180,7 +191,20 @@ async fn handle_tcp_connect(
                 {
                     return Err(anyhow!("active uplink switched for SOCKS TCP session"));
                 }
-                let chunk = match reader.read_chunk().await {
+                let chunk_result = if chunks_forwarded < UPSTREAM_RESPONSE_TIMEOUT_CHUNKS {
+                    tokio::time::timeout(UPSTREAM_RESPONSE_TIMEOUT, reader.read_chunk())
+                        .await
+                        .map_err(|_| {
+                            anyhow!(
+                                "upstream did not respond within {}s (chunk {})",
+                                UPSTREAM_RESPONSE_TIMEOUT.as_secs(),
+                                chunks_forwarded,
+                            )
+                        })?
+                } else {
+                    reader.read_chunk().await
+                };
+                let chunk = match chunk_result {
                     Ok(chunk) => chunk,
                     Err(_err) if reader.closed_cleanly => {
                         if chunks_forwarded == 0 {
@@ -209,8 +233,9 @@ async fn handle_tcp_connect(
                     .write_all(&chunk)
                     .await
                     .context("client write failed")?;
+                // Response received from upstream — data path confirmed working; clear cooldown.
                 uplinks_downlink
-                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .report_active_traffic(selected_index, TransportKind::Tcp, true)
                     .await;
             }
             client_write
@@ -391,13 +416,13 @@ async fn handle_udp_associate(
                         payload.len(),
                     );
                     uplinks_uplink
-                        .report_active_traffic(replacement.index, TransportKind::Udp)
+                        .report_active_traffic(replacement.index, TransportKind::Udp, false)
                         .await;
                 } else {
                     metrics::add_udp_datagram("client_to_upstream", &uplink_name);
                     metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
                     uplinks_uplink
-                        .report_active_traffic(active_index, TransportKind::Udp)
+                        .report_active_traffic(active_index, TransportKind::Udp, false)
                         .await;
                 }
             }
@@ -483,6 +508,10 @@ async fn handle_udp_associate(
                     .send_to(&packet, client_addr)
                     .await
                     .context("UDP relay send failed")?;
+                // Response received from upstream — data path confirmed; clear cooldown.
+                uplinks_downlink
+                    .report_active_traffic(active.0, TransportKind::Udp, true)
+                    .await;
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())

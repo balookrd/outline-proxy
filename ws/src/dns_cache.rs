@@ -1,0 +1,52 @@
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+const TTL: Duration = Duration::from_secs(60);
+
+struct Entry {
+    addrs: Vec<SocketAddr>,
+    expires_at: Instant,
+}
+
+pub(crate) struct DnsCache {
+    inner: Mutex<HashMap<(String, u16), Entry>>,
+}
+
+impl DnsCache {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Returns cached addresses if the entry exists and has not expired.
+    pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
+        let map = self.inner.lock().unwrap();
+        let entry = map.get(&(host.to_string(), port))?;
+        if Instant::now() < entry.expires_at {
+            Some(entry.addrs.clone())
+        } else {
+            None
+        }
+    }
+
+    /// Returns cached addresses regardless of expiry. Used as a last-resort
+    /// fallback when the live DNS lookup fails (e.g. resolver temporarily down).
+    pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
+        let map = self.inner.lock().unwrap();
+        map.get(&(host.to_string(), port)).map(|e| e.addrs.clone())
+    }
+
+    pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {
+        let mut map = self.inner.lock().unwrap();
+        map.insert(
+            (host.to_string(), port),
+            Entry {
+                addrs,
+                expires_at: Instant::now() + TTL,
+            },
+        );
+    }
+}
