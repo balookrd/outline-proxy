@@ -166,7 +166,6 @@ pub struct ProbeConfig {
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
     pub dns: Option<DnsProbeConfig>,
-    pub tcp: Option<TcpProbeConfig>,
 }
 
 #[derive(Debug, Clone)]
@@ -184,12 +183,6 @@ pub struct DnsProbeConfig {
     pub server: String,
     pub port: u16,
     pub name: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct TcpProbeConfig {
-    pub host: String,
-    pub port: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -413,7 +406,6 @@ struct ProbeSection {
     ws: Option<WsProbeSection>,
     http: Option<HttpProbeSection>,
     dns: Option<DnsProbeSection>,
-    tcp: Option<TcpProbeSection>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -431,12 +423,6 @@ struct DnsProbeSection {
     server: String,
     port: Option<u16>,
     name: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-struct TcpProbeSection {
-    host: String,
-    port: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -923,12 +909,7 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
                 .clone()
                 .unwrap_or_else(|| "example.com".to_string()),
         });
-    let tcp = probe
-        .and_then(|p| p.tcp.as_ref())
-        .map(|tcp| TcpProbeConfig {
-            host: tcp.host.clone(),
-            port: tcp.port.unwrap_or(80),
-        });
+
     Ok(ProbeConfig {
         interval: Duration::from_secs(probe.and_then(|p| p.interval_secs).unwrap_or(30)),
         timeout: Duration::from_secs(probe.and_then(|p| p.timeout_secs).unwrap_or(10)),
@@ -944,7 +925,6 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         },
         http,
         dns,
-        tcp,
     })
 }
 

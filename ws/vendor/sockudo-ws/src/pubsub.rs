@@ -66,9 +66,9 @@
 //! ```
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(target_has_atomic = "64"))]
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc::UnboundedSender;

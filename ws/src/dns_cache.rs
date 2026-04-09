@@ -21,7 +21,6 @@ impl DnsCache {
         }
     }
 
-    /// Returns cached addresses if the entry exists and has not expired.
     pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
         let entry = map.get(&(host.to_string(), port))?;
@@ -32,11 +31,9 @@ impl DnsCache {
         }
     }
 
-    /// Returns cached addresses regardless of expiry. Used as a last-resort
-    /// fallback when the live DNS lookup fails (e.g. resolver temporarily down).
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
-        map.get(&(host.to_string(), port)).map(|e| e.addrs.clone())
+        map.get(&(host.to_string(), port)).map(|entry| entry.addrs.clone())
     }
 
     pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {

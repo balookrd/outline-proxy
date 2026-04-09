@@ -277,7 +277,7 @@ mod tests {
     fn invert() {
         let l = BypassList::parse(&["10.0.0.0/8".to_string()], true).unwrap();
         assert!(!l.is_bypassed(&v4(10, 0, 0, 1))); // in list → NOT bypassed
-        assert!(l.is_bypassed(&v4(1, 1, 1, 1))); // not in list → bypassed
+        assert!(l.is_bypassed(&v4(1, 1, 1, 1)));   // not in list → bypassed
     }
 
     #[test]
@@ -298,10 +298,10 @@ mod tests {
     #[test]
     fn boundary_v4() {
         let l = list(&["10.0.0.0/8"]);
-        assert!(l.is_bypassed(&v4(10, 0, 0, 0))); // start
-        assert!(l.is_bypassed(&v4(10, 255, 255, 255))); // end
-        assert!(!l.is_bypassed(&v4(9, 255, 255, 255))); // before start
-        assert!(!l.is_bypassed(&v4(11, 0, 0, 0))); // after end
+        assert!(l.is_bypassed(&v4(10, 0, 0, 0)));         // start
+        assert!(l.is_bypassed(&v4(10, 255, 255, 255)));   // end
+        assert!(!l.is_bypassed(&v4(9, 255, 255, 255)));   // before start
+        assert!(!l.is_bypassed(&v4(11, 0, 0, 0)));        // after end
     }
 
     #[test]

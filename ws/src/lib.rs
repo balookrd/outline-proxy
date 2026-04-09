@@ -40,20 +40,6 @@ use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkManager, log_uplink_summary};
 
-fn warn_about_tcp_probe_target(config: &AppConfig) {
-    let Some(tcp_probe) = config.probe.tcp.as_ref() else {
-        return;
-    };
-
-    if matches!(tcp_probe.port, 80 | 443 | 8080 | 8443) {
-        warn!(
-            host = %tcp_probe.host,
-            port = tcp_probe.port,
-            "probe.tcp waits for the remote side to send bytes or close cleanly; HTTP/HTTPS-style targets on common web ports usually wait for a client request and will time out. Prefer probe.http for HTTP endpoints or use a speak-first TCP service for probe.tcp"
-        );
-    }
-}
-
 pub fn init_rustls_crypto_provider() -> Result<()> {
     let provider = ring::default_provider();
     match provider.install_default() {
@@ -107,7 +93,6 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
         tun_enabled = config.tun.is_some(),
         "proxy started"
     );
-    warn_about_tcp_probe_target(&config);
     log_uplink_summary(&uplinks);
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {

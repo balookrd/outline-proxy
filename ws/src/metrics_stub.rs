@@ -44,33 +44,24 @@ pub fn render_prometheus(_: &UplinkManagerSnapshot) -> anyhow::Result<String> {
 
 // ── Transport ─────────────────────────────────────────────────────────────────
 
-pub fn record_transport_connect(_source: &'static str, _mode: &'static str, _result: &'static str) {
-}
+pub fn record_transport_connect(_source: &'static str, _mode: &'static str, _result: &'static str) {}
 pub fn add_transport_connects_active(_source: &'static str, _mode: &'static str, _delta: i64) {}
-pub fn record_upstream_transport(
-    _source: &'static str,
-    _protocol: &'static str,
-    _result: &'static str,
-) {
-}
-pub fn add_upstream_transports_active(_source: &'static str, _protocol: &'static str, _delta: i64) {
-}
+pub fn record_upstream_transport(_source: &'static str, _protocol: &'static str, _result: &'static str) {}
+pub fn add_upstream_transports_active(_source: &'static str, _protocol: &'static str, _delta: i64) {}
 pub fn record_request(_command: &'static str) {}
 pub fn add_bytes(_protocol: &'static str, _direction: &'static str, _uplink: &str, _bytes: usize) {}
 pub fn add_udp_datagram(_direction: &'static str, _uplink: &str) {}
 pub fn record_dropped_oversized_udp_packet(_direction: &'static str) {}
 pub fn record_uplink_selected(_transport: &'static str, _uplink: &str) {}
 pub fn record_runtime_failure(_transport: &'static str, _uplink: &str) {}
-pub fn record_runtime_failure_cause(_transport: &'static str, _uplink: &str, _cause: &'static str) {
-}
+pub fn record_runtime_failure_cause(_transport: &'static str, _uplink: &str, _cause: &'static str) {}
 pub fn record_runtime_failure_signature(
     _transport: &'static str,
     _uplink: &str,
     _signature: &'static str,
 ) {
 }
-pub fn record_runtime_failure_other_detail(_transport: &'static str, _uplink: &str, _detail: &str) {
-}
+pub fn record_runtime_failure_other_detail(_transport: &'static str, _uplink: &str, _detail: &str) {}
 pub fn record_runtime_failure_suppressed(_transport: &'static str, _uplink: &str) {}
 pub fn record_failover(_transport: &'static str, _from_uplink: &str, _to_uplink: &str) {}
 pub fn record_probe(
@@ -96,23 +87,13 @@ pub fn record_probe_wakeup(
     _result: &'static str,
 ) {
 }
-pub fn record_warm_standby_acquire(
-    _transport: &'static str,
-    _uplink: &str,
-    _outcome: &'static str,
-) {
-}
+pub fn record_warm_standby_acquire(_transport: &'static str, _uplink: &str, _outcome: &'static str) {}
 pub fn record_warm_standby_refill(_transport: &'static str, _uplink: &str, _success: bool) {}
 pub fn record_metrics_http_request(_path: &str, _status: u16) {}
 
 // ── TUN ───────────────────────────────────────────────────────────────────────
 
-pub fn record_tun_packet(
-    _direction: &'static str,
-    _ip_family: &'static str,
-    _outcome: &'static str,
-) {
-}
+pub fn record_tun_packet(_direction: &'static str, _ip_family: &'static str, _outcome: &'static str) {}
 pub fn record_tun_flow_created(_uplink: &str) {}
 pub fn record_tun_flow_closed(_uplink: &str, _reason: &'static str, _duration: Duration) {}
 pub fn record_tun_icmp_local_reply(_ip_family: &'static str) {}

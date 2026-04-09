@@ -89,7 +89,6 @@ async fn build_manager(
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
-            tcp: None,
         },
         LoadBalancingConfig {
             mode: outline_ws_rust::config::LoadBalancingMode::ActiveActive,
