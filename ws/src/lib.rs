@@ -16,6 +16,7 @@ pub mod proxy;
 pub mod socks5;
 pub mod transport;
 #[cfg(feature = "h3")]
+#[path = "transport/h3.rs"]
 pub(crate) mod transport_h3;
 pub mod tun;
 pub(crate) mod tun_defrag;
