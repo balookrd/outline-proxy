@@ -163,22 +163,15 @@ impl TunUdpEngine {
                 &replacement_name,
                 payload.len(),
             );
-            self.inner
-                .uplinks
-                .report_active_traffic(replacement_index, TransportKind::Udp, false)
-                .await;
             debug!(
                 flow_id = replacement_flow_id,
                 uplink = %replacement_name,
                 "recreated TUN UDP flow after send failure"
             );
+            let _ = replacement_index;
         } else {
             metrics::add_udp_datagram("client_to_upstream", &uplink_name);
             metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
-            self.inner
-                .uplinks
-                .report_active_traffic(uplink_index, TransportKind::Udp, false)
-                .await;
         }
 
         Ok(())
