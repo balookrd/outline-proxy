@@ -174,8 +174,6 @@ async fn handle_tcp_connect(
         let mut replay_overflow = false;
         let mut active_index = selected_index;
         let mut active_uplink_name = selected_uplink_name.clone();
-        let mut client_half_closed = false;
-        let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
 
         let first_upstream_chunk: Vec<u8> = 'phase1: loop {
             let can_failover = strict_transport
@@ -193,17 +191,6 @@ async fn handle_tcp_connect(
             // by the select! (via read_chunk) is released before we potentially
             // replace writer/reader on failover.
             let attempt: Result<Vec<u8>> = loop {
-                if client_half_closed {
-                    break tokio::time::timeout_at(deadline, reader.read_chunk())
-                        .await
-                        .map_err(|_| {
-                            anyhow!(
-                                "upstream did not respond within {}s (chunk 0)",
-                                attempt_timeout.as_secs(),
-                            )
-                        })?;
-                }
-
                 tokio::select! {
                     result = reader.read_chunk() => {
                         break result;
@@ -211,11 +198,9 @@ async fn handle_tcp_connect(
                     n_res = client_read.read(&mut rbuf) => {
                         match n_res {
                             Ok(0) => {
-                                // Preserve TCP half-close semantics: stop sending
-                                // client data upstream, but keep waiting for the
-                                // response on the existing Shadowsocks session.
-                                writer.close().await.context("uplink half-close failed")?;
-                                client_half_closed = true;
+                                // Client closed connection before the server responded.
+                                // Return Ok so the session metric counts as success.
+                                return Ok(());
                             }
                             Ok(n) => {
                                 let chunk = rbuf[..n].to_vec();
@@ -257,73 +242,39 @@ async fn handle_tcp_connect(
             match attempt {
                 Ok(chunk) if chunk.is_empty() => {
                     // Empty decrypted payload is not valid; treat as clean close.
-                    client_write.shutdown().await.context("client shutdown failed")?;
+                    client_write
+                        .shutdown()
+                        .await
+                        .context("client shutdown failed")?;
                     return Ok(());
                 }
-                Ok(chunk) => {
-                    // Attribute earlier chunk-0 stalls only after another uplink
-                    // proves it can carry the same session. If every attempted
-                    // uplink times out before sending any response bytes, the
-                    // failure is ambiguous (target-specific or shared-path), so
-                    // cooling down each uplink would poison the whole pool.
-                    for (failed_index, failed_uplink_name, failed_error) in
-                        deferred_phase1_failures.drain(..)
-                    {
-                        let deferred_error = anyhow!(failed_error.clone());
-                        uplinks
-                            .report_runtime_failure(
-                                failed_index,
-                                TransportKind::Tcp,
-                                &deferred_error,
-                            )
-                            .await;
-                        debug!(
-                            uplink = %failed_uplink_name,
-                            error = %failed_error,
-                            recovered_via = %active_uplink_name,
-                            "recorded deferred TCP chunk-0 runtime failure after successful failover"
-                        );
-                    }
-                    break 'phase1 chunk;
-                }
+                Ok(chunk) => break 'phase1 chunk,
                 Err(ref e) if reader.closed_cleanly => {
                     debug!(
                         uplink = %active_uplink_name,
                         error = %format!("{e:#}"),
                         "upstream closed before sending any data (phase 1)"
                     );
-                    client_write.shutdown().await.context("client shutdown failed")?;
+                    client_write
+                        .shutdown()
+                        .await
+                        .context("client shutdown failed")?;
                     return Ok(());
                 }
                 Err(e) => {
-                    let error_text = format!("{e:#}");
+                    // Report the failure on the current uplink.
+                    uplinks
+                        .report_runtime_failure(active_index, TransportKind::Tcp, &e)
+                        .await;
                     warn!(
                         uplink = %active_uplink_name,
-                        error = %error_text,
+                        error = %format!("{e:#}"),
                         "TCP chunk-0 failure"
                     );
 
                     if !can_failover {
-                        if deferred_phase1_failures.is_empty() {
-                            uplinks
-                                .report_runtime_failure(active_index, TransportKind::Tcp, &e)
-                                .await;
-                        } else {
-                            warn!(
-                                last_uplink = %active_uplink_name,
-                                attempts = deferred_phase1_failures.len() + 1,
-                                error = %error_text,
-                                "suppressing TCP chunk-0 runtime failure attribution because every attempted uplink stalled before the first response"
-                            );
-                        }
                         return Err(e);
                     }
-
-                    deferred_phase1_failures.push((
-                        active_index,
-                        active_uplink_name.clone(),
-                        error_text,
-                    ));
 
                     // Find a candidate we haven't tried yet.
                     let candidates = uplinks.tcp_candidates(&target).await;
@@ -331,7 +282,9 @@ async fn handle_tcp_connect(
                         .into_iter()
                         .find(|c| !tried_indexes.contains(&c.index));
                     let Some(next_candidate) = next else {
-                        return Err(e.context("no alternative uplink available for chunk-0 failover"));
+                        return Err(
+                            e.context("no alternative uplink available for chunk-0 failover")
+                        );
                     };
                     tried_indexes.insert(next_candidate.index);
 
@@ -358,7 +311,11 @@ async fn handle_tcp_connect(
                             next_candidate.index,
                         )
                         .await;
-                    metrics::record_failover("tcp", &active_uplink_name, &next_candidate.uplink.name);
+                    metrics::record_failover(
+                        "tcp",
+                        &active_uplink_name,
+                        &next_candidate.uplink.name,
+                    );
                     metrics::record_uplink_selected("tcp", &next_candidate.uplink.name);
                     info!(
                         from = %active_uplink_name,
@@ -376,12 +333,6 @@ async fn handle_tcp_connect(
                             .send_chunk(chunk)
                             .await
                             .context("replay to failover uplink failed")?;
-                    }
-                    if client_half_closed {
-                        writer
-                            .close()
-                            .await
-                            .context("failover uplink half-close failed")?;
                     }
                     // Continue 'phase1 loop with the new uplink.
                 }
@@ -804,10 +755,9 @@ async fn handle_udp_associate(
                     .recv_from(&mut buf)
                     .await
                     .context("bypass UDP recv failed")?;
-                let client_addr =
-                    client_udp_addr_direct.lock().await.ok_or_else(|| {
-                        anyhow!("received bypass UDP response before client sent any packet")
-                    })?;
+                let client_addr = client_udp_addr_direct.lock().await.ok_or_else(|| {
+                    anyhow!("received bypass UDP response before client sent any packet")
+                })?;
                 let target = socket_addr_to_target(src_addr);
                 let packet = build_udp_packet(&target, &buf[..len])?;
                 if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {

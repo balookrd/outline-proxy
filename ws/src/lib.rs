@@ -1,8 +1,8 @@
 pub(crate) mod atomic_counter;
-pub(crate) mod dns_cache;
 pub mod bypass;
 pub mod config;
 pub mod crypto;
+pub(crate) mod dns_cache;
 pub(crate) mod error_text;
 pub mod memory;
 #[cfg(feature = "metrics")]

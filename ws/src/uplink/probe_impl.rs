@@ -78,7 +78,13 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
-        let result = run_http_probe(uplink, http_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
+        let result = run_http_probe(
+            uplink,
+            http_probe,
+            Arc::clone(&dial_limit),
+            effective_tcp_mode,
+        )
+        .await;
         crate::metrics::record_probe(
             &uplink.name,
             "tcp",
@@ -209,7 +215,10 @@ pub(super) async fn run_ws_probe(
     Ok(())
 }
 
-pub(super) async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
+pub(super) async fn run_tcp_socket_probe(
+    uplink: &UplinkConfig,
+    dial_limit: Arc<Semaphore>,
+) -> Result<()> {
     let _permit = dial_limit
         .acquire_owned()
         .await
@@ -224,7 +233,10 @@ pub(super) async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<
     Ok(())
 }
 
-pub(super) async fn run_udp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
+pub(super) async fn run_udp_socket_probe(
+    uplink: &UplinkConfig,
+    dial_limit: Arc<Semaphore>,
+) -> Result<()> {
     let _permit = dial_limit
         .acquire_owned()
         .await
@@ -356,9 +368,13 @@ pub(super) async fn run_http_probe(
                     &master_key,
                     Arc::clone(&lifetime),
                 )?;
-                let reader =
-                    TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-                        .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
+                let reader = TcpShadowsocksReader::new_socket(
+                    reader_half,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
+                )
+                .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
                 (writer, reader)
             }
         }
@@ -513,9 +529,13 @@ pub(super) async fn run_tcp_tunnel_probe(
                     &master_key,
                     Arc::clone(&lifetime),
                 )?;
-                let reader =
-                    TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-                        .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
+                let reader = TcpShadowsocksReader::new_socket(
+                    reader_half,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
+                )
+                .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
                 (writer, reader)
             }
         }
@@ -537,13 +557,7 @@ pub(super) async fn run_tcp_tunnel_probe(
     // immediately sends a banner and shuts down) is also a success.
     match reader.read_chunk().await {
         Ok(chunk) => {
-            crate::metrics::add_probe_bytes(
-                &uplink.name,
-                "tcp",
-                "tcp",
-                "incoming",
-                chunk.len(),
-            );
+            crate::metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "incoming", chunk.len());
             debug!(
                 uplink = %uplink.name,
                 target = %format!("{}:{}", probe.host, probe.port),
@@ -710,9 +724,7 @@ pub(super) fn format_http_host_header(host: &str, port: u16) -> String {
     }
 }
 
-pub(super) async fn validate_ws_stream_alive(
-    ws: &mut AnyWsStream,
-) -> Result<()> {
+pub(super) async fn validate_ws_stream_alive(ws: &mut AnyWsStream) -> Result<()> {
     match timeout(std::time::Duration::from_millis(1), ws.next()).await {
         Err(_elapsed) => Ok(()), // still open — nothing to read
         Ok(None) => Err(anyhow!("standby websocket stream ended")),

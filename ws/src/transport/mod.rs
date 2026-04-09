@@ -11,9 +11,14 @@ pub use stream::AnyWsStream;
 pub use tcp::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp::UdpWsTransport;
 
+#[cfg(feature = "h3")]
 pub(crate) use dns::resolve_host_with_preference;
-pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
-pub(crate) use socket::{bind_addr_for, bind_udp_socket, format_authority, websocket_path};
+pub(crate) use guards::UpstreamTransportGuard;
+#[cfg(feature = "h3")]
+pub(crate) use guards::{AbortOnDrop, TransportConnectGuard};
+pub(crate) use socket::{bind_addr_for, bind_udp_socket};
+#[cfg(feature = "h3")]
+pub(crate) use socket::{format_authority, websocket_path};
 
 use anyhow::{Context, Result};
 use tokio::net::UdpSocket;
@@ -120,7 +125,7 @@ pub async fn connect_websocket_with_source(
                     Ok(AnyWsStream::Http1 { inner: ws_stream })
                 }
             }
-        },
+        }
     }
 }
 
