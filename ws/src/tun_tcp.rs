@@ -3767,6 +3767,7 @@ mod tests {
                 ws: WsProbeConfig { enabled: false },
                 http: None,
                 dns: None,
+                tcp: None,
             },
             LoadBalancingConfig {
                 mode: crate::config::LoadBalancingMode::ActiveActive,

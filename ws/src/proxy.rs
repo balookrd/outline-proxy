@@ -1,5 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
@@ -32,6 +33,9 @@ struct ActiveUdpTransport {
 
 const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
 const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
+const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
+const CHUNK0_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
+const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
 pub async fn handle_client(
     mut client: TcpStream,
@@ -124,16 +128,158 @@ async fn handle_tcp_connect(
             "selected TCP uplink"
         );
         let selected_index = candidate.index;
-        let (writer, reader) = connected;
+        let (mut writer, mut reader) = connected;
 
         let bound_addr = socket_addr_to_target(client.local_addr()?);
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
 
         let (mut client_read, mut client_write) = client.into_split();
-        let uplink_uplink_name = selected_uplink_name.clone();
+        let mut replay_buf: Vec<Vec<u8>> = Vec::new();
+        let mut replay_overflow = false;
+        let mut active_index = selected_index;
+        let mut active_uplink_name = selected_uplink_name.clone();
+
+        let first_upstream_chunk: Vec<u8> = 'phase1: loop {
+            let can_failover = strict_transport
+                && !replay_overflow
+                && tried_indexes.len() < uplinks.uplinks().len();
+            let attempt_timeout = if can_failover {
+                CHUNK0_ATTEMPT_TIMEOUT
+            } else {
+                UPSTREAM_RESPONSE_TIMEOUT
+            };
+            let deadline = tokio::time::Instant::now() + attempt_timeout;
+            let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
+
+            let attempt: Result<Vec<u8>> = loop {
+                tokio::select! {
+                    result = reader.read_chunk() => {
+                        break result;
+                    }
+                    n_res = client_read.read(&mut rbuf) => {
+                        match n_res {
+                            Ok(0) => return Ok(()),
+                            Ok(n) => {
+                                let chunk = rbuf[..n].to_vec();
+                                writer
+                                    .send_chunk(&chunk)
+                                    .await
+                                    .context("uplink write failed")?;
+                                metrics::add_bytes(
+                                    "tcp",
+                                    "client_to_upstream",
+                                    &active_uplink_name,
+                                    n,
+                                );
+                                uplinks
+                                    .report_active_traffic(active_index, TransportKind::Tcp)
+                                    .await;
+                                if !replay_overflow {
+                                    let total: usize = replay_buf.iter().map(|c| c.len()).sum();
+                                    if total + n <= MAX_CHUNK0_FAILOVER_BUF {
+                                        replay_buf.push(chunk);
+                                    } else {
+                                        replay_overflow = true;
+                                    }
+                                }
+                            }
+                            Err(e) => break Err(e.into()),
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        break Err(anyhow!(
+                            "upstream did not respond within {}s (chunk 0)",
+                            attempt_timeout.as_secs(),
+                        ));
+                    }
+                }
+            };
+
+            match attempt {
+                Ok(chunk) if chunk.is_empty() => {
+                    client_write.shutdown().await.context("client shutdown failed")?;
+                    return Ok(());
+                }
+                Ok(chunk) => break 'phase1 chunk,
+                Err(ref e) if reader.closed_cleanly => {
+                    debug!(
+                        uplink = %active_uplink_name,
+                        error = %format!("{e:#}"),
+                        "upstream closed before sending any data (phase 1)"
+                    );
+                    client_write.shutdown().await.context("client shutdown failed")?;
+                    return Ok(());
+                }
+                Err(e) => {
+                    uplinks
+                        .report_runtime_failure(active_index, TransportKind::Tcp, &e)
+                        .await;
+                    warn!(
+                        uplink = %active_uplink_name,
+                        error = %format!("{e:#}"),
+                        "TCP chunk-0 failure"
+                    );
+
+                    if !can_failover {
+                        return Err(e);
+                    }
+
+                    let candidates = uplinks.tcp_candidates(&target).await;
+                    let next = candidates
+                        .into_iter()
+                        .find(|c| !tried_indexes.contains(&c.index));
+                    let Some(next_candidate) = next else {
+                        return Err(e.context("no alternative uplink available for chunk-0 failover"));
+                    };
+                    tried_indexes.insert(next_candidate.index);
+
+                    let (new_writer, new_reader) =
+                        match connect_tcp_uplink(&uplinks, &next_candidate, &target).await {
+                            Ok(v) => v,
+                            Err(connect_err) => {
+                                uplinks
+                                    .report_runtime_failure(
+                                        next_candidate.index,
+                                        TransportKind::Tcp,
+                                        &connect_err,
+                                    )
+                                    .await;
+                                return Err(connect_err.context("chunk-0 failover connect failed"));
+                            }
+                        };
+
+                    uplinks
+                        .confirm_selected_uplink(
+                            TransportKind::Tcp,
+                            Some(&target),
+                            next_candidate.index,
+                        )
+                        .await;
+                    metrics::record_failover("tcp", &active_uplink_name, &next_candidate.uplink.name);
+                    metrics::record_uplink_selected("tcp", &next_candidate.uplink.name);
+                    info!(
+                        from = %active_uplink_name,
+                        to = %next_candidate.uplink.name,
+                        "TCP chunk-0 failover"
+                    );
+                    active_index = next_candidate.index;
+                    active_uplink_name = next_candidate.uplink.name.clone();
+                    writer = new_writer;
+                    reader = new_reader;
+
+                    for chunk in &replay_buf {
+                        writer
+                            .send_chunk(chunk)
+                            .await
+                            .context("replay to failover uplink failed")?;
+                    }
+                }
+            }
+        };
+
+        let uplink_uplink_name = active_uplink_name.clone();
         let uplinks_uplink = uplinks.clone();
         let uplink = async move {
-            let mut writer = writer;
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
             loop {
@@ -141,7 +287,7 @@ async fn handle_tcp_connect(
                     && uplinks_uplink
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await
-                        .is_some_and(|active| active != selected_index)
+                        .is_some_and(|active| active != active_index)
                 {
                     return Err(anyhow!("active uplink switched for SOCKS TCP session"));
                 }
@@ -160,23 +306,36 @@ async fn handle_tcp_connect(
                     debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
                 }
                 uplinks_uplink
-                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
             }
             Ok::<(), anyhow::Error>(())
         };
 
-        let downlink_uplink_name = selected_uplink_name.clone();
+        let downlink_uplink_name = active_uplink_name.clone();
         let uplinks_downlink = uplinks.clone();
         let downlink = async move {
-            let mut reader = reader;
-            let mut chunks_forwarded: u64 = 0;
+            metrics::add_bytes(
+                "tcp",
+                "upstream_to_client",
+                &downlink_uplink_name,
+                first_upstream_chunk.len(),
+            );
+            client_write
+                .write_all(&first_upstream_chunk)
+                .await
+                .context("client write failed")?;
+            uplinks_downlink
+                .report_active_traffic(active_index, TransportKind::Tcp)
+                .await;
+
+            let mut chunks_forwarded: u64 = 1;
             loop {
                 if strict_transport
                     && uplinks_downlink
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await
-                        .is_some_and(|active| active != selected_index)
+                        .is_some_and(|active| active != active_index)
                 {
                     return Err(anyhow!("active uplink switched for SOCKS TCP session"));
                 }
@@ -210,7 +369,7 @@ async fn handle_tcp_connect(
                     .await
                     .context("client write failed")?;
                 uplinks_downlink
-                    .report_active_traffic(selected_index, TransportKind::Tcp)
+                    .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
             }
             client_write
@@ -229,7 +388,7 @@ async fn handle_tcp_connect(
         if let Err(ref err) = result {
             if crate::error_text::is_upstream_runtime_failure(err) {
                 uplinks
-                    .report_runtime_failure(selected_index, TransportKind::Tcp, err)
+                    .report_runtime_failure(active_index, TransportKind::Tcp, err)
                     .await;
             } else if crate::error_text::is_websocket_closed(err) {
                 // The upstream server closed the WebSocket connection
@@ -241,7 +400,7 @@ async fn handle_tcp_connect(
                 // next cycle — this lets the probe detect a downed server
                 // promptly rather than waiting for probe.interval of silence.
                 uplinks
-                    .report_upstream_close(selected_index, TransportKind::Tcp)
+                    .report_upstream_close(active_index, TransportKind::Tcp)
                     .await;
             }
         }
