@@ -1151,9 +1151,17 @@ impl TunTcpEngine {
                         // indicate an uplink problem and are not reported.
                         if !upstream_reader.closed_cleanly {
                             let uplink_index = flow.lock().await.uplink_index;
-                            engine
-                                .report_tcp_runtime_failure(uplink_index, &error)
-                                .await;
+                            if crate::error_text::is_websocket_closed(&error) {
+                                engine
+                                    .inner
+                                    .uplinks
+                                    .report_upstream_close(uplink_index, TransportKind::Tcp)
+                                    .await;
+                            } else {
+                                engine
+                                    .report_tcp_runtime_failure(uplink_index, &error)
+                                    .await;
+                            }
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
                         let flush = {
