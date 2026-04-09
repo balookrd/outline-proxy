@@ -14,7 +14,7 @@ STATE_DIR="${STATE_DIR:-/var/lib/outline-ws-rust}"
 TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
-VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: exact tag nightly-v1.0.0-deadbeef1234
+VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -97,10 +97,10 @@ normalize_version_tag() {
   else
     if [[ -z "$v" ]]; then
       echo ""
-    elif [[ "$v" =~ ^nightly-v[0-9]+\.[0-9]+\.[0-9]+-[0-9a-f]{12}$ ]]; then
+    elif [[ "$v" == "nightly" ]]; then
       echo "$v"
     else
-      die "Для CHANNEL=nightly VERSION должен быть точным тегом вида nightly-v1.2.3-abcdef123456"
+      die "Для CHANNEL=nightly VERSION должен быть равен nightly"
     fi
   fi
 }
@@ -133,7 +133,7 @@ def is_nightly_server_release(rel):
     return (
         not rel.get("draft", False)
         and rel.get("prerelease", False)
-        and re.fullmatch(r"nightly-v\d+\.\d+\.\d+-[0-9a-f]{12}", tag) is not None
+        and tag == "nightly"
     )
 
 filtered = [r for r in releases if is_stable_server_release(r)] if channel == "stable" \
@@ -166,6 +166,7 @@ rel = json.load(sys.stdin)
 assets = rel.get("assets", [])
 patterns = [
     rf"^outline-ws-rust-v\d+\.\d+\.\d+-{re.escape(target)}\.tar\.gz$",
+    rf"^outline-ws-rust-vnightly-[0-9a-f]{{40}}-{re.escape(target)}\.tar\.gz$",
 ]
 
 for asset in assets:

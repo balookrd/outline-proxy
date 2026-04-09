@@ -167,7 +167,7 @@ tun2udp + tun2tcp"]
 - Shadowsocks 2022 не реализован.
 - `tun2tcp` ориентирован на production, но всё ещё не эквивалентен ядерному TCP-стеку.
 - Не-echo ICMP на TUN не поддерживаются.
-- HTTP-проба поддерживает только `http://`, не `https://`.
+- HTTP-проба поддерживает только `http://`, не `https://`; `probe.tcp` должен указывать на сервис, который сам первым отправляет данные, например SSH или SMTP, а не на типичный HTTP/HTTPS-порт.
 - TCP failover безопасен до начала полезного обмена данными; живые установленные TCP-туннели не мигрируют прозрачно между аплинками.
 
 ## Структура репозитория
@@ -204,11 +204,13 @@ cargo release-router-musl-aarch64
 ### CI-релизы
 
 - Каждый push в `main` запускает workflow `Nightly Release`.
-- CI автоматически создает тег вида `nightly-v<current-version>-<commit-sha>`, чтобы было сразу видно, после какой release-линейки собран nightly.
-- Этот workflow публикует GitHub `prerelease` с server-артефактами `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также router-артефактом `release-router` для `aarch64-unknown-linux-musl`, плюс `SHA256SUMS.txt`.
+- Этот workflow передвигает rolling tag `nightly` на текущий коммит `main` и заново публикует GitHub prerelease `Nightly`.
+- Nightly публикует server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, router-артефакты `release-router` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, а также `SHA256SUMS.txt`.
+- Nightly server-архивы называются `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`; для router используется префикс `outline-ws-rust-router-vnightly-<full-commit-sha>-<target>.tar.gz`.
 - Для стабильного релиза запускайте вручную workflow `Release` и передавайте `major_minor`, например `1.7`.
-- CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит, пушит тег `v1.7.Z` и публикует полноценный GitHub Release в рамках того же workflow.
-- В результате один стабильный GitHub Release содержит и server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, и router-артефакты `release-router` для `aarch64-unknown-linux-musl`, `mips-unknown-linux-musl` и `mipsel-unknown-linux-musl`.
+- CI находит последний тег вида `v1.7.*`, автоматически увеличивает patch, обновляет `Cargo.toml` и `Cargo.lock`, создает release-коммит и пушит этот коммит в `main`.
+- После появления release-коммита в `main` нужно локально создать и отправить подписанный тег; именно push тега запускает workflow `Tag Release`, который собирает и публикует GitHub Release.
+- В результате один стабильный GitHub Release содержит и server-артефакты `release` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`, и router-артефакты `release-router` для `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
 - Router-архивы называются `outline-ws-rust-router-v<version>-<target>.tar.gz`, чтобы не пересекаться с обычными server-артефактами.
 - Если нужно, push тега вида `v1.2.3` по-прежнему запускает workflow `Tag Release` как отдельный внешний tag-driven путь.
 
@@ -924,6 +926,12 @@ Alert rules:
 - бинарник: `/usr/local/bin/outline-ws-rust`
 - конфиг: `/etc/outline-ws-rust/config.toml`
 - рабочее состояние: `/var/lib/outline-ws-rust`
+
+В репозитории также есть `install.sh` для установки бинаря и systemd-юнитов из GitHub Releases:
+
+- по умолчанию ставится последний stable server release под текущую архитектуру
+- `CHANNEL=nightly` ставит rolling prerelease `nightly`
+- `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
 
 ## Тестирование
 

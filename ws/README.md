@@ -167,7 +167,7 @@ The project is intentionally practical, but there are still boundaries:
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
-- `probe.http` supports `http://` only, not `https://`. Use `probe.tcp` for HTTPS targets.
+- `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
 ## Repository Layout
@@ -204,11 +204,13 @@ cargo release-router-musl-aarch64
 ### CI Releases
 
 - Every push to `main` triggers the `Nightly Release` workflow.
-- CI auto-creates a tag in the form `nightly-v<current-version>-<commit-sha>`, so it is obvious which release line the nightly follows.
-- That workflow publishes a GitHub `prerelease` with server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus a router `release-router` artifact for `aarch64-unknown-linux-musl`, and `SHA256SUMS.txt`.
+- That workflow moves the rolling tag `nightly` to the current `main` commit and republishes the `Nightly` GitHub prerelease.
+- Nightly publishes server `release` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, router `release-router` artifacts for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, plus `SHA256SUMS.txt`.
+- Nightly server archives are named `outline-ws-rust-vnightly-<full-commit-sha>-<target>.tar.gz`; router archives use `outline-ws-rust-router-vnightly-<full-commit-sha>-<target>.tar.gz`.
 - To cut a stable release, run the manual `Release` workflow and pass `major_minor` such as `1.7`.
-- CI finds the latest `v1.7.*` tag, increments the patch automatically, updates `Cargo.toml` and `Cargo.lock`, creates a release commit, pushes tag `v1.7.Z`, and publishes a full GitHub Release in the same workflow run.
-- The stable release now includes both server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and router `release-router` assets for `aarch64-unknown-linux-musl`, `mips-unknown-linux-musl`, and `mipsel-unknown-linux-musl`.
+- CI finds the latest `v1.7.*` tag, increments the patch automatically, updates `Cargo.toml` and `Cargo.lock`, creates a release commit, and pushes that commit to `main`.
+- After the release commit lands on `main`, create and push a signed tag locally; the tag push triggers the `Tag Release` workflow, which builds and publishes the GitHub Release.
+- The stable release includes server `release` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`, and router `release-router` assets for `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 - Router archives are named `outline-ws-rust-router-v<version>-<target>.tar.gz` so they are distinct from the regular server assets.
 - Pushing a tag like `v1.2.3` manually still triggers the `Tag Release` workflow as a separate external tag-driven path.
 
@@ -929,6 +931,12 @@ Typical deployment layout:
 - binary: `/usr/local/bin/outline-ws-rust`
 - config: `/etc/outline-ws-rust/config.toml`
 - working state: `/var/lib/outline-ws-rust`
+
+The repository also includes `install.sh` for binary + systemd deployment from GitHub Releases:
+
+- default behavior installs the latest stable server release for the current CPU architecture
+- `CHANNEL=nightly` installs from the rolling `nightly` prerelease
+- `VERSION=v1.2.3` pins a specific stable release tag
 
 ## Testing
 
