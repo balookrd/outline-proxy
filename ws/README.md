@@ -137,10 +137,13 @@ tun2udp + tun2tcp"]
 - WebSocket connectivity probes (TCP+TLS+WS handshake; no ping/pong — servers rarely respond to WebSocket ping control frames)
 - real HTTP probes over `websocket-stream`
 - real DNS probes over `websocket-packet`
+- real TCP tunnel probes through the SS data path
 - probe concurrency limits
 - separate probe dial isolation
 - immediate probe wakeup on runtime failure to accelerate detection
 - consecutive-success counter for stable auto-failback gating
+- DNS result cache (60 s TTL, stale fallback on resolver failure)
+- TCP connect timeout (10 s) to avoid indefinite hangs on unreachable upstreams
 
 ### TUN
 
@@ -680,7 +683,7 @@ Each uplink has its own:
 Selection pipeline:
 
 1. Health probes update the latest raw RTT and EWMA RTT.
-2. Probe-confirmed failures add a decaying failure penalty. When probes are enabled, runtime failures (e.g. an H3 connection reset under load) do not add a penalty on their own — they only set a temporary cooldown. The penalty is added only when a probe confirms a real failure (`consecutive_failures ≥ min_failures`). This prevents penalty accumulation on a healthy uplink due to transient errors under load.
+2. Probe-confirmed failures add a decaying failure penalty. When probes are enabled, runtime failures (e.g. an H3 connection reset under load) do not add a penalty on their own — they only set a temporary cooldown. The penalty is added only when a probe confirms a real failure (`consecutive_failures ≥ min_failures`). This prevents penalty accumulation on a healthy uplink due to transient errors under load. The cooldown immediately triggers a switch away from the active uplink (even when the probe still reports it healthy), because the probe tests only SS-server port reachability, not the full data path to the actual target. A successful probe does **not** clear an active runtime-failure cooldown — the cooldown must expire naturally (`failure_cooldown_secs`) so that candidate selection has a chance to switch away. Only a confirmed inbound chunk from the upstream (data actually flowing back to the client) clears the cooldown.
 3. Effective latency is derived from EWMA RTT plus current penalty.
 4. Final score is `effective_latency / weight`.
 5. Sticky routing and hysteresis reduce avoidable switches.
@@ -697,12 +700,12 @@ Routing scope behavior:
 - `false` (default): the active uplink is **only replaced when it fails** (enters cooldown or is no longer healthy). While the active uplink is still healthy, it stays active regardless of whether a higher-priority uplink has recovered. This is the recommended setting for production because it avoids connection disruption caused by proactive primary preference.
 - `true`: when the current active uplink is healthy and a probe-healthy candidate with a higher `weight` (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA: this prevents spurious switches under load, when the active uplink's EWMA is temporarily elevated. Failback only moves toward higher weight; switching to a lower-weight uplink requires a probe-confirmed failover.
 
-**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted with penalty-aware scoring (EWMA RTT + decaying failure penalty / weight). This prevents oscillation with three or more uplinks: without penalties, a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed, causing rapid back-and-forth. With penalties, a fresher backup with a higher raw RTT wins over the recently-failed primary until the penalty decays.
+**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted with penalty-aware scoring (EWMA RTT + decaying failure penalty / weight). This prevents oscillation with three or more uplinks: without penalties, a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed, causing rapid back-and-forth. With penalties, a fresher backup with a higher raw RTT wins over the recently-failed primary until the penalty decays. When all candidates are in cooldown (total outage or mass failure), they are sorted first by remaining cooldown duration — the uplink whose cooldown expires soonest (failed longest ago) is tried first — then by penalty score as a secondary key.
 
 Runtime failover:
 
 - UDP can switch uplinks within an active association after runtime send/read failure.
-- TCP can fail over before a usable tunnel is established.
+- TCP transparently fails over during the chunk-0 phase (waiting for the first upstream response): if no response arrives within 6 seconds, the connection is retried on the next candidate uplink without the client seeing an error. Client data sent during this window is buffered (capped at 32 KB) and replayed to the new uplink. Once the first upstream chunk is received the session is committed and no further transparent failover occurs.
 - Established TCP tunnels are not live-migrated.
 
 ## Health Probes
@@ -725,7 +728,7 @@ Probe timing:
 
 - Probes normally run on a fixed `interval` timer.
 - When a runtime failure sets a fresh failure cooldown on an uplink, the probe loop is immediately woken up (via an internal `Notify`) so that failover is confirmed within one probe cycle rather than waiting for the next scheduled interval. This significantly reduces end-to-end failover latency.
-- **Probe suppression under active traffic (global + probe):** in `routing_scope = global` mode with probes enabled, the probe cycle is skipped for an uplink when all three conditions are met: (1) real traffic was observed within the last `interval`, (2) the uplink is probe-healthy (`tcp_healthy = true`), (3) routing scope is `global`. Active traffic is stronger evidence of reachability than a probe ping. This prevents false-negative probe results under load: when the probe loop wakes immediately after an H3 runtime failure, the server may be busy and unable to accept a new QUIC connection for the probe — which would otherwise cause a spurious failover. For non-global scopes the probe still runs even when traffic is active, to confirm recovery after cooldown.
+- **Probe suppression under active traffic:** the probe cycle is skipped for an uplink when all three conditions hold: (1) real traffic was observed within the last `interval`, (2) the uplink is probe-healthy (`tcp_healthy = true`), (3) there is no active runtime-failure cooldown. When a cooldown is present the probe always runs regardless of routing scope or traffic — the cooldown signals that a recent data-path failure occurred and the probe must confirm whether the failure is persistent in order to set `tcp_healthy = false` and trigger failover. Active traffic alone is not a reliable liveness signal in this situation because outbound chunks (client → upstream) are recorded before the upstream has responded, so a failing connection still marks the uplink as active.
 
 Warm-standby validation:
 
