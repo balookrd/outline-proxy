@@ -71,6 +71,7 @@ mod tests {
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
+            tcp: None,
         }
     }
 
@@ -420,6 +421,7 @@ mod tests {
                 ws: WsProbeConfig { enabled: true },
                 http: None,
                 dns: None,
+                tcp: None,
             },
             config.clone(),
         )
