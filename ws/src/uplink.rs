@@ -14,7 +14,7 @@ use tracing::{debug, info, warn};
 
 use crate::config::{
     DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
-    RoutingScope, UplinkConfig,
+    RoutingScope, TcpProbeConfig, UplinkConfig,
 };
 use crate::memory::{maybe_shrink_hash_map, maybe_shrink_vecdeque};
 use crate::metrics;
@@ -1401,14 +1401,16 @@ impl UplinkManager {
         }
 
         // When we are switching away from a failed active uplink (cooldown is
-        // active), re-sort with penalty-aware scoring so that uplinks which
-        // failed recently are deprioritized. This prevents oscillation under
-        // load: primary fails → switch to backup → backup fails → would switch
-        // back to primary (whose cooldown probe-cleared but penalty remains).
-        // For the initial selection (no previous active) penalties are ignored
-        // to preserve the intent that strict-mode selection is EWMA-driven.
+        // active), re-sort candidates so that unhealthy uplinks whose cooldown
+        // expires sooner are tried first, with penalty-aware score as a
+        // secondary key. For the initial selection (no previous active)
+        // penalties are ignored to preserve the intent that strict-mode
+        // selection is EWMA-driven.
         if switching_from_cooldown {
             candidates.sort_by(|left, right| {
+                let left_remaining = cooldown_remaining(&statuses[left.index], gate_transport, now);
+                let right_remaining =
+                    cooldown_remaining(&statuses[right.index], gate_transport, now);
                 let left_score = score_latency(
                     &statuses[left.index],
                     self.inner.uplinks[left.index].weight,
@@ -1426,6 +1428,7 @@ impl UplinkManager {
                 rightless_bool(left.healthy)
                     .cmp(&rightless_bool(right.healthy))
                     .reverse()
+                    .then_with(|| left_remaining.cmp(&right_remaining))
                     .then_with(|| {
                         left_score
                             .unwrap_or(Duration::MAX)
@@ -2196,6 +2199,19 @@ async fn run_tcp_probe(
         let ok = result?;
         return Ok((ok, Some(started.elapsed())));
     }
+    if let Some(tcp_probe) = &probe.tcp {
+        let probe_started = Instant::now();
+        let result = run_tcp_tunnel_probe(uplink, tcp_probe, dial_limit, effective_tcp_mode).await;
+        metrics::record_probe(
+            &uplink.name,
+            "tcp",
+            "tcp",
+            result.is_ok(),
+            probe_started.elapsed(),
+        );
+        let ok = result?;
+        return Ok((ok, Some(started.elapsed())));
+    }
     if probe.ws.enabled {
         return Ok((true, Some(started.elapsed())));
     }
@@ -2517,6 +2533,146 @@ async fn run_http_probe(
     Ok((200..400).contains(&status))
 }
 
+async fn run_tcp_tunnel_probe(
+    uplink: &UplinkConfig,
+    probe: &TcpProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
+) -> Result<bool> {
+    let target = if let Ok(ip) = probe.host.parse::<IpAddr>() {
+        match ip {
+            IpAddr::V4(v4) => TargetAddr::IpV4(v4, probe.port),
+            IpAddr::V6(v6) => TargetAddr::IpV6(v6, probe.port),
+        }
+    } else {
+        TargetAddr::Domain(probe.host.clone(), probe.port)
+    };
+
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
+    let (mut writer, mut reader) = {
+        let _permit = dial_limit
+            .acquire_owned()
+            .await
+            .expect("probe dial semaphore closed");
+        match uplink.transport {
+            UplinkTransport::Websocket => {
+                let ws_stream = connect_websocket_with_source(
+                    uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    "probe_tcp_tunnel",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect TCP-tunnel probe websocket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (ws_sink, ws_stream) = ws_stream.split();
+                let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+                    ws_sink,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )
+                .await?;
+                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let reader = TcpShadowsocksReader::new(
+                    ws_stream,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
+                    ctrl_tx,
+                )
+                .with_request_salt(request_salt);
+                (writer, reader)
+            }
+            UplinkTransport::Shadowsocks => {
+                let stream = connect_shadowsocks_tcp_with_source(
+                    uplink
+                        .tcp_addr
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    "probe_tcp_tunnel",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect TCP-tunnel probe shadowsocks socket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (reader_half, writer_half) = stream.into_split();
+                (
+                    TcpShadowsocksWriter::connect_socket(
+                        writer_half,
+                        uplink.cipher,
+                        &master_key,
+                        Arc::clone(&lifetime),
+                    )?,
+                    TcpShadowsocksReader::new_socket(
+                        reader_half,
+                        uplink.cipher,
+                        &master_key,
+                        lifetime,
+                    ),
+                )
+            }
+        }
+    };
+
+    let target_wire = target.to_wire_bytes()?;
+    writer
+        .send_chunk(&target_wire)
+        .await
+        .context("failed to send TCP tunnel probe target address")?;
+    metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "outgoing", target_wire.len());
+
+    match reader.read_chunk().await {
+        Ok(chunk) => {
+            metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "incoming", chunk.len());
+            debug!(
+                uplink = %uplink.name,
+                target = %format!("{}:{}", probe.host, probe.port),
+                bytes = chunk.len(),
+                "TCP tunnel probe received data from target"
+            );
+        }
+        Err(ref e) if reader.closed_cleanly => {
+            debug!(
+                uplink = %uplink.name,
+                target = %format!("{}:{}", probe.host, probe.port),
+                error = %format!("{e:#}"),
+                "TCP tunnel probe: remote closed cleanly"
+            );
+        }
+        Err(e) => {
+            return Err(e)
+                .context(format!("TCP tunnel probe to {}:{} failed", probe.host, probe.port));
+        }
+    }
+
+    if let Err(error) = writer.close().await {
+        debug!(
+            uplink = %uplink.name,
+            transport = "tcp",
+            probe = "tcp",
+            error = %format!("{error:#}"),
+            "probe transport close returned error during teardown"
+        );
+    }
+
+    Ok(true)
+}
+
 async fn run_dns_probe(
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
@@ -2699,6 +2855,14 @@ fn cooldown_active(status: &UplinkStatus, transport: TransportKind, now: Instant
         TransportKind::Tcp => status.cooldown_until_tcp.is_some_and(|until| until > now),
         TransportKind::Udp => status.cooldown_until_udp.is_some_and(|until| until > now),
     }
+}
+
+fn cooldown_remaining(status: &UplinkStatus, transport: TransportKind, now: Instant) -> Duration {
+    let until = match transport {
+        TransportKind::Tcp => status.cooldown_until_tcp,
+        TransportKind::Udp => status.cooldown_until_udp,
+    };
+    until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
 }
 
 fn effective_latency(
@@ -3061,6 +3225,7 @@ mod tests {
             ws: WsProbeConfig { enabled: false },
             http: None,
             dns: None,
+            tcp: None,
         }
     }
 
@@ -3410,6 +3575,7 @@ mod tests {
                 ws: WsProbeConfig { enabled: true },
                 http: None,
                 dns: None,
+                tcp: None,
             },
             config.clone(),
         )
