@@ -37,7 +37,11 @@ pub(super) async fn serve_ss_tcp_listener(
                 if is_benign_ws_disconnect(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
                 } else {
-                    warn!(%peer, ?error, "shadowsocks tcp connection terminated with error");
+                    warn!(
+                        %peer,
+                        error = %format!("{error:#}"),
+                        "shadowsocks tcp connection terminated with error"
+                    );
                 }
             }
         });
@@ -65,13 +69,30 @@ async fn handle_ss_tcp_connection(
     loop {
         let read_fut = client_reader.read(&mut read_buffer);
         let read = if upstream_writer.is_none() {
-            timeout(
-                Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS),
-                read_fut,
-            )
-            .await
-            .context("shadowsocks tcp handshake timed out")?
-            .context("failed to read from shadowsocks client")?
+            match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await {
+                Ok(result) => result.context("failed to read from shadowsocks client")?,
+                Err(_) => {
+                    let encrypted_buffered = decryptor.buffered_data();
+                    let handshake_attempts = (!encrypted_buffered.is_empty())
+                        .then(|| diagnose_stream_handshake(users.as_ref(), encrypted_buffered));
+                    let authenticated_user = decryptor.user().map(|user| user.id().to_string());
+                    warn!(
+                        peer_addr = ?peer_addr,
+                        encrypted_buffered_bytes = encrypted_buffered.len(),
+                        plaintext_buffer_len = plaintext_buffer.len(),
+                        authenticated_user = authenticated_user.as_deref(),
+                        handshake_attempts = ?handshake_attempts,
+                        "socket tcp handshake timed out while waiting for a complete client request"
+                    );
+                    return Err(anyhow!(
+                        "shadowsocks tcp handshake timed out (encrypted_buffered_bytes={}, plaintext_buffer_len={}, authenticated_user={:?}, handshake_attempts={:?})",
+                        encrypted_buffered.len(),
+                        plaintext_buffer.len(),
+                        authenticated_user,
+                        handshake_attempts
+                    ));
+                }
+            }
         } else {
             read_fut
                 .await
@@ -137,6 +158,14 @@ async fn handle_ss_tcp_connection(
                 "socket tcp parsed target address"
             );
             let connect_started = std::time::Instant::now();
+            info!(
+                peer_addr = ?peer_addr,
+                user = user.id(),
+                fwmark = ?user.fwmark(),
+                target = %target_display,
+                initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
+                "socket tcp starting upstream connect"
+            );
             let stream =
                 match connect_tcp_target(&target, user.fwmark(), prefer_ipv4_upstream).await {
                     Ok(stream) => {
@@ -155,6 +184,15 @@ async fn handle_ss_tcp_connection(
                             "error",
                             connect_started.elapsed().as_secs_f64(),
                         );
+                        warn!(
+                            peer_addr = ?peer_addr,
+                            user = user.id(),
+                            fwmark = ?user.fwmark(),
+                            target = %target_display,
+                            connect_duration_ms = connect_started.elapsed().as_millis(),
+                            error = %format!("{error:#}"),
+                            "socket tcp upstream connect failed"
+                        );
                         return Err(error)
                             .with_context(|| format!("failed to connect to {target_display}"));
                     }
@@ -164,6 +202,7 @@ async fn handle_ss_tcp_connection(
                 user = user.id(),
                 fwmark = ?user.fwmark(),
                 target = %target_display,
+                connect_duration_ms = connect_started.elapsed().as_millis(),
                 "socket tcp upstream connected"
             );
 
@@ -174,6 +213,7 @@ async fn handle_ss_tcp_connection(
                 .ok_or_else(|| anyhow!("socket tcp client writer missing"))?;
             let relay_metrics = metrics.clone();
             let user_id = user.id_arc();
+            let relay_target_display = target_display.clone();
             upstream_to_client = Some(tokio::spawn(async move {
                 relay_upstream_to_socket_client(
                     upstream_reader,
@@ -181,6 +221,8 @@ async fn handle_ss_tcp_connection(
                     &mut encryptor,
                     relay_metrics,
                     user_id,
+                    peer_addr,
+                    relay_target_display,
                 )
                 .await
             }));
@@ -242,15 +284,36 @@ async fn relay_upstream_to_socket_client(
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
     user_id: Arc<str>,
+    peer_addr: Option<SocketAddr>,
+    target: String,
 ) -> Result<()> {
     let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    let mut saw_payload = false;
     loop {
         let read = upstream_reader
             .read(&mut buffer)
             .await
             .context("failed to read from upstream")?;
         if read == 0 {
+            if !saw_payload {
+                info!(
+                    peer_addr = ?peer_addr,
+                    user = %user_id,
+                    target = %target,
+                    "socket tcp upstream closed before sending payload"
+                );
+            }
             break;
+        }
+        if !saw_payload {
+            saw_payload = true;
+            info!(
+                peer_addr = ?peer_addr,
+                user = %user_id,
+                target = %target,
+                first_payload_bytes = read,
+                "socket tcp received first upstream payload"
+            );
         }
 
         metrics.record_tcp_payload_bytes(
