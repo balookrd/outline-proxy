@@ -486,8 +486,8 @@ port = 53
 name = "example.com"
 
 [probe.tcp]
-host = "example.com"
-port = 80
+host = "ssh.example.net"
+port = 22
 
 [load_balancing]
 mode = "active_active"
@@ -715,7 +715,7 @@ Available probe types:
 - `ws`: verifies TCP+TLS+WebSocket handshake connectivity to the uplink. No WebSocket ping/pong frames are sent — many servers do not respond to WebSocket ping control frames. Confirms that a new connection can be established; data-path integrity is verified by HTTP/DNS/TCP probes.
 - `http`: real HTTP `HEAD` request over `websocket-stream` — verifies the full TCP data path. Only `http://` URLs are supported.
 - `dns`: real DNS exchange over `websocket-packet` — verifies the full UDP data path.
-- `tcp`: opens a full SS tunnel to a configured `host:port` and waits for any data or a clean close from the remote. Verifies the complete TCP data path through the Shadowsocks server, unlike `ws` which only confirms port-level reachability. Use any reliably reachable TCP host (e.g. `example.com:80`, `1.1.1.1:443`).
+- `tcp`: opens a full SS tunnel to a configured `host:port` and waits for any data or a clean close from the remote. Verifies the complete TCP data path through the Shadowsocks server, unlike `ws` which only confirms port-level reachability. Use a reliably reachable speak-first TCP service (for example, an SSH or SMTP banner endpoint you control). Do not point it at HTTP/HTTPS ports such as `:80` or `:443`: those services usually wait for a client request and the probe will time out. Prefer `probe.http` for HTTP endpoints.
 
 Probe execution controls:
 
