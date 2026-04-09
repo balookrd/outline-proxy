@@ -24,7 +24,7 @@ pub use types::{TransportKind, UplinkCandidate, UplinkManagerSnapshot, UplinkSna
 
 use self::scoring::{
     add_penalty, classify_runtime_failure_cause, classify_runtime_failure_signature,
-    cooldown_active, current_penalty, duration_to_millis_option, effective_latency,
+    cooldown_active, cooldown_remaining, current_penalty, duration_to_millis_option, effective_latency,
     load_balancing_mode_name, mark_probe_wakeup, normalize_other_runtime_failure_detail,
     rightless_bool, routing_key, routing_scope_name, score_latency, selection_health,
     selection_score, strict_gate_transport, strict_route_key, supports_transport_for_scope,
@@ -1087,14 +1087,31 @@ impl UplinkManager {
         }
 
         // When we are switching away from a failed active uplink (cooldown is
-        // active), re-sort with penalty-aware scoring so that uplinks which
-        // failed recently are deprioritized. This prevents oscillation under
-        // load: primary fails → switch to backup → backup fails → would switch
-        // back to primary (whose cooldown probe-cleared but penalty remains).
-        // For the initial selection (no previous active) penalties are ignored
-        // to preserve the intent that strict-mode selection is EWMA-driven.
+        // active), re-sort candidates using three-level ordering:
+        //
+        // 1. Healthy candidates come first (probe-confirmed, no active cooldown).
+        //
+        // 2. Among unhealthy candidates (all in cooldown), prefer the one whose
+        //    cooldown expires soonest — i.e. the one that failed longest ago.
+        //    When both uplinks are simultaneously in cooldown (e.g. primary
+        //    fails, fallback is selected, fallback also fails), score/EWMA alone
+        //    would pick the historically-fastest uplink regardless of how recently
+        //    it failed.  Remaining-cooldown is a more direct signal: a smaller
+        //    remaining window means the failure is older and recovery is more
+        //    likely.
+        //
+        // 3. Penalty-aware score as a secondary key — prevents oscillation under
+        //    load (primary fails → switch to backup → backup fails → would switch
+        //    back to primary whose cooldown cleared but penalty remains).
+        //
+        // For the initial selection (no previous active) this re-sort is skipped
+        // so that strict-mode selection remains EWMA-driven.
         if switching_from_cooldown {
             candidates.sort_by(|left, right| {
+                let left_remaining =
+                    cooldown_remaining(&statuses[left.index], gate_transport, now);
+                let right_remaining =
+                    cooldown_remaining(&statuses[right.index], gate_transport, now);
                 let left_score = score_latency(
                     &statuses[left.index],
                     self.inner.uplinks[left.index].weight,
@@ -1112,6 +1129,10 @@ impl UplinkManager {
                 rightless_bool(left.healthy)
                     .cmp(&rightless_bool(right.healthy))
                     .reverse()
+                    // Among unhealthy: prefer the one whose cooldown expires
+                    // soonest (failed longest ago → most likely recovered).
+                    .then_with(|| left_remaining.cmp(&right_remaining))
+                    // Secondary: penalty-aware score (prevents oscillation).
                     .then_with(|| {
                         left_score
                             .unwrap_or(Duration::MAX)

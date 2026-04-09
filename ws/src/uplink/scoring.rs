@@ -61,6 +61,22 @@ pub(super) fn cooldown_active(status: &UplinkStatus, transport: TransportKind, n
     }
 }
 
+/// Remaining cooldown duration for an uplink.  Returns `Duration::ZERO` when
+/// the uplink has no active cooldown.  Used as a sort key when all candidates
+/// are unhealthy: the uplink whose cooldown expires soonest (smallest value)
+/// failed longest ago and is the best candidate for the next attempt.
+pub(super) fn cooldown_remaining(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> Duration {
+    let until = match transport {
+        TransportKind::Tcp => status.cooldown_until_tcp,
+        TransportKind::Udp => status.cooldown_until_udp,
+    };
+    until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+}
+
 pub(super) fn effective_latency(
     status: &UplinkStatus,
     transport: TransportKind,
