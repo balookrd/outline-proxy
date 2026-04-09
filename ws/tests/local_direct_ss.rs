@@ -140,8 +140,8 @@ listen = "127.0.0.1:{proxy_port}"
     proxy.wait_ready(proxy_port, Duration::from_secs(15))?;
 
     for index in 0..5 {
-        let mut stream = proxy_test_utils::socks5_connect(proxy_port, "example.com", 80)
-            .map_err(|err| {
+        let mut stream =
+            proxy_test_utils::socks5_connect(proxy_port, "example.com", 80).map_err(|err| {
                 format!(
                     "SOCKS5 CONNECT failed on iteration {index}: {err}\nproxy logs:\n{}",
                     proxy

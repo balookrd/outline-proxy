@@ -10,7 +10,9 @@ use tracing::{info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request, send_reply};
+use crate::socks5::{
+    SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request, send_reply,
+};
 use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::types::{TargetAddr, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
@@ -290,10 +292,9 @@ pub(super) async fn handle_udp_associate(
                     .recv_from(&mut buf)
                     .await
                     .context("bypass UDP recv failed")?;
-                let client_addr =
-                    client_udp_addr_direct.lock().await.ok_or_else(|| {
-                        anyhow!("received bypass UDP response before client sent any packet")
-                    })?;
+                let client_addr = client_udp_addr_direct.lock().await.ok_or_else(|| {
+                    anyhow!("received bypass UDP response before client sent any packet")
+                })?;
                 let target = socket_addr_to_target(src_addr);
                 let packet = build_udp_packet(&target, &buf[..len])?;
                 if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
