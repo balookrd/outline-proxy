@@ -39,11 +39,11 @@ use crate::crypto::{
     decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet, encrypt_udp_packet_2022,
     increment_nonce, validate_ss2022_timestamp,
 };
+use crate::dns_cache::DnsCache;
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
-use crate::dns_cache::DnsCache;
 use crate::types::{CipherKind, ServerAddr, TargetAddr, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -150,9 +150,10 @@ pin_project! {
 #[cfg(not(feature = "h3"))]
 impl Stream for H3WsStream {
     type Item = Result<Message, WsError>;
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Option<Self::Item>>
-    {
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         // SAFETY: Infallible can never be constructed, so this branch is unreachable.
         match *self.project()._never {}
     }
@@ -161,17 +162,27 @@ impl Stream for H3WsStream {
 #[cfg(not(feature = "h3"))]
 impl Sink<Message> for H3WsStream {
     type Error = WsError;
-    fn poll_ready(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error>
-    { match *self.project()._never {} }
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn poll_close(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+        match *self.project()._never {}
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
 }
 
 pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
@@ -516,12 +527,13 @@ pub async fn connect_websocket_with_source(
                 }
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
-                    let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+                    let ws_stream =
+                        connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                     Ok(AnyWsStream::Http1 { inner: ws_stream })
                 }
             }
-        },
+        }
     }
 }
 
@@ -1483,7 +1495,10 @@ async fn connect_tcp_socket_with_fwmark(
     bail!("fwmark is only supported on Linux")
 }
 
-pub(crate) fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std::net::UdpSocket> {
+pub(crate) fn bind_udp_socket(
+    bind_addr: SocketAddr,
+    fwmark: Option<u32>,
+) -> Result<std::net::UdpSocket> {
     let socket = Socket::new(
         Domain::for_address(bind_addr),
         Type::DGRAM,

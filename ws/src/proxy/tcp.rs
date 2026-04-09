@@ -444,10 +444,10 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
             &format!("failed to resolve {target}"),
             false,
         )
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
     let upstream = TcpStream::connect(addr)

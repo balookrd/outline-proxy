@@ -26,7 +26,9 @@ pub async fn handle_client(
     });
 
     match request {
-        SocksRequest::Connect(target) => tcp::handle_tcp_connect(client, config, uplinks, target).await,
+        SocksRequest::Connect(target) => {
+            tcp::handle_tcp_connect(client, config, uplinks, target).await
+        }
         SocksRequest::UdpAssociate(client_hint) => {
             udp::handle_udp_associate(client, config, uplinks, client_hint).await
         }

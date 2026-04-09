@@ -33,7 +33,8 @@ impl DnsCache {
 
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
-        map.get(&(host.to_string(), port)).map(|entry| entry.addrs.clone())
+        map.get(&(host.to_string(), port))
+            .map(|entry| entry.addrs.clone())
     }
 
     pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {

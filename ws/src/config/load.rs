@@ -17,8 +17,8 @@ use super::schema::{
 };
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
-    MetricsConfig, ProbeConfig, RoutingScope, Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig,
-    TunConfig, TunTcpConfig, UplinkConfig, WsProbeConfig,
+    MetricsConfig, ProbeConfig, RoutingScope, Socks5AuthConfig, Socks5AuthUserConfig,
+    TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig, WsProbeConfig,
 };
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {

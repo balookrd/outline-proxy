@@ -73,7 +73,19 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     );
     metrics::set_tun_config(max_flows, idle_timeout);
     tokio::spawn(async move {
-        if let Err(error) = tun_read_loop(reader, writer, udp_engine, tcp_engine, tun_mtu, defrag_max_total_bytes, defrag_max_bytes_per_set, defrag_max_fragment_sets, defrag_max_fragments_per_set).await {
+        if let Err(error) = tun_read_loop(
+            reader,
+            writer,
+            udp_engine,
+            tcp_engine,
+            tun_mtu,
+            defrag_max_total_bytes,
+            defrag_max_bytes_per_set,
+            defrag_max_fragment_sets,
+            defrag_max_fragments_per_set,
+        )
+        .await
+        {
             warn!(path = %tun_path_for_task.display(), error = %format!("{error:#}"), "TUN loop stopped");
         }
     });
