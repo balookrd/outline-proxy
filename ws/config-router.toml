@@ -102,6 +102,13 @@ attempts = 1
 [probe.ws]
 enabled = true
 
+# TCP tunnel probe: open a full SS tunnel to host:port and wait for any data.
+# Tests the complete data path, not just port reachability.
+# Omit on very constrained devices where one extra connection per cycle matters.
+[probe.tcp]
+host = "example.com"
+port = 80
+
 # ── Load balancing ───────────────────────────────────────────────────────────
 [load_balancing]
 mode = "active_passive"         # single active uplink, fail over on error
