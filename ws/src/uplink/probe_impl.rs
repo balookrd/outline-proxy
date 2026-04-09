@@ -9,7 +9,7 @@ use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
 
-use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, UplinkConfig};
+use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use crate::transport::{
     AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport,
     UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
@@ -78,11 +78,24 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
-        let result = run_http_probe(uplink, http_probe, dial_limit, effective_tcp_mode).await;
+        let result = run_http_probe(uplink, http_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
         crate::metrics::record_probe(
             &uplink.name,
             "tcp",
             "http",
+            result.is_ok(),
+            probe_started.elapsed(),
+        );
+        let ok = result?;
+        return Ok((ok, Some(started.elapsed())));
+    }
+    if let Some(tcp_probe) = &probe.tcp {
+        let probe_started = Instant::now();
+        let result = run_tcp_tunnel_probe(uplink, tcp_probe, dial_limit, effective_tcp_mode).await;
+        crate::metrics::record_probe(
+            &uplink.name,
+            "tcp",
+            "tcp",
             result.is_ok(),
             probe_started.elapsed(),
         );
@@ -408,6 +421,171 @@ pub(super) async fn run_http_probe(
     }
 
     Ok((200..400).contains(&status))
+}
+
+/// TCP tunnel probe: open a full SS tunnel to `host:port` and attempt to read
+/// one chunk.  Success is declared when either:
+///   - any data arrives from the remote (the target accepted the connection), or
+///   - the server closes the connection cleanly (`closed_cleanly == true`).
+///
+/// This probes the entire data path through the SS server to a real internet
+/// host, unlike `probe.ws` which only tests the SS TCP port itself.
+pub(super) async fn run_tcp_tunnel_probe(
+    uplink: &UplinkConfig,
+    probe: &TcpProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
+) -> Result<bool> {
+    let target = {
+        use std::net::IpAddr;
+        if let Ok(ip) = probe.host.parse::<IpAddr>() {
+            match ip {
+                IpAddr::V4(v4) => TargetAddr::IpV4(v4, probe.port),
+                IpAddr::V6(v6) => TargetAddr::IpV6(v6, probe.port),
+            }
+        } else {
+            TargetAddr::Domain(probe.host.clone(), probe.port)
+        }
+    };
+
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
+    let (mut writer, mut reader) = {
+        let _permit = dial_limit
+            .acquire_owned()
+            .await
+            .expect("probe dial semaphore closed");
+        match uplink.transport {
+            UplinkTransport::Websocket => {
+                let ws_stream = connect_websocket_with_source(
+                    uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    "probe_tcp_tunnel",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect TCP-tunnel probe websocket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (ws_sink, ws_stream) = ws_stream.split();
+                let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
+                    ws_sink,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )
+                .await?;
+                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let reader = TcpShadowsocksReader::new(
+                    ws_stream,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
+                    ctrl_tx,
+                )
+                .with_request_salt(request_salt);
+                (writer, reader)
+            }
+            UplinkTransport::Shadowsocks => {
+                let stream = connect_shadowsocks_tcp_with_source(
+                    uplink
+                        .tcp_addr
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    "probe_tcp_tunnel",
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to connect TCP-tunnel probe shadowsocks socket for uplink {}",
+                        uplink.name
+                    )
+                })?;
+                let (reader_half, writer_half) = stream.into_split();
+                (
+                    TcpShadowsocksWriter::connect_socket(
+                        writer_half,
+                        uplink.cipher,
+                        &master_key,
+                        Arc::clone(&lifetime),
+                    )?,
+                    TcpShadowsocksReader::new_socket(
+                        reader_half,
+                        uplink.cipher,
+                        &master_key,
+                        lifetime,
+                    ),
+                )
+            }
+        }
+    };
+
+    writer
+        .send_chunk(&target.to_wire_bytes()?)
+        .await
+        .context("failed to send TCP tunnel probe target address")?;
+    crate::metrics::add_probe_bytes(
+        &uplink.name,
+        "tcp",
+        "tcp",
+        "outgoing",
+        target.to_wire_bytes()?.len(),
+    );
+
+    // Wait for any data from the remote.  A clean close (e.g. the target
+    // immediately sends a banner and shuts down) is also a success.
+    match reader.read_chunk().await {
+        Ok(chunk) => {
+            crate::metrics::add_probe_bytes(
+                &uplink.name,
+                "tcp",
+                "tcp",
+                "incoming",
+                chunk.len(),
+            );
+            debug!(
+                uplink = %uplink.name,
+                target = %format!("{}:{}", probe.host, probe.port),
+                bytes = chunk.len(),
+                "TCP tunnel probe received data from target"
+            );
+        }
+        Err(ref e) if reader.closed_cleanly => {
+            debug!(
+                uplink = %uplink.name,
+                target = %format!("{}:{}", probe.host, probe.port),
+                error = %format!("{e:#}"),
+                "TCP tunnel probe: remote closed cleanly"
+            );
+        }
+        Err(e) => {
+            return Err(e).context(format!(
+                "TCP tunnel probe to {}:{} failed",
+                probe.host, probe.port
+            ));
+        }
+    }
+
+    if let Err(error) = writer.close().await {
+        debug!(
+            uplink = %uplink.name,
+            transport = "tcp",
+            probe = "tcp",
+            error = %format!("{error:#}"),
+            "probe transport close returned error during teardown"
+        );
+    }
+
+    Ok(true)
 }
 
 pub(super) async fn run_dns_probe(
