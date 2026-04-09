@@ -108,8 +108,8 @@ impl Drop for H3ConnectionGuard {
 // ── TLS / QUIC client configs (initialised once) ─────────────────────────────
 
 use rustls::{ClientConfig, RootCertStore};
-use webpki_roots::TLS_SERVER_ROOTS;
 use std::sync::OnceLock;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();

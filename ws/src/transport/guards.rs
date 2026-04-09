@@ -24,7 +24,11 @@ impl TransportConnectGuard {
     pub(crate) fn new(source: &'static str, mode: &'static str) -> Self {
         add_transport_connects_active(source, mode, 1);
         record_transport_connect(source, mode, "started");
-        Self { source, mode, finished: false }
+        Self {
+            source,
+            mode,
+            finished: false,
+        }
     }
 
     pub(crate) fn finish(&mut self, result: &'static str) {

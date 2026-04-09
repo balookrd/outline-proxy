@@ -6,12 +6,12 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::memory::maybe_shrink_vecdeque;
-use crate::transport::{AnyWsStream, UdpWsTransport, connect_websocket_with_source};
 use crate::transport::connect_shadowsocks_udp_with_source;
+use crate::transport::{AnyWsStream, UdpWsTransport, connect_websocket_with_source};
 use crate::types::UplinkTransport;
 
-use super::types::{TransportKind, UplinkCandidate};
 use super::probe_impl::is_expected_standby_probe_failure;
+use super::types::{TransportKind, UplinkCandidate};
 
 use super::UplinkManager;
 
@@ -271,7 +271,11 @@ impl UplinkManager {
                     );
                 }
                 Err(error) => {
-                    crate::metrics::record_warm_standby_refill(transport_label, &uplink.name, false);
+                    crate::metrics::record_warm_standby_refill(
+                        transport_label,
+                        &uplink.name,
+                        false,
+                    );
                     warn!(
                         uplink = %uplink.name,
                         transport = ?transport,

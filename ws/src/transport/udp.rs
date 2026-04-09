@@ -9,8 +9,8 @@ use tracing::warn;
 use url::Url;
 
 use crate::crypto::{
-    SHADOWSOCKS_MAX_PAYLOAD, decrypt_udp_packet, decrypt_udp_packet_2022,
-    encrypt_udp_packet, encrypt_udp_packet_2022,
+    SHADOWSOCKS_MAX_PAYLOAD, decrypt_udp_packet, decrypt_udp_packet_2022, encrypt_udp_packet,
+    encrypt_udp_packet_2022,
 };
 use crate::types::{CipherKind, WsTransportMode};
 

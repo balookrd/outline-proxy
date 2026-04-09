@@ -4,10 +4,10 @@ mod tests {
     use std::time::Duration;
     use url::Url;
 
-    use super::super::{TransportKind, UplinkManager};
-    use super::super::types::{PenaltyState, UplinkStatus};
     use super::super::probe_impl::build_http_probe_request;
     use super::super::scoring::{effective_latency, score_latency, update_rtt_ewma};
+    use super::super::types::{PenaltyState, UplinkStatus};
+    use super::super::{TransportKind, UplinkManager};
     use crate::config::{
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
         WsProbeConfig,

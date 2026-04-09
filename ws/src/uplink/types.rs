@@ -85,12 +85,24 @@ impl fmt::Display for RoutingKey {
         match self {
             Self::Global => write!(f, "global"),
             Self::TransportGlobal(transport) => {
-                write!(f, "{}:global", super::scoring::transport_key_prefix(*transport))
+                write!(
+                    f,
+                    "{}:global",
+                    super::scoring::transport_key_prefix(*transport)
+                )
             }
             Self::Target { transport, target } => {
-                write!(f, "{}:{target}", super::scoring::transport_key_prefix(*transport))
+                write!(
+                    f,
+                    "{}:{target}",
+                    super::scoring::transport_key_prefix(*transport)
+                )
             }
-            Self::Default(transport) => write!(f, "{}:default", super::scoring::transport_key_prefix(*transport)),
+            Self::Default(transport) => write!(
+                f,
+                "{}:default",
+                super::scoring::transport_key_prefix(*transport)
+            ),
         }
     }
 }

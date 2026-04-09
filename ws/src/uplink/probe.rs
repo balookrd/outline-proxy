@@ -7,9 +7,9 @@ use tracing::{debug, warn};
 
 use crate::types::UplinkTransport;
 
+use super::probe_impl::probe_uplink;
 use super::scoring::{add_penalty, cooldown_active, update_rtt_ewma};
 use super::types::TransportKind;
-use super::probe_impl::probe_uplink;
 
 use super::UplinkManager;
 
