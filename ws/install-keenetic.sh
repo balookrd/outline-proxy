@@ -182,7 +182,13 @@ select_release_tag() {
         stable)
             jq -r '
                 map(select(.draft == false and .prerelease == false))
-                | map(select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$")))
+                | map(select(
+                    .tag_name
+                    | startswith("v")
+                    and ((.[1:] | split(".")) as $parts
+                        | ($parts | length) == 3
+                        and all($parts[]; (tonumber?) != null))
+                ))
                 | .[0].tag_name // empty
             ' "$json"
             ;;
