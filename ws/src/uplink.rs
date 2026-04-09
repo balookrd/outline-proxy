@@ -2460,20 +2460,21 @@ async fn run_http_probe(
                     )
                 })?;
                 let (reader_half, writer_half) = stream.into_split();
-                (
-                    TcpShadowsocksWriter::connect_socket(
-                        writer_half,
-                        uplink.cipher,
-                        &master_key,
-                        Arc::clone(&lifetime),
-                    )?,
-                    TcpShadowsocksReader::new_socket(
-                        reader_half,
-                        uplink.cipher,
-                        &master_key,
-                        lifetime,
-                    ),
+                let writer = TcpShadowsocksWriter::connect_socket(
+                    writer_half,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )?;
+                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let reader = TcpShadowsocksReader::new_socket(
+                    reader_half,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
                 )
+                .with_request_salt(request_salt);
+                (writer, reader)
             }
         }
     };
@@ -2611,20 +2612,21 @@ async fn run_tcp_tunnel_probe(
                     )
                 })?;
                 let (reader_half, writer_half) = stream.into_split();
-                (
-                    TcpShadowsocksWriter::connect_socket(
-                        writer_half,
-                        uplink.cipher,
-                        &master_key,
-                        Arc::clone(&lifetime),
-                    )?,
-                    TcpShadowsocksReader::new_socket(
-                        reader_half,
-                        uplink.cipher,
-                        &master_key,
-                        lifetime,
-                    ),
+                let writer = TcpShadowsocksWriter::connect_socket(
+                    writer_half,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )?;
+                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let reader = TcpShadowsocksReader::new_socket(
+                    reader_half,
+                    uplink.cipher,
+                    &master_key,
+                    lifetime,
                 )
+                .with_request_salt(request_salt);
+                (writer, reader)
             }
         }
     };
