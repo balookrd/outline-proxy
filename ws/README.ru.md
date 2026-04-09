@@ -481,6 +481,10 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
+[probe.tcp]
+host = "example.com"
+port = 80
+
 [load_balancing]
 mode = "active_active"
 routing_scope = "per_flow"
@@ -704,9 +708,10 @@ Runtime failover:
 
 Доступные типы проб:
 
-- `ws`: проверяет TCP+TLS+WebSocket handshake-связность с аплинком. WebSocket ping/pong фреймы не отправляются — многие серверы не отвечают на WebSocket ping control frames. Подтверждает, что новое соединение может быть установлено; целостность data path проверяется HTTP/DNS-пробами.
-- `http`: реальный HTTP-запрос через `websocket-stream` — проверяет полный data path.
+- `ws`: проверяет TCP+TLS+WebSocket handshake-связность с аплинком. WebSocket ping/pong фреймы не отправляются — многие серверы не отвечают на WebSocket ping control frames. Подтверждает, что новое соединение может быть установлено; целостность data path проверяется HTTP/DNS/TCP-пробами.
+- `http`: реальный HTTP `HEAD`-запрос через `websocket-stream` — проверяет полный TCP data path. Поддерживаются только `http://` URL.
 - `dns`: реальный DNS-обмен через `websocket-packet` — проверяет полный UDP data path.
+- `tcp`: открывает полный SS-туннель до настроенного `host:port` и ждёт хотя бы одного чанка данных или чистого закрытия соединения удалённой стороной. Проверяет полный TCP data path через Shadowsocks-сервер — в отличие от `ws`, которая подтверждает только доступность порта. Используйте любой надёжно доступный TCP-хост (например, `example.com:80`, `1.1.1.1:443`).
 
 Управление выполнением проб:
 
@@ -729,7 +734,7 @@ Runtime failover:
 
 - пробы не запускаются, пока настройки проб явно не сконфигурированы
 - одна секция `[probe]` не включает ни одну проверку
-- должна присутствовать хотя бы одна из: `[probe.ws]`, `[probe.http]`, `[probe.dns]`
+- должна присутствовать хотя бы одна из: `[probe.ws]`, `[probe.http]`, `[probe.dns]`, `[probe.tcp]`
 
 Аплинки без `udp_ws_url` считаются TCP-only: UDP health state и standby-слоты для них не создаются и не отслеживаются, UDP-результаты проб не влияют на их UDP health метрику.
 

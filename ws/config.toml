@@ -69,6 +69,10 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
+[probe.tcp]
+host = "example.com"
+port = 80
+
 [load_balancing]
 mode = "active_active"          # "active_active" or "active_passive"
 routing_scope = "per_flow"      # "per_flow", "per_uplink", or "global"
