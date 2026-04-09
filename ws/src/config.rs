@@ -929,7 +929,6 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
             host: tcp.host.clone(),
             port: tcp.port.unwrap_or(80),
         });
-
     Ok(ProbeConfig {
         interval: Duration::from_secs(probe.and_then(|p| p.interval_secs).unwrap_or(30)),
         timeout: Duration::from_secs(probe.and_then(|p| p.timeout_secs).unwrap_or(10)),

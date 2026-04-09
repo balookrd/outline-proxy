@@ -137,7 +137,6 @@ tun2udp + tun2tcp"]
 - WebSocket connectivity probes (TCP+TLS+WS handshake; no ping/pong — servers rarely respond to WebSocket ping control frames)
 - real HTTP probes over `websocket-stream`
 - real DNS probes over `websocket-packet`
-- real TCP tunnel probes through the SS data path
 - probe concurrency limits
 - separate probe dial isolation
 - immediate probe wakeup on runtime failure to accelerate detection
@@ -167,7 +166,7 @@ The project is intentionally practical, but there are still boundaries:
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
-- `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
+- `probe.http` supports `http://` only, not `https://`.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
 ## Repository Layout
@@ -487,10 +486,6 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
-[probe.tcp]
-host = "ssh.example.net"
-port = 22
-
 [load_balancing]
 mode = "active_active"
 routing_scope = "per_flow"
@@ -707,7 +702,7 @@ Routing scope behavior:
 Runtime failover:
 
 - UDP can switch uplinks within an active association after runtime send/read failure.
-- TCP transparently fails over during the chunk-0 phase (waiting for the first upstream response): if no response arrives within 6 seconds, the connection is retried on the next candidate uplink without the client seeing an error. Client data sent during this window is buffered (capped at 32 KB) and replayed to the new uplink. Once the first upstream chunk is received the session is committed and no further transparent failover occurs.
+- Established TCP tunnels are not live-migrated, and SOCKS5 TCP does not transparently re-dial another uplink while waiting for the first upstream response byte.
 - Established TCP tunnels are not live-migrated.
 
 ## Health Probes
@@ -740,7 +735,7 @@ Probe activation rules:
 
 - probes do not start unless probe settings are explicitly configured
 - `[probe]` alone does not enable any check
-- at least one of `[probe.ws]`, `[probe.http]`, `[probe.dns]`, or `[probe.tcp]` must be present
+- at least one of `[probe.ws]`, `[probe.http]`, or `[probe.dns]` must be present
 
 Uplinks without a `udp_ws_url` are treated as TCP-only: UDP health state and standby slots are not created or tracked for them, and UDP-related probe outcomes do not affect their UDP health metric.
 

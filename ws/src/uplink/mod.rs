@@ -11,28 +11,28 @@ use crate::config::{
 use crate::metrics;
 use crate::types::{TargetAddr, UplinkTransport};
 
-mod types;
-mod standby;
-mod sticky;
 mod probe;
 mod probe_impl;
 mod scoring;
+mod standby;
+mod sticky;
 #[cfg(test)]
 mod tests;
+mod types;
 
-pub use types::{TransportKind, UplinkCandidate, UplinkManagerSnapshot, UplinkSnapshot, StickyRouteSnapshot};
+pub use types::{
+    StickyRouteSnapshot, TransportKind, UplinkCandidate, UplinkManagerSnapshot, UplinkSnapshot,
+};
 
 use self::scoring::{
     add_penalty, classify_runtime_failure_cause, classify_runtime_failure_signature,
-    cooldown_active, cooldown_remaining, current_penalty, duration_to_millis_option, effective_latency,
-    load_balancing_mode_name, mark_probe_wakeup, normalize_other_runtime_failure_detail,
-    rightless_bool, routing_key, routing_scope_name, score_latency, selection_health,
-    selection_score, strict_gate_transport, strict_route_key, supports_transport_for_scope,
-    update_rtt_ewma,
+    cooldown_active, cooldown_remaining, current_penalty, duration_to_millis_option,
+    effective_latency, load_balancing_mode_name, mark_probe_wakeup,
+    normalize_other_runtime_failure_detail, rightless_bool, routing_key, routing_scope_name,
+    score_latency, selection_health, selection_score, strict_gate_transport, strict_route_key,
+    supports_transport_for_scope, update_rtt_ewma,
 };
-use self::types::{
-    CandidateState, StandbyPool, UplinkManagerInner, UplinkStatus,
-};
+use self::types::{CandidateState, StandbyPool, UplinkManagerInner, UplinkStatus};
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
@@ -790,7 +790,10 @@ impl UplinkManager {
 
     /// Returns the effective TCP WebSocket mode for `index`, falling back to
     /// H2 when H3 has been marked broken by repeated runtime errors.
-    pub(super) async fn effective_tcp_ws_mode(&self, index: usize) -> crate::types::WsTransportMode {
+    pub(super) async fn effective_tcp_ws_mode(
+        &self,
+        index: usize,
+    ) -> crate::types::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         if uplink.transport == UplinkTransport::Websocket
             && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
@@ -1108,8 +1111,7 @@ impl UplinkManager {
         // so that strict-mode selection remains EWMA-driven.
         if switching_from_cooldown {
             candidates.sort_by(|left, right| {
-                let left_remaining =
-                    cooldown_remaining(&statuses[left.index], gate_transport, now);
+                let left_remaining = cooldown_remaining(&statuses[left.index], gate_transport, now);
                 let right_remaining =
                     cooldown_remaining(&statuses[right.index], gate_transport, now);
                 let left_score = score_latency(

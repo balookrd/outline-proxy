@@ -7,7 +7,11 @@ use crate::config::{LoadBalancingConfig, LoadBalancingMode, RoutingScope, Uplink
 
 use super::types::{PenaltyState, TransportKind, UplinkStatus};
 
-pub(super) fn effective_health(status: &UplinkStatus, transport: TransportKind, now: Instant) -> bool {
+pub(super) fn effective_health(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
     match transport {
         TransportKind::Tcp => {
             status.tcp_healthy == Some(true) && !cooldown_active(status, transport, now)
@@ -47,14 +51,21 @@ pub(super) fn selection_health(
     }
 }
 
-pub(super) fn strict_gate_transport(scope: RoutingScope, transport: TransportKind) -> TransportKind {
+pub(super) fn strict_gate_transport(
+    scope: RoutingScope,
+    transport: TransportKind,
+) -> TransportKind {
     match scope {
         RoutingScope::Global => TransportKind::Tcp,
         RoutingScope::PerUplink | RoutingScope::PerFlow => transport,
     }
 }
 
-pub(super) fn cooldown_active(status: &UplinkStatus, transport: TransportKind, now: Instant) -> bool {
+pub(super) fn cooldown_active(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
     match transport {
         TransportKind::Tcp => status.cooldown_until_tcp.is_some_and(|until| until > now),
         TransportKind::Udp => status.cooldown_until_udp.is_some_and(|until| until > now),
@@ -115,7 +126,10 @@ pub(super) fn effective_latency(
     }
 }
 
-pub(super) fn scoring_base_latency(status: &UplinkStatus, transport: TransportKind) -> Option<Duration> {
+pub(super) fn scoring_base_latency(
+    status: &UplinkStatus,
+    transport: TransportKind,
+) -> Option<Duration> {
     match transport {
         TransportKind::Tcp => status.tcp_rtt_ewma.or(status.tcp_latency),
         TransportKind::Udp => status.udp_rtt_ewma.or(status.udp_latency),
@@ -184,7 +198,11 @@ pub(super) fn global_selection_score_latency(
     }
 }
 
-pub(super) fn update_rtt_ewma(current: &mut Option<Duration>, sample: Option<Duration>, alpha: f64) {
+pub(super) fn update_rtt_ewma(
+    current: &mut Option<Duration>,
+    sample: Option<Duration>,
+    alpha: f64,
+) {
     let Some(sample) = sample else {
         return;
     };
@@ -248,7 +266,10 @@ pub(super) fn routing_key(
     }
 }
 
-pub(super) fn strict_route_key(transport: TransportKind, scope: RoutingScope) -> super::types::RoutingKey {
+pub(super) fn strict_route_key(
+    transport: TransportKind,
+    scope: RoutingScope,
+) -> super::types::RoutingKey {
     use super::types::RoutingKey;
     match scope {
         RoutingScope::Global => RoutingKey::Global,
