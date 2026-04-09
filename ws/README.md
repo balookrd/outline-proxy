@@ -164,7 +164,7 @@ The project is intentionally practical, but there are still boundaries:
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
-- HTTP probe supports `http://` today, not `https://`.
+- `probe.http` supports `http://` only, not `https://`. Use `probe.tcp` for HTTPS targets.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
 ## Repository Layout
@@ -482,6 +482,10 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
+[probe.tcp]
+host = "example.com"
+port = 80
+
 [load_balancing]
 mode = "active_active"
 routing_scope = "per_flow"
@@ -705,9 +709,10 @@ Runtime failover:
 
 Available probe types:
 
-- `ws`: verifies TCP+TLS+WebSocket handshake connectivity to the uplink. No WebSocket ping/pong frames are sent — many servers do not respond to WebSocket ping control frames. Confirms that a new connection can be established; data-path integrity is verified by HTTP/DNS probes.
-- `http`: real HTTP request over `websocket-stream` — verifies the full data path.
+- `ws`: verifies TCP+TLS+WebSocket handshake connectivity to the uplink. No WebSocket ping/pong frames are sent — many servers do not respond to WebSocket ping control frames. Confirms that a new connection can be established; data-path integrity is verified by HTTP/DNS/TCP probes.
+- `http`: real HTTP `HEAD` request over `websocket-stream` — verifies the full TCP data path. Only `http://` URLs are supported.
 - `dns`: real DNS exchange over `websocket-packet` — verifies the full UDP data path.
+- `tcp`: opens a full SS tunnel to a configured `host:port` and waits for any data or a clean close from the remote. Verifies the complete TCP data path through the Shadowsocks server, unlike `ws` which only confirms port-level reachability. Use any reliably reachable TCP host (e.g. `example.com:80`, `1.1.1.1:443`).
 
 Probe execution controls:
 
@@ -730,7 +735,7 @@ Probe activation rules:
 
 - probes do not start unless probe settings are explicitly configured
 - `[probe]` alone does not enable any check
-- at least one of `[probe.ws]`, `[probe.http]`, or `[probe.dns]` must be present
+- at least one of `[probe.ws]`, `[probe.http]`, `[probe.dns]`, or `[probe.tcp]` must be present
 
 Uplinks without a `udp_ws_url` are treated as TCP-only: UDP health state and standby slots are not created or tracked for them, and UDP-related probe outcomes do not affect their UDP health metric.
 
