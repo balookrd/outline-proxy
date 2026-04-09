@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
+use super::state_machine::TcpFlowState;
 use crate::metrics;
 use crate::transport::{
     AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
@@ -12,9 +13,10 @@ use crate::transport::{
 };
 use crate::types::{TargetAddr, UplinkTransport};
 use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
-use super::state_machine::TcpFlowState;
 
-pub(super) async fn close_upstream_writer(upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>) {
+pub(super) async fn close_upstream_writer(
+    upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
+) {
     let Some(upstream_writer) = upstream_writer else {
         return;
     };

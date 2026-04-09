@@ -39,11 +39,11 @@ const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod maintenance;
 mod state_machine;
+#[cfg(test)]
+mod tests;
 mod upstream;
 mod validation;
 mod wire;
-#[cfg(test)]
-mod tests;
 
 use self::maintenance::{FlowMaintenancePlan, plan_flow_maintenance, sync_flow_metrics_and_wake};
 use self::upstream::{
@@ -578,6 +578,11 @@ impl TunTcpEngine {
                     &candidate.uplink.name,
                     payload.len(),
                 );
+                engine
+                    .inner
+                    .uplinks
+                    .report_active_traffic(candidate.index, TransportKind::Tcp, false)
+                    .await;
             }
 
             if should_close_client_half {
@@ -902,6 +907,10 @@ impl TunTcpEngine {
                     &uplink_name,
                     pending_payload.len(),
                 );
+                self.inner
+                    .uplinks
+                    .report_active_traffic(uplink_index, TransportKind::Tcp, false)
+                    .await;
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
                 state
@@ -1000,6 +1009,15 @@ impl TunTcpEngine {
                             continue;
                         }
                         let chunk_len = chunk.len();
+                        let uplink_index = {
+                            let state = flow.lock().await;
+                            state.uplink_index
+                        };
+                        engine
+                            .inner
+                            .uplinks
+                            .report_active_traffic(uplink_index, TransportKind::Tcp, true)
+                            .await;
                         let (flush, ip_family, backlog_pressure, uplink_name) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
@@ -1152,10 +1170,16 @@ impl TunTcpEngine {
                         // can switch to a backup uplink or fall back to H2/H1.
                         // Clean WebSocket closes (FIN, Close frame) do not
                         // indicate an uplink problem and are not reported.
+                        let uplink_index = flow.lock().await.uplink_index;
                         if !upstream_reader.closed_cleanly {
-                            let uplink_index = flow.lock().await.uplink_index;
                             engine
                                 .report_tcp_runtime_failure(uplink_index, &error)
+                                .await;
+                        } else {
+                            engine
+                                .inner
+                                .uplinks
+                                .report_upstream_close(uplink_index, TransportKind::Tcp)
                                 .await;
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
@@ -1307,4 +1331,3 @@ impl TunTcpEngine {
         maybe_shrink_hash_map(&mut guard);
     }
 }
-

@@ -189,6 +189,11 @@ impl TunUdpEngine {
                     };
                     metrics::add_udp_datagram("upstream_to_client", &uplink_name);
                     metrics::add_bytes("udp", "upstream_to_client", &uplink_name, payload.len());
+                    engine
+                        .inner
+                        .uplinks
+                        .report_active_traffic(uplink_index, TransportKind::Udp, true)
+                        .await;
                     engine.inner.writer.write_packet(&packet).await?;
                     metrics::record_tun_packet(
                         "upstream_to_tun",

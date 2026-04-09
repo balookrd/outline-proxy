@@ -7,9 +7,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 
-use crate::crypto::{
-    SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, increment_nonce,
-};
+use crate::crypto::{SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, increment_nonce};
 use crate::types::{CipherKind, TargetAddr};
 
 use super::guards::{AbortOnDrop, UpstreamTransportGuard};

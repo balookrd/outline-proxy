@@ -1,10 +1,10 @@
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{Sink, Stream};
+use hyper_util::rt::TokioIo;
 use pin_project_lite::pin_project;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use hyper_util::rt::TokioIo;
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::{
@@ -75,9 +75,10 @@ pin_project! {
 #[cfg(not(feature = "h3"))]
 impl Stream for H3WsStream {
     type Item = Result<Message, WsError>;
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Option<Self::Item>>
-    {
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         // SAFETY: Infallible can never be constructed, so this branch is unreachable.
         match *self.project()._never {}
     }
@@ -86,17 +87,27 @@ impl Stream for H3WsStream {
 #[cfg(not(feature = "h3"))]
 impl Sink<Message> for H3WsStream {
     type Error = WsError;
-    fn poll_ready(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error>
-    { match *self.project()._never {} }
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn poll_close(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+        match *self.project()._never {}
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
 }
 
 pin_project! {

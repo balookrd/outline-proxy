@@ -5,8 +5,8 @@ use tokio::time::Instant;
 use crate::config::{LoadBalancingMode, RoutingScope};
 use crate::memory::maybe_shrink_hash_map;
 
-use super::types::{CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkStatus};
 use super::scoring::score_latency;
+use super::types::{CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkStatus};
 
 use super::UplinkManager;
 
