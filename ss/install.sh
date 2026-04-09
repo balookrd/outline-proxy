@@ -4,6 +4,8 @@ set -Eeuo pipefail
 REPO="${REPO:-balookrd/outline-ss-rust}"
 BINARY_NAME="outline-ss-rust"
 SERVICE_NAME="${SERVICE_NAME:-outline-ss-rust.service}"
+CHANNEL="${CHANNEL:-stable}"
+VERSION="${VERSION:-}"
 
 INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
 INSTALL_BIN_PATH="${INSTALL_BIN_DIR}/${BINARY_NAME}"
@@ -94,36 +96,50 @@ detect_arch() {
     aarch64|arm64)
       TARGET_TRIPLE="aarch64-unknown-linux-musl"
       ;;
-    armv7l|armv7|armhf)
-      TARGET_TRIPLE="armv7-unknown-linux-musleabihf"
-      ;;
     *)
       die "Неподдерживаемая архитектура: $arch"
       ;;
   esac
 }
 
-resolve_latest_tag() {
-  local url final_url
-  url="https://github.com/${REPO}/releases/latest"
-
-  if have_cmd curl; then
-    final_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "$url")"
-  elif have_cmd wget; then
-    final_url="$(wget -qSO- "$url" 2>&1 | awk '/^  Location: /{print $2}' | tail -n1 | tr -d '\r')"
-  else
-    die "Нужен curl или wget"
-  fi
-
-  LATEST_TAG="${final_url##*/}"
-  [[ -n "${LATEST_TAG}" && "${LATEST_TAG}" != "latest" ]] || die "Не удалось определить latest release tag"
+github_api_url() {
+  local path="$1"
+  printf 'https://api.github.com/repos/%s/%s' "$REPO" "$path"
 }
 
-release_asset_url() {
-  local tag="$1"
-  local triple="$2"
-  printf 'https://github.com/%s/releases/download/%s/%s-%s-%s.tar.gz' \
-    "$REPO" "$tag" "$BINARY_NAME" "$tag" "$triple"
+resolve_release() {
+  local api_path release_json tag_line url_line asset_pattern
+
+  if [[ -n "$VERSION" ]]; then
+    [[ "$VERSION" == v* ]] || die "VERSION должен быть в формате v1.2.3"
+    [[ "$CHANNEL" == "stable" ]] || die "Нельзя одновременно задавать VERSION и CHANNEL=${CHANNEL}. Используй либо stable по VERSION, либо CHANNEL=nightly."
+    api_path="releases/tags/${VERSION}"
+  else
+    case "$CHANNEL" in
+      stable)
+        api_path="releases/latest"
+        ;;
+      nightly)
+        api_path="releases/tags/nightly"
+        ;;
+      *)
+        die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
+        ;;
+    esac
+  fi
+
+  release_json="$(fetch_stdout "$(github_api_url "$api_path")")" || die "Не удалось получить release metadata из GitHub API"
+
+  tag_line="$(printf '%s\n' "$release_json" | grep -m1 '"tag_name":')"
+  RELEASE_TAG="$(printf '%s\n' "$tag_line" | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')"
+  [[ -n "$RELEASE_TAG" && "$RELEASE_TAG" != "$tag_line" ]] || die "Не удалось определить tag_name релиза"
+
+  asset_pattern="/${BINARY_NAME}-v[^/]*-${TARGET_TRIPLE}\\.tar\\.gz$"
+  url_line="$(printf '%s\n' "$release_json" | grep '"browser_download_url":' | grep -E "$asset_pattern" | head -n1 || true)"
+  RELEASE_ASSET_URL="$(printf '%s\n' "$url_line" | sed -E 's/.*"browser_download_url":[[:space:]]*"([^"]+)".*/\1/')"
+
+  [[ -n "$RELEASE_ASSET_URL" && "$RELEASE_ASSET_URL" != "$url_line" ]] || \
+    die "Не удалось найти release-артефакт для ${TARGET_TRIPLE} в релизе ${RELEASE_TAG}"
 }
 
 tag_raw_url() {
@@ -143,7 +159,10 @@ extract_binary() {
 
   local found=""
   while IFS= read -r -d '' f; do
-    if [[ "$(basename "$f")" == "$BINARY_NAME" ]] && [[ -f "$f" ]]; then
+    local base
+    base="$(basename "$f")"
+
+    if [[ -f "$f" ]] && [[ "$base" == "$BINARY_NAME" || "$base" == "${BINARY_NAME}-"* ]]; then
       found="$f"
       break
     fi
@@ -184,7 +203,7 @@ install_config_if_missing() {
   fi
 
   local cfg_url
-  cfg_url="$(tag_raw_url "$LATEST_TAG" "config.toml")"
+  cfg_url="$(tag_raw_url "$RELEASE_TAG" "config.toml")"
 
   log "Скачиваю пример конфига ${cfg_url}"
   fetch "$cfg_url" "$CONFIG_PATH"
@@ -194,7 +213,7 @@ install_config_if_missing() {
 
 install_systemd_unit() {
   local unit_url tmp_unit
-  unit_url="$(tag_raw_url "$LATEST_TAG" "systemd/${SERVICE_NAME}")"
+  unit_url="$(tag_raw_url "$RELEASE_TAG" "systemd/${SERVICE_NAME}")"
   tmp_unit="${TMP_DIR}/${SERVICE_NAME}"
 
   log "Скачиваю systemd unit ${unit_url}"
@@ -210,13 +229,14 @@ install_systemd_unit() {
 }
 
 install_binary() {
-  local asset_url archive tmp_bin backup_path=""
-  asset_url="$(release_asset_url "$LATEST_TAG" "$TARGET_TRIPLE")"
+  local archive tmp_bin backup_path=""
   archive="${TMP_DIR}/${BINARY_NAME}.tar.gz"
   tmp_bin="${TMP_DIR}/${BINARY_NAME}.new"
 
-  log "Скачиваю архив ${asset_url}"
-  fetch "$asset_url" "$archive"
+  log "Скачиваю архив ${RELEASE_ASSET_URL}"
+  if ! fetch "$RELEASE_ASSET_URL" "$archive"; then
+    die "Не удалось скачать release-артефакт для ${TARGET_TRIPLE}. Текущий GitHub CI публикует только x86_64-unknown-linux-musl и aarch64-unknown-linux-musl."
+  fi
 
   log "Распаковываю бинарь"
   extract_binary "$archive" "$tmp_bin"
@@ -248,7 +268,8 @@ reload_and_restart_service() {
 show_summary() {
   echo
   echo "Готово."
-  echo "Release: ${LATEST_TAG}"
+  echo "Channel: ${CHANNEL}"
+  echo "Release: ${RELEASE_TAG}"
   echo "Binary : ${INSTALL_BIN_PATH}"
   echo "Service: ${SERVICE_PATH}"
   echo "Config : ${CONFIG_PATH}"
@@ -262,10 +283,11 @@ main() {
   need_root
   require_tools
   detect_arch
-  resolve_latest_tag
+  resolve_release
 
   log "Архитектура: ${TARGET_TRIPLE}"
-  log "Latest release: ${LATEST_TAG}"
+  log "Канал: ${CHANNEL}"
+  log "Release: ${RELEASE_TAG}"
 
   ensure_user_group
   install_dirs

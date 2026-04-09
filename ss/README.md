@@ -444,6 +444,63 @@ sysctl -w kern.ipc.maxsockbuf=33554432
 
 ## Production Operations
 
+### `install.sh`
+
+For a basic production install on Linux you can use the bundled [install.sh](/Users/mvmalykh/IdeaProjects/outline-ss-rust/install.sh) script. Run it as `root` on the target host:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+Install modes:
+
+- Default: installs the latest stable server release for the current architecture
+- `CHANNEL=nightly`: installs the rolling nightly prerelease
+- `VERSION=v1.2.3`: installs a specific stable tag
+
+Examples:
+
+```bash
+sudo ./install.sh
+sudo CHANNEL=nightly ./install.sh
+sudo VERSION=v1.2.3 ./install.sh
+```
+
+What the script does:
+
+- detects the host architecture and downloads the latest GitHub release artifact
+- installs the binary to `/usr/local/bin/outline-ss-rust`
+- creates the `outline-ss-rust` system user and group if they do not exist yet
+- creates `/etc/outline-ss-rust` and `/var/lib/outline-ss-rust`
+- downloads `config.toml` and the bundled systemd unit from the same release tag
+- enables and starts `outline-ss-rust.service`
+
+After the first install:
+
+1. Edit `/etc/outline-ss-rust/config.toml`.
+2. Restart the service with `sudo systemctl restart outline-ss-rust`.
+3. Check status with `systemctl status outline-ss-rust --no-pager`.
+4. Check logs with `journalctl -u outline-ss-rust -e --no-pager`.
+
+The script is safe to re-run for upgrades: it downloads the selected release, replaces the binary, preserves the existing config, and restarts the service.
+
+Supported release architectures currently match GitHub CI artifacts: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
+
+Useful overrides:
+
+- `CHANNEL=stable|nightly`: choose the release channel; default is `stable`
+- `VERSION=v1.2.3`: pin the install to a specific stable tag
+- `REPO=owner/name`: install from another GitHub repository or fork
+- `SERVICE_NAME=custom.service`: use a different unit name
+- `INSTALL_BIN_DIR=/path`: install the binary outside `/usr/local/bin`
+- `CONFIG_DIR=/path`: keep configuration outside `/etc/outline-ss-rust`
+- `STATE_DIR=/path`: use a different state directory
+- `SERVICE_USER=name` and `SERVICE_GROUP=name`: run the service under a different account
+
+`VERSION` and `CHANNEL=nightly` are mutually exclusive.
+
 ### systemd
 
 A production-oriented systemd unit is included at [systemd/outline-ss-rust.service](/Users/mmalykhin/Documents/outline-ss-rust/systemd/outline-ss-rust.service).

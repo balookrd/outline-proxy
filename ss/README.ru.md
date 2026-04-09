@@ -431,6 +431,63 @@ scrape_configs:
 
 ## Production-эксплуатация
 
+### `install.sh`
+
+Для базовой production-установки на Linux можно использовать bundled-скрипт [install.sh](install.sh). Запускать его нужно от `root` на целевом хосте:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+Режимы установки:
+
+- По умолчанию ставится последний stable server release под текущую архитектуру
+- `CHANNEL=nightly` ставит rolling prerelease nightly
+- `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
+
+Примеры:
+
+```bash
+sudo ./install.sh
+sudo CHANNEL=nightly ./install.sh
+sudo VERSION=v1.2.3 ./install.sh
+```
+
+Что делает скрипт:
+
+- определяет архитектуру хоста и скачивает артефакт последнего GitHub release
+- устанавливает бинарник в `/usr/local/bin/outline-ss-rust`
+- создаёт системного пользователя и группу `outline-ss-rust`, если их ещё нет
+- создаёт каталоги `/etc/outline-ss-rust` и `/var/lib/outline-ss-rust`
+- скачивает `config.toml` и bundled systemd unit из того же release tag
+- включает и запускает `outline-ss-rust.service`
+
+После первой установки:
+
+1. Отредактируйте `/etc/outline-ss-rust/config.toml`.
+2. Перезапустите сервис: `sudo systemctl restart outline-ss-rust`.
+3. Проверьте статус: `systemctl status outline-ss-rust --no-pager`.
+4. Проверьте логи: `journalctl -u outline-ss-rust -e --no-pager`.
+
+Скрипт можно безопасно запускать повторно для обновления: он скачает выбранный release, заменит бинарник, сохранит существующий конфиг и перезапустит сервис.
+
+Сейчас поддерживаются только те архитектуры, для которых GitHub CI публикует release-артефакты: `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
+
+Полезные переопределения:
+
+- `CHANNEL=stable|nightly`: выбор release-канала; по умолчанию `stable`
+- `VERSION=v1.2.3`: зафиксировать установку на конкретном stable-теге
+- `REPO=owner/name`: установка из другого GitHub-репозитория или форка
+- `SERVICE_NAME=custom.service`: другое имя unit-файла
+- `INSTALL_BIN_DIR=/path`: установить бинарник не в `/usr/local/bin`
+- `CONFIG_DIR=/path`: хранить конфиг не в `/etc/outline-ss-rust`
+- `STATE_DIR=/path`: использовать другой state-каталог
+- `SERVICE_USER=name` и `SERVICE_GROUP=name`: запускать сервис от другого пользователя
+
+`VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
+
 ### systemd
 
 Production-ориентированный systemd unit находится в [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service).
