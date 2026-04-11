@@ -21,8 +21,8 @@ SERVICE_USER="${SERVICE_USER:-outline-ss-rust}"
 SERVICE_GROUP="${SERVICE_GROUP:-outline-ss-rust}"
 SERVICE_WAS_ACTIVE=0
 
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_DIR=""
+trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
 
 log() {
   printf '[+] %s\n' "$*"
@@ -35,6 +35,37 @@ warn() {
 die() {
   printf '[x] %s\n' "$*" >&2
   exit 1
+}
+
+show_usage() {
+  cat <<EOF
+Usage:
+  ./install.sh [--help]
+
+Устанавливает или обновляет ${BINARY_NAME} на Linux.
+Саму установку нужно запускать от root, но справку можно посмотреть без root.
+
+Режимы установки:
+  CHANNEL=stable    установить последний stable release (по умолчанию)
+  CHANNEL=nightly   установить rolling nightly prerelease
+  VERSION=v1.2.3    установить конкретный stable tag
+
+Примеры:
+  ./install.sh --help
+  sudo ./install.sh
+  sudo CHANNEL=nightly ./install.sh
+  sudo VERSION=v1.2.3 ./install.sh
+
+Дополнительные переменные окружения:
+  REPO=${REPO}
+  SERVICE_NAME=${SERVICE_NAME}
+  INSTALL_BIN_DIR=${INSTALL_BIN_DIR}
+  CONFIG_DIR=${CONFIG_DIR}
+  STATE_DIR=${STATE_DIR}
+  SYSTEMD_DIR=${SYSTEMD_DIR}
+  SERVICE_USER=${SERVICE_USER}
+  SERVICE_GROUP=${SERVICE_GROUP}
+EOF
 }
 
 need_root() {
@@ -68,6 +99,30 @@ fetch_stdout() {
   else
     die "Нужен curl или wget"
   fi
+}
+
+parse_args() {
+  if [[ "$#" -eq 0 ]]; then
+    return
+  fi
+
+  if [[ "$#" -eq 1 ]]; then
+    case "$1" in
+      -h|--help)
+        show_usage
+        exit 0
+        ;;
+      *)
+        die "Неизвестный аргумент: $1. Используй --help для справки."
+        ;;
+    esac
+  fi
+
+  die "Скрипт не принимает позиционные аргументы. Используй --help для справки."
+}
+
+prepare_tmp_dir() {
+  TMP_DIR="$(mktemp -d)"
 }
 
 require_tools() {
@@ -300,7 +355,9 @@ show_summary() {
 }
 
 main() {
+  parse_args "$@"
   need_root
+  prepare_tmp_dir
   require_tools
   detect_arch
   resolve_release
