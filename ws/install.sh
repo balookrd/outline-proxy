@@ -49,6 +49,52 @@ require_root() {
   fi
 }
 
+usage() {
+  cat <<EOF
+Использование:
+  sudo ./install.sh
+  sudo CHANNEL=nightly ./install.sh
+  sudo VERSION=v1.2.3 ./install.sh
+  ./install.sh --help
+
+Что делает скрипт:
+  - скачивает релиз ${REPO_OWNER}/${REPO_NAME} под текущую архитектуру
+  - устанавливает бинарник в ${INSTALL_PATH}
+  - скачивает и устанавливает systemd unit-файлы
+  - создаёт ${CONFIG_DIR} и ${STATE_DIR}
+  - скачивает config.toml и example instance, если их ещё нет
+  - перезапускает только уже активные outline-ws-rust unit'ы
+
+Основные переменные окружения:
+  CHANNEL=stable|nightly    Канал релизов, по умолчанию stable
+  VERSION=...               stable: 1.2.3 или v1.2.3; nightly: nightly
+  INSTALL_PATH=...          Куда установить бинарник
+  CONFIG_DIR=...            Каталог конфигурации
+  STATE_DIR=...             Каталог рабочего состояния
+  GITHUB_TOKEN=...          GitHub token для обхода rate limit API
+
+После установки:
+  systemctl enable --now ${SERVICE_NAME}
+  systemctl enable --now outline-ws-rust@NAME.service
+EOF
+}
+
+parse_args() {
+  case "${1:-}" in
+    "")
+      return 0
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      die "Неизвестный аргумент: $1"
+      ;;
+  esac
+}
+
 github_api_get() {
   local url="$1"
   if [[ -n "$GITHUB_TOKEN" ]]; then
@@ -231,6 +277,7 @@ restart_previously_active_units() {
 }
 
 main() {
+  parse_args "${1:-}"
   require_root
   need_cmd curl
   need_cmd tar
