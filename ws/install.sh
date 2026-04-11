@@ -106,77 +106,45 @@ normalize_version_tag() {
 }
 
 select_release_json() {
-  local tag
+  local api_path tag
 
   if [[ -n "$VERSION" ]]; then
     tag="$(normalize_version_tag "$VERSION")"
-    github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/releases/tags/${tag}"
-    return 0
+    api_path="releases/tags/${tag}"
+  else
+    case "$CHANNEL" in
+      stable)
+        api_path="releases/latest"
+        ;;
+      nightly)
+        api_path="releases/tags/nightly"
+        ;;
+      *)
+        die "Неподдерживаемый CHANNEL: ${CHANNEL}. Допустимо: stable, nightly"
+        ;;
+    esac
   fi
 
-  github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/releases?per_page=100" | \
-    python3 - "$CHANNEL" <<'PY'
-import json, re, sys
-channel = sys.argv[1]
-releases = json.load(sys.stdin)
-
-def is_stable_server_release(rel):
-    tag = rel.get("tag_name", "")
-    return (
-        not rel.get("draft", False)
-        and not rel.get("prerelease", False)
-        and re.fullmatch(r"v\d+\.\d+\.\d+", tag) is not None
-    )
-
-def is_nightly_server_release(rel):
-    tag = rel.get("tag_name", "")
-    return (
-        not rel.get("draft", False)
-        and rel.get("prerelease", False)
-        and tag == "nightly"
-    )
-
-filtered = [r for r in releases if is_stable_server_release(r)] if channel == "stable" \
-           else [r for r in releases if is_nightly_server_release(r)]
-
-if not filtered:
-    raise SystemExit("Не удалось найти подходящий release")
-
-print(json.dumps(filtered[0]))
-PY
+  github_api_get "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/${api_path}"
 }
 
 release_field() {
   local field="$1"
-  python3 - "$field" <<'PY'
-import json, sys
-field = sys.argv[1]
-data = json.load(sys.stdin)
-print(data.get(field, ""))
-PY
+
+  grep -oE "\"${field}\":[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" \
+    | head -n1 \
+    | sed -E "s/^\"${field}\":[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"$/\\1/"
 }
 
 asset_url_from_release() {
   local target="$1"
-  python3 - "$target" <<'PY'
-import json, re, sys
-target = sys.argv[1]
-rel = json.load(sys.stdin)
+  local asset_pattern
 
-assets = rel.get("assets", [])
-patterns = [
-    rf"^outline-ws-rust-v\d+\.\d+\.\d+-{re.escape(target)}\.tar\.gz$",
-    rf"^outline-ws-rust-vnightly-[0-9a-f]{{40}}-{re.escape(target)}\.tar\.gz$",
-]
-
-for asset in assets:
-    name = asset.get("name", "")
-    if any(re.fullmatch(p, name) for p in patterns):
-        print(asset["browser_download_url"])
-        raise SystemExit(0)
-
-raise SystemExit(f"Не найден asset под target={target}")
-PY
+  asset_pattern="/${BINARY_NAME}-v[^/]*-${target}\\.tar\\.gz$"
+  grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' \
+    | sed -E 's/^"browser_download_url":[[:space:]]*"([^"]+)"$/\1/' \
+    | grep -E "$asset_pattern" \
+    | head -n1 || true
 }
 
 install_binary() {
@@ -266,10 +234,11 @@ main() {
   require_root
   need_cmd curl
   need_cmd tar
-  need_cmd python3
   need_cmd install
   need_cmd systemctl
   need_cmd sed
+  need_cmd grep
+  need_cmd find
   need_cmd uname
 
   local target release_json release_tag release_name asset_url archive_path workdir
