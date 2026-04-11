@@ -252,17 +252,9 @@ install_binary() {
   mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
 }
 
-reload_and_restart_service() {
+reload_systemd() {
+  log "Перечитываю конфигурацию systemd"
   systemctl daemon-reload
-  systemctl enable "$SERVICE_NAME" >/dev/null
-
-  if systemctl is-active --quiet "$SERVICE_NAME"; then
-    log "Перезапускаю ${SERVICE_NAME}"
-    systemctl try-restart "$SERVICE_NAME"
-  else
-    log "Запускаю ${SERVICE_NAME}"
-    systemctl start "$SERVICE_NAME"
-  fi
 }
 
 show_summary() {
@@ -273,6 +265,13 @@ show_summary() {
   echo "Binary : ${INSTALL_BIN_PATH}"
   echo "Service: ${SERVICE_PATH}"
   echo "Config : ${CONFIG_PATH}"
+  echo
+  echo "Сервис не был запущен автоматически."
+  echo "Запуск:"
+  echo "  sudo systemctl enable --now ${SERVICE_NAME}"
+  echo
+  echo "После изменения конфигурации или обновления бинаря:"
+  echo "  sudo systemctl restart ${SERVICE_NAME}"
   echo
   echo "Проверка:"
   echo "  systemctl status ${SERVICE_NAME} --no-pager"
@@ -294,7 +293,7 @@ main() {
   install_binary
   install_config_if_missing
   install_systemd_unit
-  reload_and_restart_service
+  reload_systemd
   show_summary
 }
 
