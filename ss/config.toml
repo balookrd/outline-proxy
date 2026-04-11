@@ -14,7 +14,7 @@ listen = "0.0.0.0:3000"
 # tls_key_path = "./key.pem"
 
 # Optional HTTP/3 / QUIC listener for RFC 9220.
-# If omitted, H3 uses the same socket address as `listen`.
+# This may reuse the same ip:port as `listen`, because H3 binds UDP while `listen` binds TCP.
 # h3_listen = "0.0.0.0:3000"
 # h3_cert_path = "./cert.pem"
 # h3_key_path = "./key.pem"

@@ -179,9 +179,6 @@ impl Config {
         if self.listen.is_some() && self.listen == self.metrics_listen {
             bail!("listen must differ from metrics_listen");
         }
-        if self.listen.is_some() && self.listen == self.effective_h3_listen() {
-            bail!("listen must differ from h3_listen");
-        }
         let users = self.user_entries()?;
         let mut tcp_paths = BTreeSet::new();
         let mut udp_paths = BTreeSet::new();
@@ -630,5 +627,37 @@ udp_ws_path = "/alice-legacy-udp"
         .to_string();
 
         assert!(error.contains("h3_listen must be configured explicitly"));
+    }
+
+    #[test]
+    fn allows_h3_listener_to_share_address_with_tcp_listener() {
+        Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: Some("127.0.0.1:3000".parse().unwrap()),
+            h3_cert_path: Some("cert.pem".into()),
+            h3_key_path: Some("key.pem".into()),
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            public_host: None,
+            public_scheme: "wss".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: Some("secret".into()),
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
+        .validate()
+        .unwrap();
     }
 }

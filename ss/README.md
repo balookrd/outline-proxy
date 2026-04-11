@@ -40,7 +40,7 @@ It supports:
 | HTTP/2 WebSocket | Supported | RFC 8441 Extended CONNECT |
 | HTTP/3 WebSocket | Supported | RFC 9220 Extended CONNECT |
 | Built-in TLS for h1/h2 | Supported | Optional, on the main TCP listener |
-| Built-in QUIC/TLS for h3 | Supported | Optional, on `h3_listen` or `listen` |
+| Built-in QUIC/TLS for h3 | Supported | Optional, on `h3_listen` (may reuse the `listen` port over UDP) |
 | IPv6 | Supported | Listener, upstream resolution, and access key generation |
 | Prometheus metrics | Supported | Dedicated listener and low-cardinality labels |
 | Grafana dashboard | Supported | Ready-made JSON dashboard included |
