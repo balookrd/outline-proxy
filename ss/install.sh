@@ -19,6 +19,7 @@ SERVICE_PATH="${SYSTEMD_DIR}/${SERVICE_NAME}"
 
 SERVICE_USER="${SERVICE_USER:-outline-ss-rust}"
 SERVICE_GROUP="${SERVICE_GROUP:-outline-ss-rust}"
+SERVICE_WAS_ACTIVE=0
 
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
@@ -252,9 +253,25 @@ install_binary() {
   mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
 }
 
+remember_service_state() {
+  if systemctl is-active --quiet "$SERVICE_NAME"; then
+    SERVICE_WAS_ACTIVE=1
+    log "Сервис ${SERVICE_NAME} уже запущен, будет перезапущен после обновления"
+  else
+    SERVICE_WAS_ACTIVE=0
+  fi
+}
+
 reload_systemd() {
   log "Перечитываю конфигурацию systemd"
   systemctl daemon-reload
+}
+
+restart_service_if_needed() {
+  if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then
+    log "Перезапускаю уже запущенный сервис ${SERVICE_NAME}"
+    systemctl restart "$SERVICE_NAME"
+  fi
 }
 
 show_summary() {
@@ -266,7 +283,11 @@ show_summary() {
   echo "Service: ${SERVICE_PATH}"
   echo "Config : ${CONFIG_PATH}"
   echo
-  echo "Сервис не был запущен автоматически."
+  if [[ "$SERVICE_WAS_ACTIVE" -eq 1 ]]; then
+    echo "Сервис был активен до обновления и был перезапущен автоматически."
+  else
+    echo "Сервис не был запущен автоматически."
+  fi
   echo "Запуск:"
   echo "  sudo systemctl enable --now ${SERVICE_NAME}"
   echo
@@ -288,12 +309,14 @@ main() {
   log "Канал: ${CHANNEL}"
   log "Release: ${RELEASE_TAG}"
 
+  remember_service_state
   ensure_user_group
   install_dirs
   install_binary
   install_config_if_missing
   install_systemd_unit
   reload_systemd
+  restart_service_if_needed
   show_summary
 }
 
