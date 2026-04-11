@@ -419,6 +419,7 @@ fn build_http_server_builder() -> HyperBuilder<TokioExecutor> {
     let mut builder = HyperBuilder::new(TokioExecutor::new());
     builder
         .http2()
+        .timer(TokioTimer::new())
         .enable_connect_protocol()
         .initial_stream_window_size(Some(H2_STREAM_WINDOW_BYTES))
         .initial_connection_window_size(Some(H2_CONNECTION_WINDOW_BYTES))
