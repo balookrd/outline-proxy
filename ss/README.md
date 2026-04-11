@@ -451,6 +451,7 @@ For a basic production install on Linux you can use the bundled [install.sh](/Us
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
 chmod +x install.sh
+./install.sh --help
 sudo ./install.sh
 ```
 
@@ -463,6 +464,7 @@ Install modes:
 Examples:
 
 ```bash
+./install.sh --help
 sudo ./install.sh
 sudo CHANNEL=nightly ./install.sh
 sudo VERSION=v1.2.3 ./install.sh
