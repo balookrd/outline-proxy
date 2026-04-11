@@ -138,7 +138,7 @@ resolve_release() {
   url_line="$(printf '%s\n' "$release_json" | sed -nE 's/.*"browser_download_url":[[:space:]]*"([^"]+)".*/\1/p' | grep -E "$asset_pattern" | head -n1 || true)"
   RELEASE_ASSET_URL="$url_line"
 
-  [[ -n "$RELEASE_ASSET_URL" && "$RELEASE_ASSET_URL" != "$url_line" ]] || \
+  [[ -n "$RELEASE_ASSET_URL" ]] || \
     die "Не удалось найти release-артефакт для ${TARGET_TRIPLE} в релизе ${RELEASE_TAG}"
 }
 
