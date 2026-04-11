@@ -25,7 +25,7 @@ use axum::{
 };
 use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder as HyperBuilder,
     service::TowerToHyperService,
 };
@@ -444,9 +444,10 @@ mod tests {
     use h3::ext::Protocol as H3Protocol;
     use http_body_util::Empty;
     use hyper::ext::Protocol;
+    use hyper::client::conn::http2;
     use hyper_util::{
         client::legacy::Client,
-        rt::{TokioExecutor, TokioIo},
+        rt::{TokioExecutor, TokioIo, TokioTimer},
     };
     use quinn::Endpoint;
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -459,6 +460,7 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream, UdpSocket},
     };
+    use tokio_rustls::TlsConnector;
     use tokio_tungstenite::{
         WebSocketStream, connect_async,
         tungstenite::{Message as WsMessage, protocol},
@@ -466,7 +468,7 @@ mod tests {
 
     use super::{
         UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
-        serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket,
+        serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
     };
     use super::bootstrap::serve_listener;
     use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
@@ -717,6 +719,77 @@ mod tests {
         socket.close(None).await?;
         server.abort();
         let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
+        super::ensure_rustls_provider_installed();
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let config = sample_config(addr);
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+        );
+
+        let (cert_path, key_path, cert_der) = write_test_h2_tls_cert()?;
+        let mut tls_config = config.clone();
+        tls_config.tls_cert_path = Some(cert_path.clone());
+        tls_config.tls_key_path = Some(key_path.clone());
+        let server =
+            tokio::spawn(async move { serve_tcp_listener(listener, app, Arc::new(tls_config)).await });
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(cert_der)?;
+        let mut client_config = rustls::ClientConfig::builder()
+            .with_root_certificates(Arc::new(roots))
+            .with_no_client_auth();
+        client_config.alpn_protocols = vec![b"h2".to_vec()];
+
+        let tcp = TcpStream::connect(addr).await?;
+        let tls = TlsConnector::from(Arc::new(client_config))
+            .connect(rustls::pki_types::ServerName::try_from("localhost".to_string())?, tcp)
+            .await?;
+
+        let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
+            .timer(TokioTimer::new())
+            .handshake::<_, Empty<Bytes>>(TokioIo::new(tls))
+            .await?;
+        let driver = tokio::spawn(async move { conn.await });
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("https://localhost:{}/tcp", addr.port()))
+            .version(Version::HTTP_2)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(Protocol::from_static("websocket"))
+            .body(Empty::<Bytes>::new())?;
+
+        let mut response = send_request.send_request(req).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.version(), Version::HTTP_2);
+
+        let upgraded = hyper::upgrade::on(&mut response).await?;
+        let upgraded = TokioIo::new(upgraded);
+        let mut socket =
+            WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
+        socket.close(None).await?;
+
+        driver.abort();
+        server.abort();
+        let _ = driver.await;
+        let _ = server.await;
+        let _ = std::fs::remove_file(cert_path);
+        let _ = std::fs::remove_file(key_path);
         Ok(())
     }
 
@@ -1119,5 +1192,24 @@ mod tests {
         let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
             .map_err(|error| anyhow::anyhow!(error))?;
         Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
+    }
+
+    fn write_test_h2_tls_cert() -> Result<(std::path::PathBuf, std::path::PathBuf, CertificateDer<'static>)> {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
+        let cert_pem = cert.cert.pem();
+        let cert_der = CertificateDer::from(cert.cert.der().to_vec());
+        let key_pem = cert.signing_key.serialize_pem();
+        let base = std::env::temp_dir().join(format!(
+            "outline-ss-rust-h2-tls-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let cert_path = base.with_extension("crt.pem");
+        let key_path = base.with_extension("key.pem");
+        std::fs::write(&cert_path, cert_pem)?;
+        std::fs::write(&key_path, key_pem)?;
+        Ok((cert_path, key_path, cert_der))
     }
 }
