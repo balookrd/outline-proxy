@@ -274,8 +274,6 @@ main() {
   download_instance_example_if_missing
 
   systemctl daemon-reload
-  systemctl enable outline-ws-rust.service >/dev/null 2>&1 || true
-
   restart_previously_active_units
 
   log "Готово"
@@ -283,7 +281,9 @@ main() {
   log "Шаблонный unit: ${SYSTEMD_DIR}/${TEMPLATE_NAME}"
   log "Обычный конфиг: ${CONFIG_DIR}/config.toml"
   log "Инстансы:       ${CONFIG_DIR}/instances/NAME.toml"
-  log "Запуск инстанса: systemctl enable --now outline-ws-rust@NAME.service"
+  log "Автозапуск после установки не выполняется"
+  log "Запуск обычного сервиса: systemctl enable --now ${SERVICE_NAME}"
+  log "Запуск инстанса:        systemctl enable --now outline-ws-rust@NAME.service"
 }
 
 main "$@"
