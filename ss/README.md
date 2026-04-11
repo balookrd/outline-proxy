@@ -475,7 +475,9 @@ What the script does:
 - creates the `outline-ss-rust` system user and group if they do not exist yet
 - creates `/etc/outline-ss-rust` and `/var/lib/outline-ss-rust`
 - downloads `config.toml` and the bundled systemd unit from the same release tag
-- reloads systemd manager configuration with `daemon-reload`, but does not start the service automatically
+- reloads systemd manager configuration with `daemon-reload`
+- does not start the service automatically on the first install
+- automatically restarts the service during upgrades if it was already running
 
 After the first install:
 
@@ -484,7 +486,7 @@ After the first install:
 3. Check status with `systemctl status outline-ss-rust --no-pager`.
 4. Check logs with `journalctl -u outline-ss-rust -e --no-pager`.
 
-The script is safe to re-run for upgrades: it downloads the selected release, replaces the binary, preserves the existing config, and does not restart the service automatically. After an upgrade, restart it manually with `sudo systemctl restart outline-ss-rust`.
+The script is safe to re-run for upgrades: it downloads the selected release, replaces the binary, preserves the existing config, and automatically restarts `outline-ss-rust.service` if it was already active. If the service was stopped, the script leaves it stopped.
 
 Supported release architectures currently match GitHub CI artifacts: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
 
