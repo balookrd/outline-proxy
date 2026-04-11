@@ -462,16 +462,16 @@ sudo VERSION=v1.2.3 ./install.sh
 - создаёт системного пользователя и группу `outline-ss-rust`, если их ещё нет
 - создаёт каталоги `/etc/outline-ss-rust` и `/var/lib/outline-ss-rust`
 - скачивает `config.toml` и bundled systemd unit из того же release tag
-- включает и запускает `outline-ss-rust.service`
+- обновляет конфигурацию systemd через `daemon-reload`, но не запускает сервис автоматически
 
 После первой установки:
 
 1. Отредактируйте `/etc/outline-ss-rust/config.toml`.
-2. Перезапустите сервис: `sudo systemctl restart outline-ss-rust`.
+2. Запустите сервис вручную: `sudo systemctl enable --now outline-ss-rust`.
 3. Проверьте статус: `systemctl status outline-ss-rust --no-pager`.
 4. Проверьте логи: `journalctl -u outline-ss-rust -e --no-pager`.
 
-Скрипт можно безопасно запускать повторно для обновления: он скачает выбранный release, заменит бинарник, сохранит существующий конфиг и перезапустит сервис.
+Скрипт можно безопасно запускать повторно для обновления: он скачает выбранный release, заменит бинарник, сохранит существующий конфиг и не будет перезапускать сервис автоматически. После обновления перезапустите его вручную: `sudo systemctl restart outline-ss-rust`.
 
 Сейчас поддерживаются только те архитектуры, для которых GitHub CI публикует release-артефакты: `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
 
