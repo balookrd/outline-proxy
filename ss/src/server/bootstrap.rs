@@ -407,7 +407,11 @@ async fn serve_tls_listener(
             let tls_stream = match acceptor.accept(stream).await {
                 Ok(stream) => stream,
                 Err(error) => {
-                    warn!(?error, %peer_addr, "tls handshake failed");
+                    if is_benign_tls_handshake_error(&error) {
+                        debug!(?error, %peer_addr, "tls handshake closed before completion");
+                    } else {
+                        warn!(?error, %peer_addr, "tls handshake failed");
+                    }
                     return;
                 }
             };
@@ -444,4 +448,26 @@ fn is_benign_http_serve_error(error: &(dyn std::error::Error + Send + Sync + 'st
     message.contains("connection closed")
         || message.contains("closed before message completed")
         || message.contains("canceled")
+}
+
+fn is_benign_tls_handshake_error(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::UnexpectedEof
+        || error.to_string().contains("tls handshake eof")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_benign_tls_handshake_error;
+
+    #[test]
+    fn tls_handshake_unexpected_eof_is_benign() {
+        let error = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "tls handshake eof");
+        assert!(is_benign_tls_handshake_error(&error));
+    }
+
+    #[test]
+    fn tls_handshake_protocol_failure_is_not_benign() {
+        let error = std::io::Error::other("received corrupt message");
+        assert!(!is_benign_tls_handshake_error(&error));
+    }
 }
