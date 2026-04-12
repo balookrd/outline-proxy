@@ -139,6 +139,11 @@ impl UserKey {
         &self.ws_path_udp
     }
 
+    pub fn matches_password(&self, password: &str) -> Result<bool, CryptoError> {
+        let derived = password_to_master_key(password, self.cipher)?;
+        Ok(self.master_key() == derived.as_slice())
+    }
+
     fn master_key(&self) -> &[u8] {
         self.master_key.as_ref()
     }
@@ -1124,14 +1129,22 @@ fn encrypt_legacy_chunk(
     let len_start = output.len();
     output.extend_from_slice(&length);
     let tag = key
-        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[len_start..])
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[len_start..],
+        )
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
     let payload_start = output.len();
     output.extend_from_slice(plaintext);
     let tag = key
-        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[payload_start..],
+        )
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
@@ -1168,14 +1181,22 @@ fn encrypt_ss2022_chunk(
                 .to_be_bytes(),
         );
         let tag = key
-            .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[header_start..])
+            .seal_in_place_separate_tag(
+                next_stream_nonce(nonce_counter),
+                Aad::empty(),
+                &mut output[header_start..],
+            )
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(tag.as_ref());
 
         let payload_start = output.len();
         output.extend_from_slice(plaintext);
         let tag = key
-            .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+            .seal_in_place_separate_tag(
+                next_stream_nonce(nonce_counter),
+                Aad::empty(),
+                &mut output[payload_start..],
+            )
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(tag.as_ref());
         *sent_header = true;
@@ -1189,14 +1210,22 @@ fn encrypt_ss2022_chunk(
             .to_be_bytes(),
     );
     let tag = key
-        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[len_start..])
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[len_start..],
+        )
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
     let payload_start = output.len();
     output.extend_from_slice(plaintext);
     let tag = key
-        .seal_in_place_separate_tag(next_stream_nonce(nonce_counter), Aad::empty(), &mut output[payload_start..])
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[payload_start..],
+        )
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
     Ok(output)

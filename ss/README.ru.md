@@ -191,6 +191,8 @@ cargo release-musl-armv7
 | `udp_nat_idle_timeout_secs` | Время жизни UDP NAT-записи после последней исходящей датаграммы; по умолчанию `300` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
+| `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
+| `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `outline-ss-rust` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
 | `public_scheme` | `ws` или `wss` для генерируемых client URL |
 | `access_key_url_base` | Базовый URL для хостинга генерируемых YAML-файлов |
@@ -215,6 +217,8 @@ ws_path_udp = "/alice/udp"
 
 Для `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305` параметр `password` должен содержать base64-кодированный сырой PSK длиной ровно 16, 32 и 32 байта соответственно, например `openssl rand -base64 32`.
 
+Если `http_root_auth = true`, обычный `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется, а пароль проверяется по настроенным Shadowsocks-пользователям. Параметр `http_root_realm` задаёт текст этого запроса пароля. После трёх неудачных попыток пароля в рамках одной браузерной сессии сервер начинает отвечать `403 Forbidden`. Обычные HTTP-запросы к любым не-корневым путям по-прежнему получают `404 Not Found`.
+
 ### Переменные окружения
 
 - `OUTLINE_SS_CONFIG`
@@ -231,6 +235,8 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
+- `OUTLINE_SS_HTTP_ROOT_AUTH`
+- `OUTLINE_SS_HTTP_ROOT_REALM`
 - `OUTLINE_SS_PUBLIC_HOST`
 - `OUTLINE_SS_PUBLIC_SCHEME`
 - `OUTLINE_SS_ACCESS_KEY_URL_BASE`

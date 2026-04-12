@@ -32,6 +32,13 @@ client_active_ttl_secs = 300
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
 
+# Optional OpenConnect-style password prompt on GET /.
+# The browser username is ignored; the password is matched against configured users.
+# After 3 failed passwords in the same browser session, the server returns 403.
+# Non-root HTTP paths still return 404.
+# http_root_auth = true
+# http_root_realm = "outline-ss-rust"
+
 # Used for generated Outline access keys.
 # For IPv6 hosts, use brackets:
 # public_host = "[2001:db8::10]:443"

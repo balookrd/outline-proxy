@@ -118,7 +118,10 @@ pub(super) fn order_tcp_connect_addrs(
     ordered
 }
 
-pub(super) async fn connect_tcp_addrs(addrs: &[SocketAddr], fwmark: Option<u32>) -> Result<TcpStream> {
+pub(super) async fn connect_tcp_addrs(
+    addrs: &[SocketAddr],
+    fwmark: Option<u32>,
+) -> Result<TcpStream> {
     let mut attempts = FuturesUnordered::new();
     for (index, addr) in addrs.iter().copied().enumerate() {
         attempts.push(async move {

@@ -70,9 +70,7 @@ use self::{
     },
     connect::connect_tcp_target,
     shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
-    transport::{
-        is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade,
-    },
+    transport::{is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade},
 };
 
 const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
@@ -107,12 +105,15 @@ const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
 
 #[derive(Clone)]
 struct AppState {
+    users: Arc<[UserKey]>,
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
+    http_root_auth: bool,
+    http_root_realm: Arc<str>,
 }
 
 #[derive(Clone)]
@@ -193,12 +194,15 @@ pub async fn run(config: Config) -> Result<()> {
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
     let udp_dns_cache = UdpDnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let app = build_app(
+        users.clone(),
         tcp_routes.clone(),
         udp_routes.clone(),
         metrics.clone(),
         Arc::clone(&nat_table),
         Arc::clone(&udp_dns_cache),
         config.prefer_ipv4_upstream,
+        config.http_root_auth,
+        config.http_root_realm.clone(),
     );
     let listener = if let Some(listen) = config.listen {
         Some(
@@ -429,7 +433,6 @@ fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
     ))
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -437,14 +440,15 @@ mod tests {
         sync::Arc,
     };
 
-    use anyhow::Result;
+    use anyhow::{Context, Result};
     use axum::http::{Method, Request, StatusCode, Version, header};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     use bytes::Bytes;
     use futures_util::{SinkExt, StreamExt};
     use h3::ext::Protocol as H3Protocol;
     use http_body_util::Empty;
-    use hyper::ext::Protocol;
     use hyper::client::conn::http2;
+    use hyper::ext::Protocol;
     use hyper_util::{
         client::legacy::Client,
         rt::{TokioExecutor, TokioIo, TokioTimer},
@@ -466,12 +470,12 @@ mod tests {
         tungstenite::{Message as WsMessage, protocol},
     };
 
+    use super::bootstrap::serve_listener;
+    use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
     use super::{
         UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
         serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
     };
-    use super::bootstrap::serve_listener;
-    use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
     use crate::config::{CipherKind, Config, UserEntry};
     use crate::crypto::{
         AeadStreamDecryptor, AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet,
@@ -613,12 +617,15 @@ mod tests {
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let app = build_app(
+            users.clone(),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
             udp_dns_cache,
             false,
+            false,
+            "outline-ss-rust".into(),
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
@@ -669,12 +676,15 @@ mod tests {
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let app = build_app(
+            users.clone(),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
             udp_dns_cache,
             false,
+            false,
+            "outline-ss-rust".into(),
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
@@ -733,12 +743,15 @@ mod tests {
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let app = build_app(
+            users.clone(),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
             udp_dns_cache,
             false,
+            false,
+            "outline-ss-rust".into(),
         );
 
         let (cert_path, key_path, cert_der) = write_test_h2_tls_cert()?;
@@ -746,7 +759,9 @@ mod tests {
         tls_config.tls_cert_path = Some(cert_path.clone());
         tls_config.tls_key_path = Some(key_path.clone());
         let server =
-            tokio::spawn(async move { serve_tcp_listener(listener, app, Arc::new(tls_config)).await });
+            tokio::spawn(
+                async move { serve_tcp_listener(listener, app, Arc::new(tls_config)).await },
+            );
 
         let mut roots = rustls::RootCertStore::empty();
         roots.add(cert_der)?;
@@ -757,7 +772,10 @@ mod tests {
 
         let tcp = TcpStream::connect(addr).await?;
         let tls = TlsConnector::from(Arc::new(client_config))
-            .connect(rustls::pki_types::ServerName::try_from("localhost".to_string())?, tcp)
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost".to_string())?,
+                tcp,
+            )
             .await?;
 
         let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
@@ -825,12 +843,15 @@ mod tests {
         let nat_table = NatTable::new(std::time::Duration::from_secs(300));
         let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
         let app = build_app(
+            users.clone(),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
             Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
             Metrics::new(&config),
             nat_table,
             udp_dns_cache,
             false,
+            false,
+            "outline-ss-rust".into(),
         );
         let server = tokio::spawn(async move { serve_listener(listener, app).await });
 
@@ -861,6 +882,157 @@ mod tests {
                 .is_err(),
             "bob key on alice path must not reach upstream"
         );
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.http_root_auth = true;
+        config.http_root_realm = "My VPN \"Portal\"".into();
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            users.clone(),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+            true,
+            config.http_root_realm.clone(),
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+
+        let response = client
+            .request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("http://{addr}/"))
+                    .body(Empty::<Bytes>::new())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.headers().get(header::WWW_AUTHENTICATE),
+            Some(&header::HeaderValue::from_static(
+                "Basic realm=\"My VPN \\\"Portal\\\"\""
+            ))
+        );
+        let challenge_cookie = set_cookie_pair(&response)?;
+        assert_eq!(challenge_cookie, "outline_ss_root_auth=0");
+
+        let response = client
+            .request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("http://{addr}/"))
+                    .header(header::COOKIE, challenge_cookie.as_str())
+                    .header(header::AUTHORIZATION, basic_auth_header("secret-b"))
+                    .body(Empty::<Bytes>::new())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .context("missing auth reset cookie")?
+                .to_str()?
+                .contains("Max-Age=0")
+        );
+
+        let response = client
+            .request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("http://{addr}/tcp"))
+                    .body(Empty::<Bytes>::new())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let response = client
+            .request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("http://{addr}/anything"))
+                    .body(Empty::<Bytes>::new())?,
+            )
+            .await?;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.http_root_auth = true;
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            users.clone(),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+            true,
+            config.http_root_realm.clone(),
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+
+        let response = client
+            .request(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(format!("http://{addr}/"))
+                    .body(Empty::<Bytes>::new())?,
+            )
+            .await?;
+        let mut cookie = set_cookie_pair(&response)?;
+
+        for attempt in 1..=3 {
+            let response = client
+                .request(
+                    Request::builder()
+                        .method(Method::GET)
+                        .uri(format!("http://{addr}/"))
+                        .header(header::COOKIE, cookie.as_str())
+                        .header(header::AUTHORIZATION, basic_auth_header("wrong-password"))
+                        .body(Empty::<Bytes>::new())?,
+                )
+                .await?;
+
+            let expected_status = if attempt < 3 {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            assert_eq!(response.status(), expected_status);
+            cookie = set_cookie_pair(&response)?;
+            assert_eq!(cookie, format!("outline_ss_root_auth={attempt}"));
+        }
 
         server.abort();
         let _ = server.await;
@@ -1122,6 +1294,8 @@ mod tests {
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: "outline-ss-rust".into(),
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,
@@ -1133,6 +1307,22 @@ mod tests {
             users,
             method: CipherKind::Chacha20IetfPoly1305,
         }
+    }
+
+    fn basic_auth_header(password: &str) -> String {
+        format!("Basic {}", STANDARD.encode(format!("ignored:{password}")))
+    }
+
+    fn set_cookie_pair<T>(response: &axum::http::Response<T>) -> Result<String> {
+        Ok(response
+            .headers()
+            .get(header::SET_COOKIE)
+            .context("missing set-cookie header")?
+            .to_str()?
+            .split(';')
+            .next()
+            .context("invalid set-cookie header")?
+            .to_owned())
     }
 
     async fn send_encrypted_udp_request(
@@ -1194,7 +1384,11 @@ mod tests {
         Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
     }
 
-    fn write_test_h2_tls_cert() -> Result<(std::path::PathBuf, std::path::PathBuf, CertificateDer<'static>)> {
+    fn write_test_h2_tls_cert() -> Result<(
+        std::path::PathBuf,
+        std::path::PathBuf,
+        CertificateDer<'static>,
+    )> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let cert_pem = cert.cert.pem();
         let cert_der = CertificateDer::from(cert.cert.der().to_vec());
