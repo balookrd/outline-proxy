@@ -925,6 +925,45 @@ Alert rules:
 - `CHANNEL=nightly` ставит rolling prerelease `nightly`
 - `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
 
+Как пользоваться:
+
+```bash
+chmod +x ./install.sh
+sudo ./install.sh
+```
+
+Быстрые варианты:
+
+```bash
+sudo CHANNEL=nightly ./install.sh
+sudo VERSION=v1.2.3 ./install.sh
+./install.sh --help
+```
+
+Что делает скрипт во время установки:
+
+- ставит бинарник в `/usr/local/bin/outline-ws-rust`
+- кладёт unit-файлы в `/etc/systemd/system`
+- создаёт `/etc/outline-ws-rust` и `/var/lib/outline-ws-rust`
+- скачивает `config.toml` и `instances/example.toml`, только если их ещё нет
+- перезапускает только уже активные `outline-ws-rust` unit'ы
+- не включает автозапуск нового сервиса автоматически
+
+После установки обычно нужно вручную включить один из вариантов сервиса:
+
+```bash
+sudo systemctl enable --now outline-ws-rust.service
+sudo systemctl enable --now outline-ws-rust@NAME.service
+```
+
+Полезные переменные окружения:
+
+- `CHANNEL=stable|nightly` — выбрать stable или nightly канал
+- `VERSION=1.2.3` или `VERSION=v1.2.3` — закрепить конкретный stable-релиз
+- `INSTALL_PATH=/custom/path/outline-ws-rust` — изменить путь установки бинарника
+- `CONFIG_DIR=/custom/etc/outline-ws-rust` — изменить каталог конфигов
+- `STATE_DIR=/custom/var/lib/outline-ws-rust` — изменить каталог рабочего состояния
+
 ## Тестирование
 
 Полезные локальные проверки:

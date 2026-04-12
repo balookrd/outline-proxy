@@ -931,6 +931,45 @@ The repository also includes `install.sh` for binary + systemd deployment from G
 - `CHANNEL=nightly` installs from the rolling `nightly` prerelease
 - `VERSION=v1.2.3` pins a specific stable release tag
 
+How to use it:
+
+```bash
+chmod +x ./install.sh
+sudo ./install.sh
+```
+
+Common variants:
+
+```bash
+sudo CHANNEL=nightly ./install.sh
+sudo VERSION=v1.2.3 ./install.sh
+./install.sh --help
+```
+
+What the script does during installation:
+
+- installs the binary to `/usr/local/bin/outline-ws-rust`
+- installs unit files into `/etc/systemd/system`
+- creates `/etc/outline-ws-rust` and `/var/lib/outline-ws-rust`
+- downloads `config.toml` and `instances/example.toml` only if they do not already exist
+- restarts only already-active `outline-ws-rust` units
+- does not automatically enable/start a fresh service
+
+After installation you will usually enable one of the service variants manually:
+
+```bash
+sudo systemctl enable --now outline-ws-rust.service
+sudo systemctl enable --now outline-ws-rust@NAME.service
+```
+
+Useful environment variables:
+
+- `CHANNEL=stable|nightly` selects the release channel
+- `VERSION=1.2.3` or `VERSION=v1.2.3` pins a specific stable release
+- `INSTALL_PATH=/custom/path/outline-ws-rust` changes the binary destination
+- `CONFIG_DIR=/custom/etc/outline-ws-rust` changes the config directory
+- `STATE_DIR=/custom/var/lib/outline-ws-rust` changes the working-state directory
+
 ## Testing
 
 Useful local checks:
