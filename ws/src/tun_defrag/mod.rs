@@ -725,7 +725,7 @@ mod tests {
         IPV6_NEXT_HEADER_ICMPV6, IPV6_NEXT_HEADER_UDP, checksum16, ipv6_payload_checksum,
         locate_ipv6_payload, locate_ipv6_upper_layer,
     };
-    use crate::tun_wire_test_utils::{assert_transport_checksum_valid, transport_offset};
+    use crate::tun_wire::test_utils::{assert_transport_checksum_valid, transport_offset};
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::time::{Duration, Instant};
 

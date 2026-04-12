@@ -23,8 +23,6 @@ pub(crate) mod tun_defrag;
 pub mod tun_tcp;
 pub mod tun_udp;
 pub(crate) mod tun_wire;
-#[cfg(test)]
-pub(crate) mod tun_wire_test_utils;
 pub mod types;
 pub mod uplink;
 
