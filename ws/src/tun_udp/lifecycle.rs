@@ -317,7 +317,7 @@ fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowK
         .map(|(key, _)| key.clone())
 }
 
-pub(super) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {
+pub(crate) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {
     metrics::record_tun_flow_closed(
         &flow.uplink_name,
         reason,
