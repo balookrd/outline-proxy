@@ -189,6 +189,8 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram; default is `300` (5 minutes) |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
+| `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
+| `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `outline-ss-rust` |
 | `public_host` | Public host used for generated Outline access keys |
 | `public_scheme` | `ws` or `wss` for generated client URLs |
 | `access_key_url_base` | Base URL where generated YAML files will be hosted |
@@ -213,6 +215,8 @@ ws_path_udp = "/alice/udp"
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
 
+When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
+
 ### Environment Variables
 
 - `OUTLINE_SS_CONFIG`
@@ -229,6 +233,8 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
+- `OUTLINE_SS_HTTP_ROOT_AUTH`
+- `OUTLINE_SS_HTTP_ROOT_REALM`
 - `OUTLINE_SS_PUBLIC_HOST`
 - `OUTLINE_SS_PUBLIC_SCHEME`
 - `OUTLINE_SS_ACCESS_KEY_URL_BASE`

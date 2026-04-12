@@ -1,5 +1,5 @@
-use super::*;
 use super::connect::{configure_tcp_stream, resolve_udp_target};
+use super::*;
 
 pub(super) async fn serve_ss_tcp_listener(
     listener: TcpListener,

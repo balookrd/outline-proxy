@@ -26,6 +26,8 @@ pub struct Config {
     pub udp_nat_idle_timeout_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
+    pub http_root_auth: bool,
+    pub http_root_realm: String,
     pub public_host: Option<String>,
     pub public_scheme: String,
     pub access_key_url_base: Option<String>,
@@ -81,6 +83,11 @@ impl Config {
                 .ws_path_udp
                 .or(file.ws_path_udp)
                 .unwrap_or_else(|| "/udp".to_owned()),
+            http_root_auth: args.http_root_auth.or(file.http_root_auth).unwrap_or(false),
+            http_root_realm: args
+                .http_root_realm
+                .or(file.http_root_realm)
+                .unwrap_or_else(default_http_root_realm),
             public_host: args.public_host.or(file.public_host),
             public_scheme: args
                 .public_scheme
@@ -202,6 +209,12 @@ impl Config {
                 conflict
             );
         }
+        if self.http_root_auth && (tcp_paths.contains("/") || udp_paths.contains("/")) {
+            bail!("http_root_auth requires all websocket paths to differ from '/'");
+        }
+        if self.http_root_realm.chars().any(char::is_control) {
+            bail!("http_root_realm must not contain control characters");
+        }
         Ok(())
     }
 
@@ -293,6 +306,19 @@ struct ConfigArgs {
     )]
     ws_path_udp: Option<String>,
 
+    #[arg(
+        long,
+        env = "OUTLINE_SS_HTTP_ROOT_AUTH",
+        action = ArgAction::Set,
+        num_args = 0..=1,
+        default_missing_value = "true",
+        require_equals = true
+    )]
+    http_root_auth: Option<bool>,
+
+    #[arg(long, env = "OUTLINE_SS_HTTP_ROOT_REALM")]
+    http_root_realm: Option<String>,
+
     #[arg(long, env = "OUTLINE_SS_PUBLIC_HOST")]
     public_host: Option<String>,
 
@@ -355,6 +381,8 @@ struct FileConfig {
     ws_path_tcp: Option<String>,
     #[serde(default)]
     ws_path_udp: Option<String>,
+    http_root_auth: Option<bool>,
+    http_root_realm: Option<String>,
     public_host: Option<String>,
     public_scheme: Option<String>,
     access_key_url_base: Option<String>,
@@ -509,9 +537,13 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     }
 }
 
+fn default_http_root_realm() -> String {
+    "outline-ss-rust".to_owned()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CipherKind, Config, FileConfig};
+    use super::{CipherKind, Config, FileConfig, default_http_root_realm};
 
     #[test]
     fn parses_new_ws_path_keys() {
@@ -520,6 +552,8 @@ mod tests {
 listen = "0.0.0.0:3000"
 ws_path_tcp = "/custom-tcp"
 ws_path_udp = "/custom-udp"
+http_root_auth = true
+http_root_realm = "VPN"
 
 [[users]]
 id = "alice"
@@ -532,6 +566,8 @@ ws_path_udp = "/alice-udp"
 
         assert_eq!(config.ws_path_tcp.as_deref(), Some("/custom-tcp"));
         assert_eq!(config.ws_path_udp.as_deref(), Some("/custom-udp"));
+        assert_eq!(config.http_root_auth, Some(true));
+        assert_eq!(config.http_root_realm.as_deref(), Some("VPN"));
         let users = config.users.unwrap();
         assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
         assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
@@ -576,6 +612,8 @@ udp_ws_path = "/alice-legacy-udp"
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: default_http_root_realm(),
             public_host: None,
             public_scheme: "wss".into(),
             access_key_url_base: None,
@@ -611,6 +649,8 @@ udp_ws_path = "/alice-legacy-udp"
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: default_http_root_realm(),
             public_host: None,
             public_scheme: "wss".into(),
             access_key_url_base: None,
@@ -646,6 +686,8 @@ udp_ws_path = "/alice-legacy-udp"
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: default_http_root_realm(),
             public_host: None,
             public_scheme: "wss".into(),
             access_key_url_base: None,
@@ -659,5 +701,79 @@ udp_ws_path = "/alice-legacy-udp"
         }
         .validate()
         .unwrap();
+    }
+
+    #[test]
+    fn rejects_http_root_auth_on_root_ws_path() {
+        let error = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/".into(),
+            ws_path_udp: "/udp".into(),
+            http_root_auth: true,
+            http_root_realm: default_http_root_realm(),
+            public_host: None,
+            public_scheme: "wss".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: Some("secret".into()),
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("http_root_auth requires all websocket paths to differ from '/'"));
+    }
+
+    #[test]
+    fn rejects_http_root_realm_with_control_characters() {
+        let error = Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
+            ss_listen: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+            h3_listen: None,
+            h3_cert_path: None,
+            h3_key_path: None,
+            metrics_listen: None,
+            metrics_path: "/metrics".into(),
+            prefer_ipv4_upstream: false,
+            client_active_ttl_secs: 300,
+            udp_nat_idle_timeout_secs: 300,
+            ws_path_tcp: "/tcp".into(),
+            ws_path_udp: "/udp".into(),
+            http_root_auth: true,
+            http_root_realm: "bad\nrealm".into(),
+            public_host: None,
+            public_scheme: "wss".into(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".into(),
+            print_access_keys: false,
+            write_access_keys_dir: None,
+            password: Some("secret".into()),
+            fwmark: None,
+            users: vec![],
+            method: CipherKind::Chacha20IetfPoly1305,
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("http_root_realm must not contain control characters"));
     }
 }

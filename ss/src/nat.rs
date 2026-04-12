@@ -309,7 +309,6 @@ impl NatTable {
             );
         }
     }
-
 }
 
 // ── Background reader task ────────────────────────────────────────────────────
@@ -467,6 +466,8 @@ mod tests {
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: "outline-ss-rust".into(),
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,
@@ -523,6 +524,8 @@ mod tests {
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: "outline-ss-rust".into(),
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,
@@ -580,6 +583,8 @@ mod tests {
             udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            http_root_auth: false,
+            http_root_realm: "outline-ss-rust".into(),
             public_host: None,
             public_scheme: "ws".into(),
             access_key_url_base: None,

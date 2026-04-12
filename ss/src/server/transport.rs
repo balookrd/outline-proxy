@@ -1,13 +1,27 @@
-use super::*;
 use super::connect::{connect_tcp_target, resolve_udp_target};
+use super::*;
+use axum::{
+    body::Body,
+    extract::ws::rejection::WebSocketUpgradeRejection,
+    http::{HeaderMap, header},
+    response::Response,
+};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
+
+const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
+const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
 
 pub(super) async fn tcp_websocket_upgrade(
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
-) -> axum::response::Response {
+) -> Response {
+    let ws: WebSocketUpgrade = match ws {
+        Ok(ws) => ws,
+        Err(_) => return not_found_response(),
+    };
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
     let route = state
@@ -49,6 +63,40 @@ pub(super) async fn tcp_websocket_upgrade(
     })
 }
 
+pub(super) async fn root_http_auth_handler(
+    State(state): State<AppState>,
+    method: Method,
+    headers: HeaderMap,
+) -> Response {
+    if !state.http_root_auth || !matches!(method, Method::GET | Method::HEAD) {
+        return not_found_response();
+    }
+
+    let failed_attempts = parse_failed_root_auth_attempts(&headers);
+    if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+        return root_http_auth_forbidden_response();
+    }
+
+    match parse_root_http_auth_password(&headers) {
+        Some(password) if password_matches_any_user(state.users.as_ref(), &password) => {
+            root_http_auth_success_response()
+        }
+        Some(_) => {
+            let failed_attempts = failed_attempts.saturating_add(1);
+            if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+                root_http_auth_forbidden_response()
+            } else {
+                root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref())
+            }
+        }
+        None => root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref()),
+    }
+}
+
+pub(super) async fn not_found_handler() -> Response {
+    not_found_response()
+}
+
 pub(super) async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
     (
         StatusCode::OK,
@@ -58,12 +106,16 @@ pub(super) async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl
 }
 
 pub(super) async fn udp_websocket_upgrade(
-    ws: WebSocketUpgrade,
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
-) -> axum::response::Response {
+) -> Response {
+    let ws: WebSocketUpgrade = match ws {
+        Ok(ws) => ws,
+        Err(_) => return not_found_response(),
+    };
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
@@ -107,6 +159,93 @@ pub(super) async fn udp_websocket_upgrade(
         };
         session.finish(outcome);
     })
+}
+
+fn parse_failed_root_auth_attempts(headers: &HeaderMap) -> u8 {
+    headers
+        .get(header::COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| parse_cookie(value, ROOT_HTTP_AUTH_COOKIE_NAME))
+        .and_then(|value| value.parse::<u8>().ok())
+        .map(|attempts| attempts.min(ROOT_HTTP_AUTH_MAX_FAILURES))
+        .unwrap_or(0)
+}
+
+fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
+    cookie_header.split(';').find_map(|entry| {
+        let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
+        (cookie_name == name).then_some(cookie_value)
+    })
+}
+
+fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let encoded = value.strip_prefix("Basic ")?;
+    let decoded = STANDARD.decode(encoded).ok()?;
+    let decoded = std::str::from_utf8(&decoded).ok()?;
+    let (_, password) = decoded.split_once(':')?;
+    Some(password.to_owned())
+}
+
+fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
+    users
+        .iter()
+        .any(|user| matches!(user.matches_password(password), Ok(true)))
+}
+
+fn not_found_response() -> Response {
+    Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::empty())
+        .expect("failed to build not found response")
+}
+
+fn root_http_auth_success_response() -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!("{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+        )
+        .body(Body::empty())
+        .expect("failed to build root auth success response")
+}
+
+fn root_http_auth_challenge_response(failed_attempts: u8, realm: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(
+            header::WWW_AUTHENTICATE,
+            format!("Basic realm=\"{}\"", escape_http_auth_realm(realm)),
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!(
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; HttpOnly; SameSite=Lax"
+            ),
+        )
+        .body(Body::empty())
+        .expect("failed to build root auth challenge response")
+}
+
+fn escape_http_auth_realm(realm: &str) -> String {
+    realm.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn root_http_auth_forbidden_response() -> Response {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!(
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; HttpOnly; SameSite=Lax"
+            ),
+        )
+        .body(Body::empty())
+        .expect("failed to build root auth forbidden response")
 }
 
 struct TcpRelayState {

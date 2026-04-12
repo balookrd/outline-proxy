@@ -1,27 +1,37 @@
-use super::*;
 use super::connect::configure_tcp_stream;
 use super::transport::{
     handle_tcp_h3_connection, handle_udp_h3_connection, is_benign_ws_disconnect,
-    is_normal_h3_shutdown, metrics_handler,
+    is_normal_h3_shutdown, metrics_handler, not_found_handler, root_http_auth_handler,
 };
+use super::*;
 
 pub(super) fn build_app(
+    users: Arc<[UserKey]>,
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
+    http_root_auth: bool,
+    http_root_realm: String,
 ) -> Router {
     let state = AppState {
+        users,
         tcp_routes: tcp_routes.clone(),
         udp_routes: udp_routes.clone(),
         metrics,
         nat_table,
         udp_dns_cache,
         prefer_ipv4_upstream,
+        http_root_auth,
+        http_root_realm: Arc::from(http_root_realm),
     };
     let mut router = Router::new();
+
+    if http_root_auth {
+        router = router.route("/", any(root_http_auth_handler));
+    }
 
     for path in tcp_routes.keys() {
         router = router.route(path, any(tcp_websocket_upgrade));
@@ -31,7 +41,7 @@ pub(super) fn build_app(
         router = router.route(path, any(udp_websocket_upgrade));
     }
 
-    router.with_state(state)
+    router.fallback(any(not_found_handler)).with_state(state)
 }
 
 pub(super) fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
