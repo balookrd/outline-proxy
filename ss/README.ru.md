@@ -192,7 +192,7 @@ cargo release-musl-armv7
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
-| `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `outline-ss-rust` |
+| `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
 | `public_scheme` | `ws` или `wss` для генерируемых client URL |
 | `access_key_url_base` | Базовый URL для хостинга генерируемых YAML-файлов |
