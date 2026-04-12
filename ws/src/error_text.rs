@@ -4,6 +4,7 @@ const CLIENT_IO_FAILURES: &[&str] = &["client read failed", "client write failed
 const WEBSOCKET_CLOSES: &[&str] = &[
     "websocket closed",
     "connection reset without closing handshake",
+    "peer closed connection without sending tls close_notify",
 ];
 const TRANSPORT_DISCONNECTS: &[&str] = &[
     "connection reset by peer",
@@ -167,6 +168,15 @@ mod tests {
     fn abrupt_websocket_reset_is_treated_as_closed() {
         let error = anyhow!(
             "websocket read failed: WebSocket protocol error: Connection reset without closing handshake"
+        );
+        assert!(is_websocket_closed(&error));
+        assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    #[test]
+    fn tls_close_notify_missing_is_treated_as_closed() {
+        let error = anyhow!(
+            "websocket read failed: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
         );
         assert!(is_websocket_closed(&error));
         assert!(!is_upstream_runtime_failure(&error));
