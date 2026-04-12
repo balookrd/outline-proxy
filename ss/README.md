@@ -190,7 +190,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
-| `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `outline-ss-rust` |
+| `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |
 | `public_scheme` | `ws` or `wss` for generated client URLs |
 | `access_key_url_base` | Base URL where generated YAML files will be hosted |

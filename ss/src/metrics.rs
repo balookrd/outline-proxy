@@ -1854,7 +1854,7 @@ mod tests {
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
             http_root_auth: false,
-            http_root_realm: "outline-ss-rust".to_owned(),
+            http_root_realm: "Authorization required".to_owned(),
             public_host: None,
             public_scheme: "wss".to_owned(),
             access_key_url_base: None,

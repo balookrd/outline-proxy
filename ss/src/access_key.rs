@@ -281,7 +281,7 @@ mod tests {
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
-            http_root_realm: "outline-ss-rust".into(),
+            http_root_realm: "Authorization required".into(),
             public_host: Some("vpn.example.com".into()),
             public_scheme: "wss".into(),
             access_key_url_base: Some("https://keys.example.com/outline".into()),

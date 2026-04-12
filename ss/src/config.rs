@@ -538,7 +538,7 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 }
 
 fn default_http_root_realm() -> String {
-    "outline-ss-rust".to_owned()
+    "Authorization required".to_owned()
 }
 
 #[cfg(test)]
