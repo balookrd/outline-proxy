@@ -1519,7 +1519,7 @@ mod tests {
     use crate::transport::{AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter};
     use crate::tun::SharedTunWriter;
     use crate::tun_tcp::state_machine::SequenceRange;
-    use crate::tun_wire_test_utils::{
+    use crate::tun_wire::test_utils::{
         IP_PROTOCOL_TCP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
         flip_packet_byte, random_payload, seeded_rng, transport_offset,
     };

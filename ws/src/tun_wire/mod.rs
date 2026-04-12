@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, bail};

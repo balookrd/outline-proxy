@@ -206,7 +206,7 @@ fn ip_family_from_version(version: IpVersion) -> &'static str {
 mod tests {
     use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
     use super::{IpVersion, parse_udp_packet};
-    use crate::tun_wire_test_utils::{
+    use crate::tun_wire::test_utils::{
         IP_PROTOCOL_UDP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
         corrupt_ip_length_field, corrupt_udp_length_field, random_payload, seeded_rng,
     };
