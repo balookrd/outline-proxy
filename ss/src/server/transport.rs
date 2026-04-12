@@ -8,8 +8,8 @@ use axum::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
-const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
+pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
+pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -161,7 +161,7 @@ pub(super) async fn udp_websocket_upgrade(
     })
 }
 
-fn parse_failed_root_auth_attempts(headers: &HeaderMap) -> u8 {
+pub(super) fn parse_failed_root_auth_attempts(headers: &HeaderMap) -> u8 {
     headers
         .get(header::COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -178,7 +178,7 @@ fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
     })
 }
 
-fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
+pub(super) fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     let encoded = value.strip_prefix("Basic ")?;
     let decoded = STANDARD.decode(encoded).ok()?;
@@ -187,7 +187,7 @@ fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
     Some(password.to_owned())
 }
 
-fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
+pub(super) fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
     users
         .iter()
         .any(|user| matches!(user.matches_password(password), Ok(true)))
@@ -230,7 +230,7 @@ fn root_http_auth_challenge_response(failed_attempts: u8, realm: &str) -> Respon
         .expect("failed to build root auth challenge response")
 }
 
-fn escape_http_auth_realm(realm: &str) -> String {
+pub(super) fn escape_http_auth_realm(realm: &str) -> String {
     realm.replace('\\', "\\\\").replace('"', "\\\"")
 }
 

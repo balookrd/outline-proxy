@@ -287,21 +287,27 @@ pub async fn run(config: Config) -> Result<()> {
         tasks.spawn(async move { serve_tcp_listener(listener, app, config).await });
     }
     if let Some(h3_server) = h3_server {
+        let users = users.clone();
         let tcp_routes = tcp_routes.clone();
         let udp_routes = udp_routes.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
         let udp_dns_cache = Arc::clone(&udp_dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        let http_root_auth = config.http_root_auth;
+        let http_root_realm = config.http_root_realm.clone();
         tasks.spawn(async move {
             serve_h3_server(
                 h3_server,
+                users,
                 tcp_routes,
                 udp_routes,
                 metrics,
                 nat_table,
                 udp_dns_cache,
                 prefer_ipv4_upstream,
+                http_root_auth,
+                http_root_realm,
             )
             .await
         });
@@ -644,6 +650,86 @@ mod tests {
         let mut response = client.request(req).await?;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.version(), Version::HTTP_2);
+
+        let upgraded = hyper::upgrade::on(&mut response).await?;
+        let upgraded = TokioIo::new(upgraded);
+        let mut socket =
+            WebSocketStream::from_raw_socket(upgraded, protocol::Role::Client, None).await;
+        socket.close(None).await?;
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.http_root_auth = true;
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            users.clone(),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+            true,
+            config.http_root_realm.clone(),
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let (mut socket, _) = connect_async(format!("ws://{addr}/tcp")).await?;
+        socket.close(None).await?;
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<()> {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let addr = listener.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.http_root_auth = true;
+        let users = build_users(&config)?;
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let app = build_app(
+            users.clone(),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
+            Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
+            Metrics::new(&config),
+            nat_table,
+            udp_dns_cache,
+            false,
+            true,
+            config.http_root_realm.clone(),
+        );
+        let server = tokio::spawn(async move { serve_listener(listener, app).await });
+
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build_http::<Empty<Bytes>>();
+
+        let req = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("http://{addr}/tcp"))
+            .version(Version::HTTP_2)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(Protocol::from_static("websocket"))
+            .body(Empty::<Bytes>::new())?;
+
+        let mut response = client.request(req).await?;
+        assert_eq!(response.status(), StatusCode::OK);
 
         let upgraded = hyper::upgrade::on(&mut response).await?;
         let upgraded = TokioIo::new(upgraded);
@@ -1108,12 +1194,15 @@ mod tests {
         let server = tokio::spawn(async move {
             serve_h3_server(
                 server,
+                users,
                 tcp_routes,
                 udp_routes,
                 metrics,
                 nat_table,
                 udp_dns_cache,
                 false,
+                false,
+                config.http_root_realm.clone(),
             )
             .await
         });
@@ -1140,6 +1229,137 @@ mod tests {
         let response = stream.recv_response().await?;
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.version(), Version::HTTP_3);
+
+        let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
+        let mut socket =
+            H3WebSocketStream::from_raw(h3_stream, H3Role::Client, H3WsConfig::default());
+        socket.send(H3Message::Close(None)).await?;
+
+        driver.abort();
+        server.abort();
+        let _ = driver.await;
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
+        let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let (tls_config, cert_der) = test_h3_server_tls()?;
+        let server =
+            H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+                .await?;
+        let addr = server.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.h3_listen = Some(addr);
+        config.h3_cert_path = Some("cert.pem".into());
+        config.h3_key_path = Some("key.pem".into());
+        config.http_root_auth = true;
+        let users = build_users(&config)?;
+        let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
+        let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let server = tokio::spawn(async move {
+            serve_h3_server(
+                server,
+                users,
+                tcp_routes,
+                udp_routes,
+                metrics,
+                nat_table,
+                udp_dns_cache,
+                false,
+                true,
+                config.http_root_realm.clone(),
+            )
+            .await
+        });
+
+        let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+        endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+        let connection = endpoint.connect(addr, "localhost")?.await?;
+        let (mut driver, mut send_request) =
+            h3::client::new(h3_quinn::Connection::new(connection)).await?;
+        let driver =
+            tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri(format!("https://localhost:{}/", addr.port()))
+            .version(Version::HTTP_3)
+            .body(())?;
+
+        let mut stream = send_request.send_request(request).await?;
+        let response = stream.recv_response().await?;
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        driver.abort();
+        server.abort();
+        let _ = driver.await;
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<()> {
+        let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+        let (tls_config, cert_der) = test_h3_server_tls()?;
+        let server =
+            H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+                .await?;
+        let addr = server.local_addr()?;
+
+        let mut config = sample_config(addr);
+        config.h3_listen = Some(addr);
+        config.h3_cert_path = Some("cert.pem".into());
+        config.h3_key_path = Some("key.pem".into());
+        config.http_root_auth = true;
+        let users = build_users(&config)?;
+        let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
+        let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+        let metrics = Metrics::new(&config);
+        let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+        let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+        let server = tokio::spawn(async move {
+            serve_h3_server(
+                server,
+                users,
+                tcp_routes,
+                udp_routes,
+                metrics,
+                nat_table,
+                udp_dns_cache,
+                false,
+                true,
+                config.http_root_realm.clone(),
+            )
+            .await
+        });
+
+        let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+        endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+
+        let connection = endpoint.connect(addr, "localhost")?.await?;
+        let (mut driver, mut send_request) =
+            h3::client::new(h3_quinn::Connection::new(connection)).await?;
+        let driver =
+            tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+        let request = Request::builder()
+            .method(Method::CONNECT)
+            .uri(format!("https://localhost:{}/tcp", addr.port()))
+            .version(Version::HTTP_3)
+            .header(header::SEC_WEBSOCKET_VERSION, "13")
+            .extension(H3Protocol::WEBSOCKET)
+            .body(())?;
+
+        let mut stream = send_request.send_request(request).await?;
+        let response = stream.recv_response().await?;
+        assert_eq!(response.status(), StatusCode::OK);
 
         let h3_stream = H3Stream::<H3Transport>::from_h3_client(stream);
         let mut socket =

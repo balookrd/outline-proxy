@@ -597,6 +597,15 @@ impl WebSocketServer<Http3> {
         &self.config
     }
 
+    /// Consume the server and return its QUIC endpoint and WebSocket configuration.
+    pub fn into_parts(self) -> (Endpoint, Config) {
+        let config = self.config;
+        match self.inner {
+            ServerInner::Http3 { endpoint } => (endpoint, config),
+            _ => unreachable!(),
+        }
+    }
+
     /// Serve WebSocket connections with full RFC 9220 compliance
     ///
     /// This accepts QUIC connections, performs HTTP/3 handshake with

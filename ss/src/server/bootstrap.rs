@@ -1,9 +1,14 @@
 use super::connect::configure_tcp_stream;
 use super::transport::{
     handle_tcp_h3_connection, handle_udp_h3_connection, is_benign_ws_disconnect,
-    is_normal_h3_shutdown, metrics_handler, not_found_handler, root_http_auth_handler,
+    is_normal_h3_shutdown, metrics_handler, not_found_handler, parse_failed_root_auth_attempts,
+    parse_root_http_auth_password, password_matches_any_user, root_http_auth_handler,
+    escape_http_auth_realm, ROOT_HTTP_AUTH_COOKIE_NAME, ROOT_HTTP_AUTH_MAX_FAILURES,
 };
 use super::*;
+use axum::http::{self, header};
+use h3::server::Connection as H3Connection;
+use sockudo_ws::{Role as H3Role, build_extended_connect_error, build_extended_connect_response};
 
 pub(super) fn build_app(
     users: Arc<[UserKey]>,
@@ -177,24 +182,98 @@ pub(super) async fn serve_tcp_listener(
 
 pub(super) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
+    users: Arc<[UserKey]>,
     tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     udp_dns_cache: Arc<UdpDnsCache>,
     prefer_ipv4_upstream: bool,
+    http_root_auth: bool,
+    http_root_realm: String,
 ) -> Result<()> {
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
-    let allowed_tcp = tcp_paths.clone();
-    let allowed_udp = udp_paths.clone();
+    let http_root_realm: Arc<str> = Arc::from(http_root_realm);
+    let (endpoint, ws_config) = server.into_parts();
 
-    server
-        .serve_with_filter(
-            move |req: &H3ExtendedConnectRequest| {
-                allowed_tcp.contains(req.path.as_str()) || allowed_udp.contains(req.path.as_str())
-            },
-            move |socket, req| {
+    while let Some(incoming) = endpoint.accept().await {
+        let users = users.clone();
+        let tcp_routes = tcp_routes.clone();
+        let udp_routes = udp_routes.clone();
+        let metrics = metrics.clone();
+        let tcp_paths = tcp_paths.clone();
+        let udp_paths = udp_paths.clone();
+        let nat_table = Arc::clone(&nat_table);
+        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+        let http_root_realm = Arc::clone(&http_root_realm);
+        let ws_config = ws_config.clone();
+
+        tokio::spawn(async move {
+            if let Err(error) = handle_h3_connection(
+                incoming,
+                users,
+                tcp_routes,
+                udp_routes,
+                metrics,
+                tcp_paths,
+                udp_paths,
+                nat_table,
+                udp_dns_cache,
+                prefer_ipv4_upstream,
+                http_root_auth,
+                http_root_realm,
+                ws_config,
+            )
+            .await
+                && !is_normal_h3_shutdown(&error)
+            {
+                warn!(?error, "HTTP/3 connection terminated with error");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+async fn handle_h3_connection(
+    incoming: quinn::Incoming,
+    users: Arc<[UserKey]>,
+    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    metrics: Arc<Metrics>,
+    tcp_paths: BTreeSet<String>,
+    udp_paths: BTreeSet<String>,
+    nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
+    prefer_ipv4_upstream: bool,
+    http_root_auth: bool,
+    http_root_realm: Arc<str>,
+    ws_config: H3WebSocketConfig,
+) -> Result<()> {
+    let connection = incoming
+        .await
+        .context("failed to accept incoming HTTP/3 connection")?;
+    let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
+        H3Connection::new(h3_quinn::Connection::new(connection))
+            .await
+            .context("failed to initialize HTTP/3 connection")?;
+
+    loop {
+        match h3_conn.accept().await {
+            Ok(Some(resolver)) => {
+                let (request, stream) = match resolver.resolve_request().await {
+                    Ok(parts) => parts,
+                    Err(error) => {
+                        let error = anyhow!(error);
+                        if !is_normal_h3_shutdown(&error) {
+                            warn!(?error, "failed to resolve HTTP/3 request");
+                        }
+                        continue;
+                    }
+                };
+
+                let users = users.clone();
                 let tcp_routes = tcp_routes.clone();
                 let udp_routes = udp_routes.clone();
                 let metrics = metrics.clone();
@@ -202,81 +281,275 @@ pub(super) async fn serve_h3_server(
                 let udp_paths = udp_paths.clone();
                 let nat_table = Arc::clone(&nat_table);
                 let udp_dns_cache = Arc::clone(&udp_dns_cache);
-                async move {
-                    if tcp_paths.contains(req.path.as_str()) {
-                        let route = tcp_routes
-                            .get(&req.path)
-                            .cloned()
-                            .unwrap_or_else(empty_transport_route);
-                        debug!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-                        let session = metrics
-                            .open_websocket_session(Transport::Tcp, Protocol::Http3);
-                        let outcome = match handle_tcp_h3_connection(
-                            socket,
-                            route.users,
-                            metrics.clone(),
-                            req.path.clone(),
-                            route.candidate_users,
-                            prefer_ipv4_upstream,
-                        )
-                        .await
-                        {
-                            Ok(()) => DisconnectReason::Normal,
-                            Err(error) => {
-                                if is_normal_h3_shutdown(&error) {
-                                    debug!(?error, "tcp websocket connection closed normally");
-                                    DisconnectReason::Normal
-                                } else if is_benign_ws_disconnect(&error) {
-                                    debug!(?error, "tcp websocket connection closed abruptly");
-                                    DisconnectReason::ClientDisconnect
-                                } else {
-                                    warn!(?error, "tcp websocket connection terminated with error");
-                                    DisconnectReason::Error
-                                }
-                            }
-                        };
-                        session.finish(outcome);
-                    } else if udp_paths.contains(req.path.as_str()) {
-                        let route = udp_routes
-                            .get(&req.path)
-                            .cloned()
-                            .unwrap_or_else(empty_transport_route);
-                        debug!(method = "CONNECT", version = "HTTP/3", path = %req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-                        let session = metrics
-                            .open_websocket_session(Transport::Udp, Protocol::Http3);
-                        let outcome = match handle_udp_h3_connection(
-                            socket,
-                            route.users,
-                            metrics.clone(),
-                            req.path.clone(),
-                            route.candidate_users,
-                            nat_table,
-                            udp_dns_cache,
-                            prefer_ipv4_upstream,
-                        )
-                        .await
-                        {
-                            Ok(()) => DisconnectReason::Normal,
-                            Err(error) => {
-                                if is_normal_h3_shutdown(&error) {
-                                    debug!(?error, "udp websocket connection closed normally");
-                                    DisconnectReason::Normal
-                                } else if is_benign_ws_disconnect(&error) {
-                                    debug!(?error, "udp websocket connection closed abruptly");
-                                    DisconnectReason::ClientDisconnect
-                                } else {
-                                    warn!(?error, "udp websocket connection terminated with error");
-                                    DisconnectReason::Error
-                                }
-                            }
-                        };
-                        session.finish(outcome);
+                let http_root_realm = Arc::clone(&http_root_realm);
+                let ws_config = ws_config.clone();
+
+                tokio::spawn(async move {
+                    if let Err(error) = handle_h3_request(
+                        request,
+                        stream,
+                        users,
+                        tcp_routes,
+                        udp_routes,
+                        metrics,
+                        tcp_paths,
+                        udp_paths,
+                        nat_table,
+                        udp_dns_cache,
+                        prefer_ipv4_upstream,
+                        http_root_auth,
+                        http_root_realm,
+                        ws_config,
+                    )
+                    .await
+                        && !is_normal_h3_shutdown(&error)
+                    {
+                        warn!(?error, "HTTP/3 request terminated with error");
                     }
+                });
+            }
+            Ok(None) => break,
+            Err(error) => {
+                let error = anyhow!(error);
+                if is_normal_h3_shutdown(&error) {
+                    break;
                 }
-            },
+                return Err(error).context("failed to accept HTTP/3 request");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_h3_request(
+    request: http::Request<()>,
+    mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    users: Arc<[UserKey]>,
+    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    metrics: Arc<Metrics>,
+    tcp_paths: BTreeSet<String>,
+    udp_paths: BTreeSet<String>,
+    nat_table: Arc<NatTable>,
+    udp_dns_cache: Arc<UdpDnsCache>,
+    prefer_ipv4_upstream: bool,
+    http_root_auth: bool,
+    http_root_realm: Arc<str>,
+    ws_config: H3WebSocketConfig,
+) -> Result<()> {
+    let path = request.uri().path().to_owned();
+
+    if request.method() != Method::CONNECT {
+        let response = h3_http_response(
+            users.as_ref(),
+            request.method(),
+            &path,
+            request.headers(),
+            http_root_auth,
+            http_root_realm.as_ref(),
+        );
+        stream
+            .send_response(response)
+            .await
+            .context("failed to send HTTP/3 plain response")?;
+        return Ok(());
+    }
+
+    let protocol_header = request
+        .extensions()
+        .get::<h3::ext::Protocol>()
+        .map(|protocol: &h3::ext::Protocol| protocol.as_str().to_owned());
+
+    let mut ws_req = H3ExtendedConnectRequest::from_request(&request)
+        .ok_or_else(|| anyhow!("invalid HTTP/3 CONNECT request"))?;
+    if ws_req.protocol.is_none() {
+        ws_req.protocol = protocol_header;
+    }
+
+    if !tcp_paths.contains(ws_req.path.as_str()) && !udp_paths.contains(ws_req.path.as_str()) {
+        stream
+            .send_response(build_extended_connect_error(
+                StatusCode::NOT_FOUND,
+                Some("Not Found"),
+            ))
+            .await
+            .context("failed to send HTTP/3 not found response")?;
+        return Ok(());
+    }
+
+    if let Err(status) = ws_req.validate() {
+        stream
+            .send_response(build_extended_connect_error(status, None))
+            .await
+            .context("failed to send HTTP/3 websocket error response")?;
+        return Ok(());
+    }
+
+    stream
+        .send_response(build_extended_connect_response(None, None))
+        .await
+        .context("failed to send HTTP/3 websocket response")?;
+
+    let h3_stream = H3Stream::<H3Transport>::from_h3_server(stream);
+    let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ws_config);
+
+    if tcp_paths.contains(ws_req.path.as_str()) {
+        let route = tcp_routes
+            .get(&ws_req.path)
+            .cloned()
+            .unwrap_or_else(empty_transport_route);
+        debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
+        let session = metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
+        let outcome = match handle_tcp_h3_connection(
+            socket,
+            route.users,
+            metrics.clone(),
+            ws_req.path.clone(),
+            route.candidate_users,
+            prefer_ipv4_upstream,
         )
         .await
-        .context("HTTP/3 server exited unexpectedly")
+        {
+            Ok(()) => DisconnectReason::Normal,
+            Err(error) => {
+                if is_normal_h3_shutdown(&error) {
+                    debug!(?error, "tcp websocket connection closed normally");
+                    DisconnectReason::Normal
+                } else if is_benign_ws_disconnect(&error) {
+                    debug!(?error, "tcp websocket connection closed abruptly");
+                    DisconnectReason::ClientDisconnect
+                } else {
+                    warn!(?error, "tcp websocket connection terminated with error");
+                    DisconnectReason::Error
+                }
+            }
+        };
+        session.finish(outcome);
+    } else if udp_paths.contains(ws_req.path.as_str()) {
+        let route = udp_routes
+            .get(&ws_req.path)
+            .cloned()
+            .unwrap_or_else(empty_transport_route);
+        debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
+        let session = metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
+        let outcome = match handle_udp_h3_connection(
+            socket,
+            route.users,
+            metrics.clone(),
+            ws_req.path.clone(),
+            route.candidate_users,
+            nat_table,
+            udp_dns_cache,
+            prefer_ipv4_upstream,
+        )
+        .await
+        {
+            Ok(()) => DisconnectReason::Normal,
+            Err(error) => {
+                if is_normal_h3_shutdown(&error) {
+                    debug!(?error, "udp websocket connection closed normally");
+                    DisconnectReason::Normal
+                } else if is_benign_ws_disconnect(&error) {
+                    debug!(?error, "udp websocket connection closed abruptly");
+                    DisconnectReason::ClientDisconnect
+                } else {
+                    warn!(?error, "udp websocket connection terminated with error");
+                    DisconnectReason::Error
+                }
+            }
+        };
+        session.finish(outcome);
+    }
+
+    Ok(())
+}
+
+fn h3_http_response(
+    users: &[UserKey],
+    method: &Method,
+    path: &str,
+    headers: &axum::http::HeaderMap,
+    http_root_auth: bool,
+    http_root_realm: &str,
+) -> http::Response<()> {
+    if path != "/" || !http_root_auth || !(method == Method::GET || method == Method::HEAD) {
+        return h3_not_found_response();
+    }
+
+    let failed_attempts = parse_failed_root_auth_attempts(headers);
+    if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+        return h3_root_http_auth_forbidden_response();
+    }
+
+    match parse_root_http_auth_password(headers) {
+        Some(password) if password_matches_any_user(users, &password) => {
+            h3_root_http_auth_success_response()
+        }
+        Some(_) => {
+            let failed_attempts = failed_attempts.saturating_add(1);
+            if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
+                h3_root_http_auth_forbidden_response()
+            } else {
+                h3_root_http_auth_challenge_response(failed_attempts, http_root_realm)
+            }
+        }
+        None => h3_root_http_auth_challenge_response(failed_attempts, http_root_realm),
+    }
+}
+
+fn h3_not_found_response() -> http::Response<()> {
+    http::Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(())
+        .expect("failed to build HTTP/3 not found response")
+}
+
+fn h3_root_http_auth_success_response() -> http::Response<()> {
+    http::Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!("{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
+        )
+        .body(())
+        .expect("failed to build HTTP/3 root auth success response")
+}
+
+fn h3_root_http_auth_challenge_response(
+    failed_attempts: u8,
+    realm: &str,
+) -> http::Response<()> {
+    http::Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .header(
+            header::WWW_AUTHENTICATE,
+            format!("Basic realm=\"{}\"", escape_http_auth_realm(realm)),
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!(
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; HttpOnly; SameSite=Lax"
+            ),
+        )
+        .body(())
+        .expect("failed to build HTTP/3 root auth challenge response")
+}
+
+fn h3_root_http_auth_forbidden_response() -> http::Response<()> {
+    http::Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            header::SET_COOKIE,
+            format!(
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; HttpOnly; SameSite=Lax"
+            ),
+        )
+        .body(())
+        .expect("failed to build HTTP/3 root auth forbidden response")
 }
 
 fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
