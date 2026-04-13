@@ -90,7 +90,7 @@ impl UplinkManager {
             loop {
                 sleep(interval).await;
                 for index in 0..manager.inner.uplinks.len() {
-                    manager.maintain_pool(index, TransportKind::Tcp).await;
+                    manager.keepalive_tcp_pool(index).await;
                 }
             }
         });
@@ -98,6 +98,11 @@ impl UplinkManager {
 
     pub async fn run_standby_maintenance(&self) {
         self.refill_all_standby().await;
+    }
+
+    #[cfg(test)]
+    pub(super) async fn run_tcp_standby_keepalive(&self, index: usize) {
+        self.keepalive_tcp_pool(index).await;
     }
 
     pub fn uplinks(&self) -> &[Arc<UplinkConfig>] {
