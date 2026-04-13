@@ -10,9 +10,9 @@ use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use crate::transport::{
-    TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport,
-    UpstreamTransportGuard, connect_shadowsocks_tcp_with_source,
-    connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+    TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
+    connect_websocket_with_source,
 };
 use crate::types::{TargetAddr, UplinkTransport};
 
@@ -28,13 +28,7 @@ pub(super) async fn probe_uplink(
         run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode).await?;
     let (udp_ok, udp_applicable, udp_latency) = run_udp_probe(uplink, probe, dial_limit).await?;
 
-    Ok(ProbeOutcome {
-        tcp_ok,
-        udp_ok,
-        udp_applicable,
-        tcp_latency,
-        udp_latency,
-    })
+    Ok(ProbeOutcome { tcp_ok, udp_ok, udp_applicable, tcp_latency, udp_latency })
 }
 
 pub(super) async fn run_tcp_probe(
@@ -77,7 +71,8 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
-        let result = run_http_probe(uplink, http_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
+        let result =
+            run_http_probe(uplink, http_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
         crate::metrics::record_probe(
             &uplink.name,
             "tcp",
@@ -90,7 +85,9 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(tcp_probe) = &probe.tcp {
         let probe_started = Instant::now();
-        let result = run_tcp_tunnel_probe(uplink, tcp_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
+        let result =
+            run_tcp_tunnel_probe(uplink, tcp_probe, Arc::clone(&dial_limit), effective_tcp_mode)
+                .await;
         crate::metrics::record_probe(
             &uplink.name,
             "tcp",
@@ -176,10 +173,7 @@ pub(super) async fn run_ws_probe(
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
 ) -> Result<()> {
-    let _permit = dial_limit
-        .acquire_owned()
-        .await
-        .expect("probe dial semaphore closed");
+    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     // Verify WebSocket connectivity only — TCP connect + TLS + HTTP upgrade.
     // Many servers do not respond to WebSocket ping control frames (they expect
     // Shadowsocks data immediately), so we do not send a ping here.  The
@@ -208,11 +202,11 @@ pub(super) async fn run_ws_probe(
     Ok(())
 }
 
-pub(super) async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
-    let _permit = dial_limit
-        .acquire_owned()
-        .await
-        .expect("probe dial semaphore closed");
+pub(super) async fn run_tcp_socket_probe(
+    uplink: &UplinkConfig,
+    dial_limit: Arc<Semaphore>,
+) -> Result<()> {
+    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .tcp_addr
         .as_ref()
@@ -223,11 +217,11 @@ pub(super) async fn run_tcp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<
     Ok(())
 }
 
-pub(super) async fn run_udp_socket_probe(uplink: &UplinkConfig, dial_limit: Arc<Semaphore>) -> Result<()> {
-    let _permit = dial_limit
-        .acquire_owned()
-        .await
-        .expect("probe dial semaphore closed");
+pub(super) async fn run_udp_socket_probe(
+    uplink: &UplinkConfig,
+    dial_limit: Arc<Semaphore>,
+) -> Result<()> {
+    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .udp_addr
         .as_ref()
@@ -247,6 +241,38 @@ pub(super) fn build_http_probe_request(host: &str, port: u16, path: &str) -> Str
         "HEAD {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         format_http_host_header(host, port)
     )
+}
+
+async fn close_probe_tcp_writer(
+    uplink_name: &str,
+    probe: &'static str,
+    writer: &mut TcpShadowsocksWriter,
+) {
+    if let Err(error) = writer.close().await {
+        debug!(
+            uplink = %uplink_name,
+            transport = "tcp",
+            probe,
+            error = %format!("{error:#}"),
+            "probe transport close returned error during teardown"
+        );
+    }
+}
+
+async fn close_probe_udp_transport(
+    uplink_name: &str,
+    probe: &'static str,
+    transport: &UdpWsTransport,
+) {
+    if let Err(error) = transport.close().await {
+        debug!(
+            uplink = %uplink_name,
+            transport = "udp",
+            probe,
+            error = %format!("{error:#}"),
+            "probe transport close returned error during teardown"
+        );
+    }
 }
 
 pub(super) async fn run_http_probe(
@@ -289,10 +315,7 @@ pub(super) async fn run_http_probe(
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
     let (mut writer, mut reader) = {
-        let _permit = dial_limit
-            .acquire_owned()
-            .await
-            .expect("probe dial semaphore closed");
+        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
                 let ws_stream = connect_websocket_with_source(
@@ -307,10 +330,7 @@ pub(super) async fn run_http_probe(
                 )
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to connect HTTP probe websocket for uplink {}",
-                        uplink.name
-                    )
+                    format!("failed to connect HTTP probe websocket for uplink {}", uplink.name)
                 })?;
                 let (ws_sink, ws_stream) = ws_stream.split();
                 let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
@@ -367,60 +387,47 @@ pub(super) async fn run_http_probe(
             }
         }
     };
-    writer
-        .send_chunk(&target.to_wire_bytes()?)
-        .await
-        .context("failed to send HTTP probe target")?;
-    crate::metrics::add_probe_bytes(
-        &uplink.name,
-        "tcp",
-        "http",
-        "outgoing",
-        target.to_wire_bytes()?.len(),
-    );
+    let target_wire = target.to_wire_bytes()?;
+    let result = async {
+        writer
+            .send_chunk(&target_wire)
+            .await
+            .context("failed to send HTTP probe target")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", target_wire.len());
 
-    // Use HEAD so health checks do not pull response bodies through the data
-    // path. This keeps probe traffic tiny even when the probe URL points at a
-    // large page or object.
-    let request = build_http_probe_request(host, port, &path);
-    writer
-        .send_chunk(request.as_bytes())
-        .await
-        .context("failed to send HTTP probe request")?;
-    crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", request.len());
+        // Use HEAD so health checks do not pull response bodies through the data
+        // path. This keeps probe traffic tiny even when the probe URL points at a
+        // large page or object.
+        let request = build_http_probe_request(host, port, &path);
+        writer
+            .send_chunk(request.as_bytes())
+            .await
+            .context("failed to send HTTP probe request")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", request.len());
 
-    let response = reader
-        .read_chunk()
-        .await
-        .context("failed to read HTTP probe response")?;
-    crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "incoming", response.len());
-    let line = String::from_utf8_lossy(&response);
-    let status = line
-        .lines()
-        .next()
-        .and_then(|first| first.split_whitespace().nth(1))
-        .and_then(|status| status.parse::<u16>().ok())
-        .ok_or_else(|| anyhow!("invalid HTTP probe response status line"))?;
+        let response = reader.read_chunk().await.context("failed to read HTTP probe response")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "incoming", response.len());
+        let line = String::from_utf8_lossy(&response);
+        let status = line
+            .lines()
+            .next()
+            .and_then(|first| first.split_whitespace().nth(1))
+            .and_then(|status| status.parse::<u16>().ok())
+            .ok_or_else(|| anyhow!("invalid HTTP probe response status line"))?;
+
+        Ok::<bool, anyhow::Error>((200..400).contains(&status))
+    }
+    .await;
 
     debug!(
         uplink = %uplink.name,
         transport = "tcp",
         probe = "http",
         url = %probe.url,
-        "closing probe transport after successful HTTP probe"
+        "closing probe transport after HTTP probe"
     );
-    if let Err(error) = writer.close().await {
-        debug!(
-            uplink = %uplink.name,
-            transport = "tcp",
-            probe = "http",
-            url = %probe.url,
-            error = %format!("{error:#}"),
-            "probe websocket close returned error during teardown"
-        );
-    }
-
-    Ok((200..400).contains(&status))
+    close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
+    result
 }
 
 pub(super) async fn run_tcp_tunnel_probe(
@@ -441,10 +448,7 @@ pub(super) async fn run_tcp_tunnel_probe(
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
     let (mut writer, mut reader) = {
-        let _permit = dial_limit
-            .acquire_owned()
-            .await
-            .expect("probe dial semaphore closed");
+        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
                 let ws_stream = connect_websocket_with_source(
@@ -521,49 +525,49 @@ pub(super) async fn run_tcp_tunnel_probe(
     };
 
     let target_wire = target.to_wire_bytes()?;
-    writer
-        .send_chunk(&target_wire)
-        .await
-        .context("failed to send TCP tunnel probe target address")?;
-    crate::metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "outgoing", target_wire.len());
+    let result = async {
+        writer
+            .send_chunk(&target_wire)
+            .await
+            .context("failed to send TCP tunnel probe target address")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "outgoing", target_wire.len());
 
-    match reader.read_chunk().await {
-        Ok(chunk) => {
-            crate::metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "incoming", chunk.len());
-            debug!(
-                uplink = %uplink.name,
-                target = %format!("{}:{}", probe.host, probe.port),
-                bytes = chunk.len(),
-                "TCP tunnel probe received data from target"
-            );
+        match reader.read_chunk().await {
+            Ok(chunk) => {
+                crate::metrics::add_probe_bytes(
+                    &uplink.name,
+                    "tcp",
+                    "tcp",
+                    "incoming",
+                    chunk.len(),
+                );
+                debug!(
+                    uplink = %uplink.name,
+                    target = %format!("{}:{}", probe.host, probe.port),
+                    bytes = chunk.len(),
+                    "TCP tunnel probe received data from target"
+                );
+            }
+            Err(ref e) if reader.closed_cleanly => {
+                debug!(
+                    uplink = %uplink.name,
+                    target = %format!("{}:{}", probe.host, probe.port),
+                    error = %format!("{e:#}"),
+                    "TCP tunnel probe: remote closed cleanly"
+                );
+            }
+            Err(e) => {
+                return Err(e)
+                    .context(format!("TCP tunnel probe to {}:{} failed", probe.host, probe.port));
+            }
         }
-        Err(ref e) if reader.closed_cleanly => {
-            debug!(
-                uplink = %uplink.name,
-                target = %format!("{}:{}", probe.host, probe.port),
-                error = %format!("{e:#}"),
-                "TCP tunnel probe: remote closed cleanly"
-            );
-        }
-        Err(e) => {
-            return Err(e).context(format!(
-                "TCP tunnel probe to {}:{} failed",
-                probe.host, probe.port
-            ));
-        }
+
+        Ok::<bool, anyhow::Error>(true)
     }
+    .await;
 
-    if let Err(error) = writer.close().await {
-        debug!(
-            uplink = %uplink.name,
-            transport = "tcp",
-            probe = "tcp",
-            error = %format!("{error:#}"),
-            "probe transport close returned error during teardown"
-        );
-    }
-
-    Ok(true)
+    close_probe_tcp_writer(&uplink.name, "tcp", &mut writer).await;
+    result
 }
 
 pub(super) async fn run_dns_probe(
@@ -572,10 +576,7 @@ pub(super) async fn run_dns_probe(
     dial_limit: Arc<Semaphore>,
 ) -> Result<bool> {
     let transport = {
-        let _permit = dial_limit
-            .acquire_owned()
-            .await
-            .expect("probe dial semaphore closed");
+        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
                 let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
@@ -593,10 +594,7 @@ pub(super) async fn run_dns_probe(
                 )
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to connect DNS probe websocket for uplink {}",
-                        uplink.name
-                    )
+                    format!("failed to connect DNS probe websocket for uplink {}", uplink.name)
                 })?
             }
             UplinkTransport::Shadowsocks => {
@@ -625,46 +623,40 @@ pub(super) async fn run_dns_probe(
     let mut payload = dns_server.to_wire_bytes()?;
     payload.extend_from_slice(&query);
 
-    transport
-        .send_packet(&payload)
-        .await
-        .context("failed to send DNS probe packet")?;
-    crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "outgoing", payload.len());
-    let response = transport
-        .read_packet()
-        .await
-        .context("failed to read DNS probe response")?;
-    crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "incoming", response.len());
-    let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
-    let dns = &response[consumed..];
+    let result = async {
+        transport
+            .send_packet(&payload)
+            .await
+            .context("failed to send DNS probe packet")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "outgoing", payload.len());
+        let response =
+            transport.read_packet().await.context("failed to read DNS probe response")?;
+        crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "incoming", response.len());
+        let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
+        let dns = &response[consumed..];
 
-    if dns.len() < 12 {
-        bail!("DNS probe response is too short");
+        if dns.len() < 12 {
+            bail!("DNS probe response is too short");
+        }
+        if dns[..2] != query[..2] {
+            bail!("DNS probe transaction id mismatch");
+        }
+        if dns[3] & 0x0f != 0 {
+            bail!("DNS probe returned non-zero rcode");
+        }
+
+        Ok::<bool, anyhow::Error>(true)
     }
-    if dns[..2] != query[..2] {
-        bail!("DNS probe transaction id mismatch");
-    }
-    if dns[3] & 0x0f != 0 {
-        bail!("DNS probe returned non-zero rcode");
-    }
+    .await;
 
     debug!(
         uplink = %uplink.name,
         transport = "udp",
         probe = "dns",
-        "closing probe transport after successful DNS probe"
+        "closing probe transport after DNS probe"
     );
-    if let Err(error) = transport.close().await {
-        debug!(
-            uplink = %uplink.name,
-            transport = "udp",
-            probe = "dns",
-            error = %format!("{error:#}"),
-            "probe transport close returned error during teardown"
-        );
-    }
-
-    Ok(true)
+    close_probe_udp_transport(&uplink.name, "dns", &transport).await;
+    result
 }
 
 pub(super) fn build_dns_query(name: &str) -> Vec<u8> {
