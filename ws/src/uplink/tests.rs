@@ -1,5 +1,9 @@
 use anyhow::anyhow;
+use futures_util::StreamExt;
 use std::time::Duration;
+use tokio::net::TcpListener;
+use tokio::sync::{mpsc, oneshot};
+use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use url::Url;
 
 use super::{
@@ -9,6 +13,7 @@ use super::{
 use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, WsProbeConfig,
 };
+use crate::transport::connect_websocket_with_source;
 use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
 use tokio::time::Instant;
 
@@ -103,6 +108,27 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         fwmark: None,
         ipv6_first: false,
     }
+}
+
+async fn start_keepalive_observer() -> (
+    Url,
+    mpsc::UnboundedReceiver<Message>,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (message_tx, message_rx) = mpsc::unbounded_channel();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut ws = accept_async(stream).await.unwrap();
+        if let Some(Ok(message)) = ws.next().await {
+            message_tx.send(message).unwrap();
+        }
+        let _ = shutdown_rx.await;
+    });
+    (Url::parse(&format!("ws://{addr}/tcp")).unwrap(), message_rx, shutdown_tx, task)
 }
 
 async fn set_tcp_status(manager: &UplinkManager, index: usize, healthy: bool, rtt_ms: u64) {
@@ -796,4 +822,32 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
         third[0].uplink.name, "backup2",
         "penalty-aware fallback must prefer fresh backup2 over recently-failed primary"
     );
+}
+
+#[tokio::test]
+async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
+    let mut config = lb();
+    config.warm_standby_tcp = 1;
+    let (url, mut message_rx, shutdown_tx, observer_task) = start_keepalive_observer().await;
+    let manager =
+        UplinkManager::new(vec![make_uplink("primary", url.as_str())], probe_disabled(), config)
+            .unwrap();
+
+    let ws =
+        connect_websocket_with_source(&url, WsTransportMode::Http1, None, false, "test_standby")
+            .await
+            .unwrap();
+    manager.inner.standby_pools[0].tcp.lock().await.push_back(ws);
+
+    manager.run_tcp_standby_keepalive(0).await;
+
+    let message = tokio::time::timeout(Duration::from_secs(2), message_rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(message, Message::Ping(_)));
+    assert_eq!(manager.inner.standby_pools[0].tcp.lock().await.len(), 1);
+
+    let _ = shutdown_tx.send(());
+    observer_task.await.unwrap();
 }

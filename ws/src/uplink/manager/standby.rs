@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use futures_util::{SinkExt, StreamExt};
 use tokio::time::{Instant, timeout};
 use tracing::{debug, warn};
 
@@ -13,6 +14,9 @@ use crate::types::UplinkTransport;
 
 use super::super::probe::is_expected_standby_probe_failure;
 use super::super::types::{TransportKind, UplinkCandidate, UplinkManager};
+
+const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
+const STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
 impl UplinkManager {
     /// Returns the effective TCP WebSocket mode for `index`, falling back to
@@ -194,6 +198,93 @@ impl UplinkManager {
         self.refill_pool(index, transport).await;
     }
 
+    /// Sends WebSocket ping frames on idle TCP standby sockets so middleboxes
+    /// keep the connection state warm, then replenishes any entries that were
+    /// dropped as stale.
+    pub(super) async fn keepalive_tcp_pool(&self, index: usize) {
+        use tokio_tungstenite::tungstenite::protocol::Message;
+
+        if self.inner.load_balancing.warm_standby_tcp == 0 {
+            return;
+        }
+
+        let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        if uplink.transport != UplinkTransport::Websocket {
+            return;
+        }
+
+        let pool = &self.inner.standby_pools[index];
+        let mut drained = std::collections::VecDeque::new();
+        {
+            let mut guard = pool.tcp.lock().await;
+            drained.extend(guard.drain(..));
+        }
+
+        if drained.is_empty() {
+            self.refill_pool(index, TransportKind::Tcp).await;
+            return;
+        }
+
+        let mut alive = std::collections::VecDeque::with_capacity(drained.len());
+        while let Some(mut ws) = drained.pop_front() {
+            let started = Instant::now();
+            let keepalive_result: Result<()> = match timeout(
+                STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
+                ws.send(Message::Ping(vec![].into())),
+            )
+            .await
+            {
+                Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
+                Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
+                Ok(Ok(())) => {
+                    match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                        Err(_elapsed) => Ok(()), // still open — nothing to read
+                        Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                        Ok(Some(Err(error))) => Err(anyhow!("standby websocket error: {error}")),
+                        Ok(Some(Ok(Message::Close(frame)))) => {
+                            Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                        },
+                        Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
+                    }
+                },
+            };
+            metrics::record_probe(
+                &uplink.name,
+                "tcp",
+                "standby_ws_keepalive",
+                keepalive_result.is_ok(),
+                started.elapsed(),
+            );
+            match keepalive_result {
+                Ok(()) => alive.push_back(ws),
+                Err(error) => {
+                    if is_expected_standby_probe_failure(&error) {
+                        debug!(
+                            uplink = %uplink.name,
+                            transport = ?TransportKind::Tcp,
+                            error = %format!("{error:#}"),
+                            "dropping stale warm-standby websocket after keepalive ping"
+                        );
+                    } else {
+                        warn!(
+                            uplink = %uplink.name,
+                            transport = ?TransportKind::Tcp,
+                            error = %format!("{error:#}"),
+                            "dropping stale warm-standby websocket after keepalive ping"
+                        );
+                    }
+                },
+            }
+        }
+
+        let mut guard = pool.tcp.lock().await;
+        guard.extend(alive);
+        maybe_shrink_vecdeque(&mut guard);
+        drop(guard);
+
+        self.refill_pool(index, TransportKind::Tcp).await;
+    }
+
     async fn refill_pool(&self, index: usize, transport: TransportKind) {
         let desired = match transport {
             TransportKind::Tcp => self.inner.load_balancing.warm_standby_tcp,
@@ -295,7 +386,6 @@ impl UplinkManager {
     }
 
     async fn validate_pool(&self, index: usize, transport: TransportKind) {
-        use futures_util::StreamExt;
         use tokio_tungstenite::tungstenite::protocol::Message;
 
         let desired = match transport {
@@ -329,8 +419,7 @@ impl UplinkManager {
             // a quick peek instead: if the server has closed the connection we
             // will see a Close frame or an error immediately; otherwise the
             // read times out and we treat the connection as still alive.
-            let alive_result: Result<()> = match timeout(Duration::from_millis(1), ws.next()).await
-            {
+            let alive_result: Result<()> = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
                 Err(_elapsed) => Ok(()), // still open — nothing to read
                 Ok(None) => Err(anyhow!("standby websocket stream ended")),
                 Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
