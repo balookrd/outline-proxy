@@ -853,12 +853,10 @@ scrape_configs:
 - gauges resident memory и heap usage процесса
 - запросы SOCKS5 и активные сессии, включая `command="connect"`, `command="udp_associate"` и `command="udp_in_tcp"`
 - гистограмму длительности сессий
-- rolling p95 gauge сессий
 - payload bytes и UDP datagrams
 - счётчики дропа oversized UDP-пакетов для входящих клиентских пакетов и исходящих ответов клиенту
 - health, latency, EWMA RTT, штрафы, скор, cooldown, готовность standby аплинков. `uplink_health` экспортируется как `1` (здоров) или `0` (нездоров) только если проба выполнялась и подтвердила состояние. До первого цикла проб метрика отсутствует — пустое значение означает «неизвестно», а не нездоров.
-- счётчики последовательных TCP/UDP-сбоев и последовательных успехов на аплинк
-- состояние H3-даунгрейда на аплинк (оставшееся окно в миллисекундах)
+- состояние routing policy и выбор активного uplink
 - результаты и latency проб
 - исходы acquire и refill warm-standby
 - метрики потоков и пакетов TUN
@@ -868,26 +866,21 @@ scrape_configs:
 
 - `outline_ws_rust_process_resident_memory_bytes`
 - `outline_ws_rust_process_virtual_memory_bytes`
-- `outline_ws_rust_process_heap_memory_bytes`
 - `outline_ws_rust_process_heap_allocated_bytes`
-- `outline_ws_rust_process_heap_free_bytes`
 - `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
 
 Метрики heap на Linux сейчас рассчитываются через оценку по `VmData` и экспортируют `heap_mode_info{mode="estimated"}`.
-`heap_free_bytes` остаётся `0`, потому что текущий путь семплирования не предоставляет отдельную статистику свободного heap от аллокатора.
 
 На Linux процесс также периодически выводит в лог inventory дескрипторов:
 
 - `process fd snapshot`
 
 Snapshot дескрипторов включает общее количество открытых FD и разбивку на сокеты, pipes, anon inodes, обычные файлы и прочее.
-Основной дашборд содержит секцию `Memory & Allocator` с панелями `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Heap to RSS Ratio` и `RSS to Virtual Ratio`.
+Основной дашборд содержит секцию `Memory & Allocator` с панелями `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode` и `Process Memory`.
 
-При подавлении runtime failure storms из-за уже активного cooldown метрика `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` и панель `Suppressed Runtime Failures` показывают, сколько дублирующих failure-событий было намеренно проигнорировано.
-
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` питают stat-панели `Selection Mode`, `Routing Scope`, `Global Active Uplink` и `Global Sticky Routes`.
+`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` питают stat-панели `Selection Mode`, `Routing Scope`, `Active Uplink` и `Global Sticky Routes`.
 
 При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` и панель `UDP Forward Errors` разбивают их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
 Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}` и показывается в панели `Oversized UDP Drops`.

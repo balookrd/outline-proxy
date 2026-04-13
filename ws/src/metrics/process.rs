@@ -86,11 +86,6 @@ pub fn init() {
     }
     for protocol in ["tcp", "udp"] {
         let _ = METRICS.sessions_active.with_label_values(&[protocol]);
-        METRICS
-            .session_recent_p95_seconds
-            .with_label_values(&[protocol])
-            .set(0.0);
-        METRICS.session_recent_samples.with_label_values(&[protocol]).set(0);
     }
     for mode in ["active_active", "active_passive"] {
         METRICS.selection_mode_info.with_label_values(&[mode]).set(0);
@@ -157,9 +152,9 @@ pub fn spawn_process_metrics_sampler() {
 pub fn update_process_memory(
     rss_bytes: Option<u64>,
     virtual_bytes: Option<u64>,
-    heap_bytes: Option<u64>,
+    _heap_bytes: Option<u64>,
     heap_allocated_bytes: Option<u64>,
-    heap_free_bytes: Option<u64>,
+    _heap_free_bytes: Option<u64>,
     heap_mode: &'static str,
     open_fds: Option<u64>,
     thread_count: Option<u64>,
@@ -171,13 +166,9 @@ pub fn update_process_memory(
     METRICS
         .process_virtual_memory_bytes
         .set(virtual_bytes.unwrap_or(0) as f64);
-    METRICS.process_heap_memory_bytes.set(heap_bytes.unwrap_or(0) as f64);
     METRICS
         .process_heap_allocated_bytes
         .set(heap_allocated_bytes.unwrap_or(0) as f64);
-    METRICS
-        .process_heap_free_bytes
-        .set(heap_free_bytes.unwrap_or(0) as f64);
     for mode in ["exact", "estimated", "unavailable"] {
         METRICS
             .process_heap_mode_info

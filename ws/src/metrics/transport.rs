@@ -170,17 +170,5 @@ pub fn record_warm_standby_refill(transport: &'static str, uplink: &str, success
 }
 
 pub fn record_metrics_http_request(path: &str, status: u16) {
-    let path = match path {
-        "/metrics" => "/metrics",
-        _ => "other",
-    };
-    let status = match status {
-        200 => "200",
-        404 => "404",
-        _ => "500",
-    };
-    METRICS
-        .metrics_http_requests_total
-        .with_label_values(&[path, status])
-        .inc();
+    let _ = (path, status);
 }

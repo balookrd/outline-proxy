@@ -1,9 +1,7 @@
-use super::session::{RecentSessionWindow, session_window_p95};
 use super::*;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
 use std::sync::{LazyLock, Mutex};
-use std::time::Instant;
 
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
@@ -59,7 +57,7 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
 }
 
 #[test]
-fn render_prometheus_exports_session_histogram_and_recent_p95() {
+fn render_prometheus_exports_session_histogram() {
     let _guard = test_guard();
     init();
     let session = track_session("tcp");
@@ -67,8 +65,6 @@ fn render_prometheus_exports_session_histogram_and_recent_p95() {
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_session_duration_seconds_bucket"));
-    assert!(rendered.contains("outline_ws_rust_session_recent_p95_seconds"));
-    assert!(rendered.contains("outline_ws_rust_session_recent_samples"));
     assert!(rendered.contains("protocol=\"tcp\""));
     assert!(rendered.contains("result=\"success\""));
 }
@@ -99,9 +95,7 @@ fn render_prometheus_exports_process_memory_metrics() {
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
     assert!(rendered.contains("outline_ws_rust_process_virtual_memory_bytes 4321"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_memory_bytes 5678"));
     assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
-    assert!(rendered.contains("outline_ws_rust_process_heap_free_bytes 256"));
     assert!(rendered.contains("outline_ws_rust_process_heap_mode_info{mode=\"estimated\"} 1"));
     assert!(rendered.contains("outline_ws_rust_process_open_fds 42"));
     assert!(rendered.contains("outline_ws_rust_process_threads 9"));
@@ -374,16 +368,4 @@ fn metric_value(rendered: &str, metric: &str) -> Option<f64> {
     rendered
         .lines()
         .find_map(|line| line.strip_prefix(metric)?.trim().parse::<f64>().ok())
-}
-
-#[test]
-fn session_window_p95_uses_nearest_rank() {
-    let _guard = test_guard();
-    let mut window = RecentSessionWindow::default();
-    let now = Instant::now();
-    for value in [0.1, 0.2, 0.3, 0.4, 0.9] {
-        window.samples.push_back((now, value));
-    }
-
-    assert_eq!(session_window_p95(&window), 0.9);
 }

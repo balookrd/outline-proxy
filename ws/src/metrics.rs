@@ -8,12 +8,7 @@ mod transport;
 mod tun;
 
 use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
-use std::collections::HashMap;
 use std::sync::LazyLock;
-use std::sync::Mutex;
-use std::time::Duration;
-
-use self::session::RecentSessionWindow;
 
 pub use self::process::{init, spawn_process_metrics_sampler, update_process_memory};
 pub use self::session::{SessionTracker, track_session};
@@ -42,8 +37,6 @@ pub use self::tun::{
 };
 
 static METRICS: LazyLock<Metrics> = LazyLock::new(Metrics::new);
-const SESSION_RECENT_WINDOW: Duration = Duration::from_secs(15 * 60);
-const SESSION_RECENT_MAX_SAMPLES: usize = 4096;
 
 struct Metrics {
     registry: Registry,
@@ -53,8 +46,6 @@ struct Metrics {
     socks_requests_total: IntCounterVec,
     sessions_active: IntGaugeVec,
     session_duration_seconds: HistogramVec,
-    session_recent_p95_seconds: GaugeVec,
-    session_recent_samples: IntGaugeVec,
     bytes_total: IntCounterVec,
     udp_datagrams_total: IntCounterVec,
     udp_oversized_dropped_total: IntCounterVec,
@@ -71,12 +62,9 @@ struct Metrics {
     probe_wakeups_total: IntCounterVec,
     warm_standby_acquire_total: IntCounterVec,
     warm_standby_refill_total: IntCounterVec,
-    metrics_http_requests_total: IntCounterVec,
     process_resident_memory_bytes: Gauge,
     process_virtual_memory_bytes: Gauge,
-    process_heap_memory_bytes: Gauge,
     process_heap_allocated_bytes: Gauge,
-    process_heap_free_bytes: Gauge,
     process_heap_mode_info: IntGaugeVec,
     process_open_fds: Gauge,
     process_threads: Gauge,
@@ -128,5 +116,4 @@ struct Metrics {
     per_uplink_active_uplink_info: IntGaugeVec,
     sticky_routes_total: IntGauge,
     sticky_routes_by_uplink: IntGaugeVec,
-    session_recent_windows: Mutex<HashMap<&'static str, RecentSessionWindow>>,
 }

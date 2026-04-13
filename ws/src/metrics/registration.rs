@@ -3,8 +3,6 @@ use prometheus::{
     Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
     Registry,
 };
-use std::collections::HashMap;
-use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl Metrics {
@@ -47,22 +45,6 @@ impl Metrics {
             &["protocol", "result"],
         )
         .expect("session_duration_seconds metric");
-        let session_recent_p95_seconds = GaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_session_recent_p95_seconds",
-                "Rolling p95 of completed proxy session durations by protocol.",
-            ),
-            &["protocol"],
-        )
-        .expect("session_recent_p95_seconds metric");
-        let session_recent_samples = IntGaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_session_recent_samples",
-                "Number of completed proxy sessions tracked in the rolling latency window.",
-            ),
-            &["protocol"],
-        )
-        .expect("session_recent_samples metric");
         let bytes_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_bytes_total",
@@ -192,14 +174,6 @@ impl Metrics {
             &["transport", "uplink", "result"],
         )
         .expect("warm_standby_refill_total metric");
-        let metrics_http_requests_total = IntCounterVec::new(
-            Opts::new(
-                "outline_ws_rust_metrics_http_requests_total",
-                "HTTP requests served by the built-in metrics endpoint.",
-            ),
-            &["path", "status"],
-        )
-        .expect("metrics_http_requests_total metric");
         let process_resident_memory_bytes = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_resident_memory_bytes",
             "Current resident set size of the process in bytes.",
@@ -210,21 +184,11 @@ impl Metrics {
             "Current virtual memory size of the process in bytes.",
         ))
         .expect("process_virtual_memory_bytes metric");
-        let process_heap_memory_bytes = Gauge::with_opts(Opts::new(
-            "outline_ws_rust_process_heap_memory_bytes",
-            "Current heap usage of the process in bytes.",
-        ))
-        .expect("process_heap_memory_bytes metric");
         let process_heap_allocated_bytes = Gauge::with_opts(Opts::new(
             "outline_ws_rust_process_heap_allocated_bytes",
             "Current allocated heap bytes when available; may be estimated from process memory maps.",
         ))
         .expect("process_heap_allocated_bytes metric");
-        let process_heap_free_bytes = Gauge::with_opts(Opts::new(
-            "outline_ws_rust_process_heap_free_bytes",
-            "Current free heap bytes when reported by the active allocator.",
-        ))
-        .expect("process_heap_free_bytes metric");
         let process_heap_mode_info = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_process_heap_mode_info",
@@ -621,12 +585,6 @@ impl Metrics {
             .register(Box::new(session_duration_seconds.clone()))
             .expect("register session_duration_seconds");
         registry
-            .register(Box::new(session_recent_p95_seconds.clone()))
-            .expect("register session_recent_p95_seconds");
-        registry
-            .register(Box::new(session_recent_samples.clone()))
-            .expect("register session_recent_samples");
-        registry
             .register(Box::new(bytes_total.clone()))
             .expect("register bytes_total");
         registry
@@ -675,23 +633,14 @@ impl Metrics {
             .register(Box::new(warm_standby_refill_total.clone()))
             .expect("register warm_standby_refill_total");
         registry
-            .register(Box::new(metrics_http_requests_total.clone()))
-            .expect("register metrics_http_requests_total");
-        registry
             .register(Box::new(process_resident_memory_bytes.clone()))
             .expect("register process_resident_memory_bytes");
         registry
             .register(Box::new(process_virtual_memory_bytes.clone()))
             .expect("register process_virtual_memory_bytes");
         registry
-            .register(Box::new(process_heap_memory_bytes.clone()))
-            .expect("register process_heap_memory_bytes");
-        registry
             .register(Box::new(process_heap_allocated_bytes.clone()))
             .expect("register process_heap_allocated_bytes");
-        registry
-            .register(Box::new(process_heap_free_bytes.clone()))
-            .expect("register process_heap_free_bytes");
         registry
             .register(Box::new(process_heap_mode_info.clone()))
             .expect("register process_heap_mode_info");
@@ -862,8 +811,6 @@ impl Metrics {
             socks_requests_total,
             sessions_active,
             session_duration_seconds,
-            session_recent_p95_seconds,
-            session_recent_samples,
             bytes_total,
             udp_datagrams_total,
             udp_oversized_dropped_total,
@@ -880,12 +827,9 @@ impl Metrics {
             probe_wakeups_total,
             warm_standby_acquire_total,
             warm_standby_refill_total,
-            metrics_http_requests_total,
             process_resident_memory_bytes,
             process_virtual_memory_bytes,
-            process_heap_memory_bytes,
             process_heap_allocated_bytes,
-            process_heap_free_bytes,
             process_heap_mode_info,
             process_open_fds,
             process_threads,
@@ -937,7 +881,6 @@ impl Metrics {
             per_uplink_active_uplink_info,
             sticky_routes_total,
             sticky_routes_by_uplink,
-            session_recent_windows: Mutex::new(HashMap::new()),
         }
     }
 }
