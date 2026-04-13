@@ -12,12 +12,9 @@ use std::{
 use crate::config::Config;
 use tokio::time::{Duration, MissedTickBehavior};
 
-const TCP_CONNECT_BUCKETS: &[f64] = &[
-    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0,
-];
-const UDP_RELAY_BUCKETS: &[f64] = &[
-    0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0,
-];
+const TCP_CONNECT_BUCKETS: &[f64] =
+    &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
+const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
 const PROCESS_MEMORY_SAMPLING_INTERVAL_SECS: u64 = 15;
 
@@ -175,10 +172,7 @@ impl Metrics {
         transport: Transport,
         protocol: Protocol,
     ) -> WebSocketSessionGuard {
-        let labels = WsLabels {
-            transport,
-            protocol,
-        };
+        let labels = WsLabels { transport, protocol };
         self.websocket_upgrades_total.inc(labels.clone(), 1);
         self.active_websocket_sessions.inc(labels.clone(), 1);
         WebSocketSessionGuard {
@@ -210,11 +204,7 @@ impl Metrics {
         direction: &'static str,
         bytes: usize,
     ) {
-        let labels = WsDirectionLabels {
-            transport,
-            protocol,
-            direction,
-        };
+        let labels = WsDirectionLabels { transport, protocol, direction };
         self.websocket_frames_total.inc(labels.clone(), 1);
         self.websocket_bytes_total.inc(labels, bytes as u64);
     }
@@ -233,10 +223,8 @@ impl Metrics {
         transport: Transport,
     ) {
         let user = user.into();
-        self.client_sessions_total.inc(
-            UserProtocolTransportLabels::new(Arc::clone(&user), protocol, transport),
-            1,
-        );
+        self.client_sessions_total
+            .inc(UserProtocolTransportLabels::new(Arc::clone(&user), protocol, transport), 1);
         self.record_client_last_seen(user);
     }
 
@@ -255,8 +243,7 @@ impl Metrics {
         let user = user.into();
         let labels = UserProtocolResultLabels::new(user, protocol, result);
         self.tcp_upstream_connects_total.inc(labels.clone(), 1);
-        self.tcp_upstream_connect_duration_seconds
-            .observe(labels, duration_seconds);
+        self.tcp_upstream_connect_duration_seconds.observe(labels, duration_seconds);
     }
 
     pub fn open_tcp_upstream_connection(
@@ -267,11 +254,7 @@ impl Metrics {
         let user = user.into();
         let labels = UserProtocolLabels::new(user, protocol);
         self.active_tcp_upstream_connections.inc(labels.clone(), 1);
-        TcpUpstreamGuard {
-            metrics: self.clone(),
-            labels,
-            finished: false,
-        }
+        TcpUpstreamGuard { metrics: self.clone(), labels, finished: false }
     }
 
     pub fn record_tcp_payload_bytes(
@@ -302,8 +285,7 @@ impl Metrics {
         let user = user.into();
         let labels = UserProtocolResultLabels::new(user, protocol, result);
         self.udp_requests_total.inc(labels.clone(), 1);
-        self.udp_relay_duration_seconds
-            .observe(labels, duration_seconds);
+        self.udp_relay_duration_seconds.observe(labels, duration_seconds);
     }
 
     pub fn record_udp_payload_bytes(
@@ -340,14 +322,8 @@ impl Metrics {
         protocol: Protocol,
         reason: &'static str,
     ) {
-        self.udp_relay_drops_total.inc(
-            ProtocolTransportReasonLabels {
-                transport,
-                protocol,
-                reason,
-            },
-            1,
-        );
+        self.udp_relay_drops_total
+            .inc(ProtocolTransportReasonLabels { transport, protocol, reason }, 1);
     }
 
     pub fn record_udp_oversized_datagram_dropped(
@@ -356,28 +332,22 @@ impl Metrics {
         protocol: Protocol,
         direction: &'static str,
     ) {
-        self.udp_oversized_datagrams_dropped_total.inc(
-            UserProtocolDirectionLabels::new(user.into(), protocol, direction),
-            1,
-        );
+        self.udp_oversized_datagrams_dropped_total
+            .inc(UserProtocolDirectionLabels::new(user.into(), protocol, direction), 1);
     }
 
     pub fn record_udp_nat_entry_created(&self) {
         self.udp_nat_active_entries.fetch_add(1, Ordering::Relaxed);
-        self.udp_nat_entries_created_total
-            .fetch_add(1, Ordering::Relaxed);
+        self.udp_nat_entries_created_total.fetch_add(1, Ordering::Relaxed);
     }
 
     pub fn record_udp_nat_entries_evicted(&self, count: usize) {
-        self.udp_nat_active_entries
-            .fetch_sub(count as i64, Ordering::Relaxed);
-        self.udp_nat_entries_evicted_total
-            .fetch_add(count as u64, Ordering::Relaxed);
+        self.udp_nat_active_entries.fetch_sub(count as i64, Ordering::Relaxed);
+        self.udp_nat_entries_evicted_total.fetch_add(count as u64, Ordering::Relaxed);
     }
 
     pub fn record_udp_nat_response_dropped(&self) {
-        self.udp_nat_responses_dropped_total
-            .fetch_add(1, Ordering::Relaxed);
+        self.udp_nat_responses_dropped_total.fetch_add(1, Ordering::Relaxed);
     }
 
     fn cached_process_memory_snapshot(&self) -> Option<ProcessMemorySnapshot> {
@@ -397,21 +367,14 @@ impl Metrics {
         #[cfg(not(target_os = "linux"))]
         let snapshot = process_memory_snapshot();
 
-        *self
-            .process_memory_snapshot
-            .write()
-            .expect("process memory snapshot poisoned") = snapshot;
+        *self.process_memory_snapshot.write().expect("process memory snapshot poisoned") = snapshot;
     }
 
     pub fn render_prometheus(&self) -> String {
         self.scrapes_total.fetch_add(1, Ordering::Relaxed);
         let mut out = String::with_capacity(32 * 1024);
 
-        write_help(
-            &mut out,
-            "outline_ss_build_info",
-            "Build metadata for the running binary.",
-        );
+        write_help(&mut out, "outline_ss_build_info", "Build metadata for the running binary.");
         write_type(&mut out, "outline_ss_build_info", "gauge");
         writeln!(
             out,
@@ -435,18 +398,10 @@ impl Metrics {
         )
         .ok();
 
-        write_help(
-            &mut out,
-            "outline_ss_uptime_seconds",
-            "Seconds since the process started.",
-        );
+        write_help(&mut out, "outline_ss_uptime_seconds", "Seconds since the process started.");
         write_type(&mut out, "outline_ss_uptime_seconds", "gauge");
-        writeln!(
-            out,
-            "outline_ss_uptime_seconds {:.3}",
-            self.started_at.elapsed().as_secs_f64()
-        )
-        .ok();
+        writeln!(out, "outline_ss_uptime_seconds {:.3}", self.started_at.elapsed().as_secs_f64())
+            .ok();
 
         write_help(
             &mut out,
@@ -467,11 +422,7 @@ impl Metrics {
                 "outline_ss_process_resident_memory_bytes",
                 "Resident set size of the outline-ss-rust process.",
             );
-            write_type(
-                &mut out,
-                "outline_ss_process_resident_memory_bytes",
-                "gauge",
-            );
+            write_type(&mut out, "outline_ss_process_resident_memory_bytes", "gauge");
             writeln!(
                 out,
                 "outline_ss_process_resident_memory_bytes {}",
@@ -509,12 +460,8 @@ impl Metrics {
                     "Virtual memory bytes currently reserved by process stacks.",
                 );
                 write_type(&mut out, "outline_ss_process_virtual_stack_bytes", "gauge");
-                writeln!(
-                    out,
-                    "outline_ss_process_virtual_stack_bytes {}",
-                    virtual_stack_bytes
-                )
-                .ok();
+                writeln!(out, "outline_ss_process_virtual_stack_bytes {}", virtual_stack_bytes)
+                    .ok();
             }
 
             if let Some(virtual_anon_private_bytes) = snapshot.virtual_anon_private_bytes {
@@ -523,11 +470,7 @@ impl Metrics {
                     "outline_ss_process_virtual_anon_private_bytes",
                     "Virtual memory bytes in anonymous private mappings.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_anon_private_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_anon_private_bytes", "gauge");
                 writeln!(
                     out,
                     "outline_ss_process_virtual_anon_private_bytes {}",
@@ -542,11 +485,7 @@ impl Metrics {
                     "outline_ss_process_virtual_anon_shared_bytes",
                     "Virtual memory bytes in anonymous shared mappings.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_anon_shared_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_anon_shared_bytes", "gauge");
                 writeln!(
                     out,
                     "outline_ss_process_virtual_anon_shared_bytes {}",
@@ -561,11 +500,7 @@ impl Metrics {
                     "outline_ss_process_virtual_file_private_bytes",
                     "Virtual memory bytes in file-backed private mappings.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_file_private_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_file_private_bytes", "gauge");
                 writeln!(
                     out,
                     "outline_ss_process_virtual_file_private_bytes {}",
@@ -580,11 +515,7 @@ impl Metrics {
                     "outline_ss_process_virtual_file_shared_bytes",
                     "Virtual memory bytes in file-backed shared mappings.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_file_shared_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_file_shared_bytes", "gauge");
                 writeln!(
                     out,
                     "outline_ss_process_virtual_file_shared_bytes {}",
@@ -599,17 +530,9 @@ impl Metrics {
                     "outline_ss_process_virtual_special_bytes",
                     "Virtual memory bytes in special kernel/runtime mappings such as [vdso] or [vvar].",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_special_bytes",
-                    "gauge",
-                );
-                writeln!(
-                    out,
-                    "outline_ss_process_virtual_special_bytes {}",
-                    virtual_special_bytes
-                )
-                .ok();
+                write_type(&mut out, "outline_ss_process_virtual_special_bytes", "gauge");
+                writeln!(out, "outline_ss_process_virtual_special_bytes {}", virtual_special_bytes)
+                    .ok();
             }
 
             if !snapshot.top_virtual_mappings.is_empty() {
@@ -618,31 +541,19 @@ impl Metrics {
                     "outline_ss_process_virtual_top_mapping_size_bytes",
                     "Top virtual memory mappings by reserved size from /proc/self/smaps.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_top_mapping_size_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_top_mapping_size_bytes", "gauge");
                 write_help(
                     &mut out,
                     "outline_ss_process_virtual_top_mapping_rss_bytes",
                     "RSS contribution of the top virtual memory mappings from /proc/self/smaps.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_top_mapping_rss_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_top_mapping_rss_bytes", "gauge");
                 write_help(
                     &mut out,
                     "outline_ss_process_virtual_top_mapping_gap_bytes",
                     "Reserved but currently non-resident bytes of the top virtual memory mappings from /proc/self/smaps.",
                 );
-                write_type(
-                    &mut out,
-                    "outline_ss_process_virtual_top_mapping_gap_bytes",
-                    "gauge",
-                );
+                write_type(&mut out, "outline_ss_process_virtual_top_mapping_gap_bytes", "gauge");
 
                 for (index, mapping) in snapshot.top_virtual_mappings.iter().enumerate() {
                     let rank = index + 1;
@@ -833,11 +744,7 @@ impl Metrics {
             "outline_ss_udp_nat_entries_created_total",
             "Total UDP NAT table entries ever created.",
         );
-        write_type(
-            &mut out,
-            "outline_ss_udp_nat_entries_created_total",
-            "counter",
-        );
+        write_type(&mut out, "outline_ss_udp_nat_entries_created_total", "counter");
         writeln!(
             out,
             "outline_ss_udp_nat_entries_created_total {}",
@@ -850,11 +757,7 @@ impl Metrics {
             "outline_ss_udp_nat_entries_evicted_total",
             "Total UDP NAT table entries evicted due to idle timeout.",
         );
-        write_type(
-            &mut out,
-            "outline_ss_udp_nat_entries_evicted_total",
-            "counter",
-        );
+        write_type(&mut out, "outline_ss_udp_nat_entries_evicted_total", "counter");
         writeln!(
             out,
             "outline_ss_udp_nat_entries_evicted_total {}",
@@ -867,11 +770,7 @@ impl Metrics {
             "outline_ss_udp_nat_responses_dropped_total",
             "UDP upstream responses dropped because no WebSocket session was registered.",
         );
-        write_type(
-            &mut out,
-            "outline_ss_udp_nat_responses_dropped_total",
-            "counter",
-        );
+        write_type(&mut out, "outline_ss_udp_nat_responses_dropped_total", "counter");
         writeln!(
             out,
             "outline_ss_udp_nat_responses_dropped_total {}",
@@ -896,9 +795,7 @@ impl WebSocketSessionGuard {
             return;
         }
         self.finished = true;
-        self.metrics
-            .active_websocket_sessions
-            .inc(self.labels.clone(), -1);
+        self.metrics.active_websocket_sessions.inc(self.labels.clone(), -1);
         self.metrics.websocket_disconnects_total.inc(
             WsDisconnectLabels {
                 transport: self.labels.transport,
@@ -916,9 +813,7 @@ impl WebSocketSessionGuard {
 impl Drop for WebSocketSessionGuard {
     fn drop(&mut self) {
         if !self.finished {
-            self.metrics
-                .active_websocket_sessions
-                .inc(self.labels.clone(), -1);
+            self.metrics.active_websocket_sessions.inc(self.labels.clone(), -1);
             self.metrics.websocket_disconnects_total.inc(
                 WsDisconnectLabels {
                     transport: self.labels.transport,
@@ -947,18 +842,14 @@ impl TcpUpstreamGuard {
             return;
         }
         self.finished = true;
-        self.metrics
-            .active_tcp_upstream_connections
-            .inc(self.labels.clone(), -1);
+        self.metrics.active_tcp_upstream_connections.inc(self.labels.clone(), -1);
     }
 }
 
 impl Drop for TcpUpstreamGuard {
     fn drop(&mut self) {
         if !self.finished {
-            self.metrics
-                .active_tcp_upstream_connections
-                .inc(self.labels.clone(), -1);
+            self.metrics.active_tcp_upstream_connections.inc(self.labels.clone(), -1);
             self.finished = true;
         }
     }
@@ -1044,10 +935,7 @@ impl UserProtocolLabels {
 
 impl PrometheusLabels for UserProtocolLabels {
     fn labels(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("user", self.user.to_string()),
-            ("protocol", self.protocol.as_str().to_owned()),
-        ]
+        vec![("user", self.user.to_string()), ("protocol", self.protocol.as_str().to_owned())]
     }
 }
 
@@ -1077,11 +965,7 @@ struct UserProtocolTransportLabels {
 
 impl UserProtocolTransportLabels {
     fn new(user: Arc<str>, protocol: Protocol, transport: Transport) -> Self {
-        Self {
-            user,
-            protocol,
-            transport,
-        }
+        Self { user, protocol, transport }
     }
 }
 
@@ -1104,11 +988,7 @@ struct UserProtocolResultLabels {
 
 impl UserProtocolResultLabels {
     fn new(user: Arc<str>, protocol: Protocol, result: &'static str) -> Self {
-        Self {
-            user,
-            protocol,
-            result,
-        }
+        Self { user, protocol, result }
     }
 }
 
@@ -1131,11 +1011,7 @@ struct UserProtocolDirectionLabels {
 
 impl UserProtocolDirectionLabels {
     fn new(user: Arc<str>, protocol: Protocol, direction: &'static str) -> Self {
-        Self {
-            user,
-            protocol,
-            direction,
-        }
+        Self { user, protocol, direction }
     }
 }
 
@@ -1164,12 +1040,7 @@ impl UserProtocolTransportDirectionLabels {
         transport: Transport,
         direction: &'static str,
     ) -> Self {
-        Self {
-            user,
-            protocol,
-            transport,
-            direction,
-        }
+        Self { user, protocol, transport, direction }
     }
 }
 
@@ -1194,9 +1065,7 @@ struct CounterVec<L> {
 
 impl<L> Default for CounterVec<L> {
     fn default() -> Self {
-        Self {
-            values: RwLock::new(HashMap::new()),
-        }
+        Self { values: RwLock::new(HashMap::new()) }
     }
 }
 
@@ -1214,10 +1083,7 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("counter vec poisoned");
-            values
-                .entry(labels)
-                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
-                .clone()
+            values.entry(labels).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
         };
         cell.fetch_add(value, Ordering::Relaxed);
     }
@@ -1241,9 +1107,7 @@ struct GaugeVec<L> {
 
 impl<L> Default for GaugeVec<L> {
     fn default() -> Self {
-        Self {
-            values: RwLock::new(HashMap::new()),
-        }
+        Self { values: RwLock::new(HashMap::new()) }
     }
 }
 
@@ -1261,10 +1125,7 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("gauge vec poisoned");
-            values
-                .entry(labels)
-                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
-                .clone()
+            values.entry(labels).or_insert_with(|| Arc::new(AtomicI64::new(0))).clone()
         };
         cell.store(value, Ordering::Relaxed);
     }
@@ -1279,10 +1140,7 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("gauge vec poisoned");
-            values
-                .entry(labels)
-                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
-                .clone()
+            values.entry(labels).or_insert_with(|| Arc::new(AtomicI64::new(0))).clone()
         };
         cell.fetch_add(value, Ordering::Relaxed);
     }
@@ -1310,20 +1168,14 @@ where
     L: Clone + Eq + Hash + Ord,
 {
     fn new(buckets: &'static [f64]) -> Self {
-        Self {
-            buckets,
-            values: RwLock::new(HashMap::new()),
-        }
+        Self { buckets, values: RwLock::new(HashMap::new()) }
     }
 
     fn observe(&self, labels: L, value: f64) {
         {
             let values = self.values.read().expect("histogram vec poisoned");
             if let Some(state) = values.get(&labels) {
-                state
-                    .lock()
-                    .expect("histogram state poisoned")
-                    .observe(self.buckets, value);
+                state.lock().expect("histogram state poisoned").observe(self.buckets, value);
                 return;
             }
         }
@@ -1334,10 +1186,7 @@ where
                 .or_insert_with(|| Arc::new(Mutex::new(HistogramState::new(self.buckets))))
                 .clone()
         };
-        state
-            .lock()
-            .expect("histogram state poisoned")
-            .observe(self.buckets, value);
+        state.lock().expect("histogram state poisoned").observe(self.buckets, value);
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
@@ -1347,10 +1196,8 @@ where
             .expect("histogram vec poisoned")
             .iter()
             .map(|(labels, state)| {
-                let snapshot = state
-                    .lock()
-                    .expect("histogram state poisoned")
-                    .snapshot(self.buckets);
+                let snapshot =
+                    state.lock().expect("histogram state poisoned").snapshot(self.buckets);
                 (labels.clone(), snapshot)
             })
             .collect::<Vec<_>>();
@@ -1367,11 +1214,7 @@ struct HistogramState {
 
 impl HistogramState {
     fn new(buckets: &[f64]) -> Self {
-        Self {
-            bucket_counts: vec![0; buckets.len()],
-            count: 0,
-            sum: 0.0,
-        }
+        Self { bucket_counts: vec![0; buckets.len()], count: 0, sum: 0.0 }
     }
 
     fn observe(&mut self, buckets: &[f64], value: f64) {
@@ -1457,24 +1300,14 @@ where
         }
         let mut inf_labels = base_labels.clone();
         inf_labels.push(("le", "+Inf".to_owned()));
-        write_metric_line(
-            out,
-            &format!("{name}_bucket"),
-            &inf_labels,
-            snapshot.count.to_string(),
-        );
+        write_metric_line(out, &format!("{name}_bucket"), &inf_labels, snapshot.count.to_string());
         write_metric_line(
             out,
             &format!("{name}_sum"),
             &base_labels,
             format!("{:.6}", snapshot.sum),
         );
-        write_metric_line(
-            out,
-            &format!("{name}_count"),
-            &base_labels,
-            snapshot.count.to_string(),
-        );
+        write_metric_line(out, &format!("{name}_count"), &base_labels, snapshot.count.to_string());
     }
 }
 
@@ -1534,21 +1367,15 @@ fn client_active_snapshots(
         .snapshot()
         .into_iter()
         .map(|(labels, seen_at)| {
-            let active = if seen_at > 0 && now.saturating_sub(seen_at) <= ttl_secs as i64 {
-                1
-            } else {
-                0
-            };
+            let active =
+                if seen_at > 0 && now.saturating_sub(seen_at) <= ttl_secs as i64 { 1 } else { 0 };
             (labels, active)
         })
         .collect()
 }
 
 fn escape_label_value(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\n', "\\n")
-        .replace('"', "\\\"")
+    value.replace('\\', "\\\\").replace('\n', "\\n").replace('"', "\\\"")
 }
 
 #[cfg(target_os = "linux")]
@@ -1646,12 +1473,7 @@ fn procfs_virtual_memory_diagnostics() -> VirtualMemoryDiagnostics {
         }
     }
 
-    finalize_virtual_mapping(
-        &mut diagnostics,
-        current_mapping,
-        current_size_kib,
-        current_rss_kib,
-    );
+    finalize_virtual_mapping(&mut diagnostics, current_mapping, current_size_kib, current_rss_kib);
     diagnostics.top_mappings.sort_by(|left, right| {
         right
             .size_bytes

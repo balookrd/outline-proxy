@@ -118,20 +118,14 @@ fn build_user_artifact(
     user: &UserEntry,
     public_host: &str,
 ) -> Result<AccessKeyArtifact> {
-    let config_filename = format!(
-        "{}{}",
-        sanitize_filename(&user.id),
-        config.access_key_file_extension
-    );
+    let config_filename =
+        format!("{}{}", sanitize_filename(&user.id), config.access_key_file_extension);
     let config_url = config
         .access_key_url_base
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let access_key_url = config_url
-        .as_deref()
-        .map(dynamic_access_key_url)
-        .transpose()?;
+    let access_key_url = config_url.as_deref().map(dynamic_access_key_url).transpose()?;
     let method = user.effective_method(config.method);
     let tcp_url = websocket_url(
         &config.public_scheme,
@@ -181,19 +175,11 @@ fn render_outline_yaml(method: &str, password: &str, tcp_url: &str, udp_url: &st
 }
 
 fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
-    format!(
-        "{scheme}://{}{}",
-        normalize_host(host),
-        normalize_path(path)
-    )
+    format!("{scheme}://{}{}", normalize_host(host), normalize_path(path))
 }
 
 fn normalize_path(path: &str) -> String {
-    if path.starts_with('/') {
-        path.to_owned()
-    } else {
-        format!("/{path}")
-    }
+    if path.starts_with('/') { path.to_owned() } else { format!("/{path}") }
 }
 
 fn normalize_host(host: &str) -> String {
@@ -243,11 +229,7 @@ fn sanitize_filename(input: &str) -> String {
         }
     }
 
-    if output.is_empty() {
-        "user".to_owned()
-    } else {
-        output
-    }
+    if output.is_empty() { "user".to_owned() } else { output }
 }
 
 fn yaml_quote(value: &str) -> String {
@@ -321,22 +303,10 @@ mod tests {
             artifacts[0].access_key_url.as_deref(),
             Some("ssconf://keys.example.com/outline/alice.yaml")
         );
-        assert!(
-            artifacts[0]
-                .yaml
-                .contains("url: \"wss://vpn.example.com/alice/tcp\"")
-        );
-        assert!(
-            artifacts[0]
-                .yaml
-                .contains("url: \"wss://vpn.example.com/alice/udp\"")
-        );
+        assert!(artifacts[0].yaml.contains("url: \"wss://vpn.example.com/alice/tcp\""));
+        assert!(artifacts[0].yaml.contains("url: \"wss://vpn.example.com/alice/udp\""));
         assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
-        assert!(
-            artifacts[1]
-                .yaml
-                .contains("cipher: \"chacha20-ietf-poly1305\"")
-        );
+        assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
     }
 
     #[test]

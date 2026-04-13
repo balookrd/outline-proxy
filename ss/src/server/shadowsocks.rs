@@ -94,9 +94,7 @@ async fn handle_ss_tcp_connection(
                 }
             }
         } else {
-            read_fut
-                .await
-                .context("failed to read from shadowsocks client")?
+            read_fut.await.context("failed to read from shadowsocks client")?
         };
         if read == 0 {
             debug!(peer_addr = ?peer_addr, "socket tcp client closed connection");
@@ -129,9 +127,7 @@ async fn handle_ss_tcp_connection(
                     attempts = ?diagnose_stream_handshake(users.as_ref(), decryptor.buffered_data()),
                     "socket tcp authentication failed for all configured users"
                 );
-                return Err(anyhow!(
-                    "no configured key matched the incoming socket tcp stream"
-                ));
+                return Err(anyhow!("no configured key matched the incoming socket tcp stream"));
             }
             Err(error) => return Err(anyhow!(error)),
         }
@@ -421,9 +417,7 @@ async fn handle_ss_udp_datagram(
                 attempts = ?diagnose_udp_packet(users.as_ref(), &data),
                 "socket udp authentication failed for all configured users"
             );
-            return Err(anyhow!(
-                "no configured key matched the incoming socket udp datagram"
-            ));
+            return Err(anyhow!("no configured key matched the incoming socket udp datagram"));
         }
         Err(error) => return Err(anyhow!(error)),
     };
@@ -468,12 +462,7 @@ async fn handle_ss_udp_datagram(
         udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
-        .get_or_create(
-            nat_key,
-            &packet.user,
-            packet.session.clone(),
-            Arc::clone(&metrics),
-        )
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 

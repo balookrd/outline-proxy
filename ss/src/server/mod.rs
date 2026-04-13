@@ -137,10 +137,7 @@ struct UdpDnsCache {
 
 impl UdpDnsCache {
     fn new(ttl: Duration) -> Arc<Self> {
-        Arc::new(Self {
-            entries: RwLock::new(HashMap::new()),
-            ttl,
-        })
+        Arc::new(Self { entries: RwLock::new(HashMap::new()), ttl })
     }
 
     fn lookup(&self, host: &str, port: u16, prefer_ipv4_upstream: bool) -> Option<SocketAddr> {
@@ -170,10 +167,7 @@ impl UdpDnsCache {
     }
 
     fn store(&self, host: &str, port: u16, prefer_ipv4_upstream: bool, resolved: SocketAddr) {
-        let entry = UdpDnsCacheEntry {
-            resolved,
-            expires_at: std::time::Instant::now() + self.ttl,
-        };
+        let entry = UdpDnsCacheEntry { resolved, expires_at: std::time::Instant::now() + self.ttl };
         self.entries
             .write()
             .expect("udp dns cache poisoned")
@@ -222,9 +216,11 @@ pub async fn run(config: Config) -> Result<()> {
             None
         };
     let ss_udp_socket = if let Some(ss_listen) = config.ss_listen {
-        Some(Arc::new(UdpSocket::bind(ss_listen).await.with_context(
-            || format!("failed to bind shadowsocks udp socket {}", ss_listen),
-        )?))
+        Some(Arc::new(
+            UdpSocket::bind(ss_listen)
+                .await
+                .with_context(|| format!("failed to bind shadowsocks udp socket {}", ss_listen))?,
+        ))
     } else {
         None
     };
@@ -238,11 +234,8 @@ pub async fn run(config: Config) -> Result<()> {
     } else {
         None
     };
-    let h3_server = if config.h3_enabled() {
-        Some(build_h3_server(config.as_ref()).await?)
-    } else {
-        None
-    };
+    let h3_server =
+        if config.h3_enabled() { Some(build_h3_server(config.as_ref()).await?) } else { None };
 
     // Periodic NAT entry eviction.
     {
@@ -377,10 +370,7 @@ fn build_transport_route_map(
             Transport::Tcp => user.ws_path_tcp(),
             Transport::Udp => user.ws_path_udp(),
         };
-        grouped
-            .entry(path.to_owned())
-            .or_default()
-            .push(user.clone());
+        grouped.entry(path.to_owned()).or_default().push(user.clone());
     }
 
     grouped
@@ -601,11 +591,9 @@ mod tests {
         let client = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await?;
         client.send_to(b"ping", echo_addr).await?;
         let mut buf = [0_u8; 64];
-        let (read, source) = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            client.recv_from(&mut buf),
-        )
-        .await??;
+        let (read, source) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), client.recv_from(&mut buf))
+                .await??;
 
         assert_eq!(source.ip(), Ipv6Addr::LOCALHOST);
         assert_eq!(&buf[..read], b"ping");
@@ -858,10 +846,7 @@ mod tests {
 
         let tcp = TcpStream::connect(addr).await?;
         let tls = TlsConnector::from(Arc::new(client_config))
-            .connect(
-                rustls::pki_types::ServerName::try_from("localhost".to_string())?,
-                tcp,
-            )
+            .connect(rustls::pki_types::ServerName::try_from("localhost".to_string())?, tcp)
             .await?;
 
         let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
@@ -1011,9 +996,15 @@ mod tests {
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
             response.headers().get(header::WWW_AUTHENTICATE),
-            Some(&header::HeaderValue::from_static(
-                "Basic realm=\"My VPN \\\"Portal\\\"\""
-            ))
+            Some(&header::HeaderValue::from_static("Basic realm=\"My VPN \\\"Portal\\\"\""))
+        );
+        assert!(
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .context("missing auth challenge cookie")?
+                .to_str()?
+                .contains("Max-Age=300")
         );
         let challenge_cookie = set_cookie_pair(&response)?;
         assert_eq!(challenge_cookie, "outline_ss_root_auth=0");
@@ -1110,12 +1101,17 @@ mod tests {
                 )
                 .await?;
 
-            let expected_status = if attempt < 3 {
-                StatusCode::UNAUTHORIZED
-            } else {
-                StatusCode::FORBIDDEN
-            };
+            let expected_status =
+                if attempt < 3 { StatusCode::UNAUTHORIZED } else { StatusCode::FORBIDDEN };
             assert_eq!(response.status(), expected_status);
+            assert!(
+                response
+                    .headers()
+                    .get(header::SET_COOKIE)
+                    .context("missing auth attempt cookie")?
+                    .to_str()?
+                    .contains("Max-Age=300")
+            );
             cookie = set_cookie_pair(&response)?;
             assert_eq!(cookie, format!("outline_ss_root_auth={attempt}"));
         }
@@ -1296,6 +1292,14 @@ mod tests {
         let mut stream = send_request.send_request(request).await?;
         let response = stream.recv_response().await?;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            response
+                .headers()
+                .get(header::SET_COOKIE)
+                .context("missing HTTP/3 auth challenge cookie")?
+                .to_str()?
+                .contains("Max-Age=300")
+        );
 
         driver.abort();
         server.abort();
@@ -1432,11 +1436,8 @@ mod tests {
                 let (read, peer) = upstream.recv_from(&mut buf).await?;
                 peers.push(peer);
                 assert_eq!(&buf[..read], expected);
-                let reply = if expected == b"ping-1" {
-                    b"pong-1".as_slice()
-                } else {
-                    b"pong-2".as_slice()
-                };
+                let reply =
+                    if expected == b"ping-1" { b"pong-1".as_slice() } else { b"pong-2".as_slice() };
                 upstream.send_to(reply, peer).await?;
             }
             Result::<_, anyhow::Error>::Ok(peers)
@@ -1604,11 +1605,8 @@ mod tests {
         Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
     }
 
-    fn write_test_h2_tls_cert() -> Result<(
-        std::path::PathBuf,
-        std::path::PathBuf,
-        CertificateDer<'static>,
-    )> {
+    fn write_test_h2_tls_cert()
+    -> Result<(std::path::PathBuf, std::path::PathBuf, CertificateDer<'static>)> {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;
         let cert_pem = cert.cert.pem();
         let cert_der = CertificateDer::from(cert.cert.der().to_vec());
@@ -1616,9 +1614,7 @@ mod tests {
         let base = std::env::temp_dir().join(format!(
             "outline-ss-rust-h2-tls-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
         ));
         let cert_path = base.with_extension("crt.pem");
         let key_path = base.with_extension("key.pem");

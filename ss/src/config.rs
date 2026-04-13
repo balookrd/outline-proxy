@@ -75,14 +75,8 @@ impl Config {
                 .udp_nat_idle_timeout_secs
                 .or(file.udp_nat_idle_timeout_secs)
                 .unwrap_or(300),
-            ws_path_tcp: args
-                .ws_path_tcp
-                .or(file.ws_path_tcp)
-                .unwrap_or_else(|| "/tcp".to_owned()),
-            ws_path_udp: args
-                .ws_path_udp
-                .or(file.ws_path_udp)
-                .unwrap_or_else(|| "/udp".to_owned()),
+            ws_path_tcp: args.ws_path_tcp.or(file.ws_path_tcp).unwrap_or_else(|| "/tcp".to_owned()),
+            ws_path_udp: args.ws_path_udp.or(file.ws_path_udp).unwrap_or_else(|| "/udp".to_owned()),
             http_root_auth: args.http_root_auth.or(file.http_root_auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm
@@ -95,25 +89,14 @@ impl Config {
                 .unwrap_or_else(|| "wss".to_owned()),
             access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
             access_key_file_extension: normalize_access_key_file_extension(
-                args.access_key_file_extension
-                    .or(file.access_key_file_extension),
+                args.access_key_file_extension.or(file.access_key_file_extension),
             ),
-            print_access_keys: args
-                .print_access_keys
-                .or(file.print_access_keys)
-                .unwrap_or(false),
+            print_access_keys: args.print_access_keys.or(file.print_access_keys).unwrap_or(false),
             write_access_keys_dir: args.write_access_keys_dir.or(file.write_access_keys_dir),
             password: args.password.or(file.password),
             fwmark: args.fwmark.or(file.fwmark),
-            users: if args.users.is_empty() {
-                file.users.unwrap_or_default()
-            } else {
-                args.users
-            },
-            method: args
-                .method
-                .or(file.method)
-                .unwrap_or(CipherKind::Chacha20IetfPoly1305),
+            users: if args.users.is_empty() { file.users.unwrap_or_default() } else { args.users },
+            method: args.method.or(file.method).unwrap_or(CipherKind::Chacha20IetfPoly1305),
         };
 
         config.validate()?;
@@ -204,10 +187,7 @@ impl Config {
             udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
         }
         if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
-            bail!(
-                "tcp and udp websocket paths must be distinct, conflict on {}",
-                conflict
-            );
+            bail!("tcp and udp websocket paths must be distinct, conflict on {}", conflict);
         }
         if self.http_root_auth && (tcp_paths.contains("/") || udp_paths.contains("/")) {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
@@ -292,18 +272,10 @@ struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
     udp_nat_idle_timeout_secs: Option<u64>,
 
-    #[arg(
-        long = "ws-path-tcp",
-        visible_alias = "ws-path",
-        env = "OUTLINE_SS_WS_PATH_TCP"
-    )]
+    #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     ws_path_tcp: Option<String>,
 
-    #[arg(
-        long = "ws-path-udp",
-        visible_alias = "udp-ws-path",
-        env = "OUTLINE_SS_WS_PATH_UDP"
-    )]
+    #[arg(long = "ws-path-udp", visible_alias = "udp-ws-path", env = "OUTLINE_SS_WS_PATH_UDP")]
     ws_path_udp: Option<String>,
 
     #[arg(
@@ -433,10 +405,7 @@ impl CipherKind {
     }
 
     pub const fn is_2022(self) -> bool {
-        matches!(
-            self,
-            Self::Aes128Gcm2022 | Self::Aes256Gcm2022 | Self::Chacha20Poly13052022
-        )
+        matches!(self, Self::Aes128Gcm2022 | Self::Aes256Gcm2022 | Self::Chacha20Poly13052022)
     }
 
     pub const fn is_2022_aes(self) -> bool {
@@ -493,9 +462,8 @@ pub enum ConfigError {
 }
 
 fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
-    let (id, password) = value
-        .split_once('=')
-        .ok_or_else(|| "expected format id=password".to_owned())?;
+    let (id, password) =
+        value.split_once('=').ok_or_else(|| "expected format id=password".to_owned())?;
     let id = id.trim();
     let password = password.trim();
 
@@ -530,11 +498,7 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
 
 fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
-    if extension.starts_with('.') {
-        extension
-    } else {
-        format!(".{extension}")
-    }
+    if extension.starts_with('.') { extension } else { format!(".{extension}") }
 }
 
 fn default_http_root_realm() -> String {

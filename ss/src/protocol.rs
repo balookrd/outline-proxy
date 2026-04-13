@@ -67,10 +67,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
             }
             let host = Ipv4Addr::new(rest[0], rest[1], rest[2], rest[3]);
             let port = u16::from_be_bytes([rest[4], rest[5]]);
-            Ok(Some((
-                TargetAddr::Socket(SocketAddr::from((host, port))),
-                7,
-            )))
+            Ok(Some((TargetAddr::Socket(SocketAddr::from((host, port))), 7)))
         }
         0x03 => {
             let Some((&len, rest)) = rest.split_first() else {
@@ -83,10 +80,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
             let host =
                 std::str::from_utf8(&rest[..len]).map_err(|_| ProtocolError::InvalidDomain)?;
             let port = u16::from_be_bytes([rest[len], rest[len + 1]]);
-            Ok(Some((
-                TargetAddr::Domain(host.to_owned(), port),
-                1 + 1 + len + 2,
-            )))
+            Ok(Some((TargetAddr::Domain(host.to_owned(), port), 1 + 1 + len + 2)))
         }
         0x04 => {
             if rest.len() < 18 {
@@ -96,10 +90,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
             octets.copy_from_slice(&rest[..16]);
             let host = Ipv6Addr::from(octets);
             let port = u16::from_be_bytes([rest[16], rest[17]]);
-            Ok(Some((
-                TargetAddr::Socket(SocketAddr::from((host, port))),
-                19,
-            )))
+            Ok(Some((TargetAddr::Socket(SocketAddr::from((host, port))), 19)))
         }
         other => Err(ProtocolError::UnsupportedAddressType(other)),
     }
@@ -126,14 +117,10 @@ mod tests {
 
     #[test]
     fn parses_domain_target() {
-        let bytes = [
-            0x03, 0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o', b'm', 0, 80,
-        ];
+        let bytes =
+            [0x03, 0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c', b'o', b'm', 0, 80];
         let parsed = parse_target_addr(&bytes).unwrap();
-        assert_eq!(
-            parsed,
-            Some((TargetAddr::Domain("example.com".into(), 80), bytes.len()))
-        );
+        assert_eq!(parsed, Some((TargetAddr::Domain("example.com".into(), 80), bytes.len())));
     }
 
     #[test]
@@ -145,9 +132,7 @@ mod tests {
 
     #[test]
     fn parses_ipv6_target() {
-        let bytes = [
-            0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01, 0xbb,
-        ];
+        let bytes = [0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01, 0xbb];
         let parsed = parse_target_addr(&bytes).unwrap();
         assert_eq!(
             parsed,
@@ -171,9 +156,7 @@ mod tests {
 
         assert_eq!(
             encoded,
-            vec![
-                0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01, 0xbb,
-            ]
+            vec![0x04, 0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0x01, 0xbb,]
         );
     }
 }
