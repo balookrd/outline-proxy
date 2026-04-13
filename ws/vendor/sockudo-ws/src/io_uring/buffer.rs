@@ -52,12 +52,7 @@ impl RegisteredBufferPool {
             free_list.push_back(RegisteredBuffer::new(index, buffer_size));
         }
 
-        Self {
-            free_list,
-            buffer_size,
-            max_buffers: count,
-            allocated_count: count,
-        }
+        Self { free_list, buffer_size, max_buffers: count, allocated_count: count }
     }
 
     /// Acquire a buffer from the pool
@@ -131,12 +126,7 @@ pub struct RegisteredBuffer {
 impl RegisteredBuffer {
     /// Create a new registered buffer
     fn new(index: usize, size: usize) -> Self {
-        Self {
-            index,
-            data: vec![0u8; size],
-            len: 0,
-            pos: 0,
-        }
+        Self { index, data: vec![0u8; size], len: 0, pos: 0 }
     }
 
     /// Get the buffer index
@@ -254,12 +244,7 @@ impl RegisteredBuffer {
     /// * `data` - The buffer data
     /// * `len` - Number of valid bytes in the buffer
     pub fn from_vec(index: usize, data: Vec<u8>, len: usize) -> Self {
-        Self {
-            index,
-            data,
-            len,
-            pos: 0,
-        }
+        Self { index, data, len, pos: 0 }
     }
 }
 

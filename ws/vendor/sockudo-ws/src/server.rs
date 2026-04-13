@@ -118,10 +118,7 @@ enum ServerInner<T: Transport> {
 impl WebSocketServer<Http1> {
     /// Create a new HTTP/1.1 WebSocket server with the given configuration
     pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            inner: ServerInner::Http1(PhantomData),
-        }
+        Self { config, inner: ServerInner::Http1(PhantomData) }
     }
 
     /// Create a new HTTP/1.1 WebSocket server with default configuration
@@ -281,10 +278,7 @@ impl Default for WebSocketServer<Http1> {
 
 impl Clone for WebSocketServer<Http1> {
     fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            inner: ServerInner::Http1(PhantomData),
-        }
+        Self { config: self.config.clone(), inner: ServerInner::Http1(PhantomData) }
     }
 }
 
@@ -296,10 +290,7 @@ impl Clone for WebSocketServer<Http1> {
 impl WebSocketServer<Http2> {
     /// Create a new HTTP/2 WebSocket server with the given configuration
     pub fn new(config: Config) -> Self {
-        Self {
-            config,
-            inner: ServerInner::Http2(PhantomData),
-        }
+        Self { config, inner: ServerInner::Http2(PhantomData) }
     }
 
     /// Create a new HTTP/2 WebSocket server with default configuration
@@ -429,10 +420,7 @@ impl Default for WebSocketServer<Http2> {
 #[cfg(feature = "http2")]
 impl Clone for WebSocketServer<Http2> {
     fn clone(&self) -> Self {
-        Self {
-            config: self.config.clone(),
-            inner: ServerInner::Http2(PhantomData),
-        }
+        Self { config: self.config.clone(), inner: ServerInner::Http2(PhantomData) }
     }
 }
 
@@ -461,9 +449,7 @@ where
         // Accept the WebSocket upgrade
         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
 
-        let send_stream = respond
-            .send_response(response, false)
-            .map_err(Error::from)?;
+        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
 
         let recv_stream = request.into_body();
 
@@ -518,9 +504,7 @@ where
 
         let response = build_extended_connect_response(ws_req.subprotocols.as_deref(), None);
 
-        let send_stream = respond
-            .send_response(response, false)
-            .map_err(Error::from)?;
+        let send_stream = respond.send_response(response, false).map_err(Error::from)?;
 
         let recv_stream = request.into_body();
         let h2_stream = Stream::<Http2>::from_h2(send_stream, recv_stream);
@@ -566,10 +550,7 @@ impl WebSocketServer<Http3> {
         // Create QUIC endpoint
         let endpoint = Endpoint::server(server_config, addr).map_err(Error::Io)?;
 
-        Ok(Self {
-            config: ws_config,
-            inner: ServerInner::Http3 { endpoint },
-        })
+        Ok(Self { config: ws_config, inner: ServerInner::Http3 { endpoint } })
     }
 
     /// Create from an existing QUIC endpoint
@@ -578,10 +559,7 @@ impl WebSocketServer<Http3> {
     /// such as enabling BBR congestion control for better performance
     /// in lossy networks.
     pub fn from_endpoint(endpoint: Endpoint, ws_config: Config) -> Self {
-        Self {
-            config: ws_config,
-            inner: ServerInner::Http3 { endpoint },
-        }
+        Self { config: ws_config, inner: ServerInner::Http3 { endpoint } }
     }
 
     /// Get the local address the server is bound to
@@ -807,10 +785,8 @@ where
         return Ok(());
     }
 
-    let protocol_header = request
-        .extensions()
-        .get::<h3::ext::Protocol>()
-        .map(|p| p.as_str().to_string());
+    let protocol_header =
+        request.extensions().get::<h3::ext::Protocol>().map(|p| p.as_str().to_string());
 
     let mut ws_req = ExtendedConnectRequest::from_request(&request)
         .ok_or_else(|| Error::HandshakeFailed("invalid CONNECT request"))?;
@@ -863,10 +839,8 @@ where
         return Ok(());
     }
 
-    let protocol_header = request
-        .extensions()
-        .get::<h3::ext::Protocol>()
-        .map(|p| p.as_str().to_string());
+    let protocol_header =
+        request.extensions().get::<h3::ext::Protocol>().map(|p| p.as_str().to_string());
 
     let mut ws_req = ExtendedConnectRequest::from_request(&request)
         .ok_or_else(|| Error::HandshakeFailed("invalid CONNECT request"))?;
@@ -905,8 +879,6 @@ where
 
 impl<T: Transport> std::fmt::Debug for WebSocketServer<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebSocketServer")
-            .field("config", &self.config)
-            .finish()
+        f.debug_struct("WebSocketServer").field("config", &self.config).finish()
     }
 }

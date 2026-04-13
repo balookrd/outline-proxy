@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,6 +23,45 @@ use crate::uplink::{TransportKind, UplinkManager};
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK0_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
+
+async fn drive_tcp_session_tasks<U, D>(uplink: U, downlink: D) -> Result<()>
+where
+    U: Future<Output = Result<()>> + Send + 'static,
+    D: Future<Output = Result<()>> + Send + 'static,
+{
+    let mut uplink_task = tokio::spawn(uplink);
+    let mut downlink_task = tokio::spawn(downlink);
+
+    tokio::select! {
+        joined = &mut downlink_task => {
+            let downlink_result = match joined {
+                Ok(result) => result,
+                Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+            };
+            uplink_task.abort();
+            let _ = uplink_task.await;
+            downlink_result
+        }
+        joined = &mut uplink_task => {
+            match joined {
+                Ok(Ok(())) => match downlink_task.await {
+                    Ok(result) => result,
+                    Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+                },
+                Ok(Err(error)) => {
+                    downlink_task.abort();
+                    let _ = downlink_task.await;
+                    Err(error)
+                }
+                Err(error) => {
+                    downlink_task.abort();
+                    let _ = downlink_task.await;
+                    Err(anyhow!("SOCKS TCP uplink task failed: {error}"))
+                }
+            }
+        }
+    }
+}
 
 pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
@@ -402,7 +442,13 @@ pub(super) async fn handle_tcp_connect(
             Ok::<(), anyhow::Error>(())
         };
 
-        let result = tokio::try_join!(uplink, downlink).map(|_| ());
+        // Preserve client half-close semantics (client EOF while still waiting
+        // for the response), but do not keep the upstream transport alive after
+        // the server side has already closed cleanly. Previously `try_join!`
+        // waited forever for `uplink` when `downlink` had already reached EOF,
+        // which kept the SOCKS5 -> WebSocket transport, its tasks, and the
+        // underlying socket alive until the client finally closed too.
+        let result = drive_tcp_session_tasks(uplink, downlink).await;
         // Report mid-stream upstream transport failures so that broken transports
         // (e.g. H3 APPLICATION_CLOSE received after session establishment) trigger
         // the H3→H2 downgrade and flush stale warm-standby connections immediately,
@@ -572,4 +618,66 @@ async fn do_tcp_ss_setup_socket(
         "sent initial Shadowsocks target header to uplink"
     );
     Ok((writer, reader))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use tokio::sync::Notify;
+
+    struct DropSignal {
+        notify: std::sync::Arc<Notify>,
+    }
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            self.notify.notify_one();
+        }
+    }
+
+    #[tokio::test]
+    async fn drive_tcp_session_tasks_aborts_uplink_when_downlink_finishes_first() {
+        let uplink_dropped = std::sync::Arc::new(Notify::new());
+        let uplink_dropped_clone = std::sync::Arc::clone(&uplink_dropped);
+        let uplink = async move {
+            let _drop_signal = DropSignal { notify: uplink_dropped_clone };
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+        let downlink = async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+            .await
+            .expect("driver should return once downlink finishes")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), uplink_dropped.notified())
+            .await
+            .expect("uplink should be dropped when downlink wins");
+    }
+
+    #[tokio::test]
+    async fn drive_tcp_session_tasks_waits_for_downlink_after_client_half_close() {
+        let downlink_completed = std::sync::Arc::new(Notify::new());
+        let downlink_completed_clone = std::sync::Arc::clone(&downlink_completed);
+        let uplink = async move { Ok::<(), anyhow::Error>(()) };
+        let downlink = async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            downlink_completed_clone.notify_one();
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+            .await
+            .expect("driver should wait for downlink after client EOF")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), downlink_completed.notified())
+            .await
+            .expect("downlink should be allowed to finish");
+    }
 }

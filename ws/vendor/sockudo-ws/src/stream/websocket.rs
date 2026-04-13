@@ -223,8 +223,7 @@ where
         }
 
         let close = Message::Close(Some(CloseReason::new(code, reason)));
-        self.protocol
-            .encode_message(&close, self.write_buf.buffer_mut())?;
+        self.protocol.encode_message(&close, self.write_buf.buffer_mut())?;
         self.state = StreamState::CloseSent;
 
         // Flush the close frame
@@ -279,11 +278,7 @@ where
                 unsafe {
                     this.read_buf.set_len(buf_len + n);
                 }
-                if n == 0 {
-                    Poll::Ready(Ok(0))
-                } else {
-                    Poll::Ready(Ok(n))
-                }
+                if n == 0 { Poll::Ready(Ok(0)) } else { Poll::Ready(Ok(n)) }
             }
             Poll::Ready(Err(e)) => {
                 unsafe {
@@ -361,8 +356,7 @@ where
                         let this = self.as_mut().get_mut();
                         if this.state == StreamState::Open {
                             // Send close response
-                            this.protocol
-                                .encode_close_response(this.write_buf.buffer_mut());
+                            this.protocol.encode_close_response(this.write_buf.buffer_mut());
                             this.state = StreamState::Closed;
                         }
                         return Poll::Ready(Some(Ok(Message::Close(reason.clone()))));
@@ -425,8 +419,7 @@ where
         }
 
         // Encode message into write buffer
-        this.protocol
-            .encode_message(&item, this.write_buf.buffer_mut())?;
+        this.protocol.encode_message(&item, this.write_buf.buffer_mut())?;
         Ok(())
     }
 
@@ -851,8 +844,7 @@ where
 
     /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason))))
-            .await
+        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
     }
 
     /// Check if the connection is closed
@@ -966,8 +958,7 @@ where
         }
 
         let close = Message::Close(Some(CloseReason::new(code, reason)));
-        self.protocol
-            .encode_message(&close, self.write_buf.buffer_mut())?;
+        self.protocol.encode_message(&close, self.write_buf.buffer_mut())?;
         self.state = StreamState::CloseSent;
 
         self.flush_write_buf().await?;
@@ -1018,11 +1009,7 @@ where
                 unsafe {
                     this.read_buf.set_len(buf_len + n);
                 }
-                if n == 0 {
-                    Poll::Ready(Ok(0))
-                } else {
-                    Poll::Ready(Ok(n))
-                }
+                if n == 0 { Poll::Ready(Ok(0)) } else { Poll::Ready(Ok(n)) }
             }
             Poll::Ready(Err(e)) => {
                 unsafe {
@@ -1095,8 +1082,7 @@ where
                     Message::Close(reason) => {
                         let this = self.as_mut().get_mut();
                         if this.state == StreamState::Open {
-                            this.protocol
-                                .encode_close_response(this.write_buf.buffer_mut());
+                            this.protocol.encode_close_response(this.write_buf.buffer_mut());
                             this.state = StreamState::Closed;
                         }
                         return Poll::Ready(Some(Ok(Message::Close(reason.clone()))));
@@ -1152,8 +1138,7 @@ where
             this.state = StreamState::CloseSent;
         }
 
-        this.protocol
-            .encode_message(&item, this.write_buf.buffer_mut())?;
+        this.protocol.encode_message(&item, this.write_buf.buffer_mut())?;
         Ok(())
     }
 
@@ -1297,9 +1282,8 @@ where
         let (control_tx, control_rx) = mpsc::unbounded_channel();
 
         // Split the protocol into reader and writer halves
-        let (reader_protocol, writer_protocol) = self
-            .protocol
-            .split(self.config.max_frame_size, self.config.max_message_size);
+        let (reader_protocol, writer_protocol) =
+            self.protocol.split(self.config.max_frame_size, self.config.max_message_size);
 
         (
             CompressedSplitReader {
@@ -1478,8 +1462,7 @@ where
 
     /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason))))
-            .await
+        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
     }
 
     /// Check if the connection is closed
