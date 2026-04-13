@@ -243,7 +243,8 @@ impl Metrics {
         let user = user.into();
         let labels = UserProtocolResultLabels::new(user, protocol, result);
         self.tcp_upstream_connects_total.inc(labels.clone(), 1);
-        self.tcp_upstream_connect_duration_seconds.observe(labels, duration_seconds);
+        self.tcp_upstream_connect_duration_seconds
+            .observe(labels, duration_seconds);
     }
 
     pub fn open_tcp_upstream_connection(
@@ -254,7 +255,11 @@ impl Metrics {
         let user = user.into();
         let labels = UserProtocolLabels::new(user, protocol);
         self.active_tcp_upstream_connections.inc(labels.clone(), 1);
-        TcpUpstreamGuard { metrics: self.clone(), labels, finished: false }
+        TcpUpstreamGuard {
+            metrics: self.clone(),
+            labels,
+            finished: false,
+        }
     }
 
     pub fn record_tcp_payload_bytes(
@@ -343,7 +348,8 @@ impl Metrics {
 
     pub fn record_udp_nat_entries_evicted(&self, count: usize) {
         self.udp_nat_active_entries.fetch_sub(count as i64, Ordering::Relaxed);
-        self.udp_nat_entries_evicted_total.fetch_add(count as u64, Ordering::Relaxed);
+        self.udp_nat_entries_evicted_total
+            .fetch_add(count as u64, Ordering::Relaxed);
     }
 
     pub fn record_udp_nat_response_dropped(&self) {
@@ -367,7 +373,10 @@ impl Metrics {
         #[cfg(not(target_os = "linux"))]
         let snapshot = process_memory_snapshot();
 
-        *self.process_memory_snapshot.write().expect("process memory snapshot poisoned") = snapshot;
+        *self
+            .process_memory_snapshot
+            .write()
+            .expect("process memory snapshot poisoned") = snapshot;
     }
 
     pub fn render_prometheus(&self) -> String {
@@ -842,14 +851,18 @@ impl TcpUpstreamGuard {
             return;
         }
         self.finished = true;
-        self.metrics.active_tcp_upstream_connections.inc(self.labels.clone(), -1);
+        self.metrics
+            .active_tcp_upstream_connections
+            .inc(self.labels.clone(), -1);
     }
 }
 
 impl Drop for TcpUpstreamGuard {
     fn drop(&mut self) {
         if !self.finished {
-            self.metrics.active_tcp_upstream_connections.inc(self.labels.clone(), -1);
+            self.metrics
+                .active_tcp_upstream_connections
+                .inc(self.labels.clone(), -1);
             self.finished = true;
         }
     }
@@ -1083,7 +1096,10 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("counter vec poisoned");
-            values.entry(labels).or_insert_with(|| Arc::new(AtomicU64::new(0))).clone()
+            values
+                .entry(labels)
+                .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+                .clone()
         };
         cell.fetch_add(value, Ordering::Relaxed);
     }
@@ -1125,7 +1141,10 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("gauge vec poisoned");
-            values.entry(labels).or_insert_with(|| Arc::new(AtomicI64::new(0))).clone()
+            values
+                .entry(labels)
+                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
+                .clone()
         };
         cell.store(value, Ordering::Relaxed);
     }
@@ -1140,7 +1159,10 @@ where
         }
         let cell = {
             let mut values = self.values.write().expect("gauge vec poisoned");
-            values.entry(labels).or_insert_with(|| Arc::new(AtomicI64::new(0))).clone()
+            values
+                .entry(labels)
+                .or_insert_with(|| Arc::new(AtomicI64::new(0)))
+                .clone()
         };
         cell.fetch_add(value, Ordering::Relaxed);
     }
@@ -1168,14 +1190,20 @@ where
     L: Clone + Eq + Hash + Ord,
 {
     fn new(buckets: &'static [f64]) -> Self {
-        Self { buckets, values: RwLock::new(HashMap::new()) }
+        Self {
+            buckets,
+            values: RwLock::new(HashMap::new()),
+        }
     }
 
     fn observe(&self, labels: L, value: f64) {
         {
             let values = self.values.read().expect("histogram vec poisoned");
             if let Some(state) = values.get(&labels) {
-                state.lock().expect("histogram state poisoned").observe(self.buckets, value);
+                state
+                    .lock()
+                    .expect("histogram state poisoned")
+                    .observe(self.buckets, value);
                 return;
             }
         }
@@ -1186,7 +1214,10 @@ where
                 .or_insert_with(|| Arc::new(Mutex::new(HistogramState::new(self.buckets))))
                 .clone()
         };
-        state.lock().expect("histogram state poisoned").observe(self.buckets, value);
+        state
+            .lock()
+            .expect("histogram state poisoned")
+            .observe(self.buckets, value);
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
@@ -1214,7 +1245,11 @@ struct HistogramState {
 
 impl HistogramState {
     fn new(buckets: &[f64]) -> Self {
-        Self { bucket_counts: vec![0; buckets.len()], count: 0, sum: 0.0 }
+        Self {
+            bucket_counts: vec![0; buckets.len()],
+            count: 0,
+            sum: 0.0,
+        }
     }
 
     fn observe(&mut self, buckets: &[f64], value: f64) {
@@ -1367,8 +1402,11 @@ fn client_active_snapshots(
         .snapshot()
         .into_iter()
         .map(|(labels, seen_at)| {
-            let active =
-                if seen_at > 0 && now.saturating_sub(seen_at) <= ttl_secs as i64 { 1 } else { 0 };
+            let active = if seen_at > 0 && now.saturating_sub(seen_at) <= ttl_secs as i64 {
+                1
+            } else {
+                0
+            };
             (labels, active)
         })
         .collect()
@@ -1535,7 +1573,7 @@ impl<'a> SmapsMappingHeader<'a> {
                 } else {
                     MappingKind::AnonPrivate
                 }
-            }
+            },
             Some(path) if path.starts_with('[') => MappingKind::Special,
             Some(_) => {
                 if shared {
@@ -1543,14 +1581,14 @@ impl<'a> SmapsMappingHeader<'a> {
                 } else {
                     MappingKind::FilePrivate
                 }
-            }
+            },
             None => {
                 if shared {
                     MappingKind::AnonShared
                 } else {
                     MappingKind::AnonPrivate
                 }
-            }
+            },
         }
     }
 
@@ -1610,23 +1648,23 @@ fn finalize_virtual_mapping(
     let rss_bytes = rss_kib.saturating_mul(1024);
 
     match mapping.kind {
-        MappingKind::Heap => {}
+        MappingKind::Heap => {},
         MappingKind::Stack => add_optional_u64(&mut diagnostics.breakdown.stack_bytes, size_bytes),
         MappingKind::AnonPrivate => {
             add_optional_u64(&mut diagnostics.breakdown.anon_private_bytes, size_bytes)
-        }
+        },
         MappingKind::AnonShared => {
             add_optional_u64(&mut diagnostics.breakdown.anon_shared_bytes, size_bytes)
-        }
+        },
         MappingKind::FilePrivate => {
             add_optional_u64(&mut diagnostics.breakdown.file_private_bytes, size_bytes)
-        }
+        },
         MappingKind::FileShared => {
             add_optional_u64(&mut diagnostics.breakdown.file_shared_bytes, size_bytes)
-        }
+        },
         MappingKind::Special => {
             add_optional_u64(&mut diagnostics.breakdown.special_bytes, size_bytes)
-        }
+        },
     }
 
     diagnostics.top_mappings.push(TopVirtualMapping {

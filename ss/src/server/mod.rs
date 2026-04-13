@@ -137,7 +137,10 @@ struct UdpDnsCache {
 
 impl UdpDnsCache {
     fn new(ttl: Duration) -> Arc<Self> {
-        Arc::new(Self { entries: RwLock::new(HashMap::new()), ttl })
+        Arc::new(Self {
+            entries: RwLock::new(HashMap::new()),
+            ttl,
+        })
     }
 
     fn lookup(&self, host: &str, port: u16, prefer_ipv4_upstream: bool) -> Option<SocketAddr> {
@@ -167,7 +170,10 @@ impl UdpDnsCache {
     }
 
     fn store(&self, host: &str, port: u16, prefer_ipv4_upstream: bool, resolved: SocketAddr) {
-        let entry = UdpDnsCacheEntry { resolved, expires_at: std::time::Instant::now() + self.ttl };
+        let entry = UdpDnsCacheEntry {
+            resolved,
+            expires_at: std::time::Instant::now() + self.ttl,
+        };
         self.entries
             .write()
             .expect("udp dns cache poisoned")
@@ -216,11 +222,9 @@ pub async fn run(config: Config) -> Result<()> {
             None
         };
     let ss_udp_socket = if let Some(ss_listen) = config.ss_listen {
-        Some(Arc::new(
-            UdpSocket::bind(ss_listen)
-                .await
-                .with_context(|| format!("failed to bind shadowsocks udp socket {}", ss_listen))?,
-        ))
+        Some(Arc::new(UdpSocket::bind(ss_listen).await.with_context(|| {
+            format!("failed to bind shadowsocks udp socket {}", ss_listen)
+        })?))
     } else {
         None
     };
@@ -234,8 +238,11 @@ pub async fn run(config: Config) -> Result<()> {
     } else {
         None
     };
-    let h3_server =
-        if config.h3_enabled() { Some(build_h3_server(config.as_ref()).await?) } else { None };
+    let h3_server = if config.h3_enabled() {
+        Some(build_h3_server(config.as_ref()).await?)
+    } else {
+        None
+    };
 
     // Periodic NAT entry eviction.
     {
@@ -338,7 +345,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     while let Some(result) = tasks.join_next().await {
         match result {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {},
             Ok(Err(error)) => warn!(?error, "server task exited with error"),
             Err(join_error) => warn!(?join_error, "server task panicked"),
         }
@@ -1101,8 +1108,11 @@ mod tests {
                 )
                 .await?;
 
-            let expected_status =
-                if attempt < 3 { StatusCode::UNAUTHORIZED } else { StatusCode::FORBIDDEN };
+            let expected_status = if attempt < 3 {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            };
             assert_eq!(response.status(), expected_status);
             assert!(
                 response
@@ -1436,8 +1446,11 @@ mod tests {
                 let (read, peer) = upstream.recv_from(&mut buf).await?;
                 peers.push(peer);
                 assert_eq!(&buf[..read], expected);
-                let reply =
-                    if expected == b"ping-1" { b"pong-1".as_slice() } else { b"pong-2".as_slice() };
+                let reply = if expected == b"ping-1" {
+                    b"pong-1".as_slice()
+                } else {
+                    b"pong-2".as_slice()
+                };
                 upstream.send_to(reply, peer).await?;
             }
             Result::<_, anyhow::Error>::Ok(peers)
@@ -1614,7 +1627,9 @@ mod tests {
         let base = std::env::temp_dir().join(format!(
             "outline-ss-rust-h2-tls-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
         ));
         let cert_path = base.with_extension("crt.pem");
         let key_path = base.with_extension("key.pem");

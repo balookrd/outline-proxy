@@ -14,7 +14,7 @@ pub(super) async fn serve_ss_tcp_listener(
             Err(error) => {
                 warn!(?error, "failed to accept shadowsocks tcp connection");
                 continue;
-            }
+            },
         };
         if let Err(error) = configure_tcp_stream(&stream) {
             warn!(%peer, ?error, "failed to configure shadowsocks tcp connection");
@@ -25,7 +25,7 @@ pub(super) async fn serve_ss_tcp_listener(
             Err(_) => {
                 warn!(%peer, "shadowsocks tcp concurrent connection limit reached, dropping connection");
                 continue;
-            }
+            },
         };
         let users = users.clone();
         let metrics = metrics.clone();
@@ -91,7 +91,7 @@ async fn handle_ss_tcp_connection(
                         authenticated_user,
                         handshake_attempts
                     ));
-                }
+                },
             }
         } else {
             read_fut.await.context("failed to read from shadowsocks client")?
@@ -119,7 +119,7 @@ async fn handle_ss_tcp_connection(
                     authenticated_user = decryptor.user().map(|user| user.id()),
                     "socket tcp decrypted client bytes"
                 );
-            }
+            },
             Err(CryptoError::UnknownUser) => {
                 debug!(
                     peer_addr = ?peer_addr,
@@ -128,7 +128,7 @@ async fn handle_ss_tcp_connection(
                     "socket tcp authentication failed for all configured users"
                 );
                 return Err(anyhow!("no configured key matched the incoming socket tcp stream"));
-            }
+            },
             Err(error) => return Err(anyhow!(error)),
         }
 
@@ -172,7 +172,7 @@ async fn handle_ss_tcp_connection(
                             connect_started.elapsed().as_secs_f64(),
                         );
                         stream
-                    }
+                    },
                     Err(error) => {
                         metrics.record_tcp_connect(
                             user.id_arc(),
@@ -191,7 +191,7 @@ async fn handle_ss_tcp_connection(
                         );
                         return Err(error)
                             .with_context(|| format!("failed to connect to {target_display}"));
-                    }
+                    },
                 };
             info!(
                 peer_addr = ?peer_addr,
@@ -418,7 +418,7 @@ async fn handle_ss_udp_datagram(
                 "socket udp authentication failed for all configured users"
             );
             return Err(anyhow!("no configured key matched the incoming socket udp datagram"));
-        }
+        },
         Err(error) => return Err(anyhow!(error)),
     };
     let user_id = packet.user.id_arc();

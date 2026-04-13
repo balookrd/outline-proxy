@@ -75,8 +75,14 @@ impl Config {
                 .udp_nat_idle_timeout_secs
                 .or(file.udp_nat_idle_timeout_secs)
                 .unwrap_or(300),
-            ws_path_tcp: args.ws_path_tcp.or(file.ws_path_tcp).unwrap_or_else(|| "/tcp".to_owned()),
-            ws_path_udp: args.ws_path_udp.or(file.ws_path_udp).unwrap_or_else(|| "/udp".to_owned()),
+            ws_path_tcp: args
+                .ws_path_tcp
+                .or(file.ws_path_tcp)
+                .unwrap_or_else(|| "/tcp".to_owned()),
+            ws_path_udp: args
+                .ws_path_udp
+                .or(file.ws_path_udp)
+                .unwrap_or_else(|| "/udp".to_owned()),
             http_root_auth: args.http_root_auth.or(file.http_root_auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm
@@ -95,8 +101,15 @@ impl Config {
             write_access_keys_dir: args.write_access_keys_dir.or(file.write_access_keys_dir),
             password: args.password.or(file.password),
             fwmark: args.fwmark.or(file.fwmark),
-            users: if args.users.is_empty() { file.users.unwrap_or_default() } else { args.users },
-            method: args.method.or(file.method).unwrap_or(CipherKind::Chacha20IetfPoly1305),
+            users: if args.users.is_empty() {
+                file.users.unwrap_or_default()
+            } else {
+                args.users
+            },
+            method: args
+                .method
+                .or(file.method)
+                .unwrap_or(CipherKind::Chacha20IetfPoly1305),
         };
 
         config.validate()?;
@@ -138,7 +151,7 @@ impl Config {
             bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
         }
         match (&self.tls_cert_path, &self.tls_key_path) {
-            (Some(_), Some(_)) | (None, None) => {}
+            (Some(_), Some(_)) | (None, None) => {},
             _ => bail!("tls_cert_path and tls_key_path must be configured together"),
         }
         match (&self.h3_cert_path, &self.h3_key_path) {
@@ -146,12 +159,12 @@ impl Config {
                 if self.h3_listen.is_none() {
                     bail!("h3_listen must be configured explicitly when HTTP/3 is enabled");
                 }
-            }
+            },
             (None, None) => {
                 if self.h3_listen.is_some() {
                     bail!("h3_listen requires both h3_cert_path and h3_key_path");
                 }
-            }
+            },
             _ => bail!("h3_cert_path and h3_key_path must be configured together"),
         }
         if !self.metrics_path.starts_with('/') {
@@ -275,7 +288,11 @@ struct ConfigArgs {
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     ws_path_tcp: Option<String>,
 
-    #[arg(long = "ws-path-udp", visible_alias = "udp-ws-path", env = "OUTLINE_SS_WS_PATH_UDP")]
+    #[arg(
+        long = "ws-path-udp",
+        visible_alias = "udp-ws-path",
+        env = "OUTLINE_SS_WS_PATH_UDP"
+    )]
     ws_path_udp: Option<String>,
 
     #[arg(
@@ -462,8 +479,9 @@ pub enum ConfigError {
 }
 
 fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
-    let (id, password) =
-        value.split_once('=').ok_or_else(|| "expected format id=password".to_owned())?;
+    let (id, password) = value
+        .split_once('=')
+        .ok_or_else(|| "expected format id=password".to_owned())?;
     let id = id.trim();
     let password = password.trim();
 
@@ -498,7 +516,11 @@ fn load_file_config(path: &Path) -> Result<FileConfig> {
 
 fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
-    if extension.starts_with('.') { extension } else { format!(".{extension}") }
+    if extension.starts_with('.') {
+        extension
+    } else {
+        format!(".{extension}")
+    }
 }
 
 fn default_http_root_realm() -> String {

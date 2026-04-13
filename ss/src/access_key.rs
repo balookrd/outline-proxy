@@ -179,7 +179,11 @@ fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
 }
 
 fn normalize_path(path: &str) -> String {
-    if path.starts_with('/') { path.to_owned() } else { format!("/{path}") }
+    if path.starts_with('/') {
+        path.to_owned()
+    } else {
+        format!("/{path}")
+    }
 }
 
 fn normalize_host(host: &str) -> String {
