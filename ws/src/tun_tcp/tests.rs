@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::{accept_async, connect_async};
 
 fn parse_action_response(packet: &[u8]) -> Vec<u8> {

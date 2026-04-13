@@ -41,6 +41,7 @@ pub use ws_stream::AnyWsStream;
 pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
 pub(crate) use socket::{bind_addr_for, bind_udp_socket};
+#[cfg(feature = "h3")]
 pub(crate) use url_util::{format_authority, websocket_path};
 
 pub async fn connect_websocket(
