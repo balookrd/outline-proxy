@@ -12,11 +12,7 @@ use super::state_machine::{
 
 pub(super) enum FlowMaintenancePlan {
     Wait(Option<Instant>),
-    SendPacket {
-        packet: Vec<u8>,
-        packet_metric: &'static str,
-        event: &'static str,
-    },
+    SendPacket { packet: Vec<u8>, packet_metric: &'static str, event: &'static str },
     Abort(&'static str),
     Close(&'static str),
 }
@@ -145,9 +141,5 @@ pub(super) fn plan_flow_maintenance(
         });
     }
 
-    Ok(FlowMaintenancePlan::Wait(next_flow_deadline(
-        state,
-        tcp,
-        idle_timeout,
-    )))
+    Ok(FlowMaintenancePlan::Wait(next_flow_deadline(state, tcp, idle_timeout)))
 }

@@ -15,9 +15,9 @@ mod wire;
 mod tests;
 
 pub use self::engine::TunUdpEngine;
-pub(crate) use self::wire::parse_udp_packet;
 #[cfg(test)]
 pub(crate) use self::wire::build_ipv4_udp_packet;
+pub(crate) use self::wire::parse_udp_packet;
 
 use self::types::{UdpFlowKey, UdpFlowState};
 

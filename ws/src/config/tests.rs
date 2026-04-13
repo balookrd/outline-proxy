@@ -23,10 +23,7 @@ fn config_deserializes() {
     "#;
     let parsed: ConfigFile = toml::from_str(cfg).unwrap();
     let socks5 = parsed.socks5.unwrap();
-    assert_eq!(
-        socks5.listen.unwrap(),
-        SocketAddr::from(([127, 0, 0, 1], 1080))
-    );
+    assert_eq!(socks5.listen.unwrap(), SocketAddr::from(([127, 0, 0, 1], 1080)));
     assert_eq!(socks5.username.as_deref(), Some("alice"));
     assert_eq!(socks5.password.as_deref(), Some("secret"));
 }
@@ -355,62 +352,19 @@ async fn load_config_enables_tun_when_configured() {
 
     let args = super::Args::parse_from(["test"]);
     let config = load_config(&path, &args).await.unwrap();
-    assert_eq!(
-        config.tun.as_ref().unwrap().path,
-        PathBuf::from("/dev/tun0")
-    );
+    assert_eq!(config.tun.as_ref().unwrap().path, PathBuf::from("/dev/tun0"));
     assert_eq!(config.tun.as_ref().unwrap().mtu, 1500);
     assert_eq!(config.tun.as_ref().unwrap().max_flows, 512);
-    assert_eq!(
-        config.tun.as_ref().unwrap().idle_timeout,
-        Duration::from_secs(60)
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.connect_timeout,
-        Duration::from_secs(7)
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.handshake_timeout,
-        Duration::from_secs(9)
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.half_close_timeout,
-        Duration::from_secs(30)
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.max_pending_server_bytes,
-        262_144
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.backlog_abort_grace,
-        Duration::from_secs(5)
-    );
-    assert_eq!(
-        config
-            .tun
-            .as_ref()
-            .unwrap()
-            .tcp
-            .backlog_hard_limit_multiplier,
-        4
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.backlog_no_progress_abort,
-        Duration::from_secs(11)
-    );
-    assert_eq!(
-        config
-            .tun
-            .as_ref()
-            .unwrap()
-            .tcp
-            .max_buffered_client_segments,
-        2048
-    );
-    assert_eq!(
-        config.tun.as_ref().unwrap().tcp.max_buffered_client_bytes,
-        65_536
-    );
+    assert_eq!(config.tun.as_ref().unwrap().idle_timeout, Duration::from_secs(60));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.connect_timeout, Duration::from_secs(7));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.handshake_timeout, Duration::from_secs(9));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.half_close_timeout, Duration::from_secs(30));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.max_pending_server_bytes, 262_144);
+    assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_abort_grace, Duration::from_secs(5));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_hard_limit_multiplier, 4);
+    assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_no_progress_abort, Duration::from_secs(11));
+    assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_segments, 2048);
+    assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_bytes, 65_536);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);
 }
 
@@ -437,10 +391,7 @@ async fn load_config_enables_tun_from_cli_without_tun_section() {
         "1500",
     ]);
     let config = load_config(&path, &args).await.unwrap();
-    assert_eq!(
-        config.tun.as_ref().unwrap().path,
-        PathBuf::from("/dev/net/tun")
-    );
+    assert_eq!(config.tun.as_ref().unwrap().path, PathBuf::from("/dev/net/tun"));
     assert_eq!(config.tun.as_ref().unwrap().name.as_deref(), Some("tun0"));
     assert_eq!(config.tun.as_ref().unwrap().mtu, 1500);
 
@@ -468,10 +419,7 @@ async fn load_config_enables_metrics_from_cli_without_metrics_section() {
         "127.0.0.1:1080",
     ]);
     let config = load_config(&path, &args).await.unwrap();
-    assert_eq!(
-        config.metrics.as_ref().unwrap().listen,
-        "[::1]:9090".parse().unwrap()
-    );
+    assert_eq!(config.metrics.as_ref().unwrap().listen, "[::1]:9090".parse().unwrap());
 
     let _ = std::fs::remove_file(path);
 }
@@ -527,14 +475,8 @@ async fn load_config_supports_direct_shadowsocks_uplink() {
     assert_eq!(config.uplinks.len(), 1);
     let uplink = &config.uplinks[0];
     assert_eq!(uplink.transport, crate::types::UplinkTransport::Shadowsocks);
-    assert_eq!(
-        uplink.tcp_addr.as_ref().unwrap().to_string(),
-        "ss.example.com:8388"
-    );
-    assert_eq!(
-        uplink.udp_addr.as_ref().unwrap().to_string(),
-        "ss.example.com:8388"
-    );
+    assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
+    assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
     assert!(uplink.tcp_ws_url.is_none());
     assert!(uplink.udp_ws_url.is_none());
 

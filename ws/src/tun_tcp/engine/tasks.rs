@@ -55,11 +55,7 @@ impl TunTcpEngine {
                         engine.close_flow(&key, reason).await;
                         return;
                     }
-                    Ok(FlowMaintenancePlan::SendPacket {
-                        packet,
-                        packet_metric,
-                        event,
-                    }) => {
+                    Ok(FlowMaintenancePlan::SendPacket { packet, packet_metric, event }) => {
                         let ip_family = ip_family_from_version(key.version);
                         if let Err(error) = engine.inner.writer.write_packet(&packet).await {
                             warn!(
@@ -102,9 +98,7 @@ impl TunTcpEngine {
                             error = %format!("{error:#}"),
                             "failed to plan TUN TCP flow maintenance"
                         );
-                        engine
-                            .abort_flow_with_rst(&key, "retransmit_build_error")
-                            .await;
+                        engine.abort_flow_with_rst(&key, "retransmit_build_error").await;
                         return;
                     }
                 }
@@ -242,11 +236,7 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                if engine
-                    .inner
-                    .uplinks
-                    .strict_active_uplink_for(TransportKind::Tcp)
-                {
+                if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
                     let active_uplink = engine
                         .inner
                         .uplinks
@@ -292,10 +282,7 @@ impl TunTcpEngine {
                                 &mut state,
                                 &engine.inner.tcp,
                                 Instant::now(),
-                                flush
-                                    .as_ref()
-                                    .map(|flush| flush.window_stalled)
-                                    .unwrap_or(false),
+                                flush.as_ref().map(|flush| flush.window_stalled).unwrap_or(false),
                             );
                             sync_flow_metrics_and_wake(&mut state);
                             (
@@ -313,9 +300,7 @@ impl TunTcpEngine {
                                 state.uplink_index
                             };
                             let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
-                            engine
-                                .report_tcp_runtime_failure(uplink_index, &error)
-                                .await;
+                            engine.report_tcp_runtime_failure(uplink_index, &error).await;
                             let (cooldown_ms, penalty_ms) = engine
                                 .inner
                                 .uplinks
@@ -332,9 +317,7 @@ impl TunTcpEngine {
                                 no_progress_ms = backlog_pressure.no_progress_ms.unwrap_or_default(),
                                 "closing TUN TCP flow after server backlog limit"
                             );
-                            engine
-                                .abort_flow_with_rst(&key, "server_backlog_limit")
-                                .await;
+                            engine.abort_flow_with_rst(&key, "server_backlog_limit").await;
                             return;
                         } else if backlog_pressure.exceeded {
                             debug!(
@@ -441,9 +424,7 @@ impl TunTcpEngine {
                                     .report_upstream_close(uplink_index, TransportKind::Tcp)
                                     .await;
                             } else {
-                                engine
-                                    .report_tcp_runtime_failure(uplink_index, &error)
-                                    .await;
+                                engine.report_tcp_runtime_failure(uplink_index, &error).await;
                             }
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");

@@ -60,15 +60,8 @@ impl TunUdpEngine {
             remote_port: packet.destination_port,
         };
 
-        let active_uplink = if self
-            .inner
-            .uplinks
-            .strict_active_uplink_for(TransportKind::Udp)
-        {
-            self.inner
-                .uplinks
-                .active_uplink_index_for_transport(TransportKind::Udp)
-                .await
+        let active_uplink = if self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp) {
+            self.inner.uplinks.active_uplink_index_for_transport(TransportKind::Udp).await
         } else {
             None
         };
@@ -127,12 +120,7 @@ impl TunUdpEngine {
                 return Err(error);
             }
             metrics::add_udp_datagram("client_to_upstream", &replacement_name);
-            metrics::add_bytes(
-                "udp",
-                "client_to_upstream",
-                &replacement_name,
-                payload.len(),
-            );
+            metrics::add_bytes("udp", "client_to_upstream", &replacement_name, payload.len());
             debug!(
                 flow_id = replacement_flow_id,
                 uplink = %replacement_name,

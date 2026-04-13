@@ -29,16 +29,9 @@ impl TunTcpEngine {
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
     ) -> Result<()> {
-        if self
-            .inner
-            .uplinks
-            .strict_active_uplink_for(TransportKind::Tcp)
-        {
-            let active_uplink = self
-                .inner
-                .uplinks
-                .active_uplink_index_for_transport(TransportKind::Tcp)
-                .await;
+        if self.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
+            let active_uplink =
+                self.inner.uplinks.active_uplink_index_for_transport(TransportKind::Tcp).await;
             let (should_abort, key) = {
                 let state = flow.lock().await;
                 (
@@ -130,11 +123,8 @@ impl TunTcpEngine {
             }
         }
 
-        let ack_effect = process_server_ack(
-            &mut state,
-            packet.acknowledgement_number,
-            &packet.sack_blocks,
-        );
+        let ack_effect =
+            process_server_ack(&mut state, packet.acknowledgement_number, &packet.sack_blocks);
         let bytes_acked = ack_effect.bytes_acked;
         let rtt_sample = ack_effect.rtt_sample;
         if ack_effect.has_ack_progress() {
@@ -166,8 +156,7 @@ impl TunTcpEngine {
                 if retransmit_budget_exhausted(&state, &self.inner.tcp) {
                     let key = state.key.clone();
                     drop(state);
-                    self.abort_flow_with_rst(&key, "retransmit_budget_exhausted")
-                        .await;
+                    self.abort_flow_with_rst(&key, "retransmit_budget_exhausted").await;
                     return Ok(());
                 }
                 sync_flow_metrics_and_wake(&mut state);
@@ -220,8 +209,7 @@ impl TunTcpEngine {
             if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
                 let key = state.key.clone();
                 drop(state);
-                self.abort_flow_with_rst(&key, "client_reassembly_limit")
-                    .await;
+                self.abort_flow_with_rst(&key, "client_reassembly_limit").await;
                 return Ok(());
             }
             sync_flow_metrics_and_wake(&mut state);
@@ -333,9 +321,7 @@ impl TunTcpEngine {
                 );
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
-                state
-                    .pending_client_data
-                    .push_back(std::mem::take(&mut pending_payload).into());
+                state.pending_client_data.push_back(std::mem::take(&mut pending_payload).into());
                 sync_flow_metrics_and_wake(&mut state);
             }
             should_send_ack = true;

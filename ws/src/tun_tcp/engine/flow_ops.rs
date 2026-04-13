@@ -70,10 +70,7 @@ impl TunTcpEngine {
             client_window: u32::from(packet.window_size),
             client_window_end: server_isn
                 .wrapping_add(1)
-                .wrapping_add(decode_client_window(
-                    &packet,
-                    packet.window_scale.unwrap_or(0),
-                )),
+                .wrapping_add(decode_client_window(&packet, packet.window_scale.unwrap_or(0))),
             client_window_update_seq: packet.sequence_number,
             client_window_update_ack: packet.acknowledgement_number,
             server_seq: server_isn.wrapping_add(1),

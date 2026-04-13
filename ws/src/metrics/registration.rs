@@ -12,10 +12,7 @@ impl Metrics {
         let registry = Registry::new();
 
         let build_info = IntGaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_build_info",
-                "Build info for outline-ws-rust.",
-            ),
+            Opts::new("outline_ws_rust_build_info", "Build info for outline-ws-rust."),
             &["version"],
         )
         .expect("build_info metric");
@@ -46,9 +43,7 @@ impl Metrics {
                 "outline_ws_rust_session_duration_seconds",
                 "Proxy session duration by protocol and result.",
             )
-            .buckets(vec![
-                0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0, 60.0, 300.0, 900.0,
-            ]),
+            .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0, 60.0, 300.0, 900.0]),
             &["protocol", "result"],
         )
         .expect("session_duration_seconds metric");
@@ -161,9 +156,7 @@ impl Metrics {
                 "outline_ws_rust_probe_duration_seconds",
                 "Probe duration by uplink, transport and probe type.",
             )
-            .buckets(vec![
-                0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0,
-            ]),
+            .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0]),
             &["uplink", "transport", "probe"],
         )
         .expect("probe_duration_seconds metric");
@@ -299,10 +292,7 @@ impl Metrics {
         )
         .expect("tun_packets_total metric");
         let tun_flows_total = IntCounterVec::new(
-            Opts::new(
-                "outline_ws_rust_tun_flows_total",
-                "Lifecycle events for TUN UDP flows.",
-            ),
+            Opts::new("outline_ws_rust_tun_flows_total", "Lifecycle events for TUN UDP flows."),
             &["event", "uplink"],
         )
         .expect("tun_flows_total metric");
@@ -507,10 +497,7 @@ impl Metrics {
         )
         .expect("tun_tcp_smoothed_rtt_seconds metric");
         let uplink_health = GaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_uplink_health",
-                "Current uplink health by transport.",
-            ),
+            Opts::new("outline_ws_rust_uplink_health", "Current uplink health by transport."),
             &["transport", "uplink"],
         )
         .expect("uplink_health metric");
@@ -555,10 +542,7 @@ impl Metrics {
         )
         .expect("uplink_score_seconds metric");
         let uplink_weight = GaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_uplink_weight",
-                "Configured static weight for each uplink.",
-            ),
+            Opts::new("outline_ws_rust_uplink_weight", "Configured static weight for each uplink."),
             &["uplink"],
         )
         .expect("uplink_weight metric");
@@ -587,10 +571,7 @@ impl Metrics {
         )
         .expect("selection_mode_info metric");
         let routing_scope_info = IntGaugeVec::new(
-            Opts::new(
-                "outline_ws_rust_routing_scope_info",
-                "Configured routing scope.",
-            ),
+            Opts::new("outline_ws_rust_routing_scope_info", "Configured routing scope."),
             &["scope"],
         )
         .expect("routing_scope_info metric");
@@ -624,9 +605,7 @@ impl Metrics {
         )
         .expect("sticky_routes_by_uplink metric");
 
-        registry
-            .register(Box::new(build_info.clone()))
-            .expect("register build_info");
+        registry.register(Box::new(build_info.clone())).expect("register build_info");
         registry
             .register(Box::new(start_time_seconds.clone()))
             .expect("register start_time_seconds");
@@ -645,9 +624,7 @@ impl Metrics {
         registry
             .register(Box::new(session_recent_samples.clone()))
             .expect("register session_recent_samples");
-        registry
-            .register(Box::new(bytes_total.clone()))
-            .expect("register bytes_total");
+        registry.register(Box::new(bytes_total.clone())).expect("register bytes_total");
         registry
             .register(Box::new(udp_datagrams_total.clone()))
             .expect("register udp_datagrams_total");
@@ -865,16 +842,10 @@ impl Metrics {
             .register(Box::new(sticky_routes_by_uplink.clone()))
             .expect("register sticky_routes_by_uplink");
 
-        build_info
-            .with_label_values(&[env!("CARGO_PKG_VERSION")])
-            .set(1);
+        build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
 
-        start_time_seconds.set(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-        );
+        start_time_seconds
+            .set(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64());
 
         Self {
             registry,

@@ -151,9 +151,7 @@ struct TestWsServer {
 
 impl TestWsServer {
     async fn start() -> Self {
-        let listener = TcpListener::bind(("127.0.0.1", 0))
-            .await
-            .expect("bind ws server");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("bind ws server");
         let addr = listener.local_addr().expect("ws server addr");
         let accepted = Arc::new(AtomicUsize::new(0));
         let connections = Arc::new(Mutex::new(Vec::new()));
@@ -174,11 +172,7 @@ impl TestWsServer {
             }
         });
 
-        Self {
-            addr,
-            accepted,
-            connections,
-        }
+        Self { addr, accepted, connections }
     }
 
     fn url(&self) -> Url {

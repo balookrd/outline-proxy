@@ -13,10 +13,7 @@ use super::udp::{decrypt_udp_packet, encrypt_udp_packet};
 #[test]
 fn bytes_to_key_matches_known_vector() {
     let key = evp_bytes_to_key(b"password", 32);
-    assert_eq!(
-        hex(&key),
-        "5f4dcc3b5aa765d61d8327deb882cf992b95990a9151374abd8ff8c5a7a0fe08"
-    );
+    assert_eq!(hex(&key), "5f4dcc3b5aa765d61d8327deb882cf992b95990a9151374abd8ff8c5a7a0fe08");
 }
 
 #[test]
@@ -43,25 +40,18 @@ fn shadowsocks_udp_packet_round_trip() {
 #[test]
 fn ss2022_key_uses_base64_psk() {
     let cipher = CipherKind::Aes128Gcm2022;
-    let key = cipher
-        .derive_master_key("AQIDBAUGBwgJCgsMDQ4PEA==")
-        .unwrap();
+    let key = cipher.derive_master_key("AQIDBAUGBwgJCgsMDQ4PEA==").unwrap();
     assert_eq!(hex(&key), "0102030405060708090a0b0c0d0e0f10");
 }
 
 #[test]
 fn ss2022_udp_packet_round_trip() {
     let cipher = CipherKind::Aes128Gcm2022;
-    let master_key = cipher
-        .derive_master_key("AQIDBAUGBwgJCgsMDQ4PEA==")
-        .unwrap();
+    let master_key = cipher.derive_master_key("AQIDBAUGBwgJCgsMDQ4PEA==").unwrap();
     let client_session_id = 7u64;
     let server_session_id = 17u64;
     let server_packet_id = 19u64;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let mut plaintext = Vec::new();
     plaintext.push(SS2022_UDP_SERVER_PACKET);
     plaintext.extend_from_slice(&timestamp.to_be_bytes());
@@ -92,10 +82,7 @@ fn ss2022_chacha_udp_packet_round_trip() {
     let client_session_id = 7u64;
     let server_session_id = 17u64;
     let server_packet_id = 19u64;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
     let mut plaintext = Vec::new();
     plaintext.extend_from_slice(&server_session_id.to_be_bytes());
     plaintext.extend_from_slice(&server_packet_id.to_be_bytes());

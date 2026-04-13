@@ -46,10 +46,7 @@ struct ParsedTcpOptions {
 }
 
 pub(crate) fn parse_tcp_packet(packet: &[u8]) -> Result<ParsedTcpPacket> {
-    let version = packet
-        .first()
-        .ok_or_else(|| anyhow!("empty TUN TCP packet"))?
-        >> 4;
+    let version = packet.first().ok_or_else(|| anyhow!("empty TUN TCP packet"))? >> 4;
     match version {
         4 => parse_ipv4_tcp_packet(packet),
         6 => parse_ipv6_tcp_packet(packet),
@@ -227,11 +224,8 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
 }
 
 pub(super) fn build_reset_response(packet: &ParsedTcpPacket) -> Result<Vec<u8>> {
-    let response_seq = if (packet.flags & TCP_FLAG_ACK) != 0 {
-        packet.acknowledgement_number
-    } else {
-        0
-    };
+    let response_seq =
+        if (packet.flags & TCP_FLAG_ACK) != 0 { packet.acknowledgement_number } else { 0 };
     let response_ack = if (packet.flags & TCP_FLAG_ACK) != 0 {
         0
     } else {
@@ -241,11 +235,8 @@ pub(super) fn build_reset_response(packet: &ParsedTcpPacket) -> Result<Vec<u8>> 
             .wrapping_add(u32::from((packet.flags & TCP_FLAG_SYN) != 0))
             .wrapping_add(u32::from((packet.flags & TCP_FLAG_FIN) != 0))
     };
-    let response_flags = if (packet.flags & TCP_FLAG_ACK) != 0 {
-        TCP_FLAG_RST
-    } else {
-        TCP_FLAG_RST | TCP_FLAG_ACK
-    };
+    let response_flags =
+        if (packet.flags & TCP_FLAG_ACK) != 0 { TCP_FLAG_RST } else { TCP_FLAG_RST | TCP_FLAG_ACK };
 
     build_response_packet(
         packet.version,

@@ -199,9 +199,8 @@ fn h2_client_tls_config() -> Arc<ClientConfig> {
     Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| {
         let mut roots = RootCertStore::empty();
         roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
+        let mut config =
+            ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
         config.alpn_protocols = vec![b"h2".to_vec()];
         Arc::new(config)
     }))
@@ -217,11 +216,7 @@ impl TransportConnectGuard {
     pub(crate) fn new(source: &'static str, mode: &'static str) -> Self {
         add_transport_connects_active(source, mode, 1);
         record_transport_connect(source, mode, "started");
-        Self {
-            source,
-            mode,
-            finished: false,
-        }
+        Self { source, mode, finished: false }
     }
 
     pub(crate) fn finish(&mut self, result: &'static str) {
@@ -361,23 +356,13 @@ type WsSink = SplitSink<AnyWsStream, Message>;
 type WsStream = SplitStream<AnyWsStream>;
 
 enum TcpWriteTransport {
-    Websocket {
-        data_tx: Option<mpsc::Sender<Message>>,
-        _writer_task: AbortOnDrop,
-    },
-    Socket {
-        writer: OwnedWriteHalf,
-    },
+    Websocket { data_tx: Option<mpsc::Sender<Message>>, _writer_task: AbortOnDrop },
+    Socket { writer: OwnedWriteHalf },
 }
 
 enum TcpReadTransport {
-    Websocket {
-        stream: WsStream,
-        ctrl_tx: mpsc::Sender<Message>,
-    },
-    Socket {
-        reader: OwnedReadHalf,
-    },
+    Websocket { stream: WsStream, ctrl_tx: mpsc::Sender<Message> },
+    Socket { reader: OwnedReadHalf },
 }
 
 enum UdpTransport {
@@ -748,10 +733,9 @@ impl TcpShadowsocksWriter {
                 key: derive_subkey(cipher, master_key, &salt)?,
                 nonce: [0u8; 12],
                 pending_salt: Some(salt),
-                ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
-                    request_salt,
-                    header_sent: false,
-                }),
+                ss2022: cipher
+                    .is_ss2022()
+                    .then(|| Ss2022TcpWriterState { request_salt, header_sent: false }),
                 _lifetime: lifetime,
             },
             ctrl_tx,
@@ -772,18 +756,15 @@ impl TcpShadowsocksWriter {
             key: derive_subkey(cipher, master_key, &salt)?,
             nonce: [0u8; 12],
             pending_salt: Some(salt.clone()),
-            ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
-                request_salt: salt,
-                header_sent: false,
-            }),
+            ss2022: cipher
+                .is_ss2022()
+                .then(|| Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
             _lifetime: lifetime,
         })
     }
 
     pub fn request_salt(&self) -> Option<&[u8]> {
-        self.ss2022
-            .as_ref()
-            .map(|state| state.request_salt.as_slice())
+        self.ss2022.as_ref().map(|state| state.request_salt.as_slice())
     }
 
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
@@ -916,10 +897,8 @@ impl TcpShadowsocksReader {
     }
 
     pub(crate) fn with_request_salt(mut self, request_salt: Option<Vec<u8>>) -> Self {
-        self.ss2022 = request_salt.map(|request_salt| Ss2022TcpReaderState {
-            request_salt,
-            response_header_read: false,
-        });
+        self.ss2022 = request_salt
+            .map(|request_salt| Ss2022TcpReaderState { request_salt, response_header_read: false });
         self
     }
 
@@ -928,15 +907,10 @@ impl TcpShadowsocksReader {
             let salt = self.read_exact_from_ws(self.cipher.salt_len()).await?;
             self.key = Some(derive_subkey(self.cipher, &self.master_key, &salt)?);
         }
-        let key = self
-            .key
-            .clone()
-            .ok_or_else(|| anyhow!("missing derived key"))?;
+        let key = self.key.clone().ok_or_else(|| anyhow!("missing derived key"))?;
 
-        let need_ss2022_response_header = self
-            .ss2022
-            .as_ref()
-            .is_some_and(|state| !state.response_header_read);
+        let need_ss2022_response_header =
+            self.ss2022.as_ref().is_some_and(|state| !state.response_header_read);
         if need_ss2022_response_header {
             let request_salt = self
                 .ss2022
@@ -950,9 +924,8 @@ impl TcpShadowsocksReader {
                 increment_nonce(&mut self.nonce);
                 let payload_len =
                     parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
-                let encrypted_payload = self
-                    .read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN)
-                    .await?;
+                let encrypted_payload =
+                    self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
                 let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
                 increment_nonce(&mut self.nonce);
                 if let Some(state) = &mut self.ss2022 {
@@ -980,9 +953,7 @@ impl TcpShadowsocksReader {
             bail!("payload length exceeds limit: {payload_len}");
         }
 
-        let encrypted_payload = self
-            .read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN)
-            .await?;
+        let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
         let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
         increment_nonce(&mut self.nonce);
         Ok(payload)
@@ -1092,11 +1063,7 @@ impl UdpWsTransport {
                 ticker.tick().await; // skip the first immediate tick
                 loop {
                     ticker.tick().await;
-                    if keepalive_ctrl_tx
-                        .send(Message::Ping(vec![].into()))
-                        .await
-                        .is_err()
-                    {
+                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
                         break;
                     }
                 }
@@ -1227,9 +1194,7 @@ impl UdpWsTransport {
                 };
                 self.decrypt_udp_bytes(&buf[..len]).await
             }
-            UdpTransport::Websocket {
-                stream, ctrl_tx, ..
-            } => {
+            UdpTransport::Websocket { stream, ctrl_tx, .. } => {
                 let mut close_rx = self.close_signal.subscribe();
                 let mut stream = stream.lock().await;
                 loop {
@@ -1303,12 +1268,8 @@ async fn connect_websocket_http1(
     source: &'static str,
 ) -> Result<H1WsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "http1");
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL is missing port"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let port = url.port_or_known_default().ok_or_else(|| anyhow!("URL is missing port"))?;
     let server_addr =
         resolve_host_with_preference(host, port, "failed to resolve websocket host", ipv6_first)
             .await?
@@ -1330,31 +1291,19 @@ async fn connect_websocket_h2(
     source: &'static str,
 ) -> Result<AnyWsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h2");
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr = resolve_host_with_preference(
-        host,
-        port,
-        "failed to resolve h2 websocket host",
-        ipv6_first,
-    )
-    .await?
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let port = url.port_or_known_default().ok_or_else(|| anyhow!("URL is missing port"))?;
+    let server_addr =
+        resolve_host_with_preference(host, port, "failed to resolve h2 websocket host", ipv6_first)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let target_uri = websocket_target_uri(url)?;
 
     let io = match url.scheme() {
-        "ws" => H2Io::Plain {
-            inner: connect_tcp_socket(server_addr, fwmark).await?,
-        },
-        "wss" => H2Io::Tls {
-            inner: connect_tls_h2(server_addr, host, fwmark).await?,
-        },
+        "ws" => H2Io::Plain { inner: connect_tcp_socket(server_addr, fwmark).await? },
+        "wss" => H2Io::Tls { inner: connect_tls_h2(server_addr, host, fwmark).await? },
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
     };
 
@@ -1386,10 +1335,7 @@ async fn connect_websocket_h2(
     let mut response: http::Response<hyper::body::Incoming> =
         send_request.send_request(req).await?;
     if !response.status().is_success() {
-        bail!(
-            "HTTP/2 websocket CONNECT failed with status {}",
-            response.status()
-        );
+        bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
     }
 
     let upgraded = hyper::upgrade::on(&mut response)
@@ -1397,12 +1343,7 @@ async fn connect_websocket_h2(
         .context("failed to upgrade HTTP/2 websocket stream")?;
     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
     connect_guard.finish("success");
-    Ok(AnyWsStream::H2 {
-        inner: H2WsStream {
-            inner: ws,
-            driver_task,
-        },
-    })
+    Ok(AnyWsStream::H2 { inner: H2WsStream { inner: ws, driver_task } })
 }
 
 async fn connect_tls_h2(
@@ -1445,18 +1386,12 @@ async fn connect_tcp_socket_with_fwmark(
     addr: SocketAddr,
     fwmark: Option<u32>,
 ) -> Result<TcpStream> {
-    let socket = Socket::new(
-        Domain::for_address(addr),
-        Type::STREAM,
-        Some(SocketProtocol::TCP),
-    )
-    .context("failed to create TCP socket")?;
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(SocketProtocol::TCP))
+        .context("failed to create TCP socket")?;
     apply_fwmark(&socket, fwmark)?;
     // Set non-blocking BEFORE connect so that the handshake is driven by tokio
     // instead of blocking the current thread.
-    socket
-        .set_nonblocking(true)
-        .context("failed to set TCP socket nonblocking")?;
+    socket.set_nonblocking(true).context("failed to set TCP socket nonblocking")?;
     // Non-blocking connect: returns EINPROGRESS while the handshake is in flight.
     match socket.connect(&addr.into()) {
         Ok(()) => {}
@@ -1477,10 +1412,7 @@ async fn connect_tcp_socket_with_fwmark(
         .await
         .with_context(|| format!("failed waiting for TCP connect to {addr}"))?;
     // Retrieve the actual connect result via getsockopt(SO_ERROR).
-    if let Some(err) = stream
-        .take_error()
-        .context("failed to retrieve TCP socket error")?
-    {
+    if let Some(err) = stream.take_error().context("failed to retrieve TCP socket error")? {
         return Err(err).with_context(|| format!("TCP connection to {addr} failed"));
     }
     configure_tcp_stream_low_latency(&stream, addr)?;
@@ -1499,12 +1431,9 @@ pub(crate) fn bind_udp_socket(
     bind_addr: SocketAddr,
     fwmark: Option<u32>,
 ) -> Result<std::net::UdpSocket> {
-    let socket = Socket::new(
-        Domain::for_address(bind_addr),
-        Type::DGRAM,
-        Some(SocketProtocol::UDP),
-    )
-    .context("failed to create UDP socket")?;
+    let socket =
+        Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(SocketProtocol::UDP))
+            .context("failed to create UDP socket")?;
     if bind_addr.is_ipv6() {
         let _ = socket.set_only_v6(false);
     }
@@ -1515,9 +1444,7 @@ pub(crate) fn bind_udp_socket(
     if let Some(&size) = UDP_SEND_BUF_BYTES.get() {
         let _ = socket.set_send_buffer_size(size);
     }
-    socket
-        .set_nonblocking(true)
-        .context("failed to set UDP socket nonblocking")?;
+    socket.set_nonblocking(true).context("failed to set UDP socket nonblocking")?;
     socket
         .bind(&bind_addr.into())
         .with_context(|| format!("failed to bind UDP socket on {bind_addr}"))?;
@@ -1563,11 +1490,7 @@ fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
 }
 
 pub(crate) fn websocket_path(url: &Url) -> String {
-    let mut path = if url.path().is_empty() {
-        "/".to_string()
-    } else {
-        url.path().to_string()
-    };
+    let mut path = if url.path().is_empty() { "/".to_string() } else { url.path().to_string() };
     if let Some(query) = url.query() {
         path.push('?');
         path.push_str(query);
@@ -1582,9 +1505,7 @@ fn websocket_target_uri(url: &Url) -> Result<String> {
         other => bail!("unsupported websocket scheme for h2 target URI: {other}"),
     };
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let mut uri = format!("{scheme}://{}", format_authority(host, url.port()));
     uri.push_str(&websocket_path(url));
     Ok(uri)
