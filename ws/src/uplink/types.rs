@@ -97,7 +97,10 @@ pub enum TransportKind {
 pub(super) enum RoutingKey {
     Global,
     TransportGlobal(TransportKind),
-    Target { transport: TransportKind, target: TargetAddr },
+    Target {
+        transport: TransportKind,
+        target: TargetAddr,
+    },
     Default(TransportKind),
 }
 
@@ -107,10 +110,10 @@ impl fmt::Display for RoutingKey {
             Self::Global => write!(f, "global"),
             Self::TransportGlobal(transport) => {
                 write!(f, "{}:global", transport_key_prefix(*transport))
-            }
+            },
             Self::Target { transport, target } => {
                 write!(f, "{}:{target}", transport_key_prefix(*transport))
-            }
+            },
             Self::Default(transport) => write!(f, "{}:default", transport_key_prefix(*transport)),
         }
     }

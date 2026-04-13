@@ -30,7 +30,11 @@ pub(crate) fn flip_packet_byte(packet: &[u8], offset: usize) -> Vec<u8> {
 pub(crate) fn transport_offset(packet: &[u8]) -> usize {
     match packet.first().copied().unwrap_or_default() >> 4 {
         4 => usize::from(packet[0] & 0x0f) * 4,
-        6 => locate_ipv6_upper_layer(packet).expect("valid IPv6 packet in test harness").1,
+        6 => {
+            locate_ipv6_upper_layer(packet)
+                .expect("valid IPv6 packet in test harness")
+                .1
+        },
         other => panic!("unsupported IP version in test harness: {other}"),
     }
 }
@@ -59,7 +63,7 @@ pub(crate) fn assert_transport_checksum_valid(packet: &[u8], protocol: u8) {
                 0,
                 "invalid IPv4 transport checksum",
             );
-        }
+        },
         6 => {
             let (next_header, offset, total_len) =
                 locate_ipv6_upper_layer(packet).expect("valid IPv6 packet in test harness");
@@ -78,7 +82,7 @@ pub(crate) fn assert_transport_checksum_valid(packet: &[u8], protocol: u8) {
                 0,
                 "invalid IPv6 transport checksum",
             );
-        }
+        },
         other => panic!("unsupported IP version in test harness: {other}"),
     }
 }
@@ -89,10 +93,10 @@ pub(crate) fn corrupt_ip_length_field(packet: &[u8]) -> Vec<u8> {
         4 => {
             let invalid_total_len = (transport_offset(packet) + 7) as u16;
             mutated[2..4].copy_from_slice(&invalid_total_len.to_be_bytes());
-        }
+        },
         6 => {
             mutated[4..6].copy_from_slice(&7u16.to_be_bytes());
-        }
+        },
         other => panic!("unsupported IP version in test harness: {other}"),
     }
     mutated

@@ -22,21 +22,21 @@ pub fn encrypt(
                 .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer)
                 .map_err(|_| anyhow!("chacha20 encryption failed"))?;
             buffer.extend_from_slice(&tag);
-        }
+        },
         CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
             let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
             let tag = cipher
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
                 .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?;
             buffer.extend_from_slice(&tag);
-        }
+        },
         CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
             let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
             let tag = cipher
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
                 .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?;
             buffer.extend_from_slice(&tag);
-        }
+        },
     }
     Ok(buffer)
 }
@@ -66,7 +66,7 @@ pub fn decrypt(
                     tag.into(),
                 )
                 .map_err(|_| anyhow!("chacha20 decryption failed"))?;
-        }
+        },
         CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
             let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
             cipher
@@ -77,7 +77,7 @@ pub fn decrypt(
                     tag.into(),
                 )
                 .map_err(|_| anyhow!("aes-128-gcm decryption failed"))?;
-        }
+        },
         CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
             let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
             cipher
@@ -88,7 +88,7 @@ pub fn decrypt(
                     tag.into(),
                 )
                 .map_err(|_| anyhow!("aes-256-gcm decryption failed"))?;
-        }
+        },
     }
     Ok(buffer)
 }

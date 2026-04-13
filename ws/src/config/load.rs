@@ -94,12 +94,12 @@ fn load_socks5_auth_config(
                 bail!(
                     "missing socks5 password: pass --socks5-password together with --socks5-username"
                 )
-            }
+            },
             (None, Some(_)) => {
                 bail!(
                     "missing socks5 username: pass --socks5-username together with --socks5-password"
                 )
-            }
+            },
             (None, None) => unreachable!("checked above"),
         };
     }
@@ -129,17 +129,20 @@ fn load_socks5_auth_config(
             bail!(
                 "use either [socks5].username/password for a single user or [[socks5.users]] for multiple users, not both"
             )
-        }
+        },
         (None, Some(username), Some(password)) => vec![validate_socks5_auth_user(
-            Socks5AuthUserConfig { username: username.clone(), password: password.clone() },
+            Socks5AuthUserConfig {
+                username: username.clone(),
+                password: password.clone(),
+            },
             "socks5 auth user",
         )?],
         (None, Some(_), None) => {
             bail!("missing socks5 password: set [socks5].password together with [socks5].username")
-        }
+        },
         (None, None, Some(_)) => {
             bail!("missing socks5 username: set [socks5].username together with [socks5].password")
-        }
+        },
         (None, None, None) => Vec::new(),
     };
 
@@ -217,7 +220,9 @@ impl ResolvedUplinkInput {
                 .or_else(|| outline.and_then(|section| section.password.clone())),
             weight: Some(1.0),
             fwmark: args.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
-            ipv6_first: args.ipv6_first.or_else(|| outline.and_then(|section| section.ipv6_first)),
+            ipv6_first: args
+                .ipv6_first
+                .or_else(|| outline.and_then(|section| section.ipv6_first)),
         }
     }
 
@@ -303,7 +308,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         );
                     }
                     None
-                }
+                },
             },
             tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
             udp_ws_url: match transport {
@@ -319,7 +324,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         );
                     }
                     None
-                }
+                },
                 UplinkTransport::Shadowsocks => Some(tcp_addr.ok_or_else(|| {
                     anyhow!("missing tcp_addr: set it in config.toml or pass --tcp-addr")
                 })?),
@@ -379,9 +384,10 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         port: dns.port.unwrap_or(53),
         name: dns.name.clone().unwrap_or_else(|| "example.com".to_string()),
     });
-    let tcp = probe
-        .and_then(|p| p.tcp.as_ref())
-        .map(|tcp| TcpProbeConfig { host: tcp.host.clone(), port: tcp.port.unwrap_or(80) });
+    let tcp = probe.and_then(|p| p.tcp.as_ref()).map(|tcp| TcpProbeConfig {
+        host: tcp.host.clone(),
+        port: tcp.port.unwrap_or(80),
+    });
 
     Ok(ProbeConfig {
         interval: Duration::from_secs(probe.and_then(|p| p.interval_secs).unwrap_or(30)),
@@ -391,7 +397,10 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         min_failures: probe.and_then(|p| p.min_failures).unwrap_or(3).max(1),
         attempts: probe.and_then(|p| p.attempts).unwrap_or(2).max(1),
         ws: WsProbeConfig {
-            enabled: probe.and_then(|p| p.ws.as_ref()).and_then(|ws| ws.enabled).unwrap_or(false),
+            enabled: probe
+                .and_then(|p| p.ws.as_ref())
+                .and_then(|ws| ws.enabled)
+                .unwrap_or(false),
         },
         http,
         dns,
@@ -441,9 +450,18 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
 }
 
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
-    let path = args.tun_path.clone().or_else(|| tun.and_then(|section| section.path.clone()));
-    let name = args.tun_name.clone().or_else(|| tun.and_then(|section| section.name.clone()));
-    let mtu = args.tun_mtu.or_else(|| tun.and_then(|section| section.mtu)).unwrap_or(1500);
+    let path = args
+        .tun_path
+        .clone()
+        .or_else(|| tun.and_then(|section| section.path.clone()));
+    let name = args
+        .tun_name
+        .clone()
+        .or_else(|| tun.and_then(|section| section.name.clone()));
+    let mtu = args
+        .tun_mtu
+        .or_else(|| tun.and_then(|section| section.mtu))
+        .unwrap_or(1500);
     let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
     let idle_timeout =
         Duration::from_secs(tun.and_then(|section| section.idle_timeout_secs).unwrap_or(300));
@@ -468,19 +486,27 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
     let tcp_section = tun.and_then(|section| section.tcp.as_ref());
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
-            tcp_section.and_then(|section| section.connect_timeout_secs).unwrap_or(10),
+            tcp_section
+                .and_then(|section| section.connect_timeout_secs)
+                .unwrap_or(10),
         ),
         handshake_timeout: Duration::from_secs(
-            tcp_section.and_then(|section| section.handshake_timeout_secs).unwrap_or(15),
+            tcp_section
+                .and_then(|section| section.handshake_timeout_secs)
+                .unwrap_or(15),
         ),
         half_close_timeout: Duration::from_secs(
-            tcp_section.and_then(|section| section.half_close_timeout_secs).unwrap_or(60),
+            tcp_section
+                .and_then(|section| section.half_close_timeout_secs)
+                .unwrap_or(60),
         ),
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
             .unwrap_or(4_194_304),
         backlog_abort_grace: Duration::from_secs(
-            tcp_section.and_then(|section| section.backlog_abort_grace_secs).unwrap_or(3),
+            tcp_section
+                .and_then(|section| section.backlog_abort_grace_secs)
+                .unwrap_or(3),
         ),
         backlog_hard_limit_multiplier: tcp_section
             .and_then(|section| section.backlog_hard_limit_multiplier)
@@ -537,15 +563,18 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("missing tun.name: Linux TUN attach requires --tun-name or [tun].name");
     }
 
-    let defrag_max_fragment_sets =
-        tun.and_then(|section| section.defrag_max_fragment_sets).unwrap_or(1024);
-    let defrag_max_fragments_per_set =
-        tun.and_then(|section| section.defrag_max_fragments_per_set).unwrap_or(64);
+    let defrag_max_fragment_sets = tun
+        .and_then(|section| section.defrag_max_fragment_sets)
+        .unwrap_or(1024);
+    let defrag_max_fragments_per_set = tun
+        .and_then(|section| section.defrag_max_fragments_per_set)
+        .unwrap_or(64);
     let defrag_max_total_bytes = tun
         .and_then(|section| section.defrag_max_total_bytes)
         .unwrap_or(16 * 1024 * 1024);
-    let defrag_max_bytes_per_set =
-        tun.and_then(|section| section.defrag_max_bytes_per_set).unwrap_or(128 * 1024);
+    let defrag_max_bytes_per_set = tun
+        .and_then(|section| section.defrag_max_bytes_per_set)
+        .unwrap_or(128 * 1024);
     if defrag_max_fragment_sets == 0 {
         bail!("tun.defrag_max_fragment_sets must be greater than zero");
     }

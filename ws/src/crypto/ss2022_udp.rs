@@ -137,12 +137,12 @@ pub fn encrypt_udp_separate_header(
             let cipher =
                 Aes128::new_from_slice(master_key).context("invalid aes-128 ss2022 key")?;
             cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
-        }
+        },
         CipherKind::Aes256Gcm2022 => {
             let cipher =
                 Aes256::new_from_slice(master_key).context("invalid aes-256 ss2022 key")?;
             cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
-        }
+        },
         _ => bail!("UDP separate header is only defined for ss2022 AES methods"),
     }
     Ok(block)
@@ -159,12 +159,12 @@ pub fn decrypt_udp_separate_header(
             let cipher =
                 Aes128::new_from_slice(master_key).context("invalid aes-128 ss2022 key")?;
             cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
-        }
+        },
         CipherKind::Aes256Gcm2022 => {
             let cipher =
                 Aes256::new_from_slice(master_key).context("invalid aes-256 ss2022 key")?;
             cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
-        }
+        },
         _ => bail!("UDP separate header is only defined for ss2022 AES methods"),
     }
     Ok(block)

@@ -52,7 +52,7 @@ pub(super) fn validate_existing_packet(
     }
 
     match validate_packet_timestamps(state, packet) {
-        PacketValidation::Accept => {}
+        PacketValidation::Accept => {},
         other => return other,
     }
 

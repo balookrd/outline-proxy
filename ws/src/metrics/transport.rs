@@ -9,7 +9,10 @@ pub fn record_transport_connect(source: &'static str, mode: &'static str, result
 }
 
 pub fn add_transport_connects_active(source: &'static str, mode: &'static str, delta: i64) {
-    METRICS.transport_connects_active.with_label_values(&[source, mode]).add(delta);
+    METRICS
+        .transport_connects_active
+        .with_label_values(&[source, mode])
+        .add(delta);
 }
 
 pub fn record_upstream_transport(
@@ -42,15 +45,24 @@ pub fn add_bytes(protocol: &'static str, direction: &'static str, uplink: &str, 
 }
 
 pub fn add_udp_datagram(direction: &'static str, uplink: &str) {
-    METRICS.udp_datagrams_total.with_label_values(&[direction, uplink]).inc();
+    METRICS
+        .udp_datagrams_total
+        .with_label_values(&[direction, uplink])
+        .inc();
 }
 
 pub fn record_dropped_oversized_udp_packet(direction: &'static str) {
-    METRICS.udp_oversized_dropped_total.with_label_values(&[direction]).inc();
+    METRICS
+        .udp_oversized_dropped_total
+        .with_label_values(&[direction])
+        .inc();
 }
 
 pub fn record_uplink_selected(transport: &'static str, uplink: &str) {
-    METRICS.uplink_selected_total.with_label_values(&[transport, uplink]).inc();
+    METRICS
+        .uplink_selected_total
+        .with_label_values(&[transport, uplink])
+        .inc();
 }
 
 pub fn record_runtime_failure(transport: &'static str, uplink: &str) {
@@ -165,5 +177,8 @@ pub fn record_metrics_http_request(path: &str, status: u16) {
         404 => "404",
         _ => "500",
     };
-    METRICS.metrics_http_requests_total.with_label_values(&[path, status]).inc();
+    METRICS
+        .metrics_http_requests_total
+        .with_label_values(&[path, status])
+        .inc();
 }

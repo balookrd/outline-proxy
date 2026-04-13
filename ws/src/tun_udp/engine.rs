@@ -61,7 +61,10 @@ impl TunUdpEngine {
         };
 
         let active_uplink = if self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp) {
-            self.inner.uplinks.active_uplink_index_for_transport(TransportKind::Udp).await
+            self.inner
+                .uplinks
+                .active_uplink_index_for_transport(TransportKind::Udp)
+                .await
         } else {
             None
         };
@@ -72,7 +75,7 @@ impl TunUdpEngine {
                 Some(flow) if active_uplink.is_some_and(|active| active != flow.uplink_index) => {
                     let stale = guard.remove(&key).expect("stale TUN UDP flow must exist");
                     (None, Some(stale))
-                }
+                },
                 Some(_) => {
                     let flow = guard.get_mut(&key).expect("TUN UDP flow must still exist");
                     flow.last_seen = Instant::now();
@@ -85,7 +88,7 @@ impl TunUdpEngine {
                         )),
                         None,
                     )
-                }
+                },
                 None => (None, None),
             }
         };

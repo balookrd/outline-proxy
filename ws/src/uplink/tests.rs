@@ -233,8 +233,10 @@ async fn per_uplink_scope_ignores_penalty_in_selection_score() {
     set_tcp_status(&manager, 1, true, 30).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty =
-            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
+        statuses[0].tcp_penalty = PenaltyState {
+            value_secs: 20.0,
+            updated_at: Some(Instant::now()),
+        };
     }
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
@@ -460,10 +462,14 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     set_udp_status(&manager, 1, true, 50).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty =
-            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
-        statuses[0].udp_penalty =
-            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
+        statuses[0].tcp_penalty = PenaltyState {
+            value_secs: 20.0,
+            updated_at: Some(Instant::now()),
+        };
+        statuses[0].udp_penalty = PenaltyState {
+            value_secs: 20.0,
+            updated_at: Some(Instant::now()),
+        };
     }
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
@@ -516,7 +522,9 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
     .unwrap();
 
     let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
-    manager.confirm_selected_uplink(TransportKind::Tcp, Some(&tcp_target), 1).await;
+    manager
+        .confirm_selected_uplink(TransportKind::Tcp, Some(&tcp_target), 1)
+        .await;
 
     let snapshot = manager.snapshot().await;
     assert_eq!(snapshot.global_active_uplink.as_deref(), Some("backup"));
@@ -532,14 +540,18 @@ async fn repeated_runtime_failure_during_cooldown_does_not_extend_penalty_or_coo
     .unwrap();
 
     let first_error = anyhow!("first failure");
-    manager.report_runtime_failure(0, TransportKind::Udp, &first_error).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Udp, &first_error)
+        .await;
     let (cooldown_first, penalty_first) =
         manager.runtime_failure_debug_state(0, TransportKind::Udp).await;
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let second_error = anyhow!("second failure");
-    manager.report_runtime_failure(0, TransportKind::Udp, &second_error).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Udp, &second_error)
+        .await;
     let (cooldown_second, penalty_second) =
         manager.runtime_failure_debug_state(0, TransportKind::Udp).await;
 
@@ -559,9 +571,12 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
     .unwrap();
 
     let first_error = anyhow!("first failure");
-    manager.report_runtime_failure(0, TransportKind::Udp, &first_error).await;
-    let first_wakeup_age =
-        manager.runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Udp, &first_error)
+        .await;
+    let first_wakeup_age = manager
+        .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
+        .await;
     assert!(first_wakeup_age.is_some());
 
     {
@@ -570,9 +585,12 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
     }
 
     let second_error = anyhow!("second failure");
-    manager.report_runtime_failure(0, TransportKind::Udp, &second_error).await;
-    let second_wakeup_age =
-        manager.runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp).await;
+    manager
+        .report_runtime_failure(0, TransportKind::Udp, &second_error)
+        .await;
+    let second_wakeup_age = manager
+        .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
+        .await;
 
     assert_eq!(
         second_wakeup_age, first_wakeup_age,

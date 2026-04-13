@@ -362,7 +362,10 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_pending_server_bytes, 262_144);
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_abort_grace, Duration::from_secs(5));
     assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_hard_limit_multiplier, 4);
-    assert_eq!(config.tun.as_ref().unwrap().tcp.backlog_no_progress_abort, Duration::from_secs(11));
+    assert_eq!(
+        config.tun.as_ref().unwrap().tcp.backlog_no_progress_abort,
+        Duration::from_secs(11)
+    );
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_segments, 2048);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_buffered_client_bytes, 65_536);
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);

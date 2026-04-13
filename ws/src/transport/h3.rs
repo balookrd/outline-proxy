@@ -121,8 +121,9 @@ fn h3_client_tls_config() -> Arc<ClientConfig> {
     Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| {
         let mut roots = RootCertStore::empty();
         roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-        let mut config =
-            ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
         config.alpn_protocols = vec![b"h3".to_vec()];
         Arc::new(config)
     }))
@@ -141,7 +142,9 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
             // detects dead connections promptly.
             transport.keep_alive_interval(Some(Duration::from_secs(10)));
             transport.max_idle_timeout(Some(
-                Duration::from_secs(120).try_into().expect("valid H3 QUIC client idle timeout"),
+                Duration::from_secs(120)
+                    .try_into()
+                    .expect("valid H3 QUIC client idle timeout"),
             ));
             config.transport_config(Arc::new(transport));
             config
@@ -156,7 +159,11 @@ static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
 
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
-    let cell = if bind_addr.is_ipv4() { &H3_CLIENT_ENDPOINT_V4 } else { &H3_CLIENT_ENDPOINT_V6 };
+    let cell = if bind_addr.is_ipv4() {
+        &H3_CLIENT_ENDPOINT_V4
+    } else {
+        &H3_CLIENT_ENDPOINT_V6
+    };
     let endpoint = cell.get_or_try_init(|| {
         let socket = bind_udp_socket(bind_addr, None)?;
         quinn::Endpoint::new(
@@ -183,7 +190,9 @@ pub(crate) async fn connect_websocket_h3(
     }
 
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url.port_or_known_default().ok_or_else(|| anyhow!("URL is missing port"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow!("URL is missing port"))?;
     let server_addrs =
         resolve_host_with_preference(host, port, "failed to resolve h3 websocket host", ipv6_first)
             .await?;
@@ -322,7 +331,7 @@ pub(crate) fn sockudo_to_tungstenite_message(message: SockudoMessage) -> Message
     match message {
         SockudoMessage::Text(bytes) => {
             Message::Text(String::from_utf8_lossy(&bytes).into_owned().into())
-        }
+        },
         SockudoMessage::Binary(bytes) => Message::Binary(bytes),
         SockudoMessage::Ping(bytes) => Message::Ping(bytes),
         SockudoMessage::Pong(bytes) => Message::Pong(bytes),
@@ -348,7 +357,10 @@ pub(crate) fn sockudo_to_ws_error(error: sockudo_ws::Error) -> WsError {
 }
 
 fn sockudo_close_to_tungstenite(reason: SockudoCloseReason) -> CloseFrame {
-    CloseFrame { code: CloseCode::from(reason.code), reason: Utf8Bytes::from(reason.reason) }
+    CloseFrame {
+        code: CloseCode::from(reason.code),
+        reason: Utf8Bytes::from(reason.reason),
+    }
 }
 
 fn tungstenite_close_to_sockudo(frame: CloseFrame) -> SockudoCloseReason {

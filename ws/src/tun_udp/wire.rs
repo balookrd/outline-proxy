@@ -99,10 +99,10 @@ pub(super) fn build_response_packet(
     match (version, target, local_ip) {
         (IpVersion::V4, TargetAddr::IpV4(remote_ip, remote_port), IpAddr::V4(local_ip)) => {
             build_ipv4_udp_packet(*remote_ip, local_ip, *remote_port, local_port, payload)
-        }
+        },
         (IpVersion::V6, TargetAddr::IpV6(remote_ip, remote_port), IpAddr::V6(local_ip)) => {
             build_ipv6_udp_packet(*remote_ip, local_ip, *remote_port, local_port, payload)
-        }
+        },
         _ => bail!("unexpected response address family for TUN UDP flow"),
     }
 }

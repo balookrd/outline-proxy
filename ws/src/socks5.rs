@@ -1,12 +1,12 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::config::{Socks5AuthConfig, Socks5AuthUserConfig};
-use crate::types::{TargetAddr, SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6};
+use crate::types::{SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6, TargetAddr};
 
 pub const SOCKS_VERSION: u8 = 0x05;
 pub const SOCKS_CMD_CONNECT: u8 = 0x01;
@@ -622,7 +622,7 @@ mod tests {
             SocksRequest::Connect(TargetAddr::Domain(host, port)) => {
                 assert_eq!(host, "example.org");
                 assert_eq!(port, 53);
-            }
+            },
             other => panic!("unexpected request: {other:?}"),
         }
     }
@@ -684,7 +684,7 @@ mod tests {
             SocksRequest::UdpInTcp(TargetAddr::IpV4(ip, port)) => {
                 assert_eq!(ip, Ipv4Addr::UNSPECIFIED);
                 assert_eq!(port, 0);
-            }
+            },
             other => panic!("unexpected request: {other:?}"),
         }
     }

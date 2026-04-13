@@ -27,7 +27,10 @@ impl UplinkManager {
         {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
-            if status.h3_tcp_downgrade_until.is_some_and(|t| t > tokio::time::Instant::now()) {
+            if status
+                .h3_tcp_downgrade_until
+                .is_some_and(|t| t > tokio::time::Instant::now())
+            {
                 return crate::types::WsTransportMode::H2;
             }
         }
@@ -43,7 +46,11 @@ impl UplinkManager {
         if candidate.uplink.transport != UplinkTransport::Websocket {
             return None;
         }
-        let ws = self.inner.standby_pools[candidate.index].tcp.lock().await.pop_front()?;
+        let ws = self.inner.standby_pools[candidate.index]
+            .tcp
+            .lock()
+            .await
+            .pop_front()?;
         self.spawn_refill(candidate.index, TransportKind::Tcp);
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
         debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
@@ -239,7 +246,7 @@ impl UplinkManager {
                     )
                     .await
                     .with_context(|| format!("failed to preconnect to {}", tcp_ws_url))
-                }
+                },
                 TransportKind::Udp => {
                     if uplink.transport != UplinkTransport::Websocket {
                         break;
@@ -256,7 +263,7 @@ impl UplinkManager {
                     )
                     .await
                     .with_context(|| format!("failed to preconnect to {}", url))
-                }
+                },
             };
 
             match ws {
@@ -270,7 +277,7 @@ impl UplinkManager {
                         desired,
                         "warm-standby websocket replenished"
                     );
-                }
+                },
                 Err(error) => {
                     metrics::record_warm_standby_refill(transport_label, &uplink.name, false);
                     warn!(
@@ -280,7 +287,7 @@ impl UplinkManager {
                         "failed to replenish warm-standby websocket"
                     );
                     break;
-                }
+                },
             }
         }
 
@@ -329,7 +336,7 @@ impl UplinkManager {
                 Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
                 Ok(Some(Ok(Message::Close(frame)))) => {
                     Err(anyhow!("standby websocket closed by server: {:?}", frame))
-                }
+                },
                 Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
             };
             metrics::record_probe(
@@ -360,7 +367,7 @@ impl UplinkManager {
                             "dropping stale warm-standby websocket"
                         );
                     }
-                }
+                },
             }
         }
 
@@ -379,12 +386,12 @@ impl UplinkManager {
                 let mut guard = pool.tcp.lock().await;
                 guard.clear();
                 maybe_shrink_vecdeque(&mut guard);
-            }
+            },
             TransportKind::Udp => {
                 let mut guard = pool.udp.lock().await;
                 guard.clear();
                 maybe_shrink_vecdeque(&mut guard);
-            }
+            },
         }
     }
 }

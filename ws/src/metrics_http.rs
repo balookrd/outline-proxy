@@ -66,7 +66,7 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> M
             Ok(response) => {
                 record_metrics_http_request("/metrics", 200);
                 response
-            }
+            },
             Err(error) => {
                 warn!(error = %format!("{error:#}"), "failed to render metrics response");
                 record_metrics_http_request("/metrics", 500);
@@ -75,7 +75,7 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> M
                     "text/plain; charset=utf-8",
                     Bytes::from_static(b"internal server error\n"),
                 )
-            }
+            },
         },
         _ => {
             record_metrics_http_request(path, 404);
@@ -84,7 +84,7 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> M
                 "text/plain; charset=utf-8",
                 Bytes::from_static(b"not found\n"),
             )
-        }
+        },
     }
 }
 

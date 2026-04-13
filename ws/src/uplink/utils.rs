@@ -38,7 +38,9 @@ pub(super) fn current_penalty(
     if value_secs < 0.001 {
         None
     } else {
-        Some(Duration::from_secs_f64(value_secs.min(config.failure_penalty_max.as_secs_f64())))
+        Some(Duration::from_secs_f64(
+            value_secs.min(config.failure_penalty_max.as_secs_f64()),
+        ))
     }
 }
 
@@ -122,7 +124,10 @@ pub(super) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
 }
 
 pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
-    let first_line = error_text.lines().find(|line| !line.trim().is_empty()).unwrap_or("other");
+    let first_line = error_text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("other");
     let mut normalized = String::with_capacity(first_line.len().min(48));
     let mut prev_underscore = false;
     for ch in first_line.to_ascii_lowercase().chars() {
@@ -147,5 +152,9 @@ pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String
         }
     }
     let normalized = normalized.trim_matches('_').chars().take(48).collect::<String>();
-    if normalized.is_empty() { "other".to_string() } else { normalized }
+    if normalized.is_empty() {
+        "other".to_string()
+    } else {
+        normalized
+    }
 }

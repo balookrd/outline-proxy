@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,12 +12,12 @@ use tracing::{debug, info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{send_reply, SOCKS_STATUS_SUCCESS};
+use crate::socks5::{SOCKS_STATUS_SUCCESS, send_reply};
 use crate::transport::{
-    connect_shadowsocks_tcp_with_source, TcpShadowsocksReader, TcpShadowsocksWriter,
-    UpstreamTransportGuard,
+    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source,
 };
-use crate::types::{socket_addr_to_target, TargetAddr, UplinkTransport};
+use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);

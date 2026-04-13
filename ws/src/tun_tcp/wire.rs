@@ -159,10 +159,10 @@ fn validate_tcp_checksum(
     let checksum_valid = match (version, source_ip, destination_ip) {
         (IpVersion::V4, IpAddr::V4(source_ip), IpAddr::V4(destination_ip)) => {
             ipv4_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
-        }
+        },
         (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
             ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_TCP, segment) == 0
-        }
+        },
         _ => bail!("unexpected address family while validating TCP checksum"),
     };
     if !checksum_valid {
@@ -191,13 +191,13 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                     2 if body.len() == 2 => {
                         parsed.max_segment_size =
                             Some(u16::from_be_bytes([body[0], body[1]]).max(1));
-                    }
+                    },
                     3 if body.len() == 1 => {
                         parsed.window_scale = Some(body[0].min(14));
-                    }
+                    },
                     4 if body.is_empty() => {
                         parsed.sack_permitted = true;
-                    }
+                    },
                     5 if body.len() >= 8 && body.len() % 8 == 0 => {
                         for block in body.chunks_exact(8) {
                             let left = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
@@ -207,25 +207,28 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                                 parsed.sack_blocks.push((left, right));
                             }
                         }
-                    }
+                    },
                     8 if body.len() == 8 => {
                         parsed.timestamp_value =
                             Some(u32::from_be_bytes([body[0], body[1], body[2], body[3]]));
                         parsed.timestamp_echo_reply =
                             Some(u32::from_be_bytes([body[4], body[5], body[6], body[7]]));
-                    }
-                    _ => {}
+                    },
+                    _ => {},
                 }
                 index += len;
-            }
+            },
         }
     }
     Ok(parsed)
 }
 
 pub(super) fn build_reset_response(packet: &ParsedTcpPacket) -> Result<Vec<u8>> {
-    let response_seq =
-        if (packet.flags & TCP_FLAG_ACK) != 0 { packet.acknowledgement_number } else { 0 };
+    let response_seq = if (packet.flags & TCP_FLAG_ACK) != 0 {
+        packet.acknowledgement_number
+    } else {
+        0
+    };
     let response_ack = if (packet.flags & TCP_FLAG_ACK) != 0 {
         0
     } else {
@@ -235,8 +238,11 @@ pub(super) fn build_reset_response(packet: &ParsedTcpPacket) -> Result<Vec<u8>> 
             .wrapping_add(u32::from((packet.flags & TCP_FLAG_SYN) != 0))
             .wrapping_add(u32::from((packet.flags & TCP_FLAG_FIN) != 0))
     };
-    let response_flags =
-        if (packet.flags & TCP_FLAG_ACK) != 0 { TCP_FLAG_RST } else { TCP_FLAG_RST | TCP_FLAG_ACK };
+    let response_flags = if (packet.flags & TCP_FLAG_ACK) != 0 {
+        TCP_FLAG_RST
+    } else {
+        TCP_FLAG_RST | TCP_FLAG_ACK
+    };
 
     build_response_packet(
         packet.version,
@@ -304,7 +310,7 @@ pub(super) fn build_response_packet_custom(
                 options,
                 payload,
             )
-        }
+        },
         (IpVersion::V6, IpAddr::V6(source_ip), IpAddr::V6(destination_ip)) => {
             build_ipv6_tcp_packet(
                 source_ip,
@@ -318,7 +324,7 @@ pub(super) fn build_response_packet_custom(
                 options,
                 payload,
             )
-        }
+        },
         _ => bail!("unexpected address family in TUN TCP response"),
     }
 }

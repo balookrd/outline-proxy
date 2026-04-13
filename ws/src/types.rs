@@ -60,12 +60,12 @@ impl TargetAddr {
                 out.push(SOCKS_ATYP_IPV4);
                 out.extend_from_slice(&addr.octets());
                 out.extend_from_slice(&port.to_be_bytes());
-            }
+            },
             Self::IpV6(addr, port) => {
                 out.push(SOCKS_ATYP_IPV6);
                 out.extend_from_slice(&addr.octets());
                 out.extend_from_slice(&port.to_be_bytes());
-            }
+            },
             Self::Domain(host, port) => {
                 let len: u8 =
                     host.len().try_into().context("domain name is too long for SOCKS5")?;
@@ -73,7 +73,7 @@ impl TargetAddr {
                 out.push(len);
                 out.extend_from_slice(host.as_bytes());
                 out.extend_from_slice(&port.to_be_bytes());
-            }
+            },
         }
         Ok(out)
     }
@@ -88,7 +88,7 @@ impl TargetAddr {
                 let host = Ipv4Addr::new(bytes[1], bytes[2], bytes[3], bytes[4]);
                 let port = u16::from_be_bytes([bytes[5], bytes[6]]);
                 Ok((Self::IpV4(host, port), 7))
-            }
+            },
             SOCKS_ATYP_IPV6 => {
                 if bytes.len() < 19 {
                     bail!("short IPv6 address");
@@ -97,7 +97,7 @@ impl TargetAddr {
                 raw.copy_from_slice(&bytes[1..17]);
                 let port = u16::from_be_bytes([bytes[17], bytes[18]]);
                 Ok((Self::IpV6(Ipv6Addr::from(raw), port), 19))
-            }
+            },
             SOCKS_ATYP_DOMAIN => {
                 let len = *bytes.get(1).ok_or_else(|| anyhow!("short domain address"))? as usize;
                 if bytes.len() < 2 + len + 2 {
@@ -107,7 +107,7 @@ impl TargetAddr {
                     .context("domain is not valid UTF-8")?;
                 let port = u16::from_be_bytes([bytes[2 + len], bytes[2 + len + 1]]);
                 Ok((Self::Domain(host, port), 2 + len + 2))
-            }
+            },
             _ => bail!("unsupported address type: {atyp}"),
         }
     }
@@ -215,8 +215,14 @@ impl std::str::FromStr for ServerAddr {
     fn from_str(s: &str) -> Result<Self> {
         if let Ok(addr) = s.parse::<SocketAddr>() {
             return Ok(match addr {
-                SocketAddr::V4(v4) => Self { host: v4.ip().to_string(), port: v4.port() },
-                SocketAddr::V6(v6) => Self { host: v6.ip().to_string(), port: v6.port() },
+                SocketAddr::V4(v4) => Self {
+                    host: v4.ip().to_string(),
+                    port: v4.port(),
+                },
+                SocketAddr::V6(v6) => Self {
+                    host: v6.ip().to_string(),
+                    port: v6.port(),
+                },
             });
         }
 
@@ -242,7 +248,9 @@ impl std::str::FromStr for ServerAddr {
         }
         Ok(Self {
             host: host.to_string(),
-            port: port.parse::<u16>().with_context(|| format!("invalid server port in {s}"))?,
+            port: port
+                .parse::<u16>()
+                .with_context(|| format!("invalid server port in {s}"))?,
         })
     }
 }

@@ -41,7 +41,10 @@ impl TunUdpEngine {
             .await;
         let transport = Arc::new(transport);
         let now = Instant::now();
-        let flow_id = self.inner.next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let flow_id = self
+            .inner
+            .next_flow_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let state = UdpFlowState {
             id: flow_id,
             transport: Arc::clone(&transport),
@@ -112,12 +115,17 @@ impl TunUdpEngine {
             candidates
         };
         for candidate in iter {
-            match self.inner.uplinks.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
+            match self
+                .inner
+                .uplinks
+                .acquire_udp_standby_or_connect(&candidate, "tun_udp")
+                .await
+            {
                 Ok(transport) => return Ok((candidate, transport)),
                 Err(error) => {
                     self.report_udp_runtime_failure(candidate.index, &error).await;
                     last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-                }
+                },
             }
         }
         Err(anyhow!(
@@ -187,8 +195,13 @@ impl TunUdpEngine {
             let close_reason = if result.is_ok() { "closed" } else { "read_error" };
 
             if let Err(ref error) = result {
-                let is_current =
-                    engine.inner.flows.lock().await.get(&key).map_or(false, |f| f.id == flow_id);
+                let is_current = engine
+                    .inner
+                    .flows
+                    .lock()
+                    .await
+                    .get(&key)
+                    .map_or(false, |f| f.id == flow_id);
                 if is_current {
                     engine.report_udp_runtime_failure(uplink_index, error).await;
                     metrics::record_tun_packet(
@@ -278,7 +291,10 @@ impl TunUdpEngine {
 }
 
 fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowKey> {
-    flows.iter().min_by_key(|(_, flow)| flow.last_seen).map(|(key, _)| key.clone())
+    flows
+        .iter()
+        .min_by_key(|(_, flow)| flow.last_seen)
+        .map(|(key, _)| key.clone())
 }
 
 pub(crate) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {

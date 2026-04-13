@@ -52,7 +52,9 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
     let reader = File::from_std(device.try_clone().context("failed to clone TUN file descriptor")?);
-    let writer = SharedTunWriter { inner: Arc::new(Mutex::new(File::from_std(device))) };
+    let writer = SharedTunWriter {
+        inner: Arc::new(Mutex::new(File::from_std(device))),
+    };
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
@@ -135,7 +137,7 @@ async fn tun_read_loop(
                         "fragment_reassembled",
                     );
                     Some(packet)
-                }
+                },
                 Ok(DefragmentedPacket::Pending) => {
                     metrics::record_tun_packet(
                         "tun_to_upstream",
@@ -143,7 +145,7 @@ async fn tun_read_loop(
                         "fragment_buffered",
                     );
                     continue;
-                }
+                },
                 Ok(DefragmentedPacket::Dropped(reason)) => {
                     metrics::record_tun_packet(
                         "tun_to_upstream",
@@ -152,7 +154,7 @@ async fn tun_read_loop(
                     );
                     debug!(reason, packet_len = read, "dropping fragmented TUN packet");
                     continue;
-                }
+                },
                 Err(error) => {
                     metrics::record_tun_packet(
                         "tun_to_upstream",
@@ -165,7 +167,7 @@ async fn tun_read_loop(
                         "dropping malformed fragmented TUN packet"
                     );
                     continue;
-                }
+                },
             }
         };
         let packet_storage;
@@ -186,7 +188,7 @@ async fn tun_read_loop(
                 );
                 debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed TUN packet");
                 continue;
-            }
+            },
         };
         match disposition {
             PacketDisposition::Udp => {
@@ -205,7 +207,7 @@ async fn tun_read_loop(
                         );
                         debug!(error = %format!("{error:#}"), packet_len = read, "dropping malformed UDP packet from TUN");
                         continue;
-                    }
+                    },
                 };
                 if let Err(error) = udp_engine.handle_packet(parsed).await {
                     metrics::record_tun_udp_forward_error(classify_tun_udp_forward_error(&error));
@@ -221,7 +223,7 @@ async fn tun_read_loop(
                     );
                     continue;
                 }
-            }
+            },
             PacketDisposition::Tcp => {
                 metrics::record_tun_packet(
                     "tun_to_upstream",
@@ -240,7 +242,7 @@ async fn tun_read_loop(
                         "failed to handle TCP packet from TUN"
                     );
                 }
-            }
+            },
             PacketDisposition::IcmpEchoRequest => match build_icmp_echo_reply_packets(packet) {
                 Ok(replies) => {
                     metrics::record_tun_packet(
@@ -274,7 +276,7 @@ async fn tun_read_loop(
                             "icmp_local_reply",
                         );
                     }
-                }
+                },
                 Err(error) => {
                     metrics::record_tun_packet(
                         "tun_to_upstream",
@@ -286,7 +288,7 @@ async fn tun_read_loop(
                         packet_len = read,
                         "dropping malformed ICMP packet from TUN"
                     );
-                }
+                },
             },
             PacketDisposition::Unsupported(reason) => {
                 metrics::record_tun_packet(
@@ -295,7 +297,7 @@ async fn tun_read_loop(
                     "unsupported",
                 );
                 debug!(reason, packet_len = read, "ignoring unsupported TUN packet");
-            }
+            },
         }
     }
 }
@@ -323,7 +325,10 @@ impl SharedTunWriter {
 
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         let mut writer = self.inner.lock().await;
-        writer.write_all(packet).await.context("failed to write packet to TUN")?;
+        writer
+            .write_all(packet)
+            .await
+            .context("failed to write packet to TUN")?;
         writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
     }
@@ -331,7 +336,10 @@ impl SharedTunWriter {
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
         let mut writer = self.inner.lock().await;
         for packet in packets {
-            writer.write_all(packet).await.context("failed to write packet to TUN")?;
+            writer
+                .write_all(packet)
+                .await
+                .context("failed to write packet to TUN")?;
         }
         writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
@@ -375,10 +383,10 @@ fn classify_ipv6_packet(packet: &[u8]) -> Result<PacketDisposition> {
         IPV6_NEXT_HEADER_ICMPV6 => classify_ipv6_icmp_packet(packet, payload_offset)?,
         IPV6_NEXT_HEADER_FRAGMENT => {
             PacketDisposition::Unsupported("IPv6 fragments are not supported on TUN")
-        }
+        },
         IPV6_NEXT_HEADER_NONE => {
             PacketDisposition::Unsupported("IPv6 no-next-header packets are not supported on TUN")
-        }
+        },
         _ => PacketDisposition::Unsupported(
             "unsupported IPv6 payload protocol or extension header path on TUN",
         ),
@@ -587,14 +595,14 @@ async fn open_tun_device_with_retry(config: &TunConfig) -> Result<std::fs::File>
                     "TUN interface is busy, retrying attach"
                 );
                 tokio::time::sleep(TUN_OPEN_BUSY_RETRY_DELAY).await;
-            }
+            },
             Err(error) if is_tun_device_busy_error(&error) => {
                 bail!(
                     "TUN interface {} remained busy after {} retries; another process may still own it: {error:#}",
                     config.name.as_deref().unwrap_or("n/a"),
                     TUN_OPEN_BUSY_RETRIES
                 );
-            }
+            },
             Err(error) => return Err(error),
         }
     }

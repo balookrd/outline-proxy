@@ -456,7 +456,14 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         remote_ip: remote_ip.into(),
         remote_port,
     };
-    let flow = engine.inner.flows.read().await.get(&key).cloned().expect("flow must exist");
+    let flow = engine
+        .inner
+        .flows
+        .read()
+        .await
+        .get(&key)
+        .cloned()
+        .expect("flow must exist");
     {
         let mut state = flow.lock().await;
         state.retransmission_timeout = Duration::from_millis(200);
@@ -905,7 +912,10 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         .get(&key)
         .cloned()
         .expect("flow must remain after client FIN");
-    assert!(matches!(flow.lock().await.status, TcpFlowStatus::CloseWait | TcpFlowStatus::LastAck));
+    assert!(matches!(
+        flow.lock().await.status,
+        TcpFlowStatus::CloseWait | TcpFlowStatus::LastAck
+    ));
 
     upstream.close().await;
     let server_fin = parse_tcp_packet(&capture.next_packet().await).unwrap();
@@ -1206,7 +1216,7 @@ fn packet_length(data: &[u8]) -> Option<usize> {
         4 if data.len() >= 4 => Some(u16::from_be_bytes([data[2], data[3]]) as usize),
         6 if data.len() >= 6 => {
             Some(IPV6_HEADER_LEN + u16::from_be_bytes([data[4], data[5]]) as usize)
-        }
+        },
         _ => None,
     }
 }

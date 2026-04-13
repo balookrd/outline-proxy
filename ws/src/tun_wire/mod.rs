@@ -45,7 +45,7 @@ pub(crate) fn checksum16_parts(parts: &[&[u8]]) -> u16 {
             match pending.take() {
                 Some(high) => {
                     sum = sum.wrapping_add(u32::from(u16::from_be_bytes([high, byte])));
-                }
+                },
                 None => pending = Some(byte),
             }
         }
@@ -113,7 +113,7 @@ pub(crate) fn locate_ipv6_payload(packet: &[u8]) -> Result<Ipv6PayloadInfo> {
                     total_len,
                     next_header_field_offset,
                 });
-            }
+            },
             IPV6_NEXT_HEADER_HOP_BY_HOP
             | IPV6_NEXT_HEADER_ROUTING
             | IPV6_NEXT_HEADER_DESTINATION_OPTIONS => {
@@ -127,7 +127,7 @@ pub(crate) fn locate_ipv6_payload(packet: &[u8]) -> Result<Ipv6PayloadInfo> {
                 next_header_field_offset = offset;
                 next_header = packet[offset];
                 offset += header_len;
-            }
+            },
             IPV6_NEXT_HEADER_AUTH => {
                 if offset + 2 > total_len {
                     bail!("truncated IPv6 authentication header");
@@ -139,7 +139,7 @@ pub(crate) fn locate_ipv6_payload(packet: &[u8]) -> Result<Ipv6PayloadInfo> {
                 next_header_field_offset = offset;
                 next_header = packet[offset];
                 offset += header_len;
-            }
+            },
             _ => {
                 return Ok(Ipv6PayloadInfo {
                     next_header,
@@ -147,7 +147,7 @@ pub(crate) fn locate_ipv6_payload(packet: &[u8]) -> Result<Ipv6PayloadInfo> {
                     total_len,
                     next_header_field_offset,
                 });
-            }
+            },
         }
     }
 }

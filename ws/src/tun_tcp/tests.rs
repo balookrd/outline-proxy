@@ -261,8 +261,11 @@ fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
         flags: TCP_FLAG_ACK,
         payload: b"ghi".to_vec(),
     };
-    let second =
-        ParsedTcpPacket { sequence_number: 103, payload: b"def".to_vec(), ..first.clone() };
+    let second = ParsedTcpPacket {
+        sequence_number: 103,
+        payload: b"def".to_vec(),
+        ..first.clone()
+    };
     queue_future_segment(&mut pending, &first, expected_seq);
     queue_future_segment(&mut pending, &second, expected_seq);
     let mut payload = Vec::new();
@@ -466,7 +469,11 @@ fn randomized_tcp_packet_round_trip_and_mutation_smoke() {
             TCP_FLAG_SYN,
             TCP_FLAG_SYN | TCP_FLAG_ACK,
         ][rng.gen_range(0..5)];
-        let payload = if (flags & TCP_FLAG_SYN) != 0 { Vec::new() } else { payload };
+        let payload = if (flags & TCP_FLAG_SYN) != 0 {
+            Vec::new()
+        } else {
+            payload
+        };
         let options = match rng.gen_range(0..4) {
             0 => Vec::new(),
             1 => tcp_option_pad(vec![2, 4, 0x05, 0xb4]),
@@ -768,7 +775,11 @@ async fn update_client_send_window_uses_rfc_precedence_rules() {
     assert_eq!(state.client_window, 4096);
     assert_eq!(state.client_window_end, 5096);
 
-    let newer = ParsedTcpPacket { sequence_number: 101, window_size: 2, ..stale };
+    let newer = ParsedTcpPacket {
+        sequence_number: 101,
+        window_size: 2,
+        ..stale
+    };
     super::update_client_send_window(&mut state, &newer);
     assert_eq!(state.client_window, 2);
     assert_eq!(state.client_window_end, 1002);
@@ -963,7 +974,10 @@ async fn reassembly_limits_trigger_for_segment_and_byte_pressure() {
 async fn server_backlog_limit_detects_pending_bytes() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 128].into(), vec![2; 128].into()]);
-    let config = TunTcpConfig { max_pending_server_bytes: 200, ..test_tun_tcp_config() };
+    let config = TunTcpConfig {
+        max_pending_server_bytes: 200,
+        ..test_tun_tcp_config()
+    };
     let pressure =
         super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);
     assert!(pressure.exceeded);
@@ -975,7 +989,10 @@ async fn server_backlog_pressure_allows_brief_window_stall() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
-    let config = TunTcpConfig { max_pending_server_bytes: 200, ..test_tun_tcp_config() };
+    let config = TunTcpConfig {
+        max_pending_server_bytes: 200,
+        ..test_tun_tcp_config()
+    };
 
     let pressure = super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
 
@@ -988,7 +1005,10 @@ async fn server_backlog_pressure_allows_brief_window_stall() {
 async fn server_backlog_pressure_aborts_after_grace_even_without_window_stall() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
-    let config = TunTcpConfig { max_pending_server_bytes: 200, ..test_tun_tcp_config() };
+    let config = TunTcpConfig {
+        max_pending_server_bytes: 200,
+        ..test_tun_tcp_config()
+    };
     state.backlog_limit_exceeded_since = Some(Instant::now() - config.backlog_abort_grace);
 
     let pressure =
@@ -1004,7 +1024,10 @@ async fn server_backlog_pressure_aborts_after_grace_when_stalled() {
     state.client_window = 0;
     state.client_window_end = state.server_seq;
     state.pending_server_data = VecDeque::from([vec![1; 256].into()]);
-    let config = TunTcpConfig { max_pending_server_bytes: 200, ..test_tun_tcp_config() };
+    let config = TunTcpConfig {
+        max_pending_server_bytes: 200,
+        ..test_tun_tcp_config()
+    };
     state.backlog_limit_exceeded_since = Some(Instant::now() - config.backlog_abort_grace);
 
     let pressure = super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), true);
@@ -1040,7 +1063,10 @@ async fn server_backlog_pressure_aborts_after_no_ack_progress_timeout() {
 async fn server_backlog_pressure_aborts_immediately_above_hard_limit() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 512].into()]);
-    let config = TunTcpConfig { max_pending_server_bytes: 200, ..test_tun_tcp_config() };
+    let config = TunTcpConfig {
+        max_pending_server_bytes: 200,
+        ..test_tun_tcp_config()
+    };
 
     let pressure =
         super::assess_server_backlog_pressure(&mut state, &config, Instant::now(), false);

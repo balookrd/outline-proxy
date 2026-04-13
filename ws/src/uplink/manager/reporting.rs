@@ -155,7 +155,7 @@ impl UplinkManager {
                         already_in_cooldown,
                         should_wake_probe,
                     )
-                }
+                },
                 TransportKind::Udp => {
                     let already_in_cooldown =
                         status.cooldown_until_udp.is_some_and(|deadline| deadline > now);
@@ -203,7 +203,7 @@ impl UplinkManager {
                         already_in_cooldown,
                         should_wake_probe,
                     )
-                }
+                },
             }
         };
 
@@ -370,14 +370,14 @@ impl UplinkManager {
                     status.tcp_consecutive_failures = 0;
                 }
                 status.cooldown_until_tcp = None;
-            }
+            },
             TransportKind::Udp => {
                 if !probe_enabled {
                     status.udp_healthy = Some(true);
                     status.udp_consecutive_failures = 0;
                 }
                 status.cooldown_until_udp = None;
-            }
+            },
         }
     }
 
@@ -403,19 +403,21 @@ impl UplinkManager {
         let status = &mut statuses[index];
         match transport {
             TransportKind::Tcp => {
-                let recently_active =
-                    status.last_active_tcp.is_some_and(|t| now.duration_since(t) < threshold);
+                let recently_active = status
+                    .last_active_tcp
+                    .is_some_and(|t| now.duration_since(t) < threshold);
                 if !recently_active {
                     status.last_active_tcp = None;
                 }
-            }
+            },
             TransportKind::Udp => {
-                let recently_active =
-                    status.last_active_udp.is_some_and(|t| now.duration_since(t) < threshold);
+                let recently_active = status
+                    .last_active_udp
+                    .is_some_and(|t| now.duration_since(t) < threshold);
                 if !recently_active {
                     status.last_active_udp = None;
                 }
-            }
+            },
         }
     }
 
@@ -435,10 +437,10 @@ impl UplinkManager {
         match transport {
             TransportKind::Tcp => {
                 update_rtt_ewma(&mut status.tcp_rtt_ewma, Some(latency), alpha);
-            }
+            },
             TransportKind::Udp => {
                 update_rtt_ewma(&mut status.udp_rtt_ewma, Some(latency), alpha);
-            }
+            },
         }
     }
 }
