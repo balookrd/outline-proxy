@@ -5,7 +5,7 @@
 It supports:
 
 - SOCKS5 `CONNECT`
-- SOCKS5 `UDP ASSOCIATE`
+- SOCKS5 `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - multi-uplink failover and load balancing
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
 - Prometheus metrics and packaged Grafana dashboards
@@ -88,6 +88,8 @@ tun2udp + tun2tcp"]
 - Optional username/password auth (`RFC 1929`)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
+- `hev-socks5` `FWD UDP` / `UDP-in-TCP` (`CMD=0x05`)
+- pipelined SOCKS5 handshake compatibility for `hev-socks5-tunnel`
 - SOCKS5 UDP fragmentation reassembly on inbound client traffic
 - IPv4, IPv6, and domain-name targets
 - optional bypass list for direct (non-tunneled) connections by IP prefix, file-backed with hot-reload
@@ -164,19 +166,23 @@ The project is intentionally practical, but there are still boundaries:
 - Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
-<<<<<<< HEAD
 - `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
 - TCP failover is safe before useful payload exchange; live established TCP tunnels cannot be migrated transparently between uplinks.
 
 ## Repository Layout
 
-- [`config.toml`](/Users/mmalykhin/Documents/Playground/config.toml) - example configuration
-- [`systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/systemd/outline-ws-rust.service) - hardened systemd unit
-- [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json) - main operational dashboard
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
-- `grafana/outline-ws-rust-native-burst-dashboard.json` - startup and traffic-switch burst diagnostics for native Shadowsocks mode
-- [`prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
-- [`PATCHES.md`](/Users/mmalykhin/Documents/Playground/PATCHES.md) - local vendored patch inventory
+- [`config.toml`](config.toml) - example configuration
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
+- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) - startup and traffic-switch burst diagnostics for native Shadowsocks mode
+- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
+- [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers
+- [`src/uplink/`](src/uplink) - uplink selection, probing, failover, and standby management
+- [`src/transport/`](src/transport) - WebSocket and direct Shadowsocks transport implementations
+- [`src/tun_tcp/`](src/tun_tcp) and [`src/tun_udp/`](src/tun_udp) - stateful TUN relay engines
+- [`src/crypto/`](src/crypto) - crypto helpers and TLS glue
+- [`PATCHES.md`](PATCHES.md) - local vendored patch inventory
 
 ## Build
 
@@ -419,9 +425,26 @@ Example client settings:
 
 For `listen = "[::]:1080"`, many systems create a dual-stack listener. If your platform does not map IPv4 to IPv6 sockets, bind an additional IPv4 listener instead.
 
+### `hev-socks5-tunnel` compatibility
+
+`outline-ws-rust` accepts both UDP relay modes used by [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+
+```yaml
+socks5:
+  address: '127.0.0.1'
+  port: 1080
+  udp: 'udp'      # standard SOCKS5 UDP ASSOCIATE
+  # udp: 'tcp'    # hev FWD UDP / UDP-in-TCP (CMD=0x05)
+  # pipeline: true
+```
+
+- `udp: 'udp'` uses standard SOCKS5 `UDP ASSOCIATE`.
+- `udp: 'tcp'` uses the proprietary `hev-socks5` TCP-carried UDP relay (`CMD=0x05`), which is also supported.
+- `pipeline: true` is accepted, including when username/password auth is enabled.
+
 ## Configuration
 
-By default the process reads [`config.toml`](/Users/mmalykhin/Documents/Playground/config.toml).
+By default the process reads [`config.toml`](config.toml).
 
 Example:
 
@@ -544,6 +567,7 @@ password = "Secret0"
 - `[[socks5.users]]` enables local SOCKS5 username/password auth for multiple users. Each entry must include both `username` and `password`.
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.
 - CLI/env equivalents `--socks5-username` / `SOCKS5_USERNAME` and `--socks5-password` / `SOCKS5_PASSWORD` also configure a single user.
+- The same SOCKS5 listener accepts both standard `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); no extra config switch is required on the server.
 - `[probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering failover. The same value also sets the consecutive-success stability threshold for `auto_failback`.
 - `[load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
@@ -826,7 +850,7 @@ Metrics include:
 
 - build and startup info
 - process resident memory and heap usage gauges
-- SOCKS5 requests and active sessions
+- SOCKS5 requests and active sessions, including `command="connect"`, `command="udp_associate"`, and `command="udp_in_tcp"`
 - session duration histogram
 - rolling session p95 gauge
 - payload bytes and UDP datagrams
@@ -874,9 +898,9 @@ For direct `transport = "shadowsocks"` UDP uplinks, the same oversized checks st
 
 Dashboards:
 
-- [`grafana/outline-ws-rust-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-dashboard.json)
-- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](/Users/mmalykhin/Documents/Playground/grafana/outline-ws-rust-tun-tcp-dashboard.json)
-- `grafana/outline-ws-rust-native-burst-dashboard.json`
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
+- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
 
 The main dashboard is grouped into:
 
@@ -905,13 +929,13 @@ Legends also use a shared ordering convention: `instance`, then `uplink` when pr
 
 Alert rules:
 
-- [`prometheus/outline-ws-rust-alerts.yml`](/Users/mmalykhin/Documents/Playground/prometheus/outline-ws-rust-alerts.yml)
+- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
 
 ## Systemd Deployment
 
 The repository includes a hardened unit:
 
-- [`systemd/outline-ws-rust.service`](/Users/mmalykhin/Documents/Playground/systemd/outline-ws-rust.service)
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service)
 
 Key operational notes:
 
@@ -1006,6 +1030,8 @@ cargo test --test standby_validation -- --nocapture
 ## Protocol References
 
 - [Outline `outline-ss-server`](https://github.com/Jigsaw-Code/outline-ss-server)
+- [`hev-socks5-core`](https://github.com/heiher/hev-socks5-core)
+- [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel)
 - [Shadowsocks AEAD specification](https://shadowsocks.org/doc/aead.html)
 - [RFC 8441: Bootstrapping WebSockets with HTTP/2](https://datatracker.ietf.org/doc/html/rfc8441)
 - [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
@@ -1014,6 +1040,6 @@ cargo test --test standby_validation -- --nocapture
 
 Vendored dependency patches are tracked in:
 
-- [`PATCHES.md`](/Users/mmalykhin/Documents/Playground/PATCHES.md)
+- [`PATCHES.md`](PATCHES.md)
 
 This is the source of truth for local deviations from upstream crates, including the vendored `h3` patch used for RFC 9220 support.

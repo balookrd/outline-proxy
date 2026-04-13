@@ -5,7 +5,7 @@
 Поддерживает:
 
 - SOCKS5 `CONNECT`
-- SOCKS5 `UDP ASSOCIATE`
+- SOCKS5 `UDP ASSOCIATE` и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - failover и балансировку нагрузки между несколькими аплинками
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
 - метрики Prometheus и готовые дашборды Grafana
@@ -88,6 +88,8 @@ tun2udp + tun2tcp"]
 - Опциональная аутентификация по логину/паролю (`RFC 1929`)
 - TCP `CONNECT`
 - UDP `ASSOCIATE`
+- `hev-socks5` `FWD UDP` / `UDP-in-TCP` (`CMD=0x05`)
+- совместимость с pipelined SOCKS5-handshake из `hev-socks5-tunnel`
 - пересборка UDP-фрагментов SOCKS5 на входящем клиентском трафике
 - цели IPv4, IPv6 и по доменному имени
 - опциональный байпасс-лист для прямых (не туннелируемых) соединений по IP-префиксу, из файла с горячей перезагрузкой
@@ -169,13 +171,18 @@ tun2udp + tun2tcp"]
 
 ## Структура репозитория
 
-- `config.toml` — пример конфигурации
-- `systemd/outline-ws-rust.service` — hardened systemd unit
-- `grafana/outline-ws-rust-dashboard.json` — основной операционный дашборд
-- `grafana/outline-ws-rust-tun-tcp-dashboard.json` — дашборд `tun2tcp`
-- `grafana/outline-ws-rust-native-burst-dashboard.json` — диагностика стартового и переключательного burst в native Shadowsocks
-- `prometheus/outline-ws-rust-alerts.yml` — alert rules Prometheus
-- `PATCHES.md` — реестр локальных патчей vendored-зависимостей
+- [`config.toml`](config.toml) — пример конфигурации
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — hardened systemd unit
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) — дашборд `tun2tcp`
+- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) — диагностика стартового и переключательного burst в native Shadowsocks
+- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) — alert rules Prometheus
+- [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
+- [`src/uplink/`](src/uplink) — выбор аплинка, пробы, failover и standby-логика
+- [`src/transport/`](src/transport) — реализации WebSocket и прямых Shadowsocks transport'ов
+- [`src/tun_tcp/`](src/tun_tcp) и [`src/tun_udp/`](src/tun_udp) — stateful TUN relay engines
+- [`src/crypto/`](src/crypto) — криптография и TLS glue
+- [`PATCHES.md`](PATCHES.md) — реестр локальных патчей vendored-зависимостей
 
 ## Сборка
 
@@ -417,9 +424,26 @@ cargo run --release -- \
 
 При `listen = "[::]:1080"` большинство систем создают dual-stack слушатель. Если ваша платформа не проксирует IPv4 через IPv6 сокеты, добавьте отдельный IPv4-слушатель.
 
+### Совместимость с `hev-socks5-tunnel`
+
+`outline-ws-rust` принимает оба UDP-режима, которые использует [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel):
+
+```yaml
+socks5:
+  address: '127.0.0.1'
+  port: 1080
+  udp: 'udp'      # стандартный SOCKS5 UDP ASSOCIATE
+  # udp: 'tcp'    # hev FWD UDP / UDP-in-TCP (CMD=0x05)
+  # pipeline: true
+```
+
+- `udp: 'udp'` использует стандартный SOCKS5 `UDP ASSOCIATE`.
+- `udp: 'tcp'` использует проприетарный TCP-несущий UDP relay из `hev-socks5` (`CMD=0x05`), который тоже поддержан.
+- `pipeline: true` тоже принимается, в том числе вместе с username/password-аутентификацией.
+
 ## Конфигурация
 
-По умолчанию процесс читает `config.toml`.
+По умолчанию процесс читает [`config.toml`](config.toml).
 
 Пример:
 
@@ -542,6 +566,7 @@ password = "Secret0"
 - `[[socks5.users]]` включает локальную SOCKS5-аутентификацию по логину/паролю для нескольких пользователей. В каждой записи должны быть и `username`, и `password`.
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
 - CLI/env-эквиваленты `--socks5-username` / `SOCKS5_USERNAME` и `--socks5-password` / `SOCKS5_PASSWORD` тоже задают одного пользователя.
+- Тот же SOCKS5-listener принимает и стандартный `UDP ASSOCIATE`, и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); отдельный server-side переключатель не нужен.
 - `[probe] min_failures` (по умолчанию `1`): количество последовательных неудачных проб, необходимых для объявления аплинка нездоровым. Увеличьте до `2` или `3`, чтобы допускать разовые сбои проб без запуска failover. То же значение используется в качестве порога стабильности последовательных успехов для `auto_failback`.
 - `[load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
   - `false` (по умолчанию): активный аплинк заменяется **только при сбое**. Как только прокси переключился на резервный, он остаётся на нём, пока не упадёт сам резервный — никакого автоматического возврата на primary. Рекомендуется для production, чтобы исключить лишние обрывы соединений.
@@ -824,7 +849,7 @@ scrape_configs:
 
 - информацию о сборке и запуске
 - gauges resident memory и heap usage процесса
-- запросы SOCKS5 и активные сессии
+- запросы SOCKS5 и активные сессии, включая `command="connect"`, `command="udp_associate"` и `command="udp_in_tcp"`
 - гистограмму длительности сессий
 - rolling p95 gauge сессий
 - payload bytes и UDP datagrams
@@ -872,9 +897,9 @@ Snapshot дескрипторов включает общее количеств
 
 Дашборды:
 
-- `grafana/outline-ws-rust-dashboard.json`
-- `grafana/outline-ws-rust-tun-tcp-dashboard.json`
-- `grafana/outline-ws-rust-native-burst-dashboard.json`
+- [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
+- [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
+- [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
 
 Основной дашборд сгруппирован по секциям:
 
@@ -899,13 +924,13 @@ Snapshot дескрипторов включает общее количеств
 
 Alert rules:
 
-- `prometheus/outline-ws-rust-alerts.yml`
+- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
 
 ## Развёртывание через systemd
 
 Репозиторий включает hardened unit:
 
-- `systemd/outline-ws-rust.service`
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service)
 
 Ключевые операционные замечания:
 
@@ -1000,6 +1025,8 @@ cargo test --test standby_validation -- --nocapture
 ## Ссылки на протоколы
 
 - [Outline `outline-ss-server`](https://github.com/Jigsaw-Code/outline-ss-server)
+- [`hev-socks5-core`](https://github.com/heiher/hev-socks5-core)
+- [`hev-socks5-tunnel`](https://github.com/heiher/hev-socks5-tunnel)
 - [Shadowsocks AEAD specification](https://shadowsocks.org/doc/aead.html)
 - [RFC 8441: Bootstrapping WebSockets with HTTP/2](https://datatracker.ietf.org/doc/html/rfc8441)
 - [RFC 9220: Bootstrapping WebSockets with HTTP/3](https://datatracker.ietf.org/doc/html/rfc9220)
@@ -1008,6 +1035,6 @@ cargo test --test standby_validation -- --nocapture
 
 Патчи на vendored-зависимости отслеживаются в:
 
-- `PATCHES.md`
+- [`PATCHES.md`](PATCHES.md)
 
 Это единственный источник правды для локальных отличий от upstream crates, включая vendored-патч `h3` для поддержки RFC 9220.
