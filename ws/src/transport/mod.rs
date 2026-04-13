@@ -5,10 +5,8 @@ use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::{WebSocketStream, client_async_tls};
 use tracing::{debug, error, warn};
@@ -17,121 +15,33 @@ use url::Url;
 #[cfg(feature = "h3")]
 use crate::transport_h3::connect_websocket_h3;
 
-use crate::metrics::{
-    add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
-    record_upstream_transport,
-};
 use crate::types::{ServerAddr, WsTransportMode};
 
 mod dns;
+mod guards;
 mod h2_io;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
+mod url_util;
 mod ws_stream;
 
 use dns::resolve_server_addr;
-use h2_io::{H2Io, connect_tls_h2};
+use h2_io::{H2Io, connect_tls_h2, h2_connection_window_size, h2_stream_window_size};
 use socket::connect_tcp_socket;
+use url_util::websocket_target_uri;
 use ws_stream::{H1WsStream, H2WsStream};
+
+pub use h2_io::init_h2_window_sizes;
 pub use socket::init_udp_socket_bufs;
-pub(crate) use dns::resolve_host_with_preference;
-pub(crate) use socket::{bind_addr_for, bind_udp_socket};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::AnyWsStream;
 
-// HTTP/2 flow-control window sizes. Defaults match the sizing used by
-// sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
-// stall on the small RFC default window under sustained downstream traffic.
-// On memory-constrained routers these can be reduced via [h2] in config.toml.
-static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
-static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
-
-/// Initialise H2 window sizes from config. Must be called before the first
-/// outbound H2 connection is opened. Safe to call multiple times with the same
-/// values; panics if called with different values after initialization.
-pub fn init_h2_window_sizes(stream: u32, connection: u32) {
-    H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
-    H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
-}
-
-fn h2_stream_window_size() -> u32 {
-    *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
-}
-
-fn h2_connection_window_size() -> u32 {
-    *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
-}
-
-pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-impl AbortOnDrop {
-    fn new(handle: JoinHandle<()>) -> Self {
-        Self(handle)
-    }
-
-    async fn finish(mut self) {
-        let handle = std::mem::replace(&mut self.0, tokio::spawn(async {}));
-        let _ = handle.await;
-    }
-}
-
-pub(crate) struct TransportConnectGuard {
-    source: &'static str,
-    mode: &'static str,
-    finished: bool,
-}
-
-impl TransportConnectGuard {
-    pub(crate) fn new(source: &'static str, mode: &'static str) -> Self {
-        add_transport_connects_active(source, mode, 1);
-        record_transport_connect(source, mode, "started");
-        Self { source, mode, finished: false }
-    }
-
-    pub(crate) fn finish(&mut self, result: &'static str) {
-        if !self.finished {
-            self.finished = true;
-            record_transport_connect(self.source, self.mode, result);
-        }
-    }
-}
-
-impl Drop for TransportConnectGuard {
-    fn drop(&mut self) {
-        if !self.finished {
-            record_transport_connect(self.source, self.mode, "error");
-        }
-        add_transport_connects_active(self.source, self.mode, -1);
-    }
-}
-
-pub(crate) struct UpstreamTransportGuard {
-    source: &'static str,
-    protocol: &'static str,
-}
-
-impl UpstreamTransportGuard {
-    pub(crate) fn new(source: &'static str, protocol: &'static str) -> Arc<Self> {
-        add_upstream_transports_active(source, protocol, 1);
-        record_upstream_transport(source, protocol, "opened");
-        Arc::new(Self { source, protocol })
-    }
-}
-
-impl Drop for UpstreamTransportGuard {
-    fn drop(&mut self) {
-        record_upstream_transport(self.source, self.protocol, "closed");
-        add_upstream_transports_active(self.source, self.protocol, -1);
-    }
-}
+pub(crate) use dns::resolve_host_with_preference;
+pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
+pub(crate) use socket::{bind_addr_for, bind_udp_socket};
+pub(crate) use url_util::{format_authority, websocket_path};
 
 pub async fn connect_websocket(
     url: &Url,
@@ -356,44 +266,6 @@ async fn connect_websocket_h2(
     Ok(AnyWsStream::H2 {
         inner: H2WsStream::new(ws, driver_task),
     })
-}
-
-pub(crate) fn websocket_path(url: &Url) -> String {
-    let mut path = if url.path().is_empty() {
-        "/".to_string()
-    } else {
-        url.path().to_string()
-    };
-    if let Some(query) = url.query() {
-        path.push('?');
-        path.push_str(query);
-    }
-    path
-}
-
-fn websocket_target_uri(url: &Url) -> Result<String> {
-    let scheme = match url.scheme() {
-        "wss" => "https",
-        "ws" => "http",
-        other => bail!("unsupported websocket scheme for h2 target URI: {other}"),
-    };
-
-    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let mut uri = format!("{scheme}://{}", format_authority(host, url.port()));
-    uri.push_str(&websocket_path(url));
-    Ok(uri)
-}
-
-pub(crate) fn format_authority(host: &str, port: Option<u16>) -> String {
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    match port {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    }
 }
 
 #[cfg(test)]
