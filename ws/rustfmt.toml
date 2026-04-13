@@ -1,9 +1,22 @@
+edition = "2021"
+
 max_width = 100
+use_small_heuristics = "Max"
+
 hard_tabs = false
 tab_spaces = 4
 newline_style = "Unix"
-use_small_heuristics = "Max"
+
 reorder_imports = true
 reorder_modules = true
-fn_call_width = 100
-chain_width = 80
+
+fn_call_width = 80
+attr_fn_like_width = 80
+chain_width = 70
+
+struct_lit_width = 40
+struct_variant_width = 40
+
+single_line_if_else_max_width = 60
+
+match_block_trailing_comma = true

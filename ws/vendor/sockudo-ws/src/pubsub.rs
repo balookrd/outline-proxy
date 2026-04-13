@@ -66,9 +66,9 @@
 //! ```
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 #[cfg(not(target_has_atomic = "64"))]
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc::UnboundedSender;
@@ -225,11 +225,7 @@ impl PubSub {
     pub fn create_subscriber(&self, sender: UnboundedSender<Message>) -> SubscriberId {
         let id = SubscriberId(self.next_subscriber_id.fetch_add(1, Ordering::Relaxed));
 
-        let subscriber = Arc::new(Subscriber {
-            sender,
-            topics: DashSet::new(),
-            socket_id: None,
-        });
+        let subscriber = Arc::new(Subscriber { sender, topics: DashSet::new(), socket_id: None });
 
         self.subscribers.insert(id, subscriber);
         self.subscriber_count.fetch_add(1, Ordering::Relaxed);
@@ -269,10 +265,7 @@ impl PubSub {
     pub fn generate_socket_id() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
 
         // Use time-based pseudo-random values
         let part1 = (now & 0xFFFFFFFFFF) ^ (now >> 40);
@@ -392,9 +385,7 @@ impl PubSub {
     ///
     /// The socket ID if the subscriber has one, or `None`
     pub fn get_socket_id(&self, id: SubscriberId) -> Option<String> {
-        self.subscribers
-            .get(&id)
-            .and_then(|sub| sub.socket_id.clone())
+        self.subscribers.get(&id).and_then(|sub| sub.socket_id.clone())
     }
 
     /// Remove a subscriber by its socket ID
@@ -637,11 +628,7 @@ impl PubSub {
 
         self.messages_published.fetch_add(1, Ordering::Relaxed);
 
-        if sent > 0 {
-            PublishResult::Published(sent)
-        } else {
-            PublishResult::NoSubscribers
-        }
+        if sent > 0 { PublishResult::Published(sent) } else { PublishResult::NoSubscribers }
     }
 
     // =========================================================================
@@ -650,10 +637,7 @@ impl PubSub {
 
     /// Check if a subscriber is subscribed to a topic
     pub fn is_subscribed(&self, id: SubscriberId, topic: &str) -> bool {
-        self.topics
-            .get(topic)
-            .map(|t| t.contains(&id))
-            .unwrap_or(false)
+        self.topics.get(topic).map(|t| t.contains(&id)).unwrap_or(false)
     }
 
     /// Get the number of subscribers to a topic
