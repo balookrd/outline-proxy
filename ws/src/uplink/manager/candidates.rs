@@ -1,6 +1,6 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
-use std::{cmp::Ordering};
 
 use tokio::time::Instant;
 
@@ -15,9 +15,7 @@ use super::super::types::{CandidateState, TransportKind, UplinkCandidate, Uplink
 use super::super::utils::{rightless_bool, routing_key, strict_route_key};
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
-    right_weight
-        .partial_cmp(&left_weight)
-        .unwrap_or(Ordering::Equal)
+    right_weight.partial_cmp(&left_weight).unwrap_or(Ordering::Equal)
 }
 
 impl UplinkManager {
@@ -201,6 +199,7 @@ impl UplinkManager {
         self.prune_sticky_routes().await;
         let statuses = self.inner.statuses.read().await;
         let now = Instant::now();
+        let current_active = self.active_uplink_index_for_transport(transport).await;
         let mut candidates = self
             .inner
             .uplinks
@@ -237,28 +236,48 @@ impl UplinkManager {
             return Vec::new();
         }
 
-        candidates.sort_by(|left, right| {
-            rightless_bool(left.healthy)
-                .cmp(&rightless_bool(right.healthy))
-                .reverse()
-                .then_with(|| {
-                    left.score
-                        .unwrap_or(Duration::MAX)
-                        .cmp(&right.score.unwrap_or(Duration::MAX))
-                })
-                .then_with(|| {
-                    higher_weight_first(
-                        self.inner.uplinks[left.index].weight,
-                        self.inner.uplinks[right.index].weight,
-                    )
-                })
-                .then_with(|| left.index.cmp(&right.index))
-        });
+        if current_active.is_none() {
+            candidates.sort_by(|left, right| {
+                rightless_bool(left.healthy)
+                    .cmp(&rightless_bool(right.healthy))
+                    .reverse()
+                    .then_with(|| {
+                        higher_weight_first(
+                            self.inner.uplinks[left.index].weight,
+                            self.inner.uplinks[right.index].weight,
+                        )
+                    })
+                    .then_with(|| {
+                        left.score
+                            .unwrap_or(Duration::MAX)
+                            .cmp(&right.score.unwrap_or(Duration::MAX))
+                    })
+                    .then_with(|| left.index.cmp(&right.index))
+            });
+        } else {
+            candidates.sort_by(|left, right| {
+                rightless_bool(left.healthy)
+                    .cmp(&rightless_bool(right.healthy))
+                    .reverse()
+                    .then_with(|| {
+                        left.score
+                            .unwrap_or(Duration::MAX)
+                            .cmp(&right.score.unwrap_or(Duration::MAX))
+                    })
+                    .then_with(|| {
+                        higher_weight_first(
+                            self.inner.uplinks[left.index].weight,
+                            self.inner.uplinks[right.index].weight,
+                        )
+                    })
+                    .then_with(|| left.index.cmp(&right.index))
+            });
+        }
 
         let gate_transport =
             strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
         let mut switching_from_cooldown = false;
-        if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
+        if let Some(active_index) = current_active {
             let active_failed = failed_active_index.is_some_and(|index| index == active_index);
             if let Some(candidate) =
                 candidates.iter().find(|candidate| candidate.index == active_index)

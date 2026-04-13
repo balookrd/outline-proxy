@@ -19,8 +19,14 @@ async fn run_probe_attempt_with_timeout(
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::types::WsTransportMode,
-    timeout_duration: Duration,
 ) -> Result<super::super::types::ProbeOutcome> {
+    let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
+    let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
+    let transport_budgets = (tcp_budget + udp_budget).max(1);
+    let timeout_duration = probe
+        .timeout
+        .saturating_mul(transport_budgets)
+        .saturating_add(Duration::from_secs(1));
     let mut probe_task =
         tokio::spawn(
             async move { probe_uplink(&uplink, &probe, dial_limit, effective_tcp_mode).await },
@@ -123,7 +129,6 @@ impl UplinkManager {
 
             let uplink = Arc::clone(uplink);
             let probe = self.inner.probe.clone();
-            let timeout_duration = self.inner.probe.timeout;
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let probe_attempts = probe.attempts.max(1);
@@ -153,7 +158,6 @@ impl UplinkManager {
                         probe.clone(),
                         Arc::clone(&dial_limit),
                         effective_tcp_mode,
-                        timeout_duration,
                     )
                     .await;
                     if outcome.is_ok() {

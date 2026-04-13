@@ -82,10 +82,10 @@ pub struct ProbeConfig {
     pub max_concurrent: usize,
     pub max_dials: usize,
     pub min_failures: usize,
-    /// Number of connection attempts per probe cycle. If any attempt succeeds the
-    /// cycle is counted as a success. Retries are separated by a short pause
-    /// (500 ms) so the total time per cycle can be up to
-    /// `attempts × (timeout + 500 ms)`. Default: 2.
+    /// Number of probe attempts per cycle. If any attempt succeeds the cycle is
+    /// counted as a success. Retries are separated by a short pause (500 ms),
+    /// so the total time per cycle can be up to
+    /// `attempts × (per-transport probe timeout budget + 500 ms)`. Default: 2.
     pub attempts: usize,
     pub ws: WsProbeConfig,
     pub http: Option<HttpProbeConfig>,
