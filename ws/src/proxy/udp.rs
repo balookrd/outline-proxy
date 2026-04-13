@@ -5,7 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
@@ -137,11 +137,14 @@ pub(super) async fn handle_udp_associate(
                     Some(&packet.target),
                 )
                 .await?;
-                let (transport, uplink_name) = {
+                let (transport, uplink_name, active_index) = {
                     let active = active_transport_uplink.lock().await;
-                    (Arc::clone(&active.transport), active.uplink_name.clone())
+                    (
+                        Arc::clone(&active.transport),
+                        active.uplink_name.clone(),
+                        active.index,
+                    )
                 };
-                let active_index = active_transport_uplink.lock().await.index;
                 if let Err(error) = transport.send_packet(&payload).await {
                     if is_dropped_oversized_udp_error(&error) {
                         continue;
@@ -150,6 +153,7 @@ pub(super) async fn handle_udp_associate(
                         &uplinks_uplink,
                         &active_transport_uplink,
                         Some(&packet.target),
+                        active_index,
                         error,
                     )
                     .await?;
@@ -202,6 +206,7 @@ pub(super) async fn handle_udp_associate(
                             &uplinks_downlink,
                             &active_transport_downlink,
                             None,
+                            active.0,
                             error,
                         )
                         .await?;
@@ -317,12 +322,14 @@ pub(super) async fn handle_udp_associate(
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::select! {
+        let session_result = tokio::select! {
             result = uplink => result,
             result = downlink => result,
             result = control => result,
             result = direct_downlink => result,
-        }
+        };
+        close_active_udp_transport(&active_transport, "session_end").await;
+        session_result
     }
     .await;
     session.finish(result.is_ok());
@@ -376,35 +383,45 @@ async fn failover_udp_transport(
     uplinks: &UplinkManager,
     active_transport: &Arc<Mutex<ActiveUdpTransport>>,
     target: Option<&TargetAddr>,
+    failed_index: usize,
     error: anyhow::Error,
 ) -> Result<ActiveUdpTransport> {
-    let failed = active_transport.lock().await.index;
+    let failed_uplink_name = {
+        let active = active_transport.lock().await;
+        if active.index != failed_index {
+            return Ok(active.clone());
+        }
+        active.uplink_name.clone()
+    };
     uplinks
-        .report_runtime_failure(failed, TransportKind::Udp, &error)
+        .report_runtime_failure(failed_index, TransportKind::Udp, &error)
         .await;
     let replacement = select_udp_transport(uplinks, target).await?;
-    info!(
-        failed_index = failed,
-        new_uplink = %replacement.uplink_name,
-        error = %format!("{error:#}"),
-        "runtime UDP failover activated"
-    );
-    let mut active = active_transport.lock().await;
-    // Guard against concurrent failovers: if another task already replaced the
-    // transport while we were selecting, return whatever is current instead of
-    // overwriting with a potentially different replacement.
-    if active.index != failed {
-        return Ok(active.clone());
+    if let Some(previous_transport) = replace_active_udp_transport_if_current(
+        active_transport,
+        failed_index,
+        ActiveUdpTransport {
+            index: replacement.index,
+            uplink_name: replacement.uplink_name.clone(),
+            uplink_weight: replacement.uplink_weight,
+            transport: Arc::clone(&replacement.transport),
+        },
+    )
+    .await
+    {
+        info!(
+            failed_index,
+            failed_uplink = %failed_uplink_name,
+            new_uplink = %replacement.uplink_name,
+            error = %format!("{error:#}"),
+            "runtime UDP failover activated"
+        );
+        metrics::record_failover("udp", &failed_uplink_name, &replacement.uplink_name);
+        metrics::record_uplink_selected("udp", &replacement.uplink_name);
+        close_udp_transport(previous_transport, "failover").await;
+        return Ok(replacement);
     }
-    metrics::record_failover("udp", &active.uplink_name, &replacement.uplink_name);
-    metrics::record_uplink_selected("udp", &replacement.uplink_name);
-    *active = ActiveUdpTransport {
-        index: replacement.index,
-        uplink_name: replacement.uplink_name.clone(),
-        uplink_weight: replacement.uplink_weight,
-        transport: Arc::clone(&replacement.transport),
-    };
-    Ok(replacement)
+    Ok(active_transport.lock().await.clone())
 }
 
 async fn reconcile_global_udp_transport(
@@ -424,20 +441,127 @@ async fn reconcile_global_udp_transport(
         return Ok(());
     }
 
-    let replacement = select_udp_transport(uplinks, target).await?;
-    let mut active = active_transport.lock().await;
-    // Guard against concurrent reconciliations: if another task already updated
-    // the active transport while we were selecting, skip the overwrite.
-    if active.index != selected {
-        return Ok(());
-    }
-    metrics::record_failover("udp", &active.uplink_name, &replacement.uplink_name);
-    metrics::record_uplink_selected("udp", &replacement.uplink_name);
-    *active = ActiveUdpTransport {
-        index: replacement.index,
-        uplink_name: replacement.uplink_name.clone(),
-        uplink_weight: replacement.uplink_weight,
-        transport: Arc::clone(&replacement.transport),
+    let replaced_uplink_name = {
+        let active = active_transport.lock().await;
+        if active.index != selected {
+            return Ok(());
+        }
+        active.uplink_name.clone()
     };
+    let replacement = select_udp_transport(uplinks, target).await?;
+    if let Some(previous_transport) = replace_active_udp_transport_if_current(
+        active_transport,
+        selected,
+        ActiveUdpTransport {
+            index: replacement.index,
+            uplink_name: replacement.uplink_name.clone(),
+            uplink_weight: replacement.uplink_weight,
+            transport: Arc::clone(&replacement.transport),
+        },
+    )
+    .await
+    {
+        metrics::record_failover("udp", &replaced_uplink_name, &replacement.uplink_name);
+        metrics::record_uplink_selected("udp", &replacement.uplink_name);
+        close_udp_transport(previous_transport, "global_switch").await;
+    }
     Ok(())
+}
+
+async fn replace_active_udp_transport_if_current(
+    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    expected_index: usize,
+    replacement: ActiveUdpTransport,
+) -> Option<Arc<UdpWsTransport>> {
+    let mut active = active_transport.lock().await;
+    if active.index != expected_index {
+        return None;
+    }
+    let previous_transport = Arc::clone(&active.transport);
+    *active = replacement;
+    Some(previous_transport)
+}
+
+async fn close_active_udp_transport(
+    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    reason: &'static str,
+) {
+    let transport = {
+        let active = active_transport.lock().await;
+        Arc::clone(&active.transport)
+    };
+    close_udp_transport(transport, reason).await;
+}
+
+async fn close_udp_transport(transport: Arc<UdpWsTransport>, reason: &'static str) {
+    if let Err(error) = transport.close().await {
+        debug!(
+            reason,
+            error = %format!("{error:#}"),
+            "failed to close SOCKS5 UDP transport"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::net::UdpSocket;
+
+    use super::*;
+    use crate::types::CipherKind;
+
+    #[tokio::test]
+    async fn replacing_active_udp_transport_closes_previous_reader() {
+        let old_transport = Arc::new(
+            UdpWsTransport::from_socket(
+                UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
+                CipherKind::Chacha20IetfPoly1305,
+                "password",
+                "test_old",
+            )
+            .unwrap(),
+        );
+        let new_transport = Arc::new(
+            UdpWsTransport::from_socket(
+                UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
+                CipherKind::Chacha20IetfPoly1305,
+                "password",
+                "test_new",
+            )
+            .unwrap(),
+        );
+        let active_transport = Arc::new(Mutex::new(ActiveUdpTransport {
+            index: 1,
+            uplink_name: "old".to_string(),
+            uplink_weight: 1.0,
+            transport: Arc::clone(&old_transport),
+        }));
+
+        let reader_transport = Arc::clone(&old_transport);
+        let read_task = tokio::spawn(async move { reader_transport.read_packet().await });
+
+        let previous_transport = replace_active_udp_transport_if_current(
+            &active_transport,
+            1,
+            ActiveUdpTransport {
+                index: 2,
+                uplink_name: "new".to_string(),
+                uplink_weight: 1.0,
+                transport: Arc::clone(&new_transport),
+            },
+        )
+        .await
+        .expect("active transport should be replaced");
+        close_udp_transport(previous_transport, "test_replace").await;
+
+        let error = tokio::time::timeout(Duration::from_secs(1), async {
+            read_task.await.unwrap().unwrap_err()
+        })
+        .await
+        .unwrap();
+        assert!(format!("{error:#}").contains("udp transport closed"));
+        assert_eq!(active_transport.lock().await.index, 2);
+    }
 }
