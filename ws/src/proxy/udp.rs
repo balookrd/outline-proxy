@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use tokio::io::AsyncReadExt;
+use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
@@ -11,10 +12,11 @@ use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
-    SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request, send_reply,
+    build_udp_packet, parse_udp_request, read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
+    UdpFragmentReassembler, SOCKS_STATUS_SUCCESS,
 };
-use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-use crate::types::{TargetAddr, socket_addr_to_target};
+use crate::transport::{is_dropped_oversized_udp_error, UdpWsTransport};
+use crate::types::{socket_addr_to_target, TargetAddr};
 use crate::uplink::{TransportKind, UplinkManager};
 
 #[derive(Clone)]
@@ -79,8 +81,10 @@ pub(super) async fn handle_udp_associate(
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
             loop {
-                let (len, addr) =
-                    socket_uplink.recv_from(&mut buf).await.context("UDP relay receive failed")?;
+                let (len, addr) = socket_uplink
+                    .recv_from(&mut buf)
+                    .await
+                    .context("UDP relay receive failed")?;
                 *client_udp_addr_uplink.lock().await = Some(addr);
 
                 let packet = parse_udp_request(&buf[..len])?;
@@ -94,13 +98,13 @@ pub(super) async fn handle_udp_associate(
                         let target_addr = match &packet.target {
                             crate::types::TargetAddr::IpV4(ip, port) => {
                                 SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
-                            }
+                            },
                             crate::types::TargetAddr::IpV6(ip, port) => {
                                 SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
-                            }
+                            },
                             crate::types::TargetAddr::Domain(_, _) => {
                                 unreachable!("domains return false from is_bypassed")
-                            }
+                            },
                         };
                         sock.send_to(&packet.payload, target_addr)
                             .await
@@ -163,7 +167,9 @@ pub(super) async fn handle_udp_associate(
                 } else {
                     metrics::add_udp_datagram("client_to_upstream", &uplink_name);
                     metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
-                    uplinks_uplink.report_active_traffic(active_index, TransportKind::Udp).await;
+                    uplinks_uplink
+                        .report_active_traffic(active_index, TransportKind::Udp)
+                        .await;
                 }
             }
         };
@@ -221,7 +227,7 @@ pub(super) async fn handle_udp_associate(
                             .await
                             .context("UDP relay send failed")?;
                         continue;
-                    }
+                    },
                 };
                 let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
                 let client_addr = client_udp_addr_downlink.lock().await.ok_or_else(|| {
@@ -253,7 +259,10 @@ pub(super) async fn handle_udp_associate(
         let control = async move {
             let mut buf = [0u8; 1];
             loop {
-                let read = client.read(&mut buf).await.context("control connection read failed")?;
+                let read = client
+                    .read(&mut buf)
+                    .await
+                    .context("control connection read failed")?;
                 if read == 0 {
                     break;
                 }
@@ -312,6 +321,227 @@ pub(super) async fn handle_udp_associate(
     result
 }
 
+pub(super) async fn handle_udp_in_tcp(
+    mut client: TcpStream,
+    config: AppConfig,
+    uplinks: UplinkManager,
+    client_hint: TargetAddr,
+) -> Result<()> {
+    let session = metrics::track_session("udp");
+    let result = async {
+        let bind_ip = client.local_addr()?.ip();
+        let bypass_socket = if config.bypass.is_some() {
+            let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
+                .await
+                .with_context(|| format!("failed to bind bypass UDP socket on {}", bind_ip))?;
+            Some(Arc::new(sock))
+        } else {
+            None
+        };
+        let bypass = config.bypass.clone();
+
+        let active_transport = Arc::new(Mutex::new(select_udp_transport(&uplinks, None).await?));
+        let (initial_uplink_name, initial_weight) = {
+            let active = active_transport.lock().await;
+            (active.uplink_name.clone(), active.uplink_weight)
+        };
+        metrics::record_uplink_selected("udp", &initial_uplink_name);
+        info!(
+            uplink = %initial_uplink_name,
+            weight = initial_weight,
+            "selected UDP uplink"
+        );
+
+        send_reply(&mut client, SOCKS_STATUS_SUCCESS, &client_hint).await?;
+
+        let (mut client_read, client_write) = client.into_split();
+        let client_write = Arc::new(Mutex::new(client_write));
+
+        let active_transport_uplink = Arc::clone(&active_transport);
+        let uplinks_uplink = uplinks.clone();
+        let bypass_socket_uplink = bypass_socket.clone();
+        let bypass_uplink = bypass.clone();
+        let uplink = async move {
+            loop {
+                let Some(packet) = read_udp_tcp_packet(&mut client_read).await? else {
+                    break;
+                };
+
+                if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
+                    if bl.read().await.is_bypassed(&packet.target) {
+                        let target_addr = match &packet.target {
+                            crate::types::TargetAddr::IpV4(ip, port) => {
+                                SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
+                            },
+                            crate::types::TargetAddr::IpV6(ip, port) => {
+                                SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
+                            },
+                            crate::types::TargetAddr::Domain(_, _) => {
+                                unreachable!("domains return false from is_bypassed")
+                            },
+                        };
+                        sock.send_to(&packet.payload, target_addr)
+                            .await
+                            .context("bypass UDP send failed")?;
+                        continue;
+                    }
+                }
+
+                let mut payload = packet.target.to_wire_bytes()?;
+                payload.extend_from_slice(&packet.payload);
+                if payload.len() > MAX_CLIENT_UDP_PACKET_SIZE {
+                    warn!(
+                        target = %packet.target,
+                        payload_len = payload.len(),
+                        limit = MAX_CLIENT_UDP_PACKET_SIZE,
+                        "dropping oversized incoming UDP-in-TCP packet"
+                    );
+                    metrics::record_dropped_oversized_udp_packet("incoming");
+                    continue;
+                }
+
+                reconcile_global_udp_transport(
+                    &uplinks_uplink,
+                    &active_transport_uplink,
+                    Some(&packet.target),
+                )
+                .await?;
+                let (transport, uplink_name, active_index) = {
+                    let active = active_transport_uplink.lock().await;
+                    (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
+                };
+                if let Err(error) = transport.send_packet(&payload).await {
+                    if is_dropped_oversized_udp_error(&error) {
+                        continue;
+                    }
+                    let replacement = failover_udp_transport(
+                        &uplinks_uplink,
+                        &active_transport_uplink,
+                        Some(&packet.target),
+                        active_index,
+                        error,
+                    )
+                    .await?;
+                    if let Err(error) = replacement.transport.send_packet(&payload).await {
+                        if is_dropped_oversized_udp_error(&error) {
+                            continue;
+                        }
+                        return Err(error);
+                    }
+                    metrics::add_udp_datagram("client_to_upstream", &replacement.uplink_name);
+                    metrics::add_bytes(
+                        "udp",
+                        "client_to_upstream",
+                        &replacement.uplink_name,
+                        payload.len(),
+                    );
+                    uplinks_uplink
+                        .report_active_traffic(replacement.index, TransportKind::Udp)
+                        .await;
+                } else {
+                    metrics::add_udp_datagram("client_to_upstream", &uplink_name);
+                    metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
+                    uplinks_uplink
+                        .report_active_traffic(active_index, TransportKind::Udp)
+                        .await;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let active_transport_downlink = Arc::clone(&active_transport);
+        let uplinks_downlink = uplinks.clone();
+        let client_write_downlink = Arc::clone(&client_write);
+        let downlink = async move {
+            loop {
+                reconcile_global_udp_transport(&uplinks_downlink, &active_transport_downlink, None)
+                    .await?;
+                let active = {
+                    let active = active_transport_downlink.lock().await;
+                    (active.index, active.uplink_name.clone(), Arc::clone(&active.transport))
+                };
+                let payload = match active.2.read_packet().await {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        let replacement = failover_udp_transport(
+                            &uplinks_downlink,
+                            &active_transport_downlink,
+                            None,
+                            active.0,
+                            error,
+                        )
+                        .await?;
+                        let payload = replacement.transport.read_packet().await?;
+                        let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
+                        write_udp_tcp_response(
+                            &client_write_downlink,
+                            &target,
+                            &payload[consumed..],
+                            "upstream UDP-in-TCP response",
+                        )
+                        .await?;
+                        metrics::add_udp_datagram("upstream_to_client", &replacement.uplink_name);
+                        metrics::add_bytes(
+                            "udp",
+                            "upstream_to_client",
+                            &replacement.uplink_name,
+                            payload.len(),
+                        );
+                        continue;
+                    },
+                };
+
+                let (target, consumed) = TargetAddr::from_wire_bytes(&payload)?;
+                write_udp_tcp_response(
+                    &client_write_downlink,
+                    &target,
+                    &payload[consumed..],
+                    "upstream UDP-in-TCP response",
+                )
+                .await?;
+                metrics::add_udp_datagram("upstream_to_client", &active.1);
+                metrics::add_bytes("udp", "upstream_to_client", &active.1, payload.len());
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let client_write_direct = Arc::clone(&client_write);
+        let direct_downlink = async move {
+            let Some(sock) = bypass_socket else {
+                std::future::pending::<()>().await;
+                unreachable!()
+            };
+            let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
+            loop {
+                let (len, src_addr) =
+                    sock.recv_from(&mut buf).await.context("bypass UDP recv failed")?;
+                let target = socket_addr_to_target(src_addr);
+                write_udp_tcp_response(
+                    &client_write_direct,
+                    &target,
+                    &buf[..len],
+                    "bypass UDP-in-TCP response",
+                )
+                .await?;
+            }
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        let session_result = tokio::select! {
+            result = uplink => result,
+            result = downlink => result,
+            result = direct_downlink => result,
+        };
+        close_active_udp_transport(&active_transport, "session_end").await;
+        session_result
+    }
+    .await;
+    session.finish(result.is_ok());
+    result
+}
+
 pub(super) async fn select_udp_transport(
     uplinks: &UplinkManager,
     target: Option<&TargetAddr>,
@@ -336,13 +566,13 @@ pub(super) async fn select_udp_transport(
                     uplink_weight: candidate.uplink.weight,
                     transport: Arc::new(transport),
                 });
-            }
+            },
             Err(error) => {
                 uplinks
                     .report_runtime_failure(candidate.index, TransportKind::Udp, &error)
                     .await;
                 last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-            }
+            },
         }
     }
 
@@ -366,7 +596,9 @@ async fn failover_udp_transport(
         }
         active.uplink_name.clone()
     };
-    uplinks.report_runtime_failure(failed_index, TransportKind::Udp, &error).await;
+    uplinks
+        .report_runtime_failure(failed_index, TransportKind::Udp, &error)
+        .await;
     let replacement = select_udp_transport(uplinks, target).await?;
     if let Some(previous_transport) = replace_active_udp_transport_if_current(
         active_transport,
@@ -470,6 +702,30 @@ async fn close_udp_transport(transport: Arc<UdpWsTransport>, reason: &'static st
             "failed to close SOCKS5 UDP transport"
         );
     }
+}
+
+async fn write_udp_tcp_response(
+    client_write: &Arc<Mutex<OwnedWriteHalf>>,
+    target: &TargetAddr,
+    payload: &[u8],
+    context: &'static str,
+) -> Result<()> {
+    let target_wire = target.to_wire_bytes()?;
+    if 3 + target_wire.len() > usize::from(u8::MAX) || payload.len() > usize::from(u16::MAX) {
+        warn!(
+            target = %target,
+            payload_len = payload.len(),
+            context,
+            "dropping oversized outgoing UDP-in-TCP response"
+        );
+        metrics::record_dropped_oversized_udp_packet("outgoing");
+        return Ok(());
+    }
+
+    let mut client_write = client_write.lock().await;
+    write_udp_tcp_packet(&mut *client_write, target, payload)
+        .await
+        .with_context(|| format!("failed to write {context}"))
 }
 
 #[cfg(test)]

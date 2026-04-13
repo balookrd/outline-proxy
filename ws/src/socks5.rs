@@ -1,16 +1,17 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use anyhow::{bail, Context, Result};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
 use crate::config::{Socks5AuthConfig, Socks5AuthUserConfig};
-use crate::types::{SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6, TargetAddr};
+use crate::types::{TargetAddr, SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6};
 
 pub const SOCKS_VERSION: u8 = 0x05;
 pub const SOCKS_CMD_CONNECT: u8 = 0x01;
 pub const SOCKS_CMD_UDP_ASSOCIATE: u8 = 0x03;
+pub const SOCKS_CMD_UDP_IN_TCP: u8 = 0x05;
 pub const SOCKS_AUTH_METHOD_NO_AUTH: u8 = 0x00;
 pub const SOCKS_AUTH_METHOD_USERNAME_PASSWORD: u8 = 0x02;
 pub const SOCKS_AUTH_METHOD_NO_ACCEPTABLE: u8 = 0xff;
@@ -22,12 +23,19 @@ pub const SOCKS_STATUS_ADDRESS_NOT_SUPPORTED: u8 = 0x08;
 pub enum SocksRequest {
     Connect(TargetAddr),
     UdpAssociate(TargetAddr),
+    UdpInTcp(TargetAddr),
 }
 
 pub struct Socks5UdpPacket<'a> {
     pub fragment: u8,
     pub target: TargetAddr,
     pub payload: &'a [u8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Socks5UdpTcpPacket {
+    pub target: TargetAddr,
+    pub payload: Vec<u8>,
 }
 
 pub const SOCKS5_UDP_FRAGMENT_END: u8 = 0x80;
@@ -76,7 +84,10 @@ pub async fn negotiate(
     match auth {
         Some(auth) => {
             if !methods.contains(&SOCKS_AUTH_METHOD_USERNAME_PASSWORD) {
-                stream.write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE]).await.ok();
+                stream
+                    .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
+                    .await
+                    .ok();
                 bail!("client does not support username/password auth");
             }
             stream
@@ -84,21 +95,27 @@ pub async fn negotiate(
                 .await
                 .context("failed to write method selection")?;
             authenticate_username_password(stream, auth).await?;
-        }
+        },
         None => {
             if !methods.contains(&SOCKS_AUTH_METHOD_NO_AUTH) {
-                stream.write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE]).await.ok();
+                stream
+                    .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
+                    .await
+                    .ok();
                 bail!("client does not support no-auth method");
             }
             stream
                 .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH])
                 .await
                 .context("failed to write method selection")?;
-        }
+        },
     }
 
     let mut request = [0u8; 4];
-    stream.read_exact(&mut request).await.context("failed to read request header")?;
+    stream
+        .read_exact(&mut request)
+        .await
+        .context("failed to read request header")?;
 
     if request[0] != SOCKS_VERSION {
         bail!("invalid request version: {}", request[0]);
@@ -111,6 +128,7 @@ pub async fn negotiate(
     match request[1] {
         SOCKS_CMD_CONNECT => Ok(SocksRequest::Connect(target)),
         SOCKS_CMD_UDP_ASSOCIATE => Ok(SocksRequest::UdpAssociate(target)),
+        SOCKS_CMD_UDP_IN_TCP => Ok(SocksRequest::UdpInTcp(target)),
         command => {
             send_reply(
                 stream,
@@ -120,7 +138,7 @@ pub async fn negotiate(
             .await
             .ok();
             bail!("unsupported SOCKS command: {command}");
-        }
+        },
     }
 }
 
@@ -205,7 +223,11 @@ pub fn parse_udp_request(packet: &[u8]) -> Result<Socks5UdpPacket<'_>> {
     let fragment = packet[2];
     let (target, consumed) = TargetAddr::from_wire_bytes(&packet[3..])?;
     let payload_offset = 3 + consumed;
-    Ok(Socks5UdpPacket { fragment, target, payload: &packet[payload_offset..] })
+    Ok(Socks5UdpPacket {
+        fragment,
+        target,
+        payload: &packet[payload_offset..],
+    })
 }
 
 pub fn build_udp_packet(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
@@ -213,6 +235,90 @@ pub fn build_udp_packet(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> 
     out.extend_from_slice(&target.to_wire_bytes()?);
     out.extend_from_slice(payload);
     Ok(out)
+}
+
+pub async fn read_udp_tcp_packet<R>(reader: &mut R) -> Result<Option<Socks5UdpTcpPacket>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut data_len = [0u8; 2];
+    let read = reader
+        .read(&mut data_len[..1])
+        .await
+        .context("failed to read UDP-in-TCP data length")?;
+    if read == 0 {
+        return Ok(None);
+    }
+    reader
+        .read_exact(&mut data_len[1..])
+        .await
+        .context("failed to read UDP-in-TCP data length tail")?;
+    let data_len = u16::from_be_bytes(data_len) as usize;
+
+    let mut header_len = [0u8; 1];
+    reader
+        .read_exact(&mut header_len)
+        .await
+        .context("failed to read UDP-in-TCP header length")?;
+    let header_len = header_len[0] as usize;
+    let addr_len = header_len
+        .checked_sub(3)
+        .ok_or_else(|| anyhow::anyhow!("invalid UDP-in-TCP header length: {header_len}"))?;
+
+    let mut addr_buf = vec![0u8; addr_len];
+    reader
+        .read_exact(&mut addr_buf)
+        .await
+        .context("failed to read UDP-in-TCP target address")?;
+    let (target, consumed) = TargetAddr::from_wire_bytes(&addr_buf)?;
+    if consumed != addr_len {
+        bail!("UDP-in-TCP header length mismatch");
+    }
+
+    let mut payload = vec![0u8; data_len];
+    reader
+        .read_exact(&mut payload)
+        .await
+        .context("failed to read UDP-in-TCP payload")?;
+
+    Ok(Some(Socks5UdpTcpPacket { target, payload }))
+}
+
+pub async fn write_udp_tcp_packet<W>(
+    writer: &mut W,
+    target: &TargetAddr,
+    payload: &[u8],
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let addr = target.to_wire_bytes()?;
+    let header_len = 3 + addr.len();
+    let header_len: u8 = header_len
+        .try_into()
+        .context("UDP-in-TCP header is too large for protocol framing")?;
+    let data_len: u16 = payload
+        .len()
+        .try_into()
+        .context("UDP-in-TCP payload exceeds u16 framing limit")?;
+
+    writer
+        .write_all(&data_len.to_be_bytes())
+        .await
+        .context("failed to write UDP-in-TCP data length")?;
+    writer
+        .write_all(&[header_len])
+        .await
+        .context("failed to write UDP-in-TCP header length")?;
+    writer
+        .write_all(&addr)
+        .await
+        .context("failed to write UDP-in-TCP target address")?;
+    writer
+        .write_all(payload)
+        .await
+        .context("failed to write UDP-in-TCP payload")?;
+    Ok(())
 }
 
 impl UdpFragmentReassembler {
@@ -283,13 +389,13 @@ async fn read_target_addr(stream: &mut TcpStream, atyp: u8) -> Result<TargetAddr
             stream.read_exact(&mut raw).await?;
             let port = read_port(stream).await?;
             Ok(TargetAddr::IpV4(Ipv4Addr::from(raw), port))
-        }
+        },
         SOCKS_ATYP_IPV6 => {
             let mut raw = [0u8; 16];
             stream.read_exact(&mut raw).await?;
             let port = read_port(stream).await?;
             Ok(TargetAddr::IpV6(Ipv6Addr::from(raw), port))
-        }
+        },
         SOCKS_ATYP_DOMAIN => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len).await?;
@@ -298,7 +404,7 @@ async fn read_target_addr(stream: &mut TcpStream, atyp: u8) -> Result<TargetAddr
             let port = read_port(stream).await?;
             let host = String::from_utf8(raw).context("domain is not valid UTF-8")?;
             Ok(TargetAddr::Domain(host, port))
-        }
+        },
         _ => {
             send_reply(
                 stream,
@@ -308,7 +414,7 @@ async fn read_target_addr(stream: &mut TcpStream, atyp: u8) -> Result<TargetAddr
             .await
             .ok();
             bail!("unsupported address type: {atyp}");
-        }
+        },
     }
 }
 
@@ -336,6 +442,21 @@ mod tests {
         assert_eq!(parsed.fragment, 0);
         assert_eq!(parsed.target, target);
         assert_eq!(parsed.payload, b"hello");
+    }
+
+    #[tokio::test]
+    async fn socks5_udp_in_tcp_packet_round_trip() {
+        let (mut writer, mut reader) = tokio::io::duplex(128);
+        let target = TargetAddr::Domain("example.com".to_string(), 53);
+
+        let send = tokio::spawn(async move {
+            write_udp_tcp_packet(&mut writer, &target, b"hello").await.unwrap();
+        });
+
+        let packet = read_udp_tcp_packet(&mut reader).await.unwrap().unwrap();
+        send.await.unwrap();
+        assert_eq!(packet.target, TargetAddr::Domain("example.com".to_string(), 53));
+        assert_eq!(packet.payload, b"hello");
     }
 
     #[test]
@@ -387,7 +508,10 @@ mod tests {
         let (mut server_stream, mut client) = socks_pair().await;
         let server = tokio::spawn(async move { negotiate(&mut server_stream, None).await });
 
-        client.write_all(&[SOCKS_VERSION, 1, SOCKS_AUTH_METHOD_NO_AUTH]).await.unwrap();
+        client
+            .write_all(&[SOCKS_VERSION, 1, SOCKS_AUTH_METHOD_NO_AUTH])
+            .await
+            .unwrap();
         let mut method_reply = [0u8; 2];
         client.read_exact(&mut method_reply).await.unwrap();
         assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH]);
@@ -413,6 +537,153 @@ mod tests {
             SocksRequest::Connect(TargetAddr::IpV4(ip, port)) => {
                 assert_eq!(ip, Ipv4Addr::new(1, 2, 3, 4));
                 assert_eq!(port, 443);
+            },
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn negotiate_accepts_udp_in_tcp_request() {
+        let (mut server_stream, mut client) = socks_pair().await;
+        let server = tokio::spawn(async move { negotiate(&mut server_stream, None).await });
+
+        client
+            .write_all(&[SOCKS_VERSION, 1, SOCKS_AUTH_METHOD_NO_AUTH])
+            .await
+            .unwrap();
+        let mut method_reply = [0u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH]);
+
+        client
+            .write_all(&[
+                SOCKS_VERSION,
+                SOCKS_CMD_UDP_IN_TCP,
+                0x00,
+                SOCKS_ATYP_IPV4,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await
+            .unwrap();
+
+        let request = server.await.unwrap().unwrap();
+        match request {
+            SocksRequest::UdpInTcp(TargetAddr::IpV4(ip, port)) => {
+                assert_eq!(ip, Ipv4Addr::UNSPECIFIED);
+                assert_eq!(port, 0);
+            },
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn negotiate_accepts_pipelined_no_auth_request() {
+        let (mut server_stream, mut client) = socks_pair().await;
+        let server = tokio::spawn(async move { negotiate(&mut server_stream, None).await });
+
+        client
+            .write_all(&[
+                SOCKS_VERSION,
+                1,
+                SOCKS_AUTH_METHOD_NO_AUTH,
+                SOCKS_VERSION,
+                SOCKS_CMD_CONNECT,
+                0x00,
+                SOCKS_ATYP_DOMAIN,
+                11,
+                b'e',
+                b'x',
+                b'a',
+                b'm',
+                b'p',
+                b'l',
+                b'e',
+                b'.',
+                b'o',
+                b'r',
+                b'g',
+                0,
+                53,
+            ])
+            .await
+            .unwrap();
+
+        let mut method_reply = [0u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH]);
+
+        let request = server.await.unwrap().unwrap();
+        match request {
+            SocksRequest::Connect(TargetAddr::Domain(host, port)) => {
+                assert_eq!(host, "example.org");
+                assert_eq!(port, 53);
+            }
+            other => panic!("unexpected request: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn negotiate_accepts_pipelined_userpass_udp_in_tcp_request() {
+        let (mut server_stream, mut client) = socks_pair().await;
+        let auth = Socks5AuthConfig {
+            users: vec![Socks5AuthUserConfig {
+                username: "alice".to_string(),
+                password: "secret".to_string(),
+            }],
+        };
+        let server = tokio::spawn(async move { negotiate(&mut server_stream, Some(&auth)).await });
+
+        client
+            .write_all(&[
+                SOCKS_VERSION,
+                1,
+                SOCKS_AUTH_METHOD_USERNAME_PASSWORD,
+                0x01,
+                5,
+                b'a',
+                b'l',
+                b'i',
+                b'c',
+                b'e',
+                6,
+                b's',
+                b'e',
+                b'c',
+                b'r',
+                b'e',
+                b't',
+                SOCKS_VERSION,
+                SOCKS_CMD_UDP_IN_TCP,
+                0x00,
+                SOCKS_ATYP_IPV4,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ])
+            .await
+            .unwrap();
+
+        let mut method_reply = [0u8; 2];
+        client.read_exact(&mut method_reply).await.unwrap();
+        assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD]);
+
+        let mut auth_reply = [0u8; 2];
+        client.read_exact(&mut auth_reply).await.unwrap();
+        assert_eq!(auth_reply, [0x01, 0x00]);
+
+        let request = server.await.unwrap().unwrap();
+        match request {
+            SocksRequest::UdpInTcp(TargetAddr::IpV4(ip, port)) => {
+                assert_eq!(ip, Ipv4Addr::UNSPECIFIED);
+                assert_eq!(port, 0);
             }
             other => panic!("unexpected request: {other:?}"),
         }
@@ -485,7 +756,7 @@ mod tests {
             SocksRequest::Connect(TargetAddr::Domain(host, port)) => {
                 assert_eq!(host, "example.com");
                 assert_eq!(port, 80);
-            }
+            },
             other => panic!("unexpected request: {other:?}"),
         }
     }
@@ -522,7 +793,9 @@ mod tests {
     }
 
     async fn socks_pair() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await.unwrap();
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
         let client = TcpStream::connect(addr).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();
