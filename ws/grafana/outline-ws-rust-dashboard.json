@@ -4689,14 +4689,15 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_build_info, job)",
+        "definition": "label_values(outline_ws_rust_build_info,instance)",
         "includeAll": true,
-        "label": "Job",
-        "name": "job",
+        "label": "Instance",
+        "name": "instance",
         "options": [],
         "query": {
-          "query": "label_values(outline_ws_rust_build_info, job)",
-          "refId": "Prometheus-job-Variable-Query"
+          "qryType": 1,
+          "query": "label_values(outline_ws_rust_build_info,instance)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
         "regex": "",
@@ -4713,14 +4714,15 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
+        "definition": "label_values(outline_ws_rust_build_info{instance=~\"$instance\"},job)",
         "includeAll": true,
-        "label": "Instance",
-        "name": "instance",
+        "label": "Job",
+        "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(outline_ws_rust_build_info{job=~\"$job\"}, instance)",
-          "refId": "Prometheus-instance-Variable-Query"
+          "qryType": 1,
+          "query": "label_values(outline_ws_rust_build_info{instance=~\"$instance\"},job)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
         "regex": "",
@@ -4738,6 +4740,6 @@
   "timezone": "browser",
   "title": "outline-ws-rust",
   "uid": "outline-ws-rust",
-  "version": 73,
+  "version": 74,
   "weekStart": ""
 }
