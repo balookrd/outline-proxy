@@ -5,39 +5,37 @@ use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use pin_project_lite::pin_project;
-use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, RootCertStore};
-use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
-use tokio::net::{TcpStream, UdpSocket, lookup_host};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::task::JoinHandle;
-use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tokio_tungstenite::{WebSocketStream, client_async_tls};
 use tracing::{debug, error, warn};
 use url::Url;
-use webpki_roots::TLS_SERVER_ROOTS;
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::connect_websocket_h3;
 
-use crate::dns_cache::DnsCache;
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
 use crate::types::{ServerAddr, WsTransportMode};
 
+mod dns;
+mod h2_io;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
 mod ws_stream;
 
+use dns::resolve_server_addr;
+use h2_io::{H2Io, connect_tls_h2};
 use socket::connect_tcp_socket;
 use ws_stream::{H1WsStream, H2WsStream};
 pub use socket::init_udp_socket_bufs;
+pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use socket::{bind_addr_for, bind_udp_socket};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
@@ -49,7 +47,6 @@ pub use ws_stream::AnyWsStream;
 // On memory-constrained routers these can be reduced via [h2] in config.toml.
 static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
-static DNS_CACHE: OnceLock<DnsCache> = OnceLock::new();
 
 /// Initialise H2 window sizes from config. Must be called before the first
 /// outbound H2 connection is opened. Safe to call multiple times with the same
@@ -84,20 +81,6 @@ impl AbortOnDrop {
         let handle = std::mem::replace(&mut self.0, tokio::spawn(async {}));
         let _ = handle.await;
     }
-}
-
-static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
-
-fn h2_client_tls_config() -> Arc<ClientConfig> {
-    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| {
-        let mut roots = RootCertStore::empty();
-        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        config.alpn_protocols = vec![b"h2".to_vec()];
-        Arc::new(config)
-    }))
 }
 
 pub(crate) struct TransportConnectGuard {
@@ -280,62 +263,6 @@ pub async fn connect_shadowsocks_udp_with_source(
     Ok(socket)
 }
 
-async fn resolve_server_addr(addr: &ServerAddr, ipv6_first: bool) -> Result<SocketAddr> {
-    resolve_host_with_preference(
-        addr.host(),
-        addr.port(),
-        &format!("failed to resolve {}", addr),
-        ipv6_first,
-    )
-    .await?
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
-}
-
-pub(crate) async fn resolve_host_with_preference(
-    host: &str,
-    port: u16,
-    context: &str,
-    ipv6_first: bool,
-) -> Result<Vec<SocketAddr>> {
-    let cache = DNS_CACHE.get_or_init(DnsCache::new);
-    let mut server_addrs = if let Some(addrs) = cache.get(host, port) {
-        addrs
-    } else {
-        match lookup_host((host, port)).await {
-            Ok(resolved) => {
-                let addrs = resolved.collect::<Vec<_>>();
-                cache.insert(host, port, addrs.clone());
-                addrs
-            },
-            Err(err) => {
-                if let Some(stale) = cache.get_stale(host, port) {
-                    warn!(
-                        host,
-                        port,
-                        error = %err,
-                        "DNS lookup failed, using stale cached addresses"
-                    );
-                    stale
-                } else {
-                    return Err(err).with_context(|| context.to_string());
-                }
-            },
-        }
-    };
-    server_addrs.sort_by_key(|addr| {
-        if ipv6_first {
-            if addr.is_ipv6() { 0 } else { 1 }
-        } else if addr.is_ipv4() {
-            0
-        } else {
-            1
-        }
-    });
-    Ok(server_addrs)
-}
-
 async fn connect_websocket_http1(
     url: &Url,
     fwmark: Option<u32>,
@@ -466,80 +393,6 @@ pub(crate) fn format_authority(host: &str, port: Option<u16>) -> String {
     match port {
         Some(port) => format!("{host}:{port}"),
         None => host,
-    }
-}
-
-async fn connect_tls_h2(
-    addr: SocketAddr,
-    host: &str,
-    fwmark: Option<u32>,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
-    let tcp = connect_tcp_socket(addr, fwmark).await?;
-    let connector = TlsConnector::from(h2_client_tls_config());
-    let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
-        ServerName::IpAddress(ip.into())
-    } else {
-        ServerName::try_from(host.to_string())
-            .map_err(|_| anyhow!("invalid TLS server name: {host}"))?
-    };
-    connector
-        .connect(server_name, tcp)
-        .await
-        .context("TLS handshake for h2 websocket failed")
-}
-
-
-pin_project! {
-    #[project = H2IoProj]
-    enum H2Io {
-        Plain { #[pin] inner: TcpStream },
-        Tls { #[pin] inner: tokio_rustls::client::TlsStream<TcpStream> },
-    }
-}
-
-impl tokio::io::AsyncRead for H2Io {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project() {
-            H2IoProj::Plain { inner } => inner.poll_read(cx, buf),
-            H2IoProj::Tls { inner } => inner.poll_read(cx, buf),
-        }
-    }
-}
-
-impl tokio::io::AsyncWrite for H2Io {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
-        match self.project() {
-            H2IoProj::Plain { inner } => inner.poll_write(cx, buf),
-            H2IoProj::Tls { inner } => inner.poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project() {
-            H2IoProj::Plain { inner } => inner.poll_flush(cx),
-            H2IoProj::Tls { inner } => inner.poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project() {
-            H2IoProj::Plain { inner } => inner.poll_shutdown(cx),
-            H2IoProj::Tls { inner } => inner.poll_shutdown(cx),
-        }
     }
 }
 
