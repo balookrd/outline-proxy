@@ -7,10 +7,14 @@ use tokio::sync::{Notify, RwLock, Semaphore};
 use tokio::time::{Instant, sleep, timeout};
 use tracing::{debug, info, warn};
 
-use crate::config::{LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig};
+use crate::config::{
+    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
+};
 use crate::memory::{maybe_shrink_hash_map, maybe_shrink_vecdeque};
 use crate::metrics;
-use crate::transport::{AnyWsStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source};
+use crate::transport::{
+    AnyWsStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+};
 use crate::types::{TargetAddr, UplinkTransport};
 
 use super::probe::probe_uplink;
@@ -19,20 +23,46 @@ use super::selection::{
     selection_score, strict_gate_transport, supports_transport_for_scope,
 };
 use super::types::{
-    CandidateState, RoutingKey, StickyRoute, StandbyPool, UplinkCandidate, UplinkManagerInner,
-    UplinkManager, UplinkManagerSnapshot, UplinkSnapshot, StickyRouteSnapshot, UplinkStatus,
-    TransportKind,
+    CandidateState, RoutingKey, StandbyPool, StickyRoute, StickyRouteSnapshot, TransportKind,
+    UplinkCandidate, UplinkManager, UplinkManagerInner, UplinkManagerSnapshot, UplinkSnapshot,
+    UplinkStatus,
 };
 use super::utils::{
-    add_penalty, current_penalty, duration_to_millis_option, load_balancing_mode_name,
-    mark_probe_wakeup, rightless_bool, routing_key, routing_scope_name,
+    add_penalty, classify_runtime_failure_cause, classify_runtime_failure_signature,
+    current_penalty, duration_to_millis_option, load_balancing_mode_name, mark_probe_wakeup,
+    normalize_other_runtime_failure_detail, rightless_bool, routing_key, routing_scope_name,
     strict_route_key, update_rtt_ewma,
-    classify_runtime_failure_cause, classify_runtime_failure_signature,
-    normalize_other_runtime_failure_detail,
 };
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
+
+async fn run_probe_attempt_with_timeout(
+    uplink: Arc<UplinkConfig>,
+    probe: ProbeConfig,
+    dial_limit: Arc<Semaphore>,
+    effective_tcp_mode: crate::types::WsTransportMode,
+    timeout_duration: Duration,
+) -> Result<super::types::ProbeOutcome> {
+    let mut probe_task =
+        tokio::spawn(
+            async move { probe_uplink(&uplink, &probe, dial_limit, effective_tcp_mode).await },
+        );
+    let timeout_sleep = sleep(timeout_duration);
+    tokio::pin!(timeout_sleep);
+
+    tokio::select! {
+        joined = &mut probe_task => match joined {
+            Ok(result) => result,
+            Err(error) => Err(anyhow!("probe task failed: {error}")),
+        },
+        _ = &mut timeout_sleep => {
+            probe_task.abort();
+            let _ = probe_task.await;
+            Err(anyhow!("probe timed out after {:?}", timeout_duration))
+        }
+    }
+}
 
 impl UplinkManager {
     pub fn new(
@@ -217,16 +247,12 @@ impl UplinkManager {
         let per_uplink = self.strict_per_uplink_active_uplink();
         let tcp_active_uplink = per_uplink
             .then(|| {
-                tcp_active_index
-                    .and_then(|i| self.inner.uplinks.get(i))
-                    .map(|u| u.name.clone())
+                tcp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone())
             })
             .flatten();
         let udp_active_uplink = per_uplink
             .then(|| {
-                udp_active_index
-                    .and_then(|i| self.inner.uplinks.get(i))
-                    .map(|u| u.name.clone())
+                udp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone())
             })
             .flatten();
 
@@ -235,15 +261,14 @@ impl UplinkManager {
             sticky
                 .iter()
                 .filter_map(|(key, route)| {
-                    route
-                        .expires_at
-                        .checked_duration_since(now)
-                        .map(|remaining| StickyRouteSnapshot {
+                    route.expires_at.checked_duration_since(now).map(|remaining| {
+                        StickyRouteSnapshot {
                             key: key.to_string(),
                             uplink_index: route.uplink_index,
                             uplink_name: self.inner.uplinks[route.uplink_index].name.clone(),
                             expires_in_ms: remaining.as_millis(),
-                        })
+                        }
+                    })
                 })
                 .collect()
         };
@@ -266,19 +291,14 @@ impl UplinkManager {
 
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Tcp) {
-            return self
-                .strict_transport_candidates(TransportKind::Tcp, Some(target))
-                .await;
+            return self.strict_transport_candidates(TransportKind::Tcp, Some(target)).await;
         }
-        self.ordered_candidates(TransportKind::Tcp, Some(target))
-            .await
+        self.ordered_candidates(TransportKind::Tcp, Some(target)).await
     }
 
     pub async fn udp_candidates(&self, target: Option<&TargetAddr>) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Udp) {
-            return self
-                .strict_transport_candidates(TransportKind::Udp, target)
-                .await;
+            return self.strict_transport_candidates(TransportKind::Udp, target).await;
         }
         self.ordered_candidates(TransportKind::Udp, target).await
     }
@@ -304,8 +324,7 @@ impl UplinkManager {
         uplink_index: usize,
     ) {
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        self.set_active_uplink_index_for_transport(transport, uplink_index)
-            .await;
+        self.set_active_uplink_index_for_transport(transport, uplink_index).await;
         self.store_sticky_route(&routing_key, uplink_index).await;
     }
 
@@ -410,9 +429,8 @@ impl UplinkManager {
             let uplink_name = self.inner.uplinks[index].name.clone();
             match transport {
                 TransportKind::Tcp => {
-                    let already_in_cooldown = status
-                        .cooldown_until_tcp
-                        .is_some_and(|deadline| deadline > now);
+                    let already_in_cooldown =
+                        status.cooldown_until_tcp.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
                         // When probe is enabled it is the authoritative source of health.
                         // Do not add a penalty on every transient runtime failure: under
@@ -475,9 +493,8 @@ impl UplinkManager {
                     )
                 }
                 TransportKind::Udp => {
-                    let already_in_cooldown = status
-                        .cooldown_until_udp
-                        .is_some_and(|deadline| deadline > now);
+                    let already_in_cooldown =
+                        status.cooldown_until_udp.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
                         // Same rationale as TCP above: when probe is enabled, defer
                         // penalty to the probe confirmation path to avoid inflating
@@ -526,11 +543,8 @@ impl UplinkManager {
             }
         };
 
-        let cooldown_ms = cooldown_until.map(|deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .as_millis()
-        });
+        let cooldown_ms = cooldown_until
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()).as_millis());
         if already_in_cooldown {
             debug!(
                 uplink = %uplink_name,
@@ -725,17 +739,15 @@ impl UplinkManager {
         let status = &mut statuses[index];
         match transport {
             TransportKind::Tcp => {
-                let recently_active = status
-                    .last_active_tcp
-                    .is_some_and(|t| now.duration_since(t) < threshold);
+                let recently_active =
+                    status.last_active_tcp.is_some_and(|t| now.duration_since(t) < threshold);
                 if !recently_active {
                     status.last_active_tcp = None;
                 }
             }
             TransportKind::Udp => {
-                let recently_active = status
-                    .last_active_udp
-                    .is_some_and(|t| now.duration_since(t) < threshold);
+                let recently_active =
+                    status.last_active_udp.is_some_and(|t| now.duration_since(t) < threshold);
                 if !recently_active {
                     status.last_active_udp = None;
                 }
@@ -775,10 +787,7 @@ impl UplinkManager {
         {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
-            if status
-                .h3_tcp_downgrade_until
-                .is_some_and(|t| t > tokio::time::Instant::now())
-            {
+            if status.h3_tcp_downgrade_until.is_some_and(|t| t > tokio::time::Instant::now()) {
                 return crate::types::WsTransportMode::H2;
             }
         }
@@ -794,11 +803,7 @@ impl UplinkManager {
         if candidate.uplink.transport != UplinkTransport::Websocket {
             return None;
         }
-        let ws = self.inner.standby_pools[candidate.index]
-            .tcp
-            .lock()
-            .await
-            .pop_front()?;
+        let ws = self.inner.standby_pools[candidate.index].tcp.lock().await.pop_front()?;
         self.spawn_refill(candidate.index, TransportKind::Tcp);
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
         debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
@@ -812,10 +817,7 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<AnyWsStream> {
         if candidate.uplink.transport != UplinkTransport::Websocket {
-            bail!(
-                "uplink {} does not use websocket transport",
-                candidate.uplink.name
-            );
+            bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
         metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
         let mode = self.effective_tcp_ws_mode(candidate.index).await;
@@ -839,11 +841,7 @@ impl UplinkManager {
             .with_context(|| {
                 format!(
                     "failed to connect to {}",
-                    candidate
-                        .uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .expect("validated tcp_ws_url")
+                    candidate.uplink.tcp_ws_url.as_ref().expect("validated tcp_ws_url")
                 )
             })?;
         // Feed the on-demand dial latency into the RTT EWMA so real connection
@@ -872,10 +870,7 @@ impl UplinkManager {
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
             metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
             let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "udp_addr is not configured for uplink {}",
-                    candidate.uplink.name
-                )
+                anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
             })?;
             let started = Instant::now();
             let socket = connect_shadowsocks_udp_with_source(
@@ -913,10 +908,7 @@ impl UplinkManager {
         metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
         debug!(uplink = %candidate.uplink.name, "no warm-standby UDP websocket available, dialing on-demand");
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
-            anyhow!(
-                "udp_ws_url is not configured for uplink {}",
-                candidate.uplink.name
-            )
+            anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
         })?;
         let started = Instant::now();
         let transport = UdpWsTransport::connect(
@@ -987,9 +979,7 @@ impl UplinkManager {
                 .cmp(&rightless_bool(right.healthy))
                 .reverse()
                 .then_with(|| {
-                    left.score
-                        .unwrap_or(Duration::MAX)
-                        .cmp(&right.score.unwrap_or(Duration::MAX))
+                    left.score.unwrap_or(Duration::MAX).cmp(&right.score.unwrap_or(Duration::MAX))
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -998,10 +988,7 @@ impl UplinkManager {
             .preferred_sticky_index(&routing_key, transport, &candidates, &statuses)
             .await;
         if let Some(index) = preferred_index {
-            if let Some(pos) = candidates
-                .iter()
-                .position(|candidate| candidate.index == index)
-            {
+            if let Some(pos) = candidates.iter().position(|candidate| candidate.index == index) {
                 let sticky = candidates.remove(pos);
                 candidates.insert(0, sticky);
             }
@@ -1011,10 +998,7 @@ impl UplinkManager {
 
         candidates
             .into_iter()
-            .map(|candidate| UplinkCandidate {
-                index: candidate.index,
-                uplink: candidate.uplink,
-            })
+            .map(|candidate| UplinkCandidate { index: candidate.index, uplink: candidate.uplink })
             .collect()
     }
 
@@ -1067,9 +1051,7 @@ impl UplinkManager {
                 .cmp(&rightless_bool(right.healthy))
                 .reverse()
                 .then_with(|| {
-                    left.score
-                        .unwrap_or(Duration::MAX)
-                        .cmp(&right.score.unwrap_or(Duration::MAX))
+                    left.score.unwrap_or(Duration::MAX).cmp(&right.score.unwrap_or(Duration::MAX))
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -1078,9 +1060,8 @@ impl UplinkManager {
             strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
         let mut switching_from_cooldown = false;
         if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
-            if let Some(candidate) = candidates
-                .iter()
-                .find(|candidate| candidate.index == active_index)
+            if let Some(candidate) =
+                candidates.iter().find(|candidate| candidate.index == active_index)
             {
                 // When probe is enabled it is the authoritative source of health.  Runtime
                 // failures only set a cooldown; they do NOT update tcp_healthy/udp_healthy
@@ -1248,14 +1229,10 @@ impl UplinkManager {
         }
 
         let selected = candidates[0].index;
-        self.set_active_uplink_index_for_transport(transport, selected)
-            .await;
+        self.set_active_uplink_index_for_transport(transport, selected).await;
         let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
         self.store_sticky_route(&key, selected).await;
-        vec![UplinkCandidate {
-            index: selected,
-            uplink: Arc::clone(&candidates[0].uplink),
-        }]
+        vec![UplinkCandidate { index: selected, uplink: Arc::clone(&candidates[0].uplink) }]
     }
 
     async fn set_active_uplink_index_for_transport(
@@ -1397,8 +1374,8 @@ impl UplinkManager {
     }
 
     async fn validate_pool(&self, index: usize, transport: TransportKind) {
-        use tokio_tungstenite::tungstenite::protocol::Message;
         use futures_util::StreamExt;
+        use tokio_tungstenite::tungstenite::protocol::Message;
 
         let desired = match transport {
             TransportKind::Tcp => self.inner.load_balancing.warm_standby_tcp,
@@ -1510,12 +1487,9 @@ impl UplinkManager {
             sticky.get(routing_key).map(|route| route.uplink_index)
         }?;
 
-        let sticky = candidates
-            .iter()
-            .find(|candidate| candidate.index == sticky_index)?;
+        let sticky = candidates.iter().find(|candidate| candidate.index == sticky_index)?;
         if !sticky.healthy {
-            self.store_sticky_route(routing_key, candidates[0].index)
-                .await;
+            self.store_sticky_route(routing_key, candidates[0].index).await;
             return Some(candidates[0].index);
         }
 
@@ -1524,10 +1498,7 @@ impl UplinkManager {
             return Some(sticky.index);
         }
 
-        let fastest = candidates
-            .iter()
-            .find(|candidate| candidate.healthy)
-            .unwrap_or(sticky);
+        let fastest = candidates.iter().find(|candidate| candidate.healthy).unwrap_or(sticky);
         let now = Instant::now();
         // Always use penalty-aware scoring for the hysteresis check, regardless of routing
         // scope. This prevents a recently-failed uplink from immediately winning back the
@@ -1623,9 +1594,8 @@ impl UplinkManager {
                 let statuses = self.inner.statuses.read().await;
                 let s = &statuses[index];
                 let threshold = self.inner.probe.interval;
-                let tcp_active = s
-                    .last_active_tcp
-                    .map_or(false, |t| now.duration_since(t) < threshold);
+                let tcp_active =
+                    s.last_active_tcp.map_or(false, |t| now.duration_since(t) < threshold);
                 let tcp_currently_healthy = s.tcp_healthy == Some(true);
                 // Do NOT skip if there is an active cooldown: a runtime
                 // connection failure was reported, meaning the uplink may be
@@ -1653,9 +1623,8 @@ impl UplinkManager {
                     && self.inner.probe.enabled();
                 let skip_allowed = tcp_no_cooldown || global_probe;
                 if tcp_active && tcp_currently_healthy && skip_allowed {
-                    let udp_active = s
-                        .last_active_udp
-                        .map_or(false, |t| now.duration_since(t) < threshold);
+                    let udp_active =
+                        s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
                     debug!(
                         uplink = %uplink.name,
                         last_active_tcp_ms = s.last_active_tcp.map(|t| now.duration_since(t).as_millis()),
@@ -1695,14 +1664,14 @@ impl UplinkManager {
                 // consecutive-failure counter.
                 let mut outcome = Err(anyhow!("no probe attempts"));
                 for attempt in 0..probe_attempts {
-                    outcome = timeout(
+                    outcome = run_probe_attempt_with_timeout(
+                        Arc::clone(&uplink),
+                        probe.clone(),
+                        Arc::clone(&dial_limit),
+                        effective_tcp_mode,
                         timeout_duration,
-                        probe_uplink(&uplink, &probe, Arc::clone(&dial_limit), effective_tcp_mode),
                     )
-                    .await
-                    .unwrap_or_else(|_| {
-                        Err(anyhow!("probe timed out after {:?}", timeout_duration))
-                    });
+                    .await;
                     if outcome.is_ok() {
                         break;
                     }
@@ -1820,14 +1789,8 @@ impl UplinkManager {
                             status.last_error = None;
                         }
                         (
-                            status
-                                .tcp_rtt_ewma
-                                .map(|v| v.as_millis() as u64)
-                                .unwrap_or_default(),
-                            status
-                                .udp_rtt_ewma
-                                .map(|v| v.as_millis() as u64)
-                                .unwrap_or_default(),
+                            status.tcp_rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                            status.udp_rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
                         )
                     };
                     debug!(
