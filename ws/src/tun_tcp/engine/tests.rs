@@ -1152,6 +1152,7 @@ async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
             sticky_ttl: Duration::from_secs(300),
             hysteresis: Duration::from_millis(50),
             failure_cooldown: Duration::from_secs(10),
+            tcp_chunk0_failover_timeout: Duration::from_secs(10),
             warm_standby_tcp: 0,
             warm_standby_udp: 0,
             rtt_ewma_alpha: 0.3,

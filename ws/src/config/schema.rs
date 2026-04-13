@@ -178,6 +178,7 @@ pub(super) struct LoadBalancingSection {
     pub(super) sticky_ttl_secs: Option<u64>,
     pub(super) hysteresis_ms: Option<u64>,
     pub(super) failure_cooldown_secs: Option<u64>,
+    pub(super) tcp_chunk0_failover_timeout_secs: Option<u64>,
     pub(super) warm_standby_tcp: Option<usize>,
     pub(super) warm_standby_udp: Option<usize>,
     pub(super) rtt_ewma_alpha: Option<f64>,

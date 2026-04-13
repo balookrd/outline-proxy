@@ -244,6 +244,8 @@ pub fn log_uplink_summary(manager: &UplinkManager) {
         sticky_ttl_secs = manager.inner.load_balancing.sticky_ttl.as_secs(),
         hysteresis_ms = manager.inner.load_balancing.hysteresis.as_millis() as u64,
         failure_cooldown_secs = manager.inner.load_balancing.failure_cooldown.as_secs(),
+        tcp_chunk0_failover_timeout_secs =
+            manager.inner.load_balancing.tcp_chunk0_failover_timeout.as_secs(),
         warm_standby_tcp = manager.inner.load_balancing.warm_standby_tcp,
         warm_standby_udp = manager.inner.load_balancing.warm_standby_udp,
         rtt_ewma_alpha = manager.inner.load_balancing.rtt_ewma_alpha,

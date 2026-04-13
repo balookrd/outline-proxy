@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,21 +12,33 @@ use tracing::{debug, info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{send_reply, SOCKS_STATUS_SUCCESS};
+use crate::socks5::{SOCKS_STATUS_SUCCESS, send_reply};
 use crate::transport::{
-    connect_shadowsocks_tcp_with_source, TcpShadowsocksReader, TcpShadowsocksWriter,
-    UpstreamTransportGuard,
+    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    connect_shadowsocks_tcp_with_source,
 };
-use crate::types::{socket_addr_to_target, TargetAddr, UplinkTransport};
+use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
-const CHUNK0_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
 enum UplinkTaskResult {
     Finished,
     CloseSession,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TcpUplinkSource {
+    Standby,
+    FreshDial,
+    DirectSocket,
+}
+
+struct ConnectedTcpUplink {
+    writer: TcpShadowsocksWriter,
+    reader: TcpShadowsocksReader,
+    source: TcpUplinkSource,
 }
 
 fn attempted_chunk0_uplink_names(
@@ -106,6 +118,7 @@ pub(super) async fn handle_tcp_connect(
         let mut last_error = None;
         let mut selected = None;
         let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
+        let chunk0_attempt_timeout = config.load_balancing.tcp_chunk0_failover_timeout;
         let mut tried_indexes = std::collections::HashSet::new();
         loop {
             let candidates = uplinks.tcp_candidates(&target).await;
@@ -147,6 +160,7 @@ pub(super) async fn handle_tcp_connect(
                 last_error.unwrap_or_else(|| "no uplinks available".to_string())
             )
         })?;
+        let mut active_candidate = candidate.clone();
         let selected_uplink_name = candidate.uplink.name.clone();
         uplinks
             .confirm_selected_uplink(TransportKind::Tcp, Some(&target), candidate.index)
@@ -159,7 +173,9 @@ pub(super) async fn handle_tcp_connect(
             "selected TCP uplink"
         );
         let selected_index = candidate.index;
-        let (mut writer, mut reader) = connected;
+        let mut writer = connected.writer;
+        let mut reader = connected.reader;
+        let mut active_source = connected.source;
 
         let bound_addr = socket_addr_to_target(client.local_addr()?);
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
@@ -177,11 +193,11 @@ pub(super) async fn handle_tcp_connect(
                 && !replay_overflow
                 && tried_indexes.len() < uplinks.uplinks().len();
             let attempt_timeout = if can_failover {
-                CHUNK0_ATTEMPT_TIMEOUT
+                chunk0_attempt_timeout
             } else {
                 UPSTREAM_RESPONSE_TIMEOUT
             };
-            let deadline = tokio::time::Instant::now() + attempt_timeout;
+            let mut deadline = tokio::time::Instant::now() + attempt_timeout;
             let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
 
             let attempt: Result<Vec<u8>> = loop {
@@ -212,6 +228,12 @@ pub(super) async fn handle_tcp_connect(
                                     .send_chunk(&chunk)
                                     .await
                                     .context("uplink write failed")?;
+                                // Treat the timeout as "no response after the last
+                                // request activity", not "no response since the
+                                // beginning of phase 1". Some protocols do not send
+                                // any server bytes until the client has finished
+                                // sending the request preface or body.
+                                deadline = tokio::time::Instant::now() + attempt_timeout;
                                 metrics::add_bytes(
                                     "tcp",
                                     "client_to_upstream",
@@ -278,7 +300,40 @@ pub(super) async fn handle_tcp_connect(
                     return Ok(());
                 }
                 Err(e) => {
-                    let error_text = format!("{e:#}");
+                    let mut phase1_error = e;
+                    if active_source == TcpUplinkSource::Standby {
+                        debug!(
+                            uplink = %active_uplink_name,
+                            error = %format!("{phase1_error:#}"),
+                            "TCP phase-1 failure on warm-standby socket; retrying same uplink with a fresh dial"
+                        );
+                        match connect_tcp_uplink_fresh(&uplinks, &active_candidate, &target).await {
+                            Ok(reconnected) => {
+                                writer = reconnected.writer;
+                                reader = reconnected.reader;
+                                active_source = reconnected.source;
+                                for chunk in &replay_buf {
+                                    writer
+                                        .send_chunk(chunk)
+                                        .await
+                                        .context("replay to fresh uplink after standby failure failed")?;
+                                }
+                                if client_half_closed {
+                                    writer
+                                        .close()
+                                        .await
+                                        .context("fresh uplink half-close after standby failure failed")?;
+                                }
+                                continue 'phase1;
+                            }
+                            Err(connect_err) => {
+                                phase1_error = connect_err
+                                    .context("fresh dial retry after warm-standby phase-1 failure failed");
+                            }
+                        }
+                    }
+
+                    let error_text = format!("{phase1_error:#}");
                     let attempted_uplinks =
                         attempted_chunk0_uplink_names(&deferred_phase1_failures, &active_uplink_name);
                     warn!(
@@ -291,7 +346,11 @@ pub(super) async fn handle_tcp_connect(
                     if !can_failover {
                         if deferred_phase1_failures.is_empty() {
                             uplinks
-                                .report_runtime_failure(active_index, TransportKind::Tcp, &e)
+                                .report_runtime_failure(
+                                    active_index,
+                                    TransportKind::Tcp,
+                                    &phase1_error,
+                                )
                                 .await;
                         } else {
                             warn!(
@@ -302,7 +361,7 @@ pub(super) async fn handle_tcp_connect(
                                 "suppressing TCP chunk-0 runtime failure attribution because every attempted uplink stalled before the first response"
                             );
                         }
-                        return Err(e);
+                        return Err(phase1_error);
                     }
 
                     deferred_phase1_failures.push((
@@ -318,11 +377,13 @@ pub(super) async fn handle_tcp_connect(
                         .into_iter()
                         .find(|c| !tried_indexes.contains(&c.index));
                     let Some(next_candidate) = next else {
-                        return Err(e.context("no alternative uplink available for chunk-0 failover"));
+                        return Err(
+                            phase1_error.context("no alternative uplink available for chunk-0 failover")
+                        );
                     };
                     tried_indexes.insert(next_candidate.index);
 
-                    let (new_writer, new_reader) =
+                    let reconnected =
                         match connect_tcp_uplink(&uplinks, &next_candidate, &target).await {
                             Ok(v) => v,
                             Err(connect_err) => {
@@ -353,8 +414,10 @@ pub(super) async fn handle_tcp_connect(
                     );
                     active_index = next_candidate.index;
                     active_uplink_name = next_candidate.uplink.name.clone();
-                    writer = new_writer;
-                    reader = new_reader;
+                    active_candidate = next_candidate.clone();
+                    writer = reconnected.writer;
+                    reader = reconnected.reader;
+                    active_source = reconnected.source;
 
                     for chunk in &replay_buf {
                         writer
@@ -372,20 +435,17 @@ pub(super) async fn handle_tcp_connect(
             }
         };
 
+        // Once phase 1 completed and we received the first upstream bytes, this
+        // SOCKS TCP session is pinned to the uplink that completed setup.
+        // Strict active-uplink reselection only affects new sessions and
+        // chunk-0 failover; established TCP tunnels are not migrated
+        // transparently and should only end on a real transport error.
         let uplink_uplink_name = active_uplink_name.clone();
         let uplinks_uplink = uplinks.clone();
         let uplink = async move {
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
             loop {
-                if strict_transport
-                    && uplinks_uplink
-                        .active_uplink_index_for_transport(TransportKind::Tcp)
-                        .await
-                        .is_some_and(|active| active != active_index)
-                {
-                    return Err(anyhow!("active uplink switched for SOCKS TCP session"));
-                }
                 let read = client_read
                     .read(&mut buf)
                     .await
@@ -434,14 +494,6 @@ pub(super) async fn handle_tcp_connect(
 
             let mut chunks_forwarded: u64 = 1;
             loop {
-                if strict_transport
-                    && uplinks_downlink
-                        .active_uplink_index_for_transport(TransportKind::Tcp)
-                        .await
-                        .is_some_and(|active| active != active_index)
-                {
-                    return Err(anyhow!("active uplink switched for SOCKS TCP session"));
-                }
                 let chunk = match reader.read_chunk().await {
                     Ok(chunk) => chunk,
                     Err(_err) if reader.closed_cleanly => {
@@ -580,7 +632,7 @@ async fn connect_tcp_uplink(
     uplinks: &UplinkManager,
     candidate: &crate::uplink::UplinkCandidate,
     target: &TargetAddr,
-) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+) -> Result<ConnectedTcpUplink> {
     if candidate.uplink.transport == UplinkTransport::Shadowsocks {
         let stream = connect_shadowsocks_tcp_with_source(
             candidate
@@ -593,7 +645,13 @@ async fn connect_tcp_uplink(
             "socks_tcp",
         )
         .await?;
-        return do_tcp_ss_setup_socket(stream, &candidate.uplink, target, "socks_tcp").await;
+        let (writer, reader) =
+            do_tcp_ss_setup_socket(stream, &candidate.uplink, target, "socks_tcp").await?;
+        return Ok(ConnectedTcpUplink {
+            writer,
+            reader,
+            source: TcpUplinkSource::DirectSocket,
+        });
     }
 
     // Variant A: try a standby pool connection first.  If it turns out to be
@@ -601,7 +659,13 @@ async fn connect_tcp_uplink(
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
         match do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await {
-            Ok(v) => return Ok(v),
+            Ok((writer, reader)) => {
+                return Ok(ConnectedTcpUplink {
+                    writer,
+                    reader,
+                    source: TcpUplinkSource::Standby,
+                });
+            },
             Err(e) => {
                 debug!(
                     uplink = %candidate.uplink.name,
@@ -612,8 +676,21 @@ async fn connect_tcp_uplink(
         }
     }
 
+    connect_tcp_uplink_fresh(uplinks, candidate, target).await
+}
+
+async fn connect_tcp_uplink_fresh(
+    uplinks: &UplinkManager,
+    candidate: &crate::uplink::UplinkCandidate,
+    target: &TargetAddr,
+) -> Result<ConnectedTcpUplink> {
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
-    do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await
+    let (writer, reader) = do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await?;
+    Ok(ConnectedTcpUplink {
+        writer,
+        reader,
+        source: TcpUplinkSource::FreshDial,
+    })
 }
 
 async fn do_tcp_ss_setup(

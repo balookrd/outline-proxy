@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use tokio::fs;
 use tokio::sync::RwLock;
 use tracing::info;
@@ -13,8 +13,8 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 use super::args::Args;
 use super::schema::{
-    resolve_outline_section, BypassSection, ConfigFile, H2Section, OutlineSection, TunSection,
-    UplinkSection,
+    BypassSection, ConfigFile, H2Section, OutlineSection, TunSection, UplinkSection,
+    resolve_outline_section,
 };
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
@@ -422,6 +422,10 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
         failure_cooldown: Duration::from_secs(
             lb.and_then(|l| l.failure_cooldown_secs).unwrap_or(10),
+        ),
+        tcp_chunk0_failover_timeout: Duration::from_secs(
+            lb.and_then(|l| l.tcp_chunk0_failover_timeout_secs)
+                .unwrap_or(10),
         ),
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),

@@ -77,6 +77,7 @@ warm_standby_udp = 1
 sticky_ttl_secs = 300
 hysteresis_ms = 50
 failure_cooldown_secs = 10
+tcp_chunk0_failover_timeout_secs = 10
 rtt_ewma_alpha = 0.3
 failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
