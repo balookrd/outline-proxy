@@ -1,4 +1,6 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
+#[cfg(not(target_os = "linux"))]
+use anyhow::bail;
 use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::OnceLock;

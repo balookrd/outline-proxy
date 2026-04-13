@@ -12,6 +12,7 @@ use outline_ws_rust::uplink::UplinkManager;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
+#[cfg(feature = "env-filter")]
 use tracing_subscriber::EnvFilter;
 use url::Url;
 
@@ -138,10 +139,14 @@ async fn wait_for_standby(
 }
 
 fn init_test_tracing() {
+    #[cfg(feature = "env-filter")]
     let _ = tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::new("debug,outline_ws_rust=debug"))
         .with_test_writer()
         .try_init();
+
+    #[cfg(not(feature = "env-filter"))]
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
 }
 
 struct TestWsServer {
