@@ -1,5 +1,5 @@
 use super::METRICS;
-use crate::memory::{ProcessFdSnapshot, sample_process_memory};
+use crate::memory::{sample_process_memory, ProcessFdSnapshot};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -18,6 +18,9 @@ pub fn init() {
         initial_sample.thread_count,
         initial_sample.fd_snapshot,
     );
+    METRICS.bytes_total.reset();
+    METRICS.udp_datagrams_total.reset();
+    METRICS.udp_oversized_dropped_total.reset();
     METRICS.tun_ip_fragments_total.reset();
     METRICS.tun_ip_reassemblies_total.reset();
     METRICS.tun_ip_fragment_sets_active.reset();
@@ -66,6 +69,20 @@ pub fn init() {
     }
     for direction in ["incoming", "outgoing"] {
         let _ = METRICS.udp_oversized_dropped_total.with_label_values(&[direction]);
+    }
+    for protocol in ["tcp", "udp"] {
+        for direction in ["client_to_upstream", "upstream_to_client"] {
+            METRICS
+                .bytes_total
+                .with_label_values(&[protocol, direction, super::BYPASS_UPLINK_LABEL])
+                .inc_by(0);
+        }
+    }
+    for direction in ["client_to_upstream", "upstream_to_client"] {
+        METRICS
+            .udp_datagrams_total
+            .with_label_values(&[direction, super::BYPASS_UPLINK_LABEL])
+            .inc_by(0);
     }
     for protocol in ["tcp", "udp"] {
         let _ = METRICS.sessions_active.with_label_values(&[protocol]);

@@ -283,7 +283,12 @@ pub struct UringStreamAdapter {
 impl UringStreamAdapter {
     /// Create a new adapter
     pub fn new(stream: UringStream) -> Self {
-        Self { stream, read_buffer: vec![0u8; 64 * 1024], read_pos: 0, read_len: 0 }
+        Self {
+            stream,
+            read_buffer: vec![0u8; 64 * 1024],
+            read_pos: 0,
+            read_len: 0,
+        }
     }
 
     /// Get buffered data if available

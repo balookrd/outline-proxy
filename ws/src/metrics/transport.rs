@@ -1,6 +1,8 @@
 use super::METRICS;
 use std::time::Duration;
 
+pub const BYPASS_UPLINK_LABEL: &str = "bypass";
+
 pub fn record_transport_connect(source: &'static str, mode: &'static str, result: &'static str) {
     METRICS
         .transport_connects_total

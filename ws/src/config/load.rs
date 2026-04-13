@@ -2,9 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use tokio::fs;
 use tokio::sync::RwLock;
+use tracing::info;
 use url::Url;
 
 use crate::bypass::BypassList;
@@ -12,8 +13,8 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 use super::args::Args;
 use super::schema::{
-    BypassSection, ConfigFile, H2Section, OutlineSection, TunSection, UplinkSection,
-    resolve_outline_section,
+    resolve_outline_section, BypassSection, ConfigFile, H2Section, OutlineSection, TunSection,
+    UplinkSection,
 };
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
@@ -624,19 +625,14 @@ pub(super) async fn load_bypass_config(
     };
     let invert = section.invert.unwrap_or(false);
 
+    let inline_prefix_count = section.prefixes.as_ref().map_or(0, Vec::len);
     let mut prefixes: Vec<String> = section.prefixes.clone().unwrap_or_default();
+    let mut file_prefix_count = 0;
 
     if let Some(ref file) = section.file {
-        let content = tokio::fs::read_to_string(file)
-            .await
-            .with_context(|| format!("failed to read bypass file {}", file.display()))?;
-        prefixes.extend(
-            content
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .map(str::to_string),
-        );
+        let file_prefixes = crate::bypass::read_prefixes_from_file(file).await?;
+        file_prefix_count = file_prefixes.len();
+        prefixes.extend(file_prefixes);
     }
 
     if prefixes.is_empty() {
@@ -644,6 +640,13 @@ pub(super) async fn load_bypass_config(
     }
 
     let list = BypassList::parse(&prefixes, invert)?;
+    info!(
+        inline_prefix_count,
+        file_prefix_count,
+        prefix_count = prefixes.len(),
+        invert,
+        "bypass prefixes loaded"
+    );
     let shared = Arc::new(RwLock::new(list));
 
     if let Some(ref file) = section.file {

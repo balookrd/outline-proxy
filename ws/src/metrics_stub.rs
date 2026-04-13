@@ -6,6 +6,8 @@ use std::time::Duration;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::UplinkManagerSnapshot;
 
+pub const BYPASS_UPLINK_LABEL: &str = "bypass";
+
 // ── Process ──────────────────────────────────────────────────────────────────
 
 pub fn init() {}

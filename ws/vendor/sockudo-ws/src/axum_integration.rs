@@ -252,7 +252,13 @@ where
             .remove::<OnUpgrade>()
             .ok_or(WebSocketUpgradeRejection::MissingUpgrade)?;
 
-        Ok(WebSocketUpgrade { key, protocol, extensions, config: Config::default(), on_upgrade })
+        Ok(WebSocketUpgrade {
+            key,
+            protocol,
+            extensions,
+            config: Config::default(),
+            on_upgrade,
+        })
     }
 }
 
@@ -281,11 +287,11 @@ impl IntoResponse for WebSocketUpgradeRejection {
             Self::MissingSecWebSocketKey => (StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Key"),
             Self::MissingSecWebSocketVersion => {
                 (StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Version")
-            }
+            },
             Self::UnsupportedVersion => (StatusCode::BAD_REQUEST, "Unsupported WebSocket version"),
             Self::MissingUpgrade => {
                 (StatusCode::BAD_REQUEST, "Missing upgrade in request extensions")
-            }
+            },
         };
 
         Response::builder().status(status).body(Body::from(message)).unwrap()
@@ -334,10 +340,10 @@ impl IntoResponse for WebSocketUpgradeResponse {
                     let io = TokioIo::new(upgraded);
                     let stream = UpgradedStream { inner: Box::new(io) };
                     handler(stream).await;
-                }
+                },
                 Err(e) => {
                     eprintln!("WebSocket upgrade error: {}", e);
-                }
+                },
             }
         });
 
@@ -498,18 +504,26 @@ impl WebSocket {
             WebSocketInner::Plain(ws) => {
                 let (reader, writer) = ws.split();
                 (
-                    WebSocketReader { inner: WebSocketReaderInner::Plain(reader) },
-                    WebSocketWriter { inner: WebSocketWriterInner::Plain(writer) },
+                    WebSocketReader {
+                        inner: WebSocketReaderInner::Plain(reader),
+                    },
+                    WebSocketWriter {
+                        inner: WebSocketWriterInner::Plain(writer),
+                    },
                 )
-            }
+            },
             #[cfg(feature = "permessage-deflate")]
             WebSocketInner::Compressed(ws) => {
                 let (reader, writer) = ws.split();
                 (
-                    WebSocketReader { inner: WebSocketReaderInner::Compressed(reader) },
-                    WebSocketWriter { inner: WebSocketWriterInner::Compressed(writer) },
+                    WebSocketReader {
+                        inner: WebSocketReaderInner::Compressed(reader),
+                    },
+                    WebSocketWriter {
+                        inner: WebSocketWriterInner::Compressed(writer),
+                    },
                 )
-            }
+            },
         }
     }
 }
@@ -769,7 +783,10 @@ mod tests {
         assert_eq!(header, "permessage-deflate");
 
         // Test config with server_no_context_takeover
-        let config = DeflateConfig { server_no_context_takeover: true, ..Default::default() };
+        let config = DeflateConfig {
+            server_no_context_takeover: true,
+            ..Default::default()
+        };
         let header = config.to_response_header();
         assert!(header.contains("permessage-deflate"));
         assert!(header.contains("server_no_context_takeover"));
@@ -997,8 +1014,10 @@ mod tests {
         });
 
         // Simulate the negotiation logic from on_upgrade
-        let deflate_config =
-            config.deflate.clone().or_else(|| config.compression.to_deflate_config());
+        let deflate_config = config
+            .deflate
+            .clone()
+            .or_else(|| config.compression.to_deflate_config());
 
         assert!(deflate_config.is_some());
         let deflate_config = deflate_config.unwrap();

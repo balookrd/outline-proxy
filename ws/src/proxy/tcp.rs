@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,12 +12,12 @@ use tracing::{debug, info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{SOCKS_STATUS_SUCCESS, send_reply};
+use crate::socks5::{send_reply, SOCKS_STATUS_SUCCESS};
 use crate::transport::{
-    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source,
+    connect_shadowsocks_tcp_with_source, TcpShadowsocksReader, TcpShadowsocksWriter,
+    UpstreamTransportGuard,
 };
-use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
+use crate::types::{socket_addr_to_target, TargetAddr, UplinkTransport};
 use crate::uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -27,6 +27,22 @@ const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 enum UplinkTaskResult {
     Finished,
     CloseSession,
+}
+
+fn attempted_chunk0_uplink_names(
+    deferred_phase1_failures: &[(usize, String, String)],
+    active_uplink_name: &str,
+) -> Vec<String> {
+    let mut attempted = Vec::with_capacity(deferred_phase1_failures.len() + 1);
+    for (_, uplink_name, _) in deferred_phase1_failures {
+        if attempted.iter().all(|existing| existing != uplink_name) {
+            attempted.push(uplink_name.clone());
+        }
+    }
+    if attempted.iter().all(|existing| existing != active_uplink_name) {
+        attempted.push(active_uplink_name.to_string());
+    }
+    attempted
 }
 
 async fn drive_tcp_session_tasks<U, D>(uplink: U, downlink: D) -> Result<()>
@@ -263,8 +279,11 @@ pub(super) async fn handle_tcp_connect(
                 }
                 Err(e) => {
                     let error_text = format!("{e:#}");
+                    let attempted_uplinks =
+                        attempted_chunk0_uplink_names(&deferred_phase1_failures, &active_uplink_name);
                     warn!(
                         uplink = %active_uplink_name,
+                        attempted_uplinks = ?attempted_uplinks,
                         error = %error_text,
                         "TCP chunk-0 failure"
                     );
@@ -277,7 +296,8 @@ pub(super) async fn handle_tcp_connect(
                         } else {
                             warn!(
                                 last_uplink = %active_uplink_name,
-                                attempts = deferred_phase1_failures.len() + 1,
+                                attempts = attempted_uplinks.len(),
+                                attempted_uplinks = ?attempted_uplinks,
                                 error = %error_text,
                                 "suppressing TCP chunk-0 runtime failure attribution because every attempted uplink stalled before the first response"
                             );
@@ -291,7 +311,9 @@ pub(super) async fn handle_tcp_connect(
                         error_text,
                     ));
 
-                    let candidates = uplinks.tcp_candidates(&target).await;
+                    let candidates = uplinks
+                        .tcp_failover_candidates(&target, active_index)
+                        .await;
                     let next = candidates
                         .into_iter()
                         .find(|c| !tried_indexes.contains(&c.index));
@@ -525,12 +547,28 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
 
     let c2u = async {
-        tokio::io::copy(&mut client_read, &mut upstream_write).await?;
+        let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
+        loop {
+            let read = client_read.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            metrics::add_bytes("tcp", "client_to_upstream", metrics::BYPASS_UPLINK_LABEL, read);
+            upstream_write.write_all(&buf[..read]).await?;
+        }
         upstream_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
     };
     let u2c = async {
-        tokio::io::copy(&mut upstream_read, &mut client_write).await?;
+        let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
+        loop {
+            let read = upstream_read.read(&mut buf).await?;
+            if read == 0 {
+                break;
+            }
+            metrics::add_bytes("tcp", "upstream_to_client", metrics::BYPASS_UPLINK_LABEL, read);
+            client_write.write_all(&buf[..read]).await?;
+        }
         client_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
     };
@@ -726,5 +764,19 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), downlink_dropped.notified())
             .await
             .expect("downlink should be aborted after websocket-backed client EOF");
+    }
+
+    #[test]
+    fn attempted_chunk0_uplink_names_preserves_attempt_order_without_duplicates() {
+        let attempted = attempted_chunk0_uplink_names(
+            &[
+                (0, "nuxt".to_string(), "first".to_string()),
+                (1, "aeza".to_string(), "second".to_string()),
+                (0, "nuxt".to_string(), "duplicate".to_string()),
+            ],
+            "aeza",
+        );
+
+        assert_eq!(attempted, vec!["nuxt".to_string(), "aeza".to_string()]);
     }
 }

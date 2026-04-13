@@ -1,4 +1,4 @@
-use super::{METRICS, Metrics};
+use super::{Metrics, METRICS};
 use anyhow::{Context, Result};
 use prometheus::{Encoder, TextEncoder};
 

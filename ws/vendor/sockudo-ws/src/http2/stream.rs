@@ -110,13 +110,13 @@ impl AsyncRead for Http2Stream {
                 }
 
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 // Stream ended (END_STREAM received)
                 self.recv_eof = true;
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Pending => Poll::Pending,
         }
     }
@@ -148,16 +148,16 @@ impl AsyncWrite for Http2Stream {
 
                 self.capacity_needed = 0;
                 Poll::Ready(Ok(to_send))
-            }
+            },
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 // Stream was reset
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream closed")))
-            }
+            },
             Poll::Pending => {
                 self.capacity_needed = buf.len();
                 Poll::Pending
-            }
+            },
         }
     }
 

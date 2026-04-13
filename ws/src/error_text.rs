@@ -1,6 +1,14 @@
 use anyhow::Error;
 
-const CLIENT_IO_FAILURES: &[&str] = &["client read failed", "client write failed"];
+const CLIENT_IO_FAILURES: &[&str] = &[
+    "client read failed",
+    "client write failed",
+    "failed to read udp-in-tcp data length",
+    "failed to read udp-in-tcp data length tail",
+    "failed to read udp-in-tcp header length",
+    "failed to read udp-in-tcp target address",
+    "failed to read udp-in-tcp payload",
+];
 const WEBSOCKET_CLOSES: &[&str] = &[
     "websocket closed",
     "connection reset without closing handshake",
@@ -157,7 +165,7 @@ pub(crate) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
 mod tests {
     use anyhow::anyhow;
 
-    use super::{is_upstream_runtime_failure, is_websocket_closed};
+    use super::{is_expected_client_disconnect, is_upstream_runtime_failure, is_websocket_closed};
 
     #[test]
     fn abrupt_websocket_reset_is_treated_as_closed() {
@@ -174,6 +182,15 @@ mod tests {
             "websocket read failed: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
         );
         assert!(is_websocket_closed(&error));
+        assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    #[test]
+    fn udp_in_tcp_client_reset_is_treated_as_expected_disconnect() {
+        let error = anyhow!(
+            "failed to read UDP-in-TCP data length: Connection reset by peer (os error 104)"
+        );
+        assert!(is_expected_client_disconnect(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 }

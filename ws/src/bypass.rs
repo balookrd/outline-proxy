@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -62,7 +62,11 @@ impl BypassList {
             TargetAddr::IpV6(ip, _) => contains_v6(&self.v6, u128::from(*ip)),
             TargetAddr::Domain(_, _) => return false,
         };
-        if self.invert { !in_list } else { in_list }
+        if self.invert {
+            !in_list
+        } else {
+            in_list
+        }
     }
 }
 
@@ -141,20 +145,28 @@ fn merge_v6(mut ranges: Vec<[u128; 2]>) -> Vec<[u128; 2]> {
 
 // ── File loading + hot-reload ─────────────────────────────────────────────────
 
-/// Parse a bypass prefix file: one CIDR per line, `#` comments and blank lines
-/// are ignored.  Both IPv4 and IPv6 prefixes are accepted.
-pub async fn load_from_file(path: &Path, invert: bool) -> Result<BypassList> {
+/// Read a bypass prefix file: one CIDR per line, `#` comments and blank lines
+/// are ignored. Both IPv4 and IPv6 prefixes are accepted.
+pub async fn read_prefixes_from_file(path: &Path) -> Result<Vec<String>> {
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("failed to read bypass file {}", path.display()))?;
-    let prefixes: Vec<String> = content
+    Ok(content
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(str::to_string)
-        .collect();
-    BypassList::parse(&prefixes, invert)
-        .with_context(|| format!("failed to parse bypass file {}", path.display()))
+        .collect())
+}
+
+/// Parse a bypass prefix file: one CIDR per line, `#` comments and blank lines
+/// are ignored. Both IPv4 and IPv6 prefixes are accepted.
+pub async fn load_from_file(path: &Path, invert: bool) -> Result<(BypassList, usize)> {
+    let prefixes = read_prefixes_from_file(path).await?;
+    let prefix_count = prefixes.len();
+    let list = BypassList::parse(&prefixes, invert)
+        .with_context(|| format!("failed to parse bypass file {}", path.display()))?;
+    Ok((list, prefix_count))
 }
 
 /// Spawn a background task that polls `path` for mtime changes every
@@ -175,9 +187,9 @@ pub fn spawn_file_watcher(
             }
             last_mtime = mtime;
             match load_from_file(&path, invert).await {
-                Ok(new_list) => {
+                Ok((new_list, prefix_count)) => {
                     *shared.write().await = new_list;
-                    info!(path = %path.display(), "bypass list reloaded");
+                    info!(path = %path.display(), prefix_count, "bypass list reloaded");
                 },
                 Err(err) => {
                     warn!(path = %path.display(), error = %format!("{err:#}"), "failed to reload bypass list, keeping previous");

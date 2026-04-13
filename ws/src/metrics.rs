@@ -16,7 +16,7 @@ use std::time::Duration;
 use self::session::RecentSessionWindow;
 
 pub use self::process::{init, spawn_process_metrics_sampler, update_process_memory};
-pub use self::session::{SessionTracker, track_session};
+pub use self::session::{track_session, SessionTracker};
 pub use self::snapshot::render_prometheus;
 pub use self::transport::{
     add_bytes, add_probe_bytes, add_transport_connects_active, add_udp_datagram,
@@ -25,7 +25,7 @@ pub use self::transport::{
     record_runtime_failure, record_runtime_failure_cause, record_runtime_failure_other_detail,
     record_runtime_failure_signature, record_runtime_failure_suppressed, record_transport_connect,
     record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
-    record_warm_standby_refill,
+    record_warm_standby_refill, BYPASS_UPLINK_LABEL,
 };
 pub use self::tun::{
     add_tun_tcp_ack_progress_stall_flows, add_tun_tcp_ack_progress_stall_seconds,

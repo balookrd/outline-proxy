@@ -98,7 +98,10 @@ impl Stream<Http1> {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        Self { inner: StreamInner::Http1(Box::new(inner)), _marker: PhantomData }
+        Self {
+            inner: StreamInner::Http1(Box::new(inner)),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -250,12 +253,12 @@ impl AsyncRead for Stream<Http2> {
                 }
 
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 inner.recv_eof = true;
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Pending => Poll::Pending,
         }
     }
@@ -293,15 +296,15 @@ impl AsyncWrite for Stream<Http2> {
 
                 inner.capacity_needed = 0;
                 Poll::Ready(Ok(to_send))
-            }
+            },
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream closed")))
-            }
+            },
             Poll::Pending => {
                 inner.capacity_needed = buf.len();
                 Poll::Pending
-            }
+            },
         }
     }
 
@@ -450,10 +453,10 @@ impl AsyncRead for Stream<Http3> {
                             *recv_finished = true;
                         }
                         Poll::Ready(Err(io::Error::other(e)))
-                    }
+                    },
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             StreamInner::Http3(Http3StreamInner::Server { stream, read_buf }) => {
                 // First drain buffered data
                 if !read_buf.is_empty() {
@@ -480,12 +483,12 @@ impl AsyncRead for Stream<Http3> {
                             }
                         }
                         Poll::Ready(Ok(()))
-                    }
+                    },
                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             StreamInner::Http3(Http3StreamInner::Client { stream, read_buf }) => {
                 // First drain buffered data
                 if !read_buf.is_empty() {
@@ -512,12 +515,12 @@ impl AsyncRead for Stream<Http3> {
                             }
                         }
                         Poll::Ready(Ok(()))
-                    }
+                    },
                     Poll::Ready(Ok(None)) => Poll::Ready(Ok(())),
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             _ => unreachable!(),
         }
     }
@@ -541,7 +544,7 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             StreamInner::Http3(Http3StreamInner::Server { stream, .. }) => {
                 let data = Bytes::copy_from_slice(buf);
                 let fut = stream.send_data(data);
@@ -552,7 +555,7 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
                 let data = Bytes::copy_from_slice(buf);
                 let fut = stream.send_data(data);
@@ -563,7 +566,7 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             _ => unreachable!(),
         }
     }
@@ -588,7 +591,7 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
                 let fut = stream.finish();
                 tokio::pin!(fut);
@@ -598,7 +601,7 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                     Poll::Pending => Poll::Pending,
                 }
-            }
+            },
             _ => unreachable!(),
         }
     }

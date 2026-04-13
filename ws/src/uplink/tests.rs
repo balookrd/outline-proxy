@@ -3,8 +3,8 @@ use std::time::Duration;
 use url::Url;
 
 use super::{
-    PenaltyState, TransportKind, UplinkManager, UplinkStatus, build_http_probe_request,
-    effective_latency, score_latency, update_rtt_ewma,
+    build_http_probe_request, effective_latency, score_latency, update_rtt_ewma, PenaltyState,
+    TransportKind, UplinkManager, UplinkStatus,
 };
 use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, WsProbeConfig,
@@ -170,6 +170,43 @@ async fn per_uplink_scope_shares_selected_uplink_across_targets() {
     let target_two = TargetAddr::Domain("github.com".to_string(), 443);
     let second = manager.tcp_candidates(&target_two).await;
     assert_eq!(second[0].uplink.name, "primary");
+}
+
+#[tokio::test]
+async fn strict_tcp_failover_candidates_include_backup_before_failure_is_recorded() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 40).await;
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "primary");
+    assert_eq!(manager.active_uplink_index_for_transport(TransportKind::Tcp).await, Some(0));
+
+    let failover_candidates = manager.tcp_failover_candidates(&target, 0).await;
+    let backup = failover_candidates
+        .into_iter()
+        .find(|candidate| candidate.index != 0)
+        .expect("backup candidate should be available for failover");
+
+    assert_eq!(backup.uplink.name, "backup");
+    assert_eq!(
+        manager.active_uplink_index_for_transport(TransportKind::Tcp).await,
+        Some(0),
+        "candidate discovery for failover must not switch the active uplink before reconnect succeeds"
+    );
 }
 
 #[tokio::test]
@@ -642,7 +679,7 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
         let mut statuses = manager.inner.statuses.write().await;
         statuses[0].cooldown_until_tcp = None;
         statuses[0].tcp_healthy = Some(true); // probe confirmed it is up again
-        // penalty remains high (500 ms, just added)
+                                              // penalty remains high (500 ms, just added)
     }
 
     // Must stay on backup: penalty on primary is still 500 ms, much larger than
