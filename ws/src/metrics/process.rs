@@ -1,5 +1,5 @@
 use super::METRICS;
-use crate::memory::{ProcessFdSnapshot, sample_process_memory};
+use crate::memory::{sample_process_memory, ProcessFdSnapshot};
 use std::time::Duration;
 use tokio::time::sleep;
 
@@ -37,15 +37,23 @@ pub fn init() {
         "probe_dns",
     ] {
         for mode in ["http1", "h2", "h3"] {
-            METRICS.transport_connects_active.with_label_values(&[source, mode]).set(0);
+            METRICS
+                .transport_connects_active
+                .with_label_values(&[source, mode])
+                .set(0);
             for result in ["started", "success", "error"] {
-                let _ = METRICS.transport_connects_total.with_label_values(&[source, mode, result]);
+                let _ = METRICS
+                    .transport_connects_total
+                    .with_label_values(&[source, mode, result]);
             }
         }
     }
     for source in ["socks_tcp", "socks_udp", "tun_tcp", "tun_udp", "probe_http", "probe_dns"] {
         for protocol in ["tcp", "udp"] {
-            METRICS.upstream_transports_active.with_label_values(&[source, protocol]).set(0);
+            METRICS
+                .upstream_transports_active
+                .with_label_values(&[source, protocol])
+                .set(0);
             for result in ["opened", "closed"] {
                 let _ = METRICS
                     .upstream_transports_total
@@ -53,7 +61,7 @@ pub fn init() {
             }
         }
     }
-    for command in ["connect", "udp_associate"] {
+    for command in ["connect", "udp_associate", "udp_in_tcp"] {
         let _ = METRICS.socks_requests_total.with_label_values(&[command]);
     }
     for direction in ["incoming", "outgoing"] {
@@ -61,7 +69,10 @@ pub fn init() {
     }
     for protocol in ["tcp", "udp"] {
         let _ = METRICS.sessions_active.with_label_values(&[protocol]);
-        METRICS.session_recent_p95_seconds.with_label_values(&[protocol]).set(0.0);
+        METRICS
+            .session_recent_p95_seconds
+            .with_label_values(&[protocol])
+            .set(0.0);
         METRICS.session_recent_samples.with_label_values(&[protocol]).set(0);
     }
     for mode in ["active_active", "active_passive"] {
@@ -80,9 +91,18 @@ pub fn init() {
         let _ = METRICS.tun_udp_forward_errors_total.with_label_values(&[reason]);
     }
     for ip_family in ["ipv4", "ipv6"] {
-        METRICS.tun_icmp_local_replies_total.with_label_values(&[ip_family]).inc_by(0);
-        METRICS.tun_ip_fragments_total.with_label_values(&[ip_family]).inc_by(0);
-        METRICS.tun_ip_fragment_sets_active.with_label_values(&[ip_family]).set(0);
+        METRICS
+            .tun_icmp_local_replies_total
+            .with_label_values(&[ip_family])
+            .inc_by(0);
+        METRICS
+            .tun_ip_fragments_total
+            .with_label_values(&[ip_family])
+            .inc_by(0);
+        METRICS
+            .tun_ip_fragment_sets_active
+            .with_label_values(&[ip_family])
+            .set(0);
         for result in ["success", "timeout", "overlap", "inconsistent", "resource_limit"] {
             METRICS
                 .tun_ip_reassemblies_total
@@ -128,13 +148,19 @@ pub fn update_process_memory(
     thread_count: Option<u64>,
     fd_snapshot: Option<ProcessFdSnapshot>,
 ) {
-    METRICS.process_resident_memory_bytes.set(rss_bytes.unwrap_or(0) as f64);
-    METRICS.process_virtual_memory_bytes.set(virtual_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_resident_memory_bytes
+        .set(rss_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_virtual_memory_bytes
+        .set(virtual_bytes.unwrap_or(0) as f64);
     METRICS.process_heap_memory_bytes.set(heap_bytes.unwrap_or(0) as f64);
     METRICS
         .process_heap_allocated_bytes
         .set(heap_allocated_bytes.unwrap_or(0) as f64);
-    METRICS.process_heap_free_bytes.set(heap_free_bytes.unwrap_or(0) as f64);
+    METRICS
+        .process_heap_free_bytes
+        .set(heap_free_bytes.unwrap_or(0) as f64);
     for mode in ["exact", "estimated", "unavailable"] {
         METRICS
             .process_heap_mode_info

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -12,21 +12,26 @@ use tracing::{debug, info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{SOCKS_STATUS_SUCCESS, send_reply};
+use crate::socks5::{send_reply, SOCKS_STATUS_SUCCESS};
 use crate::transport::{
-    TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-    connect_shadowsocks_tcp_with_source,
+    connect_shadowsocks_tcp_with_source, TcpShadowsocksReader, TcpShadowsocksWriter,
+    UpstreamTransportGuard,
 };
-use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
+use crate::types::{socket_addr_to_target, TargetAddr, UplinkTransport};
 use crate::uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK0_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(6);
 const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
+enum UplinkTaskResult {
+    Finished,
+    CloseSession,
+}
+
 async fn drive_tcp_session_tasks<U, D>(uplink: U, downlink: D) -> Result<()>
 where
-    U: Future<Output = Result<()>> + Send + 'static,
+    U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
     D: Future<Output = Result<()>> + Send + 'static,
 {
     let mut uplink_task = tokio::spawn(uplink);
@@ -44,10 +49,15 @@ where
         }
         joined = &mut uplink_task => {
             match joined {
-                Ok(Ok(())) => match downlink_task.await {
+                Ok(Ok(UplinkTaskResult::Finished)) => match downlink_task.await {
                     Ok(result) => result,
                     Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
                 },
+                Ok(Ok(UplinkTaskResult::CloseSession)) => {
+                    downlink_task.abort();
+                    let _ = downlink_task.await;
+                    Ok(())
+                }
                 Ok(Err(error)) => {
                     downlink_task.abort();
                     let _ = downlink_task.await;
@@ -359,8 +369,16 @@ pub(super) async fn handle_tcp_connect(
                     .await
                     .context("client read failed")?;
                 if read == 0 {
+                    let supports_half_close = writer.supports_half_close();
                     writer.close().await?;
-                    break;
+                    if supports_half_close {
+                        break;
+                    }
+                    debug!(
+                        uplink = %uplink_uplink_name,
+                        "client closed websocket-backed SOCKS TCP session; tearing down upstream immediately"
+                    );
+                    return Ok(UplinkTaskResult::CloseSession);
                 }
                 metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
                 writer.send_chunk(&buf[..read]).await?;
@@ -372,7 +390,7 @@ pub(super) async fn handle_tcp_connect(
                     .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
             }
-            Ok::<(), anyhow::Error>(())
+            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
         };
 
         let downlink_uplink_name = active_uplink_name.clone();
@@ -552,7 +570,7 @@ async fn connect_tcp_uplink(
                     error = %format!("{e:#}"),
                     "stale standby TCP pool connection, retrying with fresh dial"
                 );
-            }
+            },
         }
     }
 
@@ -577,7 +595,10 @@ async fn do_tcp_ss_setup(
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt);
     let target_wire = target.to_wire_bytes()?;
-    writer.send_chunk(&target_wire).await.context("failed to send target address")?;
+    writer
+        .send_chunk(&target_wire)
+        .await
+        .context("failed to send target address")?;
     debug!(
         uplink = %uplink.name,
         target = %target,
@@ -608,7 +629,10 @@ async fn do_tcp_ss_setup_socket(
         TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
             .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
     let target_wire = target.to_wire_bytes()?;
-    writer.send_chunk(&target_wire).await.context("failed to send target address")?;
+    writer
+        .send_chunk(&target_wire)
+        .await
+        .context("failed to send target address")?;
     debug!(
         uplink = %uplink.name,
         target = %target,
@@ -645,7 +669,7 @@ mod tests {
             let _drop_signal = DropSignal { notify: uplink_dropped_clone };
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
+            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
         };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -662,10 +686,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drive_tcp_session_tasks_waits_for_downlink_after_client_half_close() {
+    async fn drive_tcp_session_tasks_waits_for_downlink_after_socket_half_close() {
         let downlink_completed = std::sync::Arc::new(Notify::new());
         let downlink_completed_clone = std::sync::Arc::clone(&downlink_completed);
-        let uplink = async move { Ok::<(), anyhow::Error>(()) };
+        let uplink =
+            async move { Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished) };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             downlink_completed_clone.notify_one();
@@ -679,5 +704,27 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(1), downlink_completed.notified())
             .await
             .expect("downlink should be allowed to finish");
+    }
+
+    #[tokio::test]
+    async fn drive_tcp_session_tasks_aborts_downlink_after_websocket_client_eof() {
+        let downlink_dropped = std::sync::Arc::new(Notify::new());
+        let downlink_dropped_clone = std::sync::Arc::clone(&downlink_dropped);
+        let uplink =
+            async move { Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::CloseSession) };
+        let downlink = async move {
+            let _drop_signal = DropSignal { notify: downlink_dropped_clone };
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+            .await
+            .expect("driver should return once websocket-backed client EOF is observed")
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), downlink_dropped.notified())
+            .await
+            .expect("downlink should be aborted after websocket-backed client EOF");
     }
 }
