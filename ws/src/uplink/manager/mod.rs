@@ -189,12 +189,16 @@ impl UplinkManager {
         let per_uplink = self.strict_per_uplink_active_uplink();
         let tcp_active_uplink = per_uplink
             .then(|| {
-                tcp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone())
+                tcp_active_index
+                    .and_then(|i| self.inner.uplinks.get(i))
+                    .map(|u| u.name.clone())
             })
             .flatten();
         let udp_active_uplink = per_uplink
             .then(|| {
-                udp_active_index.and_then(|i| self.inner.uplinks.get(i)).map(|u| u.name.clone())
+                udp_active_index
+                    .and_then(|i| self.inner.uplinks.get(i))
+                    .map(|u| u.name.clone())
             })
             .flatten();
 

@@ -28,7 +28,13 @@ pub(super) async fn probe_uplink(
         run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode).await?;
     let (udp_ok, udp_applicable, udp_latency) = run_udp_probe(uplink, probe, dial_limit).await?;
 
-    Ok(ProbeOutcome { tcp_ok, udp_ok, udp_applicable, tcp_latency, udp_latency })
+    Ok(ProbeOutcome {
+        tcp_ok,
+        udp_ok,
+        udp_applicable,
+        tcp_latency,
+        udp_latency,
+    })
 }
 
 pub(super) async fn run_tcp_probe(
@@ -55,10 +61,10 @@ pub(super) async fn run_tcp_probe(
                     probe.timeout,
                 )
                 .await
-            }
+            },
             UplinkTransport::Shadowsocks => {
                 run_tcp_socket_probe(uplink, Arc::clone(&dial_limit)).await
-            }
+            },
         };
         crate::metrics::record_probe(
             &uplink.name,
@@ -131,10 +137,10 @@ pub(super) async fn run_udp_probe(
                     probe.timeout,
                 )
                 .await
-            }
+            },
             UplinkTransport::Shadowsocks => {
                 run_udp_socket_probe(uplink, Arc::clone(&dial_limit)).await
-            }
+            },
         };
         crate::metrics::record_probe(
             &uplink.name,
@@ -350,7 +356,7 @@ pub(super) async fn run_http_probe(
                 )
                 .with_request_salt(request_salt);
                 (writer, reader)
-            }
+            },
             UplinkTransport::Shadowsocks => {
                 let stream = connect_shadowsocks_tcp_with_source(
                     uplink
@@ -384,7 +390,7 @@ pub(super) async fn run_http_probe(
                 )
                 .with_request_salt(request_salt);
                 (writer, reader)
-            }
+            },
         }
     };
     let target_wire = target.to_wire_bytes()?;
@@ -405,7 +411,10 @@ pub(super) async fn run_http_probe(
             .context("failed to send HTTP probe request")?;
         crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", request.len());
 
-        let response = reader.read_chunk().await.context("failed to read HTTP probe response")?;
+        let response = reader
+            .read_chunk()
+            .await
+            .context("failed to read HTTP probe response")?;
         crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "incoming", response.len());
         let line = String::from_utf8_lossy(&response);
         let status = line
@@ -486,7 +495,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                 )
                 .with_request_salt(request_salt);
                 (writer, reader)
-            }
+            },
             UplinkTransport::Shadowsocks => {
                 let stream = connect_shadowsocks_tcp_with_source(
                     uplink
@@ -520,7 +529,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                 )
                 .with_request_salt(request_salt);
                 (writer, reader)
-            }
+            },
         }
     };
 
@@ -547,7 +556,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                     bytes = chunk.len(),
                     "TCP tunnel probe received data from target"
                 );
-            }
+            },
             Err(ref e) if reader.closed_cleanly => {
                 debug!(
                     uplink = %uplink.name,
@@ -555,11 +564,11 @@ pub(super) async fn run_tcp_tunnel_probe(
                     error = %format!("{e:#}"),
                     "TCP tunnel probe: remote closed cleanly"
                 );
-            }
+            },
             Err(e) => {
                 return Err(e)
                     .context(format!("TCP tunnel probe to {}:{} failed", probe.host, probe.port));
-            }
+            },
         }
 
         Ok::<bool, anyhow::Error>(true)
@@ -596,7 +605,7 @@ pub(super) async fn run_dns_probe(
                 .with_context(|| {
                     format!("failed to connect DNS probe websocket for uplink {}", uplink.name)
                 })?
-            }
+            },
             UplinkTransport::Shadowsocks => {
                 let socket = connect_shadowsocks_udp_with_source(
                     uplink.udp_addr.as_ref().ok_or_else(|| {
@@ -614,7 +623,7 @@ pub(super) async fn run_dns_probe(
                     )
                 })?;
                 UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")?
-            }
+            },
         }
     };
 
@@ -629,8 +638,10 @@ pub(super) async fn run_dns_probe(
             .await
             .context("failed to send DNS probe packet")?;
         crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "outgoing", payload.len());
-        let response =
-            transport.read_packet().await.context("failed to read DNS probe response")?;
+        let response = transport
+            .read_packet()
+            .await
+            .context("failed to read DNS probe response")?;
         crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "incoming", response.len());
         let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
         let dns = &response[consumed..];

@@ -16,7 +16,9 @@ use super::super::utils::{rightless_bool, routing_key, strict_route_key};
 impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Tcp) {
-            return self.strict_transport_candidates(TransportKind::Tcp, Some(target)).await;
+            return self
+                .strict_transport_candidates(TransportKind::Tcp, Some(target))
+                .await;
         }
         self.ordered_candidates(TransportKind::Tcp, Some(target)).await
     }
@@ -49,7 +51,8 @@ impl UplinkManager {
         uplink_index: usize,
     ) {
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        self.set_active_uplink_index_for_transport(transport, uplink_index).await;
+        self.set_active_uplink_index_for_transport(transport, uplink_index)
+            .await;
         self.store_sticky_route(&routing_key, uplink_index).await;
     }
 
@@ -127,7 +130,9 @@ impl UplinkManager {
                 .cmp(&rightless_bool(right.healthy))
                 .reverse()
                 .then_with(|| {
-                    left.score.unwrap_or(Duration::MAX).cmp(&right.score.unwrap_or(Duration::MAX))
+                    left.score
+                        .unwrap_or(Duration::MAX)
+                        .cmp(&right.score.unwrap_or(Duration::MAX))
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -146,7 +151,10 @@ impl UplinkManager {
 
         candidates
             .into_iter()
-            .map(|candidate| UplinkCandidate { index: candidate.index, uplink: candidate.uplink })
+            .map(|candidate| UplinkCandidate {
+                index: candidate.index,
+                uplink: candidate.uplink,
+            })
             .collect()
     }
 
@@ -199,7 +207,9 @@ impl UplinkManager {
                 .cmp(&rightless_bool(right.healthy))
                 .reverse()
                 .then_with(|| {
-                    left.score.unwrap_or(Duration::MAX).cmp(&right.score.unwrap_or(Duration::MAX))
+                    left.score
+                        .unwrap_or(Duration::MAX)
+                        .cmp(&right.score.unwrap_or(Duration::MAX))
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -293,10 +303,10 @@ impl UplinkManager {
                                 && match gate_transport {
                                     TransportKind::Tcp => {
                                         statuses[b.index].tcp_healthy == Some(true)
-                                    }
+                                    },
                                     TransportKind::Udp => {
                                         statuses[b.index].udp_healthy == Some(true)
-                                    }
+                                    },
                                 }
                         })
                         .max_by(|a, b| {
@@ -380,7 +390,10 @@ impl UplinkManager {
         self.set_active_uplink_index_for_transport(transport, selected).await;
         let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
         self.store_sticky_route(&key, selected).await;
-        vec![UplinkCandidate { index: selected, uplink: Arc::clone(&candidates[0].uplink) }]
+        vec![UplinkCandidate {
+            index: selected,
+            uplink: Arc::clone(&candidates[0].uplink),
+        }]
     }
 
     pub(super) async fn set_active_uplink_index_for_transport(
@@ -394,10 +407,10 @@ impl UplinkManager {
             match transport {
                 TransportKind::Tcp => {
                     *self.inner.tcp_active_uplink.write().await = Some(uplink_index);
-                }
+                },
                 TransportKind::Udp => {
                     *self.inner.udp_active_uplink.write().await = Some(uplink_index);
-                }
+                },
             }
         }
     }

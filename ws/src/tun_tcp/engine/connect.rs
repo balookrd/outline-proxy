@@ -58,7 +58,7 @@ pub(super) async fn select_tcp_candidate_and_connect(
                         );
                     }
                     return Ok((candidate, writer, reader));
-                }
+                },
                 Err(error) => {
                     uplinks
                         .report_runtime_failure(candidate.index, TransportKind::Tcp, &error)
@@ -67,7 +67,7 @@ pub(super) async fn select_tcp_candidate_and_connect(
                         failed_uplink = Some(candidate.uplink.name.clone());
                     }
                     last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-                }
+                },
             }
         }
         if !strict_transport || !progressed {
@@ -113,7 +113,7 @@ async fn connect_tcp_uplink(
                     error = %format!("{e:#}"),
                     "stale standby TCP pool connection, retrying with fresh dial"
                 );
-            }
+            },
         }
     }
 

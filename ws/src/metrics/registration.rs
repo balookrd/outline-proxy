@@ -605,7 +605,9 @@ impl Metrics {
         )
         .expect("sticky_routes_by_uplink metric");
 
-        registry.register(Box::new(build_info.clone())).expect("register build_info");
+        registry
+            .register(Box::new(build_info.clone()))
+            .expect("register build_info");
         registry
             .register(Box::new(start_time_seconds.clone()))
             .expect("register start_time_seconds");
@@ -624,7 +626,9 @@ impl Metrics {
         registry
             .register(Box::new(session_recent_samples.clone()))
             .expect("register session_recent_samples");
-        registry.register(Box::new(bytes_total.clone())).expect("register bytes_total");
+        registry
+            .register(Box::new(bytes_total.clone()))
+            .expect("register bytes_total");
         registry
             .register(Box::new(udp_datagrams_total.clone()))
             .expect("register udp_datagrams_total");
@@ -844,8 +848,12 @@ impl Metrics {
 
         build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
 
-        start_time_seconds
-            .set(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64());
+        start_time_seconds.set(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
+        );
 
         Self {
             registry,

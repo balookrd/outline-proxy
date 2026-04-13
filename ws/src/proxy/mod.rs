@@ -9,7 +9,7 @@ use tracing::debug;
 
 use crate::config::AppConfig;
 use crate::metrics;
-use crate::socks5::{negotiate, SocksRequest};
+use crate::socks5::{SocksRequest, negotiate};
 use crate::uplink::UplinkManager;
 
 pub async fn handle_client(

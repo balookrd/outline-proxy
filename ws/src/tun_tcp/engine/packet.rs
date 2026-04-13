@@ -30,8 +30,11 @@ impl TunTcpEngine {
         packet: ParsedTcpPacket,
     ) -> Result<()> {
         if self.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
-            let active_uplink =
-                self.inner.uplinks.active_uplink_index_for_transport(TransportKind::Tcp).await;
+            let active_uplink = self
+                .inner
+                .uplinks
+                .active_uplink_index_for_transport(TransportKind::Tcp)
+                .await;
             let (should_abort, key) = {
                 let state = flow.lock().await;
                 (
@@ -67,7 +70,7 @@ impl TunTcpEngine {
         }
 
         match validate_existing_packet(&state, &packet) {
-            PacketValidation::Accept => {}
+            PacketValidation::Accept => {},
             PacketValidation::Ignore => return Ok(()),
             PacketValidation::CloseFlow(reason) => {
                 let key = state.key.clone();
@@ -77,7 +80,7 @@ impl TunTcpEngine {
                     metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
                 }
                 return Ok(());
-            }
+            },
             PacketValidation::ChallengeAck(event) => {
                 let key = state.key.clone();
                 let uplink_name = state.uplink_name.clone();
@@ -91,7 +94,7 @@ impl TunTcpEngine {
                 self.write_ack_packet_with_event(&key, ack, ip_family, &uplink_name, event)
                     .await?;
                 return Ok(());
-            }
+            },
         }
 
         note_recent_client_timestamp(&mut state, packet.timestamp_value);
@@ -321,7 +324,9 @@ impl TunTcpEngine {
                 );
             } else if let Some(flow) = self.lookup_flow(&key).await {
                 let mut state = flow.lock().await;
-                state.pending_client_data.push_back(std::mem::take(&mut pending_payload).into());
+                state
+                    .pending_client_data
+                    .push_back(std::mem::take(&mut pending_payload).into());
                 sync_flow_metrics_and_wake(&mut state);
             }
             should_send_ack = true;

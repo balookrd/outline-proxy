@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
@@ -17,27 +17,27 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{lookup_host, TcpStream, UdpSocket};
-use tokio::sync::{mpsc, watch, Mutex};
+use tokio::net::{TcpStream, UdpSocket, lookup_host};
+use tokio::sync::{Mutex, mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::{protocol::Message, Error as WsError};
-use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls};
 use tracing::{debug, error, warn};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::{
-    connect_websocket_h3, sockudo_to_tungstenite_message, sockudo_to_ws_error,
-    tungstenite_to_sockudo_message, H3WsStream,
+    H3WsStream, connect_websocket_h3, sockudo_to_tungstenite_message, sockudo_to_ws_error,
+    tungstenite_to_sockudo_message,
 };
 
 use crate::crypto::{
-    decrypt, decrypt_udp_packet, decrypt_udp_packet_2022, derive_subkey, encrypt,
-    encrypt_udp_packet, encrypt_udp_packet_2022, increment_nonce, validate_ss2022_timestamp,
-    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN,
+    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet,
+    decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet, encrypt_udp_packet_2022,
+    increment_nonce, validate_ss2022_timestamp,
 };
 use crate::dns_cache::DnsCache;
 use crate::metrics::{
@@ -632,11 +632,7 @@ pub(crate) async fn resolve_host_with_preference(
     };
     server_addrs.sort_by_key(|addr| {
         if ipv6_first {
-            if addr.is_ipv6() {
-                0
-            } else {
-                1
-            }
+            if addr.is_ipv6() { 0 } else { 1 }
         } else if addr.is_ipv4() {
             0
         } else {

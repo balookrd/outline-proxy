@@ -203,7 +203,7 @@ impl HalfCloseAwareTcpServer {
                         Ok(target) => target,
                         Err(TcpSsReadError::CleanEof) => {
                             return Err("upstream closed before target header".into());
-                        }
+                        },
                         Err(TcpSsReadError::Io(err)) => return Err(err.into()),
                         Err(TcpSsReadError::Crypto(err)) => return Err(err.into()),
                     };
@@ -337,7 +337,7 @@ impl TcpSsStream {
             Ok(()) => Ok(buf),
             Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => {
                 Err(TcpSsReadError::CleanEof)
-            }
+            },
             Err(err) => Err(TcpSsReadError::Io(err)),
         }
     }
@@ -379,7 +379,12 @@ impl FanoutUdpServer {
                 let _ = shutdown_rx.recv_timeout(Duration::from_secs(5));
                 Ok(())
             });
-        Ok(Self { addr, request_rx, shutdown_tx, thread: Some(thread) })
+        Ok(Self {
+            addr,
+            request_rx,
+            shutdown_tx,
+            thread: Some(thread),
+        })
     }
 
     fn addr(&self) -> SocketAddr {

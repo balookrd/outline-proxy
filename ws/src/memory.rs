@@ -188,23 +188,23 @@ fn sample_process_fd_snapshot() -> Option<ProcessFdSnapshot> {
         match target.as_ref().and_then(|path| path.to_str()) {
             Some(value) if value.starts_with("socket:") => {
                 snapshot.sockets = snapshot.sockets.saturating_add(1);
-            }
+            },
             Some(value) if value.starts_with("pipe:") => {
                 snapshot.pipes = snapshot.pipes.saturating_add(1);
-            }
+            },
             Some(value) if value.starts_with("anon_inode:") => {
                 snapshot.anon_inodes = snapshot.anon_inodes.saturating_add(1);
-            }
+            },
             Some(value)
                 if value.starts_with('/')
                     || value.starts_with("./")
                     || value.starts_with("../") =>
             {
                 snapshot.regular_files = snapshot.regular_files.saturating_add(1);
-            }
+            },
             _ => {
                 snapshot.other = snapshot.other.saturating_add(1);
-            }
+            },
         }
     }
     Some(snapshot)

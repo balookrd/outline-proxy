@@ -16,10 +16,10 @@ pub(super) fn effective_health(
     match transport {
         TransportKind::Tcp => {
             status.tcp_healthy == Some(true) && !cooldown_active(status, transport, now)
-        }
+        },
         TransportKind::Udp => {
             status.udp_healthy == Some(true) && !cooldown_active(status, transport, now)
-        }
+        },
     }
 }
 
@@ -188,7 +188,7 @@ pub(super) fn global_selection_score_latency(
         // be driven by cooldown/failover rather than decayed score history.
         (Some(tcp), Some(udp)) => {
             Some(Duration::from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05))
-        }
+        },
         (Some(tcp), None) => Some(tcp),
         (None, Some(udp)) => Some(udp),
         (None, None) => None,

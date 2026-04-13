@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpStream, UdpSocket};
@@ -12,11 +12,11 @@ use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
-    build_udp_packet, parse_udp_request, read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
-    UdpFragmentReassembler, SOCKS_STATUS_SUCCESS,
+    SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
+    read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
 };
-use crate::transport::{is_dropped_oversized_udp_error, UdpWsTransport};
-use crate::types::{socket_addr_to_target, TargetAddr};
+use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
+use crate::types::{TargetAddr, socket_addr_to_target};
 use crate::uplink::{TransportKind, UplinkManager};
 
 #[derive(Clone)]

@@ -173,7 +173,7 @@ impl UplinkManager {
                 Err(error) => {
                     warn!(error = %error, "probe task failed");
                     continue;
-                }
+                },
             };
             let mut refill_tcp = false;
             let mut refill_udp = false;
@@ -291,7 +291,7 @@ impl UplinkManager {
                     // When UDP is not configured for this uplink, leave the
                     // standby pool alone (don't clear it, don't refill it).
                     refill_udp = result.udp_applicable && result.udp_ok;
-                }
+                },
                 Err(error) => {
                     {
                         let now = Instant::now();
@@ -342,7 +342,7 @@ impl UplinkManager {
                         status.last_error = Some(format!("{error:#}"));
                     }
                     warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
-                }
+                },
             }
 
             if refill_tcp {

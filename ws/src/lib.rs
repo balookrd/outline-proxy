@@ -138,7 +138,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
                     continue;
                 }
                 return Err(e).context("accept failed");
-            }
+            },
         };
         let config = config.clone();
         let uplinks = uplinks.clone();

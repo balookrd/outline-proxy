@@ -22,7 +22,11 @@ impl DnsCache {
     pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
         let entry = map.get(&(host.to_string(), port))?;
-        if Instant::now() < entry.expires_at { Some(entry.addrs.clone()) } else { None }
+        if Instant::now() < entry.expires_at {
+            Some(entry.addrs.clone())
+        } else {
+            None
+        }
     }
 
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {

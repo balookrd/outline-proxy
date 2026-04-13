@@ -79,7 +79,7 @@ impl TunTcpEngine {
             None if (parsed.flags & TCP_FLAG_RST) != 0 => {
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_rst_observed");
                 Ok(())
-            }
+            },
             None => self.handle_new_flow(key, parsed).await,
         }
     }

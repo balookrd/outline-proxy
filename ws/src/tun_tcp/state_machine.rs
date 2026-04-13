@@ -287,7 +287,7 @@ fn ack_options(state: &TcpFlowState) -> Vec<u8> {
                 if seq_gt(right, *merged_right) {
                     *merged_right = right;
                 }
-            }
+            },
             _ => merged.push((left, right)),
         }
     }
@@ -424,25 +424,28 @@ pub(super) fn server_fin_sent(status: TcpFlowStatus) -> bool {
 }
 
 pub(super) fn server_fin_awaiting_ack(status: TcpFlowStatus) -> bool {
-    matches!(status, TcpFlowStatus::FinWait1 | TcpFlowStatus::Closing | TcpFlowStatus::LastAck)
+    matches!(
+        status,
+        TcpFlowStatus::FinWait1 | TcpFlowStatus::Closing | TcpFlowStatus::LastAck
+    )
 }
 
 pub(super) fn transition_on_client_fin(state: &mut TcpFlowState) {
     match state.status {
         TcpFlowStatus::SynReceived | TcpFlowStatus::Established => {
             set_flow_status(state, TcpFlowStatus::CloseWait);
-        }
+        },
         TcpFlowStatus::FinWait1 => {
             set_flow_status(state, TcpFlowStatus::Closing);
-        }
+        },
         TcpFlowStatus::FinWait2 => {
             set_flow_status(state, TcpFlowStatus::TimeWait);
-        }
+        },
         TcpFlowStatus::CloseWait
         | TcpFlowStatus::Closing
         | TcpFlowStatus::LastAck
         | TcpFlowStatus::TimeWait
-        | TcpFlowStatus::Closed => {}
+        | TcpFlowStatus::Closed => {},
     }
 }
 
@@ -451,15 +454,15 @@ pub(super) fn transition_on_server_fin_ack(state: &mut TcpFlowState) -> bool {
         TcpFlowStatus::FinWait1 => {
             set_flow_status(state, TcpFlowStatus::FinWait2);
             false
-        }
+        },
         TcpFlowStatus::Closing => {
             set_flow_status(state, TcpFlowStatus::TimeWait);
             false
-        }
+        },
         TcpFlowStatus::LastAck => {
             set_flow_status(state, TcpFlowStatus::Closed);
             true
-        }
+        },
         TcpFlowStatus::SynReceived
         | TcpFlowStatus::Established
         | TcpFlowStatus::CloseWait
@@ -484,7 +487,9 @@ pub(super) fn note_recent_client_timestamp(state: &mut TcpFlowState, timestamp_v
 
 fn receive_window_end(state: &TcpFlowState) -> u32 {
     state.client_next_seq.wrapping_add(
-        state.receive_window_capacity.saturating_sub(buffered_client_bytes(state)) as u32,
+        state
+            .receive_window_capacity
+            .saturating_sub(buffered_client_bytes(state)) as u32,
     )
 }
 
@@ -543,7 +548,11 @@ fn normalize_client_segment_parts(
         Bytes::copy_from_slice(&payload[overlap..])
     };
 
-    let fin = if (flags & TCP_FLAG_FIN) == 0 { false } else { overlap <= original_payload_len };
+    let fin = if (flags & TCP_FLAG_FIN) == 0 {
+        false
+    } else {
+        overlap <= original_payload_len
+    };
 
     ClientSegmentView { payload, fin }
 }
@@ -594,8 +603,11 @@ pub(super) fn queue_future_segment(
             break;
         }
         if seq_gt(existing_start, cursor) {
-            let end =
-                if seq_lt(payload_end, existing_start) { payload_end } else { existing_start };
+            let end = if seq_lt(payload_end, existing_start) {
+                payload_end
+            } else {
+                existing_start
+            };
             let start_offset = cursor.wrapping_sub(payload_start) as usize;
             let end_offset = end.wrapping_sub(payload_start) as usize;
             insert_client_segment(
@@ -834,7 +846,7 @@ fn merge_sequence_ranges(mut ranges: Vec<SequenceRange>, anchor: u32) -> Vec<Seq
                 if seq_gt(range.end, last.end) {
                     last.end = range.end;
                 }
-            }
+            },
             _ => merged.push(range),
         }
     }
@@ -898,7 +910,9 @@ fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bo
 }
 
 fn server_segment_is_sacked(state: &TcpFlowState, segment: &ServerSegment) -> bool {
-    let end = segment.sequence_number.wrapping_add(server_segment_len(segment) as u32);
+    let end = segment
+        .sequence_number
+        .wrapping_add(server_segment_len(segment) as u32);
     range_fully_covered(&state.sack_scoreboard, segment.sequence_number, end)
 }
 
@@ -967,8 +981,9 @@ pub(super) fn process_server_ack(
         let mut bytes_acked = 0usize;
         let mut rtt_sample = None;
         while let Some(segment) = state.unacked_server_segments.front() {
-            let segment_end =
-                segment.sequence_number.wrapping_add(server_segment_len(segment) as u32);
+            let segment_end = segment
+                .sequence_number
+                .wrapping_add(server_segment_len(segment) as u32);
             if seq_ge(acknowledgement_number, segment_end) {
                 let segment = state.unacked_server_segments.pop_front().expect("front exists");
                 bytes_acked = bytes_acked.saturating_add(server_segment_len(&segment));
@@ -989,18 +1004,25 @@ pub(super) fn process_server_ack(
             {
                 exit_fast_recovery(state);
             } else {
-                state.congestion_window =
-                    state.slow_start_threshold.saturating_add(server_max_segment_payload(state));
+                state.congestion_window = state
+                    .slow_start_threshold
+                    .saturating_add(server_max_segment_payload(state));
                 retransmit_now = preferred_retransmit_index(state).is_some();
             }
         }
 
-        AckEffect { bytes_acked, rtt_sample, grow_congestion_window, retransmit_now }
+        AckEffect {
+            bytes_acked,
+            rtt_sample,
+            grow_congestion_window,
+            retransmit_now,
+        }
     } else if acknowledgement_number == state.last_client_ack {
         state.duplicate_ack_count = state.duplicate_ack_count.saturating_add(1);
         if state.fast_recovery_end.is_some() {
-            state.congestion_window =
-                state.congestion_window.saturating_add(server_max_segment_payload(state));
+            state.congestion_window = state
+                .congestion_window
+                .saturating_add(server_max_segment_payload(state));
             AckEffect {
                 bytes_acked: 0,
                 rtt_sample: None,
@@ -1065,11 +1087,11 @@ fn update_rtt_estimator(state: &mut TcpFlowState, sample: Duration) {
             let new_srtt_us = 0.875 * srtt_us + 0.125 * sample_us;
             state.smoothed_rtt = Some(Duration::from_micros(new_srtt_us.max(1.0) as u64));
             state.rttvar = Duration::from_micros(new_rttvar_us.max(1.0) as u64);
-        }
+        },
         None => {
             state.smoothed_rtt = Some(sample);
             state.rttvar = sample / 2;
-        }
+        },
     }
 
     let srtt = state.smoothed_rtt.unwrap_or(sample);
@@ -1108,8 +1130,11 @@ pub(super) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
     state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
     state.fast_recovery_end = None;
     state.duplicate_ack_count = 0;
-    state.congestion_window =
-        if timeout { MAX_SERVER_SEGMENT_PAYLOAD } else { state.slow_start_threshold };
+    state.congestion_window = if timeout {
+        MAX_SERVER_SEGMENT_PAYLOAD
+    } else {
+        state.slow_start_threshold
+    };
     if timeout {
         state.retransmission_timeout = current_retransmission_timeout(state)
             .saturating_mul(2)
@@ -1132,7 +1157,10 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
             continue;
         }
 
-        let payload_len = front.len().min(max_payload_per_segment).min(available_window as usize);
+        let payload_len = front
+            .len()
+            .min(max_payload_per_segment)
+            .min(available_window as usize);
         let payload = front.split_to(payload_len);
         if front.is_empty() {
             state.pending_server_data.pop_front();
@@ -1182,7 +1210,12 @@ pub(super) fn flush_server_output(state: &mut TcpFlowState) -> Result<ServerFlus
     let window_stalled = send_window_remaining(state) == 0 && !state.pending_server_data.is_empty();
     let fin_packet = maybe_emit_server_fin(state)?;
     let probe_packet = maybe_emit_zero_window_probe(state)?;
-    Ok(ServerFlush { data_packets, fin_packet, probe_packet, window_stalled })
+    Ok(ServerFlush {
+        data_packets,
+        fin_packet,
+        probe_packet,
+        window_stalled,
+    })
 }
 
 fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
@@ -1208,13 +1241,13 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
         TcpFlowStatus::CloseWait => set_flow_status(state, TcpFlowStatus::LastAck),
         TcpFlowStatus::SynReceived | TcpFlowStatus::Established => {
             set_flow_status(state, TcpFlowStatus::FinWait1);
-        }
+        },
         TcpFlowStatus::FinWait1
         | TcpFlowStatus::FinWait2
         | TcpFlowStatus::Closing
         | TcpFlowStatus::LastAck
         | TcpFlowStatus::TimeWait
-        | TcpFlowStatus::Closed => {}
+        | TcpFlowStatus::Closed => {},
     }
     state.unacked_server_segments.push_back(ServerSegment {
         sequence_number,
@@ -1237,7 +1270,11 @@ pub(super) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> Result<O
     }
 
     let now = Instant::now();
-    if state.next_zero_window_probe_at.map(|deadline| deadline > now).unwrap_or(false) {
+    if state
+        .next_zero_window_probe_at
+        .map(|deadline| deadline > now)
+        .unwrap_or(false)
+    {
         return Ok(None);
     }
 
@@ -1355,8 +1392,10 @@ pub(super) fn sync_flow_metrics(state: &mut TcpFlowState) {
     let congestion_window = state.congestion_window;
     let slow_start_threshold = state.slow_start_threshold;
     let retransmission_timeout_us = state.retransmission_timeout.as_micros() as u64;
-    let smoothed_rtt_us =
-        state.smoothed_rtt.map(|duration| duration.as_micros() as u64).unwrap_or(0);
+    let smoothed_rtt_us = state
+        .smoothed_rtt
+        .map(|duration| duration.as_micros() as u64)
+        .unwrap_or(0);
 
     let uplink = state.uplink_name.as_str();
     if !state.reported_active {

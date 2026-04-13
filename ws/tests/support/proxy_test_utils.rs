@@ -220,8 +220,10 @@ impl ProxyProcess {
             }
             thread::sleep(Duration::from_millis(200));
         }
-        Err(format!("timed out waiting for proxy on port {}.\nlogs:\n{}", port, self.logs()?)
-            .into())
+        Err(
+            format!("timed out waiting for proxy on port {}.\nlogs:\n{}", port, self.logs()?)
+                .into(),
+        )
     }
 
     pub fn logs(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -275,17 +277,17 @@ pub fn socks5_connect(
         0x01 => {
             let mut rest = [0u8; 6];
             stream.read_exact(&mut rest)?;
-        }
+        },
         0x03 => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len)?;
             let mut rest = vec![0u8; len[0] as usize + 2];
             stream.read_exact(&mut rest)?;
-        }
+        },
         0x04 => {
             let mut rest = [0u8; 18];
             stream.read_exact(&mut rest)?;
-        }
+        },
         atyp => return Err(format!("unsupported socks reply atyp: {atyp}").into()),
     }
 
@@ -328,21 +330,21 @@ fn read_socks_bound_addr(
                 [raw[0], raw[1], raw[2], raw[3]],
                 u16::from_be_bytes([raw[4], raw[5]]),
             ))
-        }
+        },
         0x04 => {
             let mut raw = [0u8; 18];
             stream.read_exact(&mut raw)?;
             let mut ip = [0u8; 16];
             ip.copy_from_slice(&raw[..16]);
             std::net::SocketAddr::from((ip, u16::from_be_bytes([raw[16], raw[17]])))
-        }
+        },
         0x03 => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len)?;
             let mut rest = vec![0u8; len[0] as usize + 2];
             stream.read_exact(&mut rest)?;
             return Err("domain socks bound address is not supported in test".into());
-        }
+        },
         atyp => return Err(format!("unsupported socks reply atyp: {atyp}").into()),
     };
     Ok(addr)
@@ -359,11 +361,11 @@ pub fn build_udp_packet(
             IpAddr::V4(ip) => {
                 out.push(0x01);
                 out.extend_from_slice(&ip.octets());
-            }
+            },
             IpAddr::V6(ip) => {
                 out.push(0x04);
                 out.extend_from_slice(&ip.octets());
-            }
+            },
         }
     } else {
         let host_len: u8 = host.len().try_into()?;
@@ -400,7 +402,11 @@ fn parse_udp_ipv4_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::
     }
     let ip = Ipv4Addr::new(packet[4], packet[5], packet[6], packet[7]);
     let port = u16::from_be_bytes([packet[8], packet[9]]);
-    Ok(UdpDomainPacket { host: ip.to_string(), port, payload: packet[10..].to_vec() })
+    Ok(UdpDomainPacket {
+        host: ip.to_string(),
+        port,
+        payload: packet[10..].to_vec(),
+    })
 }
 
 fn parse_udp_domain_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::error::Error>> {
@@ -425,7 +431,11 @@ fn parse_udp_ipv6_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::
     raw.copy_from_slice(&packet[4..20]);
     let ip = Ipv6Addr::from(raw);
     let port = u16::from_be_bytes([packet[20], packet[21]]);
-    Ok(UdpDomainPacket { host: ip.to_string(), port, payload: packet[22..].to_vec() })
+    Ok(UdpDomainPacket {
+        host: ip.to_string(),
+        port,
+        payload: packet[22..].to_vec(),
+    })
 }
 
 pub fn build_dns_query(name: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -472,6 +482,9 @@ impl Drop for TestDir {
 }
 
 fn unique_suffix() -> String {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     nanos.to_string()
 }

@@ -34,7 +34,10 @@ impl UplinkManager {
             return Some(sticky.index);
         }
 
-        let fastest = candidates.iter().find(|candidate| candidate.healthy).unwrap_or(sticky);
+        let fastest = candidates
+            .iter()
+            .find(|candidate| candidate.healthy)
+            .unwrap_or(sticky);
         let now = Instant::now();
         // Always use penalty-aware scoring for the hysteresis check, regardless of routing
         // scope. This prevents a recently-failed uplink from immediately winning back the
@@ -61,7 +64,7 @@ impl UplinkManager {
             (Some(sticky_score), Some(fastest_score)) => {
                 sticky.index != fastest.index
                     && sticky_score > fastest_score + self.inner.load_balancing.hysteresis
-            }
+            },
             _ => false,
         };
 
@@ -105,11 +108,11 @@ impl UplinkManager {
         match self.inner.load_balancing.routing_scope {
             RoutingScope::Global => {
                 self.strict_global_active_uplink() && *key == RoutingKey::Global
-            }
+            },
             RoutingScope::PerUplink => {
                 self.strict_per_uplink_active_uplink()
                     && matches!(key, RoutingKey::TransportGlobal(_))
-            }
+            },
             RoutingScope::PerFlow => false,
         }
     }

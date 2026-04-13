@@ -50,11 +50,11 @@ impl TunTcpEngine {
                     Ok(FlowMaintenancePlan::Abort(reason)) => {
                         engine.abort_flow_with_rst(&key, reason).await;
                         return;
-                    }
+                    },
                     Ok(FlowMaintenancePlan::Close(reason)) => {
                         engine.close_flow(&key, reason).await;
                         return;
-                    }
+                    },
                     Ok(FlowMaintenancePlan::SendPacket { packet, packet_metric, event }) => {
                         let ip_family = ip_family_from_version(key.version);
                         if let Err(error) = engine.inner.writer.write_packet(&packet).await {
@@ -68,7 +68,7 @@ impl TunTcpEngine {
                         let uplink_name = key_uplink_name(&flow).await;
                         metrics::record_tun_tcp_event(&uplink_name, event);
                         metrics::record_tun_packet("upstream_to_tun", ip_family, packet_metric);
-                    }
+                    },
                     Ok(FlowMaintenancePlan::Wait(deadline)) => match deadline {
                         Some(deadline) if deadline <= Instant::now() => continue,
                         Some(deadline) => {
@@ -81,7 +81,7 @@ impl TunTcpEngine {
                                 _ = maintenance_notify.notified() => {}
                                 _ = sleep_until(tokio::time::Instant::from_std(deadline)) => {}
                             }
-                        }
+                        },
                         None => {
                             tokio::select! {
                                 changed = close_rx.changed() => {
@@ -91,7 +91,7 @@ impl TunTcpEngine {
                                 }
                                 _ = maintenance_notify.notified() => {}
                             }
-                        }
+                        },
                     },
                     Err(error) => {
                         warn!(
@@ -100,7 +100,7 @@ impl TunTcpEngine {
                         );
                         engine.abort_flow_with_rst(&key, "retransmit_build_error").await;
                         return;
-                    }
+                    },
                 }
             }
         });
@@ -151,13 +151,13 @@ impl TunTcpEngine {
                     warn!(flow_id, remote = %target, error = %format!("{error:#}"), "failed to establish async TUN TCP upstream");
                     engine.abort_flow_with_rst(&key, "connect_failed").await;
                     return;
-                }
+                },
                 Err(_) => {
                     metrics::record_tun_tcp_async_connect("timeout");
                     warn!(flow_id, remote = %target, timeout_secs = engine.inner.tcp.connect_timeout.as_secs(), "timed out establishing async TUN TCP upstream");
                     engine.abort_flow_with_rst(&key, "connect_timeout").await;
                     return;
-                }
+                },
             };
 
             let upstream_writer = Arc::new(Mutex::new(upstream_writer));
@@ -400,14 +400,14 @@ impl TunTcpEngine {
                                     &uplink_name,
                                     chunk_len,
                                 );
-                            }
+                            },
                             Err(error) => {
                                 warn!(error = %format!("{error:#}"), "failed to build TUN TCP data packet");
                                 engine.close_flow(&key, "build_packet_error").await;
                                 return;
-                            }
+                            },
                         }
-                    }
+                    },
                     Err(error) => {
                         // Transport errors (e.g. QUIC APPLICATION_CLOSE /
                         // H3_INTERNAL_ERROR) set closed_cleanly=false.  Report
@@ -504,12 +504,12 @@ impl TunTcpEngine {
                                         "tcp_fin",
                                     );
                                 }
-                            }
+                            },
                             Err(flush_error) => {
                                 warn!(error = %format!("{flush_error:#}"), "failed to flush deferred server FIN/data");
                                 engine.close_flow(&key, "build_packet_error").await;
                                 return;
-                            }
+                            },
                         }
 
                         let should_close = {
@@ -520,7 +520,7 @@ impl TunTcpEngine {
                             engine.close_flow(&key, "upstream_closed").await;
                         }
                         return;
-                    }
+                    },
                 }
             }
         });
