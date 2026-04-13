@@ -1,6 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use futures_util::{Sink, Stream};
 use http::{Method, Request, Version};
 use http_body_util::Empty;
 use hyper::client::conn::http2;
@@ -9,25 +8,20 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use pin_project_lite::pin_project;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
-use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio::net::{TcpStream, UdpSocket, lookup_host};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls};
+use tokio_tungstenite::{WebSocketStream, client_async_tls};
 use tracing::{debug, error, warn};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 #[cfg(feature = "h3")]
-use crate::transport_h3::{
-    H3WsStream, connect_websocket_h3, sockudo_to_tungstenite_message, sockudo_to_ws_error,
-    tungstenite_to_sockudo_message,
-};
+use crate::transport_h3::connect_websocket_h3;
 
 use crate::dns_cache::DnsCache;
 use crate::metrics::{
@@ -36,14 +30,18 @@ use crate::metrics::{
 };
 use crate::types::{ServerAddr, WsTransportMode};
 
+mod socket;
 mod tcp_transport;
 mod udp_transport;
+mod ws_stream;
 
+use socket::connect_tcp_socket;
+use ws_stream::{H1WsStream, H2WsStream};
+pub use socket::init_udp_socket_bufs;
+pub(crate) use socket::{bind_addr_for, bind_udp_socket};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-
-type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
+pub use ws_stream::AnyWsStream;
 
 // HTTP/2 flow-control window sizes. Defaults match the sizing used by
 // sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
@@ -51,8 +49,6 @@ type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 // On memory-constrained routers these can be reduced via [h2] in config.toml.
 static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
 static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
-static UDP_RECV_BUF_BYTES: OnceLock<usize> = OnceLock::new();
-static UDP_SEND_BUF_BYTES: OnceLock<usize> = OnceLock::new();
 static DNS_CACHE: OnceLock<DnsCache> = OnceLock::new();
 
 /// Initialise H2 window sizes from config. Must be called before the first
@@ -63,120 +59,12 @@ pub fn init_h2_window_sizes(stream: u32, connection: u32) {
     H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
 }
 
-/// Initialise UDP socket buffer overrides from config. When set, every UDP
-/// socket created by `bind_udp_socket` will request the given buffer sizes
-/// from the kernel via `SO_RCVBUF` / `SO_SNDBUF`. The kernel may silently
-/// cap the value to `/proc/sys/net/core/rmem_max` (Linux). `None` leaves
-/// the kernel default unchanged.
-pub fn init_udp_socket_bufs(recv: Option<usize>, send: Option<usize>) {
-    if let Some(v) = recv {
-        UDP_RECV_BUF_BYTES.get_or_init(|| v);
-    }
-    if let Some(v) = send {
-        UDP_SEND_BUF_BYTES.get_or_init(|| v);
-    }
-}
-
 fn h2_stream_window_size() -> u32 {
     *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
 }
 
 fn h2_connection_window_size() -> u32 {
     *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
-}
-
-pin_project! {
-    struct H2WsStream {
-        #[pin]
-        inner: RawH2WsStream,
-        driver_task: AbortOnDrop,
-    }
-}
-
-impl Stream for H2WsStream {
-    type Item = Result<Message, WsError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.project().inner.poll_next(cx)
-    }
-}
-
-impl Sink<Message> for H2WsStream {
-    type Error = WsError;
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_ready(cx)
-    }
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        self.project().inner.start_send(item)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_flush(cx)
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_close(cx)
-    }
-}
-
-// When the h3 feature is disabled, provide a zero-size never-constructable
-// stub so that AnyWsStream::H3 remains a valid enum variant. The variant is
-// unreachable at runtime because nothing in the non-h3 code path can create it.
-#[cfg(not(feature = "h3"))]
-pin_project! {
-    struct H3WsStream { _never: std::convert::Infallible }
-}
-
-#[cfg(not(feature = "h3"))]
-impl Stream for H3WsStream {
-    type Item = Result<Message, WsError>;
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        // SAFETY: Infallible can never be constructed, so this branch is unreachable.
-        match *self.project()._never {}
-    }
-}
-
-#[cfg(not(feature = "h3"))]
-impl Sink<Message> for H3WsStream {
-    type Error = WsError;
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match *self.project()._never {}
-    }
-    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
-        match *self.project()._never {}
-    }
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match *self.project()._never {}
-    }
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match *self.project()._never {}
-    }
 }
 
 pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
@@ -259,102 +147,6 @@ impl Drop for UpstreamTransportGuard {
     fn drop(&mut self) {
         record_upstream_transport(self.source, self.protocol, "closed");
         add_upstream_transports_active(self.source, self.protocol, -1);
-    }
-}
-
-pin_project! {
-    #[project = AnyWsStreamProj]
-    pub enum AnyWsStream {
-        Http1 { #[pin] inner: H1WsStream },
-        H2 { #[pin] inner: H2WsStream },
-        H3 { #[pin] inner: H3WsStream },
-    }
-}
-
-impl Stream for AnyWsStream {
-    type Item = Result<Message, WsError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_next(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_next(cx),
-            #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => match inner.poll_next(cx) {
-                std::task::Poll::Ready(Some(Ok(message))) => {
-                    std::task::Poll::Ready(Some(Ok(sockudo_to_tungstenite_message(message))))
-                },
-                std::task::Poll::Ready(Some(Err(error))) => {
-                    std::task::Poll::Ready(Some(Err(sockudo_to_ws_error(error))))
-                },
-                std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
-                std::task::Poll::Pending => std::task::Poll::Pending,
-            },
-            // Stub variant — Infallible inner field makes this branch unreachable.
-            #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_next(cx),
-        }
-    }
-}
-
-impl Sink<Message> for AnyWsStream {
-    type Error = WsError;
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_ready(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_ready(cx),
-            #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
-            #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_ready(cx),
-        }
-    }
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.start_send(item),
-            AnyWsStreamProj::H2 { inner } => inner.start_send(item),
-            #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner
-                .start_send(tungstenite_to_sockudo_message(item)?)
-                .map_err(sockudo_to_ws_error),
-            #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.start_send(item),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_flush(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_flush(cx),
-            #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
-            #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_flush(cx),
-        }
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_close(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_close(cx),
-            #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
-            #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_close(cx),
-        }
     }
 }
 
@@ -635,155 +427,8 @@ async fn connect_websocket_h2(
     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
     connect_guard.finish("success");
     Ok(AnyWsStream::H2 {
-        inner: H2WsStream { inner: ws, driver_task },
+        inner: H2WsStream::new(ws, driver_task),
     })
-}
-
-async fn connect_tls_h2(
-    addr: SocketAddr,
-    host: &str,
-    fwmark: Option<u32>,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
-    let tcp = connect_tcp_socket(addr, fwmark).await?;
-    let connector = TlsConnector::from(h2_client_tls_config());
-    let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
-        ServerName::IpAddress(ip.into())
-    } else {
-        ServerName::try_from(host.to_string())
-            .map_err(|_| anyhow!("invalid TLS server name: {host}"))?
-    };
-    connector
-        .connect(server_name, tcp)
-        .await
-        .context("TLS handshake for h2 websocket failed")
-}
-
-async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    // For connections without fwmark use tokio's async connector so we never
-    // block a Tokio worker thread waiting for the TCP handshake to complete.
-    if fwmark.is_none() {
-        let stream = TcpStream::connect(addr)
-            .await
-            .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
-        configure_tcp_stream_low_latency(&stream, addr)?;
-        return Ok(stream);
-    }
-    connect_tcp_socket_with_fwmark(addr, fwmark).await
-}
-
-/// fwmark variant: needs SO_MARK set on the raw socket before connect, which
-/// requires socket2.  Only supported on Linux; on other platforms apply_fwmark
-/// returns Err before we reach the connect logic.
-#[cfg(target_os = "linux")]
-async fn connect_tcp_socket_with_fwmark(
-    addr: SocketAddr,
-    fwmark: Option<u32>,
-) -> Result<TcpStream> {
-    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(SocketProtocol::TCP))
-        .context("failed to create TCP socket")?;
-    apply_fwmark(&socket, fwmark)?;
-    // Set non-blocking BEFORE connect so that the handshake is driven by tokio
-    // instead of blocking the current thread.
-    socket
-        .set_nonblocking(true)
-        .context("failed to set TCP socket nonblocking")?;
-    // Non-blocking connect: returns EINPROGRESS while the handshake is in flight.
-    match socket.connect(&addr.into()) {
-        Ok(()) => {},
-        Err(e)
-            if e.raw_os_error() == Some(libc::EINPROGRESS)
-                || e.kind() == std::io::ErrorKind::WouldBlock =>
-        {
-            // Connection in progress; writable() below will signal completion.
-        },
-        Err(e) => return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}")),
-    }
-    let stream =
-        TcpStream::from_std(socket.into()).context("failed to adopt TCP socket into tokio")?;
-    // Yield to the runtime until the OS signals that the socket is writable,
-    // which means the three-way handshake completed (or failed).
-    stream
-        .writable()
-        .await
-        .with_context(|| format!("failed waiting for TCP connect to {addr}"))?;
-    // Retrieve the actual connect result via getsockopt(SO_ERROR).
-    if let Some(err) = stream.take_error().context("failed to retrieve TCP socket error")? {
-        return Err(err).with_context(|| format!("TCP connection to {addr} failed"));
-    }
-    configure_tcp_stream_low_latency(&stream, addr)?;
-    Ok(stream)
-}
-
-#[cfg(not(target_os = "linux"))]
-async fn connect_tcp_socket_with_fwmark(
-    _addr: SocketAddr,
-    _fwmark: Option<u32>,
-) -> Result<TcpStream> {
-    bail!("fwmark is only supported on Linux")
-}
-
-pub(crate) fn bind_udp_socket(
-    bind_addr: SocketAddr,
-    fwmark: Option<u32>,
-) -> Result<std::net::UdpSocket> {
-    let socket =
-        Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(SocketProtocol::UDP))
-            .context("failed to create UDP socket")?;
-    if bind_addr.is_ipv6() {
-        let _ = socket.set_only_v6(false);
-    }
-    apply_fwmark(&socket, fwmark)?;
-    if let Some(&size) = UDP_RECV_BUF_BYTES.get() {
-        let _ = socket.set_recv_buffer_size(size);
-    }
-    if let Some(&size) = UDP_SEND_BUF_BYTES.get() {
-        let _ = socket.set_send_buffer_size(size);
-    }
-    socket
-        .set_nonblocking(true)
-        .context("failed to set UDP socket nonblocking")?;
-    socket
-        .bind(&bind_addr.into())
-        .with_context(|| format!("failed to bind UDP socket on {bind_addr}"))?;
-    Ok(socket.into())
-}
-
-fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Result<()> {
-    stream
-        .set_nodelay(true)
-        .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))
-}
-
-fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
-    let Some(mark) = fwmark else {
-        return Ok(());
-    };
-    #[cfg(target_os = "linux")]
-    {
-        use std::os::fd::AsRawFd;
-
-        let value = mark as libc::c_uint;
-        let rc = unsafe {
-            libc::setsockopt(
-                socket.as_raw_fd(),
-                libc::SOL_SOCKET,
-                libc::SO_MARK,
-                &value as *const _ as *const libc::c_void,
-                std::mem::size_of_val(&value) as libc::socklen_t,
-            )
-        };
-        if rc != 0 {
-            return Err(std::io::Error::last_os_error())
-                .with_context(|| format!("failed to apply SO_MARK={mark}"));
-        }
-        Ok(())
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _mark = mark;
-        let _ = socket;
-        bail!("fwmark is only supported on Linux")
-    }
 }
 
 pub(crate) fn websocket_path(url: &Url) -> String {
@@ -824,12 +469,25 @@ pub(crate) fn format_authority(host: &str, port: Option<u16>) -> String {
     }
 }
 
-pub(crate) fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
-    match server_addr.ip() {
-        IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-        IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-    }
+async fn connect_tls_h2(
+    addr: SocketAddr,
+    host: &str,
+    fwmark: Option<u32>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = connect_tcp_socket(addr, fwmark).await?;
+    let connector = TlsConnector::from(h2_client_tls_config());
+    let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
+        ServerName::IpAddress(ip.into())
+    } else {
+        ServerName::try_from(host.to_string())
+            .map_err(|_| anyhow!("invalid TLS server name: {host}"))?
+    };
+    connector
+        .connect(server_name, tcp)
+        .await
+        .context("TLS handshake for h2 websocket failed")
 }
+
 
 pin_project! {
     #[project = H2IoProj]
