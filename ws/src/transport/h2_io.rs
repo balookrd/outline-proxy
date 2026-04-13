@@ -10,6 +10,29 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use super::connect_tcp_socket;
 
+// HTTP/2 flow-control window sizes. Defaults match the sizing used by
+// sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
+// stall on the small RFC default window under sustained downstream traffic.
+// On memory-constrained routers these can be reduced via [h2] in config.toml.
+static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+
+/// Initialise H2 window sizes from config. Must be called before the first
+/// outbound H2 connection is opened. Safe to call multiple times with the same
+/// values; panics if called with different values after initialization.
+pub fn init_h2_window_sizes(stream: u32, connection: u32) {
+    H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
+    H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
+}
+
+pub(super) fn h2_stream_window_size() -> u32 {
+    *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
+}
+
+pub(super) fn h2_connection_window_size() -> u32 {
+    *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
+}
+
 static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 pub(super) fn h2_client_tls_config() -> Arc<ClientConfig> {
