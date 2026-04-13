@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
+use tokio::time::{Instant, timeout};
 use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
@@ -24,9 +24,16 @@ pub(super) async fn probe_uplink(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::types::WsTransportMode,
 ) -> Result<ProbeOutcome> {
-    let (tcp_ok, tcp_latency) =
-        run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode).await?;
-    let (udp_ok, udp_applicable, udp_latency) = run_udp_probe(uplink, probe, dial_limit).await?;
+    let (tcp_ok, tcp_latency) = timeout(
+        probe.timeout,
+        run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
+    )
+    .await
+    .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
+    let (udp_ok, udp_applicable, udp_latency) =
+        timeout(probe.timeout, run_udp_probe(uplink, probe, dial_limit))
+            .await
+            .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
 
     Ok(ProbeOutcome {
         tcp_ok,

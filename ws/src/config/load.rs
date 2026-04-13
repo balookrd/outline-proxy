@@ -424,8 +424,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             lb.and_then(|l| l.failure_cooldown_secs).unwrap_or(10),
         ),
         tcp_chunk0_failover_timeout: Duration::from_secs(
-            lb.and_then(|l| l.tcp_chunk0_failover_timeout_secs)
-                .unwrap_or(10),
+            lb.and_then(|l| l.tcp_chunk0_failover_timeout_secs).unwrap_or(10),
         ),
         warm_standby_tcp: lb.and_then(|l| l.warm_standby_tcp).unwrap_or(0),
         warm_standby_udp: lb.and_then(|l| l.warm_standby_udp).unwrap_or(0),
