@@ -51,9 +51,7 @@ listen = "127.0.0.1:{proxy_port}"
         proxy_test_utils::socks5_udp_associate(proxy_port).map_err(|err| {
             format!(
                 "SOCKS5 UDP ASSOCIATE failed: {err}\nproxy logs:\n{}",
-                proxy
-                    .logs()
-                    .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+                proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
             )
         })?;
 
@@ -68,10 +66,7 @@ listen = "127.0.0.1:{proxy_port}"
     client.send_to(&packet, relay_addr)?;
 
     let observed = upstream.wait_for_request()?;
-    assert_eq!(
-        observed.target,
-        TargetAddr::IpV4(target_host.parse()?, target_port)
-    );
+    assert_eq!(observed.target, TargetAddr::IpV4(target_host.parse()?, target_port));
     assert_eq!(observed.payload, request_payload);
 
     let mut replies = Vec::new();
@@ -80,9 +75,7 @@ listen = "127.0.0.1:{proxy_port}"
         let (len, _) = client.recv_from(&mut buf).map_err(|err| {
             format!(
                 "failed to receive fanout UDP response: {err}\nproxy logs:\n{}",
-                proxy
-                    .logs()
-                    .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+                proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
             )
         })?;
         let response = proxy_test_utils::parse_udp_packet(&buf[..len])?;
@@ -140,13 +133,11 @@ listen = "127.0.0.1:{proxy_port}"
     proxy.wait_ready(proxy_port, Duration::from_secs(15))?;
 
     for index in 0..5 {
-        let mut stream = proxy_test_utils::socks5_connect(proxy_port, "example.com", 80)
-            .map_err(|err| {
+        let mut stream =
+            proxy_test_utils::socks5_connect(proxy_port, "example.com", 80).map_err(|err| {
                 format!(
                     "SOCKS5 CONNECT failed on iteration {index}: {err}\nproxy logs:\n{}",
-                    proxy
-                        .logs()
-                        .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+                    proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
                 )
             })?;
         stream.set_read_timeout(Some(Duration::from_secs(5)))?;
@@ -161,16 +152,11 @@ listen = "127.0.0.1:{proxy_port}"
         stream.read_to_end(&mut response).map_err(|err| {
             format!(
                 "failed to read tunneled response on iteration {index}: {err}\nproxy logs:\n{}",
-                proxy
-                    .logs()
-                    .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+                proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
             )
         })?;
         let text = String::from_utf8(response)?;
-        assert!(
-            text.contains("200 OK"),
-            "unexpected HTTP response on iteration {index}: {text}"
-        );
+        assert!(text.contains("200 OK"), "unexpected HTTP response on iteration {index}: {text}");
         assert!(
             text.ends_with(&format!("response-{index}")),
             "unexpected HTTP body on iteration {index}: {text}"
@@ -252,11 +238,7 @@ impl HalfCloseAwareTcpServer {
                 Ok(())
             },
         );
-        Ok(Self {
-            addr,
-            shutdown_tx,
-            thread: Some(thread),
-        })
+        Ok(Self { addr, shutdown_tx, thread: Some(thread) })
     }
 
     fn addr(&self) -> SocketAddr {
@@ -377,18 +359,15 @@ impl FanoutUdpServer {
         let password = password.to_string();
         let (request_tx, request_rx) = mpsc::sync_channel(1);
         let (shutdown_tx, shutdown_rx) = mpsc::sync_channel(1);
-        let thread = thread::spawn(
-            move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let thread =
+            thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let master_key = cipher.derive_master_key(&password)?;
                 let mut buf = [0u8; 65_535];
                 let (len, peer) = socket.recv_from(&mut buf)?;
                 let decrypted = decrypt_udp_packet(cipher, &master_key, &buf[..len])?;
                 let (target, consumed) = TargetAddr::from_wire_bytes(&decrypted)?;
                 let payload = decrypted[consumed..].to_vec();
-                request_tx.send(FanoutRequest {
-                    target: target.clone(),
-                    payload,
-                })?;
+                request_tx.send(FanoutRequest { target: target.clone(), payload })?;
 
                 for index in 0..5 {
                     let mut response = target.to_wire_bytes()?;
@@ -399,14 +378,8 @@ impl FanoutUdpServer {
 
                 let _ = shutdown_rx.recv_timeout(Duration::from_secs(5));
                 Ok(())
-            },
-        );
-        Ok(Self {
-            addr,
-            request_rx,
-            shutdown_tx,
-            thread: Some(thread),
-        })
+            });
+        Ok(Self { addr, request_rx, shutdown_tx, thread: Some(thread) })
     }
 
     fn addr(&self) -> SocketAddr {

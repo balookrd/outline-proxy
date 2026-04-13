@@ -466,9 +466,7 @@ impl FrameParser {
                     // Check RSV bits (must be 0 unless extension negotiated)
                     // RSV1 is allowed when compression is enabled
                     if rsv1 && !self.allow_rsv1 {
-                        return Err(Error::Protocol(
-                            "RSV1 must be 0 (compression not negotiated)",
-                        ));
+                        return Err(Error::Protocol("RSV1 must be 0 (compression not negotiated)"));
                     }
                     if rsv2 || rsv3 {
                         return Err(Error::Protocol("RSV2 and RSV3 must be 0"));
@@ -774,10 +772,8 @@ impl FrameParser {
                         apply_mask(&mut payload, mask);
                     }
 
-                    let frame = Frame {
-                        header: self.header.take().unwrap(),
-                        payload: payload.freeze(),
-                    };
+                    let frame =
+                        Frame { header: self.header.take().unwrap(), payload: payload.freeze() };
 
                     if DEBUG {
                         eprintln!(
@@ -813,16 +809,8 @@ impl FrameParser {
             return Err(Error::FrameTooLarge);
         }
 
-        self.header = Some(FrameHeader {
-            fin,
-            rsv1,
-            rsv2,
-            rsv3,
-            opcode,
-            masked,
-            payload_len,
-            mask: None,
-        });
+        self.header =
+            Some(FrameHeader { fin, rsv1, rsv2, rsv3, opcode, masked, payload_len, mask: None });
 
         Ok(())
     }

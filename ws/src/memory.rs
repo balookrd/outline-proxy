@@ -129,12 +129,7 @@ fn sample_process_rss_bytes() -> Option<u64> {
 fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
     let estimated_heap_bytes =
         sample_proc_status_kib("VmData").map(|value_kib| value_kib.saturating_mul(1024));
-    (
-        estimated_heap_bytes,
-        estimated_heap_bytes,
-        None,
-        "estimated",
-    )
+    (estimated_heap_bytes, estimated_heap_bytes, None, "estimated")
 }
 
 #[cfg(not(target_os = "linux"))]

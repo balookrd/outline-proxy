@@ -67,10 +67,8 @@ impl TargetAddr {
                 out.extend_from_slice(&port.to_be_bytes());
             }
             Self::Domain(host, port) => {
-                let len: u8 = host
-                    .len()
-                    .try_into()
-                    .context("domain name is too long for SOCKS5")?;
+                let len: u8 =
+                    host.len().try_into().context("domain name is too long for SOCKS5")?;
                 out.push(SOCKS_ATYP_DOMAIN);
                 out.push(len);
                 out.extend_from_slice(host.as_bytes());
@@ -81,9 +79,7 @@ impl TargetAddr {
     }
 
     pub fn from_wire_bytes(bytes: &[u8]) -> Result<(Self, usize)> {
-        let atyp = *bytes
-            .first()
-            .ok_or_else(|| anyhow!("empty address buffer"))?;
+        let atyp = *bytes.first().ok_or_else(|| anyhow!("empty address buffer"))?;
         match atyp {
             SOCKS_ATYP_IPV4 => {
                 if bytes.len() < 7 {
@@ -103,10 +99,7 @@ impl TargetAddr {
                 Ok((Self::IpV6(Ipv6Addr::from(raw), port), 19))
             }
             SOCKS_ATYP_DOMAIN => {
-                let len = *bytes
-                    .get(1)
-                    .ok_or_else(|| anyhow!("short domain address"))?
-                    as usize;
+                let len = *bytes.get(1).ok_or_else(|| anyhow!("short domain address"))? as usize;
                 if bytes.len() < 2 + len + 2 {
                     bail!("short domain address");
                 }
@@ -137,10 +130,7 @@ impl CipherKind {
     }
 
     pub fn is_ss2022(self) -> bool {
-        matches!(
-            self,
-            Self::Aes128Gcm2022 | Self::Aes256Gcm2022 | Self::Chacha20Poly13052022
-        )
+        matches!(self, Self::Aes128Gcm2022 | Self::Aes256Gcm2022 | Self::Chacha20Poly13052022)
     }
 
     pub fn is_ss2022_aes(self) -> bool {
@@ -225,14 +215,8 @@ impl std::str::FromStr for ServerAddr {
     fn from_str(s: &str) -> Result<Self> {
         if let Ok(addr) = s.parse::<SocketAddr>() {
             return Ok(match addr {
-                SocketAddr::V4(v4) => Self {
-                    host: v4.ip().to_string(),
-                    port: v4.port(),
-                },
-                SocketAddr::V6(v6) => Self {
-                    host: v6.ip().to_string(),
-                    port: v6.port(),
-                },
+                SocketAddr::V4(v4) => Self { host: v4.ip().to_string(), port: v4.port() },
+                SocketAddr::V6(v6) => Self { host: v6.ip().to_string(), port: v6.port() },
             });
         }
 
@@ -247,10 +231,7 @@ impl std::str::FromStr for ServerAddr {
                 .ok_or_else(|| anyhow!("invalid server address: missing port in {s}"))?
                 .parse::<u16>()
                 .with_context(|| format!("invalid server port in {s}"))?;
-            return Ok(Self {
-                host: host.to_string(),
-                port,
-            });
+            return Ok(Self { host: host.to_string(), port });
         }
 
         let (host, port) = s
@@ -261,9 +242,7 @@ impl std::str::FromStr for ServerAddr {
         }
         Ok(Self {
             host: host.to_string(),
-            port: port
-                .parse::<u16>()
-                .with_context(|| format!("invalid server port in {s}"))?,
+            port: port.parse::<u16>().with_context(|| format!("invalid server port in {s}"))?,
         })
     }
 }

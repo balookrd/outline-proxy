@@ -122,12 +122,12 @@ impl WebSocketUpgrade {
                 let negotiated = self.extensions.as_deref().and_then(|ext| {
                     crate::deflate::parse_deflate_offer(ext).and_then(|params| {
                         // Parse and validate deflate parameters from the client's offer
-                        crate::deflate::DeflateConfig::from_params(&params)
-                            .ok()
-                            .map(|_client_config| {
+                        crate::deflate::DeflateConfig::from_params(&params).ok().map(
+                            |_client_config| {
                                 // Use server's config but respect client's constraints
                                 server_config.clone()
-                            })
+                            },
+                        )
                     })
                 });
 
@@ -252,13 +252,7 @@ where
             .remove::<OnUpgrade>()
             .ok_or(WebSocketUpgradeRejection::MissingUpgrade)?;
 
-        Ok(WebSocketUpgrade {
-            key,
-            protocol,
-            extensions,
-            config: Config::default(),
-            on_upgrade,
-        })
+        Ok(WebSocketUpgrade { key, protocol, extensions, config: Config::default(), on_upgrade })
     }
 }
 
@@ -289,16 +283,12 @@ impl IntoResponse for WebSocketUpgradeRejection {
                 (StatusCode::BAD_REQUEST, "Missing Sec-WebSocket-Version")
             }
             Self::UnsupportedVersion => (StatusCode::BAD_REQUEST, "Unsupported WebSocket version"),
-            Self::MissingUpgrade => (
-                StatusCode::BAD_REQUEST,
-                "Missing upgrade in request extensions",
-            ),
+            Self::MissingUpgrade => {
+                (StatusCode::BAD_REQUEST, "Missing upgrade in request extensions")
+            }
         };
 
-        Response::builder()
-            .status(status)
-            .body(Body::from(message))
-            .unwrap()
+        Response::builder().status(status).body(Body::from(message)).unwrap()
     }
 }
 
@@ -342,9 +332,7 @@ impl IntoResponse for WebSocketUpgradeResponse {
                 Ok(upgraded) => {
                     // Wrap the upgraded connection with TokioIo for compatibility
                     let io = TokioIo::new(upgraded);
-                    let stream = UpgradedStream {
-                        inner: Box::new(io),
-                    };
+                    let stream = UpgradedStream { inner: Box::new(io) };
                     handler(stream).await;
                 }
                 Err(e) => {
@@ -445,9 +433,7 @@ impl WebSocket {
 
     /// Create from a raw TCP stream (for standalone usage)
     pub fn from_tcp(stream: tokio::net::TcpStream, config: Config) -> Self {
-        let upgraded = UpgradedStream {
-            inner: Box::new(stream),
-        };
+        let upgraded = UpgradedStream { inner: Box::new(stream) };
         Self::new(upgraded, config)
     }
 
@@ -512,24 +498,16 @@ impl WebSocket {
             WebSocketInner::Plain(ws) => {
                 let (reader, writer) = ws.split();
                 (
-                    WebSocketReader {
-                        inner: WebSocketReaderInner::Plain(reader),
-                    },
-                    WebSocketWriter {
-                        inner: WebSocketWriterInner::Plain(writer),
-                    },
+                    WebSocketReader { inner: WebSocketReaderInner::Plain(reader) },
+                    WebSocketWriter { inner: WebSocketWriterInner::Plain(writer) },
                 )
             }
             #[cfg(feature = "permessage-deflate")]
             WebSocketInner::Compressed(ws) => {
                 let (reader, writer) = ws.split();
                 (
-                    WebSocketReader {
-                        inner: WebSocketReaderInner::Compressed(reader),
-                    },
-                    WebSocketWriter {
-                        inner: WebSocketWriterInner::Compressed(writer),
-                    },
+                    WebSocketReader { inner: WebSocketReaderInner::Compressed(reader) },
+                    WebSocketWriter { inner: WebSocketWriterInner::Compressed(writer) },
                 )
             }
         }
@@ -606,8 +584,7 @@ impl WebSocketWriter {
 
     /// Send a close frame
     pub async fn close(&mut self, code: u16, reason: &str) -> Result<()> {
-        self.send(Message::Close(Some(CloseReason::new(code, reason))))
-            .await
+        self.send(Message::Close(Some(CloseReason::new(code, reason)))).await
     }
 
     /// Check if the connection is closed
@@ -792,10 +769,7 @@ mod tests {
         assert_eq!(header, "permessage-deflate");
 
         // Test config with server_no_context_takeover
-        let config = DeflateConfig {
-            server_no_context_takeover: true,
-            ..Default::default()
-        };
+        let config = DeflateConfig { server_no_context_takeover: true, ..Default::default() };
         let header = config.to_response_header();
         assert!(header.contains("permessage-deflate"));
         assert!(header.contains("server_no_context_takeover"));
@@ -1023,10 +997,8 @@ mod tests {
         });
 
         // Simulate the negotiation logic from on_upgrade
-        let deflate_config = config
-            .deflate
-            .clone()
-            .or_else(|| config.compression.to_deflate_config());
+        let deflate_config =
+            config.deflate.clone().or_else(|| config.compression.to_deflate_config());
 
         assert!(deflate_config.is_some());
         let deflate_config = deflate_config.unwrap();

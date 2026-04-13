@@ -25,11 +25,7 @@ pub enum CompressionContext {
     /// Dedicated per-connection compressor
     Dedicated(DeflateContext),
     /// Shared compressor from pool (encoder only, decoder is per-connection)
-    Shared {
-        pool: Arc<SharedCompressorPool>,
-        decoder: DeflateDecoder,
-        config: DeflateConfig,
-    },
+    Shared { pool: Arc<SharedCompressorPool>, decoder: DeflateDecoder, config: DeflateConfig },
 }
 
 impl CompressionContext {
@@ -81,22 +77,12 @@ impl CompressionContext {
     pub fn with_shared_pool(pool: Arc<SharedCompressorPool>, is_server: bool) -> Self {
         let config = pool.config.clone();
         let decoder = if is_server {
-            DeflateDecoder::new(
-                config.client_max_window_bits,
-                config.client_no_context_takeover,
-            )
+            DeflateDecoder::new(config.client_max_window_bits, config.client_no_context_takeover)
         } else {
-            DeflateDecoder::new(
-                config.server_max_window_bits,
-                config.server_no_context_takeover,
-            )
+            DeflateDecoder::new(config.server_max_window_bits, config.server_no_context_takeover)
         };
 
-        CompressionContext::Shared {
-            pool,
-            decoder,
-            config,
-        }
+        CompressionContext::Shared { pool, decoder, config }
     }
 
     /// Check if compression is enabled
@@ -172,20 +158,14 @@ impl SharedCompressorPool {
             })
             .collect();
 
-        Self {
-            encoders,
-            config,
-            next_encoder: std::sync::atomic::AtomicUsize::new(0),
-        }
+        Self { encoders, config, next_encoder: std::sync::atomic::AtomicUsize::new(0) }
     }
 
     /// Compress data using a pooled encoder
     pub fn compress(&self, data: &[u8]) -> Result<Option<Bytes>> {
         // Round-robin selection
-        let idx = self
-            .next_encoder
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            % SHARED_POOL_SIZE;
+        let idx =
+            self.next_encoder.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SHARED_POOL_SIZE;
 
         let mut encoder = self.encoders[idx].lock();
         encoder.compress(data)

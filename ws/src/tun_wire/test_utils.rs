@@ -30,11 +30,7 @@ pub(crate) fn flip_packet_byte(packet: &[u8], offset: usize) -> Vec<u8> {
 pub(crate) fn transport_offset(packet: &[u8]) -> usize {
     match packet.first().copied().unwrap_or_default() >> 4 {
         4 => usize::from(packet[0] & 0x0f) * 4,
-        6 => {
-            locate_ipv6_upper_layer(packet)
-                .expect("valid IPv6 packet in test harness")
-                .1
-        }
+        6 => locate_ipv6_upper_layer(packet).expect("valid IPv6 packet in test harness").1,
         other => panic!("unsupported IP version in test harness: {other}"),
     }
 }
@@ -42,11 +38,7 @@ pub(crate) fn transport_offset(packet: &[u8]) -> usize {
 pub(crate) fn assert_ipv4_header_checksum_valid(packet: &[u8]) {
     assert_eq!(packet[0] >> 4, 4, "expected IPv4 packet");
     let header_len = usize::from(packet[0] & 0x0f) * 4;
-    assert_eq!(
-        checksum16(&packet[..header_len]),
-        0,
-        "invalid IPv4 header checksum"
-    );
+    assert_eq!(checksum16(&packet[..header_len]), 0, "invalid IPv4 header checksum");
 }
 
 pub(crate) fn assert_transport_checksum_valid(packet: &[u8], protocol: u8) {

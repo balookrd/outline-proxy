@@ -1,13 +1,13 @@
 use anyhow::Error;
 
 const CLIENT_IO_FAILURES: &[&str] = &["client read failed", "client write failed"];
-const TRANSPORT_DISCONNECTS: &[&str] = &[
-    "connection reset by peer",
-    "broken pipe",
-    "os error 104",
-    "os error 54",
-    "os error 32",
+const WEBSOCKET_CLOSES: &[&str] = &[
+    "websocket closed",
+    "connection reset without closing handshake",
+    "peer closed connection without sending tls close_notify",
 ];
+const TRANSPORT_DISCONNECTS: &[&str] =
+    &["connection reset by peer", "broken pipe", "os error 104", "os error 54", "os error 32"];
 const STANDBY_PROBE_FAILURES: &[&str] = &[
     "websocket probe received close frame",
     "websocket probe stream closed before pong",
@@ -38,14 +38,14 @@ pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {
 }
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
-    lower_error(error).contains("websocket closed")
+    contains_any(&lower_error(error), WEBSOCKET_CLOSES)
 }
 
 pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
     let lower = lower_error(error);
     !contains_any(&lower, CLIENT_IO_FAILURES)
         && !lower.contains("active uplink switched")
-        && !lower.contains("websocket closed")
+        && !contains_any(&lower, WEBSOCKET_CLOSES)
 }
 
 pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
@@ -150,5 +150,30 @@ pub(crate) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
         "encrypt_failed"
     } else {
         "other"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::anyhow;
+
+    use super::{is_upstream_runtime_failure, is_websocket_closed};
+
+    #[test]
+    fn abrupt_websocket_reset_is_treated_as_closed() {
+        let error = anyhow!(
+            "websocket read failed: WebSocket protocol error: Connection reset without closing handshake"
+        );
+        assert!(is_websocket_closed(&error));
+        assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    #[test]
+    fn tls_close_notify_missing_is_treated_as_closed() {
+        let error = anyhow!(
+            "websocket read failed: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
+        );
+        assert!(is_websocket_closed(&error));
+        assert!(!is_upstream_runtime_failure(&error));
     }
 }

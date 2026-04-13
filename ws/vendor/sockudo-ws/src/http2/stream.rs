@@ -152,10 +152,7 @@ impl AsyncWrite for Http2Stream {
             Poll::Ready(Some(Err(e))) => Poll::Ready(Err(io::Error::other(e))),
             Poll::Ready(None) => {
                 // Stream was reset
-                Poll::Ready(Err(io::Error::new(
-                    io::ErrorKind::BrokenPipe,
-                    "HTTP/2 stream closed",
-                )))
+                Poll::Ready(Err(io::Error::new(io::ErrorKind::BrokenPipe, "HTTP/2 stream closed")))
             }
             Poll::Pending => {
                 self.capacity_needed = buf.len();
@@ -171,9 +168,7 @@ impl AsyncWrite for Http2Stream {
 
     fn poll_shutdown(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         // Send empty DATA frame with END_STREAM flag
-        self.send
-            .send_data(Bytes::new(), true)
-            .map_err(io::Error::other)?;
+        self.send.send_data(Bytes::new(), true).map_err(io::Error::other)?;
         Poll::Ready(Ok(()))
     }
 }

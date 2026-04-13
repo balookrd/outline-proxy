@@ -49,11 +49,7 @@ impl BypassList {
             }
         }
 
-        Ok(Self {
-            v4: merge_v4(v4),
-            v6: merge_v6(v6),
-            invert,
-        })
+        Ok(Self { v4: merge_v4(v4), v6: merge_v6(v6), invert })
     }
 
     pub fn is_bypassed(&self, target: &TargetAddr) -> bool {
@@ -169,10 +165,7 @@ pub fn spawn_file_watcher(
         let mut last_mtime: Option<SystemTime> = None;
         loop {
             tokio::time::sleep(interval).await;
-            let mtime = tokio::fs::metadata(&path)
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok());
+            let mtime = tokio::fs::metadata(&path).await.ok().and_then(|m| m.modified().ok());
             if mtime == last_mtime {
                 continue;
             }
@@ -194,9 +187,8 @@ fn parse_prefix_len(s: Option<&str>, max: u8, context: &str) -> Result<u8> {
     match s {
         None => Ok(max),
         Some(s) => {
-            let n: u8 = s
-                .parse()
-                .map_err(|_| anyhow::anyhow!("invalid prefix length in: {context}"))?;
+            let n: u8 =
+                s.parse().map_err(|_| anyhow::anyhow!("invalid prefix length in: {context}"))?;
             if n > max {
                 bail!("prefix length {n} exceeds maximum {max} in: {context}");
             }
@@ -220,11 +212,8 @@ mod tests {
     }
 
     fn list(prefixes: &[&str]) -> BypassList {
-        BypassList::parse(
-            &prefixes.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            false,
-        )
-        .unwrap()
+        BypassList::parse(&prefixes.iter().map(|s| s.to_string()).collect::<Vec<_>>(), false)
+            .unwrap()
     }
 
     #[test]
@@ -277,7 +266,7 @@ mod tests {
     fn invert() {
         let l = BypassList::parse(&["10.0.0.0/8".to_string()], true).unwrap();
         assert!(!l.is_bypassed(&v4(10, 0, 0, 1))); // in list → NOT bypassed
-        assert!(l.is_bypassed(&v4(1, 1, 1, 1)));   // not in list → bypassed
+        assert!(l.is_bypassed(&v4(1, 1, 1, 1))); // not in list → bypassed
     }
 
     #[test]
@@ -298,10 +287,10 @@ mod tests {
     #[test]
     fn boundary_v4() {
         let l = list(&["10.0.0.0/8"]);
-        assert!(l.is_bypassed(&v4(10, 0, 0, 0)));         // start
-        assert!(l.is_bypassed(&v4(10, 255, 255, 255)));   // end
-        assert!(!l.is_bypassed(&v4(9, 255, 255, 255)));   // before start
-        assert!(!l.is_bypassed(&v4(11, 0, 0, 0)));        // after end
+        assert!(l.is_bypassed(&v4(10, 0, 0, 0))); // start
+        assert!(l.is_bypassed(&v4(10, 255, 255, 255))); // end
+        assert!(!l.is_bypassed(&v4(9, 255, 255, 255))); // before start
+        assert!(!l.is_bypassed(&v4(11, 0, 0, 0))); // after end
     }
 
     #[test]
