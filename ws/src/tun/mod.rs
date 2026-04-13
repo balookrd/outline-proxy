@@ -48,14 +48,8 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let device = open_tun_device_with_retry(&config)
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
-    let reader = File::from_std(
-        device
-            .try_clone()
-            .context("failed to clone TUN file descriptor")?,
-    );
-    let writer = SharedTunWriter {
-        inner: Arc::new(Mutex::new(File::from_std(device))),
-    };
+    let reader = File::from_std(device.try_clone().context("failed to clone TUN file descriptor")?);
+    let writer = SharedTunWriter { inner: Arc::new(Mutex::new(File::from_std(device))) };
 
     let idle_timeout = config.idle_timeout;
     let max_flows = config.max_flows;
@@ -121,10 +115,7 @@ async fn tun_read_loop(
     )));
     spawn_tun_defragmenter_cleanup(Arc::downgrade(&defragmenter));
     loop {
-        let read = reader
-            .read(&mut buf)
-            .await
-            .context("failed to read TUN packet")?;
+        let read = reader.read(&mut buf).await.context("failed to read TUN packet")?;
         if read == 0 {
             bail!("TUN device returned EOF");
         }
@@ -324,17 +315,12 @@ fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {
 impl SharedTunWriter {
     #[cfg(test)]
     pub(crate) fn new(file: File) -> Self {
-        Self {
-            inner: Arc::new(Mutex::new(file)),
-        }
+        Self { inner: Arc::new(Mutex::new(file)) }
     }
 
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         let mut writer = self.inner.lock().await;
-        writer
-            .write_all(packet)
-            .await
-            .context("failed to write packet to TUN")?;
+        writer.write_all(packet).await.context("failed to write packet to TUN")?;
         writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
     }
@@ -342,10 +328,7 @@ impl SharedTunWriter {
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
         let mut writer = self.inner.lock().await;
         for packet in packets {
-            writer
-                .write_all(packet)
-                .await
-                .context("failed to write packet to TUN")?;
+            writer.write_all(packet).await.context("failed to write packet to TUN")?;
         }
         writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
@@ -371,9 +354,7 @@ fn classify_ipv4_packet(packet: &[u8]) -> Result<PacketDisposition> {
     }
     let fragment_field = u16::from_be_bytes([packet[6], packet[7]]);
     if (fragment_field & 0x1fff) != 0 || (fragment_field & 0x2000) != 0 {
-        return Ok(PacketDisposition::Unsupported(
-            "IPv4 fragments are not supported on TUN",
-        ));
+        return Ok(PacketDisposition::Unsupported("IPv4 fragments are not supported on TUN"));
     }
     Ok(match packet[9] {
         17 => PacketDisposition::Udp,
@@ -540,11 +521,7 @@ fn fragment_ipv6_packet(packet: Vec<u8>, mtu: usize) -> Result<Vec<Vec<u8>>> {
     while offset < fragmentable.len() {
         let remaining = fragmentable.len() - offset;
         let is_last = remaining <= chunk_budget;
-        let chunk_len = if is_last {
-            remaining
-        } else {
-            non_terminal_chunk_budget
-        };
+        let chunk_len = if is_last { remaining } else { non_terminal_chunk_budget };
         if chunk_len == 0 {
             bail!("IPv6 fragment chunk length is zero");
         }
@@ -656,10 +633,7 @@ fn open_tun_device(config: &TunConfig) -> Result<std::fs::File> {
         .open(&config.path)
         .with_context(|| format!("failed to open {}", config.path.display()))?;
 
-    let mut ifreq = IfReq {
-        name: [0; libc::IFNAMSIZ],
-        data: [0; 24],
-    };
+    let mut ifreq = IfReq { name: [0; libc::IFNAMSIZ], data: [0; 24] };
     for (index, byte) in name.as_bytes().iter().enumerate() {
         ifreq.name[index] = *byte as libc::c_char;
     }
@@ -737,20 +711,14 @@ mod tests {
             b"ping",
         );
 
-        assert_eq!(
-            classify_packet(&packet).unwrap(),
-            PacketDisposition::IcmpEchoRequest
-        );
+        assert_eq!(classify_packet(&packet).unwrap(), PacketDisposition::IcmpEchoRequest);
         let reply = build_icmp_echo_reply(&packet).unwrap();
 
         assert_eq!(reply[9], 1);
         assert_eq!(reply[12..16], [8, 8, 8, 8]);
         assert_eq!(reply[16..20], [10, 0, 0, 2]);
         assert_eq!(reply[IPV4_HEADER_LEN], 0);
-        assert_eq!(
-            reply[IPV4_HEADER_LEN + 4..IPV4_HEADER_LEN + 8],
-            [0x12, 0x34, 0x00, 0x07]
-        );
+        assert_eq!(reply[IPV4_HEADER_LEN + 4..IPV4_HEADER_LEN + 8], [0x12, 0x34, 0x00, 0x07]);
         assert_eq!(&reply[IPV4_HEADER_LEN + 8..], b"ping");
         assert_eq!(
             checksum16(
@@ -766,20 +734,14 @@ mod tests {
         let destination = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2);
         let packet = build_ipv6_icmp_echo_request(source, destination, 0xabcd, 0x0002, b"pong");
 
-        assert_eq!(
-            classify_packet(&packet).unwrap(),
-            PacketDisposition::IcmpEchoRequest
-        );
+        assert_eq!(classify_packet(&packet).unwrap(), PacketDisposition::IcmpEchoRequest);
         let reply = build_icmp_echo_reply(&packet).unwrap();
 
         assert_eq!(reply[6], 58);
         assert_eq!(reply[8..24], destination.octets());
         assert_eq!(reply[24..40], source.octets());
         assert_eq!(reply[IPV6_HEADER_LEN], 129);
-        assert_eq!(
-            reply[IPV6_HEADER_LEN + 4..IPV6_HEADER_LEN + 8],
-            [0xab, 0xcd, 0x00, 0x02]
-        );
+        assert_eq!(reply[IPV6_HEADER_LEN + 4..IPV6_HEADER_LEN + 8], [0xab, 0xcd, 0x00, 0x02]);
         assert_eq!(&reply[IPV6_HEADER_LEN + 8..], b"pong");
         let checksum = icmpv6_checksum(destination, source, &reply[IPV6_HEADER_LEN..]);
         assert_eq!(checksum, 0);
@@ -797,10 +759,7 @@ mod tests {
             b"pong",
         );
 
-        assert_eq!(
-            classify_packet(&packet).unwrap(),
-            PacketDisposition::IcmpEchoRequest
-        );
+        assert_eq!(classify_packet(&packet).unwrap(), PacketDisposition::IcmpEchoRequest);
         let reply = build_icmp_echo_reply(&packet).unwrap();
         let (_, payload_offset, total_len) =
             crate::tun_wire::locate_ipv6_upper_layer(&reply).unwrap();
@@ -808,10 +767,7 @@ mod tests {
         assert_eq!(reply[8..24], destination.octets());
         assert_eq!(reply[24..40], source.octets());
         assert_eq!(reply[payload_offset], 129);
-        assert_eq!(
-            reply[payload_offset + 4..payload_offset + 8],
-            [0xab, 0xcd, 0x00, 0x02]
-        );
+        assert_eq!(reply[payload_offset + 4..payload_offset + 8], [0xab, 0xcd, 0x00, 0x02]);
         assert_eq!(&reply[payload_offset + 8..total_len], b"pong");
         let checksum = icmpv6_checksum(destination, source, &reply[payload_offset..total_len]);
         assert_eq!(checksum, 0);
@@ -827,18 +783,11 @@ mod tests {
         let fragments = build_icmp_echo_reply_packets(&packet).unwrap();
         assert_eq!(fragments.len(), 2);
         assert_eq!(fragments[0].len(), IPV6_MIN_PATH_MTU);
-        assert!(
-            fragments
-                .iter()
-                .all(|fragment| fragment.len() <= IPV6_MIN_PATH_MTU)
-        );
+        assert!(fragments.iter().all(|fragment| fragment.len() <= IPV6_MIN_PATH_MTU));
         assert_eq!(fragments[0][6], IPV6_NEXT_HEADER_FRAGMENT);
 
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[0]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[0]).unwrap(), DefragmentedPacket::Pending));
         let reassembled = match defrag.push(&fragments[1]).unwrap() {
             DefragmentedPacket::ReadyOwned(packet) => packet,
             other => panic!("unexpected result: {other:?}"),
@@ -848,14 +797,8 @@ mod tests {
         assert_eq!(reassembled[8..24], destination.octets());
         assert_eq!(reassembled[24..40], source.octets());
         assert_eq!(reassembled[payload_offset], 129);
-        assert_eq!(
-            reassembled[payload_offset + 4..payload_offset + 8],
-            [0xab, 0xcd, 0x00, 0x02]
-        );
-        assert_eq!(
-            &reassembled[payload_offset + 8..total_len],
-            payload.as_slice()
-        );
+        assert_eq!(reassembled[payload_offset + 4..payload_offset + 8], [0xab, 0xcd, 0x00, 0x02]);
+        assert_eq!(&reassembled[payload_offset + 8..total_len], payload.as_slice());
         let checksum =
             icmpv6_checksum(destination, source, &reassembled[payload_offset..total_len]);
         assert_eq!(checksum, 0);

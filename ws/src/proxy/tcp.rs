@@ -531,10 +531,7 @@ async fn do_tcp_ss_setup(
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt);
     let target_wire = target.to_wire_bytes()?;
-    writer
-        .send_chunk(&target_wire)
-        .await
-        .context("failed to send target address")?;
+    writer.send_chunk(&target_wire).await.context("failed to send target address")?;
     debug!(
         uplink = %uplink.name,
         target = %target,
@@ -565,10 +562,7 @@ async fn do_tcp_ss_setup_socket(
         TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
             .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
     let target_wire = target.to_wire_bytes()?;
-    writer
-        .send_chunk(&target_wire)
-        .await
-        .context("failed to send target address")?;
+    writer.send_chunk(&target_wire).await.context("failed to send target address")?;
     debug!(
         uplink = %uplink.name,
         target = %target,

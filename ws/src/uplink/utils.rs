@@ -7,7 +7,11 @@ use crate::types::TargetAddr;
 
 use super::types::{PenaltyState, RoutingKey, TransportKind};
 
-pub(super) fn update_rtt_ewma(current: &mut Option<Duration>, sample: Option<Duration>, alpha: f64) {
+pub(super) fn update_rtt_ewma(
+    current: &mut Option<Duration>,
+    sample: Option<Duration>,
+    alpha: f64,
+) {
     let Some(sample) = sample else {
         return;
     };
@@ -34,16 +38,12 @@ pub(super) fn current_penalty(
     if value_secs < 0.001 {
         None
     } else {
-        Some(Duration::from_secs_f64(
-            value_secs.min(config.failure_penalty_max.as_secs_f64()),
-        ))
+        Some(Duration::from_secs_f64(value_secs.min(config.failure_penalty_max.as_secs_f64())))
     }
 }
 
 pub(super) fn add_penalty(state: &mut PenaltyState, now: Instant, config: &LoadBalancingConfig) {
-    let current = current_penalty(state, now, config)
-        .unwrap_or_default()
-        .as_secs_f64();
+    let current = current_penalty(state, now, config).unwrap_or_default().as_secs_f64();
     let next = (current + config.failure_penalty.as_secs_f64())
         .min(config.failure_penalty_max.as_secs_f64());
     state.value_secs = next;
@@ -62,10 +62,7 @@ pub(super) fn routing_key(
     match target {
         _ if matches!(scope, RoutingScope::Global) => RoutingKey::Global,
         _ if matches!(scope, RoutingScope::PerUplink) => RoutingKey::TransportGlobal(transport),
-        Some(target) => RoutingKey::Target {
-            transport,
-            target: target.clone(),
-        },
+        Some(target) => RoutingKey::Target { transport, target: target.clone() },
         None => RoutingKey::Default(transport),
     }
 }
@@ -125,10 +122,7 @@ pub(super) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
 }
 
 pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
-    let first_line = error_text
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("other");
+    let first_line = error_text.lines().find(|line| !line.trim().is_empty()).unwrap_or("other");
     let mut normalized = String::with_capacity(first_line.len().min(48));
     let mut prev_underscore = false;
     for ch in first_line.to_ascii_lowercase().chars() {
@@ -152,14 +146,6 @@ pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String
             break;
         }
     }
-    let normalized = normalized
-        .trim_matches('_')
-        .chars()
-        .take(48)
-        .collect::<String>();
-    if normalized.is_empty() {
-        "other".to_string()
-    } else {
-        normalized
-    }
+    let normalized = normalized.trim_matches('_').chars().take(48).collect::<String>();
+    if normalized.is_empty() { "other".to_string() } else { normalized }
 }

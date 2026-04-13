@@ -14,9 +14,7 @@ fn main() -> Result<()> {
     // (avoids work-stealing overhead), anything else → multi-thread.
     #[cfg(feature = "multi-thread")]
     let runtime = if args.worker_threads == Some(1) {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?
+        tokio::runtime::Builder::new_current_thread().enable_all().build()?
     } else {
         let mut b = tokio::runtime::Builder::new_multi_thread();
         if let Some(n) = args.worker_threads {
@@ -29,9 +27,7 @@ fn main() -> Result<()> {
     };
 
     #[cfg(not(feature = "multi-thread"))]
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     runtime.block_on(async move {
         #[cfg(feature = "env-filter")]
         tracing_subscriber::fmt()
@@ -44,9 +40,7 @@ fn main() -> Result<()> {
         // Router builds: env-filter (regex, ~300 KB) is disabled.
         // Log level is fixed at WARN. Use a full build to get RUST_LOG support.
         #[cfg(not(feature = "env-filter"))]
-        tracing_subscriber::fmt()
-            .with_max_level(tracing::Level::WARN)
-            .init();
+        tracing_subscriber::fmt().with_max_level(tracing::Level::WARN).init();
 
         outline_ws_rust::run(args).await
     })

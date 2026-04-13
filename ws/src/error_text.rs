@@ -6,13 +6,8 @@ const WEBSOCKET_CLOSES: &[&str] = &[
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
 ];
-const TRANSPORT_DISCONNECTS: &[&str] = &[
-    "connection reset by peer",
-    "broken pipe",
-    "os error 104",
-    "os error 54",
-    "os error 32",
-];
+const TRANSPORT_DISCONNECTS: &[&str] =
+    &["connection reset by peer", "broken pipe", "os error 104", "os error 54", "os error 32"];
 const STANDBY_PROBE_FAILURES: &[&str] = &[
     "websocket probe received close frame",
     "websocket probe stream closed before pong",

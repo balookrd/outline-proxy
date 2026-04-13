@@ -189,15 +189,12 @@ impl TunDefragmenter {
         let mut is_complete = false;
 
         {
-            let set = self
-                .ipv4_sets
-                .entry(fragment.key)
-                .or_insert_with(|| Ipv4FragmentSet {
-                    deadline: now + REASSEMBLY_TIMEOUT,
-                    header: None,
-                    chunks: Vec::new(),
-                    total_payload_len: None,
-                });
+            let set = self.ipv4_sets.entry(fragment.key).or_insert_with(|| Ipv4FragmentSet {
+                deadline: now + REASSEMBLY_TIMEOUT,
+                header: None,
+                chunks: Vec::new(),
+                total_payload_len: None,
+            });
             if set.header.is_none() && fragment.offset == 0 {
                 set.header = Some(fragment.header.to_vec());
                 self.total_buffered_bytes += fragment.header.len();
@@ -300,10 +297,7 @@ impl TunDefragmenter {
                     },
                 );
             }
-            let set = self
-                .ipv6_sets
-                .get_mut(&fragment.key)
-                .expect("IPv6 fragment set must exist");
+            let set = self.ipv6_sets.get_mut(&fragment.key).expect("IPv6 fragment set must exist");
 
             if !ipv6_prefix_matches(&set.prefix, fragment.prefix)
                 || set.next_header_field_offset != fragment.next_header_field_offset
@@ -438,16 +432,9 @@ impl TunDefragmenter {
     }
 
     fn recalculate_total_buffered_bytes(&mut self) {
-        self.total_buffered_bytes = self
-            .ipv4_sets
-            .values()
-            .map(Ipv4FragmentSet::estimated_bytes)
-            .sum::<usize>()
-            + self
-                .ipv6_sets
-                .values()
-                .map(Ipv6FragmentSet::estimated_bytes)
-                .sum::<usize>();
+        self.total_buffered_bytes =
+            self.ipv4_sets.values().map(Ipv4FragmentSet::estimated_bytes).sum::<usize>()
+                + self.ipv6_sets.values().map(Ipv6FragmentSet::estimated_bytes).sum::<usize>();
     }
 }
 
@@ -465,9 +452,7 @@ impl Ipv4FragmentSet {
     }
 
     fn build_packet(self) -> Result<Vec<u8>> {
-        let header = self
-            .header
-            .ok_or_else(|| anyhow!("missing IPv4 first fragment header"))?;
+        let header = self.header.ok_or_else(|| anyhow!("missing IPv4 first fragment header"))?;
         let payload_len = self
             .total_payload_len
             .ok_or_else(|| anyhow!("missing IPv4 reassembled payload length"))?;
@@ -554,11 +539,7 @@ impl FragmentChunk {
 }
 
 fn inspect_packet(packet: &[u8]) -> Result<PacketInspection<'_>> {
-    let version = packet
-        .first()
-        .copied()
-        .ok_or_else(|| anyhow!("empty TUN packet"))?
-        >> 4;
+    let version = packet.first().copied().ok_or_else(|| anyhow!("empty TUN packet"))? >> 4;
     match version {
         4 => inspect_ipv4(packet),
         6 => inspect_ipv6(packet),
@@ -615,10 +596,8 @@ fn inspect_ipv6(packet: &[u8]) -> Result<PacketInspection<'_>> {
         bail!("truncated IPv6 fragment header");
     }
 
-    let fragment_offset_and_flags = u16::from_be_bytes([
-        packet[info.payload_offset + 2],
-        packet[info.payload_offset + 3],
-    ]);
+    let fragment_offset_and_flags =
+        u16::from_be_bytes([packet[info.payload_offset + 2], packet[info.payload_offset + 3]]);
     let offset = usize::from(fragment_offset_and_flags >> 3)
         .checked_mul(8)
         .ok_or_else(|| anyhow!("IPv6 fragment offset overflow"))?;
@@ -674,13 +653,7 @@ fn insert_chunk(chunks: &mut Vec<FragmentChunk>, offset: usize, data: &[u8]) -> 
         return ChunkInsertOutcome::Overlap;
     }
 
-    chunks.insert(
-        index,
-        FragmentChunk {
-            offset,
-            data: data.to_vec(),
-        },
-    );
+    chunks.insert(index, FragmentChunk { offset, data: data.to_vec() });
     ChunkInsertOutcome::Inserted(data.len())
 }
 
@@ -720,12 +693,12 @@ mod tests {
     use crate::tun::build_icmp_echo_reply;
     use crate::tun_tcp::parse_tcp_packet_for_tests as parse_tcp_packet;
     use crate::tun_udp::{build_ipv4_udp_packet, parse_udp_packet};
+    use crate::tun_wire::test_utils::{assert_transport_checksum_valid, transport_offset};
     use crate::tun_wire::{
         IPV6_HEADER_LEN, IPV6_NEXT_HEADER_DESTINATION_OPTIONS, IPV6_NEXT_HEADER_FRAGMENT,
         IPV6_NEXT_HEADER_ICMPV6, IPV6_NEXT_HEADER_UDP, checksum16, ipv6_payload_checksum,
         locate_ipv6_payload, locate_ipv6_upper_layer,
     };
-    use crate::tun_wire::test_utils::{assert_transport_checksum_valid, transport_offset};
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::time::{Duration, Instant};
 
@@ -756,15 +729,10 @@ mod tests {
             b"hello fragmented udp",
         )
         .unwrap();
-        let fragments = fragment_ipv4_packet(
-            &packet,
-            &[16, packet.len() - transport_offset(&packet) - 16],
-        );
+        let fragments =
+            fragment_ipv4_packet(&packet, &[16, packet.len() - transport_offset(&packet) - 16]);
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[1]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[1]).unwrap(), DefragmentedPacket::Pending));
         let reassembled = match defrag.push(&fragments[0]).unwrap() {
             DefragmentedPacket::ReadyOwned(packet) => packet,
             other => panic!("unexpected result: {other:?}"),
@@ -784,24 +752,16 @@ mod tests {
             b"hello fragmented udp",
         )
         .unwrap();
-        let fragments = fragment_ipv4_packet(
-            &packet,
-            &[16, packet.len() - transport_offset(&packet) - 16],
-        );
+        let fragments =
+            fragment_ipv4_packet(&packet, &[16, packet.len() - transport_offset(&packet) - 16]);
         let mut overlapping = fragments[1].clone();
         let offset_units = 1u16.to_be_bytes();
         overlapping[6] = offset_units[0];
         overlapping[7] = offset_units[1];
 
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[0]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
-        assert!(matches!(
-            defrag.push(&overlapping).unwrap(),
-            DefragmentedPacket::Dropped(_)
-        ));
+        assert!(matches!(defrag.push(&fragments[0]).unwrap(), DefragmentedPacket::Pending));
+        assert!(matches!(defrag.push(&overlapping).unwrap(), DefragmentedPacket::Dropped(_)));
     }
 
     #[test]
@@ -815,10 +775,7 @@ mod tests {
         );
         let fragments = fragment_ipv6_packet(&packet, 16);
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[1]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[1]).unwrap(), DefragmentedPacket::Pending));
         let reassembled = match defrag.push(&fragments[0]).unwrap() {
             DefragmentedPacket::ReadyOwned(packet) => packet,
             other => panic!("unexpected result: {other:?}"),
@@ -865,10 +822,7 @@ mod tests {
         assert_eq!(fragments[1].len(), IPV6_HEADER_LEN + 8 + 92);
 
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[0]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[0]).unwrap(), DefragmentedPacket::Pending));
         let reassembled = match defrag.push(&fragments[1]).unwrap() {
             DefragmentedPacket::ReadyOwned(packet) => packet,
             other => panic!("unexpected result: {other:?}"),
@@ -878,10 +832,7 @@ mod tests {
         let (_, payload_offset, total_len) = locate_ipv6_upper_layer(&reply).unwrap();
 
         assert_eq!(reply[payload_offset], 129);
-        assert_eq!(
-            reply[payload_offset + 4..payload_offset + 8],
-            [0x37, 0x01, 0x00, 0x44]
-        );
+        assert_eq!(reply[payload_offset + 4..payload_offset + 8], [0x37, 0x01, 0x00, 0x44]);
         assert_eq!(total_len, IPV6_HEADER_LEN + 1460);
         assert_transport_checksum_valid(&reply, IPV6_NEXT_HEADER_ICMPV6);
     }
@@ -898,19 +849,13 @@ mod tests {
         let fragments = fragment_ipv6_packet(&packet, 1368);
 
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[0]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[0]).unwrap(), DefragmentedPacket::Pending));
         assert_eq!(defrag.ipv6_sets.len(), 1);
         assert!(defrag.total_buffered_bytes > 0);
 
         let key = *defrag.ipv6_sets.keys().next().expect("fragment set");
-        defrag
-            .ipv6_sets
-            .get_mut(&key)
-            .expect("fragment set")
-            .deadline = Instant::now() - Duration::from_secs(1);
+        defrag.ipv6_sets.get_mut(&key).expect("fragment set").deadline =
+            Instant::now() - Duration::from_secs(1);
         defrag.next_cleanup_at = Instant::now() - Duration::from_secs(1);
 
         defrag.run_maintenance();
@@ -930,10 +875,7 @@ mod tests {
         );
         let fragments = fragment_ipv6_packet(&packet, 24);
         let mut defrag = TunDefragmenter::default();
-        assert!(matches!(
-            defrag.push(&fragments[0]).unwrap(),
-            DefragmentedPacket::Pending
-        ));
+        assert!(matches!(defrag.push(&fragments[0]).unwrap(), DefragmentedPacket::Pending));
         let reassembled = match defrag.push(&fragments[1]).unwrap() {
             DefragmentedPacket::ReadyOwned(packet) => packet,
             other => panic!("unexpected result: {other:?}"),
@@ -1037,12 +979,8 @@ mod tests {
         packet[50..52].copy_from_slice(&destination_port.to_be_bytes());
         packet[52..54].copy_from_slice(&(udp_len as u16).to_be_bytes());
         packet[56..].copy_from_slice(payload);
-        let checksum = ipv6_payload_checksum(
-            source_ip,
-            destination_ip,
-            IPV6_NEXT_HEADER_UDP,
-            &packet[48..],
-        );
+        let checksum =
+            ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_UDP, &packet[48..]);
         packet[54..56].copy_from_slice(&checksum.to_be_bytes());
         packet
     }

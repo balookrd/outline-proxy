@@ -1,4 +1,3 @@
-
 use anyhow::anyhow;
 use std::time::Duration;
 use url::Url;
@@ -211,18 +210,8 @@ async fn per_uplink_scope_does_not_expire_with_sticky_ttl() {
     let second_udp = manager.udp_candidates(Some(&udp_target)).await;
     assert_eq!(second_tcp[0].uplink.name, "backup");
     assert_eq!(second_udp[0].uplink.name, "primary");
-    assert_eq!(
-        manager
-            .active_uplink_index_for_transport(TransportKind::Tcp)
-            .await,
-        Some(1)
-    );
-    assert_eq!(
-        manager
-            .active_uplink_index_for_transport(TransportKind::Udp)
-            .await,
-        Some(0)
-    );
+    assert_eq!(manager.active_uplink_index_for_transport(TransportKind::Tcp).await, Some(1));
+    assert_eq!(manager.active_uplink_index_for_transport(TransportKind::Udp).await, Some(0));
 }
 
 #[tokio::test]
@@ -244,10 +233,8 @@ async fn per_uplink_scope_ignores_penalty_in_selection_score() {
     set_tcp_status(&manager, 1, true, 30).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty = PenaltyState {
-            value_secs: 20.0,
-            updated_at: Some(Instant::now()),
-        };
+        statuses[0].tcp_penalty =
+            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
     }
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
@@ -442,20 +429,14 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
 
     // Must keep primary: probe hasn't confirmed it is down.
     let second = manager.tcp_candidates(&target).await;
-    assert_eq!(
-        second[0].uplink.name, "primary",
-        "should not switch on cooldown alone"
-    );
+    assert_eq!(second[0].uplink.name, "primary", "should not switch on cooldown alone");
 
     // Now the probe confirms primary is down.
     set_tcp_status(&manager, 0, false, 20).await;
 
     // Must switch to backup.
     let third = manager.tcp_candidates(&target).await;
-    assert_eq!(
-        third[0].uplink.name, "backup",
-        "should switch when probe confirms failure"
-    );
+    assert_eq!(third[0].uplink.name, "backup", "should switch when probe confirms failure");
 }
 
 #[tokio::test]
@@ -479,14 +460,10 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     set_udp_status(&manager, 1, true, 50).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty = PenaltyState {
-            value_secs: 20.0,
-            updated_at: Some(Instant::now()),
-        };
-        statuses[0].udp_penalty = PenaltyState {
-            value_secs: 20.0,
-            updated_at: Some(Instant::now()),
-        };
+        statuses[0].tcp_penalty =
+            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
+        statuses[0].udp_penalty =
+            PenaltyState { value_secs: 20.0, updated_at: Some(Instant::now()) };
     }
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
@@ -539,9 +516,7 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
     .unwrap();
 
     let tcp_target = TargetAddr::Domain("example.com".to_string(), 443);
-    manager
-        .confirm_selected_uplink(TransportKind::Tcp, Some(&tcp_target), 1)
-        .await;
+    manager.confirm_selected_uplink(TransportKind::Tcp, Some(&tcp_target), 1).await;
 
     let snapshot = manager.snapshot().await;
     assert_eq!(snapshot.global_active_uplink.as_deref(), Some("backup"));
@@ -557,22 +532,16 @@ async fn repeated_runtime_failure_during_cooldown_does_not_extend_penalty_or_coo
     .unwrap();
 
     let first_error = anyhow!("first failure");
-    manager
-        .report_runtime_failure(0, TransportKind::Udp, &first_error)
-        .await;
-    let (cooldown_first, penalty_first) = manager
-        .runtime_failure_debug_state(0, TransportKind::Udp)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &first_error).await;
+    let (cooldown_first, penalty_first) =
+        manager.runtime_failure_debug_state(0, TransportKind::Udp).await;
 
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     let second_error = anyhow!("second failure");
-    manager
-        .report_runtime_failure(0, TransportKind::Udp, &second_error)
-        .await;
-    let (cooldown_second, penalty_second) = manager
-        .runtime_failure_debug_state(0, TransportKind::Udp)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &second_error).await;
+    let (cooldown_second, penalty_second) =
+        manager.runtime_failure_debug_state(0, TransportKind::Udp).await;
 
     assert_eq!(penalty_second, penalty_first);
     assert!(cooldown_second <= cooldown_first);
@@ -590,12 +559,9 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
     .unwrap();
 
     let first_error = anyhow!("first failure");
-    manager
-        .report_runtime_failure(0, TransportKind::Udp, &first_error)
-        .await;
-    let first_wakeup_age = manager
-        .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &first_error).await;
+    let first_wakeup_age =
+        manager.runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp).await;
     assert!(first_wakeup_age.is_some());
 
     {
@@ -604,12 +570,9 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
     }
 
     let second_error = anyhow!("second failure");
-    manager
-        .report_runtime_failure(0, TransportKind::Udp, &second_error)
-        .await;
-    let second_wakeup_age = manager
-        .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Udp, &second_error).await;
+    let second_wakeup_age =
+        manager.runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp).await;
 
     assert_eq!(
         second_wakeup_age, first_wakeup_age,
@@ -648,16 +611,11 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
 
     // Runtime failure on primary: sets cooldown + penalty.
     let err = anyhow!("connection reset");
-    manager
-        .report_runtime_failure(0, TransportKind::Tcp, &err)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Tcp, &err).await;
 
     // Cooldown makes primary unhealthy → switch to backup.
     let second = manager.tcp_candidates(&target).await;
-    assert_eq!(
-        second[0].uplink.name, "backup",
-        "should switch to backup on failure"
-    );
+    assert_eq!(second[0].uplink.name, "backup", "should switch to backup on failure");
 
     // Simulate cooldown expiry (probe cleared it) while penalty is still large.
     // Before the fix, global_selection_score_latency ignored the penalty so
@@ -714,9 +672,7 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
 
     // Primary fails → switch to backup1 (next best by EWMA).
     let err = anyhow!("connection refused");
-    manager
-        .report_runtime_failure(0, TransportKind::Tcp, &err)
-        .await;
+    manager.report_runtime_failure(0, TransportKind::Tcp, &err).await;
     let second = manager.tcp_candidates(&tcp_target).await;
     assert_eq!(second[0].uplink.name, "backup1", "should switch to backup1");
 
@@ -729,9 +685,7 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
     }
 
     // Backup1 (current active) enters cooldown due to runtime failure.
-    manager
-        .report_runtime_failure(1, TransportKind::Tcp, &err)
-        .await;
+    manager.report_runtime_failure(1, TransportKind::Tcp, &err).await;
 
     // Without penalty-aware fallback the sort is by EWMA alone:
     //   primary 15ms < backup2 30ms → primary selected (oscillation back).

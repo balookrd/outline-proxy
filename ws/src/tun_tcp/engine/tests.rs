@@ -456,14 +456,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         remote_ip: remote_ip.into(),
         remote_port,
     };
-    let flow = engine
-        .inner
-        .flows
-        .read()
-        .await
-        .get(&key)
-        .cloned()
-        .expect("flow must exist");
+    let flow = engine.inner.flows.read().await.get(&key).cloned().expect("flow must exist");
     {
         let mut state = flow.lock().await;
         state.retransmission_timeout = Duration::from_millis(200);
@@ -912,10 +905,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         .get(&key)
         .cloned()
         .expect("flow must remain after client FIN");
-    assert!(matches!(
-        flow.lock().await.status,
-        TcpFlowStatus::CloseWait | TcpFlowStatus::LastAck
-    ));
+    assert!(matches!(flow.lock().await.status, TcpFlowStatus::CloseWait | TcpFlowStatus::LastAck));
 
     upstream.close().await;
     let server_fin = parse_tcp_packet(&capture.next_packet().await).unwrap();
@@ -1068,22 +1058,12 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         state.maintenance_notify.notify_one();
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        engine
-            .inner
-            .flows
-            .read()
-            .await
-            .get(&time_wait_key)
-            .is_none()
-    );
+    assert!(engine.inner.flows.read().await.get(&time_wait_key).is_none());
 }
 #[tokio::test]
 async fn new_flow_is_removed_when_synack_write_fails() {
-    let path = std::env::temp_dir().join(format!(
-        "outline-ws-rust-tun-write-fail-{}.bin",
-        rand::random::<u64>()
-    ));
+    let path = std::env::temp_dir()
+        .join(format!("outline-ws-rust-tun-write-fail-{}.bin", rand::random::<u64>()));
     std::fs::OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -1183,10 +1163,8 @@ struct TunCapture {
 
 impl TunCapture {
     async fn new() -> (SharedTunWriter, Self) {
-        let path = std::env::temp_dir().join(format!(
-            "outline-ws-rust-tun-capture-{}.bin",
-            rand::random::<u64>()
-        ));
+        let path = std::env::temp_dir()
+            .join(format!("outline-ws-rust-tun-capture-{}.bin", rand::random::<u64>()));
         let file = std::fs::OpenOptions::new()
             .create(true)
             .truncate(true)

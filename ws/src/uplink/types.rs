@@ -97,10 +97,7 @@ pub enum TransportKind {
 pub(super) enum RoutingKey {
     Global,
     TransportGlobal(TransportKind),
-    Target {
-        transport: TransportKind,
-        target: TargetAddr,
-    },
+    Target { transport: TransportKind, target: TargetAddr },
     Default(TransportKind),
 }
 

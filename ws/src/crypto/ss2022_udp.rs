@@ -270,10 +270,9 @@ fn parse_ss2022_udp_server_plaintext(
         bail!("ss2022 UDP client session id mismatch");
     }
     let padding_len_offset = client_session_end;
-    let padding_len = u16::from_be_bytes([
-        plaintext[padding_len_offset],
-        plaintext[padding_len_offset + 1],
-    ]) as usize;
+    let padding_len =
+        u16::from_be_bytes([plaintext[padding_len_offset], plaintext[padding_len_offset + 1]])
+            as usize;
     let payload_offset = padding_len_offset + 2 + padding_len;
     if plaintext.len() < payload_offset {
         bail!("ss2022 UDP padding exceeds payload length");
@@ -298,10 +297,7 @@ fn parse_ss2022_udp_server_chacha_plaintext(
     let server_packet_id = u64::from_be_bytes(packet_id_bytes);
 
     if plaintext[16] != SS2022_UDP_SERVER_PACKET {
-        bail!(
-            "invalid ss2022 chacha UDP server packet type: {}",
-            plaintext[16]
-        );
+        bail!("invalid ss2022 chacha UDP server packet type: {}", plaintext[16]);
     }
     let mut timestamp_bytes = [0u8; 8];
     timestamp_bytes.copy_from_slice(&plaintext[17..25]);
@@ -317,17 +313,12 @@ fn parse_ss2022_udp_server_chacha_plaintext(
         bail!("ss2022 chacha UDP client session id mismatch");
     }
     let padding_len_offset = client_session_end;
-    let padding_len = u16::from_be_bytes([
-        plaintext[padding_len_offset],
-        plaintext[padding_len_offset + 1],
-    ]) as usize;
+    let padding_len =
+        u16::from_be_bytes([plaintext[padding_len_offset], plaintext[padding_len_offset + 1]])
+            as usize;
     let payload_offset = padding_len_offset + 2 + padding_len;
     if plaintext.len() < payload_offset {
         bail!("ss2022 chacha UDP padding exceeds payload length");
     }
-    Ok((
-        server_session_id,
-        server_packet_id,
-        plaintext[payload_offset..].to_vec(),
-    ))
+    Ok((server_session_id, server_packet_id, plaintext[payload_offset..].to_vec()))
 }

@@ -29,9 +29,7 @@ pub(super) async fn select_tcp_candidate_and_connect(
                 tcp_uplinks = cooldowns.join("; "),
                 "dropping TUN TCP flow because all TCP uplinks are in cooldown or unavailable"
             );
-            return Err(anyhow!(
-                "all TCP uplinks are in cooldown or unavailable for TUN flow"
-            ));
+            return Err(anyhow!("all TCP uplinks are in cooldown or unavailable for TUN flow"));
         }
 
         let iter = if strict_transport {

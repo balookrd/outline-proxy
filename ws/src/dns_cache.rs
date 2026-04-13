@@ -16,35 +16,22 @@ pub(crate) struct DnsCache {
 
 impl DnsCache {
     pub(crate) fn new() -> Self {
-        Self {
-            inner: Mutex::new(HashMap::new()),
-        }
+        Self { inner: Mutex::new(HashMap::new()) }
     }
 
     pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
         let entry = map.get(&(host.to_string(), port))?;
-        if Instant::now() < entry.expires_at {
-            Some(entry.addrs.clone())
-        } else {
-            None
-        }
+        if Instant::now() < entry.expires_at { Some(entry.addrs.clone()) } else { None }
     }
 
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
         let map = self.inner.lock().unwrap();
-        map.get(&(host.to_string(), port))
-            .map(|entry| entry.addrs.clone())
+        map.get(&(host.to_string(), port)).map(|entry| entry.addrs.clone())
     }
 
     pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {
         let mut map = self.inner.lock().unwrap();
-        map.insert(
-            (host.to_string(), port),
-            Entry {
-                addrs,
-                expires_at: Instant::now() + TTL,
-            },
-        );
+        map.insert((host.to_string(), port), Entry { addrs, expires_at: Instant::now() + TTL });
     }
 }

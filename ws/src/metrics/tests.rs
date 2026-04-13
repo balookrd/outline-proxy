@@ -286,11 +286,8 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
         .is_some()
     );
     assert!(
-        metric_value(
-            &rendered,
-            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",
-        )
-        .is_some()
+        metric_value(&rendered, "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",)
+            .is_some()
     );
     assert!(
         metric_value(
@@ -323,11 +320,9 @@ fn render_prometheus_exports_ipv6_fragment_activity_counters() {
     set_tun_ip_fragment_sets_active("ipv6", 1);
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-    let fragments = metric_value(
-        &rendered,
-        "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}",
-    )
-    .expect("ipv6 fragment counter");
+    let fragments =
+        metric_value(&rendered, "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}")
+            .expect("ipv6 fragment counter");
     assert!(fragments >= 2.0);
     let reassemblies = metric_value(
         &rendered,

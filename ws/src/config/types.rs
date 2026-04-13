@@ -124,10 +124,7 @@ impl DnsProbeConfig {
                 IpAddr::V6(v6) => crate::types::TargetAddr::IpV6(v6, self.port),
             })
         } else {
-            Ok(crate::types::TargetAddr::Domain(
-                self.server.clone(),
-                self.port,
-            ))
+            Ok(crate::types::TargetAddr::Domain(self.server.clone(), self.port))
         }
     }
 }

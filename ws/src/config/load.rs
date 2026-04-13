@@ -114,16 +114,10 @@ fn load_socks5_auth_config(
             .enumerate()
             .map(|(index, user)| {
                 let username = user.username.clone().ok_or_else(|| {
-                    anyhow!(
-                        "missing socks5 user username in [socks5].users entry {}",
-                        index + 1
-                    )
+                    anyhow!("missing socks5 user username in [socks5].users entry {}", index + 1)
                 })?;
                 let password = user.password.clone().ok_or_else(|| {
-                    anyhow!(
-                        "missing socks5 user password in [socks5].users entry {}",
-                        index + 1
-                    )
+                    anyhow!("missing socks5 user password in [socks5].users entry {}", index + 1)
                 })?;
                 validate_socks5_auth_user(
                     Socks5AuthUserConfig { username, password },
@@ -137,10 +131,7 @@ fn load_socks5_auth_config(
             )
         }
         (None, Some(username), Some(password)) => vec![validate_socks5_auth_user(
-            Socks5AuthUserConfig {
-                username: username.clone(),
-                password: password.clone(),
-            },
+            Socks5AuthUserConfig { username: username.clone(), password: password.clone() },
             "socks5 auth user",
         )?],
         (None, Some(_), None) => {
@@ -219,29 +210,20 @@ impl ResolvedUplinkInput {
                 .udp_addr
                 .clone()
                 .or_else(|| outline.and_then(|section| section.udp_addr.clone())),
-            cipher: args
-                .method
-                .or_else(|| outline.and_then(|section| section.method)),
+            cipher: args.method.or_else(|| outline.and_then(|section| section.method)),
             password: args
                 .password
                 .clone()
                 .or_else(|| outline.and_then(|section| section.password.clone())),
             weight: Some(1.0),
-            fwmark: args
-                .fwmark
-                .or_else(|| outline.and_then(|section| section.fwmark)),
-            ipv6_first: args
-                .ipv6_first
-                .or_else(|| outline.and_then(|section| section.ipv6_first)),
+            fwmark: args.fwmark.or_else(|| outline.and_then(|section| section.fwmark)),
+            ipv6_first: args.ipv6_first.or_else(|| outline.and_then(|section| section.ipv6_first)),
         }
     }
 
     fn from_section(index: usize, uplink: &UplinkSection) -> Self {
         Self {
-            name: uplink
-                .name
-                .clone()
-                .unwrap_or_else(|| format!("uplink-{}", index + 1)),
+            name: uplink.name.clone().unwrap_or_else(|| format!("uplink-{}", index + 1)),
             transport: uplink.transport.unwrap_or_default(),
             tcp_ws_url: uplink.tcp_ws_url.clone(),
             tcp_ws_mode: uplink.tcp_ws_mode,
@@ -260,9 +242,7 @@ impl ResolvedUplinkInput {
     fn from_outline_default(outline: Option<&OutlineSection>) -> Self {
         Self {
             name: "default".to_string(),
-            transport: outline
-                .and_then(|section| section.transport)
-                .unwrap_or_default(),
+            transport: outline.and_then(|section| section.transport).unwrap_or_default(),
             tcp_ws_url: outline.and_then(|section| section.tcp_ws_url.clone()),
             tcp_ws_mode: outline.and_then(|section| section.tcp_ws_mode),
             udp_ws_url: outline.and_then(|section| section.udp_ws_url.clone()),
@@ -371,9 +351,7 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         || args.ipv6_first.is_some();
 
     if cli_override_requested {
-        return Ok(vec![
-            ResolvedUplinkInput::from_cli(args, outline).try_into()?,
-        ]);
+        return Ok(vec![ResolvedUplinkInput::from_cli(args, outline).try_into()?]);
     }
 
     if let Some(uplinks) = outline.and_then(|o| o.uplinks.as_ref()) {
@@ -388,34 +366,22 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
         return Ok(resolved);
     }
 
-    Ok(vec![
-        ResolvedUplinkInput::from_outline_default(outline).try_into()?,
-    ])
+    Ok(vec![ResolvedUplinkInput::from_outline_default(outline).try_into()?])
 }
 
 fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
     let probe = outline.and_then(|o| o.probe.as_ref());
     let http = probe
         .and_then(|p| p.http.as_ref())
-        .map(|http| HttpProbeConfig {
-            url: http.url.clone(),
-        });
-    let dns = probe
-        .and_then(|p| p.dns.as_ref())
-        .map(|dns| DnsProbeConfig {
-            server: dns.server.clone(),
-            port: dns.port.unwrap_or(53),
-            name: dns
-                .name
-                .clone()
-                .unwrap_or_else(|| "example.com".to_string()),
-        });
+        .map(|http| HttpProbeConfig { url: http.url.clone() });
+    let dns = probe.and_then(|p| p.dns.as_ref()).map(|dns| DnsProbeConfig {
+        server: dns.server.clone(),
+        port: dns.port.unwrap_or(53),
+        name: dns.name.clone().unwrap_or_else(|| "example.com".to_string()),
+    });
     let tcp = probe
         .and_then(|p| p.tcp.as_ref())
-        .map(|tcp| TcpProbeConfig {
-            host: tcp.host.clone(),
-            port: tcp.port.unwrap_or(80),
-        });
+        .map(|tcp| TcpProbeConfig { host: tcp.host.clone(), port: tcp.port.unwrap_or(80) });
 
     Ok(ProbeConfig {
         interval: Duration::from_secs(probe.and_then(|p| p.interval_secs).unwrap_or(30)),
@@ -425,10 +391,7 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
         min_failures: probe.and_then(|p| p.min_failures).unwrap_or(3).max(1),
         attempts: probe.and_then(|p| p.attempts).unwrap_or(2).max(1),
         ws: WsProbeConfig {
-            enabled: probe
-                .and_then(|p| p.ws.as_ref())
-                .and_then(|ws| ws.enabled)
-                .unwrap_or(false),
+            enabled: probe.and_then(|p| p.ws.as_ref()).and_then(|ws| ws.enabled).unwrap_or(false),
         },
         http,
         dns,
@@ -443,12 +406,8 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
     }
     Ok(LoadBalancingConfig {
-        mode: lb
-            .and_then(|l| l.mode)
-            .unwrap_or(LoadBalancingMode::ActiveActive),
-        routing_scope: lb
-            .and_then(|l| l.routing_scope)
-            .unwrap_or(RoutingScope::PerFlow),
+        mode: lb.and_then(|l| l.mode).unwrap_or(LoadBalancingMode::ActiveActive),
+        routing_scope: lb.and_then(|l| l.routing_scope).unwrap_or(RoutingScope::PerFlow),
         sticky_ttl: Duration::from_secs(lb.and_then(|l| l.sticky_ttl_secs).unwrap_or(300)),
         hysteresis: Duration::from_millis(lb.and_then(|l| l.hysteresis_ms).unwrap_or(50)),
         failure_cooldown: Duration::from_secs(
@@ -464,8 +423,7 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             lb.and_then(|l| l.failure_penalty_max_ms).unwrap_or(30_000),
         ),
         failure_penalty_halflife: Duration::from_secs(
-            lb.and_then(|l| l.failure_penalty_halflife_secs)
-                .unwrap_or(60),
+            lb.and_then(|l| l.failure_penalty_halflife_secs).unwrap_or(60),
         ),
         h3_downgrade_duration: Duration::from_secs(
             lb.and_then(|l| l.h3_downgrade_secs).unwrap_or(60),
@@ -483,23 +441,12 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
 }
 
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
-    let path = args
-        .tun_path
-        .clone()
-        .or_else(|| tun.and_then(|section| section.path.clone()));
-    let name = args
-        .tun_name
-        .clone()
-        .or_else(|| tun.and_then(|section| section.name.clone()));
-    let mtu = args
-        .tun_mtu
-        .or_else(|| tun.and_then(|section| section.mtu))
-        .unwrap_or(1500);
+    let path = args.tun_path.clone().or_else(|| tun.and_then(|section| section.path.clone()));
+    let name = args.tun_name.clone().or_else(|| tun.and_then(|section| section.name.clone()));
+    let mtu = args.tun_mtu.or_else(|| tun.and_then(|section| section.mtu)).unwrap_or(1500);
     let max_flows = tun.and_then(|section| section.max_flows).unwrap_or(4096);
-    let idle_timeout = Duration::from_secs(
-        tun.and_then(|section| section.idle_timeout_secs)
-            .unwrap_or(300),
-    );
+    let idle_timeout =
+        Duration::from_secs(tun.and_then(|section| section.idle_timeout_secs).unwrap_or(300));
 
     if path.is_none() && name.is_none() {
         return Ok(None);
@@ -521,27 +468,19 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
     let tcp_section = tun.and_then(|section| section.tcp.as_ref());
     let tcp = TunTcpConfig {
         connect_timeout: Duration::from_secs(
-            tcp_section
-                .and_then(|section| section.connect_timeout_secs)
-                .unwrap_or(10),
+            tcp_section.and_then(|section| section.connect_timeout_secs).unwrap_or(10),
         ),
         handshake_timeout: Duration::from_secs(
-            tcp_section
-                .and_then(|section| section.handshake_timeout_secs)
-                .unwrap_or(15),
+            tcp_section.and_then(|section| section.handshake_timeout_secs).unwrap_or(15),
         ),
         half_close_timeout: Duration::from_secs(
-            tcp_section
-                .and_then(|section| section.half_close_timeout_secs)
-                .unwrap_or(60),
+            tcp_section.and_then(|section| section.half_close_timeout_secs).unwrap_or(60),
         ),
         max_pending_server_bytes: tcp_section
             .and_then(|section| section.max_pending_server_bytes)
             .unwrap_or(4_194_304),
         backlog_abort_grace: Duration::from_secs(
-            tcp_section
-                .and_then(|section| section.backlog_abort_grace_secs)
-                .unwrap_or(3),
+            tcp_section.and_then(|section| section.backlog_abort_grace_secs).unwrap_or(3),
         ),
         backlog_hard_limit_multiplier: tcp_section
             .and_then(|section| section.backlog_hard_limit_multiplier)
@@ -557,9 +496,7 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         max_buffered_client_bytes: tcp_section
             .and_then(|section| section.max_buffered_client_bytes)
             .unwrap_or(262_144),
-        max_retransmits: tcp_section
-            .and_then(|section| section.max_retransmits)
-            .unwrap_or(12),
+        max_retransmits: tcp_section.and_then(|section| section.max_retransmits).unwrap_or(12),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");
@@ -600,18 +537,15 @@ fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunCo
         bail!("missing tun.name: Linux TUN attach requires --tun-name or [tun].name");
     }
 
-    let defrag_max_fragment_sets = tun
-        .and_then(|section| section.defrag_max_fragment_sets)
-        .unwrap_or(1024);
-    let defrag_max_fragments_per_set = tun
-        .and_then(|section| section.defrag_max_fragments_per_set)
-        .unwrap_or(64);
+    let defrag_max_fragment_sets =
+        tun.and_then(|section| section.defrag_max_fragment_sets).unwrap_or(1024);
+    let defrag_max_fragments_per_set =
+        tun.and_then(|section| section.defrag_max_fragments_per_set).unwrap_or(64);
     let defrag_max_total_bytes = tun
         .and_then(|section| section.defrag_max_total_bytes)
         .unwrap_or(16 * 1024 * 1024);
-    let defrag_max_bytes_per_set = tun
-        .and_then(|section| section.defrag_max_bytes_per_set)
-        .unwrap_or(128 * 1024);
+    let defrag_max_bytes_per_set =
+        tun.and_then(|section| section.defrag_max_bytes_per_set).unwrap_or(128 * 1024);
     if defrag_max_fragment_sets == 0 {
         bail!("tun.defrag_max_fragment_sets must be greater than zero");
     }

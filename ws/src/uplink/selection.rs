@@ -8,7 +8,11 @@ use crate::config::{LoadBalancingConfig, RoutingScope, UplinkConfig};
 use super::types::{TransportKind, UplinkStatus};
 use super::utils::current_penalty;
 
-pub(super) fn effective_health(status: &UplinkStatus, transport: TransportKind, now: Instant) -> bool {
+pub(super) fn effective_health(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
     match transport {
         TransportKind::Tcp => {
             status.tcp_healthy == Some(true) && !cooldown_active(status, transport, now)
@@ -48,21 +52,32 @@ pub(super) fn selection_health(
     }
 }
 
-pub(super) fn strict_gate_transport(scope: RoutingScope, transport: TransportKind) -> TransportKind {
+pub(super) fn strict_gate_transport(
+    scope: RoutingScope,
+    transport: TransportKind,
+) -> TransportKind {
     match scope {
         RoutingScope::Global => TransportKind::Tcp,
         RoutingScope::PerUplink | RoutingScope::PerFlow => transport,
     }
 }
 
-pub(super) fn cooldown_active(status: &UplinkStatus, transport: TransportKind, now: Instant) -> bool {
+pub(super) fn cooldown_active(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> bool {
     match transport {
         TransportKind::Tcp => status.cooldown_until_tcp.is_some_and(|until| until > now),
         TransportKind::Udp => status.cooldown_until_udp.is_some_and(|until| until > now),
     }
 }
 
-pub(super) fn cooldown_remaining(status: &UplinkStatus, transport: TransportKind, now: Instant) -> Duration {
+pub(super) fn cooldown_remaining(
+    status: &UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+) -> Duration {
     let until = match transport {
         TransportKind::Tcp => status.cooldown_until_tcp,
         TransportKind::Udp => status.cooldown_until_udp,
@@ -108,7 +123,10 @@ pub(super) fn effective_latency(
     }
 }
 
-pub(super) fn scoring_base_latency(status: &UplinkStatus, transport: TransportKind) -> Option<Duration> {
+pub(super) fn scoring_base_latency(
+    status: &UplinkStatus,
+    transport: TransportKind,
+) -> Option<Duration> {
     match transport {
         TransportKind::Tcp => status.tcp_rtt_ewma.or(status.tcp_latency),
         TransportKind::Udp => status.udp_rtt_ewma.or(status.udp_latency),
@@ -168,9 +186,9 @@ pub(super) fn global_selection_score_latency(
         // UDP only acts as a weak tie-breaker and should not dominate selection.
         // Penalties are intentionally excluded here; strict global switching should
         // be driven by cooldown/failover rather than decayed score history.
-        (Some(tcp), Some(udp)) => Some(Duration::from_secs_f64(
-            tcp.as_secs_f64() + udp.as_secs_f64() * 0.05,
-        )),
+        (Some(tcp), Some(udp)) => {
+            Some(Duration::from_secs_f64(tcp.as_secs_f64() + udp.as_secs_f64() * 0.05))
+        }
         (Some(tcp), None) => Some(tcp),
         (None, Some(udp)) => Some(udp),
         (None, None) => None,

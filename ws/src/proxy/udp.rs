@@ -41,9 +41,7 @@ pub(super) async fn handle_udp_associate(
             .await
             .with_context(|| format!("failed to bind UDP relay on {}", bind_ip))?;
         let udp_socket = Arc::new(udp_socket);
-        let relay_addr = udp_socket
-            .local_addr()
-            .context("failed to read UDP relay address")?;
+        let relay_addr = udp_socket.local_addr().context("failed to read UDP relay address")?;
 
         // Optional socket for direct (bypass) UDP packets.
         let bypass_socket = if config.bypass.is_some() {
@@ -69,12 +67,7 @@ pub(super) async fn handle_udp_associate(
         );
         let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
 
-        send_reply(
-            &mut client,
-            SOCKS_STATUS_SUCCESS,
-            &socket_addr_to_target(relay_addr),
-        )
-        .await?;
+        send_reply(&mut client, SOCKS_STATUS_SUCCESS, &socket_addr_to_target(relay_addr)).await?;
 
         let client_udp_addr_uplink = Arc::clone(&client_udp_addr);
         let socket_uplink = Arc::clone(&udp_socket);
@@ -86,10 +79,8 @@ pub(super) async fn handle_udp_associate(
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
             loop {
-                let (len, addr) = socket_uplink
-                    .recv_from(&mut buf)
-                    .await
-                    .context("UDP relay receive failed")?;
+                let (len, addr) =
+                    socket_uplink.recv_from(&mut buf).await.context("UDP relay receive failed")?;
                 *client_udp_addr_uplink.lock().await = Some(addr);
 
                 let packet = parse_udp_request(&buf[..len])?;
@@ -139,11 +130,7 @@ pub(super) async fn handle_udp_associate(
                 .await?;
                 let (transport, uplink_name, active_index) = {
                     let active = active_transport_uplink.lock().await;
-                    (
-                        Arc::clone(&active.transport),
-                        active.uplink_name.clone(),
-                        active.index,
-                    )
+                    (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
                 };
                 if let Err(error) = transport.send_packet(&payload).await {
                     if is_dropped_oversized_udp_error(&error) {
@@ -176,9 +163,7 @@ pub(super) async fn handle_udp_associate(
                 } else {
                     metrics::add_udp_datagram("client_to_upstream", &uplink_name);
                     metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
-                    uplinks_uplink
-                        .report_active_traffic(active_index, TransportKind::Udp)
-                        .await;
+                    uplinks_uplink.report_active_traffic(active_index, TransportKind::Udp).await;
                 }
             }
         };
@@ -193,11 +178,7 @@ pub(super) async fn handle_udp_associate(
                     .await?;
                 let active = {
                     let active = active_transport_downlink.lock().await;
-                    (
-                        active.index,
-                        active.uplink_name.clone(),
-                        Arc::clone(&active.transport),
-                    )
+                    (active.index, active.uplink_name.clone(), Arc::clone(&active.transport))
                 };
                 let payload = match active.2.read_packet().await {
                     Ok(payload) => payload,
@@ -272,10 +253,7 @@ pub(super) async fn handle_udp_associate(
         let control = async move {
             let mut buf = [0u8; 1];
             loop {
-                let read = client
-                    .read(&mut buf)
-                    .await
-                    .context("control connection read failed")?;
+                let read = client.read(&mut buf).await.context("control connection read failed")?;
                 if read == 0 {
                     break;
                 }
@@ -293,10 +271,8 @@ pub(super) async fn handle_udp_associate(
             };
             let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
-                let (len, src_addr) = sock
-                    .recv_from(&mut buf)
-                    .await
-                    .context("bypass UDP recv failed")?;
+                let (len, src_addr) =
+                    sock.recv_from(&mut buf).await.context("bypass UDP recv failed")?;
                 let client_addr = client_udp_addr_direct.lock().await.ok_or_else(|| {
                     anyhow!("received bypass UDP response before client sent any packet")
                 })?;
@@ -349,10 +325,7 @@ pub(super) async fn select_udp_transport(
         candidates
     };
     for candidate in iter {
-        match uplinks
-            .acquire_udp_standby_or_connect(&candidate, "socks_udp")
-            .await
-        {
+        match uplinks.acquire_udp_standby_or_connect(&candidate, "socks_udp").await {
             Ok(transport) => {
                 uplinks
                     .confirm_selected_uplink(TransportKind::Udp, target, candidate.index)
@@ -393,9 +366,7 @@ async fn failover_udp_transport(
         }
         active.uplink_name.clone()
     };
-    uplinks
-        .report_runtime_failure(failed_index, TransportKind::Udp, &error)
-        .await;
+    uplinks.report_runtime_failure(failed_index, TransportKind::Udp, &error).await;
     let replacement = select_udp_transport(uplinks, target).await?;
     if let Some(previous_transport) = replace_active_udp_transport_if_current(
         active_transport,
@@ -433,9 +404,7 @@ async fn reconcile_global_udp_transport(
         return Ok(());
     }
 
-    let current_active = uplinks
-        .active_uplink_index_for_transport(TransportKind::Udp)
-        .await;
+    let current_active = uplinks.active_uplink_index_for_transport(TransportKind::Udp).await;
     let selected = active_transport.lock().await.index;
     if current_active == Some(selected) || current_active.is_none() {
         return Ok(());

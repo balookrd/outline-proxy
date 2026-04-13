@@ -21,10 +21,7 @@ fn ipv4_udp_roundtrip() {
     let parsed = parse_udp_packet(&packet).unwrap();
     assert_eq!(parsed.version, IpVersion::V4);
     assert_eq!(parsed.source_ip, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)));
-    assert_eq!(
-        parsed.destination_ip,
-        IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2))
-    );
+    assert_eq!(parsed.destination_ip, IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
     assert_eq!(parsed.source_port, 53);
     assert_eq!(parsed.destination_port, 40000);
     assert_eq!(parsed.payload, b"hello");
@@ -44,10 +41,7 @@ fn ipv6_udp_roundtrip() {
     let parsed = parse_udp_packet(&packet).unwrap();
     assert_eq!(parsed.version, IpVersion::V6);
     assert_eq!(parsed.source_ip, IpAddr::V6(Ipv6Addr::LOCALHOST));
-    assert_eq!(
-        parsed.destination_ip,
-        IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2))
-    );
+    assert_eq!(parsed.destination_ip, IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)));
     assert_eq!(parsed.source_port, 5353);
     assert_eq!(parsed.destination_port, 41000);
     assert_eq!(parsed.payload, b"world");
@@ -125,8 +119,7 @@ fn randomized_udp_packet_roundtrip_and_mutation_smoke() {
             assert!(parse_udp_packet(&corrupt_udp_length_field(&packet)).is_err());
         } else {
             let source_ip = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
-            let destination_ip =
-                Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
+            let destination_ip = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, rng.gen_range(2..=250));
             let packet = build_ipv6_udp_packet(
                 source_ip,
                 destination_ip,

@@ -76,10 +76,7 @@ pub async fn negotiate(
     match auth {
         Some(auth) => {
             if !methods.contains(&SOCKS_AUTH_METHOD_USERNAME_PASSWORD) {
-                stream
-                    .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
-                    .await
-                    .ok();
+                stream.write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE]).await.ok();
                 bail!("client does not support username/password auth");
             }
             stream
@@ -90,10 +87,7 @@ pub async fn negotiate(
         }
         None => {
             if !methods.contains(&SOCKS_AUTH_METHOD_NO_AUTH) {
-                stream
-                    .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
-                    .await
-                    .ok();
+                stream.write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE]).await.ok();
                 bail!("client does not support no-auth method");
             }
             stream
@@ -104,10 +98,7 @@ pub async fn negotiate(
     }
 
     let mut request = [0u8; 4];
-    stream
-        .read_exact(&mut request)
-        .await
-        .context("failed to read request header")?;
+    stream.read_exact(&mut request).await.context("failed to read request header")?;
 
     if request[0] != SOCKS_VERSION {
         bail!("invalid request version: {}", request[0]);
@@ -214,11 +205,7 @@ pub fn parse_udp_request(packet: &[u8]) -> Result<Socks5UdpPacket<'_>> {
     let fragment = packet[2];
     let (target, consumed) = TargetAddr::from_wire_bytes(&packet[3..])?;
     let payload_offset = 3 + consumed;
-    Ok(Socks5UdpPacket {
-        fragment,
-        target,
-        payload: &packet[payload_offset..],
-    })
+    Ok(Socks5UdpPacket { fragment, target, payload: &packet[payload_offset..] })
 }
 
 pub fn build_udp_packet(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
@@ -278,20 +265,14 @@ impl UdpFragmentReassembler {
             return Ok(None);
         }
 
-        let state = self
-            .state
-            .take()
-            .expect("state exists when final fragment arrives");
+        let state = self.state.take().expect("state exists when final fragment arrives");
         let total_len: usize = state.fragments.iter().map(Vec::len).sum();
         let mut payload = Vec::with_capacity(total_len);
         for fragment in state.fragments {
             payload.extend_from_slice(&fragment);
         }
 
-        Ok(Some(ReassembledUdpPacket {
-            target: state.target,
-            payload,
-        }))
+        Ok(Some(ReassembledUdpPacket { target: state.target, payload }))
     }
 }
 
@@ -406,10 +387,7 @@ mod tests {
         let (mut server_stream, mut client) = socks_pair().await;
         let server = tokio::spawn(async move { negotiate(&mut server_stream, None).await });
 
-        client
-            .write_all(&[SOCKS_VERSION, 1, SOCKS_AUTH_METHOD_NO_AUTH])
-            .await
-            .unwrap();
+        client.write_all(&[SOCKS_VERSION, 1, SOCKS_AUTH_METHOD_NO_AUTH]).await.unwrap();
         let mut method_reply = [0u8; 2];
         client.read_exact(&mut method_reply).await.unwrap();
         assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH]);
@@ -468,15 +446,10 @@ mod tests {
             .unwrap();
         let mut method_reply = [0u8; 2];
         client.read_exact(&mut method_reply).await.unwrap();
-        assert_eq!(
-            method_reply,
-            [SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD]
-        );
+        assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD]);
 
         client
-            .write_all(&[
-                0x01, 3, b'b', b'o', b'b', 7, b'h', b'u', b'n', b't', b'e', b'r', b'2',
-            ])
+            .write_all(&[0x01, 3, b'b', b'o', b'b', 7, b'h', b'u', b'n', b't', b'e', b'r', b'2'])
             .await
             .unwrap();
         let mut auth_reply = [0u8; 2];
@@ -534,15 +507,10 @@ mod tests {
             .unwrap();
         let mut method_reply = [0u8; 2];
         client.read_exact(&mut method_reply).await.unwrap();
-        assert_eq!(
-            method_reply,
-            [SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD]
-        );
+        assert_eq!(method_reply, [SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD]);
 
         client
-            .write_all(&[
-                0x01, 5, b'a', b'l', b'i', b'c', b'e', 5, b'w', b'r', b'o', b'n', b'g',
-            ])
+            .write_all(&[0x01, 5, b'a', b'l', b'i', b'c', b'e', 5, b'w', b'r', b'o', b'n', b'g'])
             .await
             .unwrap();
         let mut auth_reply = [0u8; 2];
@@ -554,9 +522,7 @@ mod tests {
     }
 
     async fn socks_pair() -> (TcpStream, TcpStream) {
-        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-            .await
-            .unwrap();
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).await.unwrap();
         let addr = listener.local_addr().unwrap();
         let client = TcpStream::connect(addr).await.unwrap();
         let (server, _) = listener.accept().await.unwrap();

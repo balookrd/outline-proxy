@@ -41,10 +41,7 @@ impl TunUdpEngine {
             .await;
         let transport = Arc::new(transport);
         let now = Instant::now();
-        let flow_id = self
-            .inner
-            .next_flow_id
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let flow_id = self.inner.next_flow_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let state = UdpFlowState {
             id: flow_id,
             transport: Arc::clone(&transport),
@@ -99,12 +96,7 @@ impl TunUdpEngine {
         );
         self.spawn_flow_reader(key, flow_id, Arc::clone(&transport), candidate.index);
 
-        Ok((
-            flow_id,
-            transport,
-            candidate.index,
-            candidate.uplink.name.clone(),
-        ))
+        Ok((flow_id, transport, candidate.index, candidate.uplink.name.clone()))
     }
 
     async fn select_candidate_and_connect(
@@ -112,10 +104,7 @@ impl TunUdpEngine {
         remote_target: &TargetAddr,
     ) -> Result<(UplinkCandidate, UdpWsTransport)> {
         let mut last_error = None;
-        let strict_transport = self
-            .inner
-            .uplinks
-            .strict_active_uplink_for(TransportKind::Udp);
+        let strict_transport = self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp);
         let candidates = self.inner.uplinks.udp_candidates(Some(remote_target)).await;
         let iter = if strict_transport {
             candidates.into_iter().take(1).collect::<Vec<_>>()
@@ -123,16 +112,10 @@ impl TunUdpEngine {
             candidates
         };
         for candidate in iter {
-            match self
-                .inner
-                .uplinks
-                .acquire_udp_standby_or_connect(&candidate, "tun_udp")
-                .await
-            {
+            match self.inner.uplinks.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
                 Ok(transport) => return Ok((candidate, transport)),
                 Err(error) => {
-                    self.report_udp_runtime_failure(candidate.index, &error)
-                        .await;
+                    self.report_udp_runtime_failure(candidate.index, &error).await;
                     last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
                 }
             }
@@ -154,10 +137,7 @@ impl TunUdpEngine {
         tokio::spawn(async move {
             let result = async {
                 loop {
-                    if engine
-                        .inner
-                        .uplinks
-                        .strict_active_uplink_for(TransportKind::Udp)
+                    if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Udp)
                         && engine
                             .inner
                             .uplinks
@@ -165,9 +145,7 @@ impl TunUdpEngine {
                             .await
                             .is_some_and(|active| active != uplink_index)
                     {
-                        engine
-                            .close_flow_if_current(&key, flow_id, "global_switch")
-                            .await;
+                        engine.close_flow_if_current(&key, flow_id, "global_switch").await;
                         return Ok(());
                     }
                     let payload = transport.read_packet().await?;
@@ -206,20 +184,11 @@ impl TunUdpEngine {
                 Ok::<(), anyhow::Error>(())
             }
             .await;
-            let close_reason = if result.is_ok() {
-                "closed"
-            } else {
-                "read_error"
-            };
+            let close_reason = if result.is_ok() { "closed" } else { "read_error" };
 
             if let Err(ref error) = result {
-                let is_current = engine
-                    .inner
-                    .flows
-                    .lock()
-                    .await
-                    .get(&key)
-                    .map_or(false, |f| f.id == flow_id);
+                let is_current =
+                    engine.inner.flows.lock().await.get(&key).map_or(false, |f| f.id == flow_id);
                 if is_current {
                     engine.report_udp_runtime_failure(uplink_index, error).await;
                     metrics::record_tun_packet(
@@ -234,9 +203,7 @@ impl TunUdpEngine {
                     );
                 }
             }
-            engine
-                .close_flow_if_current(&key, flow_id, close_reason)
-                .await;
+            engine.close_flow_if_current(&key, flow_id, close_reason).await;
         });
     }
 
@@ -311,10 +278,7 @@ impl TunUdpEngine {
 }
 
 fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowKey> {
-    flows
-        .iter()
-        .min_by_key(|(_, flow)| flow.last_seen)
-        .map(|(key, _)| key.clone())
+    flows.iter().min_by_key(|(_, flow)| flow.last_seen).map(|(key, _)| key.clone())
 }
 
 pub(crate) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {
