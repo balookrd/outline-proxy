@@ -24,14 +24,14 @@ impl TargetAddr {
                 out.extend_from_slice(&addr.ip().octets());
                 out.extend_from_slice(&addr.port().to_be_bytes());
                 Ok(out)
-            }
+            },
             Self::Socket(SocketAddr::V6(addr)) => {
                 let mut out = Vec::with_capacity(19);
                 out.push(0x04);
                 out.extend_from_slice(&addr.ip().octets());
                 out.extend_from_slice(&addr.port().to_be_bytes());
                 Ok(out)
-            }
+            },
             Self::Domain(host, port) => {
                 let host_bytes = host.as_bytes();
                 let len =
@@ -42,7 +42,7 @@ impl TargetAddr {
                 out.extend_from_slice(host_bytes);
                 out.extend_from_slice(&port.to_be_bytes());
                 Ok(out)
-            }
+            },
         }
     }
 }
@@ -68,7 +68,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
             let host = Ipv4Addr::new(rest[0], rest[1], rest[2], rest[3]);
             let port = u16::from_be_bytes([rest[4], rest[5]]);
             Ok(Some((TargetAddr::Socket(SocketAddr::from((host, port))), 7)))
-        }
+        },
         0x03 => {
             let Some((&len, rest)) = rest.split_first() else {
                 return Ok(None);
@@ -81,7 +81,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
                 std::str::from_utf8(&rest[..len]).map_err(|_| ProtocolError::InvalidDomain)?;
             let port = u16::from_be_bytes([rest[len], rest[len + 1]]);
             Ok(Some((TargetAddr::Domain(host.to_owned(), port), 1 + 1 + len + 2)))
-        }
+        },
         0x04 => {
             if rest.len() < 18 {
                 return Ok(None);
@@ -91,7 +91,7 @@ pub fn parse_target_addr(input: &[u8]) -> Result<Option<(TargetAddr, usize)>, Pr
             let host = Ipv6Addr::from(octets);
             let port = u16::from_be_bytes([rest[16], rest[17]]);
             Ok(Some((TargetAddr::Socket(SocketAddr::from((host, port))), 19)))
-        }
+        },
         other => Err(ProtocolError::UnsupportedAddressType(other)),
     }
 }

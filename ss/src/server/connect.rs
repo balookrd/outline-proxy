@@ -24,7 +24,7 @@ pub(super) async fn resolve_udp_target(
             let resolved = resolve_target(target, prefer_ipv4_upstream).await?;
             udp_dns_cache.store(host, *port, prefer_ipv4_upstream, resolved);
             Ok(resolved)
-        }
+        },
         TargetAddr::Socket(_) => resolve_target(target, prefer_ipv4_upstream).await,
     }
 }
@@ -39,7 +39,7 @@ pub(super) async fn resolve_target_addrs(
                 return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {}", addr));
             }
             Ok(vec![*addr])
-        }
+        },
         TargetAddr::Domain(host, port) => {
             let mut addrs = lookup_host((host.as_str(), *port))
                 .await
@@ -52,7 +52,7 @@ pub(super) async fn resolve_target_addrs(
                 return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
             }
             Ok(addrs)
-        }
+        },
     }
 }
 
@@ -74,8 +74,11 @@ pub(super) fn order_tcp_connect_addrs(
     addrs: Vec<SocketAddr>,
     prefer_ipv4_upstream: bool,
 ) -> Vec<SocketAddr> {
-    let prefer_ipv6 =
-        if prefer_ipv4_upstream { false } else { addrs.first().is_some_and(SocketAddr::is_ipv6) };
+    let prefer_ipv6 = if prefer_ipv4_upstream {
+        false
+    } else {
+        addrs.first().is_some_and(SocketAddr::is_ipv6)
+    };
     let mut seen = HashSet::with_capacity(addrs.len());
     let mut ipv4 = VecDeque::new();
     let mut ipv6 = VecDeque::new();
@@ -91,8 +94,11 @@ pub(super) fn order_tcp_connect_addrs(
         }
     }
 
-    let (primary, secondary) =
-        if prefer_ipv6 { (&mut ipv6, &mut ipv4) } else { (&mut ipv4, &mut ipv6) };
+    let (primary, secondary) = if prefer_ipv6 {
+        (&mut ipv6, &mut ipv4)
+    } else {
+        (&mut ipv4, &mut ipv6)
+    };
     let mut ordered = Vec::with_capacity(primary.len() + secondary.len());
     while let Some(addr) = primary.pop_front() {
         ordered.push(addr);
@@ -138,8 +144,12 @@ pub(super) async fn connect_tcp_addrs(
 }
 
 async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
-    let socket = if resolved.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() }
-        .with_context(|| format!("failed to create tcp socket for {resolved}"))?;
+    let socket = if resolved.is_ipv4() {
+        TcpSocket::new_v4()
+    } else {
+        TcpSocket::new_v6()
+    }
+    .with_context(|| format!("failed to create tcp socket for {resolved}"))?;
 
     apply_fwmark_if_needed(&socket, fwmark)
         .with_context(|| format!("failed to apply fwmark {fwmark:?} to tcp socket"))?;
@@ -149,11 +159,12 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
             configure_tcp_stream(&stream)
                 .with_context(|| format!("failed to configure tcp stream for {resolved}"))?;
             Ok(stream)
-        }
+        },
         Ok(Err(error)) => Err(error).with_context(|| format!("tcp connect failed for {resolved}")),
-        Err(_) => {
-            Err(anyhow!("tcp connect timed out after {}s for {resolved}", TCP_CONNECT_TIMEOUT_SECS))
-        }
+        Err(_) => Err(anyhow!(
+            "tcp connect timed out after {}s for {resolved}",
+            TCP_CONNECT_TIMEOUT_SECS
+        )),
     }
 }
 

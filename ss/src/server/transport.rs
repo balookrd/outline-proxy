@@ -25,7 +25,11 @@ pub(super) async fn tcp_websocket_upgrade(
     };
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let route = state.tcp_routes.get(&path).cloned().unwrap_or_else(empty_transport_route);
+    let route = state
+        .tcp_routes
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
@@ -52,7 +56,7 @@ pub(super) async fn tcp_websocket_upgrade(
                     warn!(?error, "tcp websocket connection terminated with error");
                     DisconnectReason::Error
                 }
-            }
+            },
         };
         session.finish(outcome);
     })
@@ -75,7 +79,7 @@ pub(super) async fn root_http_auth_handler(
     match parse_root_http_auth_password(&headers) {
         Some(password) if password_matches_any_user(state.users.as_ref(), &password) => {
             root_http_auth_success_response()
-        }
+        },
         Some(_) => {
             let failed_attempts = failed_attempts.saturating_add(1);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
@@ -83,7 +87,7 @@ pub(super) async fn root_http_auth_handler(
             } else {
                 root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref())
             }
-        }
+        },
         None => root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref()),
     }
 }
@@ -114,7 +118,11 @@ pub(super) async fn udp_websocket_upgrade(
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let route = state.udp_routes.get(&path).cloned().unwrap_or_else(empty_transport_route);
+    let route = state
+        .udp_routes
+        .get(&path)
+        .cloned()
+        .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let session = state.metrics.open_websocket_session(Transport::Udp, protocol);
     let nat_table = state.nat_table.clone();
@@ -144,7 +152,7 @@ pub(super) async fn udp_websocket_upgrade(
                     warn!(?error, "udp websocket connection terminated with error");
                     DisconnectReason::Error
                 }
-            }
+            },
         };
         session.finish(outcome);
     })
@@ -177,7 +185,9 @@ pub(super) fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<Strin
 }
 
 pub(super) fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
-    users.iter().any(|user| matches!(user.matches_password(password), Ok(true)))
+    users
+        .iter()
+        .any(|user| matches!(user.matches_password(password), Ok(true)))
 }
 
 fn not_found_response() -> Response {
@@ -344,7 +354,7 @@ where
     metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "in", data.len());
     decryptor.push(&data);
     match decryptor.pull_plaintext(plaintext_buffer) {
-        Ok(()) => {}
+        Ok(()) => {},
         Err(CryptoError::UnknownUser) => {
             debug!(
                 path = %path,
@@ -356,7 +366,7 @@ where
             return Err(anyhow!(
                 "no configured key matched the incoming data on tcp path {path} candidates={candidate_users:?}",
             ));
-        }
+        },
         Err(error) => return Err(anyhow!(error)),
     }
 
@@ -385,7 +395,7 @@ where
                     connect_started.elapsed().as_secs_f64(),
                 );
                 stream
-            }
+            },
             Err(error) => {
                 metrics.record_tcp_connect(
                     Arc::clone(&user_id),
@@ -395,7 +405,7 @@ where
                 );
                 return Err(error)
                     .with_context(|| format!("failed to connect to {target_display}"));
-            }
+            },
         };
         info!(
             user = user.id(),
@@ -490,7 +500,7 @@ where
             return Err(anyhow!(
                 "no configured key matched the incoming udp data on path {path} candidates={candidate_users:?}",
             ));
-        }
+        },
         Err(error) => return Err(anyhow!(error)),
     };
     cached_user_index.store(user_index, Ordering::Relaxed);
@@ -534,7 +544,9 @@ where
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
-    entry.register_session(make_response_sender(outbound_tx, protocol)).await;
+    entry
+        .register_session(make_response_sender(outbound_tx, protocol))
+        .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         metrics.record_udp_oversized_datagram_dropped(
@@ -658,19 +670,19 @@ async fn handle_tcp_connection(
                     ws_close_message,
                 )
                 .await?;
-            }
+            },
             Message::Close(_) => {
                 debug!("client closed tcp websocket");
                 client_closed = true;
                 break;
-            }
+            },
             Message::Ping(payload) => {
                 outbound_ctrl_tx
                     .send(ws_pong_message(payload))
                     .await
                     .context("failed to queue websocket pong")?;
-            }
-            Message::Pong(_) => {}
+            },
+            Message::Pong(_) => {},
             Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }
@@ -928,18 +940,18 @@ pub(super) async fn handle_tcp_h3_connection(
                     h3_close_message,
                 )
                 .await?;
-            }
+            },
             H3Message::Close(_) => {
                 debug!("client closed tcp websocket");
                 break;
-            }
+            },
             H3Message::Ping(payload) => {
                 outbound_ctrl_tx
                     .send(h3_pong_message(payload))
                     .await
                     .context("failed to queue websocket pong")?;
-            }
-            H3Message::Pong(_) => {}
+            },
+            H3Message::Pong(_) => {},
             H3Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
         }
     }

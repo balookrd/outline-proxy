@@ -73,16 +73,25 @@ pub(crate) struct UdpResponseSender {
 enum UdpResponseSenderInner {
     Ws(mpsc::Sender<Message>),
     H3(mpsc::Sender<H3Message>),
-    Datagram { socket: Arc<UdpSocket>, client_addr: SocketAddr },
+    Datagram {
+        socket: Arc<UdpSocket>,
+        client_addr: SocketAddr,
+    },
 }
 
 impl UdpResponseSender {
     pub(crate) fn ws(tx: mpsc::Sender<Message>, protocol: Protocol) -> Self {
-        Self { inner: UdpResponseSenderInner::Ws(tx), protocol }
+        Self {
+            inner: UdpResponseSenderInner::Ws(tx),
+            protocol,
+        }
     }
 
     pub(crate) fn h3(tx: mpsc::Sender<H3Message>) -> Self {
-        Self { inner: UdpResponseSenderInner::H3(tx), protocol: Protocol::Http3 }
+        Self {
+            inner: UdpResponseSenderInner::H3(tx),
+            protocol: Protocol::Http3,
+        }
     }
 
     pub(crate) fn datagram(socket: Arc<UdpSocket>, client_addr: SocketAddr) -> Self {
@@ -103,7 +112,7 @@ impl UdpResponseSender {
             UdpResponseSenderInner::H3(tx) => tx.send(H3Message::Binary(data)).await.is_ok(),
             UdpResponseSenderInner::Datagram { socket, client_addr } => {
                 socket.send_to(&data, *client_addr).await.is_ok()
-            }
+            },
         }
     }
 }
@@ -157,7 +166,10 @@ pub(crate) struct NatTable {
 
 impl NatTable {
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        Arc::new(Self { entries: Mutex::new(HashMap::new()), idle_timeout })
+        Arc::new(Self {
+            entries: Mutex::new(HashMap::new()),
+            idle_timeout,
+        })
     }
 
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
@@ -172,7 +184,11 @@ impl NatTable {
     ) -> Result<Arc<NatEntry>> {
         let cell = {
             let mut entries = self.entries.lock().await;
-            Arc::clone(entries.entry(key.clone()).or_insert_with(|| Arc::new(OnceCell::new())))
+            Arc::clone(
+                entries
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(OnceCell::new())),
+            )
         };
 
         let create_key = key.clone();
@@ -197,7 +213,7 @@ impl NatTable {
                     entries.remove(&key);
                 }
                 Err(error)
-            }
+            },
         }
     }
 
@@ -222,7 +238,7 @@ impl NatTable {
             UdpSession::Legacy => None,
             UdpSession::Aes2022 { .. } | UdpSession::Chacha2022 { .. } => {
                 Some(random_session_id()?)
-            }
+            },
         };
 
         let reader_task = tokio::spawn(nat_reader_task(
@@ -258,7 +274,12 @@ impl NatTable {
     /// Current number of active NAT entries (informational).
     #[cfg(test)]
     pub(crate) async fn len(&self) -> usize {
-        self.entries.lock().await.values().filter(|cell| cell.get().is_some()).count()
+        self.entries
+            .lock()
+            .await
+            .values()
+            .filter(|cell| cell.get().is_some())
+            .count()
     }
 
     pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
@@ -297,7 +318,7 @@ async fn nat_reader_task(
             Err(error) => {
                 warn!(%target, %error, "UDP NAT socket recv error, closing reader");
                 break;
-            }
+            },
         };
 
         last_active.store(unix_secs_now(), Ordering::Relaxed);
@@ -315,7 +336,7 @@ async fn nat_reader_task(
             Err(error) => {
                 warn!(%source, %error, "failed to encrypt NAT UDP response");
                 continue;
-            }
+            },
         };
 
         let sender = { session_tx.lock().await.clone() };
@@ -358,7 +379,10 @@ fn random_session_id() -> Result<[u8; 8]> {
 }
 
 fn unix_secs_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn record_oversized_socket_response_drop(

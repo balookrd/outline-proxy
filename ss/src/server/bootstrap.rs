@@ -51,7 +51,9 @@ pub(super) fn build_app(
 }
 
 pub(super) fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
-    Router::new().route(&metrics_path, any(metrics_handler)).with_state(metrics)
+    Router::new()
+        .route(&metrics_path, any(metrics_handler))
+        .with_state(metrics)
 }
 
 pub(super) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transport>> {
@@ -121,7 +123,11 @@ fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
 }
 
 fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocket> {
-    let domain = if listen.is_ipv6() { socket2::Domain::IPV6 } else { socket2::Domain::IPV4 };
+    let domain = if listen.is_ipv6() {
+        socket2::Domain::IPV6
+    } else {
+        socket2::Domain::IPV4
+    };
     let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
         .context("failed to create HTTP/3 UDP socket")?;
     socket
@@ -244,7 +250,9 @@ async fn handle_h3_connection(
     http_root_realm: Arc<str>,
     ws_config: H3WebSocketConfig,
 ) -> Result<()> {
-    let connection = incoming.await.context("failed to accept incoming HTTP/3 connection")?;
+    let connection = incoming
+        .await
+        .context("failed to accept incoming HTTP/3 connection")?;
     let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
         H3Connection::new(h3_quinn::Connection::new(connection))
             .await
@@ -261,7 +269,7 @@ async fn handle_h3_connection(
                             warn!(?error, "failed to resolve HTTP/3 request");
                         }
                         continue;
-                    }
+                    },
                 };
 
                 let users = users.clone();
@@ -298,7 +306,7 @@ async fn handle_h3_connection(
                         warn!(?error, "HTTP/3 request terminated with error");
                     }
                 });
-            }
+            },
             Ok(None) => break,
             Err(error) => {
                 let error = anyhow!(error);
@@ -306,7 +314,7 @@ async fn handle_h3_connection(
                     break;
                 }
                 return Err(error).context("failed to accept HTTP/3 request");
-            }
+            },
         }
     }
 
@@ -383,7 +391,10 @@ async fn handle_h3_request(
     let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ws_config);
 
     if tcp_paths.contains(ws_req.path.as_str()) {
-        let route = tcp_routes.get(&ws_req.path).cloned().unwrap_or_else(empty_transport_route);
+        let route = tcp_routes
+            .get(&ws_req.path)
+            .cloned()
+            .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
         let outcome = match handle_tcp_h3_connection(
@@ -408,11 +419,14 @@ async fn handle_h3_request(
                     warn!(?error, "tcp websocket connection terminated with error");
                     DisconnectReason::Error
                 }
-            }
+            },
         };
         session.finish(outcome);
     } else if udp_paths.contains(ws_req.path.as_str()) {
-        let route = udp_routes.get(&ws_req.path).cloned().unwrap_or_else(empty_transport_route);
+        let route = udp_routes
+            .get(&ws_req.path)
+            .cloned()
+            .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
         let session = metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
         let outcome = match handle_udp_h3_connection(
@@ -439,7 +453,7 @@ async fn handle_h3_request(
                     warn!(?error, "udp websocket connection terminated with error");
                     DisconnectReason::Error
                 }
-            }
+            },
         };
         session.finish(outcome);
     }
@@ -467,7 +481,7 @@ fn h3_http_response(
     match parse_root_http_auth_password(headers) {
         Some(password) if password_matches_any_user(users, &password) => {
             h3_root_http_auth_success_response()
-        }
+        },
         Some(_) => {
             let failed_attempts = failed_attempts.saturating_add(1);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
@@ -475,7 +489,7 @@ fn h3_http_response(
             } else {
                 h3_root_http_auth_challenge_response(failed_attempts, http_root_realm)
             }
-        }
+        },
         None => h3_root_http_auth_challenge_response(failed_attempts, http_root_realm),
     }
 }
@@ -532,9 +546,14 @@ fn h3_root_http_auth_forbidden_response() -> http::Response<()> {
 }
 
 fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
-    let cert_path =
-        config.h3_cert_path.as_deref().ok_or_else(|| anyhow!("missing h3_cert_path"))?;
-    let key_path = config.h3_key_path.as_deref().ok_or_else(|| anyhow!("missing h3_key_path"))?;
+    let cert_path = config
+        .h3_cert_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing h3_cert_path"))?;
+    let key_path = config
+        .h3_key_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing h3_key_path"))?;
 
     load_server_tls_config(cert_path, key_path, &[b"h3".as_slice()])
         .context("failed to build HTTP/3 TLS config")
@@ -545,7 +564,10 @@ fn build_tcp_tls_acceptor(config: &Config) -> Result<TlsAcceptor> {
         .tls_cert_path
         .as_deref()
         .ok_or_else(|| anyhow!("missing tls_cert_path"))?;
-    let key_path = config.tls_key_path.as_deref().ok_or_else(|| anyhow!("missing tls_key_path"))?;
+    let key_path = config
+        .tls_key_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("missing tls_key_path"))?;
 
     let tls_config =
         load_server_tls_config(cert_path, key_path, &[b"h2".as_slice(), b"http/1.1".as_slice()])
@@ -611,7 +633,9 @@ pub(super) async fn serve_listener(listener: TcpListener, app: Router) -> Result
 }
 
 pub(super) async fn serve_metrics_listener(listener: TcpListener, app: Router) -> Result<()> {
-    axum::serve(listener, app).await.context("metrics server exited unexpectedly")
+    axum::serve(listener, app)
+        .await
+        .context("metrics server exited unexpectedly")
 }
 
 async fn serve_tls_listener(
@@ -625,7 +649,7 @@ async fn serve_tls_listener(
             Err(error) => {
                 warn!(?error, "failed to accept TLS tcp connection");
                 continue;
-            }
+            },
         };
         if let Err(error) = configure_tcp_stream(&stream) {
             warn!(%peer_addr, ?error, "failed to configure TLS tcp connection");
@@ -644,7 +668,7 @@ async fn serve_tls_listener(
                         warn!(?error, %peer_addr, "tls handshake failed");
                     }
                     return;
-                }
+                },
             };
 
             let io = TokioIo::new(tls_stream);
