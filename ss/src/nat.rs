@@ -73,33 +73,21 @@ pub(crate) struct UdpResponseSender {
 enum UdpResponseSenderInner {
     Ws(mpsc::Sender<Message>),
     H3(mpsc::Sender<H3Message>),
-    Datagram {
-        socket: Arc<UdpSocket>,
-        client_addr: SocketAddr,
-    },
+    Datagram { socket: Arc<UdpSocket>, client_addr: SocketAddr },
 }
 
 impl UdpResponseSender {
     pub(crate) fn ws(tx: mpsc::Sender<Message>, protocol: Protocol) -> Self {
-        Self {
-            inner: UdpResponseSenderInner::Ws(tx),
-            protocol,
-        }
+        Self { inner: UdpResponseSenderInner::Ws(tx), protocol }
     }
 
     pub(crate) fn h3(tx: mpsc::Sender<H3Message>) -> Self {
-        Self {
-            inner: UdpResponseSenderInner::H3(tx),
-            protocol: Protocol::Http3,
-        }
+        Self { inner: UdpResponseSenderInner::H3(tx), protocol: Protocol::Http3 }
     }
 
     pub(crate) fn datagram(socket: Arc<UdpSocket>, client_addr: SocketAddr) -> Self {
         Self {
-            inner: UdpResponseSenderInner::Datagram {
-                socket,
-                client_addr,
-            },
+            inner: UdpResponseSenderInner::Datagram { socket, client_addr },
             protocol: Protocol::Socket,
         }
     }
@@ -113,10 +101,9 @@ impl UdpResponseSender {
         match &self.inner {
             UdpResponseSenderInner::Ws(tx) => tx.send(Message::Binary(data)).await.is_ok(),
             UdpResponseSenderInner::H3(tx) => tx.send(H3Message::Binary(data)).await.is_ok(),
-            UdpResponseSenderInner::Datagram {
-                socket,
-                client_addr,
-            } => socket.send_to(&data, *client_addr).await.is_ok(),
+            UdpResponseSenderInner::Datagram { socket, client_addr } => {
+                socket.send_to(&data, *client_addr).await.is_ok()
+            }
         }
     }
 }
@@ -152,8 +139,7 @@ impl NatEntry {
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.
     pub(crate) fn touch(&self) {
-        self.last_active_secs
-            .store(unix_secs_now(), Ordering::Relaxed);
+        self.last_active_secs.store(unix_secs_now(), Ordering::Relaxed);
     }
 
     pub(crate) fn socket(&self) -> &UdpSocket {
@@ -171,10 +157,7 @@ pub(crate) struct NatTable {
 
 impl NatTable {
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        Arc::new(Self {
-            entries: Mutex::new(HashMap::new()),
-            idle_timeout,
-        })
+        Arc::new(Self { entries: Mutex::new(HashMap::new()), idle_timeout })
     }
 
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
@@ -189,11 +172,7 @@ impl NatTable {
     ) -> Result<Arc<NatEntry>> {
         let cell = {
             let mut entries = self.entries.lock().await;
-            Arc::clone(
-                entries
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(OnceCell::new())),
-            )
+            Arc::clone(entries.entry(key.clone()).or_insert_with(|| Arc::new(OnceCell::new())))
         };
 
         let create_key = key.clone();
@@ -228,11 +207,7 @@ impl NatTable {
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
-        let bind_addr: &str = if key.target.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        };
+        let bind_addr: &str = if key.target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
         let socket = UdpSocket::bind(bind_addr)
             .await
             .with_context(|| format!("failed to bind NAT UDP socket for {}", key.target))?;
@@ -283,12 +258,7 @@ impl NatTable {
     /// Current number of active NAT entries (informational).
     #[cfg(test)]
     pub(crate) async fn len(&self) -> usize {
-        self.entries
-            .lock()
-            .await
-            .values()
-            .filter(|cell| cell.get().is_some())
-            .count()
+        self.entries.lock().await.values().filter(|cell| cell.get().is_some()).count()
     }
 
     pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
@@ -302,11 +272,7 @@ impl NatTable {
         let evicted = before - entries.len();
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
-            debug!(
-                evicted,
-                remaining = entries.len(),
-                "evicted idle UDP NAT entries"
-            );
+            debug!(evicted, remaining = entries.len(), "evicted idle UDP NAT entries");
         }
     }
 }
@@ -392,10 +358,7 @@ fn random_session_id() -> Result<[u8; 8]> {
 }
 
 fn unix_secs_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 fn record_oversized_socket_response_drop(
@@ -405,10 +368,8 @@ fn record_oversized_socket_response_drop(
     source: SocketAddr,
     ciphertext_len: usize,
 ) -> bool {
-    if !matches!(
-        sender.map(UdpResponseSender::protocol),
-        Some(Protocol::Socket)
-    ) || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
+    if !matches!(sender.map(UdpResponseSender::protocol), Some(Protocol::Socket))
+        || ciphertext_len <= MAX_UDP_PAYLOAD_SIZE
     {
         return false;
     }
@@ -620,9 +581,7 @@ mod tests {
             let key = key.clone();
             let metrics = Arc::clone(&metrics);
             tasks.push(tokio::spawn(async move {
-                nat_table
-                    .get_or_create(key, &user, UdpSession::Legacy, metrics)
-                    .await
+                nat_table.get_or_create(key, &user, UdpSession::Legacy, metrics).await
             }));
         }
 

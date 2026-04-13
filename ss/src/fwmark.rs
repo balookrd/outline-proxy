@@ -8,11 +8,7 @@ pub(crate) fn apply_fwmark_if_needed<T>(socket: &T, fwmark: Option<u32>) -> std:
 where
     T: std::os::fd::AsRawFd,
 {
-    if let Some(fwmark) = fwmark {
-        apply_fwmark(socket, fwmark)
-    } else {
-        Ok(())
-    }
+    if let Some(fwmark) = fwmark { apply_fwmark(socket, fwmark) } else { Ok(()) }
 }
 
 #[cfg(not(unix))]
@@ -52,8 +48,5 @@ fn apply_fwmark<T>(_socket: &T, _fwmark: u32) -> std::io::Result<()>
 where
     T: std::os::fd::AsRawFd,
 {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "fwmark is only supported on Linux",
-    ))
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "fwmark is only supported on Linux"))
 }

@@ -47,11 +47,7 @@ pub enum CryptoError {
     #[error("failed to decode base64 pre-shared key")]
     InvalidBase64Key,
     #[error("invalid pre-shared key length for {cipher}: expected {expected} bytes, got {actual}")]
-    InvalidPskLength {
-        cipher: &'static str,
-        expected: usize,
-        actual: usize,
-    },
+    InvalidPskLength { cipher: &'static str, expected: usize, actual: usize },
     #[error("failed to derive session key")]
     KeyDerivation,
     #[error("unsupported chunk size {0}")]
@@ -207,21 +203,14 @@ impl fmt::Debug for AeadStreamDecryptor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AeadStreamDecryptor")
             .field("buffer_len", &self.buffer.len())
-            .field(
-                "active_user",
-                &self.active.as_ref().map(|active| active.user.id()),
-            )
+            .field("active_user", &self.active.as_ref().map(|active| active.user.id()))
             .finish()
     }
 }
 
 impl AeadStreamDecryptor {
     pub fn new(users: Arc<[UserKey]>) -> Self {
-        Self {
-            users,
-            buffer: BytesMut::new(),
-            active: None,
-        }
+        Self { users, buffer: BytesMut::new(), active: None }
     }
 
     pub fn push(&mut self, data: &[u8]) {
@@ -235,11 +224,9 @@ impl AeadStreamDecryptor {
     pub fn response_context(&self) -> Option<StreamResponseContext> {
         match self.active.as_ref()?.mode {
             ActiveStreamMode::Legacy { .. } => None,
-            ActiveStreamMode::Ss2022 {
-                ref request_salt, ..
-            } => Some(StreamResponseContext {
-                request_salt: request_salt.clone(),
-            }),
+            ActiveStreamMode::Ss2022 { ref request_salt, .. } => {
+                Some(StreamResponseContext { request_salt: request_salt.clone() })
+            }
         }
     }
 
@@ -381,9 +368,7 @@ impl AeadStreamDecryptor {
                                 user: user.clone(),
                                 key: less_safe,
                                 nonce_counter: 0,
-                                mode: ActiveStreamMode::Legacy {
-                                    pending_chunk_len: None,
-                                },
+                                mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
                             });
                             return Ok(());
                         }
@@ -392,11 +377,7 @@ impl AeadStreamDecryptor {
             }
         }
 
-        if any_candidate {
-            Err(CryptoError::UnknownUser)
-        } else {
-            Ok(())
-        }
+        if any_candidate { Err(CryptoError::UnknownUser) } else { Ok(()) }
     }
 }
 
@@ -432,9 +413,7 @@ impl AeadStreamEncryptor {
         response_context: Option<StreamResponseContext>,
     ) -> Result<Self, CryptoError> {
         let mut salt = vec![0_u8; user.cipher.salt_len()];
-        SystemRandom::new()
-            .fill(&mut salt)
-            .map_err(|_| CryptoError::Random)?;
+        SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
         let session_key = derive_subkey(user.cipher, user.master_key(), &salt)?;
         let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
@@ -450,12 +429,7 @@ impl AeadStreamEncryptor {
                 request_salt: context.request_salt,
             }
         } else {
-            StreamEncryptorMode::Legacy {
-                key,
-                nonce_counter: 0,
-                salt,
-                sent_salt: false,
-            }
+            StreamEncryptorMode::Legacy { key, nonce_counter: 0, salt, sent_salt: false }
         };
 
         Ok(Self { mode })
@@ -463,26 +437,12 @@ impl AeadStreamEncryptor {
 
     pub fn encrypt_chunk(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
         match &mut self.mode {
-            StreamEncryptorMode::Legacy {
-                key,
-                nonce_counter,
-                salt,
-                sent_salt,
-            } => encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext),
-            StreamEncryptorMode::Ss2022 {
-                key,
-                nonce_counter,
-                salt,
-                sent_header,
-                request_salt,
-            } => encrypt_ss2022_chunk(
-                key,
-                nonce_counter,
-                salt,
-                sent_header,
-                request_salt,
-                plaintext,
-            ),
+            StreamEncryptorMode::Legacy { key, nonce_counter, salt, sent_salt } => {
+                encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext)
+            }
+            StreamEncryptorMode::Ss2022 { key, nonce_counter, salt, sent_header, request_salt } => {
+                encrypt_ss2022_chunk(key, nonce_counter, salt, sent_header, request_salt, plaintext)
+            }
         }
     }
 }
@@ -554,9 +514,8 @@ fn try_decrypt_udp_packet_for_user(
 
         let (encrypted_header, ciphertext) = packet.split_at(SS2022_UDP_SEPARATE_HEADER_LEN);
         let separate_header = decrypt_ss2022_separate_header(user, encrypted_header)?;
-        let client_session_id = separate_header[..8]
-            .try_into()
-            .map_err(|_| CryptoError::InvalidHeader)?;
+        let client_session_id =
+            separate_header[..8].try_into().map_err(|_| CryptoError::InvalidHeader)?;
         let session_key = derive_subkey(user.cipher, user.master_key(), &separate_header[..8])?;
         let algorithm = cipher_algorithm(user.cipher);
         let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
@@ -598,9 +557,7 @@ fn try_decrypt_udp_packet_for_user(
 
 pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut salt = vec![0_u8; user.cipher.salt_len()];
-    SystemRandom::new()
-        .fill(&mut salt)
-        .map_err(|_| CryptoError::Random)?;
+    SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
 
     let session_key = derive_subkey(user.cipher, user.master_key(), &salt)?;
     let algorithm = cipher_algorithm(user.cipher);
@@ -675,9 +632,7 @@ pub fn encrypt_udp_packet_for_response(
             body.extend_from_slice(payload);
 
             let mut nonce = [0_u8; XNONCE_LEN];
-            SystemRandom::new()
-                .fill(&mut nonce)
-                .map_err(|_| CryptoError::Random)?;
+            SystemRandom::new().fill(&mut nonce).map_err(|_| CryptoError::Random)?;
             let cipher = XChaCha20Poly1305::new_from_slice(user.master_key())
                 .map_err(|_| CryptoError::Cipher)?;
             cipher
@@ -1265,11 +1220,8 @@ fn parse_ss2022_udp_request_body(body: &[u8]) -> Result<Vec<u8>, CryptoError> {
     if body[0] != SS2022_UDP_CLIENT_TYPE {
         return Err(CryptoError::InvalidHeader);
     }
-    let timestamp = u64::from_be_bytes(
-        body[1..9]
-            .try_into()
-            .map_err(|_| CryptoError::InvalidHeader)?,
-    );
+    let timestamp =
+        u64::from_be_bytes(body[1..9].try_into().map_err(|_| CryptoError::InvalidHeader)?);
     validate_timestamp(timestamp)?;
     let padding_len = u16::from_be_bytes([body[9], body[10]]) as usize;
     let body = &body[11..];
@@ -1292,18 +1244,13 @@ fn parse_ss2022_chacha_udp_request_body(body: &[u8]) -> Result<(Vec<u8>, [u8; 8]
     if body.len() < 8 + 8 + 1 + 8 + 2 {
         return Err(CryptoError::InvalidHeader);
     }
-    let client_session_id = body[..8]
-        .try_into()
-        .map_err(|_| CryptoError::InvalidHeader)?;
+    let client_session_id = body[..8].try_into().map_err(|_| CryptoError::InvalidHeader)?;
     let body = &body[16..];
     if body[0] != SS2022_UDP_CLIENT_TYPE {
         return Err(CryptoError::InvalidHeader);
     }
-    let timestamp = u64::from_be_bytes(
-        body[1..9]
-            .try_into()
-            .map_err(|_| CryptoError::InvalidHeader)?,
-    );
+    let timestamp =
+        u64::from_be_bytes(body[1..9].try_into().map_err(|_| CryptoError::InvalidHeader)?);
     validate_timestamp(timestamp)?;
     let padding_len = u16::from_be_bytes([body[9], body[10]]) as usize;
     let body = &body[11..];
@@ -1328,11 +1275,8 @@ fn validate_ss2022_request_fixed_header(header: &[u8]) -> Result<usize, CryptoEr
     if header[0] != SS2022_TCP_REQUEST_TYPE {
         return Err(CryptoError::InvalidHeader);
     }
-    let timestamp = u64::from_be_bytes(
-        header[1..9]
-            .try_into()
-            .map_err(|_| CryptoError::InvalidHeader)?,
-    );
+    let timestamp =
+        u64::from_be_bytes(header[1..9].try_into().map_err(|_| CryptoError::InvalidHeader)?);
     validate_timestamp(timestamp)?;
     Ok(u16::from_be_bytes([header[9], header[10]]) as usize)
 }
@@ -1374,10 +1318,8 @@ fn derive_subkey(
         let mut material = Vec::with_capacity(master_key.len() + salt.len());
         material.extend_from_slice(master_key);
         material.extend_from_slice(salt);
-        Ok(
-            blake3::derive_key(SS2022_SUBKEY_CONTEXT, &material).as_slice()[..cipher.key_len()]
-                .to_vec(),
-        )
+        Ok(blake3::derive_key(SS2022_SUBKEY_CONTEXT, &material).as_slice()[..cipher.key_len()]
+            .to_vec())
     } else {
         let salt = hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt);
         let prk = salt.extract(master_key);
@@ -1385,8 +1327,7 @@ fn derive_subkey(
             .expand(&[SS_SUBKEY_INFO], HkdfLen(cipher.key_len()))
             .map_err(|_| CryptoError::KeyDerivation)?;
         let mut session_key = vec![0_u8; cipher.key_len()];
-        okm.fill(&mut session_key)
-            .map_err(|_| CryptoError::KeyDerivation)?;
+        okm.fill(&mut session_key).map_err(|_| CryptoError::KeyDerivation)?;
         Ok(session_key)
     }
 }
@@ -1474,10 +1415,7 @@ fn ss2022_udp_nonce(separate_header: &[u8]) -> Result<Nonce, CryptoError> {
 }
 
 fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
 struct HkdfLen(usize);
@@ -1656,18 +1594,12 @@ mod tests {
         let mut request = Vec::new();
         request.extend_from_slice(&request_salt);
 
-        let session_key = super::derive_subkey(
-            CipherKind::Aes128Gcm2022,
-            users[0].master_key(),
-            &request_salt,
-        )
-        .unwrap();
+        let session_key =
+            super::derive_subkey(CipherKind::Aes128Gcm2022, users[0].master_key(), &request_salt)
+                .unwrap();
         let key = LessSafeKey::new(
-            UnboundKey::new(
-                super::cipher_algorithm(CipherKind::Aes128Gcm2022),
-                &session_key,
-            )
-            .unwrap(),
+            UnboundKey::new(super::cipher_algorithm(CipherKind::Aes128Gcm2022), &session_key)
+                .unwrap(),
         );
         let mut nonce_counter = 0;
 
@@ -1771,22 +1703,13 @@ mod tests {
     #[test]
     fn encrypts_ss2022_udp_response() {
         let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
-        let user = UserKey::new(
-            "alice",
-            psk,
-            None,
-            CipherKind::Aes128Gcm2022,
-            "/tcp",
-            "/udp",
-        )
-        .unwrap();
+        let user =
+            UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022, "/tcp", "/udp").unwrap();
         let packet = encrypt_udp_packet_for_response(
             &user,
             &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
             b"dns",
-            &UdpSession::Aes2022 {
-                client_session_id: [1; 8],
-            },
+            &UdpSession::Aes2022 { client_session_id: [1; 8] },
             Some([2; 8]),
             0,
         )
@@ -1797,22 +1720,14 @@ mod tests {
     #[test]
     fn encrypts_ss2022_chacha_udp_response() {
         let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-        let user = UserKey::new(
-            "alice",
-            psk,
-            None,
-            CipherKind::Chacha20Poly13052022,
-            "/tcp",
-            "/udp",
-        )
-        .unwrap();
+        let user =
+            UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022, "/tcp", "/udp")
+                .unwrap();
         let packet = encrypt_udp_packet_for_response(
             &user,
             &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
             b"mdns",
-            &UdpSession::Chacha2022 {
-                client_session_id: [3; 8],
-            },
+            &UdpSession::Chacha2022 { client_session_id: [3; 8] },
             Some([4; 8]),
             0,
         )
@@ -1822,15 +1737,9 @@ mod tests {
 
     #[test]
     fn rejects_bad_ss2022_psk_length() {
-        let error = UserKey::new(
-            "alice",
-            "c2hvcnQ=",
-            None,
-            CipherKind::Aes256Gcm2022,
-            "/tcp",
-            "/udp",
-        )
-        .unwrap_err();
+        let error =
+            UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022, "/tcp", "/udp")
+                .unwrap_err();
         assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
     }
 }

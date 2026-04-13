@@ -10,6 +10,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
 pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
+pub(super) const ROOT_HTTP_AUTH_COOKIE_TTL_SECS: u32 = 300;
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -24,15 +25,9 @@ pub(super) async fn tcp_websocket_upgrade(
     };
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let route = state
-        .tcp_routes
-        .get(&path)
-        .cloned()
-        .unwrap_or_else(empty_transport_route);
+    let route = state.tcp_routes.get(&path).cloned().unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-    let session = state
-        .metrics
-        .open_websocket_session(Transport::Tcp, protocol);
+    let session = state.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_tcp_connection(
             socket,
@@ -119,15 +114,9 @@ pub(super) async fn udp_websocket_upgrade(
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let path = uri.path().to_owned();
-    let route = state
-        .udp_routes
-        .get(&path)
-        .cloned()
-        .unwrap_or_else(empty_transport_route);
+    let route = state.udp_routes.get(&path).cloned().unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-    let session = state
-        .metrics
-        .open_websocket_session(Transport::Udp, protocol);
+    let session = state.metrics.open_websocket_session(Transport::Udp, protocol);
     let nat_table = state.nat_table.clone();
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_udp_connection(
@@ -188,9 +177,7 @@ pub(super) fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<Strin
 }
 
 pub(super) fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
-    users
-        .iter()
-        .any(|user| matches!(user.matches_password(password), Ok(true)))
+    users.iter().any(|user| matches!(user.matches_password(password), Ok(true)))
 }
 
 fn not_found_response() -> Response {
@@ -223,7 +210,7 @@ fn root_http_auth_challenge_response(failed_attempts: u8, realm: &str) -> Respon
         .header(
             header::SET_COOKIE,
             format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; HttpOnly; SameSite=Lax"
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
             ),
         )
         .body(Body::empty())
@@ -241,7 +228,7 @@ fn root_http_auth_forbidden_response() -> Response {
         .header(
             header::SET_COOKIE,
             format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; HttpOnly; SameSite=Lax"
+                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
             ),
         )
         .body(Body::empty())
@@ -543,18 +530,11 @@ where
         udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
-        .get_or_create(
-            nat_key,
-            &packet.user,
-            packet.session.clone(),
-            Arc::clone(&metrics),
-        )
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
-    entry
-        .register_session(make_response_sender(outbound_tx, protocol))
-        .await;
+    entry.register_session(make_response_sender(outbound_tx, protocol)).await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         metrics.record_udp_oversized_datagram_dropped(
@@ -594,12 +574,7 @@ where
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    metrics.record_udp_request(
-        user_id,
-        protocol,
-        "success",
-        started_at.elapsed().as_secs_f64(),
-    );
+    metrics.record_udp_request(user_id, protocol, "success", started_at.elapsed().as_secs_f64());
 
     Ok(())
 }
@@ -654,10 +629,7 @@ async fn handle_tcp_connection(
                         data.len(),
                     );
                 }
-                ws_sender
-                    .send(m)
-                    .await
-                    .context("failed to write websocket frame")?;
+                ws_sender.send(m).await.context("failed to write websocket frame")?;
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -719,17 +691,14 @@ async fn handle_tcp_connection(
         let _ = writer_task.await;
     } else {
         if let Some(task) = state.upstream_to_client.take() {
-            task.await
-                .context("tcp upstream relay task join failed")??;
+            task.await.context("tcp upstream relay task join failed")??;
         }
         if let Some(guard) = state.upstream_guard.take() {
             guard.finish();
         }
         drop(outbound_ctrl_tx);
         drop(outbound_data_tx);
-        writer_task
-            .await
-            .context("websocket writer task join failed")??;
+        writer_task.await.context("websocket writer task join failed")??;
     }
     Ok(())
 }
@@ -789,10 +758,7 @@ async fn handle_udp_connection(
                         data.len(),
                     );
                 }
-                ws_sender
-                    .send(m)
-                    .await
-                    .context("failed to write websocket frame")?;
+                ws_sender.send(m).await.context("failed to write websocket frame")?;
             }
         }
         Ok::<(), anyhow::Error>(())
@@ -873,9 +839,7 @@ async fn handle_udp_connection(
     while in_flight.next().await.is_some() {}
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
-    writer_task
-        .await
-        .context("websocket writer task join failed")??;
+    writer_task.await.context("websocket writer task join failed")??;
     loop_result
 }
 
@@ -985,8 +949,7 @@ pub(super) async fn handle_tcp_h3_connection(
     }
 
     if let Some(task) = state.upstream_to_client.take() {
-        task.await
-            .context("tcp upstream relay task join failed")??;
+        task.await.context("tcp upstream relay task join failed")??;
     }
 
     if let Some(guard) = state.upstream_guard.take() {
@@ -995,9 +958,7 @@ pub(super) async fn handle_tcp_h3_connection(
 
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
-    writer_task
-        .await
-        .context("websocket writer task join failed")??;
+    writer_task.await.context("websocket writer task join failed")??;
     Ok(())
 }
 
@@ -1153,9 +1114,7 @@ pub(super) async fn handle_udp_h3_connection(
     while in_flight.next().await.is_some() {}
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
-    writer_task
-        .await
-        .context("websocket writer task join failed")??;
+    writer_task.await.context("websocket writer task join failed")??;
     loop_result
 }
 
