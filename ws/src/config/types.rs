@@ -142,6 +142,9 @@ pub struct LoadBalancingConfig {
     pub sticky_ttl: Duration,
     pub hysteresis: Duration,
     pub failure_cooldown: Duration,
+    /// Maximum silence window to wait for the first upstream response bytes
+    /// before TCP chunk-0 failover is allowed.
+    pub tcp_chunk0_failover_timeout: Duration,
     pub warm_standby_tcp: usize,
     pub warm_standby_udp: usize,
     pub rtt_ewma_alpha: f64,

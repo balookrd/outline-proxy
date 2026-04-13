@@ -3,8 +3,8 @@ use std::time::Duration;
 use url::Url;
 
 use super::{
-    build_http_probe_request, effective_latency, score_latency, update_rtt_ewma, PenaltyState,
-    TransportKind, UplinkManager, UplinkStatus,
+    PenaltyState, TransportKind, UplinkManager, UplinkStatus, build_http_probe_request,
+    effective_latency, score_latency, update_rtt_ewma,
 };
 use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, WsProbeConfig,
@@ -19,6 +19,7 @@ fn lb() -> LoadBalancingConfig {
         sticky_ttl: Duration::from_secs(300),
         hysteresis: Duration::from_millis(50),
         failure_cooldown: Duration::from_secs(10),
+        tcp_chunk0_failover_timeout: Duration::from_secs(10),
         warm_standby_tcp: 0,
         warm_standby_udp: 0,
         rtt_ewma_alpha: 0.25,
@@ -679,7 +680,7 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
         let mut statuses = manager.inner.statuses.write().await;
         statuses[0].cooldown_until_tcp = None;
         statuses[0].tcp_healthy = Some(true); // probe confirmed it is up again
-                                              // penalty remains high (500 ms, just added)
+        // penalty remains high (500 ms, just added)
     }
 
     // Must stay on backup: penalty on primary is still 500 ms, much larger than
