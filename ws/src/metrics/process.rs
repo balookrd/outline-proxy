@@ -1,5 +1,5 @@
 use super::METRICS;
-use crate::memory::{sample_process_memory, ProcessFdSnapshot};
+use crate::memory::{ProcessFdSnapshot, sample_process_memory};
 use std::time::Duration;
 use tokio::time::sleep;
 

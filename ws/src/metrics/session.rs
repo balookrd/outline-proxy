@@ -1,4 +1,4 @@
-use super::{Metrics, METRICS, SESSION_RECENT_MAX_SAMPLES, SESSION_RECENT_WINDOW};
+use super::{METRICS, Metrics, SESSION_RECENT_MAX_SAMPLES, SESSION_RECENT_WINDOW};
 use std::collections::VecDeque;
 use std::time::Instant;
 

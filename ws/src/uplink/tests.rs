@@ -146,6 +146,50 @@ async fn active_passive_keeps_current_healthy_uplink() {
 }
 
 #[tokio::test]
+async fn cold_start_active_active_prefers_higher_weight_without_probe_data() {
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("light", "wss://light.example.com/tcp"),
+            UplinkConfig {
+                weight: 2.0,
+                ..make_uplink("heavy", "wss://heavy.example.com/tcp")
+            },
+        ],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "heavy");
+}
+
+#[tokio::test]
+async fn cold_start_active_passive_prefers_higher_weight_without_probe_data() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("light", "wss://light.example.com/tcp"),
+            UplinkConfig {
+                weight: 2.0,
+                ..make_uplink("heavy", "wss://heavy.example.com/tcp")
+            },
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "heavy");
+    assert_eq!(manager.global_active_uplink_index().await, Some(1));
+}
+
+#[tokio::test]
 async fn per_uplink_scope_shares_selected_uplink_across_targets() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
+use std::{cmp::Ordering};
 
 use tokio::time::Instant;
 
@@ -12,6 +13,12 @@ use super::super::selection::{
 };
 use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager};
 use super::super::utils::{rightless_bool, routing_key, strict_route_key};
+
+fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
+    right_weight
+        .partial_cmp(&left_weight)
+        .unwrap_or(Ordering::Equal)
+}
 
 impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
@@ -154,6 +161,12 @@ impl UplinkManager {
                         .unwrap_or(Duration::MAX)
                         .cmp(&right.score.unwrap_or(Duration::MAX))
                 })
+                .then_with(|| {
+                    higher_weight_first(
+                        self.inner.uplinks[left.index].weight,
+                        self.inner.uplinks[right.index].weight,
+                    )
+                })
                 .then_with(|| left.index.cmp(&right.index))
         });
 
@@ -232,6 +245,12 @@ impl UplinkManager {
                     left.score
                         .unwrap_or(Duration::MAX)
                         .cmp(&right.score.unwrap_or(Duration::MAX))
+                })
+                .then_with(|| {
+                    higher_weight_first(
+                        self.inner.uplinks[left.index].weight,
+                        self.inner.uplinks[right.index].weight,
+                    )
                 })
                 .then_with(|| left.index.cmp(&right.index))
         });
@@ -412,6 +431,12 @@ impl UplinkManager {
                         left_score
                             .unwrap_or(Duration::MAX)
                             .cmp(&right_score.unwrap_or(Duration::MAX))
+                    })
+                    .then_with(|| {
+                        higher_weight_first(
+                            self.inner.uplinks[left.index].weight,
+                            self.inner.uplinks[right.index].weight,
+                        )
                     })
                     .then_with(|| left.index.cmp(&right.index))
             });

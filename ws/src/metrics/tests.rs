@@ -1,4 +1,4 @@
-use super::session::{session_window_p95, RecentSessionWindow};
+use super::session::{RecentSessionWindow, session_window_p95};
 use super::*;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
@@ -123,8 +123,10 @@ fn render_prometheus_exports_transport_connect_metrics() {
     record_upstream_transport("tun_tcp", "tcp", "closed");
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-    assert!(rendered
-        .contains("outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}"));
+    assert!(
+        rendered
+            .contains("outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}")
+    );
     assert!(rendered.contains(
         "outline_ws_rust_transport_connects_total{mode=\"h2\",result=\"started\",source=\"tun_tcp\"}"
     ));
@@ -270,26 +272,31 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
     init();
 
     let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
-    assert!(metric_value(
-        &rendered,
-        "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
-    )
-    .is_some());
-    assert!(metric_value(
-        &rendered,
-        "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"}",
-    )
-    .is_some());
-    assert!(metric_value(
-        &rendered,
-        "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
-    )
-    .is_some());
-    assert!(metric_value(
-        &rendered,
-        "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",
-    )
-    .is_some());
+    assert!(
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"all_uplinks_failed\"}",
+        )
+        .is_some()
+    );
+    assert!(
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"transport_error\"}",
+        )
+        .is_some()
+    );
+    assert!(
+        metric_value(
+            &rendered,
+            "outline_ws_rust_tun_udp_forward_errors_total{reason=\"connect_failed\"}",
+        )
+        .is_some()
+    );
+    assert!(
+        metric_value(&rendered, "outline_ws_rust_tun_udp_forward_errors_total{reason=\"other\"}",)
+            .is_some()
+    );
     assert!(metric_value(
         &rendered,
         "outline_ws_rust_tun_icmp_local_replies_total{ip_family=\"ipv4\"}",

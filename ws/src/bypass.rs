@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -62,11 +62,7 @@ impl BypassList {
             TargetAddr::IpV6(ip, _) => contains_v6(&self.v6, u128::from(*ip)),
             TargetAddr::Domain(_, _) => return false,
         };
-        if self.invert {
-            !in_list
-        } else {
-            in_list
-        }
+        if self.invert { !in_list } else { in_list }
     }
 }
 

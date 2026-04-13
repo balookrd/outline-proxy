@@ -157,11 +157,11 @@ impl TunDefragmenter {
             PacketInspection::Ipv4Fragment(fragment) => {
                 metrics::record_tun_ip_fragment_received("ipv4");
                 self.handle_ipv4_fragment(now, fragment)
-            }
+            },
             PacketInspection::Ipv6Fragment(fragment) => {
                 metrics::record_tun_ip_fragment_received("ipv6");
                 self.handle_ipv6_fragment(now, fragment)
-            }
+            },
         }
     }
 
@@ -206,14 +206,14 @@ impl TunDefragmenter {
             match insert_chunk(&mut set.chunks, fragment.offset, fragment.payload) {
                 ChunkInsertOutcome::Inserted(bytes) => {
                     self.total_buffered_bytes += bytes;
-                }
+                },
                 ChunkInsertOutcome::DuplicateExact => {
                     set.deadline = now + REASSEMBLY_TIMEOUT;
                     return Ok(DefragmentedPacket::Pending);
-                }
+                },
                 ChunkInsertOutcome::Overlap => {
                     should_remove = Some("overlap");
-                }
+                },
             }
 
             if should_remove.is_none() {
@@ -225,7 +225,7 @@ impl TunDefragmenter {
                     match set.total_payload_len {
                         Some(existing) if existing != fragment_end => {
                             should_remove = Some("inconsistent");
-                        }
+                        },
                         _ => set.total_payload_len = Some(fragment_end),
                     }
                 }
@@ -300,7 +300,10 @@ impl TunDefragmenter {
                     },
                 );
             }
-            let set = self.ipv6_sets.get_mut(&fragment.key).expect("IPv6 fragment set must exist");
+            let set = self
+                .ipv6_sets
+                .get_mut(&fragment.key)
+                .expect("IPv6 fragment set must exist");
 
             if !ipv6_prefix_matches(&set.prefix, fragment.prefix)
                 || set.next_header_field_offset != fragment.next_header_field_offset
@@ -311,14 +314,14 @@ impl TunDefragmenter {
                 match insert_chunk(&mut set.chunks, fragment.offset, fragment.payload) {
                     ChunkInsertOutcome::Inserted(bytes) => {
                         self.total_buffered_bytes += bytes;
-                    }
+                    },
                     ChunkInsertOutcome::DuplicateExact => {
                         set.deadline = now + REASSEMBLY_TIMEOUT;
                         return Ok(DefragmentedPacket::Pending);
-                    }
+                    },
                     ChunkInsertOutcome::Overlap => {
                         should_remove = Some("overlap");
-                    }
+                    },
                 }
             }
 
@@ -331,7 +334,7 @@ impl TunDefragmenter {
                     match set.total_payload_len {
                         Some(existing) if existing != fragment_end => {
                             should_remove = Some("inconsistent");
-                        }
+                        },
                         _ => set.total_payload_len = Some(fragment_end),
                     }
                 }
@@ -435,9 +438,16 @@ impl TunDefragmenter {
     }
 
     fn recalculate_total_buffered_bytes(&mut self) {
-        self.total_buffered_bytes =
-            self.ipv4_sets.values().map(Ipv4FragmentSet::estimated_bytes).sum::<usize>()
-                + self.ipv6_sets.values().map(Ipv6FragmentSet::estimated_bytes).sum::<usize>();
+        self.total_buffered_bytes = self
+            .ipv4_sets
+            .values()
+            .map(Ipv4FragmentSet::estimated_bytes)
+            .sum::<usize>()
+            + self
+                .ipv6_sets
+                .values()
+                .map(Ipv6FragmentSet::estimated_bytes)
+                .sum::<usize>();
     }
 }
 
@@ -455,7 +465,9 @@ impl Ipv4FragmentSet {
     }
 
     fn build_packet(self) -> Result<Vec<u8>> {
-        let header = self.header.ok_or_else(|| anyhow!("missing IPv4 first fragment header"))?;
+        let header = self
+            .header
+            .ok_or_else(|| anyhow!("missing IPv4 first fragment header"))?;
         let payload_len = self
             .total_payload_len
             .ok_or_else(|| anyhow!("missing IPv4 reassembled payload length"))?;

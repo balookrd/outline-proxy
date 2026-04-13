@@ -318,12 +318,8 @@ fn build_ipv6_icmp_echo_request_with_fragment_header(
     packet[52..54].copy_from_slice(&identifier.to_be_bytes());
     packet[54..56].copy_from_slice(&sequence.to_be_bytes());
     packet[56..].copy_from_slice(payload);
-    let checksum = ipv6_payload_checksum(
-        source_ip,
-        destination_ip,
-        IPV6_NEXT_HEADER_ICMPV6,
-        &packet[48..],
-    );
+    let checksum =
+        ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_ICMPV6, &packet[48..]);
     packet[50..52].copy_from_slice(&checksum.to_be_bytes());
     packet
 }
@@ -348,12 +344,8 @@ fn build_ipv6_icmp_echo_request(
     packet[44..46].copy_from_slice(&identifier.to_be_bytes());
     packet[46..48].copy_from_slice(&sequence.to_be_bytes());
     packet[48..].copy_from_slice(payload);
-    let checksum = ipv6_payload_checksum(
-        source_ip,
-        destination_ip,
-        IPV6_NEXT_HEADER_ICMPV6,
-        &packet[40..],
-    );
+    let checksum =
+        ipv6_payload_checksum(source_ip, destination_ip, IPV6_NEXT_HEADER_ICMPV6, &packet[40..]);
     packet[42..44].copy_from_slice(&checksum.to_be_bytes());
     packet
 }
