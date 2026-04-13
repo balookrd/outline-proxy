@@ -854,12 +854,10 @@ Metrics include:
 - process resident memory and heap usage gauges
 - SOCKS5 requests and active sessions, including `command="connect"`, `command="udp_associate"`, and `command="udp_in_tcp"`
 - session duration histogram
-- rolling session p95 gauge
 - payload bytes and UDP datagrams
 - oversized UDP drop counters for incoming client packets and outgoing client responses
 - uplink health, latency, EWMA RTT, penalties, score, cooldown, standby readiness. `uplink_health` is exported as `1` (healthy) or `0` (unhealthy) only when the probe has run and confirmed a state. Before the first probe cycle the metric is absent — an empty value means "unknown", not unhealthy.
-- per-uplink consecutive TCP/UDP failure counters and consecutive-success counters
-- per-uplink H3 downgrade state (remaining downgrade window in milliseconds)
+- routing policy and active-uplink selection state
 - probe results and latency
 - warm-standby acquire and refill outcomes
 - TUN flow and packet metrics
@@ -869,25 +867,21 @@ On Linux, the process memory sampler updates:
 
 - `outline_ws_rust_process_resident_memory_bytes`
 - `outline_ws_rust_process_virtual_memory_bytes`
-- `outline_ws_rust_process_heap_memory_bytes`
 - `outline_ws_rust_process_heap_allocated_bytes`
-- `outline_ws_rust_process_heap_free_bytes`
 - `outline_ws_rust_process_heap_mode_info{mode}`
 - `outline_ws_rust_process_open_fds`
 - `outline_ws_rust_process_threads`
 
 Heap metrics currently fall back to `VmData`-based estimation on Linux and export `heap_mode_info{mode="estimated"}`.
-`heap_free_bytes` remains `0` because the current sampling path does not expose allocator-specific free-heap accounting.
 
 On Linux, the process also emits a periodic descriptor inventory log:
 
 - `process fd snapshot`
 
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, `Process Memory`, `Allocator Heap State`, `Heap to RSS Ratio`, and `RSS to Virtual Ratio`. FD, thread, and transport pressure remain in a separate section so allocator behavior is visible without mixing it with descriptor churn.
+The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, and `Process Memory`. FD, thread, and transport pressure remain in a separate section so allocator behavior is visible without mixing it with descriptor churn.
 
-When runtime failure storms are suppressed because an uplink is already in cooldown, `outline_ws_rust_uplink_runtime_failures_suppressed_total{transport,uplink}` and the `Suppressed Runtime Failures` panel show how much duplicate failure churn was intentionally ignored.
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` feed the `Selection Mode`, `Routing Scope`, `Global Active Uplink`, and `Global Sticky Routes` stat panels so you can confirm how the selector is configured and, in `global` scope, whether a sticky active uplink is currently pinned.
+`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` feed the `Selection Mode`, `Routing Scope`, `Active Uplink`, and `Global Sticky Routes` stat panels so you can confirm how the selector is configured and, in `global` scope, whether a sticky active uplink is currently pinned.
 When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` and the `UDP Forward Errors` panel break that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
 Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}` and visualized in the `Oversized UDP Drops` panel.
 Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}` and visualized in the `Local ICMP Replies` panel.
@@ -927,7 +921,6 @@ The `tun2tcp` dashboard is grouped into:
 
 Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
 Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
-`outline_ws_rust_allocator_info{allocator=...}` exports the selected allocator explicitly, and the main dashboard shows it in the `Allocator` panel so you can confirm which allocator build is running.
 
 Alert rules:
 
