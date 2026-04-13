@@ -1,3 +1,6 @@
+#[cfg(test)]
+pub(crate) mod test_utils;
+
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, bail};
@@ -160,11 +163,7 @@ mod tests {
 
     #[test]
     fn checksum16_parts_matches_flat_buffer_for_odd_boundaries() {
-        let parts = [
-            b"\x12".as_slice(),
-            b"\x34\x56".as_slice(),
-            b"\x78\x9a\xbc".as_slice(),
-        ];
+        let parts = [b"\x12".as_slice(), b"\x34\x56".as_slice(), b"\x78\x9a\xbc".as_slice()];
         let flat = b"\x12\x34\x56\x78\x9a\xbc";
         assert_eq!(checksum16_parts(&parts), checksum16(flat));
     }

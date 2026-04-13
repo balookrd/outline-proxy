@@ -27,22 +27,16 @@ impl Metrics {
         for scope in ["per_flow", "per_uplink", "global"] {
             self.routing_scope_info.with_label_values(&[scope]).set(0);
         }
-        self.routing_scope_info
-            .with_label_values(&[&snapshot.routing_scope])
-            .set(1);
+        self.routing_scope_info.with_label_values(&[&snapshot.routing_scope]).set(1);
 
         for uplink in &snapshot.uplinks {
-            self.global_active_uplink_info
-                .with_label_values(&[&uplink.name])
-                .set(0);
+            self.global_active_uplink_info.with_label_values(&[&uplink.name]).set(0);
             for proto in ["tcp", "udp"] {
                 self.per_uplink_active_uplink_info
                     .with_label_values(&[proto, &uplink.name])
                     .set(0);
             }
-            self.uplink_weight
-                .with_label_values(&[&uplink.name])
-                .set(uplink.weight);
+            self.uplink_weight.with_label_values(&[&uplink.name]).set(uplink.weight);
             if let Some(tcp_healthy) = uplink.tcp_healthy {
                 self.uplink_health
                     .with_label_values(&["tcp", &uplink.name])
@@ -123,9 +117,7 @@ impl Metrics {
                 .set(i64::try_from(uplink.standby_udp_ready).unwrap_or(i64::MAX));
         }
         if let Some(global_active_uplink) = &snapshot.global_active_uplink {
-            self.global_active_uplink_info
-                .with_label_values(&[global_active_uplink])
-                .set(1);
+            self.global_active_uplink_info.with_label_values(&[global_active_uplink]).set(1);
         }
         if let Some(tcp_active) = &snapshot.tcp_active_uplink {
             self.per_uplink_active_uplink_info
@@ -139,9 +131,7 @@ impl Metrics {
         }
 
         for sticky in &snapshot.sticky_routes {
-            self.sticky_routes_by_uplink
-                .with_label_values(&[&sticky.uplink_name])
-                .inc();
+            self.sticky_routes_by_uplink.with_label_values(&[&sticky.uplink_name]).inc();
         }
     }
 }

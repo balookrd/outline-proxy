@@ -7,9 +7,9 @@ mod tests;
 mod transport;
 mod tun;
 
-use std::sync::LazyLock;
 use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
 use std::collections::HashMap;
+use std::sync::LazyLock;
 use std::sync::Mutex;
 use std::time::Duration;
 

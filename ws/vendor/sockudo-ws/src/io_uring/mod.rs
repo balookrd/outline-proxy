@@ -176,13 +176,7 @@ pub fn kernel_version() -> Option<(u32, u32, u32)> {
         .ok()?;
     let patch: u32 = version_numbers
         .get(2)
-        .and_then(|s| {
-            s.chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect::<String>()
-                .parse()
-                .ok()
-        })
+        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
         .unwrap_or(0);
 
     Some((major, minor, patch))
@@ -226,10 +220,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn test_kernel_version() {
         let version = kernel_version();
-        assert!(
-            version.is_some(),
-            "Should be able to read kernel version on Linux"
-        );
+        assert!(version.is_some(), "Should be able to read kernel version on Linux");
 
         let (major, minor, _patch) = version.unwrap();
         // Sanity check: kernel version should be reasonable

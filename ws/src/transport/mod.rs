@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{Sink, SinkExt, Stream, StreamExt};
@@ -17,33 +17,33 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{TcpStream, UdpSocket, lookup_host};
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::net::{lookup_host, TcpStream, UdpSocket};
+use tokio::sync::{mpsc, watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls};
+use tokio_tungstenite::tungstenite::{protocol::Message, Error as WsError};
+use tokio_tungstenite::{client_async_tls, MaybeTlsStream, WebSocketStream};
 use tracing::{debug, error, warn};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::{
-    H3WsStream, connect_websocket_h3, sockudo_to_tungstenite_message, sockudo_to_ws_error,
-    tungstenite_to_sockudo_message,
+    connect_websocket_h3, sockudo_to_tungstenite_message, sockudo_to_ws_error,
+    tungstenite_to_sockudo_message, H3WsStream,
 };
 
 use crate::crypto::{
-    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet,
-    decrypt_udp_packet_2022, derive_subkey, encrypt, encrypt_udp_packet, encrypt_udp_packet_2022,
-    increment_nonce, validate_ss2022_timestamp,
+    decrypt, decrypt_udp_packet, decrypt_udp_packet_2022, derive_subkey, encrypt,
+    encrypt_udp_packet, encrypt_udp_packet_2022, increment_nonce, validate_ss2022_timestamp,
+    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN,
 };
+use crate::dns_cache::DnsCache;
 use crate::metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
-use crate::dns_cache::DnsCache;
 use crate::types::{CipherKind, ServerAddr, TargetAddr, WsTransportMode};
 
 type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -150,9 +150,10 @@ pin_project! {
 #[cfg(not(feature = "h3"))]
 impl Stream for H3WsStream {
     type Item = Result<Message, WsError>;
-    fn poll_next(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Option<Self::Item>>
-    {
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
         // SAFETY: Infallible can never be constructed, so this branch is unreachable.
         match *self.project()._never {}
     }
@@ -161,17 +162,27 @@ impl Stream for H3WsStream {
 #[cfg(not(feature = "h3"))]
 impl Sink<Message> for H3WsStream {
     type Error = WsError;
-    fn poll_ready(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error>
-    { match *self.project()._never {} }
-    fn poll_flush(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
-    fn poll_close(self: std::pin::Pin<&mut Self>, _: &mut std::task::Context<'_>)
-        -> std::task::Poll<Result<(), Self::Error>>
-    { match *self.project()._never {} }
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn start_send(self: std::pin::Pin<&mut Self>, _: Message) -> Result<(), Self::Error> {
+        match *self.project()._never {}
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        match *self.project()._never {}
+    }
 }
 
 pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
@@ -179,6 +190,17 @@ pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.0.abort();
+    }
+}
+
+impl AbortOnDrop {
+    fn new(handle: JoinHandle<()>) -> Self {
+        Self(handle)
+    }
+
+    async fn finish(mut self) {
+        let handle = std::mem::replace(&mut self.0, tokio::spawn(async {}));
+        let _ = handle.await;
     }
 }
 
@@ -206,11 +228,7 @@ impl TransportConnectGuard {
     pub(crate) fn new(source: &'static str, mode: &'static str) -> Self {
         add_transport_connects_active(source, mode, 1);
         record_transport_connect(source, mode, "started");
-        Self {
-            source,
-            mode,
-            finished: false,
-        }
+        Self { source, mode, finished: false }
     }
 
     pub(crate) fn finish(&mut self, result: &'static str) {
@@ -273,10 +291,10 @@ impl Stream for AnyWsStream {
             AnyWsStreamProj::H3 { inner } => match inner.poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(message))) => {
                     std::task::Poll::Ready(Some(Ok(sockudo_to_tungstenite_message(message))))
-                }
+                },
                 std::task::Poll::Ready(Some(Err(error))) => {
                     std::task::Poll::Ready(Some(Err(sockudo_to_ws_error(error))))
-                }
+                },
                 std::task::Poll::Ready(None) => std::task::Poll::Ready(None),
                 std::task::Poll::Pending => std::task::Poll::Pending,
             },
@@ -352,7 +370,7 @@ type WsStream = SplitStream<AnyWsStream>;
 enum TcpWriteTransport {
     Websocket {
         data_tx: Option<mpsc::Sender<Message>>,
-        _writer_task: AbortOnDrop,
+        writer_task: Option<AbortOnDrop>,
     },
     Socket {
         writer: OwnedWriteHalf,
@@ -455,12 +473,12 @@ pub async fn connect_websocket_with_source(
             let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             Ok(AnyWsStream::Http1 { inner: ws_stream })
-        }
+        },
         WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 Ok(stream)
-            }
+            },
             Err(h2_error) => {
                 warn!(
                     url = %url,
@@ -471,14 +489,14 @@ pub async fn connect_websocket_with_source(
                 let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(AnyWsStream::Http1 { inner: ws_stream })
-            }
+            },
         },
         #[cfg(feature = "h3")]
         WsTransportMode::H3 => match connect_websocket_h3(url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 Ok(stream)
-            }
+            },
             Err(h3_error) => {
                 warn!(
                     url = %url,
@@ -490,7 +508,7 @@ pub async fn connect_websocket_with_source(
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         Ok(stream)
-                    }
+                    },
                     Err(h2_error) => {
                         warn!(
                             url = %url,
@@ -502,9 +520,9 @@ pub async fn connect_websocket_with_source(
                             connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(AnyWsStream::Http1 { inner: ws_stream })
-                    }
+                    },
                 }
-            }
+            },
         },
         #[cfg(not(feature = "h3"))]
         WsTransportMode::H3 => {
@@ -513,13 +531,14 @@ pub async fn connect_websocket_with_source(
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                     Ok(stream)
-                }
+                },
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
-                    let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+                    let ws_stream =
+                        connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                     Ok(AnyWsStream::Http1 { inner: ws_stream })
-                }
+                },
             }
         },
     }
@@ -595,7 +614,7 @@ pub(crate) async fn resolve_host_with_preference(
                 let addrs = resolved.collect::<Vec<_>>();
                 cache.insert(host, port, addrs.clone());
                 addrs
-            }
+            },
             Err(err) => {
                 if let Some(stale) = cache.get_stale(host, port) {
                     warn!(
@@ -608,12 +627,16 @@ pub(crate) async fn resolve_host_with_preference(
                 } else {
                     return Err(err).with_context(|| context.to_string());
                 }
-            }
+            },
         }
     };
     server_addrs.sort_by_key(|addr| {
         if ipv6_first {
-            if addr.is_ipv6() { 0 } else { 1 }
+            if addr.is_ipv6() {
+                0
+            } else {
+                1
+            }
         } else if addr.is_ipv4() {
             0
         } else {
@@ -715,11 +738,11 @@ impl TcpShadowsocksWriter {
                             if ws_sink.send(m).await.is_err() {
                                 return;
                             }
-                        }
+                        },
                         None => {
                             let _ = ws_sink.close().await;
                             return;
-                        }
+                        },
                     }
                 }
             }
@@ -730,16 +753,15 @@ impl TcpShadowsocksWriter {
             Self {
                 transport: TcpWriteTransport::Websocket {
                     data_tx: Some(data_tx),
-                    _writer_task: AbortOnDrop(writer_task),
+                    writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
                 cipher,
                 key: derive_subkey(cipher, master_key, &salt)?,
                 nonce: [0u8; 12],
                 pending_salt: Some(salt),
-                ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
-                    request_salt,
-                    header_sent: false,
-                }),
+                ss2022: cipher
+                    .is_ss2022()
+                    .then(|| Ss2022TcpWriterState { request_salt, header_sent: false }),
                 _lifetime: lifetime,
             },
             ctrl_tx,
@@ -760,18 +782,19 @@ impl TcpShadowsocksWriter {
             key: derive_subkey(cipher, master_key, &salt)?,
             nonce: [0u8; 12],
             pending_salt: Some(salt.clone()),
-            ss2022: cipher.is_ss2022().then(|| Ss2022TcpWriterState {
-                request_salt: salt,
-                header_sent: false,
-            }),
+            ss2022: cipher
+                .is_ss2022()
+                .then(|| Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
             _lifetime: lifetime,
         })
     }
 
     pub fn request_salt(&self) -> Option<&[u8]> {
-        self.ss2022
-            .as_ref()
-            .map(|state| state.request_salt.as_slice())
+        self.ss2022.as_ref().map(|state| state.request_salt.as_slice())
+    }
+
+    pub fn supports_half_close(&self) -> bool {
+        matches!(self.transport, TcpWriteTransport::Socket { .. })
     }
 
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
@@ -837,12 +860,15 @@ impl TcpShadowsocksWriter {
 
     pub async fn close(&mut self) -> Result<()> {
         match &mut self.transport {
-            TcpWriteTransport::Websocket { data_tx, .. } => {
+            TcpWriteTransport::Websocket { data_tx, writer_task } => {
                 drop(data_tx.take());
-            }
+                if let Some(task) = writer_task.take() {
+                    task.finish().await;
+                }
+            },
             TcpWriteTransport::Socket { writer } => {
                 writer.shutdown().await.context("socket shutdown failed")?;
-            }
+            },
         }
         Ok(())
     }
@@ -916,15 +942,10 @@ impl TcpShadowsocksReader {
             let salt = self.read_exact_from_ws(self.cipher.salt_len()).await?;
             self.key = Some(derive_subkey(self.cipher, &self.master_key, &salt)?);
         }
-        let key = self
-            .key
-            .clone()
-            .ok_or_else(|| anyhow!("missing derived key"))?;
+        let key = self.key.clone().ok_or_else(|| anyhow!("missing derived key"))?;
 
-        let need_ss2022_response_header = self
-            .ss2022
-            .as_ref()
-            .is_some_and(|state| !state.response_header_read);
+        let need_ss2022_response_header =
+            self.ss2022.as_ref().is_some_and(|state| !state.response_header_read);
         if need_ss2022_response_header {
             let request_salt = self
                 .ss2022
@@ -938,9 +959,8 @@ impl TcpShadowsocksReader {
                 increment_nonce(&mut self.nonce);
                 let payload_len =
                     parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
-                let encrypted_payload = self
-                    .read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN)
-                    .await?;
+                let encrypted_payload =
+                    self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
                 let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
                 increment_nonce(&mut self.nonce);
                 if let Some(state) = &mut self.ss2022 {
@@ -968,9 +988,7 @@ impl TcpShadowsocksReader {
             bail!("payload length exceeds limit: {payload_len}");
         }
 
-        let encrypted_payload = self
-            .read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN)
-            .await?;
+        let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
         let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
         increment_nonce(&mut self.nonce);
         Ok(payload)
@@ -988,14 +1006,14 @@ impl TcpShadowsocksReader {
                     return Err(err).context("socket read failed");
                 }
                 Ok(buf)
-            }
+            },
             TcpReadTransport::Websocket { stream, ctrl_tx } => {
                 while self.buffer.len() < len {
                     let next = match stream.next().await {
                         None => {
                             self.closed_cleanly = true;
                             bail!("websocket closed");
-                        }
+                        },
                         Some(Ok(msg)) => msg,
                         Some(Err(e)) => return Err(anyhow!("websocket read failed: {e}")),
                     };
@@ -1005,19 +1023,19 @@ impl TcpShadowsocksReader {
                         Message::Close(_) => {
                             self.closed_cleanly = true;
                             bail!("websocket closed");
-                        }
+                        },
                         Message::Ping(payload) => {
                             let _ = ctrl_tx.try_send(Message::Pong(payload));
-                        }
-                        Message::Pong(_) => {}
+                        },
+                        Message::Pong(_) => {},
                         Message::Text(_) => bail!("unexpected text websocket frame"),
-                        Message::Frame(_) => {}
+                        Message::Frame(_) => {},
                     }
                 }
 
                 let tail = self.buffer.split_off(len);
                 Ok(std::mem::replace(&mut self.buffer, tail))
-            }
+            },
         }
     }
 }
@@ -1063,12 +1081,12 @@ impl UdpWsTransport {
                         Some(Message::Close(_)) | None => {
                             let _ = ws_sink.close().await;
                             return;
-                        }
+                        },
                         Some(m) => {
                             if ws_sink.send(m).await.is_err() {
                                 return;
                             }
-                        }
+                        },
                     }
                 }
             }
@@ -1080,11 +1098,7 @@ impl UdpWsTransport {
                 ticker.tick().await; // skip the first immediate tick
                 loop {
                     ticker.tick().await;
-                    if keepalive_ctrl_tx
-                        .send(Message::Ping(vec![].into()))
-                        .await
-                        .is_err()
-                    {
+                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
                         break;
                     }
                 }
@@ -1190,7 +1204,7 @@ impl UdpWsTransport {
                     .await
                     .context("failed to send UDP shadowsocks packet")
                     .map(|_| ())
-            }
+            },
         }
     }
 
@@ -1214,10 +1228,8 @@ impl UdpWsTransport {
                     }
                 };
                 self.decrypt_udp_bytes(&buf[..len]).await
-            }
-            UdpTransport::Websocket {
-                stream, ctrl_tx, ..
-            } => {
+            },
+            UdpTransport::Websocket { stream, ctrl_tx, .. } => {
                 let mut close_rx = self.close_signal.subscribe();
                 let mut stream = stream.lock().await;
                 loop {
@@ -1242,13 +1254,13 @@ impl UdpWsTransport {
                         Message::Close(_) => bail!("websocket closed"),
                         Message::Ping(payload) => {
                             let _ = ctrl_tx.try_send(Message::Pong(payload));
-                        }
-                        Message::Pong(_) => {}
+                        },
+                        Message::Pong(_) => {},
                         Message::Text(_) => bail!("unexpected text websocket frame"),
-                        Message::Frame(_) => {}
+                        Message::Frame(_) => {},
                     }
                 }
-            }
+            },
         }
     }
 
@@ -1291,9 +1303,7 @@ async fn connect_websocket_http1(
     source: &'static str,
 ) -> Result<H1WsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "http1");
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
@@ -1318,22 +1328,16 @@ async fn connect_websocket_h2(
     source: &'static str,
 ) -> Result<AnyWsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h2");
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr = resolve_host_with_preference(
-        host,
-        port,
-        "failed to resolve h2 websocket host",
-        ipv6_first,
-    )
-    .await?
-    .into_iter()
-    .next()
-    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+    let server_addr =
+        resolve_host_with_preference(host, port, "failed to resolve h2 websocket host", ipv6_first)
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let target_uri = websocket_target_uri(url)?;
 
     let io = match url.scheme() {
@@ -1374,10 +1378,7 @@ async fn connect_websocket_h2(
     let mut response: http::Response<hyper::body::Incoming> =
         send_request.send_request(req).await?;
     if !response.status().is_success() {
-        bail!(
-            "HTTP/2 websocket CONNECT failed with status {}",
-            response.status()
-        );
+        bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
     }
 
     let upgraded = hyper::upgrade::on(&mut response)
@@ -1386,10 +1387,7 @@ async fn connect_websocket_h2(
     let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
     connect_guard.finish("success");
     Ok(AnyWsStream::H2 {
-        inner: H2WsStream {
-            inner: ws,
-            driver_task,
-        },
+        inner: H2WsStream { inner: ws, driver_task },
     })
 }
 
@@ -1433,12 +1431,8 @@ async fn connect_tcp_socket_with_fwmark(
     addr: SocketAddr,
     fwmark: Option<u32>,
 ) -> Result<TcpStream> {
-    let socket = Socket::new(
-        Domain::for_address(addr),
-        Type::STREAM,
-        Some(SocketProtocol::TCP),
-    )
-    .context("failed to create TCP socket")?;
+    let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(SocketProtocol::TCP))
+        .context("failed to create TCP socket")?;
     apply_fwmark(&socket, fwmark)?;
     // Set non-blocking BEFORE connect so that the handshake is driven by tokio
     // instead of blocking the current thread.
@@ -1447,13 +1441,13 @@ async fn connect_tcp_socket_with_fwmark(
         .context("failed to set TCP socket nonblocking")?;
     // Non-blocking connect: returns EINPROGRESS while the handshake is in flight.
     match socket.connect(&addr.into()) {
-        Ok(()) => {}
+        Ok(()) => {},
         Err(e)
             if e.raw_os_error() == Some(libc::EINPROGRESS)
                 || e.kind() == std::io::ErrorKind::WouldBlock =>
         {
             // Connection in progress; writable() below will signal completion.
-        }
+        },
         Err(e) => return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}")),
     }
     let stream =
@@ -1465,10 +1459,7 @@ async fn connect_tcp_socket_with_fwmark(
         .await
         .with_context(|| format!("failed waiting for TCP connect to {addr}"))?;
     // Retrieve the actual connect result via getsockopt(SO_ERROR).
-    if let Some(err) = stream
-        .take_error()
-        .context("failed to retrieve TCP socket error")?
-    {
+    if let Some(err) = stream.take_error().context("failed to retrieve TCP socket error")? {
         return Err(err).with_context(|| format!("TCP connection to {addr} failed"));
     }
     configure_tcp_stream_low_latency(&stream, addr)?;
@@ -1483,13 +1474,13 @@ async fn connect_tcp_socket_with_fwmark(
     bail!("fwmark is only supported on Linux")
 }
 
-pub(crate) fn bind_udp_socket(bind_addr: SocketAddr, fwmark: Option<u32>) -> Result<std::net::UdpSocket> {
-    let socket = Socket::new(
-        Domain::for_address(bind_addr),
-        Type::DGRAM,
-        Some(SocketProtocol::UDP),
-    )
-    .context("failed to create UDP socket")?;
+pub(crate) fn bind_udp_socket(
+    bind_addr: SocketAddr,
+    fwmark: Option<u32>,
+) -> Result<std::net::UdpSocket> {
+    let socket =
+        Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(SocketProtocol::UDP))
+            .context("failed to create UDP socket")?;
     if bind_addr.is_ipv6() {
         let _ = socket.set_only_v6(false);
     }
@@ -1567,9 +1558,7 @@ fn websocket_target_uri(url: &Url) -> Result<String> {
         other => bail!("unsupported websocket scheme for h2 target URI: {other}"),
     };
 
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
+    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let mut uri = format!("{scheme}://{}", format_authority(host, url.port()));
     uri.push_str(&websocket_path(url));
     Ok(uri)
@@ -1649,82 +1638,4 @@ impl tokio::io::AsyncWrite for H2Io {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-    use tokio::net::{TcpListener, UdpSocket};
-
-    #[tokio::test]
-    async fn tcp_writer_splits_large_aead_payload_into_multiple_chunks() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 128 * 1024];
-            let mut total = 0usize;
-            loop {
-                let read = stream.read(&mut buf[total..]).await.unwrap();
-                if read == 0 {
-                    break;
-                }
-                total += read;
-            }
-            total
-        });
-
-        let stream = TcpStream::connect(addr).await.unwrap();
-        let (_reader_half, writer_half) = stream.into_split();
-        let cipher = CipherKind::Chacha20IetfPoly1305;
-        let master_key = cipher.derive_master_key("password").unwrap();
-        let lifetime = UpstreamTransportGuard::new("test", "tcp");
-        let mut writer =
-            TcpShadowsocksWriter::connect_socket(writer_half, cipher, &master_key, lifetime)
-                .unwrap();
-        let payload = vec![0x42; 40_000];
-
-        writer.send_chunk(&payload).await.unwrap();
-        writer.close().await.unwrap();
-
-        let total = server.await.unwrap();
-        assert!(total > payload.len());
-    }
-
-    #[tokio::test]
-    async fn udp_socket_transport_close_wakes_blocked_reader() {
-        let transport = Arc::new(
-            UdpWsTransport::from_socket(
-                UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
-                CipherKind::Chacha20IetfPoly1305,
-                "password",
-                "test",
-            )
-            .unwrap(),
-        );
-        let reader_transport = Arc::clone(&transport);
-        let read_task = tokio::spawn(async move { reader_transport.read_packet().await });
-
-        transport.close().await.unwrap();
-
-        let error = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            read_task.await.unwrap().unwrap_err()
-        })
-        .await
-        .unwrap();
-        assert!(format!("{error:#}").contains("udp transport closed"));
-    }
-
-    #[tokio::test]
-    async fn connect_tcp_socket_enables_nodelay() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = tokio::spawn(async move {
-            let (_stream, _) = listener.accept().await.unwrap();
-        });
-
-        let stream = connect_tcp_socket(addr, None).await.unwrap();
-        assert!(stream.nodelay().unwrap());
-
-        drop(stream);
-        server.await.unwrap();
-    }
-}
+mod tests;

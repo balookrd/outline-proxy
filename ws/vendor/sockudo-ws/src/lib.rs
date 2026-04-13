@@ -505,9 +505,7 @@ pub struct ConfigBuilder {
 impl ConfigBuilder {
     /// Create a new builder with default values
     pub fn new() -> Self {
-        Self {
-            config: Config::default(),
-        }
+        Self { config: Config::default() }
     }
 
     /// Set compression mode

@@ -105,10 +105,7 @@ impl CloseReason {
 
     /// Create a new close reason
     pub fn new(code: u16, reason: impl Into<String>) -> Self {
-        Self {
-            code,
-            reason: reason.into(),
-        }
+        Self { code, reason: reason.into() }
     }
 
     /// Check if the close code is valid per RFC 6455

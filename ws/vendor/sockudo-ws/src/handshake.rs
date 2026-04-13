@@ -106,15 +106,7 @@ pub fn parse_request(buf: &[u8]) -> Result<Option<(HandshakeRequest<'_>, usize)>
             let path = req.path.unwrap_or("/");
 
             Ok(Some((
-                HandshakeRequest {
-                    path,
-                    host,
-                    key,
-                    version,
-                    protocol,
-                    extensions,
-                    origin,
-                },
+                HandshakeRequest { path, host, key, version, protocol, extensions, origin },
                 len,
             )))
         }
@@ -205,10 +197,8 @@ pub fn build_request(
 pub fn generate_key() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let mut seed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
+    let mut seed =
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
 
     let mut bytes = [0u8; 16];
     for byte in &mut bytes {
@@ -268,15 +258,7 @@ pub fn parse_response(buf: &[u8]) -> Result<Option<(HandshakeResponse<'_>, usize
                 }
             }
 
-            Ok(Some((
-                HandshakeResponse {
-                    status,
-                    accept,
-                    protocol,
-                    extensions,
-                },
-                len,
-            )))
+            Ok(Some((HandshakeResponse { status, accept, protocol, extensions }, len)))
         }
         Ok(httparse::Status::Partial) => Ok(None),
         Err(_) => Err(Error::InvalidHttp("failed to parse HTTP response")),
@@ -326,18 +308,10 @@ where
             stream.flush().await?;
 
             // Check if there's leftover data after the HTTP request
-            let leftover = if consumed < buf.len() {
-                Some(buf.split_off(consumed).freeze())
-            } else {
-                None
-            };
+            let leftover =
+                if consumed < buf.len() { Some(buf.split_off(consumed).freeze()) } else { None };
 
-            return Ok(HandshakeResult {
-                path,
-                protocol,
-                extensions,
-                leftover,
-            });
+            return Ok(HandshakeResult { path, protocol, extensions, leftover });
         }
     }
 }
@@ -391,9 +365,8 @@ where
 
         if let Some((res, consumed)) = parse_response(&buf)? {
             // Validate accept key
-            let accept = res
-                .accept
-                .ok_or(Error::HandshakeFailed("missing Sec-WebSocket-Accept"))?;
+            let accept =
+                res.accept.ok_or(Error::HandshakeFailed("missing Sec-WebSocket-Accept"))?;
             if !validate_accept_key(&key, accept) {
                 return Err(Error::HandshakeFailed("invalid Sec-WebSocket-Accept"));
             }
@@ -402,11 +375,8 @@ where
             let res_protocol = res.protocol.map(String::from);
             let res_extensions = res.extensions.map(String::from);
 
-            let leftover = if consumed < buf.len() {
-                Some(buf.split_off(consumed).freeze())
-            } else {
-                None
-            };
+            let leftover =
+                if consumed < buf.len() { Some(buf.split_off(consumed).freeze()) } else { None };
 
             return Ok(HandshakeResult {
                 path: path.to_string(),

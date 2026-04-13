@@ -199,10 +199,7 @@ pub struct Http3ServerStream {
 impl Http3ServerStream {
     /// Create a new Http3ServerStream
     pub fn new(stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>) -> Self {
-        Self {
-            stream,
-            read_buf: BytesMut::with_capacity(64 * 1024),
-        }
+        Self { stream, read_buf: BytesMut::with_capacity(64 * 1024) }
     }
 }
 
@@ -317,10 +314,7 @@ pub struct Http3ClientStream {
 impl Http3ClientStream {
     /// Create a new Http3ClientStream
     pub fn new(stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>) -> Self {
-        Self {
-            stream,
-            read_buf: BytesMut::with_capacity(64 * 1024),
-        }
+        Self { stream, read_buf: BytesMut::with_capacity(64 * 1024) }
     }
 }
 

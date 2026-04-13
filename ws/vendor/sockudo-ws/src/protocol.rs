@@ -101,10 +101,7 @@ impl Message {
     /// Check if this is a control message
     #[inline]
     pub fn is_control(&self) -> bool {
-        matches!(
-            self,
-            Message::Ping(_) | Message::Pong(_) | Message::Close(_)
-        )
+        matches!(self, Message::Ping(_) | Message::Pong(_) | Message::Close(_))
     }
 
     /// Get message as text (returns None for non-text messages)
@@ -343,9 +340,8 @@ impl Protocol {
 
     /// Handle continuation frame
     fn handle_continuation(&mut self, frame: Frame) -> Result<Option<Message>> {
-        let opcode = self
-            .fragment_opcode
-            .ok_or(Error::Protocol("unexpected continuation frame"))?;
+        let opcode =
+            self.fragment_opcode.ok_or(Error::Protocol("unexpected continuation frame"))?;
 
         // Check total size
         let new_size = self.fragment_buf.len() + frame.payload.len();
@@ -463,11 +459,8 @@ impl Protocol {
 
     /// Encode a message for sending
     pub fn encode_message(&mut self, msg: &Message, buf: &mut BytesMut) -> Result<()> {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
 
         match msg {
             Message::Text(b) => {
@@ -505,21 +498,15 @@ impl Protocol {
 
     /// Encode a pong response for a ping
     pub fn encode_pong(&mut self, ping_data: &[u8], buf: &mut BytesMut) {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
         encode_frame(buf, OpCode::Pong, ping_data, true, mask);
     }
 
     /// Encode a close response
     pub fn encode_close_response(&mut self, buf: &mut BytesMut) {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
 
         let payload = if let Some(ref reason) = self.pending_close {
             let mut p = BytesMut::with_capacity(2 + reason.reason.len());
@@ -676,8 +663,7 @@ impl CompressedProtocol {
                 );
             }
             let payload = if compressed {
-                self.deflate
-                    .decompress(&frame.payload, self.inner.max_message_size)?
+                self.deflate.decompress(&frame.payload, self.inner.max_message_size)?
             } else {
                 frame.payload
             };
@@ -720,8 +706,7 @@ impl CompressedProtocol {
         if frame.header.fin {
             // Complete message in one frame
             let payload = if compressed {
-                self.deflate
-                    .decompress(&frame.payload, self.inner.max_message_size)?
+                self.deflate.decompress(&frame.payload, self.inner.max_message_size)?
             } else {
                 frame.payload
             };
@@ -765,8 +750,7 @@ impl CompressedProtocol {
         // Decompress if the first frame had RSV1 set
         let data = if self.fragment_compressed {
             self.fragment_compressed = false;
-            self.deflate
-                .decompress(&compressed_data, self.inner.max_message_size)?
+            self.deflate.decompress(&compressed_data, self.inner.max_message_size)?
         } else {
             compressed_data
         };
@@ -786,11 +770,8 @@ impl CompressedProtocol {
 
     /// Encode a message for sending with compression
     pub fn encode_message(&mut self, msg: &Message, buf: &mut BytesMut) -> Result<()> {
-        let mask = if self.inner.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.inner.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
 
         match msg {
             Message::Text(b) => {
@@ -857,10 +838,7 @@ impl CompressedProtocol {
         };
 
         // Create fresh writer protocol (encoder state)
-        let writer = CompressedWriterProtocol {
-            role,
-            encoder: self.deflate.encoder,
-        };
+        let writer = CompressedWriterProtocol { role, encoder: self.deflate.encoder };
 
         (reader, writer)
     }
@@ -971,8 +949,7 @@ impl CompressedReaderProtocol {
 
         if frame.header.fin {
             let payload = if compressed {
-                self.decoder
-                    .decompress(&frame.payload, self.max_message_size)?
+                self.decoder.decompress(&frame.payload, self.max_message_size)?
             } else {
                 frame.payload
             };
@@ -996,8 +973,7 @@ impl CompressedReaderProtocol {
 
         if frame.header.fin {
             let payload = if compressed {
-                self.decoder
-                    .decompress(&frame.payload, self.max_message_size)?
+                self.decoder.decompress(&frame.payload, self.max_message_size)?
             } else {
                 frame.payload
             };
@@ -1011,9 +987,8 @@ impl CompressedReaderProtocol {
 
     /// Handle continuation frame
     fn handle_continuation(&mut self, frame: Frame) -> Result<Option<Message>> {
-        let opcode = self
-            .fragment_opcode
-            .ok_or(Error::Protocol("unexpected continuation frame"))?;
+        let opcode =
+            self.fragment_opcode.ok_or(Error::Protocol("unexpected continuation frame"))?;
 
         let new_size = self.fragment_buf.len() + frame.payload.len();
         if new_size > self.max_message_size {
@@ -1022,11 +997,7 @@ impl CompressedReaderProtocol {
 
         self.fragment_buf.extend_from_slice(&frame.payload);
 
-        if frame.header.fin {
-            self.complete_fragment(opcode)
-        } else {
-            Ok(None)
-        }
+        if frame.header.fin { self.complete_fragment(opcode) } else { Ok(None) }
     }
 
     /// Start a fragmented message
@@ -1048,8 +1019,7 @@ impl CompressedReaderProtocol {
 
         let data = if self.fragment_compressed {
             self.fragment_compressed = false;
-            self.decoder
-                .decompress(&compressed_data, self.max_message_size)?
+            self.decoder.decompress(&compressed_data, self.max_message_size)?
         } else {
             compressed_data
         };
@@ -1137,11 +1107,8 @@ impl CompressedWriterProtocol {
 
     /// Encode a message for sending with compression
     pub fn encode_message(&mut self, msg: &Message, buf: &mut BytesMut) -> Result<()> {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
 
         match msg {
             Message::Text(b) => {
@@ -1182,21 +1149,15 @@ impl CompressedWriterProtocol {
 
     /// Encode a pong response for a ping
     pub fn encode_pong(&mut self, ping_data: &[u8], buf: &mut BytesMut) {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
         encode_frame(buf, OpCode::Pong, ping_data, true, mask);
     }
 
     /// Encode a close response
     pub fn encode_close_response(&mut self, buf: &mut BytesMut) {
-        let mask = if self.role == Role::Client {
-            Some(crate::mask::generate_mask())
-        } else {
-            None
-        };
+        let mask =
+            if self.role == Role::Client { Some(crate::mask::generate_mask()) } else { None };
         encode_frame(buf, OpCode::Close, &[], true, mask);
     }
 }
@@ -1262,9 +1223,7 @@ mod tests {
         let mut protocol = Protocol::new(Role::Server, 1024 * 1024, 64 * 1024 * 1024);
         let mut buf = BytesMut::new();
 
-        protocol
-            .encode_message(&Message::text("test"), &mut buf)
-            .unwrap();
+        protocol.encode_message(&Message::text("test"), &mut buf).unwrap();
 
         assert_eq!(buf[0], 0x81); // FIN + Text
         assert_eq!(buf[1], 0x04); // Length 4 (no mask for server)

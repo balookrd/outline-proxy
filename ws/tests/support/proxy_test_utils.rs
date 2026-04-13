@@ -67,9 +67,7 @@ udp_ws_mode = "{mode}"
     let mut stream = socks5_connect(proxy_port, &target_host, target_port).map_err(|err| {
         format!(
             "SOCKS5 CONNECT failed: {err}\nproxy logs:\n{}",
-            proxy
-                .logs()
-                .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+            proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
         )
     })?;
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
@@ -82,9 +80,7 @@ udp_ws_mode = "{mode}"
     let n = stream.read(&mut response).map_err(|err| {
         format!(
             "failed to read tunneled response: {err}\nproxy logs:\n{}",
-            proxy
-                .logs()
-                .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+            proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
         )
     })?;
     let text = String::from_utf8_lossy(&response[..n]);
@@ -150,9 +146,7 @@ password = "{password}"
     let (_control, relay_addr) = socks5_udp_associate(proxy_port).map_err(|err| {
         format!(
             "SOCKS5 UDP ASSOCIATE failed: {err}\nproxy logs:\n{}",
-            proxy
-                .logs()
-                .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+            proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
         )
     })?;
 
@@ -168,9 +162,7 @@ password = "{password}"
     let (n, _) = client.recv_from(&mut buf).map_err(|err| {
         format!(
             "failed to receive UDP response: {err}\nproxy logs:\n{}",
-            proxy
-                .logs()
-                .unwrap_or_else(|_| "<proxy logs unavailable>".into())
+            proxy.logs().unwrap_or_else(|_| "<proxy logs unavailable>".into())
         )
     })?;
 
@@ -178,15 +170,8 @@ password = "{password}"
     assert_eq!(response.host, dns_server);
     assert_eq!(response.port, dns_port);
     assert!(response.payload.len() >= 12, "DNS response too short");
-    assert_eq!(
-        &response.payload[..2],
-        &dns_query[..2],
-        "DNS transaction id mismatch"
-    );
-    assert!(
-        response.payload[3] & 0x0f == 0,
-        "DNS response code is non-zero"
-    );
+    assert_eq!(&response.payload[..2], &dns_query[..2], "DNS transaction id mismatch");
+    assert!(response.payload[3] & 0x0f == 0, "DNS response code is non-zero");
 
     proxy.stop()?;
     Ok(())
@@ -209,24 +194,15 @@ pub struct ProxyProcess {
 impl ProxyProcess {
     pub fn start(config_path: &Path, log_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let binary = env!("CARGO_BIN_EXE_outline-ws-rust");
-        let stdout = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
-        let stderr = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(log_path)?;
+        let stdout = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
+        let stderr = fs::OpenOptions::new().create(true).append(true).open(log_path)?;
         let child = Command::new(binary)
             .arg("--config")
             .arg(config_path)
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .spawn()?;
-        Ok(Self {
-            child,
-            log_path: log_path.to_path_buf(),
-        })
+        Ok(Self { child, log_path: log_path.to_path_buf() })
     }
 
     pub fn wait_ready(
@@ -244,12 +220,8 @@ impl ProxyProcess {
             }
             thread::sleep(Duration::from_millis(200));
         }
-        Err(format!(
-            "timed out waiting for proxy on port {}.\nlogs:\n{}",
-            port,
-            self.logs()?
-        )
-        .into())
+        Err(format!("timed out waiting for proxy on port {}.\nlogs:\n{}", port, self.logs()?)
+            .into())
     }
 
     pub fn logs(&self) -> Result<String, Box<dyn std::error::Error>> {
@@ -428,11 +400,7 @@ fn parse_udp_ipv4_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::
     }
     let ip = Ipv4Addr::new(packet[4], packet[5], packet[6], packet[7]);
     let port = u16::from_be_bytes([packet[8], packet[9]]);
-    Ok(UdpDomainPacket {
-        host: ip.to_string(),
-        port,
-        payload: packet[10..].to_vec(),
-    })
+    Ok(UdpDomainPacket { host: ip.to_string(), port, payload: packet[10..].to_vec() })
 }
 
 fn parse_udp_domain_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::error::Error>> {
@@ -457,17 +425,11 @@ fn parse_udp_ipv6_packet(packet: &[u8]) -> Result<UdpDomainPacket, Box<dyn std::
     raw.copy_from_slice(&packet[4..20]);
     let ip = Ipv6Addr::from(raw);
     let port = u16::from_be_bytes([packet[20], packet[21]]);
-    Ok(UdpDomainPacket {
-        host: ip.to_string(),
-        port,
-        payload: packet[22..].to_vec(),
-    })
+    Ok(UdpDomainPacket { host: ip.to_string(), port, payload: packet[22..].to_vec() })
 }
 
 pub fn build_dns_query(name: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let mut out = vec![
-        0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    ];
+    let mut out = vec![0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
 
     for label in name.split('.') {
         let len: u8 = label.len().try_into()?;
@@ -510,9 +472,6 @@ impl Drop for TestDir {
 }
 
 fn unique_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
     nanos.to_string()
 }

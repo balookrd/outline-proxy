@@ -108,16 +108,7 @@ impl ExtendedConnectRequest {
         let origin = get_header_string(headers, "origin");
         let version = get_header_string(headers, "sec-websocket-version");
 
-        Some(Self {
-            path,
-            authority,
-            scheme,
-            protocol,
-            subprotocols,
-            extensions,
-            origin,
-            version,
-        })
+        Some(Self { path, authority, scheme, protocol, subprotocols, extensions, origin, version })
     }
 
     /// Create a new Extended CONNECT request for client use
@@ -153,9 +144,7 @@ impl ExtendedConnectRequest {
     ///
     /// Per RFC 8441/9220, the `:protocol` pseudo-header must be "websocket".
     pub fn is_websocket(&self) -> bool {
-        self.protocol
-            .as_ref()
-            .is_some_and(|p| p.eq_ignore_ascii_case("websocket"))
+        self.protocol.as_ref().is_some_and(|p| p.eq_ignore_ascii_case("websocket"))
     }
 
     /// Check if the request specifies a particular subprotocol
@@ -250,20 +239,12 @@ pub struct ExtendedConnectResponse {
 impl ExtendedConnectResponse {
     /// Create a successful response
     pub fn ok() -> Self {
-        Self {
-            status: StatusCode::OK,
-            protocol: None,
-            extensions: None,
-        }
+        Self { status: StatusCode::OK, protocol: None, extensions: None }
     }
 
     /// Create a successful response with a selected subprotocol
     pub fn ok_with_protocol(protocol: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::OK,
-            protocol: Some(protocol.into()),
-            extensions: None,
-        }
+        Self { status: StatusCode::OK, protocol: Some(protocol.into()), extensions: None }
     }
 
     /// Create a successful response with a selected subprotocol and extensions
@@ -280,11 +261,7 @@ impl ExtendedConnectResponse {
 
     /// Create an error response
     pub fn error(status: StatusCode) -> Self {
-        Self {
-            status,
-            protocol: None,
-            extensions: None,
-        }
+        Self { status, protocol: None, extensions: None }
     }
 }
 
@@ -315,10 +292,7 @@ impl Default for ExtendedConnectConfig {
 impl ExtendedConnectConfig {
     /// Create a new config with custom handshake timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self {
-            handshake_timeout: timeout,
-            ..Default::default()
-        }
+        Self { handshake_timeout: timeout, ..Default::default() }
     }
 
     /// Set the connection timeout (for HTTP/3)
@@ -423,10 +397,7 @@ pub fn build_extended_connect_error(status: StatusCode, reason: Option<&str>) ->
 
 /// Helper to extract a header as a String
 fn get_header_string(headers: &HeaderMap, name: &str) -> Option<String> {
-    headers
-        .get(name)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
+    headers.get(name).and_then(|v| v.to_str().ok()).map(String::from)
 }
 
 #[cfg(test)]
@@ -443,10 +414,7 @@ mod tests {
     fn test_build_response_with_protocol() {
         let response = build_extended_connect_response(Some("graphql-ws"), None);
         assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.headers().get("sec-websocket-protocol").unwrap(),
-            "graphql-ws"
-        );
+        assert_eq!(response.headers().get("sec-websocket-protocol").unwrap(), "graphql-ws");
     }
 
     #[test]
