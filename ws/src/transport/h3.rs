@@ -2,7 +2,10 @@
 // All H3-specific types, statics, and functions live here so that transport.rs
 // is free of scattered #[cfg(feature = "h3")] annotations.
 
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -17,6 +20,7 @@ use sockudo_ws::{
     Stream as SockudoTransportStream, WebSocketStream as SockudoWebSocketStream,
     error::CloseReason as SockudoCloseReason,
 };
+use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tracing::{debug, error};
@@ -28,6 +32,8 @@ use crate::transport::{
 };
 
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
+type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
+type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
 
 // ── H3WsStream ────────────────────────────────────────────────────────────────
 
@@ -35,18 +41,9 @@ pin_project! {
     pub(crate) struct H3WsStream {
         #[pin]
         inner: RawH3WsStream,
-        pub(crate) endpoint: quinn::Endpoint,
-        // Kept alive to prevent the h3 driver from initiating graceful shutdown
-        // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
-        // being dropped as a signal that no more requests will be made and may
-        // close the connection before the single WebSocket stream is used.
-        // Must be declared before `_connection` so it is dropped first: the h3
-        // layer needs to see the SendRequest gone before the QUIC connection
-        // closes, otherwise the server may receive an abrupt APPLICATION_CLOSE
-        // before the proper h3 shutdown sequence completes.
-        pub(crate) _send_request: H3SendRequest<h3_quinn::OpenStreams, Bytes>,
-        pub(crate) _connection: H3ConnectionGuard,
-        pub(crate) driver_task: AbortOnDrop,
+        // Keep the shared connection alive for as long as this websocket stream
+        // is active so the underlying HTTP/3 state does not get torn down.
+        pub(crate) _shared_connection: Arc<SharedH3Connection>,
     }
 }
 
@@ -105,6 +102,87 @@ impl Drop for H3ConnectionGuard {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct H3ConnectionKey {
+    server_addr: SocketAddr,
+    server_name: String,
+    fwmark: Option<u32>,
+}
+
+impl H3ConnectionKey {
+    fn new(server_addr: SocketAddr, server_name: &str, fwmark: Option<u32>) -> Self {
+        Self {
+            server_addr,
+            server_name: server_name.to_string(),
+            fwmark,
+        }
+    }
+}
+
+struct SharedH3Connection {
+    id: u64,
+    #[allow(dead_code)]
+    endpoint: quinn::Endpoint,
+    connection: quinn::Connection,
+    // Kept alive to prevent the h3 driver from initiating graceful shutdown
+    // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
+    // being dropped as a signal that no more requests will be made.
+    send_request: Mutex<H3SendRequestHandle>,
+    _connection_guard: H3ConnectionGuard,
+    _driver_task: AbortOnDrop,
+}
+
+impl SharedH3Connection {
+    fn is_open(&self) -> bool {
+        self.connection.close_reason().is_none()
+    }
+
+    async fn open_websocket(
+        self: &Arc<Self>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+    ) -> Result<H3WsStream> {
+        if self.connection.close_reason().is_some() {
+            bail!("shared h3 connection is already closed");
+        }
+
+        let request: Request<()> = Request::builder()
+            .method(Method::CONNECT)
+            .uri(websocket_h3_target_uri(server_name, server_port, path)?)
+            .extension(h3::ext::Protocol::WEBSOCKET)
+            .header("sec-websocket-version", "13")
+            .body(())
+            .expect("request builder never fails");
+
+        let mut stream: H3RequestStreamHandle = {
+            let mut send_request = self.send_request.lock().await;
+            send_request
+                .send_request(request)
+                .await
+                .context("failed to send HTTP/3 websocket CONNECT request")?
+        };
+
+        let response = stream
+            .recv_response()
+            .await
+            .context("failed to receive HTTP/3 websocket response")?;
+        if !response.status().is_success() {
+            bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
+        }
+
+        let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
+        Ok(H3WsStream {
+            inner: SockudoWebSocketStream::from_raw(
+                h3_stream,
+                sockudo_ws::Role::Client,
+                SockudoConfig::builder().http3_idle_timeout(90_000).build(),
+            ),
+            _shared_connection: Arc::clone(self),
+        })
+    }
+}
+
 // ── TLS / QUIC client configs (initialised once) ─────────────────────────────
 
 use rustls::{ClientConfig, RootCertStore};
@@ -157,6 +235,9 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
 // warm-standby connections = N UDP sockets" resource explosion.
 static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
+static H3_SHARED_CONNECTIONS: OnceCell<Mutex<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>>> =
+    OnceCell::new();
+static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
     let cell = if bind_addr.is_ipv4() {
@@ -175,6 +256,10 @@ fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<qui
         .with_context(|| format!("failed to bind shared QUIC client endpoint on {bind_addr}"))
     })?;
     Ok(endpoint.clone())
+}
+
+fn h3_shared_connections() -> &'static Mutex<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>> {
+    H3_SHARED_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
@@ -203,7 +288,12 @@ pub(crate) async fn connect_websocket_h3(
     let path = websocket_path(url);
     let mut last_error = None;
     for server_addr in server_addrs {
-        match connect_h3_quic(server_addr, host, &path, fwmark, source).await {
+        let connect_result = if should_reuse_h3_connection(source) {
+            connect_h3_quic_reused(server_addr, host, &path, fwmark, source).await
+        } else {
+            connect_h3_quic_fresh(server_addr, host, &path, fwmark, source).await
+        };
+        match connect_result {
             Ok(ws) => return Ok(AnyWsStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
@@ -215,14 +305,62 @@ pub(crate) async fn connect_websocket_h3(
     ))
 }
 
-async fn connect_h3_quic(
-    server_addr: std::net::SocketAddr,
+async fn connect_h3_quic_reused(
+    server_addr: SocketAddr,
+    server_name: &str,
+    path: &str,
+    fwmark: Option<u32>,
+    source: &'static str,
+) -> Result<H3WsStream> {
+    let key = H3ConnectionKey::new(server_addr, server_name, fwmark);
+
+    if let Some(shared) = cached_shared_h3_connection(&key).await {
+        match shared.open_websocket(server_name, server_addr.port(), path).await {
+            Ok(ws) => {
+                crate::metrics::record_transport_connect(source, "h3", "reused");
+                return Ok(ws);
+            },
+            Err(error) => {
+                debug!(
+                    server_addr = %server_addr,
+                    server_name,
+                    error = %format!("{error:#}"),
+                    "cached shared h3 connection failed to open websocket stream; reconnecting"
+                );
+                invalidate_shared_h3_connection_if_current(&key, shared.id).await;
+            },
+        }
+    }
+
+    let mut connect_guard = TransportConnectGuard::new(source, "h3");
+    let shared =
+        Arc::new(connect_h3_connection(server_addr, server_name, fwmark, Some(key.clone())).await?);
+    let ws = shared.open_websocket(server_name, server_addr.port(), path).await?;
+    connect_guard.finish("success");
+    cache_shared_h3_connection(key, Arc::clone(&shared)).await;
+    Ok(ws)
+}
+
+async fn connect_h3_quic_fresh(
+    server_addr: SocketAddr,
     server_name: &str,
     path: &str,
     fwmark: Option<u32>,
     source: &'static str,
 ) -> Result<H3WsStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h3");
+    let shared = Arc::new(connect_h3_connection(server_addr, server_name, fwmark, None).await?);
+    let ws = shared.open_websocket(server_name, server_addr.port(), path).await?;
+    connect_guard.finish("success");
+    Ok(ws)
+}
+
+async fn connect_h3_connection(
+    server_addr: SocketAddr,
+    server_name: &str,
+    fwmark: Option<u32>,
+    cache_key: Option<H3ConnectionKey>,
+) -> Result<SharedH3Connection> {
     let bind_addr = bind_addr_for(server_addr);
     let client_config = h3_quic_client_config();
 
@@ -250,12 +388,16 @@ async fn connect_h3_quic(
         .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
     let connection_handle = connection.clone();
 
-    let (mut driver, mut send_request) = h3::client::new(h3_quinn::Connection::new(connection))
+    let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
         .await
         .context("HTTP/3 handshake failed")?;
 
+    let id = H3_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
     let driver_task = AbortOnDrop(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        if let Some(cache_key) = cache_key {
+            invalidate_shared_h3_connection_if_current(&cache_key, id).await;
+        }
         let err_text = err.to_string();
         if is_expected_h3_close(&err_text) {
             debug!("h3 connection closed: {err_text}");
@@ -264,43 +406,50 @@ async fn connect_h3_quic(
         }
     }));
 
-    let request: Request<()> = Request::builder()
-        .method(Method::CONNECT)
-        .uri(websocket_h3_target_uri(server_name, server_addr.port(), path)?)
-        .extension(h3::ext::Protocol::WEBSOCKET)
-        .header("sec-websocket-version", "13")
-        .body(())
-        .expect("request builder never fails");
-
-    let mut stream: H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes> = send_request
-        .send_request(request)
-        .await
-        .context("failed to send HTTP/3 websocket CONNECT request")?;
-
-    let response = stream
-        .recv_response()
-        .await
-        .context("failed to receive HTTP/3 websocket response")?;
-    if !response.status().is_success() {
-        bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
-    }
-
-    let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
-    connect_guard.finish("success");
-    Ok(H3WsStream {
-        inner: SockudoWebSocketStream::from_raw(
-            h3_stream,
-            sockudo_ws::Role::Client,
-            SockudoConfig::builder().http3_idle_timeout(90_000).build(),
-        ),
+    Ok(SharedH3Connection {
+        id,
         endpoint,
-        _connection: H3ConnectionGuard(connection_handle),
-        _send_request: send_request,
-        driver_task,
+        connection: connection_handle.clone(),
+        send_request: Mutex::new(send_request),
+        _connection_guard: H3ConnectionGuard(connection_handle),
+        _driver_task: driver_task,
     })
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn should_reuse_h3_connection(source: &'static str) -> bool {
+    !source.starts_with("probe_")
+}
+
+async fn cached_shared_h3_connection(key: &H3ConnectionKey) -> Option<Arc<SharedH3Connection>> {
+    let mut shared = h3_shared_connections().lock().await;
+    match shared.get(key).cloned() {
+        Some(connection) if connection.is_open() => Some(connection),
+        Some(_) => {
+            shared.remove(key);
+            None
+        },
+        None => None,
+    }
+}
+
+async fn cache_shared_h3_connection(key: H3ConnectionKey, connection: Arc<SharedH3Connection>) {
+    let mut shared = h3_shared_connections().lock().await;
+    match shared.get(&key) {
+        Some(existing) if existing.is_open() => {},
+        _ => {
+            shared.insert(key, connection);
+        },
+    }
+}
+
+async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u64) {
+    let mut shared = h3_shared_connections().lock().await;
+    if shared.get(key).is_some_and(|connection| connection.id == id) {
+        shared.remove(key);
+    }
+}
 
 fn is_expected_h3_close(err: &str) -> bool {
     err.contains("H3_NO_ERROR")
@@ -365,4 +514,27 @@ fn sockudo_close_to_tungstenite(reason: SockudoCloseReason) -> CloseFrame {
 
 fn tungstenite_close_to_sockudo(frame: CloseFrame) -> SockudoCloseReason {
     SockudoCloseReason::new(u16::from(frame.code), frame.reason.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn h3_shared_connection_key_distinguishes_server_name_and_fwmark() {
+        let addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let base = H3ConnectionKey::new(addr, "example.com", None);
+
+        assert_eq!(base, H3ConnectionKey::new(addr, "example.com", None));
+        assert_ne!(base, H3ConnectionKey::new(addr, "example.net", None));
+        assert_ne!(base, H3ConnectionKey::new(addr, "example.com", Some(100)));
+    }
+
+    #[test]
+    fn probe_sources_do_not_reuse_shared_h3_connections() {
+        assert!(should_reuse_h3_connection("socks_tcp"));
+        assert!(should_reuse_h3_connection("standby_udp"));
+        assert!(!should_reuse_h3_connection("probe_ws"));
+        assert!(!should_reuse_h3_connection("probe_http"));
+    }
 }
