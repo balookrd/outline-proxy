@@ -17,7 +17,7 @@ impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Tcp) {
             return self
-                .strict_transport_candidates(TransportKind::Tcp, Some(target))
+                .strict_transport_candidates(TransportKind::Tcp, Some(target), None, true)
                 .await;
         }
         self.ordered_candidates(TransportKind::Tcp, Some(target)).await
@@ -25,9 +25,29 @@ impl UplinkManager {
 
     pub async fn udp_candidates(&self, target: Option<&TargetAddr>) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Udp) {
-            return self.strict_transport_candidates(TransportKind::Udp, target).await;
+            return self
+                .strict_transport_candidates(TransportKind::Udp, target, None, true)
+                .await;
         }
         self.ordered_candidates(TransportKind::Udp, target).await
+    }
+
+    pub async fn tcp_failover_candidates(
+        &self,
+        target: &TargetAddr,
+        failed_active_index: usize,
+    ) -> Vec<UplinkCandidate> {
+        if self.strict_active_uplink_for(TransportKind::Tcp) {
+            return self
+                .strict_transport_candidates(
+                    TransportKind::Tcp,
+                    Some(target),
+                    Some(failed_active_index),
+                    false,
+                )
+                .await;
+        }
+        self.ordered_candidates(TransportKind::Tcp, Some(target)).await
     }
 
     pub fn strict_global_active_uplink(&self) -> bool {
@@ -162,6 +182,8 @@ impl UplinkManager {
         &self,
         transport: TransportKind,
         _target: Option<&TargetAddr>,
+        failed_active_index: Option<usize>,
+        commit_selection: bool,
     ) -> Vec<UplinkCandidate> {
         self.prune_sticky_routes().await;
         let statuses = self.inner.statuses.read().await;
@@ -218,6 +240,7 @@ impl UplinkManager {
             strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
         let mut switching_from_cooldown = false;
         if let Some(active_index) = self.active_uplink_index_for_transport(transport).await {
+            let active_failed = failed_active_index.is_some_and(|index| index == active_index);
             if let Some(candidate) =
                 candidates.iter().find(|candidate| candidate.index == active_index)
             {
@@ -252,13 +275,17 @@ impl UplinkManager {
                 } else {
                     probe_healthy && !cooldown_active(&statuses[active_index], gate_transport, now)
                 };
-                if should_keep {
+                if should_keep && !active_failed {
                     // When auto_failback is disabled (default), never switch away
                     // from a healthy active uplink — only failure triggers a switch.
                     if !self.inner.load_balancing.auto_failback {
-                        let key =
-                            strict_route_key(transport, self.inner.load_balancing.routing_scope);
-                        self.store_sticky_route(&key, active_index).await;
+                        if commit_selection {
+                            let key = strict_route_key(
+                                transport,
+                                self.inner.load_balancing.routing_scope,
+                            );
+                            self.store_sticky_route(&key, active_index).await;
+                        }
                         return vec![UplinkCandidate {
                             index: candidate.index,
                             uplink: Arc::clone(&candidate.uplink),
@@ -326,9 +353,13 @@ impl UplinkManager {
                         consecutive >= min
                     });
                     if is_best || !best_is_stable {
-                        let key =
-                            strict_route_key(transport, self.inner.load_balancing.routing_scope);
-                        self.store_sticky_route(&key, active_index).await;
+                        if commit_selection {
+                            let key = strict_route_key(
+                                transport,
+                                self.inner.load_balancing.routing_scope,
+                            );
+                            self.store_sticky_route(&key, active_index).await;
+                        }
                         return vec![UplinkCandidate {
                             index: candidate.index,
                             uplink: Arc::clone(&candidate.uplink),
@@ -386,14 +417,24 @@ impl UplinkManager {
             });
         }
 
-        let selected = candidates[0].index;
-        self.set_active_uplink_index_for_transport(transport, selected).await;
-        let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
-        self.store_sticky_route(&key, selected).await;
-        vec![UplinkCandidate {
-            index: selected,
-            uplink: Arc::clone(&candidates[0].uplink),
-        }]
+        if commit_selection {
+            let selected = candidates[0].index;
+            self.set_active_uplink_index_for_transport(transport, selected).await;
+            let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
+            self.store_sticky_route(&key, selected).await;
+            return vec![UplinkCandidate {
+                index: selected,
+                uplink: Arc::clone(&candidates[0].uplink),
+            }];
+        }
+
+        candidates
+            .into_iter()
+            .map(|candidate| UplinkCandidate {
+                index: candidate.index,
+                uplink: candidate.uplink,
+            })
+            .collect()
     }
 
     pub(super) async fn set_active_uplink_index_for_transport(

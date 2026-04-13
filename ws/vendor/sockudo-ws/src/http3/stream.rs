@@ -132,7 +132,7 @@ impl AsyncRead for Http3Stream {
                     *this.recv_finished = true;
                 }
                 Poll::Ready(Err(io::Error::other(e)))
-            }
+            },
             Poll::Pending => Poll::Pending,
         }
     }
@@ -199,7 +199,10 @@ pub struct Http3ServerStream {
 impl Http3ServerStream {
     /// Create a new Http3ServerStream
     pub fn new(stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>) -> Self {
-        Self { stream, read_buf: BytesMut::with_capacity(64 * 1024) }
+        Self {
+            stream,
+            read_buf: BytesMut::with_capacity(64 * 1024),
+        }
     }
 }
 
@@ -240,11 +243,11 @@ impl AsyncRead for Http3ServerStream {
                     }
                 }
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Ok(None)) => {
                 // Stream finished
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
         }
@@ -314,7 +317,10 @@ pub struct Http3ClientStream {
 impl Http3ClientStream {
     /// Create a new Http3ClientStream
     pub fn new(stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>) -> Self {
-        Self { stream, read_buf: BytesMut::with_capacity(64 * 1024) }
+        Self {
+            stream,
+            read_buf: BytesMut::with_capacity(64 * 1024),
+        }
     }
 }
 
@@ -355,11 +361,11 @@ impl AsyncRead for Http3ClientStream {
                     }
                 }
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Ok(None)) => {
                 // Stream finished
                 Poll::Ready(Ok(()))
-            }
+            },
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
         }

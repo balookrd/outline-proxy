@@ -176,7 +176,13 @@ pub fn kernel_version() -> Option<(u32, u32, u32)> {
         .ok()?;
     let patch: u32 = version_numbers
         .get(2)
-        .and_then(|s| s.chars().take_while(|c| c.is_ascii_digit()).collect::<String>().parse().ok())
+        .and_then(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .ok()
+        })
         .unwrap_or(0);
 
     Some((major, minor, patch))

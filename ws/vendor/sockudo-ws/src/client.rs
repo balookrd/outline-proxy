@@ -225,12 +225,14 @@ impl WebSocketClient<Http1> {
             "wss" => 443u16,
             _ => {
                 return Err(Error::HandshakeFailed("invalid URL scheme: expected ws or wss"));
-            }
+            },
         };
 
         // Split host:port from path
-        let (host_port, path) =
-            rest.find('/').map(|i| (&rest[..i], &rest[i..])).unwrap_or((rest, "/"));
+        let (host_port, path) = rest
+            .find('/')
+            .map(|i| (&rest[..i], &rest[i..]))
+            .unwrap_or((rest, "/"));
 
         // Parse host and port
         let (host, port) = if let Some(colon_idx) = host_port.rfind(':') {
@@ -262,7 +264,10 @@ impl Default for WebSocketClient<Http1> {
 
 impl Clone for WebSocketClient<Http1> {
     fn clone(&self) -> Self {
-        Self { config: self.config.clone(), _marker: PhantomData }
+        Self {
+            config: self.config.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -452,7 +457,10 @@ impl Default for WebSocketClient<Http2> {
 #[cfg(feature = "http2")]
 impl Clone for WebSocketClient<Http2> {
     fn clone(&self) -> Self {
-        Self { config: self.config.clone(), _marker: PhantomData }
+        Self {
+            config: self.config.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -592,11 +600,11 @@ impl WebSocketClient<Http3> {
                 let h3_stream = Stream::<Http3>::from_h3_client(stream);
 
                 Ok(WebSocketStream::from_raw(h3_stream, Role::Client, self.config.clone()))
-            }
+            },
             StatusCode::NOT_IMPLEMENTED => Err(Error::ExtendedConnectNotSupported),
             StatusCode::FORBIDDEN => {
                 Err(Error::HandshakeFailed("server returned 403: connection forbidden"))
-            }
+            },
             _ => Err(Error::HandshakeFailed("server rejected WebSocket upgrade")),
         }
     }
@@ -657,7 +665,10 @@ impl Default for WebSocketClient<Http3> {
 #[cfg(feature = "http3")]
 impl Clone for WebSocketClient<Http3> {
     fn clone(&self) -> Self {
-        Self { config: self.config.clone(), _marker: PhantomData }
+        Self {
+            config: self.config.clone(),
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -667,6 +678,8 @@ impl Clone for WebSocketClient<Http3> {
 
 impl<T: Transport> std::fmt::Debug for WebSocketClient<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebSocketClient").field("config", &self.config).finish()
+        f.debug_struct("WebSocketClient")
+            .field("config", &self.config)
+            .finish()
     }
 }

@@ -595,7 +595,7 @@ impl FrameParser {
                         mask,
                     });
                     self.state = ParseState::Payload;
-                }
+                },
 
                 ParseState::ExtendedLen16 => {
                     // Need bytes 2 and 3 for 16-bit length (total 4 bytes for header so far)
@@ -631,7 +631,7 @@ impl FrameParser {
                     } else {
                         self.state = ParseState::Payload;
                     }
-                }
+                },
 
                 ParseState::ExtendedLen64 => {
                     // Need bytes 2-9 for 64-bit length (total 10 bytes for header so far)
@@ -676,7 +676,7 @@ impl FrameParser {
                     } else {
                         self.state = ParseState::Payload;
                     }
-                }
+                },
 
                 ParseState::Mask => {
                     let header = self.header.as_mut().unwrap();
@@ -727,7 +727,7 @@ impl FrameParser {
                     ]);
 
                     self.state = ParseState::Payload;
-                }
+                },
 
                 ParseState::Payload => {
                     let header = self.header.as_ref().unwrap();
@@ -772,8 +772,10 @@ impl FrameParser {
                         apply_mask(&mut payload, mask);
                     }
 
-                    let frame =
-                        Frame { header: self.header.take().unwrap(), payload: payload.freeze() };
+                    let frame = Frame {
+                        header: self.header.take().unwrap(),
+                        payload: payload.freeze(),
+                    };
 
                     if DEBUG {
                         eprintln!(
@@ -784,7 +786,7 @@ impl FrameParser {
 
                     self.reset();
                     return Ok(Some(frame));
-                }
+                },
             }
         }
     }
@@ -809,8 +811,16 @@ impl FrameParser {
             return Err(Error::FrameTooLarge);
         }
 
-        self.header =
-            Some(FrameHeader { fin, rsv1, rsv2, rsv3, opcode, masked, payload_len, mask: None });
+        self.header = Some(FrameHeader {
+            fin,
+            rsv1,
+            rsv2,
+            rsv3,
+            opcode,
+            masked,
+            payload_len,
+            mask: None,
+        });
 
         Ok(())
     }

@@ -102,7 +102,10 @@ enum MultiplexInner<T: Transport> {
 impl MultiplexedConnection<Http2> {
     /// Create a new HTTP/2 multiplexed connection (internal use)
     pub(crate) fn new_http2(send_request: SendRequest<Bytes>, config: Config) -> Self {
-        Self { inner: MultiplexInner::Http2 { send_request }, config }
+        Self {
+            inner: MultiplexInner::Http2 { send_request },
+            config,
+        }
     }
 
     /// Open a new WebSocket stream on this connection
@@ -186,7 +189,12 @@ impl MultiplexedConnection<Http3> {
         config: Config,
     ) -> Self {
         Self {
-            inner: MultiplexInner::Http3 { connection, send_request, server_name, server_port },
+            inner: MultiplexInner::Http3 {
+                connection,
+                send_request,
+                server_name,
+                server_port,
+            },
             config,
         }
     }
@@ -205,9 +213,9 @@ impl MultiplexedConnection<Http3> {
         use http::{Method, Request};
 
         let (send_request, server_name, server_port) = match &mut self.inner {
-            MultiplexInner::Http3 { send_request, server_name, server_port, .. } => {
-                (send_request, server_name.clone(), *server_port)
-            }
+            MultiplexInner::Http3 {
+                send_request, server_name, server_port, ..
+            } => (send_request, server_name.clone(), *server_port),
             _ => unreachable!(),
         };
 
@@ -271,7 +279,7 @@ impl MultiplexedConnection<Http3> {
         match &self.inner {
             MultiplexInner::Http3 { connection, .. } => {
                 connection.close(quinn::VarInt::from_u32(0x100), b"done");
-            }
+            },
             _ => unreachable!(),
         }
     }

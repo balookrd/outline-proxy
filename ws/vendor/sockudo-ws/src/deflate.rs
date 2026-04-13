@@ -88,7 +88,7 @@ impl DeflateConfig {
                         ));
                     }
                     config.server_no_context_takeover = true;
-                }
+                },
                 "client_no_context_takeover" => {
                     if value.is_some() {
                         return Err(Error::HandshakeFailed(
@@ -99,7 +99,7 @@ impl DeflateConfig {
                     // When client uses no_context_takeover, server should too
                     // to ensure decompression works correctly on client side
                     config.server_no_context_takeover = true;
-                }
+                },
                 "server_max_window_bits" => {
                     if let Some(v) = value {
                         let bits: u8 = v.parse().map_err(|_| {
@@ -112,7 +112,7 @@ impl DeflateConfig {
                         }
                         config.server_max_window_bits = bits;
                     }
-                }
+                },
                 "client_max_window_bits" => {
                     if let Some(v) = value {
                         let bits: u8 = v.parse().map_err(|_| {
@@ -126,10 +126,10 @@ impl DeflateConfig {
                         config.client_max_window_bits = bits;
                     }
                     // If no value, client just indicates support
-                }
+                },
                 _ => {
                     return Err(Error::HandshakeFailed("unknown permessage-deflate parameter"));
-                }
+                },
             }
         }
 
@@ -176,7 +176,13 @@ impl DeflateEncoder {
         // This ensures the compressed data can be decompressed by clients with smaller windows
         let compress = Compress::new_with_window_bits(compression_level, false, window_bits);
 
-        Self { compress, no_context_takeover, window_bits, compression_level, threshold }
+        Self {
+            compress,
+            no_context_takeover,
+            window_bits,
+            compression_level,
+            threshold,
+        }
     }
 
     /// Compress a message payload
@@ -250,7 +256,7 @@ impl DeflateEncoder {
                     if total_in >= data.len() {
                         break;
                     }
-                }
+                },
                 Status::StreamEnd => break,
             }
         }
@@ -288,7 +294,11 @@ impl DeflateDecoder {
         // Use raw deflate (no zlib header) with the negotiated window_bits
         let decompress = Decompress::new_with_window_bits(false, window_bits);
 
-        Self { decompress, no_context_takeover, window_bits }
+        Self {
+            decompress,
+            no_context_takeover,
+            window_bits,
+        }
     }
 
     /// Decompress a message payload
@@ -367,11 +377,11 @@ impl DeflateDecoder {
                     if total_in >= input.len() {
                         break;
                     }
-                }
+                },
                 Status::StreamEnd => break,
                 Status::BufError => {
                     // Need more output space - will be handled at top of loop
-                }
+                },
             }
         }
 
@@ -498,7 +508,10 @@ mod tests {
 
     #[test]
     fn test_small_message_not_compressed() {
-        let config = DeflateConfig { compression_threshold: 100, ..Default::default() };
+        let config = DeflateConfig {
+            compression_threshold: 100,
+            ..Default::default()
+        };
         let mut ctx = DeflateContext::server(config);
 
         let small = b"tiny";

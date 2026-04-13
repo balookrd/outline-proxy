@@ -108,7 +108,16 @@ impl ExtendedConnectRequest {
         let origin = get_header_string(headers, "origin");
         let version = get_header_string(headers, "sec-websocket-version");
 
-        Some(Self { path, authority, scheme, protocol, subprotocols, extensions, origin, version })
+        Some(Self {
+            path,
+            authority,
+            scheme,
+            protocol,
+            subprotocols,
+            extensions,
+            origin,
+            version,
+        })
     }
 
     /// Create a new Extended CONNECT request for client use
@@ -144,7 +153,9 @@ impl ExtendedConnectRequest {
     ///
     /// Per RFC 8441/9220, the `:protocol` pseudo-header must be "websocket".
     pub fn is_websocket(&self) -> bool {
-        self.protocol.as_ref().is_some_and(|p| p.eq_ignore_ascii_case("websocket"))
+        self.protocol
+            .as_ref()
+            .is_some_and(|p| p.eq_ignore_ascii_case("websocket"))
     }
 
     /// Check if the request specifies a particular subprotocol
@@ -239,12 +250,20 @@ pub struct ExtendedConnectResponse {
 impl ExtendedConnectResponse {
     /// Create a successful response
     pub fn ok() -> Self {
-        Self { status: StatusCode::OK, protocol: None, extensions: None }
+        Self {
+            status: StatusCode::OK,
+            protocol: None,
+            extensions: None,
+        }
     }
 
     /// Create a successful response with a selected subprotocol
     pub fn ok_with_protocol(protocol: impl Into<String>) -> Self {
-        Self { status: StatusCode::OK, protocol: Some(protocol.into()), extensions: None }
+        Self {
+            status: StatusCode::OK,
+            protocol: Some(protocol.into()),
+            extensions: None,
+        }
     }
 
     /// Create a successful response with a selected subprotocol and extensions
@@ -292,7 +311,10 @@ impl Default for ExtendedConnectConfig {
 impl ExtendedConnectConfig {
     /// Create a new config with custom handshake timeout
     pub fn with_timeout(timeout: Duration) -> Self {
-        Self { handshake_timeout: timeout, ..Default::default() }
+        Self {
+            handshake_timeout: timeout,
+            ..Default::default()
+        }
     }
 
     /// Set the connection timeout (for HTTP/3)

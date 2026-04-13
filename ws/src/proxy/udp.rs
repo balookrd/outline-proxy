@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::{TcpStream, UdpSocket};
@@ -12,11 +12,11 @@ use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
-    SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
-    read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
+    build_udp_packet, parse_udp_request, read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
+    UdpFragmentReassembler, SOCKS_STATUS_SUCCESS,
 };
-use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-use crate::types::{TargetAddr, socket_addr_to_target};
+use crate::transport::{is_dropped_oversized_udp_error, UdpWsTransport};
+use crate::types::{socket_addr_to_target, TargetAddr};
 use crate::uplink::{TransportKind, UplinkManager};
 
 #[derive(Clone)]
@@ -29,6 +29,10 @@ pub(super) struct ActiveUdpTransport {
 
 const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
 const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
+
+fn udp_metric_payload_len(target: &TargetAddr, payload_len: usize) -> Result<usize> {
+    Ok(target.to_wire_bytes()?.len().saturating_add(payload_len))
+}
 
 pub(super) async fn handle_udp_associate(
     mut client: TcpStream,
@@ -95,6 +99,8 @@ pub(super) async fn handle_udp_associate(
                 // Bypass: send directly without going through the uplink.
                 if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
                     if bl.read().await.is_bypassed(&packet.target) {
+                        let metric_payload_len =
+                            udp_metric_payload_len(&packet.target, packet.payload.len())?;
                         let target_addr = match &packet.target {
                             crate::types::TargetAddr::IpV4(ip, port) => {
                                 SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
@@ -109,6 +115,16 @@ pub(super) async fn handle_udp_associate(
                         sock.send_to(&packet.payload, target_addr)
                             .await
                             .context("bypass UDP send failed")?;
+                        metrics::add_udp_datagram(
+                            "client_to_upstream",
+                            metrics::BYPASS_UPLINK_LABEL,
+                        );
+                        metrics::add_bytes(
+                            "udp",
+                            "client_to_upstream",
+                            metrics::BYPASS_UPLINK_LABEL,
+                            metric_payload_len,
+                        );
                         continue;
                     }
                 }
@@ -286,6 +302,7 @@ pub(super) async fn handle_udp_associate(
                     anyhow!("received bypass UDP response before client sent any packet")
                 })?;
                 let target = socket_addr_to_target(src_addr);
+                let metric_payload_len = udp_metric_payload_len(&target, len)?;
                 let packet = build_udp_packet(&target, &buf[..len])?;
                 if packet.len() > MAX_UDP_RELAY_PACKET_SIZE {
                     warn!(
@@ -302,6 +319,13 @@ pub(super) async fn handle_udp_associate(
                     .send_to(&packet, client_addr)
                     .await
                     .context("bypass UDP relay send failed")?;
+                metrics::add_udp_datagram("upstream_to_client", metrics::BYPASS_UPLINK_LABEL);
+                metrics::add_bytes(
+                    "udp",
+                    "upstream_to_client",
+                    metrics::BYPASS_UPLINK_LABEL,
+                    metric_payload_len,
+                );
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())
@@ -369,6 +393,8 @@ pub(super) async fn handle_udp_in_tcp(
 
                 if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
                     if bl.read().await.is_bypassed(&packet.target) {
+                        let metric_payload_len =
+                            udp_metric_payload_len(&packet.target, packet.payload.len())?;
                         let target_addr = match &packet.target {
                             crate::types::TargetAddr::IpV4(ip, port) => {
                                 SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
@@ -383,6 +409,16 @@ pub(super) async fn handle_udp_in_tcp(
                         sock.send_to(&packet.payload, target_addr)
                             .await
                             .context("bypass UDP send failed")?;
+                        metrics::add_udp_datagram(
+                            "client_to_upstream",
+                            metrics::BYPASS_UPLINK_LABEL,
+                        );
+                        metrics::add_bytes(
+                            "udp",
+                            "client_to_upstream",
+                            metrics::BYPASS_UPLINK_LABEL,
+                            metric_payload_len,
+                        );
                         continue;
                     }
                 }
@@ -517,6 +553,7 @@ pub(super) async fn handle_udp_in_tcp(
                 let (len, src_addr) =
                     sock.recv_from(&mut buf).await.context("bypass UDP recv failed")?;
                 let target = socket_addr_to_target(src_addr);
+                let metric_payload_len = udp_metric_payload_len(&target, len)?;
                 write_udp_tcp_response(
                     &client_write_direct,
                     &target,
@@ -524,6 +561,13 @@ pub(super) async fn handle_udp_in_tcp(
                     "bypass UDP-in-TCP response",
                 )
                 .await?;
+                metrics::add_udp_datagram("upstream_to_client", metrics::BYPASS_UPLINK_LABEL);
+                metrics::add_bytes(
+                    "udp",
+                    "upstream_to_client",
+                    metrics::BYPASS_UPLINK_LABEL,
+                    metric_payload_len,
+                );
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())

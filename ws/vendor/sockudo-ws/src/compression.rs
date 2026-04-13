@@ -25,7 +25,11 @@ pub enum CompressionContext {
     /// Dedicated per-connection compressor
     Dedicated(DeflateContext),
     /// Shared compressor from pool (encoder only, decoder is per-connection)
-    Shared { pool: Arc<SharedCompressorPool>, decoder: DeflateDecoder, config: DeflateConfig },
+    Shared {
+        pool: Arc<SharedCompressorPool>,
+        decoder: DeflateDecoder,
+        config: DeflateConfig,
+    },
 }
 
 impl CompressionContext {
@@ -43,11 +47,11 @@ impl CompressionContext {
                     ),
                     config,
                 }
-            }
+            },
             _ => {
                 let config = mode.to_deflate_config().unwrap();
                 CompressionContext::Dedicated(DeflateContext::server(config))
-            }
+            },
         }
     }
 
@@ -65,11 +69,11 @@ impl CompressionContext {
                     ),
                     config,
                 }
-            }
+            },
             _ => {
                 let config = mode.to_deflate_config().unwrap();
                 CompressionContext::Dedicated(DeflateContext::client(config))
-            }
+            },
         }
     }
 
@@ -104,7 +108,7 @@ impl CompressionContext {
                     return Ok(None);
                 }
                 pool.compress(data)
-            }
+            },
         }
     }
 
@@ -115,7 +119,7 @@ impl CompressionContext {
                 // This shouldn't happen - protocol layer should not call decompress
                 // if compression is disabled
                 Ok(Bytes::copy_from_slice(data))
-            }
+            },
             CompressionContext::Dedicated(ctx) => ctx.decompress(data, max_size),
             CompressionContext::Shared { decoder, .. } => decoder.decompress(data, max_size),
         }
@@ -158,7 +162,11 @@ impl SharedCompressorPool {
             })
             .collect();
 
-        Self { encoders, config, next_encoder: std::sync::atomic::AtomicUsize::new(0) }
+        Self {
+            encoders,
+            config,
+            next_encoder: std::sync::atomic::AtomicUsize::new(0),
+        }
     }
 
     /// Compress data using a pooled encoder
