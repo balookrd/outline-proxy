@@ -1,8 +1,20 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};
+use tokio::time::timeout;
 use tokio_tungstenite::client_async_tls;
 use tracing::{debug, warn};
 use url::Url;
+
+// Upper bound for the HTTP/1.1 WebSocket handshake (TCP connect + TLS +
+// HTTP upgrade).  Unlike h2/h3 there is no shared pool to get stuck in, but
+// `TcpStream::connect` is bounded only by the OS SYN-retransmit budget
+// (Linux ~127s, macOS ~75s), and `client_async_tls` has no timeout of its
+// own.  Without a bound here the fallback chain h3 → h2 → h1 could stall
+// for minutes when the server is in a network black hole, before
+// `report_runtime_failure` gets a chance to mark the uplink down.
+const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::connect_websocket_h3;
@@ -183,10 +195,20 @@ async fn connect_websocket_http1(
             .into_iter()
             .next()
             .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
-    let tcp = connect_tcp_socket(server_addr, fwmark).await?;
-    let (ws_stream, _) = client_async_tls(url.as_str(), tcp)
-        .await
-        .context("HTTP/1 websocket handshake failed")?;
+    let ws_stream = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
+        let tcp = connect_tcp_socket(server_addr, fwmark).await?;
+        let (ws_stream, _) = client_async_tls(url.as_str(), tcp)
+            .await
+            .context("HTTP/1 websocket handshake failed")?;
+        Ok::<_, anyhow::Error>(ws_stream)
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "HTTP/1 websocket handshake timed out after {}s connecting to {server_addr}",
+            HTTP1_WS_CONNECT_TIMEOUT.as_secs()
+        )
+    })??;
     connect_guard.finish("success");
     Ok(ws_stream)
 }

@@ -692,6 +692,13 @@ Scoring during a downgrade window (`per_flow` scope):
 
 Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 downgrade, new standby slots are filled using H2.
 
+**Transport handshake timeouts:** every WebSocket connect path enforces an upper bound so that a silently-broken or black-holed server cannot stall new sessions for minutes while keeping the uplink nominally "healthy".
+
+- **Fresh connect** (new TCP/QUIC + TLS + protocol handshake): 10 s for H1, H2, and H3. Without this bound a network black hole can hang up to ~127 s (Linux TCP SYN retransmit, H1/H2) or up to 120 s (QUIC `max_idle_timeout`, H3).
+- **Reused shared H2/H3 connection** (opening a new WebSocket stream over an already-established connection): 7 s per await for H3, 10 s per await for H2. This catches the case where the shared pool handle is still nominally "open" to the client-side library but the underlying path has died — e.g. NAT rebinding, server graceful close received late, or silent packet loss.
+
+When a timeout fires, the error is treated as an upstream runtime failure: the shared pool entry (if any) is invalidated on the next open attempt, `report_runtime_failure` sets a cooldown, and the probe is woken immediately. In `active_passive + global` mode the active uplink is replaced only after the probe confirms the primary as down on a fresh connect of its own — transient shared-pool glitches do not change the exit IP, while recovery when the primary is genuinely unreachable is bounded to roughly one probe cycle.
+
 ## Uplink Selection and Runtime Behavior
 
 Each uplink has its own:

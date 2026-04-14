@@ -13,6 +13,7 @@ use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::{debug, error};
@@ -27,6 +28,26 @@ use super::url_util::websocket_target_uri;
 use super::ws_stream::H2WsStream;
 
 type H2SendRequestHandle = http2::SendRequest<Empty<Bytes>>;
+
+// Upper bound for opening a new H2 WebSocket stream on top of an already
+// established HTTP/2 connection.  Hyper's own keep-alive (interval 20s +
+// timeout 20s) would eventually detect a silently-broken shared connection
+// and tear it down, but that leaves new SOCKS TCP sessions stalled for up to
+// ~40s in the worst case.  Bounding each await keeps the worst-case recovery
+// latency short enough that `report_runtime_failure` fires and the probe-based
+// failover has a chance to react promptly.  The handshake itself is already
+// complete at this point; 10 seconds is a generous budget for issuing a
+// CONNECT request and reading its response on a healthy link.
+const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Upper bound for establishing a fresh HTTP/2 connection (TCP + TLS +
+// h2 handshake).  Neither `TcpStream::connect`, `connect_tls_h2`, nor
+// `hyper::client::conn::http2::Builder::handshake` enforce a deadline, so
+// without this bound a server in a network black hole could stall the
+// fallback path for the entire TCP SYN retransmit budget (Linux ~127s,
+// macOS ~75s).  10 seconds is plenty for a healthy fresh connect and
+// matches the bound used for HTTP/1 websocket handshakes.
+const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H2ConnectionKey {
@@ -73,24 +94,43 @@ impl SharedH2Connection {
             .body(Empty::new())
             .expect("request builder never fails");
 
-        let response_future = {
+        let response_future = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
             let mut send_request = self.send_request.lock().await;
             send_request
                 .ready()
                 .await
                 .context("shared h2 connection is not ready for a new websocket CONNECT")?;
-            send_request.send_request(request)
-        };
+            Ok::<_, anyhow::Error>(send_request.send_request(request))
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "HTTP/2 websocket CONNECT send timed out after {}s on shared connection",
+                OPEN_WEBSOCKET_TIMEOUT.as_secs()
+            )
+        })??;
 
-        let mut response = response_future
+        let mut response = timeout(OPEN_WEBSOCKET_TIMEOUT, response_future)
             .await
+            .map_err(|_| {
+                anyhow!(
+                    "HTTP/2 websocket CONNECT response timed out after {}s on shared connection",
+                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                )
+            })?
             .context("failed to send HTTP/2 websocket CONNECT request")?;
         if !response.status().is_success() {
             bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
         }
 
-        let upgraded = hyper::upgrade::on(&mut response)
+        let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
+            .map_err(|_| {
+                anyhow!(
+                    "HTTP/2 websocket upgrade timed out after {}s on shared connection",
+                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                )
+            })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn Send + Sync> = self.clone();
@@ -200,25 +240,34 @@ async fn connect_h2_connection(
     fwmark: Option<u32>,
     cache_key: Option<H2ConnectionKey>,
 ) -> Result<SharedH2Connection> {
-    let io = if secure {
-        H2Io::Tls {
-            inner: connect_tls_h2(server_addr, server_name, fwmark).await?,
-        }
-    } else {
-        H2Io::Plain {
-            inner: connect_tcp_socket(server_addr, fwmark).await?,
-        }
-    };
+    let (send_request, conn) = timeout(FRESH_CONNECT_TIMEOUT, async {
+        let io = if secure {
+            H2Io::Tls {
+                inner: connect_tls_h2(server_addr, server_name, fwmark).await?,
+            }
+        } else {
+            H2Io::Plain {
+                inner: connect_tcp_socket(server_addr, fwmark).await?,
+            }
+        };
 
-    let (send_request, conn) = http2::Builder::new(TokioExecutor::new())
-        .timer(TokioTimer::new())
-        .initial_stream_window_size(Some(h2_stream_window_size()))
-        .initial_connection_window_size(Some(h2_connection_window_size()))
-        .keep_alive_interval(Some(Duration::from_secs(20)))
-        .keep_alive_timeout(Duration::from_secs(20))
-        .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
-        .await
-        .context("HTTP/2 handshake failed")?;
+        http2::Builder::new(TokioExecutor::new())
+            .timer(TokioTimer::new())
+            .initial_stream_window_size(Some(h2_stream_window_size()))
+            .initial_connection_window_size(Some(h2_connection_window_size()))
+            .keep_alive_interval(Some(Duration::from_secs(20)))
+            .keep_alive_timeout(Duration::from_secs(20))
+            .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
+            .await
+            .context("HTTP/2 handshake failed")
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "HTTP/2 fresh connect timed out after {}s to {server_addr}",
+            FRESH_CONNECT_TIMEOUT.as_secs()
+        )
+    })??;
 
     let id = H2_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
     let closed = Arc::new(AtomicBool::new(false));
