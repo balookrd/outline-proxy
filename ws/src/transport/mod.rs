@@ -1,15 +1,7 @@
-use anyhow::{Context, Result, anyhow, bail};
-use bytes::Bytes;
-use http::{Method, Request, Version};
-use http_body_util::Empty;
-use hyper::client::conn::http2;
-use hyper::ext::Protocol;
-use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use std::time::Duration;
+use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};
-use tokio_tungstenite::tungstenite::protocol::Role;
-use tokio_tungstenite::{WebSocketStream, client_async_tls};
-use tracing::{debug, error, warn};
+use tokio_tungstenite::client_async_tls;
+use tracing::{debug, warn};
 use url::Url;
 
 #[cfg(feature = "h3")]
@@ -20,6 +12,7 @@ use crate::types::{ServerAddr, WsTransportMode};
 mod dns;
 mod guards;
 mod h2_io;
+mod h2_shared;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
@@ -27,10 +20,9 @@ mod url_util;
 mod ws_stream;
 
 use dns::resolve_server_addr;
-use h2_io::{H2Io, connect_tls_h2, h2_connection_window_size, h2_stream_window_size};
+use h2_shared::connect_websocket_h2;
 use socket::connect_tcp_socket;
-use url_util::websocket_target_uri;
-use ws_stream::{H1WsStream, H2WsStream};
+use ws_stream::H1WsStream;
 
 pub use h2_io::init_h2_window_sizes;
 pub use socket::init_udp_socket_bufs;
@@ -197,76 +189,6 @@ async fn connect_websocket_http1(
         .context("HTTP/1 websocket handshake failed")?;
     connect_guard.finish("success");
     Ok(ws_stream)
-}
-
-async fn connect_websocket_h2(
-    url: &Url,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<AnyWsStream> {
-    let mut connect_guard = TransportConnectGuard::new(source, "h2");
-    let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr =
-        resolve_host_with_preference(host, port, "failed to resolve h2 websocket host", ipv6_first)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
-    let target_uri = websocket_target_uri(url)?;
-
-    let io = match url.scheme() {
-        "ws" => H2Io::Plain {
-            inner: connect_tcp_socket(server_addr, fwmark).await?,
-        },
-        "wss" => H2Io::Tls {
-            inner: connect_tls_h2(server_addr, host, fwmark).await?,
-        },
-        scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
-    };
-
-    let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
-        .timer(TokioTimer::new())
-        .initial_stream_window_size(Some(h2_stream_window_size()))
-        .initial_connection_window_size(Some(h2_connection_window_size()))
-        .keep_alive_interval(Some(Duration::from_secs(20)))
-        .keep_alive_timeout(Duration::from_secs(20))
-        .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
-        .await
-        .context("HTTP/2 handshake failed")?;
-
-    let driver_task = AbortOnDrop(tokio::spawn(async move {
-        if let Err(err) = conn.await {
-            error!("h2 connection error: {err}");
-        }
-    }));
-
-    let req: Request<Empty<Bytes>> = Request::builder()
-        .method(Method::CONNECT)
-        .version(Version::HTTP_2)
-        .uri(target_uri)
-        .extension(Protocol::from_static("websocket"))
-        .header("sec-websocket-version", "13")
-        .body(Empty::new())
-        .expect("request builder never fails");
-
-    let mut response: http::Response<hyper::body::Incoming> =
-        send_request.send_request(req).await?;
-    if !response.status().is_success() {
-        bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
-    }
-
-    let upgraded = hyper::upgrade::on(&mut response)
-        .await
-        .context("failed to upgrade HTTP/2 websocket stream")?;
-    let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
-    connect_guard.finish("success");
-    Ok(AnyWsStream::H2 {
-        inner: H2WsStream::new(ws, driver_task),
-    })
 }
 
 #[cfg(test)]
