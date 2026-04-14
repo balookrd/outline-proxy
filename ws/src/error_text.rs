@@ -52,6 +52,8 @@ const STANDBY_PROBE_FAILURES: &[&str] = &[
     "os error 32",
     "websocket ping/pong timed out",
     "timed out",
+    // Quinn surfaces QUIC idle timeout as the bare word "Timeout" (not "timed out").
+    "timeout",
     "application closed",
     "connection lost",
     "stream reset",

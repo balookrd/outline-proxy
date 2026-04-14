@@ -552,6 +552,10 @@ fn is_expected_h3_close(err: &str) -> bool {
         || err.contains("H3_REQUEST_REJECTED")
         || err.contains("H3_CONNECT_ERROR")
         || err.contains("ApplicationClose")
+        // QUIC idle timeout: Quinn surfaces this as the plain string "Timeout".
+        // The session side already records a runtime failure; the driver task
+        // logging it again at ERROR is redundant noise.
+        || err.contains("Timeout")
 }
 
 fn websocket_h3_target_uri(host: &str, port: u16, path: &str) -> Result<Uri> {
