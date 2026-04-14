@@ -7,6 +7,12 @@ const CLIENT_READ_FAILURES: &[&str] = &[
     "failed to read udp-in-tcp header length",
     "failed to read udp-in-tcp target address",
     "failed to read udp-in-tcp payload",
+    // SOCKS5 negotiation aborts: client closed the TCP connection before
+    // completing the handshake.  Common during reconnect storms when a TUN
+    // interceptor (Sing-box, Clash, etc.) flushes its connection pool.
+    "failed to read method negotiation header",
+    "failed to read authentication methods",
+    "failed to read request header",
 ];
 const CLIENT_WRITE_FAILURES: &[&str] = &["client write failed"];
 const CLIENT_IO_FAILURES: &[&str] = &[
@@ -17,14 +23,25 @@ const CLIENT_IO_FAILURES: &[&str] = &[
     "failed to read udp-in-tcp header length",
     "failed to read udp-in-tcp target address",
     "failed to read udp-in-tcp payload",
+    "failed to read method negotiation header",
+    "failed to read authentication methods",
+    "failed to read request header",
 ];
 const WEBSOCKET_CLOSES: &[&str] = &[
     "websocket closed",
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
 ];
-const TRANSPORT_DISCONNECTS: &[&str] =
-    &["connection reset by peer", "broken pipe", "os error 104", "os error 54", "os error 32"];
+const TRANSPORT_DISCONNECTS: &[&str] = &[
+    "connection reset by peer",
+    "broken pipe",
+    "os error 104",
+    "os error 54",
+    "os error 32",
+    // Tokio's UnexpectedEof message produced by read_exact when the remote side
+    // closes the connection before the full buffer is filled.
+    "early eof",
+];
 const STANDBY_PROBE_FAILURES: &[&str] = &[
     "websocket probe received close frame",
     "websocket probe stream closed before pong",

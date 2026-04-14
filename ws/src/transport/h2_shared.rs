@@ -143,9 +143,25 @@ impl SharedH2Connection {
 static H2_SHARED_CONNECTIONS: OnceLock<Mutex<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>>> =
     OnceLock::new();
 static H2_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
+// Per-server-key mutex that serialises concurrent H2 connection establishment.
+// Prevents a thundering herd when the shared H2 connection drops and N sessions
+// all try to reconnect simultaneously — identical pattern to H3_CONNECT_LOCKS.
+static H2_CONNECT_LOCKS: OnceLock<
+    std::sync::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
+> = OnceLock::new();
 
 fn h2_shared_connections() -> &'static Mutex<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
     H2_SHARED_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn h2_connect_locks(
+) -> &'static std::sync::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
+    H2_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = h2_connect_locks().lock().expect("H2_CONNECT_LOCKS poisoned");
+    locks.entry(key.clone()).or_default().clone()
 }
 
 pub(super) async fn connect_websocket_h2(
@@ -188,6 +204,7 @@ async fn connect_h2_reused(
 ) -> Result<AnyWsStream> {
     let key = H2ConnectionKey::new(server_addr, server_name, secure, fwmark);
 
+    // Fast path: reuse an already-established shared connection without locking.
     if let Some(shared) = cached_shared_h2_connection(&key).await {
         match shared.open_websocket(target_uri).await {
             Ok(ws) => {
@@ -207,12 +224,39 @@ async fn connect_h2_reused(
         }
     }
 
-    let mut connect_guard = TransportConnectGuard::new(source, "h2");
+    // Slow path: need to establish a new H2 connection.  Serialise per server
+    // key so that concurrent reconnect attempts share the result rather than
+    // each starting their own TCP+TLS+H2 handshake (thundering herd).
+    let connect_lock = get_h2_connect_lock(&key);
+    let _connect_guard = connect_lock.lock().await;
+
+    // Re-check under the lock: another waiter may have established and cached
+    // a fresh connection while we were waiting.
+    if let Some(shared) = cached_shared_h2_connection(&key).await {
+        match shared.open_websocket(target_uri).await {
+            Ok(ws) => {
+                crate::metrics::record_transport_connect(source, "h2", "reused");
+                return Ok(ws);
+            },
+            Err(error) => {
+                debug!(
+                    server_addr = %server_addr,
+                    server_name,
+                    secure,
+                    error = %format!("{error:#}"),
+                    "shared h2 connection (post-lock recheck) failed to open websocket stream; reconnecting"
+                );
+                invalidate_shared_h2_connection_if_current(&key, shared.id).await;
+            },
+        }
+    }
+
+    let mut transport_guard = TransportConnectGuard::new(source, "h2");
     let shared = Arc::new(
         connect_h2_connection(server_addr, server_name, secure, fwmark, Some(key.clone())).await?,
     );
     let ws = shared.open_websocket(target_uri).await?;
-    connect_guard.finish("success");
+    transport_guard.finish("success");
     cache_shared_h2_connection(key, Arc::clone(&shared)).await;
     Ok(ws)
 }
