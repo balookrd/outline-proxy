@@ -1,0 +1,549 @@
+use std::{fmt, sync::Arc};
+
+use bytes::BytesMut;
+use ring::{
+    aead::{Aad, LessSafeKey, UnboundKey},
+    rand::{SecureRandom, SystemRandom},
+};
+
+use super::{
+    error::CryptoError,
+    primitives::{
+        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_HEADER_LEN,
+        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, current_unix_secs, derive_subkey,
+        next_stream_nonce, nonce_zero, parse_ss2022_request_header,
+        validate_ss2022_request_fixed_header,
+    },
+    user_key::UserKey,
+};
+
+#[derive(Clone, Debug)]
+pub struct StreamResponseContext {
+    pub(super) request_salt: Vec<u8>,
+}
+
+struct ActiveStream {
+    user: UserKey,
+    key: LessSafeKey,
+    nonce_counter: u64,
+    mode: ActiveStreamMode,
+}
+
+enum ActiveStreamMode {
+    Legacy {
+        pending_chunk_len: Option<usize>,
+    },
+    Ss2022 {
+        request_salt: Vec<u8>,
+        header_parsed: bool,
+        pending_header_len: Option<usize>,
+        pending_chunk_len: Option<usize>,
+    },
+}
+
+pub struct AeadStreamDecryptor {
+    users: Arc<[UserKey]>,
+    buffer: BytesMut,
+    active: Option<ActiveStream>,
+}
+
+impl fmt::Debug for AeadStreamDecryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AeadStreamDecryptor")
+            .field("buffer_len", &self.buffer.len())
+            .field("active_user", &self.active.as_ref().map(|active| active.user.id()))
+            .finish()
+    }
+}
+
+impl AeadStreamDecryptor {
+    pub fn new(users: Arc<[UserKey]>) -> Self {
+        Self {
+            users,
+            buffer: BytesMut::new(),
+            active: None,
+        }
+    }
+
+    pub fn push(&mut self, data: &[u8]) {
+        self.buffer.extend_from_slice(data);
+    }
+
+    pub fn user(&self) -> Option<&UserKey> {
+        self.active.as_ref().map(|active| &active.user)
+    }
+
+    pub fn response_context(&self) -> Option<StreamResponseContext> {
+        match self.active.as_ref()?.mode {
+            ActiveStreamMode::Legacy { .. } => None,
+            ActiveStreamMode::Ss2022 { ref request_salt, .. } => {
+                Some(StreamResponseContext { request_salt: request_salt.clone() })
+            },
+        }
+    }
+
+    pub fn buffered_data(&self) -> &[u8] {
+        &self.buffer
+    }
+
+    pub fn pull_plaintext(&mut self, output: &mut Vec<u8>) -> Result<(), CryptoError> {
+        self.ensure_session_key()?;
+
+        loop {
+            let Some(active) = &mut self.active else {
+                break;
+            };
+
+            match &mut active.mode {
+                ActiveStreamMode::Legacy { pending_chunk_len } => {
+                    if !pull_legacy_payload(
+                        &mut self.buffer,
+                        &active.key,
+                        &mut active.nonce_counter,
+                        pending_chunk_len,
+                        output,
+                    )? {
+                        break;
+                    }
+                },
+                ActiveStreamMode::Ss2022 {
+                    header_parsed,
+                    pending_header_len,
+                    pending_chunk_len,
+                    ..
+                } => {
+                    if !*header_parsed {
+                        let Some(header_len) = *pending_header_len else {
+                            return Err(CryptoError::InvalidHeader);
+                        };
+                        if self.buffer.len() < header_len + TAG_LEN {
+                            break;
+                        }
+
+                        let mut encrypted_header = self.buffer.split_to(header_len + TAG_LEN);
+                        let header = active.key.open_in_place(
+                            next_stream_nonce(&mut active.nonce_counter),
+                            Aad::empty(),
+                            &mut encrypted_header,
+                        )?;
+                        let initial_plaintext = parse_ss2022_request_header(header)?;
+                        output.extend_from_slice(&initial_plaintext);
+                        *header_parsed = true;
+                        *pending_header_len = None;
+                        continue;
+                    }
+
+                    if !pull_ss2022_payload(
+                        &mut self.buffer,
+                        &active.key,
+                        &mut active.nonce_counter,
+                        pending_chunk_len,
+                        output,
+                    )? {
+                        break;
+                    }
+                },
+            }
+        }
+
+        Ok(())
+    }
+
+    fn ensure_session_key(&mut self) -> Result<(), CryptoError> {
+        if self.active.is_some() {
+            return Ok(());
+        }
+
+        let mut any_candidate = false;
+        for user in self.users.iter() {
+            if user.cipher().is_2022() {
+                let fixed_len = SS2022_REQUEST_FIXED_HEADER_LEN + TAG_LEN;
+                let salt_len = user.cipher().salt_len();
+                if self.buffer.len() < salt_len + fixed_len {
+                    continue;
+                }
+                any_candidate = true;
+
+                let salt = &self.buffer[..salt_len];
+                let mut encrypted_fixed = self.buffer[salt_len..salt_len + fixed_len].to_vec();
+                let session_key = derive_subkey(user.cipher(), user.master_key(), salt)?;
+                let algorithm = cipher_algorithm(user.cipher());
+                let key =
+                    UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+                let less_safe = LessSafeKey::new(key);
+                if let Ok(header) =
+                    less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut encrypted_fixed)
+                {
+                    if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN {
+                        let header_len = validate_ss2022_request_fixed_header(header)?;
+                        let request_salt = self.buffer[..salt_len].to_vec();
+                        self.buffer.advance(salt_len + fixed_len);
+                        self.active = Some(ActiveStream {
+                            user: user.clone(),
+                            key: less_safe,
+                            nonce_counter: 1,
+                            mode: ActiveStreamMode::Ss2022 {
+                                request_salt,
+                                header_parsed: false,
+                                pending_header_len: Some(header_len),
+                                pending_chunk_len: None,
+                            },
+                        });
+                        return Ok(());
+                    }
+                }
+            } else {
+                let salt_len = user.cipher().salt_len();
+                if self.buffer.len() < salt_len + 2 + TAG_LEN {
+                    continue;
+                }
+                any_candidate = true;
+
+                let salt = &self.buffer[..salt_len];
+                let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
+                let session_key = derive_subkey(user.cipher(), user.master_key(), salt)?;
+                let algorithm = cipher_algorithm(user.cipher());
+                let key =
+                    UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+                let less_safe = LessSafeKey::new(key);
+
+                let mut candidate = encrypted_len.to_vec();
+                if let Ok(plaintext_len) =
+                    less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate)
+                {
+                    if plaintext_len.len() == 2 {
+                        let chunk_len =
+                            u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
+                        if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
+                            self.buffer.advance(salt_len);
+                            self.active = Some(ActiveStream {
+                                user: user.clone(),
+                                key: less_safe,
+                                nonce_counter: 0,
+                                mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
+                            });
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        }
+
+        if any_candidate {
+            Err(CryptoError::UnknownUser)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+pub struct AeadStreamEncryptor {
+    mode: StreamEncryptorMode,
+}
+
+enum StreamEncryptorMode {
+    Legacy {
+        key: LessSafeKey,
+        nonce_counter: u64,
+        salt: Vec<u8>,
+        sent_salt: bool,
+    },
+    Ss2022 {
+        key: LessSafeKey,
+        nonce_counter: u64,
+        salt: Vec<u8>,
+        sent_header: bool,
+        request_salt: Vec<u8>,
+    },
+}
+
+impl fmt::Debug for AeadStreamEncryptor {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AeadStreamEncryptor").finish()
+    }
+}
+
+impl AeadStreamEncryptor {
+    pub fn new(
+        user: &UserKey,
+        response_context: Option<StreamResponseContext>,
+    ) -> Result<Self, CryptoError> {
+        let mut salt = vec![0_u8; user.cipher().salt_len()];
+        SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
+        let session_key = derive_subkey(user.cipher(), user.master_key(), &salt)?;
+        let algorithm = cipher_algorithm(user.cipher());
+        let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+        let key = LessSafeKey::new(key);
+
+        let mode = if user.cipher().is_2022() {
+            let context = response_context.ok_or(CryptoError::MissingResponseContext)?;
+            StreamEncryptorMode::Ss2022 {
+                key,
+                nonce_counter: 0,
+                salt,
+                sent_header: false,
+                request_salt: context.request_salt,
+            }
+        } else {
+            StreamEncryptorMode::Legacy {
+                key,
+                nonce_counter: 0,
+                salt,
+                sent_salt: false,
+            }
+        };
+
+        Ok(Self { mode })
+    }
+
+    pub fn encrypt_chunk(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        match &mut self.mode {
+            StreamEncryptorMode::Legacy { key, nonce_counter, salt, sent_salt } => {
+                encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext)
+            },
+            StreamEncryptorMode::Ss2022 {
+                key,
+                nonce_counter,
+                salt,
+                sent_header,
+                request_salt,
+            } => {
+                encrypt_ss2022_chunk(key, nonce_counter, salt, sent_header, request_salt, plaintext)
+            },
+        }
+    }
+}
+
+fn pull_legacy_payload(
+    buffer: &mut BytesMut,
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    pending_chunk_len: &mut Option<usize>,
+    output: &mut Vec<u8>,
+) -> Result<bool, CryptoError> {
+    if pending_chunk_len.is_none() {
+        if buffer.len() < 2 + TAG_LEN {
+            return Ok(false);
+        }
+
+        let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
+        let nonce = next_stream_nonce(nonce_counter);
+        let decrypted_len = key
+            .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
+            .map_err(|_| CryptoError::InvalidLengthHeader)?;
+        if decrypted_len.len() != 2 {
+            return Err(CryptoError::InvalidLengthHeader);
+        }
+
+        let chunk_len = u16::from_be_bytes([decrypted_len[0], decrypted_len[1]]) as usize;
+        if chunk_len > LEGACY_MAX_CHUNK_SIZE {
+            return Err(CryptoError::InvalidChunkSize(chunk_len));
+        }
+        *pending_chunk_len = Some(chunk_len);
+    }
+
+    let chunk_len = pending_chunk_len.expect("set above");
+    if buffer.len() < chunk_len + TAG_LEN {
+        return Ok(false);
+    }
+
+    let mut encrypted_payload = buffer.split_to(chunk_len + TAG_LEN);
+    let nonce = next_stream_nonce(nonce_counter);
+    let decrypted_payload = key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
+    output.extend_from_slice(decrypted_payload);
+    *pending_chunk_len = None;
+    Ok(true)
+}
+
+fn pull_ss2022_payload(
+    buffer: &mut BytesMut,
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    pending_chunk_len: &mut Option<usize>,
+    output: &mut Vec<u8>,
+) -> Result<bool, CryptoError> {
+    if pending_chunk_len.is_none() {
+        if buffer.len() < 2 + TAG_LEN {
+            return Ok(false);
+        }
+
+        let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
+        let nonce = next_stream_nonce(nonce_counter);
+        let decrypted_len = key
+            .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
+            .map_err(|_| CryptoError::InvalidLengthHeader)?;
+        if decrypted_len.len() != 2 {
+            return Err(CryptoError::InvalidLengthHeader);
+        }
+
+        let chunk_len = u16::from_be_bytes([decrypted_len[0], decrypted_len[1]]) as usize;
+        if chunk_len > MAX_CHUNK_SIZE {
+            return Err(CryptoError::InvalidChunkSize(chunk_len));
+        }
+        *pending_chunk_len = Some(chunk_len);
+    }
+
+    let chunk_len = pending_chunk_len.expect("set above");
+    if buffer.len() < chunk_len + TAG_LEN {
+        return Ok(false);
+    }
+
+    let mut encrypted_payload = buffer.split_to(chunk_len + TAG_LEN);
+    let nonce = next_stream_nonce(nonce_counter);
+    let decrypted_payload = key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
+    output.extend_from_slice(decrypted_payload);
+    *pending_chunk_len = None;
+    Ok(true)
+}
+
+fn encrypt_legacy_chunks(
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    salt: &[u8],
+    sent_salt: &mut bool,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let chunk_count = plaintext.len().div_ceil(LEGACY_MAX_CHUNK_SIZE).max(1);
+    let mut output = Vec::with_capacity(
+        (!*sent_salt as usize) * salt.len()
+            + plaintext.len()
+            + chunk_count * (2 + TAG_LEN + TAG_LEN),
+    );
+
+    for chunk in plaintext.chunks(LEGACY_MAX_CHUNK_SIZE) {
+        output.extend_from_slice(&encrypt_legacy_chunk(
+            key,
+            nonce_counter,
+            salt,
+            sent_salt,
+            chunk,
+        )?);
+    }
+
+    Ok(output)
+}
+
+fn encrypt_legacy_chunk(
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    salt: &[u8],
+    sent_salt: &mut bool,
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if plaintext.len() > LEGACY_MAX_CHUNK_SIZE {
+        return Err(CryptoError::InvalidChunkSize(plaintext.len()));
+    }
+
+    let salt_len = if *sent_salt { 0 } else { salt.len() };
+    let mut output = Vec::with_capacity(salt_len + 2 + TAG_LEN + plaintext.len() + TAG_LEN);
+    if !*sent_salt {
+        output.extend_from_slice(salt);
+        *sent_salt = true;
+    }
+    let length = u16::try_from(plaintext.len())
+        .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
+        .to_be_bytes();
+    let len_start = output.len();
+    output.extend_from_slice(&length);
+    let tag = key
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[len_start..],
+        )
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
+
+    let payload_start = output.len();
+    output.extend_from_slice(plaintext);
+    let tag = key
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[payload_start..],
+        )
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
+
+    Ok(output)
+}
+
+fn encrypt_ss2022_chunk(
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    salt: &[u8],
+    sent_header: &mut bool,
+    request_salt: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if plaintext.len() > MAX_CHUNK_SIZE {
+        return Err(CryptoError::InvalidChunkSize(plaintext.len()));
+    }
+
+    let capacity = if !*sent_header {
+        salt.len() + (1 + 8 + request_salt.len() + 2) + TAG_LEN + plaintext.len() + TAG_LEN
+    } else {
+        2 + TAG_LEN + plaintext.len() + TAG_LEN
+    };
+    let mut output = Vec::with_capacity(capacity);
+    if !*sent_header {
+        output.extend_from_slice(salt);
+        let header_start = output.len();
+        output.push(SS2022_TCP_RESPONSE_TYPE);
+        output.extend_from_slice(&current_unix_secs().to_be_bytes());
+        output.extend_from_slice(request_salt);
+        output.extend_from_slice(
+            &u16::try_from(plaintext.len())
+                .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
+                .to_be_bytes(),
+        );
+        let tag = key
+            .seal_in_place_separate_tag(
+                next_stream_nonce(nonce_counter),
+                Aad::empty(),
+                &mut output[header_start..],
+            )
+            .map_err(|_| CryptoError::Cipher)?;
+        output.extend_from_slice(tag.as_ref());
+
+        let payload_start = output.len();
+        output.extend_from_slice(plaintext);
+        let tag = key
+            .seal_in_place_separate_tag(
+                next_stream_nonce(nonce_counter),
+                Aad::empty(),
+                &mut output[payload_start..],
+            )
+            .map_err(|_| CryptoError::Cipher)?;
+        output.extend_from_slice(tag.as_ref());
+        *sent_header = true;
+        return Ok(output);
+    }
+
+    let len_start = output.len();
+    output.extend_from_slice(
+        &u16::try_from(plaintext.len())
+            .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
+            .to_be_bytes(),
+    );
+    let tag = key
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[len_start..],
+        )
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
+
+    let payload_start = output.len();
+    output.extend_from_slice(plaintext);
+    let tag = key
+        .seal_in_place_separate_tag(
+            next_stream_nonce(nonce_counter),
+            Aad::empty(),
+            &mut output[payload_start..],
+        )
+        .map_err(|_| CryptoError::Cipher)?;
+    output.extend_from_slice(tag.as_ref());
+    Ok(output)
+}
