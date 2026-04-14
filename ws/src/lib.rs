@@ -147,6 +147,12 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
             if let Err(error) = proxy::handle_client(stream, peer, config, uplinks).await {
                 if crate::error_text::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
+                } else if crate::error_text::is_client_write_disconnect(&error) {
+                    warn!(
+                        %peer,
+                        error = %format!("{error:#}"),
+                        "client disconnected before proxy finished sending the response"
+                    );
                 } else {
                     warn!(%peer, error = %format!("{error:#}"), "connection failed");
                 }

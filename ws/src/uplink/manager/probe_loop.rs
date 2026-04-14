@@ -6,13 +6,26 @@ use tokio::sync::Semaphore;
 use tokio::time::{Instant, sleep};
 use tracing::{debug, warn};
 
-use crate::config::{ProbeConfig, RoutingScope};
+use crate::config::ProbeConfig;
 use crate::types::UplinkTransport;
 
 use super::super::probe::probe_uplink;
 use super::super::selection::cooldown_active;
-use super::super::types::{TransportKind, UplinkManager};
+use super::super::types::{TransportKind, UplinkManager, UplinkStatus};
 use super::super::utils::{add_penalty, update_rtt_ewma};
+
+fn should_skip_probe_cycle_for_recent_activity(
+    status: &UplinkStatus,
+    now: Instant,
+    interval: Duration,
+) -> bool {
+    let tcp_active = status
+        .last_active_tcp
+        .is_some_and(|t| now.duration_since(t) < interval);
+    let tcp_currently_healthy = status.tcp_healthy == Some(true);
+    let tcp_no_cooldown = !cooldown_active(status, TransportKind::Tcp, now);
+    tcp_active && tcp_currently_healthy && tcp_no_cooldown
+}
 
 async fn run_probe_attempt_with_timeout(
     uplink: Arc<crate::config::UplinkConfig>,
@@ -84,35 +97,12 @@ impl UplinkManager {
                 let statuses = self.inner.statuses.read().await;
                 let s = &statuses[index];
                 let threshold = self.inner.probe.interval;
-                let tcp_active =
-                    s.last_active_tcp.map_or(false, |t| now.duration_since(t) < threshold);
-                let tcp_currently_healthy = s.tcp_healthy == Some(true);
-                // Do NOT skip if there is an active cooldown: a runtime
-                // connection failure was reported, meaning the uplink may be
-                // down even though tcp_healthy is still Some(true) (the probe
-                // is the authoritative health source when enabled, so
-                // report_runtime_failure does not flip tcp_healthy directly).
-                // We must run the probe so it can detect the failure and
-                // trigger failover.
-                let tcp_no_cooldown = !cooldown_active(s, TransportKind::Tcp, now);
-                // In global scope with probe enabled the probe is the sole
-                // health gate — the cooldown from a runtime failure does NOT
-                // affect the switch decision (see strict_transport_candidates).
-                // Running a probe immediately after a runtime failure under
-                // load is counterproductive: the server is busy, the new QUIC
-                // handshake competes with existing traffic, and the probe is
-                // likely to fail → false negative → spurious failover.
-                // Active traffic is already stronger evidence of liveness than
-                // a probe ping, so we skip the probe cycle whenever traffic is
-                // flowing and the uplink is probe-confirmed healthy, regardless
-                // of any active runtime-failure cooldown.
-                // For non-global scopes the cooldown gate is used for candidate
-                // selection, so we must still probe to confirm recovery before
-                // the cooldown expires and re-admits the uplink.
-                let global_probe = self.inner.load_balancing.routing_scope == RoutingScope::Global
-                    && self.inner.probe.enabled();
-                let skip_allowed = tcp_no_cooldown || global_probe;
-                if tcp_active && tcp_currently_healthy && skip_allowed {
+                // Recent traffic is enough to skip the probe only while there
+                // is no active runtime-failure cooldown. Once a cooldown is
+                // set, we must run the probe even in global scope so it can
+                // confirm whether the active uplink is actually broken and let
+                // strict selection move new sessions away from it.
+                if should_skip_probe_cycle_for_recent_activity(s, now, threshold) {
                     let udp_active =
                         s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
                     debug!(
@@ -120,7 +110,6 @@ impl UplinkManager {
                         last_active_tcp_ms = s.last_active_tcp.map(|t| now.duration_since(t).as_millis()),
                         last_active_udp_ms = s.last_active_udp.map(|t| now.duration_since(t).as_millis()),
                         udp_also_active = udp_active,
-                        had_cooldown = !tcp_no_cooldown,
                         "skipping probe cycle: real traffic observed and uplink is healthy"
                     );
                     continue;
@@ -363,5 +352,49 @@ impl UplinkManager {
                 self.clear_standby(index, TransportKind::Udp).await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use crate::uplink::types::UplinkStatus;
+
+    use super::should_skip_probe_cycle_for_recent_activity;
+
+    #[test]
+    fn recent_healthy_traffic_skips_probe_without_cooldown() {
+        let now = Instant::now();
+        let status = UplinkStatus {
+            tcp_healthy: Some(true),
+            last_active_tcp: Some(now - Duration::from_secs(1)),
+            ..UplinkStatus::default()
+        };
+
+        assert!(should_skip_probe_cycle_for_recent_activity(
+            &status,
+            now,
+            Duration::from_secs(30),
+        ));
+    }
+
+    #[test]
+    fn active_cooldown_prevents_probe_skip_even_with_recent_traffic() {
+        let now = Instant::now();
+        let status = UplinkStatus {
+            tcp_healthy: Some(true),
+            last_active_tcp: Some(now - Duration::from_secs(1)),
+            cooldown_until_tcp: Some(now + Duration::from_secs(10)),
+            ..UplinkStatus::default()
+        };
+
+        assert!(!should_skip_probe_cycle_for_recent_activity(
+            &status,
+            now,
+            Duration::from_secs(30),
+        ));
     }
 }

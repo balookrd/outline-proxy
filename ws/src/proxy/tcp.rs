@@ -240,9 +240,13 @@ pub(super) async fn handle_tcp_connect(
                                     &active_uplink_name,
                                     n,
                                 );
-                                uplinks
-                                    .report_active_traffic(active_index, TransportKind::Tcp)
-                                    .await;
+                                // Do not treat client->upstream bytes during phase 1
+                                // as proof that the uplink is healthy yet. A broken
+                                // uplink can still accept writes and then reset or stall
+                                // before producing the first response byte. Marking it
+                                // active here would clear the runtime-failure cooldown and
+                                // refresh last_active_tcp on every retry, preventing probe-
+                                // driven failover for new connections.
                                 if !replay_overflow {
                                     let total: usize = replay_buf.iter().map(|c| c.len()).sum();
                                     if total + n <= MAX_CHUNK0_FAILOVER_BUF {
