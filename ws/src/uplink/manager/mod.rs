@@ -27,6 +27,47 @@ use super::utils::{
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
 impl UplinkManager {
+    pub async fn initialize_strict_active_selection(&self) {
+        if !self.strict_global_active_uplink() && !self.strict_per_uplink_active_uplink() {
+            return;
+        }
+
+        // Prime initial health before any client traffic arrives so the first
+        // strict active-uplink choice is deterministic and probe-driven rather
+        // than depending on which session wins the startup race.
+        if self.inner.probe.enabled() {
+            self.probe_all().await;
+        }
+
+        if self.strict_global_active_uplink() {
+            if self.global_active_uplink_index().await.is_none() {
+                let _ = self
+                    .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+                    .await;
+            }
+            return;
+        }
+
+        if self
+            .active_uplink_index_for_transport(TransportKind::Tcp)
+            .await
+            .is_none()
+        {
+            let _ = self
+                .strict_transport_candidates(TransportKind::Tcp, None, None, true)
+                .await;
+        }
+        if self
+            .active_uplink_index_for_transport(TransportKind::Udp)
+            .await
+            .is_none()
+        {
+            let _ = self
+                .strict_transport_candidates(TransportKind::Udp, None, None, true)
+                .await;
+        }
+    }
+
     pub fn new(
         uplinks: Vec<UplinkConfig>,
         probe: ProbeConfig,

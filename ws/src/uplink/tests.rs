@@ -665,6 +665,131 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
 }
 
 #[tokio::test]
+async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        ProbeConfig {
+            interval: Duration::from_secs(30),
+            timeout: Duration::from_secs(5),
+            max_concurrent: 1,
+            max_dials: 1,
+            min_failures: 1,
+            attempts: 1,
+            ws: WsProbeConfig { enabled: true },
+            http: None,
+            dns: None,
+            tcp: None,
+        },
+        config,
+    )
+    .unwrap();
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    manager
+        .confirm_selected_uplink(TransportKind::Tcp, Some(&target), 0)
+        .await;
+    manager
+        .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(&target), 1)
+        .await;
+
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(0),
+        "runtime failover should stay session-local while probe remains authoritative for the global active uplink"
+    );
+}
+
+#[tokio::test]
+async fn runtime_failover_promotes_global_active_when_probe_disabled() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    manager
+        .confirm_selected_uplink(TransportKind::Tcp, Some(&target), 0)
+        .await;
+    manager
+        .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(&target), 1)
+        .await;
+
+    assert_eq!(manager.global_active_uplink_index().await, Some(1));
+}
+
+#[tokio::test]
+async fn initialize_strict_global_active_selection_sets_initial_active_before_traffic() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 80).await;
+    set_udp_status(&manager, 0, true, 80).await;
+    set_tcp_status(&manager, 1, true, 20).await;
+    set_udp_status(&manager, 1, true, 20).await;
+
+    manager.initialize_strict_active_selection().await;
+
+    assert_eq!(
+        manager.global_active_uplink_index().await,
+        Some(1),
+        "strict global mode should choose a deterministic initial active uplink before first traffic"
+    );
+}
+
+#[tokio::test]
+async fn initialize_strict_global_active_selection_does_not_override_existing_active() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new(
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    manager
+        .confirm_selected_uplink(TransportKind::Tcp, Some(&target), 0)
+        .await;
+    set_tcp_status(&manager, 0, true, 80).await;
+    set_udp_status(&manager, 0, true, 80).await;
+    set_tcp_status(&manager, 1, true, 20).await;
+    set_udp_status(&manager, 1, true, 20).await;
+
+    manager.initialize_strict_active_selection().await;
+
+    assert_eq!(manager.global_active_uplink_index().await, Some(0));
+}
+
+#[tokio::test]
 async fn repeated_runtime_failure_during_cooldown_does_not_extend_penalty_or_cooldown() {
     let manager = UplinkManager::new(
         vec![make_uplink("primary", "wss://primary.example.com/tcp")],

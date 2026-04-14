@@ -21,7 +21,9 @@ pub(super) fn websocket_target_uri(url: &Url) -> Result<String> {
         other => bail!("unsupported websocket scheme for h2 target URI: {other}"),
     };
 
-    let host = url.host_str().ok_or_else(|| anyhow::anyhow!("URL is missing host: {url}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("URL is missing host: {url}"))?;
     let mut uri = format!("{scheme}://{}", format_authority(host, url.port()));
     uri.push_str(&websocket_path(url));
     Ok(uri)
