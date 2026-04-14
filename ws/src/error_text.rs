@@ -1,5 +1,14 @@
 use anyhow::Error;
 
+const CLIENT_READ_FAILURES: &[&str] = &[
+    "client read failed",
+    "failed to read udp-in-tcp data length",
+    "failed to read udp-in-tcp data length tail",
+    "failed to read udp-in-tcp header length",
+    "failed to read udp-in-tcp target address",
+    "failed to read udp-in-tcp payload",
+];
+const CLIENT_WRITE_FAILURES: &[&str] = &["client write failed"];
 const CLIENT_IO_FAILURES: &[&str] = &[
     "client read failed",
     "client write failed",
@@ -42,7 +51,12 @@ fn contains_any(text: &str, patterns: &[&str]) -> bool {
 
 pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {
     let lower = lower_error(error);
-    contains_any(&lower, CLIENT_IO_FAILURES) && contains_any(&lower, TRANSPORT_DISCONNECTS)
+    contains_any(&lower, CLIENT_READ_FAILURES) && contains_any(&lower, TRANSPORT_DISCONNECTS)
+}
+
+pub(crate) fn is_client_write_disconnect(error: &Error) -> bool {
+    let lower = lower_error(error);
+    contains_any(&lower, CLIENT_WRITE_FAILURES) && contains_any(&lower, TRANSPORT_DISCONNECTS)
 }
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
@@ -165,7 +179,10 @@ pub(crate) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
 mod tests {
     use anyhow::anyhow;
 
-    use super::{is_expected_client_disconnect, is_upstream_runtime_failure, is_websocket_closed};
+    use super::{
+        is_client_write_disconnect, is_expected_client_disconnect, is_upstream_runtime_failure,
+        is_websocket_closed,
+    };
 
     #[test]
     fn abrupt_websocket_reset_is_treated_as_closed() {
@@ -191,6 +208,14 @@ mod tests {
             "failed to read UDP-in-TCP data length: Connection reset by peer (os error 104)"
         );
         assert!(is_expected_client_disconnect(&error));
+        assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    #[test]
+    fn client_write_reset_is_not_hidden_as_expected_disconnect() {
+        let error = anyhow!("client write failed: Connection reset by peer (os error 54)");
+        assert!(!is_expected_client_disconnect(&error));
+        assert!(is_client_write_disconnect(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 }
