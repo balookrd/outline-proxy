@@ -109,6 +109,12 @@ fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
                 .try_into()
                 .context("invalid HTTP/3 idle timeout")?,
         ))
+        // Send QUIC PING frames from the server side so that NAT mappings and
+        // stateful firewalls stay alive even when only the server is sending
+        // data.  Without this, a one-directional idle on the client→server path
+        // can expire a NAT mapping and the server's own idle timer fires after
+        // H3_QUIC_IDLE_TIMEOUT_SECS, killing all multiplexed WebSocket sessions.
+        .keep_alive_interval(Some(Duration::from_secs(H3_QUIC_PING_INTERVAL_SECS)))
         .stream_receive_window(quinn::VarInt::from_u32(
             u32::try_from(H3_STREAM_WINDOW_BYTES).expect("H3_STREAM_WINDOW_BYTES exceeds u32"),
         ))
