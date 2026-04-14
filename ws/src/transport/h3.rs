@@ -21,6 +21,7 @@ use sockudo_ws::{
     error::CloseReason as SockudoCloseReason,
 };
 use tokio::sync::Mutex;
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tracing::{debug, error};
@@ -34,6 +35,24 @@ use crate::transport::{
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
 type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
+
+// Upper bound for opening a new H3 WebSocket stream on top of an already
+// established QUIC connection.  Without this bound, a silently-broken shared
+// QUIC connection (network dropped but quinn has not yet hit its 120s idle
+// timeout) makes every new SOCKS TCP session hang indefinitely on the CONNECT
+// request instead of producing an error that would invalidate the shared
+// connection and trigger failover through `report_runtime_failure`.  The
+// handshake itself is already complete at this point; a generous budget of a
+// few seconds is plenty for a healthy path and keeps the worst-case recovery
+// latency bounded.
+const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(7);
+
+// Upper bound for establishing a fresh HTTP/3 connection (QUIC handshake +
+// HTTP/3 handshake).  Without this bound, a server black hole would let the
+// QUIC handshake stall for up to `max_idle_timeout` (120s), which masks
+// failover in exactly the same way as the shared-connection stalls do.
+// 10 seconds matches the bound used for fresh H2 and H1 handshakes.
+const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ── H3WsStream ────────────────────────────────────────────────────────────────
 
@@ -155,17 +174,29 @@ impl SharedH3Connection {
             .body(())
             .expect("request builder never fails");
 
-        let mut stream: H3RequestStreamHandle = {
+        let mut stream: H3RequestStreamHandle = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
             let mut send_request = self.send_request.lock().await;
             send_request
                 .send_request(request)
                 .await
-                .context("failed to send HTTP/3 websocket CONNECT request")?
-        };
+                .context("failed to send HTTP/3 websocket CONNECT request")
+        })
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
+                OPEN_WEBSOCKET_TIMEOUT.as_secs()
+            )
+        })??;
 
-        let response = stream
-            .recv_response()
+        let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
             .await
+            .map_err(|_| {
+                anyhow!(
+                    "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
+                    OPEN_WEBSOCKET_TIMEOUT.as_secs()
+                )
+            })?
             .context("failed to receive HTTP/3 websocket response")?;
         if !response.status().is_success() {
             bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
@@ -381,16 +412,26 @@ async fn connect_h3_connection(
         get_or_init_shared_h3_endpoint(bind_addr)?
     };
 
-    let connection = endpoint
+    let connecting = endpoint
         .connect_with(client_config, server_addr, server_name)
-        .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?
-        .await
-        .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
-    let connection_handle = connection.clone();
-
-    let (mut driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
-        .await
-        .context("HTTP/3 handshake failed")?;
+        .with_context(|| format!("failed to initiate QUIC connection to {server_addr}"))?;
+    let (connection_handle, mut driver, send_request) = timeout(FRESH_CONNECT_TIMEOUT, async {
+        let connection = connecting
+            .await
+            .with_context(|| format!("QUIC handshake failed for {server_addr}"))?;
+        let connection_handle = connection.clone();
+        let (driver, send_request) = h3::client::new(h3_quinn::Connection::new(connection))
+            .await
+            .context("HTTP/3 handshake failed")?;
+        Ok::<_, anyhow::Error>((connection_handle, driver, send_request))
+    })
+    .await
+    .map_err(|_| {
+        anyhow!(
+            "HTTP/3 fresh connect timed out after {}s to {server_addr}",
+            FRESH_CONNECT_TIMEOUT.as_secs()
+        )
+    })??;
 
     let id = H3_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
     let driver_task = AbortOnDrop(tokio::spawn(async move {
