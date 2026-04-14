@@ -699,6 +699,10 @@ Warm-standby connections respect the active downgrade state: while an uplink is 
 
 When a timeout fires, the error is treated as an upstream runtime failure: the shared pool entry (if any) is invalidated on the next open attempt, `report_runtime_failure` sets a cooldown, and the probe is woken immediately. In `active_passive + global` mode the active uplink is replaced only after the probe confirms the primary as down on a fresh connect of its own — transient shared-pool glitches do not change the exit IP, while recovery when the primary is genuinely unreachable is bounded to roughly one probe cycle.
 
+**Shared connection reconnect serialization:** when the shared H2 or H3 connection drops and N sessions simultaneously try to reconnect, only one new TCP+TLS+H2 or QUIC+TLS+H3 handshake is performed. A per-server-key `tokio::sync::Mutex<()>` serialises the slow path: the first waiter establishes the connection and caches it; all other waiters find the fresh entry under the lock and reuse it without starting their own handshake. This prevents thundering herd storms where N sessions each independently open a full TLS negotiation toward the same server after a shared connection drop.
+
+**SOCKS5 negotiation abort classification:** when a local SOCKS5 client (TUN interceptor such as Sing-box or Clash) aborts the handshake early — closing the TCP connection after the method-negotiation greeting but before or during the CONNECT request — the resulting `early eof` / `failed to read request header` errors are classified as expected client disconnects and logged at `debug` level rather than `warn`. This is normal behaviour during reconnect storms when the TUN interceptor flushes its connection pool.
+
 ## Uplink Selection and Runtime Behavior
 
 Each uplink has its own:

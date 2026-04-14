@@ -269,6 +269,25 @@ static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_SHARED_CONNECTIONS: OnceCell<Mutex<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>>> =
     OnceCell::new();
 static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
+// Per-server-key mutex that serialises concurrent QUIC connection establishment.
+// Without this, when the shared QUIC connection drops and N sessions try to
+// reconnect simultaneously, each starts its own QUIC handshake (thundering herd).
+// With the lock: the first waiter establishes the connection and caches it; the
+// rest re-check the cache after acquiring the lock and reuse the result.
+// The HashMap entries are never removed; they remain as empty Mutex<()> objects
+// (a few bytes each) — acceptable because the set of unique server keys is small.
+static H3_CONNECT_LOCKS: OnceCell<std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>> =
+    OnceCell::new();
+
+fn h3_connect_locks(
+) -> &'static std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
+    H3_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = h3_connect_locks().lock().expect("H3_CONNECT_LOCKS poisoned");
+    locks.entry(key.clone()).or_default().clone()
+}
 
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
     let cell = if bind_addr.is_ipv4() {
@@ -345,6 +364,7 @@ async fn connect_h3_quic_reused(
 ) -> Result<H3WsStream> {
     let key = H3ConnectionKey::new(server_addr, server_name, fwmark);
 
+    // Fast path: reuse an already-established shared connection without locking.
     if let Some(shared) = cached_shared_h3_connection(&key).await {
         match shared.open_websocket(server_name, server_addr.port(), path).await {
             Ok(ws) => {
@@ -363,11 +383,39 @@ async fn connect_h3_quic_reused(
         }
     }
 
-    let mut connect_guard = TransportConnectGuard::new(source, "h3");
+    // Slow path: need to establish a new QUIC connection.  Serialise per
+    // server key so that concurrent reconnect attempts (e.g. after the shared
+    // QUIC connection drops and N sessions all try to reconnect at once) share
+    // the single new connection rather than each starting their own QUIC
+    // handshake (thundering herd).
+    let connect_lock = get_h3_connect_lock(&key);
+    let _connect_guard = connect_lock.lock().await;
+
+    // Re-check the cache under the lock: another waiter may have established
+    // and cached a fresh connection while we were waiting.
+    if let Some(shared) = cached_shared_h3_connection(&key).await {
+        match shared.open_websocket(server_name, server_addr.port(), path).await {
+            Ok(ws) => {
+                crate::metrics::record_transport_connect(source, "h3", "reused");
+                return Ok(ws);
+            },
+            Err(error) => {
+                debug!(
+                    server_addr = %server_addr,
+                    server_name,
+                    error = %format!("{error:#}"),
+                    "shared h3 connection (post-lock recheck) failed to open websocket stream; reconnecting"
+                );
+                invalidate_shared_h3_connection_if_current(&key, shared.id).await;
+            },
+        }
+    }
+
+    let mut transport_guard = TransportConnectGuard::new(source, "h3");
     let shared =
         Arc::new(connect_h3_connection(server_addr, server_name, fwmark, Some(key.clone())).await?);
     let ws = shared.open_websocket(server_name, server_addr.port(), path).await?;
-    connect_guard.finish("success");
+    transport_guard.finish("success");
     cache_shared_h3_connection(key, Arc::clone(&shared)).await;
     Ok(ws)
 }
