@@ -1,17 +1,15 @@
 use futures_util::{Sink, Stream};
 use hyper_util::rt::TokioIo;
 use pin_project_lite::pin_project;
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[cfg(feature = "h3")]
 use crate::transport_h3::{
-    H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error,
-    tungstenite_to_sockudo_message,
+    H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
-
-use super::AbortOnDrop;
 
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
@@ -20,13 +18,19 @@ pin_project! {
     pub(super) struct H2WsStream {
         #[pin]
         inner: RawH2WsStream,
-        pub(super) driver_task: AbortOnDrop,
+        _shared_connection: Arc<dyn Send + Sync>,
     }
 }
 
 impl H2WsStream {
-    pub(super) fn new(inner: RawH2WsStream, driver_task: AbortOnDrop) -> Self {
-        Self { inner, driver_task }
+    pub(super) fn new_shared(
+        inner: RawH2WsStream,
+        shared_connection: Arc<dyn Send + Sync>,
+    ) -> Self {
+        Self {
+            inner,
+            _shared_connection: shared_connection,
+        }
     }
 }
 
