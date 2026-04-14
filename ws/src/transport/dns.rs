@@ -9,10 +9,7 @@ use crate::types::ServerAddr;
 
 static DNS_CACHE: OnceLock<DnsCache> = OnceLock::new();
 
-pub(super) async fn resolve_server_addr(
-    addr: &ServerAddr,
-    ipv6_first: bool,
-) -> Result<SocketAddr> {
+pub(super) async fn resolve_server_addr(addr: &ServerAddr, ipv6_first: bool) -> Result<SocketAddr> {
     resolve_host_with_preference(
         addr.host(),
         addr.port(),

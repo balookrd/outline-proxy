@@ -399,7 +399,7 @@ pub(super) async fn handle_tcp_connect(
                         };
 
                     uplinks
-                        .confirm_selected_uplink(
+                        .confirm_runtime_failover_uplink(
                             TransportKind::Tcp,
                             Some(&target),
                             next_candidate.index,

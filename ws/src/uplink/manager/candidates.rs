@@ -81,6 +81,26 @@ impl UplinkManager {
         self.store_sticky_route(&routing_key, uplink_index).await;
     }
 
+    pub async fn confirm_runtime_failover_uplink(
+        &self,
+        transport: TransportKind,
+        target: Option<&TargetAddr>,
+        uplink_index: usize,
+    ) {
+        // In strict global mode with probes enabled, the probe is the
+        // authoritative source of process-wide active-uplink health. A single
+        // successful runtime failover should rescue only the current session,
+        // not immediately repoint the global active uplink for all new
+        // sessions. Otherwise transient chunk-0 stalls or mid-session transport
+        // resets under load still cause visible global flapping even though the
+        // probe continues to report the original uplink as healthy.
+        if self.strict_global_active_uplink() && self.inner.probe.enabled() {
+            return;
+        }
+
+        self.confirm_selected_uplink(transport, target, uplink_index).await;
+    }
+
     pub async fn global_active_uplink_index(&self) -> Option<usize> {
         if !self.strict_global_active_uplink() {
             return None;
@@ -189,7 +209,7 @@ impl UplinkManager {
             .collect()
     }
 
-    async fn strict_transport_candidates(
+    pub(super) async fn strict_transport_candidates(
         &self,
         transport: TransportKind,
         _target: Option<&TargetAddr>,

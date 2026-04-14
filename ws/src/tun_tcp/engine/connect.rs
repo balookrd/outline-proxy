@@ -45,9 +45,23 @@ pub(super) async fn select_tcp_candidate_and_connect(
             progressed = true;
             match connect_tcp_uplink(uplinks, &candidate, target).await {
                 Ok((writer, reader)) => {
-                    uplinks
-                        .confirm_selected_uplink(TransportKind::Tcp, Some(target), candidate.index)
-                        .await;
+                    if failed_uplink.is_some() {
+                        uplinks
+                            .confirm_runtime_failover_uplink(
+                                TransportKind::Tcp,
+                                Some(target),
+                                candidate.index,
+                            )
+                            .await;
+                    } else {
+                        uplinks
+                            .confirm_selected_uplink(
+                                TransportKind::Tcp,
+                                Some(target),
+                                candidate.index,
+                            )
+                            .await;
+                    }
                     if let Some(from_uplink) = failed_uplink.take() {
                         metrics::record_failover("tcp", &from_uplink, &candidate.uplink.name);
                         info!(

@@ -68,7 +68,7 @@ impl UplinkManager {
         });
     }
 
-    async fn probe_all(&self) {
+    pub(super) async fn probe_all(&self) {
         let mut tasks = tokio::task::JoinSet::new();
         let now = Instant::now();
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
