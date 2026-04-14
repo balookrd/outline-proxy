@@ -56,6 +56,12 @@ const STANDBY_PROBE_FAILURES: &[&str] = &[
     "connection lost",
     "stream reset",
     "transport error",
+    // QUIC APPLICATION_CLOSE codes from the server (H3_NO_ERROR, H3_INTERNAL_ERROR,
+    // H3_REQUEST_REJECTED, etc.).  These surface as "applicationclose" in the lowered
+    // error chain.  The standby slot is simply discarded (same as any other drop), and
+    // the runtime failure path on the session side already records the event and
+    // triggers the H3→H2 downgrade — a duplicate WARN from standby adds no signal.
+    "applicationclose",
 ];
 
 fn lower_error(error: &Error) -> String {
