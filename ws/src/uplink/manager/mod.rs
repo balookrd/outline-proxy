@@ -220,6 +220,10 @@ impl UplinkManager {
                     .h3_tcp_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
+                h3_udp_downgrade_until_ms: status
+                    .h3_udp_downgrade_until
+                    .and_then(|until| until.checked_duration_since(now))
+                    .map(|v| v.as_millis()),
                 last_active_tcp_ago_ms: status
                     .last_active_tcp
                     .map(|t| now.duration_since(t).as_millis()),

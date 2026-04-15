@@ -852,9 +852,14 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
         .runtime_failure_probe_wakeup_debug_state(0, TransportKind::Udp)
         .await;
 
-    assert_eq!(
-        second_wakeup_age, first_wakeup_age,
-        "fresh cooldown should not trigger a second early probe wakeup inside the rate-limit window"
+    // Rate limit means the timestamp wasn't refreshed, so the age can only
+    // grow.  An age that DROPS would imply the wakeup re-fired and the
+    // timestamp was reset to a more recent instant.
+    let first = first_wakeup_age.expect("first wakeup recorded");
+    let second = second_wakeup_age.expect("second wakeup observed");
+    assert!(
+        second >= first,
+        "fresh cooldown should not refresh the wakeup timestamp inside the rate-limit window (first={first}, second={second})"
     );
 }
 

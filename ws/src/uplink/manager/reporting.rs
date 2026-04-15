@@ -297,6 +297,34 @@ impl UplinkManager {
                 status.h3_tcp_downgrade_until = Some(downgrade_until);
             }
         }
+        // Same downgrade logic for UDP transport.  Without this, a broken H3
+        // server would cause UDP failover to spin in a tight loop when there
+        // is only one (or only one healthy) uplink: each new UDP transport
+        // dials H3, fails on the first packet with APPLICATION_CLOSE, and
+        // re-triggers failover.  Downgrading to H2 for h3_downgrade_duration
+        // breaks the loop until the downgrade timer expires (or the H3
+        // recovery probe confirms H3 is back).
+        if matches!(transport, TransportKind::Udp) {
+            let uplink = &self.inner.uplinks[index];
+            if uplink.transport == UplinkTransport::Websocket
+                && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+            {
+                let now = tokio::time::Instant::now();
+                let mut statuses = self.inner.statuses.write().await;
+                let status = &mut statuses[index];
+                let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
+                let prev = status.h3_udp_downgrade_until;
+                if prev.map_or(true, |t| t < now) {
+                    warn!(
+                        uplink = %uplink.name,
+                        error = %format!("{error:#}"),
+                        downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                        "H3 UDP runtime error detected, downgrading UDP transport to H2"
+                    );
+                }
+                status.h3_udp_downgrade_until = Some(downgrade_until);
+            }
+        }
         self.clear_standby(index, transport).await;
     }
 

@@ -57,6 +57,11 @@ pub(super) struct UplinkStatus {
     /// errors at runtime (e.g. H3_INTERNAL_ERROR from server). Until this
     /// instant, the uplink falls back to H2 for TCP to avoid the storm.
     pub(super) h3_tcp_downgrade_until: Option<Instant>,
+    /// Same as `h3_tcp_downgrade_until` but for the UDP-over-WS transport.
+    /// Without this, UDP failover loops indefinitely when the only uplink's
+    /// H3 server is broken: each new UDP transport dialed at H3 fails on the
+    /// first packet with APPLICATION_CLOSE and re-triggers failover.
+    pub(super) h3_udp_downgrade_until: Option<Instant>,
     /// Timestamp of the most recent real TCP data transfer through this uplink.
     /// Used to suppress probe cycles when the uplink is actively carrying traffic.
     pub(super) last_active_tcp: Option<Instant>,
@@ -159,6 +164,7 @@ pub struct UplinkSnapshot {
     pub tcp_consecutive_failures: u32,
     pub udp_consecutive_failures: u32,
     pub h3_tcp_downgrade_until_ms: Option<u128>,
+    pub h3_udp_downgrade_until_ms: Option<u128>,
     pub last_active_tcp_ago_ms: Option<u128>,
     pub last_active_udp_ago_ms: Option<u128>,
 }
@@ -191,6 +197,7 @@ impl Default for UplinkStatus {
             tcp_consecutive_successes: 0,
             udp_consecutive_successes: 0,
             h3_tcp_downgrade_until: None,
+            h3_udp_downgrade_until: None,
             last_active_tcp: None,
             last_active_udp: None,
             last_probe_wakeup_tcp: None,
