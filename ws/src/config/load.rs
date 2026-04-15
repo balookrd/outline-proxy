@@ -5,7 +5,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::fs;
 use tokio::sync::RwLock;
-use tracing::info;
+use tracing::{info, warn};
 use url::Url;
 
 use crate::bypass::BypassList;
@@ -451,9 +451,21 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
         // socket the client is not actively reading), poisoning every cached
         // standby connection.  Users who genuinely need NAT-keepalive can
         // opt in via `load_balancing.tcp_ws_standby_keepalive_secs`.
-        tcp_ws_standby_keepalive_interval: lb
-            .and_then(|l| l.tcp_ws_standby_keepalive_secs)
-            .map(Duration::from_secs),
+        tcp_ws_standby_keepalive_interval: {
+            let value = lb.and_then(|l| l.tcp_ws_standby_keepalive_secs);
+            if let Some(secs) = value {
+                warn!(
+                    tcp_ws_standby_keepalive_secs = secs,
+                    "WARM-STANDBY WS PING ENABLED: this sends WebSocket Pings into idle cached \
+                     sockets, which breaks some upstream Shadowsocks stacks (observed with both \
+                     HAProxy→outline-ss-server and plain outline-ss-server over H3) and manifests \
+                     as spurious chunk-0 'Connection reset without closing handshake' on new \
+                     SOCKS sessions.  Remove `load_balancing.tcp_ws_standby_keepalive_secs` \
+                     from the config unless you know the upstream tolerates it."
+                );
+            }
+            value.map(Duration::from_secs)
+        },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
     })
 }
