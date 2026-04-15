@@ -449,32 +449,51 @@ pub(super) async fn handle_tcp_connect(
         let uplink = async move {
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
+            // Periodic Shadowsocks-level keepalive (0-length encrypted chunk)
+            // to prevent idle-connection timeouts at the upstream Shadowsocks
+            // server when nothing flows in either direction.  No-op on
+            // pre-2022 ciphers; complementary to the WebSocket Ping that the
+            // transport writer sends in parallel.
+            let mut keepalive_timer =
+                tokio::time::interval(Duration::from_secs(15));
+            keepalive_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            keepalive_timer.tick().await; // consume the immediate first tick
             loop {
-                let read = client_read
-                    .read(&mut buf)
-                    .await
-                    .context("client read failed")?;
-                if read == 0 {
-                    let supports_half_close = writer.supports_half_close();
-                    writer.close().await?;
-                    if supports_half_close {
-                        break;
+                tokio::select! {
+                    biased;
+                    res = client_read.read(&mut buf) => {
+                        let read = res.context("client read failed")?;
+                        if read == 0 {
+                            let supports_half_close = writer.supports_half_close();
+                            writer.close().await?;
+                            if supports_half_close {
+                                break;
+                            }
+                            debug!(
+                                uplink = %uplink_uplink_name,
+                                "client closed websocket-backed SOCKS TCP session; tearing down upstream immediately"
+                            );
+                            return Ok(UplinkTaskResult::CloseSession);
+                        }
+                        metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
+                        writer.send_chunk(&buf[..read]).await?;
+                        // Reset the keepalive deadline whenever we send real
+                        // data — no need to inject an idle-keepalive chunk
+                        // right after a real chunk just went out.
+                        keepalive_timer.reset();
+                        chunks_sent += 1;
+                        if chunks_sent == 1 {
+                            debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
+                        }
+                        uplinks_uplink
+                            .report_active_traffic(active_index, TransportKind::Tcp)
+                            .await;
                     }
-                    debug!(
-                        uplink = %uplink_uplink_name,
-                        "client closed websocket-backed SOCKS TCP session; tearing down upstream immediately"
-                    );
-                    return Ok(UplinkTaskResult::CloseSession);
+                    _ = keepalive_timer.tick() => {
+                        writer.send_keepalive().await
+                            .context("upstream keepalive failed")?;
+                    }
                 }
-                metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
-                writer.send_chunk(&buf[..read]).await?;
-                chunks_sent += 1;
-                if chunks_sent == 1 {
-                    debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
-                }
-                uplinks_uplink
-                    .report_active_traffic(active_index, TransportKind::Tcp)
-                    .await;
             }
             Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
         };
