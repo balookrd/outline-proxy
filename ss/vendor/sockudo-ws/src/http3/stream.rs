@@ -194,6 +194,7 @@ impl std::fmt::Debug for Http3Stream {
 pub struct Http3ServerStream {
     stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     read_buf: BytesMut,
+    write_queued: Option<usize>,
 }
 
 impl Http3ServerStream {
@@ -202,6 +203,7 @@ impl Http3ServerStream {
         Self {
             stream,
             read_buf: BytesMut::with_capacity(64 * 1024),
+            write_queued: None,
         }
     }
 }
@@ -264,14 +266,20 @@ impl AsyncWrite for Http3ServerStream {
             return Poll::Ready(Ok(0));
         }
 
-        // h3's send_data takes Bytes
-        let data = Bytes::copy_from_slice(buf);
-        let fut = self.stream.send_data(data);
-        tokio::pin!(fut);
-
-        match fut.poll(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+        if self.write_queued.is_none() {
+            let data = Bytes::copy_from_slice(buf);
+            let n = data.len();
+            match self.stream.queue_send(data) {
+                Ok(()) => self.write_queued = Some(n),
+                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            }
+        }
+        match self.stream.poll_drain(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.write_queued.take().unwrap())),
+            Poll::Ready(Err(e)) => {
+                self.write_queued = None;
+                Poll::Ready(Err(io::Error::other(e.to_string())))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -312,6 +320,7 @@ unsafe impl Send for Http3ServerStream {}
 pub struct Http3ClientStream {
     stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     read_buf: BytesMut,
+    write_queued: Option<usize>,
 }
 
 impl Http3ClientStream {
@@ -320,6 +329,7 @@ impl Http3ClientStream {
         Self {
             stream,
             read_buf: BytesMut::with_capacity(64 * 1024),
+            write_queued: None,
         }
     }
 }
@@ -382,13 +392,20 @@ impl AsyncWrite for Http3ClientStream {
             return Poll::Ready(Ok(0));
         }
 
-        let data = Bytes::copy_from_slice(buf);
-        let fut = self.stream.send_data(data);
-        tokio::pin!(fut);
-
-        match fut.poll(cx) {
-            Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+        if self.write_queued.is_none() {
+            let data = Bytes::copy_from_slice(buf);
+            let n = data.len();
+            match self.stream.queue_send(data) {
+                Ok(()) => self.write_queued = Some(n),
+                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            }
+        }
+        match self.stream.poll_drain(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.write_queued.take().unwrap())),
+            Poll::Ready(Err(e)) => {
+                self.write_queued = None;
+                Poll::Ready(Err(io::Error::other(e.to_string())))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
