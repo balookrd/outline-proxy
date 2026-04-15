@@ -16,7 +16,7 @@ TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
-NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${STATE_DIR:-/var/lib/outline-ws-rust}/nightly-commit}"
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR:-/etc/outline-ws-rust}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -351,7 +351,16 @@ main() {
   svc_tmp="${TMP_DIR}/${SERVICE_NAME}"
   tpl_tmp="${TMP_DIR}/${TEMPLATE_NAME}"
 
-  mkdir -p "$TMP_DIR" "$CONFIG_DIR" "${CONFIG_DIR}/instances" "$STATE_DIR"
+  mkdir -p "$TMP_DIR" "$CONFIG_DIR" "${CONFIG_DIR}/instances"
+
+  # With DynamicUser=true, systemd manages STATE_DIR via a private bind-mount and
+  # creates a symlink /var/lib/outline-ws-rust -> /var/lib/private/outline-ws-rust.
+  # If a plain directory already exists there (created by a prior install), systemd
+  # fails with "File exists".  Remove it so systemd can set up the symlink on first start.
+  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+    log "Удаление устаревшей директории ${STATE_DIR} (systemd создаст её сам через StateDirectory)"
+    rm -rf "$STATE_DIR"
+  fi
 
   log "Архитектура: $(uname -m)"
   log "Target: ${target}"
