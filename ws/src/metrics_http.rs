@@ -14,11 +14,11 @@ use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
 use crate::metrics::{record_metrics_http_request, render_prometheus};
-use crate::uplink::UplinkManager;
+use crate::uplink::UplinkRegistry;
 
 type MetricsResponse = Response<Full<Bytes>>;
 
-pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkManager) {
+pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) {
     tokio::spawn(async move {
         if let Err(error) = run_metrics_server(config, uplinks).await {
             warn!(error = %format!("{error:#}"), "metrics server stopped");
@@ -26,7 +26,7 @@ pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkManager) {
     });
 }
 
-async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkManager) -> Result<()> {
+async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind metrics listener {}", config.listen))?;
@@ -43,7 +43,7 @@ async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkManager) -> Re
     }
 }
 
-async fn handle_connection(stream: TcpStream, uplinks: UplinkManager) -> Result<()> {
+async fn handle_connection(stream: TcpStream, uplinks: UplinkRegistry) -> Result<()> {
     let io = TokioIo::new(stream);
     http1::Builder::new()
         .serve_connection(
@@ -58,7 +58,7 @@ async fn handle_connection(stream: TcpStream, uplinks: UplinkManager) -> Result<
     Ok(())
 }
 
-async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> MetricsResponse {
+async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> MetricsResponse {
     let path = request.uri().path();
 
     match path {
@@ -88,7 +88,7 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkManager) -> M
     }
 }
 
-async fn render_metrics_response(uplinks: UplinkManager) -> Result<MetricsResponse> {
+async fn render_metrics_response(uplinks: UplinkRegistry) -> Result<MetricsResponse> {
     let snapshot = uplinks.snapshot().await;
     let body = render_prometheus(&snapshot)?;
     Ok(plain_response(StatusCode::OK, "text/plain; version=0.0.4", Bytes::from(body)))
