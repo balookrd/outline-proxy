@@ -1,20 +1,17 @@
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use tokio::fs;
-use tokio::sync::RwLock;
-use tracing::{info, warn};
+use tracing::warn;
 use url::Url;
 
-use crate::bypass::BypassList;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 use super::args::Args;
 use super::schema::{
-    BypassSection, ConfigFile, H2Section, LoadBalancingSection, OutlineSection, ProbeSection,
-    RouteSection, TunSection, UplinkGroupSection, UplinkSection, resolve_outline_section,
+    ConfigFile, H2Section, LoadBalancingSection, OutlineSection, ProbeSection, RouteSection,
+    TunSection, UplinkGroupSection, UplinkSection, resolve_outline_section,
 };
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
@@ -47,14 +44,15 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
+    if file.as_ref().and_then(|f| f.bypass.as_ref()).is_some() {
+        bail!(
+            "[bypass] was removed: migrate to a [[route]] with via = \"direct\" \
+             (or via = \"drop\"). See config.toml / README for examples"
+        );
+    }
+
     let groups = load_groups(outline.as_ref(), file.as_ref(), args)?;
     let routing = load_routing_table(file.as_ref(), &groups)?;
-
-    // Legacy flat views — derived from the resolved groups until the per-group
-    // runtime migration lands (etaps 3–5). Multi-group configs still compile
-    // and run on the old single-manager path, but only the first group's LB
-    // config is honoured and all uplinks are pooled.
-    let (uplinks, probe, load_balancing) = derive_legacy_views(&groups);
 
     let metrics = args
         .metrics_listen
@@ -62,14 +60,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .map(|listen| MetricsConfig { listen });
     let tun = load_tun_config(tun_section, args)?;
     let h2 = load_h2_config(h2_section);
-    let bypass_section = file.as_ref().and_then(|f| f.bypass.as_ref());
-    if bypass_section.is_some() && routing.is_some() {
-        bail!(
-            "[bypass] and [[route]] are mutually exclusive: migrate [bypass] into a [[route]] \
-             with via = \"direct\""
-        );
-    }
-    let bypass = load_bypass_config(bypass_section).await?;
 
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
@@ -78,31 +68,15 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     Ok(AppConfig {
         listen,
         socks5_auth,
-        uplinks,
-        probe,
-        load_balancing,
+        groups,
+        routing,
+        routing_table: None,
         metrics,
         tun,
         h2,
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
-        bypass,
-        groups,
-        routing,
-        routing_table: None,
     })
-}
-
-/// Legacy flat view for the single-manager runtime. The new per-group
-/// runtime (etap 3) reads `AppConfig.groups` directly and will obsolete these.
-fn derive_legacy_views(
-    groups: &[UplinkGroupConfig],
-) -> (Vec<UplinkConfig>, ProbeConfig, LoadBalancingConfig) {
-    let uplinks: Vec<UplinkConfig> =
-        groups.iter().flat_map(|g| g.uplinks.iter().cloned()).collect();
-    // groups is guaranteed non-empty by load_groups.
-    let first = &groups[0];
-    (uplinks, first.probe.clone(), first.load_balancing.clone())
 }
 
 fn load_socks5_auth_config(
@@ -1004,42 +978,3 @@ fn load_h2_config(h2: Option<&H2Section>) -> H2Config {
     }
 }
 
-pub(super) async fn load_bypass_config(
-    bypass: Option<&BypassSection>,
-) -> Result<Option<Arc<RwLock<BypassList>>>> {
-    let Some(section) = bypass else {
-        return Ok(None);
-    };
-    let invert = section.invert.unwrap_or(false);
-
-    let inline_prefix_count = section.prefixes.as_ref().map_or(0, Vec::len);
-    let mut prefixes: Vec<String> = section.prefixes.clone().unwrap_or_default();
-    let mut file_prefix_count = 0;
-
-    if let Some(ref file) = section.file {
-        let file_prefixes = crate::routing::read_prefixes_from_file(file).await?;
-        file_prefix_count = file_prefixes.len();
-        prefixes.extend(file_prefixes);
-    }
-
-    if prefixes.is_empty() {
-        return Ok(None);
-    }
-
-    let list = BypassList::parse(&prefixes, invert)?;
-    info!(
-        inline_prefix_count,
-        file_prefix_count,
-        prefix_count = prefixes.len(),
-        invert,
-        "bypass prefixes loaded"
-    );
-    let shared = Arc::new(RwLock::new(list));
-
-    if let Some(ref file) = section.file {
-        let poll = Duration::from_secs(section.file_poll_secs.unwrap_or(60));
-        crate::bypass::spawn_file_watcher(file.clone(), Arc::clone(&shared), invert, poll);
-    }
-
-    Ok(Some(shared))
-}

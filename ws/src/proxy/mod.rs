@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use tokio::net::TcpStream;
-use tracing::{debug, info};
+use tracing::debug;
 
 use crate::config::{AppConfig, RouteTarget};
 use crate::metrics;
@@ -44,7 +44,7 @@ pub async fn handle_client(
     match request {
         SocksRequest::Connect(target) => {
             let dispatch = resolve_dispatch(&config, &registry, Some(&target), TransportKind::Tcp).await;
-            tcp::handle_tcp_connect(client, config, dispatch, target).await
+            tcp::handle_tcp_connect(client, dispatch, target).await
         },
         SocksRequest::UdpAssociate(client_hint) => {
             // UDP associate has no target yet — pick the default group. The
@@ -58,12 +58,12 @@ pub async fn handle_client(
     }
 }
 
-/// Resolve a single TCP target (with destination known up-front) to a
-/// [`Dispatch`]. Falls through the route's fallback (one level) if the
+/// Resolve a single TCP target (destination known up-front) to a
+/// [`Dispatch`]. Falls through the route's fallback one level when the
 /// primary group has no healthy uplinks.
 ///
-/// When `[[route]]` is not configured, the legacy `[bypass]` path is honoured
-/// for direct targets and everything else dispatches to the default group.
+/// When `[[route]]` is absent, every target dispatches to the first
+/// declared group.
 pub(super) async fn resolve_dispatch(
     config: &AppConfig,
     registry: &UplinkRegistry,
@@ -79,14 +79,6 @@ pub(super) async fn resolve_dispatch(
             },
         };
         return resolve_decision(registry, decision, transport).await;
-    }
-
-    // Legacy: honour [bypass] for direct match on the target.
-    if let (Some(t), Some(bypass)) = (target, config.bypass.as_ref()) {
-        if bypass.read().await.is_bypassed(t) {
-            info!(target = %t, "legacy bypass: direct");
-            return Dispatch::Direct;
-        }
     }
 
     Dispatch::Group {

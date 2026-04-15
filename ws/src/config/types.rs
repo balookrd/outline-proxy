@@ -5,10 +5,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
-use tokio::sync::RwLock;
 use url::Url;
 
-use crate::bypass::BypassList;
 use crate::routing::RoutingTable;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
@@ -16,14 +14,16 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 pub struct AppConfig {
     pub listen: Option<SocketAddr>,
     pub socks5_auth: Option<Socks5AuthConfig>,
-    /// Legacy flat view — kept for the existing `UplinkManager`/proxy glue
-    /// until the runtime migration to per-group managers (etaps 3–5).
-    /// Derived from `groups` when the new config is used.
-    pub uplinks: Vec<UplinkConfig>,
-    /// Legacy probe config — derived from the first group.
-    pub probe: ProbeConfig,
-    /// Legacy LB config — derived from the first group.
-    pub load_balancing: LoadBalancingConfig,
+    /// Uplink groups — each is an isolated `UplinkManager` with its own
+    /// probe loop, standby pools, sticky routes, and LB config.
+    pub groups: Vec<UplinkGroupConfig>,
+    /// Declarative policy routing config (parsed from `[[route]]`). `None`
+    /// when no `[[route]]` is declared — traffic is then unconditionally
+    /// routed through the first group.
+    pub routing: Option<RoutingTableConfig>,
+    /// Compiled, hot-reloadable routing table. Built in `run_with_config`
+    /// from `routing` when present.
+    pub routing_table: Option<Arc<RoutingTable>>,
     pub metrics: Option<MetricsConfig>,
     pub tun: Option<TunConfig>,
     pub h2: H2Config,
@@ -31,18 +31,6 @@ pub struct AppConfig {
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
-    /// Optional bypass list for SOCKS5 connections. Shared + hot-reloadable.
-    /// Kept until the routing-table integration in etap 5.
-    pub bypass: Option<Arc<RwLock<BypassList>>>,
-    /// New: explicit uplink groups, each with its own LB + probe configs.
-    pub groups: Vec<UplinkGroupConfig>,
-    /// Declarative policy routing config (parsed from `[[route]]`). `None`
-    /// when the legacy `[bypass]` path is used.
-    pub routing: Option<RoutingTableConfig>,
-    /// Compiled, hot-reloadable routing table. Synthesised from either
-    /// `routing` (new config) or from `[bypass]` + default group (legacy).
-    /// Always present once [`finalize_runtime`] has been called.
-    pub routing_table: Option<Arc<RoutingTable>>,
 }
 
 /// New: a named collection of uplinks sharing a single LB + probe configuration.

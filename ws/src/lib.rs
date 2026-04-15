@@ -1,5 +1,4 @@
 pub(crate) mod atomic_counter;
-pub mod bypass;
 pub mod config;
 pub mod crypto;
 pub(crate) mod dns_cache;
@@ -41,16 +40,21 @@ use crate::metrics_http::spawn_metrics_server;
 use crate::uplink::{UplinkRegistry, log_registry_summary};
 
 fn warn_about_tcp_probe_target(config: &AppConfig) {
-    let Some(tcp_probe) = config.probe.tcp.as_ref() else {
-        return;
-    };
-
-    if matches!(tcp_probe.port, 80 | 443 | 8080 | 8443) {
-        warn!(
-            host = %tcp_probe.host,
-            port = tcp_probe.port,
-            "probe.tcp waits for the remote side to send bytes or close cleanly; HTTP/HTTPS-style targets on common web ports usually wait for a client request and will time out. Prefer probe.http for HTTP endpoints or use a speak-first TCP service for probe.tcp"
-        );
+    for group in &config.groups {
+        let Some(tcp_probe) = group.probe.tcp.as_ref() else {
+            continue;
+        };
+        if matches!(tcp_probe.port, 80 | 443 | 8080 | 8443) {
+            warn!(
+                group = %group.name,
+                host = %tcp_probe.host,
+                port = tcp_probe.port,
+                "probe.tcp waits for the remote side to send bytes or close cleanly; \
+                 HTTP/HTTPS-style targets on common web ports usually wait for a client request \
+                 and will time out. Prefer probe.http for HTTP endpoints or use a speak-first \
+                 TCP service for probe.tcp"
+            );
+        }
     }
 }
 

@@ -150,6 +150,19 @@ impl UplinkManager {
         &self.inner.uplinks
     }
 
+    /// Expose this group's load-balancing config so the dispatch layer can
+    /// honour per-group timeouts / keepalives without reaching into private
+    /// internals.
+    pub fn load_balancing(&self) -> &LoadBalancingConfig {
+        &self.inner.load_balancing
+    }
+
+    /// Expose this group's probe config (used by startup warnings that need
+    /// to inspect configured probe targets).
+    pub fn probe_config(&self) -> &ProbeConfig {
+        &self.inner.probe
+    }
+
     pub async fn snapshot(&self) -> UplinkManagerSnapshot {
         let now = Instant::now();
         let statuses = self.inner.statuses.read().await.clone();
