@@ -16,7 +16,7 @@ TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
-NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR:-/etc/outline-ws-rust}/nightly-commit}"
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
