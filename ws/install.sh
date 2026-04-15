@@ -15,6 +15,8 @@ TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
+FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${STATE_DIR:-/var/lib/outline-ws-rust}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -55,6 +57,7 @@ usage() {
   sudo ./install.sh
   sudo CHANNEL=nightly ./install.sh
   sudo VERSION=v1.2.3 ./install.sh
+  sudo ./install.sh --force
   ./install.sh --help
 
 Что делает скрипт:
@@ -68,6 +71,7 @@ usage() {
 Основные переменные окружения:
   CHANNEL=stable|nightly    Канал релизов, по умолчанию stable
   VERSION=...               stable: 1.2.3 или v1.2.3; nightly: nightly
+  FORCE=1                   Установить, даже если версия совпадает
   INSTALL_PATH=...          Куда установить бинарник
   CONFIG_DIR=...            Каталог конфигурации
   STATE_DIR=...             Каталог рабочего состояния
@@ -80,19 +84,22 @@ EOF
 }
 
 parse_args() {
-  case "${1:-}" in
-    "")
-      return 0
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      usage >&2
-      die "Неизвестный аргумент: $1"
-      ;;
-  esac
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      -f|--force)
+        FORCE=1
+        ;;
+      *)
+        usage >&2
+        die "Неизвестный аргумент: $1"
+        ;;
+    esac
+    shift
+  done
 }
 
 github_api_get() {
@@ -193,6 +200,45 @@ asset_url_from_release() {
     | head -n1 || true
 }
 
+# Возвращает короткий (12 символов) SHA коммита для тега nightly.
+# Сначала берёт target_commitish из release JSON; если это ветка, а не SHA —
+# делает доп. запрос к refs API и при annotated-теге разыменовывает его.
+get_nightly_commit_sha() {
+  local release_json="$1"
+  local commitish sha type ref_json tag_json
+
+  commitish="$(printf '%s' "$release_json" | release_field target_commitish)"
+
+  if [[ "$commitish" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "${commitish:0:12}"
+    return
+  fi
+
+  # target_commitish — имя ветки; резолвим через refs API
+  ref_json="$(github_api_get \
+    "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/ref/tags/nightly" 2>/dev/null || true)"
+
+  [[ -n "$ref_json" ]] || { echo ""; return; }
+
+  type="$(printf '%s' "$ref_json" \
+    | grep -oE '"type":[[:space:]]*"[^"]+"' | head -n1 \
+    | sed -E 's/^"type":[[:space:]]*"([^"]+)"$/\1/')"
+  sha="$(printf '%s' "$ref_json" \
+    | grep -oE '"sha":[[:space:]]*"[^"]+"' | head -n1 \
+    | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+
+  if [[ "$type" == "tag" ]]; then
+    # Annotated tag — разыменовываем до commit-объекта
+    tag_json="$(github_api_get \
+      "${GITHUB_API}/repos/${REPO_OWNER}/${REPO_NAME}/git/tags/${sha}" 2>/dev/null || true)"
+    sha="$(printf '%s' "$tag_json" \
+      | grep -oE '"sha":[[:space:]]*"[^"]+"' | tail -n1 \
+      | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+  fi
+
+  echo "${sha:0:12}"
+}
+
 install_binary() {
   local archive="$1"
   local workdir="$2"
@@ -254,6 +300,15 @@ download_instance_example_if_missing() {
   fi
 }
 
+get_installed_version() {
+  if [[ -x "$INSTALL_PATH" ]]; then
+    "$INSTALL_PATH" --version 2>/dev/null | awk '{print $2}' || true
+  fi
+}
+
+# Убирает префикс 'v' из тега релиза для сравнения с выводом --version
+strip_v() { echo "${1#v}"; }
+
 collect_active_units() {
   systemctl list-units --type=service --state=active --no-legend --no-pager \
     | awk '{print $1}' \
@@ -277,7 +332,7 @@ restart_previously_active_units() {
 }
 
 main() {
-  parse_args "${1:-}"
+  parse_args "$@"
   require_root
   need_cmd curl
   need_cmd tar
@@ -308,11 +363,68 @@ main() {
   asset_url="$(printf '%s' "$release_json" | asset_url_from_release "$target")"
 
   log "Релиз: ${release_tag}${release_name:+ (${release_name})}"
+
+  if [[ -z "$FORCE" ]]; then
+    case "$CHANNEL" in
+      stable)
+        local installed_ver release_ver
+        installed_ver="$(get_installed_version)"
+        release_ver="$(strip_v "$release_tag")"
+        if [[ -n "$installed_ver" && "$installed_ver" == "$release_ver" ]]; then
+          log "Уже установлена актуальная версия: ${installed_ver} — обновление не требуется"
+          log "Используй --force или FORCE=1 для принудительной переустановки"
+          exit 0
+        fi
+        if [[ -n "$installed_ver" ]]; then
+          log "Обновление: ${installed_ver} → ${release_ver}"
+        fi
+        ;;
+      nightly)
+        local new_sha installed_sha
+        new_sha="$(get_nightly_commit_sha "$release_json")"
+        installed_sha=""
+        if [[ -f "$NIGHTLY_COMMIT_FILE" ]]; then
+          installed_sha="$(cat "$NIGHTLY_COMMIT_FILE" 2>/dev/null || true)"
+        fi
+        if [[ -n "$new_sha" ]]; then
+          if [[ "$installed_sha" == "$new_sha" && -x "$INSTALL_PATH" ]]; then
+            log "Уже установлен актуальный nightly: ${new_sha} — обновление не требуется"
+            log "Используй --force или FORCE=1 для принудительной переустановки"
+            exit 0
+          fi
+          if [[ -n "$installed_sha" ]]; then
+            log "Обновление nightly: ${installed_sha} → ${new_sha}"
+          else
+            log "Установка nightly: ${new_sha}"
+          fi
+        else
+          log "Предупреждение: не удалось получить commit SHA для nightly — устанавливаем безусловно"
+        fi
+        ;;
+    esac
+  fi
+
   log "Скачивание бинарника: ${asset_url}"
 
   curl -fL --retry 3 --retry-delay 2 -o "$archive_path" "$asset_url"
   install_binary "$archive_path" "$workdir"
   log "Бинарник установлен: ${INSTALL_PATH}"
+
+  if [[ "$CHANNEL" == "nightly" ]]; then
+    local saved_sha
+    saved_sha="$(get_nightly_commit_sha "$release_json")"
+    if [[ -n "$saved_sha" ]]; then
+      mkdir -p "$(dirname "$NIGHTLY_COMMIT_FILE")"
+      printf '%s\n' "$saved_sha" > "$NIGHTLY_COMMIT_FILE"
+      chmod 0644 "$NIGHTLY_COMMIT_FILE"
+      log "Nightly commit: ${saved_sha}"
+    fi
+  else
+    if [[ -f "$NIGHTLY_COMMIT_FILE" ]]; then
+      rm -f "$NIGHTLY_COMMIT_FILE"
+      log "Удалён файл nightly-commit (переключение на stable)"
+    fi
+  fi
 
   download_unit_files "$svc_tmp" "$tpl_tmp"
   install_unit_files "$svc_tmp" "$tpl_tmp"
