@@ -114,7 +114,7 @@ fn render_prometheus_exports_transport_connect_metrics() {
     record_transport_connect("tun_tcp", "h2", "started");
     record_transport_connect("tun_tcp", "h2", "success");
     record_transport_connect("probe_http", "h3", "error");
-    record_runtime_failure_suppressed("udp", "primary");
+    record_runtime_failure_suppressed("udp", "main", "primary");
     add_upstream_transports_active("tun_tcp", "tcp", 1);
     record_upstream_transport("tun_tcp", "tcp", "opened");
     record_upstream_transport("tun_tcp", "tcp", "closed");
@@ -134,7 +134,7 @@ fn render_prometheus_exports_transport_connect_metrics() {
         "outline_ws_rust_transport_connects_total{mode=\"h3\",result=\"error\",source=\"probe_http\"}"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failures_suppressed_total{transport=\"udp\",uplink=\"primary\"}"
+        "outline_ws_rust_uplink_runtime_failures_suppressed_total{group=\"main\",transport=\"udp\",uplink=\"primary\"}"
     ));
     assert!(rendered.contains(
         "outline_ws_rust_upstream_transports_active{protocol=\"tcp\",source=\"tun_tcp\"}"
@@ -148,60 +148,60 @@ fn render_prometheus_exports_transport_connect_metrics() {
 fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     let _guard = test_guard();
     init();
-    add_bytes("tcp", "client_to_upstream", "nuxt", 128);
-    add_bytes("udp", "upstream_to_client", "senko", 256);
-    add_bytes("tcp", "upstream_to_client", BYPASS_UPLINK_LABEL, 512);
-    add_probe_bytes("primary", "tcp", "http", "outgoing", 64);
-    add_probe_bytes("primary", "udp", "dns", "incoming", 96);
-    record_probe_wakeup("primary", "udp", "runtime_failure", "sent");
-    record_probe_wakeup("primary", "udp", "runtime_failure", "suppressed");
-    record_runtime_failure_cause("tcp", "primary", "timeout");
-    record_runtime_failure_signature("tcp", "primary", "read_failed");
-    record_runtime_failure_other_detail("tcp", "primary", "failed_to_read_chunk");
-    add_udp_datagram("client_to_upstream", "nuxt");
-    add_udp_datagram("upstream_to_client", "senko");
-    add_udp_datagram("upstream_to_client", BYPASS_UPLINK_LABEL);
+    add_bytes("tcp", "client_to_upstream", "main", "nuxt", 128);
+    add_bytes("udp", "upstream_to_client", "main", "senko", 256);
+    add_bytes("tcp", "upstream_to_client", BYPASS_GROUP_LABEL, BYPASS_UPLINK_LABEL, 512);
+    add_probe_bytes("main", "primary", "tcp", "http", "outgoing", 64);
+    add_probe_bytes("main", "primary", "udp", "dns", "incoming", 96);
+    record_probe_wakeup("main", "primary", "udp", "runtime_failure", "sent");
+    record_probe_wakeup("main", "primary", "udp", "runtime_failure", "suppressed");
+    record_runtime_failure_cause("tcp", "main", "primary", "timeout");
+    record_runtime_failure_signature("tcp", "main", "primary", "read_failed");
+    record_runtime_failure_other_detail("tcp", "main", "primary", "failed_to_read_chunk");
+    add_udp_datagram("client_to_upstream", "main", "nuxt");
+    add_udp_datagram("upstream_to_client", "main", "senko");
+    add_udp_datagram("upstream_to_client", BYPASS_GROUP_LABEL, BYPASS_UPLINK_LABEL);
     record_dropped_oversized_udp_packet("incoming");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
+        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"main\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",protocol=\"udp\",uplink=\"senko\"} 256"
+        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"main\",protocol=\"udp\",uplink=\"senko\"} 256"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",protocol=\"tcp\",uplink=\"bypass\"} 512"
+        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"tcp\",uplink=\"bypass\"} 512"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_bytes_total{direction=\"outgoing\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
+        "outline_ws_rust_probe_bytes_total{direction=\"outgoing\",group=\"main\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_bytes_total{direction=\"incoming\",probe=\"dns\",transport=\"udp\",uplink=\"primary\"} 96"
+        "outline_ws_rust_probe_bytes_total{direction=\"incoming\",group=\"main\",probe=\"dns\",transport=\"udp\",uplink=\"primary\"} 96"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_wakeups_total{reason=\"runtime_failure\",result=\"sent\",transport=\"udp\",uplink=\"primary\"} 1"
+        "outline_ws_rust_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"sent\",transport=\"udp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_probe_wakeups_total{reason=\"runtime_failure\",result=\"suppressed\",transport=\"udp\",uplink=\"primary\"} 1"
+        "outline_ws_rust_probe_wakeups_total{group=\"main\",reason=\"runtime_failure\",result=\"suppressed\",transport=\"udp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_causes_total{cause=\"timeout\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_rust_uplink_runtime_failure_causes_total{cause=\"timeout\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_signatures_total{signature=\"read_failed\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_rust_uplink_runtime_failure_signatures_total{group=\"main\",signature=\"read_failed\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",transport=\"tcp\",uplink=\"primary\"} 1"
+        "outline_ws_rust_uplink_runtime_failure_other_details_total{detail=\"failed_to_read_chunk\",group=\"main\",transport=\"tcp\",uplink=\"primary\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",uplink=\"nuxt\"} 1"
+        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"main\",uplink=\"nuxt\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"senko\"} 1"
+        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"main\",uplink=\"senko\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"bypass\"} 1"
+        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"bypass\"} 1"
     ));
     assert!(
         rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1")
@@ -236,6 +236,8 @@ fn render_prometheus_exports_routing_selection_info() {
         "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1"
     ));
 }
+
+// Pull BYPASS_GROUP_LABEL into scope via existing glob import.
 
 #[test]
 fn render_prometheus_clears_previous_global_active_uplink() {
@@ -367,16 +369,16 @@ fn init_exports_zero_value_request_and_session_series() {
         rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
     );
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",protocol=\"tcp\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"direct\",protocol=\"tcp\",uplink=\"bypass\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",protocol=\"udp\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"udp\",uplink=\"bypass\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"direct\",uplink=\"bypass\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"bypass\"} 0"
     ));
 }
 

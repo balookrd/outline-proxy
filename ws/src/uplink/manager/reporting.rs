@@ -91,6 +91,7 @@ impl UplinkManager {
             let status = &mut statuses[index];
             status.last_error = Some(error_text.clone());
             let uplink_name = self.inner.uplinks[index].name.clone();
+            let group_name = self.inner.group_name.as_str();
             match transport {
                 TransportKind::Tcp => {
                     let already_in_cooldown =
@@ -112,22 +113,33 @@ impl UplinkManager {
                         }
                         status.cooldown_until_tcp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
-                        metrics::record_runtime_failure("tcp", &uplink_name);
-                        metrics::record_runtime_failure_cause("tcp", &uplink_name, failure_cause);
+                        metrics::record_runtime_failure("tcp", group_name, &uplink_name);
+                        metrics::record_runtime_failure_cause(
+                            "tcp",
+                            group_name,
+                            &uplink_name,
+                            failure_cause,
+                        );
                         metrics::record_runtime_failure_signature(
                             "tcp",
+                            group_name,
                             &uplink_name,
                             failure_signature,
                         );
                         if let Some(detail) = &failure_other_detail {
                             metrics::record_runtime_failure_other_detail(
                                 "tcp",
+                                group_name,
                                 &uplink_name,
                                 detail,
                             );
                         }
                     } else {
-                        metrics::record_runtime_failure_suppressed("tcp", &uplink_name);
+                        metrics::record_runtime_failure_suppressed(
+                            "tcp",
+                            group_name,
+                            &uplink_name,
+                        );
                     }
                     // When probe is enabled it is the authoritative source of
                     // tcp_healthy.  A single runtime connection failure is not
@@ -168,22 +180,33 @@ impl UplinkManager {
                         }
                         status.cooldown_until_udp =
                             Some(now + self.inner.load_balancing.failure_cooldown);
-                        metrics::record_runtime_failure("udp", &uplink_name);
-                        metrics::record_runtime_failure_cause("udp", &uplink_name, failure_cause);
+                        metrics::record_runtime_failure("udp", group_name, &uplink_name);
+                        metrics::record_runtime_failure_cause(
+                            "udp",
+                            group_name,
+                            &uplink_name,
+                            failure_cause,
+                        );
                         metrics::record_runtime_failure_signature(
                             "udp",
+                            group_name,
                             &uplink_name,
                             failure_signature,
                         );
                         if let Some(detail) = &failure_other_detail {
                             metrics::record_runtime_failure_other_detail(
                                 "udp",
+                                group_name,
                                 &uplink_name,
                                 detail,
                             );
                         }
                     } else {
-                        metrics::record_runtime_failure_suppressed("udp", &uplink_name);
+                        metrics::record_runtime_failure_suppressed(
+                            "udp",
+                            group_name,
+                            &uplink_name,
+                        );
                     }
                     if !self.inner.probe.enabled() {
                         status.udp_healthy = Some(false);
@@ -233,6 +256,7 @@ impl UplinkManager {
             // without waiting for the next scheduled interval.
             if should_wake_probe {
                 metrics::record_probe_wakeup(
+                    &self.inner.group_name,
                     &uplink_name,
                     match transport {
                         TransportKind::Tcp => "tcp",
@@ -244,6 +268,7 @@ impl UplinkManager {
                 self.inner.probe_wakeup.notify_one();
             } else if self.inner.probe.enabled() {
                 metrics::record_probe_wakeup(
+                    &self.inner.group_name,
                     &uplink_name,
                     match transport {
                         TransportKind::Tcp => "tcp",

@@ -169,8 +169,18 @@ impl TunUdpEngine {
                 }
                 return Err(error);
             }
-            metrics::add_udp_datagram("client_to_upstream", &replacement_name);
-            metrics::add_bytes("udp", "client_to_upstream", &replacement_name, payload.len());
+            metrics::add_udp_datagram(
+                "client_to_upstream",
+                manager.group_name(),
+                &replacement_name,
+            );
+            metrics::add_bytes(
+                "udp",
+                "client_to_upstream",
+                manager.group_name(),
+                &replacement_name,
+                payload.len(),
+            );
             debug!(
                 flow_id = replacement_flow_id,
                 uplink = %replacement_name,
@@ -178,8 +188,14 @@ impl TunUdpEngine {
             );
             let _ = replacement_index;
         } else {
-            metrics::add_udp_datagram("client_to_upstream", &uplink_name);
-            metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
+            metrics::add_udp_datagram("client_to_upstream", manager.group_name(), &uplink_name);
+            metrics::add_bytes(
+                "udp",
+                "client_to_upstream",
+                manager.group_name(),
+                &uplink_name,
+                payload.len(),
+            );
         }
 
         Ok(())

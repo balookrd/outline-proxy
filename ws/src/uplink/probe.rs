@@ -19,6 +19,7 @@ use crate::types::{TargetAddr, UplinkTransport};
 use super::types::ProbeOutcome;
 
 pub(super) async fn probe_uplink(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -27,13 +28,13 @@ pub(super) async fn probe_uplink(
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency) = timeout(
         probe.timeout,
-        run_tcp_probe(uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
+        run_tcp_probe(group, uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
     )
     .await
     .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
     let (udp_ok, udp_applicable, udp_latency) = timeout(
         probe.timeout,
-        run_udp_probe(uplink, probe, dial_limit, effective_udp_mode),
+        run_udp_probe(group, uplink, probe, dial_limit, effective_udp_mode),
     )
     .await
     .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
@@ -48,6 +49,7 @@ pub(super) async fn probe_uplink(
 }
 
 pub(super) async fn run_tcp_probe(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -59,6 +61,7 @@ pub(super) async fn run_tcp_probe(
         let result = match uplink.transport {
             UplinkTransport::Websocket => {
                 run_ws_probe(
+                    group,
                     &uplink.name,
                     "tcp",
                     uplink
@@ -77,6 +80,7 @@ pub(super) async fn run_tcp_probe(
             },
         };
         crate::metrics::record_probe(
+            group,
             &uplink.name,
             "tcp",
             "ws",
@@ -87,9 +91,16 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
-        let result =
-            run_http_probe(uplink, http_probe, Arc::clone(&dial_limit), effective_tcp_mode).await;
+        let result = run_http_probe(
+            group,
+            uplink,
+            http_probe,
+            Arc::clone(&dial_limit),
+            effective_tcp_mode,
+        )
+        .await;
         crate::metrics::record_probe(
+            group,
             &uplink.name,
             "tcp",
             "http",
@@ -101,10 +112,16 @@ pub(super) async fn run_tcp_probe(
     }
     if let Some(tcp_probe) = &probe.tcp {
         let probe_started = Instant::now();
-        let result =
-            run_tcp_tunnel_probe(uplink, tcp_probe, Arc::clone(&dial_limit), effective_tcp_mode)
-                .await;
+        let result = run_tcp_tunnel_probe(
+            group,
+            uplink,
+            tcp_probe,
+            Arc::clone(&dial_limit),
+            effective_tcp_mode,
+        )
+        .await;
         crate::metrics::record_probe(
+            group,
             &uplink.name,
             "tcp",
             "tcp",
@@ -121,6 +138,7 @@ pub(super) async fn run_tcp_probe(
 }
 
 pub(super) async fn run_udp_probe(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -136,6 +154,7 @@ pub(super) async fn run_udp_probe(
         let result = match uplink.transport {
             UplinkTransport::Websocket => {
                 run_ws_probe(
+                    group,
                     &uplink.name,
                     "udp",
                     uplink
@@ -154,6 +173,7 @@ pub(super) async fn run_udp_probe(
             },
         };
         crate::metrics::record_probe(
+            group,
             &uplink.name,
             "udp",
             "ws",
@@ -164,9 +184,16 @@ pub(super) async fn run_udp_probe(
     }
     if let Some(dns_probe) = &probe.dns {
         let probe_started = Instant::now();
-        let result =
-            run_dns_probe(uplink, dns_probe, Arc::clone(&dial_limit), effective_udp_mode).await;
+        let result = run_dns_probe(
+            group,
+            uplink,
+            dns_probe,
+            Arc::clone(&dial_limit),
+            effective_udp_mode,
+        )
+        .await;
         crate::metrics::record_probe(
+            group,
             &uplink.name,
             "udp",
             "dns",
@@ -183,6 +210,7 @@ pub(super) async fn run_udp_probe(
 }
 
 pub(super) async fn run_ws_probe(
+    _group: &str,
     uplink_name: &str,
     transport: &'static str,
     url: &url::Url,
@@ -294,6 +322,7 @@ async fn close_probe_udp_transport(
 }
 
 pub(super) async fn run_http_probe(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &HttpProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -411,7 +440,14 @@ pub(super) async fn run_http_probe(
             .send_chunk(&target_wire)
             .await
             .context("failed to send HTTP probe target")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", target_wire.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "tcp",
+            "http",
+            "outgoing",
+            target_wire.len(),
+        );
 
         // Use HEAD so health checks do not pull response bodies through the data
         // path. This keeps probe traffic tiny even when the probe URL points at a
@@ -421,13 +457,27 @@ pub(super) async fn run_http_probe(
             .send_chunk(request.as_bytes())
             .await
             .context("failed to send HTTP probe request")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "outgoing", request.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "tcp",
+            "http",
+            "outgoing",
+            request.len(),
+        );
 
         let response = reader
             .read_chunk()
             .await
             .context("failed to read HTTP probe response")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "http", "incoming", response.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "tcp",
+            "http",
+            "incoming",
+            response.len(),
+        );
         let line = String::from_utf8_lossy(&response);
         let status = line
             .lines()
@@ -452,6 +502,7 @@ pub(super) async fn run_http_probe(
 }
 
 pub(super) async fn run_tcp_tunnel_probe(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &TcpProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -551,11 +602,19 @@ pub(super) async fn run_tcp_tunnel_probe(
             .send_chunk(&target_wire)
             .await
             .context("failed to send TCP tunnel probe target address")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "tcp", "tcp", "outgoing", target_wire.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "tcp",
+            "tcp",
+            "outgoing",
+            target_wire.len(),
+        );
 
         match reader.read_chunk().await {
             Ok(chunk) => {
                 crate::metrics::add_probe_bytes(
+                    group,
                     &uplink.name,
                     "tcp",
                     "tcp",
@@ -592,6 +651,7 @@ pub(super) async fn run_tcp_tunnel_probe(
 }
 
 pub(super) async fn run_dns_probe(
+    group: &str,
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -650,12 +710,26 @@ pub(super) async fn run_dns_probe(
             .send_packet(&payload)
             .await
             .context("failed to send DNS probe packet")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "outgoing", payload.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "udp",
+            "dns",
+            "outgoing",
+            payload.len(),
+        );
         let response = transport
             .read_packet()
             .await
             .context("failed to read DNS probe response")?;
-        crate::metrics::add_probe_bytes(&uplink.name, "udp", "dns", "incoming", response.len());
+        crate::metrics::add_probe_bytes(
+            group,
+            &uplink.name,
+            "udp",
+            "dns",
+            "incoming",
+            response.len(),
+        );
         let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
         let dns = &response[consumed..];
 

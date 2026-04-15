@@ -221,7 +221,7 @@ pub(super) async fn handle_tcp_connect(
         uplinks
             .confirm_selected_uplink(TransportKind::Tcp, Some(&target), candidate.index)
             .await;
-        metrics::record_uplink_selected("tcp", &selected_uplink_name);
+        metrics::record_uplink_selected("tcp", uplinks.group_name(), &selected_uplink_name);
         info!(
             uplink = %selected_uplink_name,
             weight = candidate.uplink.weight,
@@ -293,6 +293,7 @@ pub(super) async fn handle_tcp_connect(
                                 metrics::add_bytes(
                                     "tcp",
                                     "client_to_upstream",
+                                    uplinks.group_name(),
                                     &active_uplink_name,
                                     n,
                                 );
@@ -466,8 +467,17 @@ pub(super) async fn handle_tcp_connect(
                             next_candidate.index,
                         )
                         .await;
-                    metrics::record_failover("tcp", &active_uplink_name, &next_candidate.uplink.name);
-                    metrics::record_uplink_selected("tcp", &next_candidate.uplink.name);
+                    metrics::record_failover(
+                        "tcp",
+                        uplinks.group_name(),
+                        &active_uplink_name,
+                        &next_candidate.uplink.name,
+                    );
+                    metrics::record_uplink_selected(
+                        "tcp",
+                        uplinks.group_name(),
+                        &next_candidate.uplink.name,
+                    );
                     info!(
                         from = %active_uplink_name,
                         to = %next_candidate.uplink.name,
@@ -548,7 +558,13 @@ pub(super) async fn handle_tcp_connect(
                     writer.close().await?;
                     break;
                 }
-                metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
+                metrics::add_bytes(
+                    "tcp",
+                    "client_to_upstream",
+                    uplinks_uplink.group_name(),
+                    &uplink_uplink_name,
+                    read,
+                );
                 writer.send_chunk(&buf[..read]).await?;
                 chunks_sent += 1;
                 if chunks_sent == 1 {
@@ -567,6 +583,7 @@ pub(super) async fn handle_tcp_connect(
             metrics::add_bytes(
                 "tcp",
                 "upstream_to_client",
+                uplinks_downlink.group_name(),
                 &downlink_uplink_name,
                 first_upstream_chunk.len(),
             );
@@ -602,6 +619,7 @@ pub(super) async fn handle_tcp_connect(
                 metrics::add_bytes(
                     "tcp",
                     "upstream_to_client",
+                    uplinks_downlink.group_name(),
                     &downlink_uplink_name,
                     chunk.len(),
                 );
@@ -700,7 +718,13 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
             if read == 0 {
                 break;
             }
-            metrics::add_bytes("tcp", "client_to_upstream", metrics::BYPASS_UPLINK_LABEL, read);
+            metrics::add_bytes(
+                "tcp",
+                "client_to_upstream",
+                metrics::BYPASS_GROUP_LABEL,
+                metrics::BYPASS_UPLINK_LABEL,
+                read,
+            );
             upstream_write.write_all(&buf[..read]).await?;
         }
         upstream_write.shutdown().await?;
@@ -713,7 +737,13 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
             if read == 0 {
                 break;
             }
-            metrics::add_bytes("tcp", "upstream_to_client", metrics::BYPASS_UPLINK_LABEL, read);
+            metrics::add_bytes(
+                "tcp",
+                "upstream_to_client",
+                metrics::BYPASS_GROUP_LABEL,
+                metrics::BYPASS_UPLINK_LABEL,
+                read,
+            );
             client_write.write_all(&buf[..read]).await?;
         }
         client_write.shutdown().await?;

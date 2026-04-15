@@ -101,11 +101,21 @@ impl UplinkManager {
                     uplink = %candidate.uplink.name,
                     "discarded stale warm-standby TCP websocket at acquisition time"
                 );
-                metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "stale");
+                metrics::record_warm_standby_acquire(
+                    "tcp",
+                    &self.inner.group_name,
+                    &candidate.uplink.name,
+                    "stale",
+                );
                 // drop `ws`, loop to try the next pool entry
                 continue;
             }
-            metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
+            metrics::record_warm_standby_acquire(
+                "tcp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "hit",
+            );
             debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
             return Some(ws);
         }
@@ -120,7 +130,12 @@ impl UplinkManager {
         if candidate.uplink.transport != UplinkTransport::Websocket {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
-        metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
+        metrics::record_warm_standby_acquire(
+            "tcp",
+            &self.inner.group_name,
+            &candidate.uplink.name,
+            "miss",
+        );
         let mode = self.effective_tcp_ws_mode(candidate.index).await;
         debug!(
             uplink = %candidate.uplink.name,
@@ -169,7 +184,12 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<UdpWsTransport> {
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-            metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
+            metrics::record_warm_standby_acquire(
+                "udp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "miss",
+            );
             let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
                 anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
             })?;
@@ -195,7 +215,12 @@ impl UplinkManager {
         let pool = &self.inner.standby_pools[candidate.index];
         if let Some(ws) = pool.udp.lock().await.pop_front() {
             self.spawn_refill(candidate.index, TransportKind::Udp);
-            metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "hit");
+            metrics::record_warm_standby_acquire(
+                "udp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "hit",
+            );
             debug!(uplink = %candidate.uplink.name, "using warm-standby UDP websocket");
             return Ok(UdpWsTransport::from_websocket(
                 ws,
@@ -206,7 +231,12 @@ impl UplinkManager {
             )?);
         }
 
-        metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
+        metrics::record_warm_standby_acquire(
+            "udp",
+            &self.inner.group_name,
+            &candidate.uplink.name,
+            "miss",
+        );
         debug!(uplink = %candidate.uplink.name, "no warm-standby UDP websocket available, dialing on-demand");
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
             anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
@@ -300,6 +330,7 @@ impl UplinkManager {
                 },
             };
             metrics::record_probe(
+                &self.inner.group_name,
                 &uplink.name,
                 "tcp",
                 "standby_ws_keepalive",
@@ -413,7 +444,12 @@ impl UplinkManager {
                 Ok(ws) => {
                     pool_vec.lock().await.push_back(ws);
                     current_len += 1;
-                    metrics::record_warm_standby_refill(transport_label, &uplink.name, true);
+                    metrics::record_warm_standby_refill(
+                        transport_label,
+                        &self.inner.group_name,
+                        &uplink.name,
+                        true,
+                    );
                     debug!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -422,7 +458,12 @@ impl UplinkManager {
                     );
                 },
                 Err(error) => {
-                    metrics::record_warm_standby_refill(transport_label, &uplink.name, false);
+                    metrics::record_warm_standby_refill(
+                        transport_label,
+                        &self.inner.group_name,
+                        &uplink.name,
+                        false,
+                    );
                     warn!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -481,6 +522,7 @@ impl UplinkManager {
                 Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
             };
             metrics::record_probe(
+                &self.inner.group_name,
                 &uplink.name,
                 match transport {
                     TransportKind::Tcp => "tcp",

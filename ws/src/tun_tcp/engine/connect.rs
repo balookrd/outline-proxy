@@ -63,7 +63,12 @@ pub(super) async fn select_tcp_candidate_and_connect(
                             .await;
                     }
                     if let Some(from_uplink) = failed_uplink.take() {
-                        metrics::record_failover("tcp", &from_uplink, &candidate.uplink.name);
+                        metrics::record_failover(
+                            "tcp",
+                            uplinks.group_name(),
+                            &from_uplink,
+                            &candidate.uplink.name,
+                        );
                         info!(
                             from_uplink,
                             to_uplink = %candidate.uplink.name,
