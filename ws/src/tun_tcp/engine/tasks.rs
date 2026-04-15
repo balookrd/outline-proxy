@@ -128,6 +128,10 @@ impl TunTcpEngine {
             metrics::record_tun_tcp_async_connect("started");
             let _active_guard = AsyncConnectActiveGuard;
 
+            // Use the flow's bound manager — set by handle_new_flow after the
+            // routing table resolved this destination to a specific group.
+            let manager = { flow.lock().await.manager.clone() };
+
             let connected = tokio::select! {
                 _ = close_rx.changed() => {
                     if *close_rx.borrow() {
@@ -140,7 +144,7 @@ impl TunTcpEngine {
                 }
                 result = timeout(
                     engine.inner.tcp.connect_timeout,
-                    select_tcp_candidate_and_connect(&engine.inner.uplinks, &target),
+                    select_tcp_candidate_and_connect(&manager, &target),
                 ) => result,
             };
 
@@ -196,6 +200,7 @@ impl TunTcpEngine {
                     engine
                         .report_tcp_runtime_failure_and_abort(
                             &key,
+                            &manager,
                             candidate.index,
                             &error,
                             "send_error",
@@ -236,10 +241,9 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
-                    let active_uplink = engine
-                        .inner
-                        .uplinks
+                let manager = { flow.lock().await.manager.clone() };
+                if manager.strict_active_uplink_for(TransportKind::Tcp) {
+                    let active_uplink = manager
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await;
                     let should_abort = {
@@ -295,15 +299,15 @@ impl TunTcpEngine {
 
                         if backlog_pressure.should_abort {
                             let uplink_name = key_uplink_name(&flow).await;
-                            let uplink_index = {
+                            let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
-                                state.uplink_index
+                                (state.uplink_index, state.manager.clone())
                             };
                             let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
-                            engine.report_tcp_runtime_failure(uplink_index, &error).await;
-                            let (cooldown_ms, penalty_ms) = engine
-                                .inner
-                                .uplinks
+                            engine
+                                .report_tcp_runtime_failure(&flow_manager, uplink_index, &error)
+                                .await;
+                            let (cooldown_ms, penalty_ms) = flow_manager
                                 .runtime_failure_debug_state(uplink_index, TransportKind::Tcp)
                                 .await;
                             warn!(
@@ -416,15 +420,22 @@ impl TunTcpEngine {
                         // Clean WebSocket closes (FIN, Close frame) do not
                         // indicate an uplink problem and are not reported.
                         if !upstream_reader.closed_cleanly {
-                            let uplink_index = flow.lock().await.uplink_index;
+                            let (uplink_index, flow_manager) = {
+                                let state = flow.lock().await;
+                                (state.uplink_index, state.manager.clone())
+                            };
                             if crate::error_text::is_websocket_closed(&error) {
-                                engine
-                                    .inner
-                                    .uplinks
+                                flow_manager
                                     .report_upstream_close(uplink_index, TransportKind::Tcp)
                                     .await;
                             } else {
-                                engine.report_tcp_runtime_failure(uplink_index, &error).await;
+                                engine
+                                    .report_tcp_runtime_failure(
+                                        &flow_manager,
+                                        uplink_index,
+                                        &error,
+                                    )
+                                    .await;
                             }
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");

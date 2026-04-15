@@ -9,7 +9,7 @@ use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use crate::metrics;
 use crate::transport::TcpShadowsocksWriter;
-use crate::tun::SharedTunWriter;
+use crate::tun::{SharedTunWriter, TunRouting};
 use crate::tun_wire::IpVersion;
 use crate::uplink::{TransportKind, UplinkManager};
 
@@ -22,7 +22,7 @@ mod flow_ops;
 mod packet;
 mod tasks;
 #[cfg(test)]
-mod tests;
+pub(in crate::tun_tcp) mod tests;
 
 #[derive(Clone)]
 pub struct TunTcpEngine {
@@ -31,7 +31,7 @@ pub struct TunTcpEngine {
 
 pub(super) struct TunTcpEngineInner {
     pub(super) writer: SharedTunWriter,
-    pub(super) uplinks: UplinkManager,
+    pub(super) dispatch: TunRouting,
     pub(super) flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
     pub(super) pending_connects: Mutex<HashSet<TcpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
@@ -43,7 +43,7 @@ pub(super) struct TunTcpEngineInner {
 impl TunTcpEngine {
     pub(crate) fn new(
         writer: SharedTunWriter,
-        uplinks: UplinkManager,
+        dispatch: TunRouting,
         max_flows: usize,
         idle_timeout: Duration,
         tcp: TunTcpConfig,
@@ -51,7 +51,7 @@ impl TunTcpEngine {
         let engine = Self {
             inner: Arc::new(TunTcpEngineInner {
                 writer,
-                uplinks,
+                dispatch,
                 flows: RwLock::new(HashMap::new()),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: CounterU64::new(1),
@@ -62,6 +62,7 @@ impl TunTcpEngine {
         };
         engine
     }
+
 
     pub async fn handle_packet(&self, packet: &[u8]) -> Result<()> {
         let parsed = parse_tcp_packet(packet)?;
@@ -116,14 +117,14 @@ impl TunTcpEngine {
 
     pub(super) async fn report_tcp_runtime_failure(
         &self,
+        manager: &UplinkManager,
         uplink_index: usize,
         error: &anyhow::Error,
     ) {
         if uplink_index == usize::MAX {
             return;
         }
-        self.inner
-            .uplinks
+        manager
             .report_runtime_failure(uplink_index, TransportKind::Tcp, error)
             .await;
     }
@@ -131,11 +132,12 @@ impl TunTcpEngine {
     pub(super) async fn report_tcp_runtime_failure_and_abort(
         &self,
         key: &TcpFlowKey,
+        manager: &UplinkManager,
         uplink_index: usize,
         error: &anyhow::Error,
         reason: &'static str,
     ) {
-        self.report_tcp_runtime_failure(uplink_index, error).await;
+        self.report_tcp_runtime_failure(manager, uplink_index, error).await;
         self.abort_flow_with_rst(key, reason).await;
     }
 }

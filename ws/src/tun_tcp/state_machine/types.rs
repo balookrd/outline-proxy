@@ -6,6 +6,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
 
 use crate::transport::TcpShadowsocksWriter;
+use crate::uplink::UplinkManager;
 
 use super::super::TcpFlowKey;
 
@@ -27,6 +28,10 @@ pub(in crate::tun_tcp) struct TcpFlowState {
     pub(in crate::tun_tcp) key: TcpFlowKey,
     pub(in crate::tun_tcp) uplink_index: usize,
     pub(in crate::tun_tcp) uplink_name: String,
+    /// The group's manager this flow is bound to. All per-flow operations
+    /// (strict-active checks, connect, runtime failover) go through this
+    /// manager, not the engine's default group.
+    pub(in crate::tun_tcp) manager: UplinkManager,
     pub(in crate::tun_tcp) upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
     pub(in crate::tun_tcp) close_signal: watch::Sender<bool>,
     pub(in crate::tun_tcp) maintenance_notify: Arc<Notify>,

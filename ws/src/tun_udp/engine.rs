@@ -9,8 +9,8 @@ use tracing::debug;
 use crate::atomic_counter::CounterU64;
 use crate::metrics;
 use crate::transport::is_dropped_oversized_udp_error;
-use crate::tun::SharedTunWriter;
-use crate::uplink::{TransportKind, UplinkManager};
+use crate::tun::{SharedTunWriter, TunRoute, TunRouting};
+use crate::uplink::TransportKind;
 
 use super::types::{FlowTable, UdpFlowKey};
 use super::wire::ParsedUdpPacket;
@@ -22,7 +22,10 @@ pub struct TunUdpEngine {
 
 pub(super) struct TunUdpEngineInner {
     pub(super) writer: SharedTunWriter,
-    pub(super) uplinks: UplinkManager,
+    /// Dispatch resolves a flow's destination to a group manager at
+    /// creation time; engine code that needs a "default" (cleanup loops,
+    /// strict checks without flow context) reads `dispatch.default_group()`.
+    pub(super) dispatch: TunRouting,
     pub(super) flows: FlowTable,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
@@ -32,14 +35,14 @@ pub(super) struct TunUdpEngineInner {
 impl TunUdpEngine {
     pub(crate) fn new(
         writer: SharedTunWriter,
-        uplinks: UplinkManager,
+        dispatch: TunRouting,
         max_flows: usize,
         idle_timeout: Duration,
     ) -> Self {
         let engine = Self {
             inner: Arc::new(TunUdpEngineInner {
                 writer,
-                uplinks,
+                dispatch,
                 flows: Arc::new(Mutex::new(HashMap::new())),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
@@ -60,46 +63,89 @@ impl TunUdpEngine {
             remote_port: packet.destination_port,
         };
 
-        let active_uplink = if self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp) {
-            self.inner
-                .uplinks
-                .active_uplink_index_for_transport(TransportKind::Udp)
-                .await
-        } else {
-            None
-        };
-
         let (existing, stale_flow) = {
-            let mut guard = self.inner.flows.lock().await;
+            let guard = self.inner.flows.lock().await;
             match guard.get(&key) {
-                Some(flow) if active_uplink.is_some_and(|active| active != flow.uplink_index) => {
-                    let stale = guard.remove(&key).expect("stale TUN UDP flow must exist");
-                    (None, Some(stale))
-                },
-                Some(_) => {
-                    let flow = guard.get_mut(&key).expect("TUN UDP flow must still exist");
-                    flow.last_seen = Instant::now();
-                    (
-                        Some((
-                            flow.id,
-                            Arc::clone(&flow.transport),
-                            flow.uplink_index,
-                            flow.uplink_name.clone(),
-                        )),
-                        None,
-                    )
-                },
+                Some(flow) => (
+                    Some((
+                        flow.id,
+                        Arc::clone(&flow.transport),
+                        flow.uplink_index,
+                        flow.uplink_name.clone(),
+                        flow.manager.clone(),
+                    )),
+                    None::<super::types::UdpFlowState>,
+                ),
                 None => (None, None),
             }
         };
 
-        if let Some(stale_flow) = stale_flow {
-            super::lifecycle::close_udp_flow(stale_flow, "global_switch").await;
+        // Check per-flow strict-active-uplink against the flow's own group.
+        // A group in active_passive / global scope may have repointed; the
+        // flow must follow or be torn down.
+        let stale_flow = if let Some((.., flow_manager)) = existing.as_ref() {
+            if flow_manager.strict_active_uplink_for(TransportKind::Udp) {
+                let active_uplink = flow_manager
+                    .active_uplink_index_for_transport(TransportKind::Udp)
+                    .await;
+                let flow_index = existing.as_ref().map(|f| f.2);
+                if active_uplink.is_some_and(|active| Some(active) != flow_index) {
+                    let mut guard = self.inner.flows.lock().await;
+                    guard.remove(&key)
+                } else {
+                    stale_flow
+                }
+            } else {
+                stale_flow
+            }
+        } else {
+            stale_flow
+        };
+
+        if let Some(stale) = stale_flow {
+            super::lifecycle::close_udp_flow(stale, "global_switch").await;
         }
 
-        let (flow_id, transport, uplink_index, uplink_name) = match existing {
-            Some(existing) => existing,
-            None => self.create_flow(key.clone()).await?,
+        // Re-check flow state after potential removal.
+        let existing = if existing.is_some() {
+            let guard = self.inner.flows.lock().await;
+            guard.get(&key).map(|flow| {
+                (
+                    flow.id,
+                    Arc::clone(&flow.transport),
+                    flow.uplink_index,
+                    flow.uplink_name.clone(),
+                    flow.manager.clone(),
+                )
+            })
+        } else {
+            None
+        };
+
+        let (flow_id, transport, uplink_index, uplink_name, manager) = match existing {
+            Some(existing) => {
+                let mut guard = self.inner.flows.lock().await;
+                if let Some(flow) = guard.get_mut(&key) {
+                    flow.last_seen = Instant::now();
+                }
+                existing
+            },
+            None => {
+                let route = self.inner.dispatch.resolve(&remote_target).await;
+                let manager = match route {
+                    TunRoute::Group { manager, .. } => manager,
+                    TunRoute::Drop { reason } => {
+                        debug!(
+                            target = %remote_target,
+                            reason,
+                            "TUN UDP route: dropping flow"
+                        );
+                        return Ok(());
+                    },
+                };
+                let (id, t, index, name) = self.create_flow(key.clone(), &manager).await?;
+                (id, t, index, name, manager)
+            },
         };
 
         let payload = super::build_udp_payload(&remote_target, &packet.payload)?;
@@ -113,6 +159,7 @@ impl TunUdpEngine {
                     flow_id,
                     uplink_index,
                     &uplink_name,
+                    &manager,
                     &error,
                 )
                 .await?;

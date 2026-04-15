@@ -20,7 +20,10 @@ use crate::tun_wire::{
     IPV6_NEXT_HEADER_NONE, IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16,
     ipv6_payload_checksum, locate_ipv6_payload, locate_ipv6_upper_layer,
 };
-use crate::uplink::UplinkManager;
+use crate::config::RouteTarget;
+use crate::routing::RoutingTable;
+use crate::types::TargetAddr;
+use crate::uplink::{UplinkManager, UplinkRegistry};
 
 const IPV6_MIN_PATH_MTU: usize = 1280;
 const EBUSY_OS_ERROR: i32 = 16;
@@ -35,6 +38,106 @@ pub(crate) struct SharedTunWriter {
     inner: Arc<Mutex<File>>,
 }
 
+/// Per-flow dispatch context for the TUN path.
+///
+/// Resolves destination targets through the policy routing table to pick a
+/// group's [`UplinkManager`]. `direct` and `drop` rules on the TUN side both
+/// result in the packet being dropped — TUN cannot synthesise a "host's own
+/// networking stack" path without fwmark/SO_BINDTODEVICE plumbing, which is
+/// OS-specific and out of scope for this module. Users that want part of
+/// their traffic to go outside the tunnel should exclude those prefixes
+/// from the TUN routing table on the host.
+#[derive(Clone)]
+pub struct TunRouting {
+    registry: UplinkRegistry,
+    routing: Option<Arc<RoutingTable>>,
+    default_group: UplinkManager,
+}
+
+/// Resolved routing decision for a new TUN flow.
+#[derive(Clone)]
+pub enum TunRoute {
+    /// Forward this flow through the named group's uplink manager.
+    Group {
+        name: String,
+        manager: UplinkManager,
+    },
+    /// Drop the flow silently (matches `via = "drop"` and — on TUN — also
+    /// `via = "direct"` since TUN cannot bypass itself).
+    Drop { reason: &'static str },
+}
+
+impl TunRouting {
+    pub fn new(registry: UplinkRegistry, routing: Option<Arc<RoutingTable>>) -> Self {
+        let default_group = registry.default_group().clone();
+        Self { registry, routing, default_group }
+    }
+
+    /// Test-only helper: wrap a single [`UplinkManager`] as the sole group,
+    /// with no routing table. Used by TUN engine tests that pre-build an
+    /// `UplinkManager` directly.
+    #[cfg(test)]
+    pub fn from_single_manager(manager: UplinkManager) -> Self {
+        Self {
+            registry: UplinkRegistry::from_single_manager(manager.clone()),
+            routing: None,
+            default_group: manager,
+        }
+    }
+
+    pub fn default_group(&self) -> &UplinkManager {
+        &self.default_group
+    }
+
+    /// Resolve a TUN flow's destination to a group manager.
+    pub async fn resolve(&self, target: &TargetAddr) -> TunRoute {
+        let Some(table) = self.routing.as_ref() else {
+            return TunRoute::Group {
+                name: self.registry.default_group_name().to_string(),
+                manager: self.default_group.clone(),
+            };
+        };
+        let decision = table.resolve(target).await;
+        self.materialize_target(decision.primary, decision.fallback).await
+    }
+
+    async fn materialize_target(
+        &self,
+        primary: RouteTarget,
+        fallback: Option<RouteTarget>,
+    ) -> TunRoute {
+        match primary {
+            RouteTarget::Direct => {
+                TunRoute::Drop { reason: "policy_direct_on_tun" }
+            },
+            RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
+            RouteTarget::Group(name) => {
+                let Some(manager) = self.registry.group_by_name(&name) else {
+                    warn!(group = %name, "TUN route references unknown group; dropping");
+                    return TunRoute::Drop { reason: "unknown_group" };
+                };
+                // Fallback applies only when the primary group has no
+                // healthy uplinks at resolve time; Direct/Drop primaries are
+                // terminal decisions.
+                if matches!(fallback, Some(_))
+                    && !manager
+                        .has_any_healthy(crate::uplink::TransportKind::Udp)
+                        .await
+                    && !manager
+                        .has_any_healthy(crate::uplink::TransportKind::Tcp)
+                        .await
+                {
+                    if let Some(fb) = fallback {
+                        // Recurse once — fallback doesn't chain further.
+                        return Box::pin(self.materialize_target(fb, None)).await;
+                    }
+                }
+                TunRoute::Group { name, manager: manager.clone() }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PacketDisposition {
     Udp,
@@ -43,7 +146,7 @@ enum PacketDisposition {
     Unsupported(&'static str),
 }
 
-pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result<()> {
+pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()> {
     let tun_path = config.path.clone();
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
@@ -62,10 +165,10 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let defrag_max_fragments_per_set = config.defrag_max_fragments_per_set;
     let defrag_max_total_bytes = config.defrag_max_total_bytes;
     let defrag_max_bytes_per_set = config.defrag_max_bytes_per_set;
-    let udp_engine = TunUdpEngine::new(writer.clone(), uplinks.clone(), max_flows, idle_timeout);
+    let udp_engine = TunUdpEngine::new(writer.clone(), routing.clone(), max_flows, idle_timeout);
     let tcp_engine = TunTcpEngine::new(
         writer.clone(),
-        uplinks.clone(),
+        routing.clone(),
         max_flows,
         idle_timeout,
         config.tcp.clone(),

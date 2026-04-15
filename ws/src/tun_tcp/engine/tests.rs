@@ -37,7 +37,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -132,7 +132,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -229,7 +229,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -305,7 +305,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -401,7 +401,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -482,7 +482,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -553,7 +553,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -632,7 +632,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -703,7 +703,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -778,7 +778,7 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -835,7 +835,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -955,7 +955,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     let (writer, mut capture) = TunCapture::new().await;
     let engine = super::TunTcpEngine::new(
         writer,
-        manager,
+        crate::tun::TunRouting::from_single_manager(manager),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -1085,7 +1085,9 @@ async fn new_flow_is_removed_when_synack_write_fails() {
     ));
     let engine = super::TunTcpEngine::new(
         writer,
-        build_test_manager(Url::parse("ws://127.0.0.1:9/tcp").unwrap()).await,
+        crate::tun::TunRouting::from_single_manager(
+            build_test_manager(Url::parse("ws://127.0.0.1:9/tcp").unwrap()).await,
+        ),
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
@@ -1117,7 +1119,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
 
     let _ = std::fs::remove_file(path);
 }
-async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
+pub(in crate::tun_tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
     UplinkManager::new(
         "test",
         vec![UplinkConfig {

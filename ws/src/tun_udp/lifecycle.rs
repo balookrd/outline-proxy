@@ -10,7 +10,7 @@ use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
 use crate::transport::UdpWsTransport;
 use crate::types::TargetAddr;
-use crate::uplink::{TransportKind, UplinkCandidate};
+use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::wire::build_response_packet;
 use super::{
@@ -32,11 +32,11 @@ impl TunUdpEngine {
     pub(super) async fn create_flow(
         &self,
         key: UdpFlowKey,
+        manager: &UplinkManager,
     ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
-        let (candidate, transport) = self.select_candidate_and_connect(&remote_target).await?;
-        self.inner
-            .uplinks
+        let (candidate, transport) = select_candidate_and_connect(manager, &remote_target).await?;
+        manager
             .confirm_selected_uplink(TransportKind::Udp, Some(&remote_target), candidate.index)
             .await;
         let transport = Arc::new(transport);
@@ -50,6 +50,7 @@ impl TunUdpEngine {
             transport: Arc::clone(&transport),
             uplink_index: candidate.index,
             uplink_name: candidate.uplink.name.clone(),
+            manager: manager.clone(),
             created_at: now,
             last_seen: now,
         };
@@ -92,46 +93,21 @@ impl TunUdpEngine {
         metrics::record_tun_flow_created(&candidate.uplink.name);
         debug!(
             flow_id,
+            group = %manager.group_name(),
             uplink = %candidate.uplink.name,
             local = %format!("{}:{}", key.local_ip, key.local_port),
             remote = %format!("{}:{}", key.remote_ip, key.remote_port),
             "created TUN UDP flow"
         );
-        self.spawn_flow_reader(key, flow_id, Arc::clone(&transport), candidate.index);
+        self.spawn_flow_reader(
+            key,
+            flow_id,
+            Arc::clone(&transport),
+            candidate.index,
+            manager.clone(),
+        );
 
         Ok((flow_id, transport, candidate.index, candidate.uplink.name.clone()))
-    }
-
-    async fn select_candidate_and_connect(
-        &self,
-        remote_target: &TargetAddr,
-    ) -> Result<(UplinkCandidate, UdpWsTransport)> {
-        let mut last_error = None;
-        let strict_transport = self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp);
-        let candidates = self.inner.uplinks.udp_candidates(Some(remote_target)).await;
-        let iter = if strict_transport {
-            candidates.into_iter().take(1).collect::<Vec<_>>()
-        } else {
-            candidates
-        };
-        for candidate in iter {
-            match self
-                .inner
-                .uplinks
-                .acquire_udp_standby_or_connect(&candidate, "tun_udp")
-                .await
-            {
-                Ok(transport) => return Ok((candidate, transport)),
-                Err(error) => {
-                    self.report_udp_runtime_failure(candidate.index, &error).await;
-                    last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-                },
-            }
-        }
-        Err(anyhow!(
-            "all UDP uplinks failed for TUN flow: {}",
-            last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
-        ))
     }
 
     fn spawn_flow_reader(
@@ -140,15 +116,14 @@ impl TunUdpEngine {
         flow_id: u64,
         transport: Arc<UdpWsTransport>,
         uplink_index: usize,
+        manager: UplinkManager,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
             let result = async {
                 loop {
-                    if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Udp)
-                        && engine
-                            .inner
-                            .uplinks
+                    if manager.strict_active_uplink_for(TransportKind::Udp)
+                        && manager
                             .active_uplink_index_for_transport(TransportKind::Udp)
                             .await
                             .is_some_and(|active| active != uplink_index)
@@ -203,7 +178,7 @@ impl TunUdpEngine {
                     .get(&key)
                     .map_or(false, |f| f.id == flow_id);
                 if is_current {
-                    engine.report_udp_runtime_failure(uplink_index, error).await;
+                    report_udp_runtime_failure(&manager, uplink_index, error).await;
                     metrics::record_tun_packet(
                         "upstream_to_tun",
                         ip_family_from_version(key.version),
@@ -267,27 +242,58 @@ impl TunUdpEngine {
         }
     }
 
-    async fn report_udp_runtime_failure(&self, uplink_index: usize, error: &anyhow::Error) {
-        self.inner
-            .uplinks
-            .report_runtime_failure(uplink_index, TransportKind::Udp, error)
-            .await;
-    }
-
     pub(super) async fn recreate_flow_after_send_error(
         &self,
         key: &UdpFlowKey,
         flow_id: u64,
         uplink_index: usize,
         uplink_name: &str,
+        manager: &UplinkManager,
         error: &anyhow::Error,
     ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
-        self.report_udp_runtime_failure(uplink_index, error).await;
+        report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
-        let replacement = self.create_flow(key.clone()).await?;
+        let replacement = self.create_flow(key.clone(), manager).await?;
         metrics::record_failover("udp", uplink_name, &replacement.3);
         Ok(replacement)
     }
+}
+
+async fn report_udp_runtime_failure(
+    manager: &UplinkManager,
+    uplink_index: usize,
+    error: &anyhow::Error,
+) {
+    manager
+        .report_runtime_failure(uplink_index, TransportKind::Udp, error)
+        .await;
+}
+
+async fn select_candidate_and_connect(
+    manager: &UplinkManager,
+    remote_target: &TargetAddr,
+) -> Result<(UplinkCandidate, UdpWsTransport)> {
+    let mut last_error = None;
+    let strict_transport = manager.strict_active_uplink_for(TransportKind::Udp);
+    let candidates = manager.udp_candidates(Some(remote_target)).await;
+    let iter = if strict_transport {
+        candidates.into_iter().take(1).collect::<Vec<_>>()
+    } else {
+        candidates
+    };
+    for candidate in iter {
+        match manager.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
+            Ok(transport) => return Ok((candidate, transport)),
+            Err(error) => {
+                report_udp_runtime_failure(manager, candidate.index, &error).await;
+                last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+            },
+        }
+    }
+    Err(anyhow!(
+        "all UDP uplinks failed for TUN flow: {}",
+        last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
+    ))
 }
 
 fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowKey> {
