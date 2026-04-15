@@ -23,6 +23,7 @@ pub(super) async fn probe_uplink(
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::types::WsTransportMode,
+    effective_udp_mode: crate::types::WsTransportMode,
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency) = timeout(
         probe.timeout,
@@ -30,10 +31,12 @@ pub(super) async fn probe_uplink(
     )
     .await
     .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
-    let (udp_ok, udp_applicable, udp_latency) =
-        timeout(probe.timeout, run_udp_probe(uplink, probe, dial_limit))
-            .await
-            .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
+    let (udp_ok, udp_applicable, udp_latency) = timeout(
+        probe.timeout,
+        run_udp_probe(uplink, probe, dial_limit, effective_udp_mode),
+    )
+    .await
+    .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
 
     Ok(ProbeOutcome {
         tcp_ok,
@@ -121,6 +124,7 @@ pub(super) async fn run_udp_probe(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
+    effective_udp_mode: crate::types::WsTransportMode,
 ) -> Result<(bool, bool, Option<Duration>)> {
     if !uplink.supports_udp() {
         return Ok((false, false, None));
@@ -138,7 +142,7 @@ pub(super) async fn run_udp_probe(
                         .udp_ws_url
                         .as_ref()
                         .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
-                    uplink.udp_ws_mode,
+                    effective_udp_mode,
                     uplink.fwmark,
                     Arc::clone(&dial_limit),
                     probe.timeout,
@@ -160,7 +164,8 @@ pub(super) async fn run_udp_probe(
     }
     if let Some(dns_probe) = &probe.dns {
         let probe_started = Instant::now();
-        let result = run_dns_probe(uplink, dns_probe, Arc::clone(&dial_limit)).await;
+        let result =
+            run_dns_probe(uplink, dns_probe, Arc::clone(&dial_limit), effective_udp_mode).await;
         crate::metrics::record_probe(
             &uplink.name,
             "udp",
@@ -590,6 +595,7 @@ pub(super) async fn run_dns_probe(
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
+    effective_udp_mode: crate::types::WsTransportMode,
 ) -> Result<bool> {
     let transport = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
@@ -600,7 +606,7 @@ pub(super) async fn run_dns_probe(
                 })?;
                 UdpWsTransport::connect(
                     udp_ws_url,
-                    uplink.udp_ws_mode,
+                    effective_udp_mode,
                     uplink.cipher,
                     &uplink.password,
                     uplink.fwmark,

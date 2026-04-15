@@ -41,6 +41,27 @@ impl UplinkManager {
         uplink.tcp_ws_mode
     }
 
+    /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS transport.
+    pub(super) async fn effective_udp_ws_mode(
+        &self,
+        index: usize,
+    ) -> crate::types::WsTransportMode {
+        let uplink = &self.inner.uplinks[index];
+        if uplink.transport == UplinkTransport::Websocket
+            && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+        {
+            let statuses = self.inner.statuses.read().await;
+            let status = &statuses[index];
+            if status
+                .h3_udp_downgrade_until
+                .is_some_and(|t| t > tokio::time::Instant::now())
+            {
+                return crate::types::WsTransportMode::H2;
+            }
+        }
+        uplink.udp_ws_mode
+    }
+
     /// Pops one connection from the TCP standby pool without falling back to a
     /// fresh dial.  Returns `None` if the pool is empty, or if the popped
     /// entry fails a quick liveness peek (pre-flight check to avoid handing a
@@ -190,10 +211,11 @@ impl UplinkManager {
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
             anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
         })?;
+        let mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
         let transport = UdpWsTransport::connect(
             udp_ws_url,
-            candidate.uplink.udp_ws_mode,
+            mode,
             candidate.uplink.cipher,
             &candidate.uplink.password,
             candidate.uplink.fwmark,
@@ -374,9 +396,10 @@ impl UplinkManager {
                     let Some(url) = uplink.udp_ws_url.as_ref() else {
                         break;
                     };
+                    let mode = self.effective_udp_ws_mode(index).await;
                     connect_websocket_with_source(
                         url,
-                        uplink.udp_ws_mode,
+                        mode,
                         uplink.fwmark,
                         uplink.ipv6_first,
                         "standby_udp",
