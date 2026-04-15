@@ -26,7 +26,7 @@ SERVICE_WAS_ACTIVE=0
 INSTALLED_VERSION=""
 SKIP_UPDATE=0
 RELEASE_COMMIT=""
-NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${STATE_DIR}/nightly-commit}"
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
 
 TMP_DIR=""
 trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
@@ -325,7 +325,6 @@ ensure_user_group() {
 install_dirs() {
   install -d -m 0755 "$INSTALL_BIN_DIR"
   install -d -m 0755 "$CONFIG_DIR"
-  install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$STATE_DIR"
 }
 
 install_config_if_missing() {
@@ -452,6 +451,16 @@ save_release_commit() {
   fi
 }
 
+migrate_state_dir() {
+  # DynamicUser=true + StateDirectory= требует, чтобы /var/lib/... не существовало как
+  # обычная директория: systemd создаёт /var/lib/private/... и ставит на это место symlink.
+  # Если там стоит plain-директория (created by root), EEXIST блокирует старт.
+  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
+    log "Удаляю устаревшую plain-директорию ${STATE_DIR} (systemd создаст symlink через StateDirectory=)"
+    rm -rf "$STATE_DIR"
+  fi
+}
+
 remember_service_state() {
   if systemctl is-active --quiet "$SERVICE_NAME"; then
     SERVICE_WAS_ACTIVE=1
@@ -521,6 +530,7 @@ main() {
   remember_service_state
   ensure_user_group
   install_dirs
+  migrate_state_dir
   install_binary
   install_config_if_missing
   install_systemd_unit
