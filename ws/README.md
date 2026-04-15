@@ -937,47 +937,40 @@ Alert rules:
 
 - [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
 
-## Systemd Deployment
+## Production Operations
 
-The repository includes a hardened unit:
+### `install.sh`
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service)
-
-Key operational notes:
-
-- `PrivateDevices=false` is required for host TUN access.
-- Keep `AmbientCapabilities=CAP_NET_ADMIN` and `CapabilityBoundingSet=CAP_NET_ADMIN` when using `fwmark`.
-- `RUST_LOG=info` is already set in the unit.
-
-Typical deployment layout:
-
-- binary: `/usr/local/bin/outline-ws-rust`
-- config: `/etc/outline-ws-rust/config.toml`
-- working state: `/var/lib/outline-ws-rust`
-
-The repository also includes `install.sh` for binary + systemd deployment from GitHub Releases:
-
-- default behavior installs the latest stable server release for the current CPU architecture
-- `CHANNEL=nightly` installs from the rolling `nightly` prerelease
-- `VERSION=v1.2.3` pins a specific stable release tag
-
-How to use it:
+For a basic production install on Linux use the bundled [install.sh](install.sh) script. Run it as `root` on the target host:
 
 ```bash
-chmod +x ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ws-rust/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh --help
 sudo ./install.sh
 ```
 
-Common variants:
+Install modes:
+
+- Default: installs the latest stable release for the current architecture
+- `CHANNEL=nightly`: installs the rolling nightly prerelease
+- `VERSION=v1.2.3`: pins the install to a specific stable tag
+
+Examples:
 
 ```bash
+./install.sh --help
+sudo ./install.sh
+sudo ./install.sh --force
 sudo CHANNEL=nightly ./install.sh
 sudo VERSION=v1.2.3 ./install.sh
-./install.sh --help
 ```
 
-What the script does during installation:
+What the script does:
 
+- detects the host architecture and downloads the latest GitHub release artifact
+- skips the download if the installed version already matches the selected release; use `--force` or `FORCE=1` to override
+- for the nightly channel, tracks the release commit SHA in `/var/lib/outline-ws-rust/nightly-commit` to detect new builds
 - installs the binary to `/usr/local/bin/outline-ws-rust`
 - installs unit files into `/etc/systemd/system`
 - creates `/etc/outline-ws-rust` and `/var/lib/outline-ws-rust`
@@ -985,20 +978,75 @@ What the script does during installation:
 - restarts only already-active `outline-ws-rust` units
 - does not automatically enable/start a fresh service
 
-After installation you will usually enable one of the service variants manually:
+After the first install:
 
-```bash
-sudo systemctl enable --now outline-ws-rust.service
-sudo systemctl enable --now outline-ws-rust@NAME.service
+1. Edit `/etc/outline-ws-rust/config.toml`.
+2. Enable one of the service variants:
+   - single instance: `sudo systemctl enable --now outline-ws-rust.service`
+   - named instance: `sudo systemctl enable --now outline-ws-rust@NAME.service`
+3. Check status with `systemctl status outline-ws-rust --no-pager`.
+4. Check logs with `journalctl -u outline-ws-rust -e --no-pager`.
+
+The script is safe to re-run for upgrades: it compares the installed version against the selected release and only downloads and replaces the binary when a newer version is available. It automatically restarts any active `outline-ws-rust` units after upgrade. If the service was stopped, the script leaves it stopped.
+
+Supported release architectures currently match GitHub CI artifacts: `x86_64-unknown-linux-musl` and `aarch64-unknown-linux-musl`.
+
+Useful overrides:
+
+- `CHANNEL=stable|nightly`: choose the release channel; default is `stable`
+- `VERSION=v1.2.3`: pin the install to a specific stable tag
+- `FORCE=1`: reinstall even when the installed version already matches
+- `INSTALL_PATH=/path`: install the binary outside `/usr/local/bin`
+- `CONFIG_DIR=/path`: keep configuration outside `/etc/outline-ws-rust`
+- `STATE_DIR=/path`: use a different state directory
+- `GITHUB_TOKEN=...`: GitHub token to avoid API rate limits
+
+`VERSION` and `CHANNEL=nightly` are mutually exclusive.
+
+### systemd
+
+Production-oriented systemd units are included at:
+
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — single instance
+- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — named-instance template (reads config from `instances/NAME.toml`)
+
+Typical installation flow:
+
+1. Install the binary to `/usr/local/bin/outline-ws-rust`.
+2. Install the configuration to `/etc/outline-ws-rust/config.toml`.
+3. Copy both unit files to `/etc/systemd/system/`.
+4. Reload and enable the service:
+   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
+
+The unit includes:
+
+- automatic restart on failure
+- journald logging
+- elevated `LimitNOFILE`
+- `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
+- `DynamicUser=true` — no manual user creation needed
+- `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used
+- `PrivateDevices=false` — required for TUN mode; harmless if TUN is not used
+- conservative systemd hardening flags
+
+On Linux, the bundled runtime pins Tokio worker and blocking thread stacks to 2 MiB so the process does not inherit very large per-thread virtual stack mappings from the host environment.
+
+### Logging
+
+The service uses `tracing` for structured logs. The bundled systemd unit sets:
+
+```text
+RUST_LOG=info
 ```
 
-Useful environment variables:
+Use `debug` only during troubleshooting — connection lifecycle and transport-layer events become much more verbose.
 
-- `CHANNEL=stable|nightly` selects the release channel
-- `VERSION=1.2.3` or `VERSION=v1.2.3` pins a specific stable release
-- `INSTALL_PATH=/custom/path/outline-ws-rust` changes the binary destination
-- `CONFIG_DIR=/custom/etc/outline-ws-rust` changes the config directory
-- `STATE_DIR=/custom/var/lib/outline-ws-rust` changes the working-state directory
+### Security Notes
+
+- Protect `metrics_listen`; do not expose it without additional access controls.
+- HTTP/3 requires public UDP reachability on the selected port.
+- `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root.
+- TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).
 
 ## Testing
 

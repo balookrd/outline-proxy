@@ -932,47 +932,40 @@ Alert rules:
 
 - [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
 
-## Развёртывание через systemd
+## Production-эксплуатация
 
-Репозиторий включает hardened unit:
+### `install.sh`
 
-- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service)
-
-Ключевые операционные замечания:
-
-- `PrivateDevices=false` обязателен для доступа к хостовому TUN.
-- Сохраняйте `AmbientCapabilities=CAP_NET_ADMIN` и `CapabilityBoundingSet=CAP_NET_ADMIN` при использовании `fwmark`.
-- `RUST_LOG=info` уже задан в unit-файле.
-
-Типичная структура развёртывания:
-
-- бинарник: `/usr/local/bin/outline-ws-rust`
-- конфиг: `/etc/outline-ws-rust/config.toml`
-- рабочее состояние: `/var/lib/outline-ws-rust`
-
-В репозитории также есть `install.sh` для установки бинаря и systemd-юнитов из GitHub Releases:
-
-- по умолчанию ставится последний stable server release под текущую архитектуру
-- `CHANNEL=nightly` ставит rolling prerelease `nightly`
-- `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
-
-Как пользоваться:
+Для базовой production-установки на Linux используйте bundled-скрипт [install.sh](install.sh). Запускайте от `root` на целевом хосте:
 
 ```bash
-chmod +x ./install.sh
+curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ws-rust/main/install.sh -o install.sh
+chmod +x install.sh
+./install.sh --help
 sudo ./install.sh
 ```
 
-Быстрые варианты:
+Режимы установки:
+
+- По умолчанию ставится последний stable-релиз под текущую архитектуру
+- `CHANNEL=nightly` ставит rolling prerelease nightly
+- `VERSION=v1.2.3` фиксирует установку на конкретный stable-тег
+
+Примеры:
 
 ```bash
+./install.sh --help
+sudo ./install.sh
+sudo ./install.sh --force
 sudo CHANNEL=nightly ./install.sh
 sudo VERSION=v1.2.3 ./install.sh
-./install.sh --help
 ```
 
-Что делает скрипт во время установки:
+Что делает скрипт:
 
+- определяет архитектуру хоста и скачивает артефакт последнего GitHub release
+- пропускает скачивание, если установленная версия уже совпадает с выбранным релизом; передай `--force` или `FORCE=1`, чтобы переустановить принудительно
+- для канала nightly хранит SHA коммита релиза в `/var/lib/outline-ws-rust/nightly-commit` для определения новых сборок
 - ставит бинарник в `/usr/local/bin/outline-ws-rust`
 - кладёт unit-файлы в `/etc/systemd/system`
 - создаёт `/etc/outline-ws-rust` и `/var/lib/outline-ws-rust`
@@ -980,20 +973,75 @@ sudo VERSION=v1.2.3 ./install.sh
 - перезапускает только уже активные `outline-ws-rust` unit'ы
 - не включает автозапуск нового сервиса автоматически
 
-После установки обычно нужно вручную включить один из вариантов сервиса:
+После первой установки:
 
-```bash
-sudo systemctl enable --now outline-ws-rust.service
-sudo systemctl enable --now outline-ws-rust@NAME.service
+1. Отредактируйте `/etc/outline-ws-rust/config.toml`.
+2. Включите один из вариантов сервиса:
+   - единственный инстанс: `sudo systemctl enable --now outline-ws-rust.service`
+   - именованный инстанс: `sudo systemctl enable --now outline-ws-rust@NAME.service`
+3. Проверьте статус: `systemctl status outline-ws-rust --no-pager`.
+4. Проверьте логи: `journalctl -u outline-ws-rust -e --no-pager`.
+
+Скрипт можно безопасно запускать повторно для обновления: он сравнивает установленную версию с выбранным релизом и скачивает бинарник только при наличии новой версии. После замены автоматически перезапускает активные `outline-ws-rust` unit'ы. Если сервис был остановлен, скрипт не будет запускать его сам.
+
+Сейчас поддерживаются только те архитектуры, для которых GitHub CI публикует release-артефакты: `x86_64-unknown-linux-musl` и `aarch64-unknown-linux-musl`.
+
+Полезные переопределения:
+
+- `CHANNEL=stable|nightly`: выбор release-канала; по умолчанию `stable`
+- `VERSION=v1.2.3`: зафиксировать установку на конкретном stable-теге
+- `FORCE=1`: переустановить, даже если версия уже совпадает
+- `INSTALL_PATH=/path`: установить бинарник не в `/usr/local/bin`
+- `CONFIG_DIR=/path`: хранить конфиг не в `/etc/outline-ws-rust`
+- `STATE_DIR=/path`: использовать другой state-каталог
+- `GITHUB_TOKEN=...`: GitHub-токен для обхода rate limit API
+
+`VERSION` и `CHANNEL=nightly` одновременно использовать нельзя.
+
+### systemd
+
+Production-ориентированные systemd unit'ы находятся в:
+
+- [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — единственный инстанс
+- [`systemd/outline-ws-rust@.service`](systemd/outline-ws-rust@.service) — шаблон для именованных инстансов (читает конфиг из `instances/NAME.toml`)
+
+Типичная процедура установки:
+
+1. Установить бинарник в `/usr/local/bin/outline-ws-rust`.
+2. Установить конфигурацию в `/etc/outline-ws-rust/config.toml`.
+3. Скопировать оба unit-файла в `/etc/systemd/system/`.
+4. Перечитать конфигурацию и включить сервис:
+   `sudo systemctl daemon-reload && sudo systemctl enable --now outline-ws-rust`
+
+Unit включает:
+
+- автоматический перезапуск при сбое
+- логирование через journald
+- увеличенный `LimitNOFILE`
+- `LimitSTACK=8M`, чтобы не раздувать anonymous thread-stack mappings
+- `DynamicUser=true` — создавать пользователя вручную не нужно
+- `CAP_NET_ADMIN` для `fwmark`; удалите, если `fwmark` не используется
+- `PrivateDevices=false` — необходим для TUN-режима; безвреден, если TUN не используется
+- консервативные флаги hardening systemd
+
+На Linux bundled runtime фиксирует размер стеков Tokio worker- и blocking-потоков на уровне 2 MiB, чтобы процесс не наследовал слишком большие виртуальные stack mappings от окружения хоста.
+
+### Логирование
+
+Сервис использует `tracing` для структурированных логов. Bundled systemd unit задаёт:
+
+```text
+RUST_LOG=info
 ```
 
-Полезные переменные окружения:
+Используйте уровень `debug` только при отладке — события жизненного цикла соединений и транспортного слоя становятся значительно подробнее.
 
-- `CHANNEL=stable|nightly` — выбрать stable или nightly канал
-- `VERSION=1.2.3` или `VERSION=v1.2.3` — закрепить конкретный stable-релиз
-- `INSTALL_PATH=/custom/path/outline-ws-rust` — изменить путь установки бинарника
-- `CONFIG_DIR=/custom/etc/outline-ws-rust` — изменить каталог конфигов
-- `STATE_DIR=/custom/var/lib/outline-ws-rust` — изменить каталог рабочего состояния
+### Безопасность
+
+- Защитите `metrics_listen`; не публикуйте его без дополнительных средств контроля доступа.
+- HTTP/3 требует публичной доступности UDP на выбранном порту.
+- `fwmark` работает только на Linux и требует `CAP_NET_ADMIN` или root.
+- TUN-режим требует доступа к `/dev/net/tun` на хосте (`PrivateDevices=false`).
 
 ## Тестирование
 
