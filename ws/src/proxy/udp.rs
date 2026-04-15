@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -21,25 +22,46 @@ use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Per-packet routing decision for UDP.
 ///
-/// Group-based routing on UDP always uses the association's active uplink
-/// transport (selected from the default group at associate time) until
-/// per-packet group switching lands in a future iteration — the table
-/// decision is consulted only to classify Direct vs Drop vs Tunnel.
+/// Group-based routing on UDP currently always tunnels through the
+/// association's active uplink transport (selected from the default group
+/// at associate time). Per-group transport switching lands in a follow-up
+/// — the table decision is classified here into Direct / Drop / Tunnel.
+#[derive(Clone, Copy, Debug)]
 enum UdpPacketRoute {
     Direct,
     Drop,
     Tunnel,
 }
 
-async fn udp_packet_route(config: &AppConfig, target: &TargetAddr) -> UdpPacketRoute {
+/// Per-association cache of route decisions keyed by destination target.
+///
+/// The routing table's [`version`](crate::routing::RoutingTable::version) is
+/// captured alongside each entry; when the watcher reloads a rule's CIDR
+/// file it bumps the version and the next lookup for an affected target
+/// falls through to a fresh resolve.
+type UdpRouteCache = HashMap<TargetAddr, (UdpPacketRoute, u64)>;
+
+async fn resolve_udp_packet_route(
+    cache: &mut UdpRouteCache,
+    config: &AppConfig,
+    target: &TargetAddr,
+) -> UdpPacketRoute {
     let Some(table) = config.routing_table.as_ref() else {
         return UdpPacketRoute::Tunnel;
     };
-    match table.resolve(target).await.primary {
+    let version = table.version();
+    if let Some((route, entry_version)) = cache.get(target) {
+        if *entry_version == version {
+            return *route;
+        }
+    }
+    let route = match table.resolve(target).await.primary {
         RouteTarget::Direct => UdpPacketRoute::Direct,
         RouteTarget::Drop => UdpPacketRoute::Drop,
         RouteTarget::Group(_) => UdpPacketRoute::Tunnel,
-    }
+    };
+    cache.insert(target.clone(), (route, version));
+    route
 }
 
 fn need_bypass_socket(config: &AppConfig) -> bool {
@@ -114,6 +136,7 @@ pub(super) async fn handle_udp_associate(
         let uplink = async move {
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
+            let mut route_cache: UdpRouteCache = HashMap::new();
             loop {
                 let (len, addr) = socket_uplink
                     .recv_from(&mut buf)
@@ -126,7 +149,9 @@ pub(super) async fn handle_udp_associate(
                     continue;
                 };
 
-                match udp_packet_route(&config_uplink, &packet.target).await {
+                match resolve_udp_packet_route(&mut route_cache, &config_uplink, &packet.target)
+                    .await
+                {
                     UdpPacketRoute::Drop => {
                         debug!(target = %packet.target, "UDP route: policy drop");
                         continue;
@@ -424,12 +449,15 @@ pub(super) async fn handle_udp_in_tcp(
         let bypass_socket_uplink = bypass_socket.clone();
         let config_uplink = config.clone();
         let uplink = async move {
+            let mut route_cache: UdpRouteCache = HashMap::new();
             loop {
                 let Some(packet) = read_udp_tcp_packet(&mut client_read).await? else {
                     break;
                 };
 
-                match udp_packet_route(&config_uplink, &packet.target).await {
+                match resolve_udp_packet_route(&mut route_cache, &config_uplink, &packet.target)
+                    .await
+                {
                     UdpPacketRoute::Drop => {
                         debug!(target = %packet.target, "UDP-in-TCP route: policy drop");
                         continue;

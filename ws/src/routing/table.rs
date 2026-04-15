@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -36,6 +37,11 @@ pub struct RoutingTable {
     pub rules: Vec<CompiledRule>,
     pub default_target: RouteTarget,
     pub default_fallback: Option<RouteTarget>,
+    /// Bumped by [`spawn_route_watchers`] after every successful rule
+    /// reload. Downstream consumers (e.g. the UDP per-association route
+    /// cache) compare this against the version snapshot taken when the
+    /// entry was inserted: a mismatch invalidates the cached decision.
+    pub version: AtomicU64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,7 +72,14 @@ impl RoutingTable {
             rules,
             default_target: config.default_target.clone(),
             default_fallback: config.default_fallback.clone(),
+            version: AtomicU64::new(0),
         })
+    }
+
+    /// Current routing-table version. Callers cache this alongside a
+    /// per-target decision and re-resolve on mismatch.
+    pub fn version(&self) -> u64 {
+        self.version.load(Ordering::Acquire)
     }
 
     /// First-match-wins resolve. Domains never match a CIDR rule and always
@@ -99,7 +112,9 @@ async fn build_cidr_set(rule: &RouteRule) -> Result<CidrSet> {
 }
 
 /// Spawn a file watcher for every rule that has `file` set. On mtime change
-/// the rule's CIDR set is rebuilt (inline + file) and swapped atomically.
+/// the rule's CIDR set is rebuilt (inline + file) and swapped atomically,
+/// then [`RoutingTable::version`] is bumped so per-association caches that
+/// hold stale resolutions re-resolve on the next hit.
 pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
     for (index, rule) in table.rules.iter().enumerate() {
         let Some(file) = rule.file.clone() else {
@@ -108,6 +123,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
         let cidrs = Arc::clone(&rule.cidrs);
         let inline = rule.inline_prefixes.clone();
         let poll = rule.file_poll;
+        let table_for_version = Arc::clone(&table);
         tokio::spawn(async move {
             let mut last_mtime: Option<SystemTime> = None;
             loop {
@@ -122,11 +138,14 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                         let count_v4 = new_set.v4_range_count();
                         let count_v6 = new_set.v6_range_count();
                         *cidrs.write().await = new_set;
+                        let new_version =
+                            table_for_version.version.fetch_add(1, Ordering::AcqRel) + 1;
                         info!(
                             rule_index = index,
                             path = %file.display(),
                             v4_ranges = count_v4,
                             v6_ranges = count_v6,
+                            table_version = new_version,
                             "route CIDR set reloaded"
                         );
                     },
@@ -239,6 +258,19 @@ mod tests {
         // Domains never match a CIDR rule.
         let dom = TargetAddr::Domain("example.com".into(), 80);
         assert_eq!(table.resolve(&dom).await.primary, RouteTarget::Group("main".into()));
+    }
+
+    #[tokio::test]
+    async fn version_starts_at_zero_and_bumps() {
+        let cfg = RoutingTableConfig {
+            rules: vec![rule(&["1.0.0.0/8"], RouteTarget::Direct, None)],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let table = RoutingTable::compile(&cfg).await.unwrap();
+        assert_eq!(table.version(), 0);
+        table.version.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(table.version(), 1);
     }
 
     #[tokio::test]
