@@ -473,26 +473,25 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
             .or(Some(Duration::from_secs(60))),
-        // Off by default: actively pinging idle warm-standby WebSocket sockets
-        // turned out to break some upstream stacks (HAProxy → outline-ss-server
-        // and similar bridges that do not gracefully handle Ping/Pong on a
-        // socket the client is not actively reading), poisoning every cached
-        // standby connection.  Users who genuinely need NAT-keepalive can
-        // opt in via `load_balancing.tcp_ws_standby_keepalive_secs`.
+        // Default: 20 s — sends a WebSocket Ping on each idle warm-standby TCP
+        // socket to keep connections alive through NAT/firewall idle-timeout
+        // windows.  outline-ss-server handles WS Ping/Pong correctly.
+        // Set to 0 to disable.
         tcp_ws_standby_keepalive_interval: {
-            let value = lb.and_then(|l| l.tcp_ws_standby_keepalive_secs);
-            if let Some(secs) = value {
-                warn!(
-                    tcp_ws_standby_keepalive_secs = secs,
-                    "WARM-STANDBY WS PING ENABLED: this sends WebSocket Pings into idle cached \
-                     sockets, which breaks some upstream Shadowsocks stacks (observed with both \
-                     HAProxy→outline-ss-server and plain outline-ss-server over H3) and manifests \
-                     as spurious chunk-0 'Connection reset without closing handshake' on new \
-                     SOCKS sessions.  Remove `load_balancing.tcp_ws_standby_keepalive_secs` \
-                     from the config unless you know the upstream tolerates it."
-                );
+            let secs = lb.and_then(|l| l.tcp_ws_standby_keepalive_secs).unwrap_or(20);
+            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+        },
+        // Default: 20 s — keeps active SOCKS TCP sessions alive through common
+        // 25-30 s upstream idle-timeout windows (HAProxy, nginx, NAT tables).
+        // Keepalives are SS2022 0-length encrypted chunks; SS1 uplinks ignore them.
+        // Set to 0 to disable.
+        tcp_active_keepalive_interval: {
+            let secs = lb.and_then(|l| l.tcp_active_keepalive_secs).unwrap_or(20);
+            if secs == 0 {
+                None
+            } else {
+                Some(Duration::from_secs(secs))
             }
-            value.map(Duration::from_secs)
         },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
     })
