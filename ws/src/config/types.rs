@@ -15,8 +15,13 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 pub struct AppConfig {
     pub listen: Option<SocketAddr>,
     pub socks5_auth: Option<Socks5AuthConfig>,
+    /// Legacy flat view — kept for the existing `UplinkManager`/proxy glue
+    /// until the runtime migration to per-group managers (etaps 3–5).
+    /// Derived from `groups` when the new config is used.
     pub uplinks: Vec<UplinkConfig>,
+    /// Legacy probe config — derived from the first group.
     pub probe: ProbeConfig,
+    /// Legacy LB config — derived from the first group.
     pub load_balancing: LoadBalancingConfig,
     pub metrics: Option<MetricsConfig>,
     pub tun: Option<TunConfig>,
@@ -26,7 +31,55 @@ pub struct AppConfig {
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
     /// Optional bypass list for SOCKS5 connections. Shared + hot-reloadable.
+    /// Kept until the routing-table integration in etap 5.
     pub bypass: Option<Arc<RwLock<BypassList>>>,
+    /// New: explicit uplink groups, each with its own LB + probe configs.
+    pub groups: Vec<UplinkGroupConfig>,
+    /// New: policy routing table. `None` until the new config is wired in.
+    pub routing: Option<RoutingTableConfig>,
+}
+
+/// New: a named collection of uplinks sharing a single LB + probe configuration.
+#[derive(Debug, Clone)]
+pub struct UplinkGroupConfig {
+    pub name: String,
+    pub uplinks: Vec<UplinkConfig>,
+    pub probe: ProbeConfig,
+    pub load_balancing: LoadBalancingConfig,
+}
+
+/// New: what a matched route should do with the traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteTarget {
+    /// Forward the connection outside any uplink (equivalent to the old
+    /// `[bypass]` behaviour).
+    Direct,
+    /// Silently drop the connection (TCP → SOCKS5 reply `REP=0x02`, UDP → drop).
+    Drop,
+    /// Route through the named group.
+    Group(String),
+}
+
+/// New: one policy routing rule.
+///
+/// Prefixes come from `inline_prefixes` and/or `file`. When `file` is set,
+/// a background watcher polls `file_poll` for mtime changes and swaps the
+/// compiled CIDR set in place.
+#[derive(Debug, Clone)]
+pub struct RouteRule {
+    pub inline_prefixes: Vec<String>,
+    pub file: Option<PathBuf>,
+    pub file_poll: Duration,
+    pub target: RouteTarget,
+    pub fallback: Option<RouteTarget>,
+}
+
+/// New: full routing table — ordered rules + explicit default.
+#[derive(Debug, Clone)]
+pub struct RoutingTableConfig {
+    pub rules: Vec<RouteRule>,
+    pub default_target: RouteTarget,
+    pub default_fallback: Option<RouteTarget>,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

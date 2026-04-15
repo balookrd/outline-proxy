@@ -7,8 +7,9 @@ pub use args::Args;
 pub use load::load_config;
 pub use types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
-    MetricsConfig, ProbeConfig, RoutingScope, Socks5AuthConfig, Socks5AuthUserConfig,
-    TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig, WsProbeConfig,
+    MetricsConfig, ProbeConfig, RouteRule, RouteTarget, RoutingScope, RoutingTableConfig,
+    Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig,
+    UplinkGroupConfig, WsProbeConfig,
 };
 
 #[cfg(test)]

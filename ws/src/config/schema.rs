@@ -32,6 +32,10 @@ pub(crate) struct ConfigFile {
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
     pub(super) bypass: Option<BypassSection>,
+    /// New: explicit uplink groups with per-group LB + probe config.
+    pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,
+    /// New: policy routes mapping CIDR prefixes to groups or `direct`.
+    pub(super) route: Option<Vec<RouteSection>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +136,54 @@ pub(super) struct UplinkSection {
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
+    /// declared; optional in legacy config (all uplinks land in `default`).
+    pub(super) group: Option<String>,
+}
+
+/// New: explicit uplink group with its own LB config and probe override.
+///
+/// Top-level `[probe]` acts as a template; unspecified fields in
+/// `[uplink_group.probe]` are inherited from it.
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct UplinkGroupSection {
+    pub(super) name: Option<String>,
+    pub(super) mode: Option<LoadBalancingMode>,
+    pub(super) routing_scope: Option<RoutingScope>,
+    pub(super) sticky_ttl_secs: Option<u64>,
+    pub(super) hysteresis_ms: Option<u64>,
+    pub(super) failure_cooldown_secs: Option<u64>,
+    pub(super) tcp_chunk0_failover_timeout_secs: Option<u64>,
+    pub(super) warm_standby_tcp: Option<usize>,
+    pub(super) warm_standby_udp: Option<usize>,
+    pub(super) rtt_ewma_alpha: Option<f64>,
+    pub(super) failure_penalty_ms: Option<u64>,
+    pub(super) failure_penalty_max_ms: Option<u64>,
+    pub(super) failure_penalty_halflife_secs: Option<u64>,
+    pub(super) h3_downgrade_secs: Option<u64>,
+    pub(super) udp_ws_keepalive_secs: Option<u64>,
+    pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
+    pub(super) tcp_active_keepalive_secs: Option<u64>,
+    pub(super) auto_failback: Option<bool>,
+    /// Per-group override of top-level `[probe]`; unspecified fields inherit.
+    pub(super) probe: Option<ProbeSection>,
+}
+
+/// New: policy routing rule.
+///
+/// Exactly one of `default = true` or non-empty `prefixes`/`file` must be set.
+/// `via` picks the target: either a group name or the reserved `"direct"`.
+/// At most one of `fallback_via` / `fallback_direct` / `fallback_drop` is allowed.
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct RouteSection {
+    pub(super) prefixes: Option<Vec<String>>,
+    pub(super) file: Option<PathBuf>,
+    pub(super) file_poll_secs: Option<u64>,
+    pub(super) default: Option<bool>,
+    pub(super) via: Option<String>,
+    pub(super) fallback_via: Option<String>,
+    pub(super) fallback_direct: Option<bool>,
+    pub(super) fallback_drop: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

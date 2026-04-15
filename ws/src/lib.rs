@@ -13,6 +13,7 @@ pub mod metrics;
 #[cfg(feature = "metrics")]
 pub mod metrics_http;
 pub mod proxy;
+pub mod routing;
 pub mod socks5;
 pub mod transport;
 #[cfg(feature = "h3")]

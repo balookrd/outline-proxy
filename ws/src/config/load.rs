@@ -13,13 +13,14 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 use super::args::Args;
 use super::schema::{
-    BypassSection, ConfigFile, H2Section, OutlineSection, TunSection, UplinkSection,
-    resolve_outline_section,
+    BypassSection, ConfigFile, H2Section, LoadBalancingSection, OutlineSection, ProbeSection,
+    RouteSection, TunSection, UplinkGroupSection, UplinkSection, resolve_outline_section,
 };
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
-    MetricsConfig, ProbeConfig, RoutingScope, Socks5AuthConfig, Socks5AuthUserConfig,
-    TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig, WsProbeConfig,
+    MetricsConfig, ProbeConfig, RouteRule, RouteTarget, RoutingScope, RoutingTableConfig,
+    Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig,
+    UplinkGroupConfig, WsProbeConfig,
 };
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
@@ -46,16 +47,29 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
-    let uplinks = load_uplinks(outline.as_ref(), args)?;
-    let probe = load_probe_config(outline.as_ref())?;
-    let load_balancing = load_balancing_config(outline.as_ref())?;
+    let groups = load_groups(outline.as_ref(), file.as_ref(), args)?;
+    let routing = load_routing_table(file.as_ref(), &groups)?;
+
+    // Legacy flat views — derived from the resolved groups until the per-group
+    // runtime migration lands (etaps 3–5). Multi-group configs still compile
+    // and run on the old single-manager path, but only the first group's LB
+    // config is honoured and all uplinks are pooled.
+    let (uplinks, probe, load_balancing) = derive_legacy_views(&groups);
+
     let metrics = args
         .metrics_listen
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
     let tun = load_tun_config(tun_section, args)?;
     let h2 = load_h2_config(h2_section);
-    let bypass = load_bypass_config(file.as_ref().and_then(|f| f.bypass.as_ref())).await?;
+    let bypass_section = file.as_ref().and_then(|f| f.bypass.as_ref());
+    if bypass_section.is_some() && routing.is_some() {
+        bail!(
+            "[bypass] and [[route]] are mutually exclusive: migrate [bypass] into a [[route]] \
+             with via = \"direct\""
+        );
+    }
+    let bypass = load_bypass_config(bypass_section).await?;
 
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
@@ -73,7 +87,21 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
         bypass,
+        groups,
+        routing,
     })
+}
+
+/// Legacy flat view for the single-manager runtime. The new per-group
+/// runtime (etap 3) reads `AppConfig.groups` directly and will obsolete these.
+fn derive_legacy_views(
+    groups: &[UplinkGroupConfig],
+) -> (Vec<UplinkConfig>, ProbeConfig, LoadBalancingConfig) {
+    let uplinks: Vec<UplinkConfig> =
+        groups.iter().flat_map(|g| g.uplinks.iter().cloned()).collect();
+    // groups is guaranteed non-empty by load_groups.
+    let first = &groups[0];
+    (uplinks, first.probe.clone(), first.load_balancing.clone())
 }
 
 fn load_socks5_auth_config(
@@ -375,8 +403,320 @@ fn load_uplinks(outline: Option<&OutlineSection>, args: &Args) -> Result<Vec<Upl
     Ok(vec![ResolvedUplinkInput::from_outline_default(outline).try_into()?])
 }
 
-fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
-    let probe = outline.and_then(|o| o.probe.as_ref());
+// ── New config: uplink groups + policy routes ─────────────────────────────────
+
+const DIRECT_TARGET: &str = "direct";
+const DROP_TARGET: &str = "drop";
+const DEFAULT_GROUP: &str = "default";
+
+/// Build the full set of uplink groups.
+///
+/// - New shape (`[[uplink_group]]` present): each group gets its own LB + probe
+///   config (probe merged from top-level `[probe]` template). Every uplink must
+///   carry a `group = "…"` field referencing a declared group.
+/// - Legacy shape: a single synthetic `default` group is built from the
+///   existing top-level `[load_balancing]` + `[probe]` + `[[uplinks]]` (or CLI
+///   overrides / `[outline]`).
+fn load_groups(
+    outline: Option<&OutlineSection>,
+    file: Option<&ConfigFile>,
+    args: &Args,
+) -> Result<Vec<UplinkGroupConfig>> {
+    let group_sections = file.and_then(|f| f.uplink_group.as_ref());
+    if group_sections.is_none_or(|v| v.is_empty()) {
+        // Legacy single-group path — reuse existing flat-config logic.
+        let uplinks = load_uplinks(outline, args)?;
+        let probe = load_probe_config(outline.and_then(|o| o.probe.as_ref()))?;
+        let load_balancing = load_balancing_config(outline.and_then(|o| o.load_balancing.as_ref()))?;
+        return Ok(vec![UplinkGroupConfig {
+            name: DEFAULT_GROUP.to_string(),
+            uplinks,
+            probe,
+            load_balancing,
+        }]);
+    }
+
+    let sections = group_sections.expect("checked above");
+    let probe_template = outline.and_then(|o| o.probe.as_ref()).cloned();
+
+    // Validate group names.
+    let mut names: Vec<String> = Vec::with_capacity(sections.len());
+    for (index, section) in sections.iter().enumerate() {
+        let name = section
+            .name
+            .clone()
+            .ok_or_else(|| anyhow!("[[uplink_group]] entry {} is missing `name`", index + 1))?;
+        if name.is_empty() {
+            bail!("[[uplink_group]] entry {} has empty name", index + 1);
+        }
+        if name.eq_ignore_ascii_case(DIRECT_TARGET) || name.eq_ignore_ascii_case(DROP_TARGET) {
+            bail!("[[uplink_group]].name = \"{name}\" is reserved; pick another name");
+        }
+        if names.iter().any(|n| n == &name) {
+            bail!("duplicate [[uplink_group]] name: {name}");
+        }
+        names.push(name);
+    }
+
+    // Uplinks in new-shape config must live under `outline.uplinks` and carry
+    // a `group` field. CLI override still lands everything in the first group
+    // (single-uplink CLI convenience).
+    let cli_override_requested = args.tcp_ws_url.is_some()
+        || args.transport.is_some()
+        || args.tcp_ws_mode.is_some()
+        || args.udp_ws_url.is_some()
+        || args.udp_ws_mode.is_some()
+        || args.tcp_addr.is_some()
+        || args.udp_addr.is_some()
+        || args.method.is_some()
+        || args.password.is_some()
+        || args.fwmark.is_some()
+        || args.ipv6_first.is_some();
+    if cli_override_requested {
+        bail!(
+            "CLI uplink overrides (--tcp-ws-url / --password / …) are not supported together \
+             with [[uplink_group]]: declare the uplink in `[[uplinks]]` instead"
+        );
+    }
+
+    let uplink_sections = outline.and_then(|o| o.uplinks.as_ref()).cloned().unwrap_or_default();
+    if uplink_sections.is_empty() {
+        bail!("[[uplink_group]] declared but no [[uplinks]] provided");
+    }
+
+    // Group uplinks by their `group` field.
+    let mut buckets: Vec<Vec<UplinkConfig>> = vec![Vec::new(); names.len()];
+    for (index, uplink) in uplink_sections.iter().enumerate() {
+        let group_name = uplink.group.as_ref().ok_or_else(|| {
+            anyhow!(
+                "[[uplinks]] entry {} is missing `group` (required when [[uplink_group]] is used)",
+                index + 1
+            )
+        })?;
+        let group_index = names.iter().position(|n| n == group_name).ok_or_else(|| {
+            anyhow!(
+                "[[uplinks]] entry {} references unknown group \"{group_name}\"",
+                index + 1
+            )
+        })?;
+        let resolved: UplinkConfig = ResolvedUplinkInput::from_section(index, uplink).try_into()?;
+        buckets[group_index].push(resolved);
+    }
+    for (name, bucket) in names.iter().zip(&buckets) {
+        if bucket.is_empty() {
+            bail!("uplink group \"{name}\" has no uplinks assigned");
+        }
+    }
+
+    // Build each UplinkGroupConfig with merged probe + LB.
+    let mut groups = Vec::with_capacity(sections.len());
+    for ((section, name), bucket) in sections.iter().zip(names.iter()).zip(buckets.into_iter()) {
+        let merged_probe = merge_probe_section(probe_template.as_ref(), section.probe.as_ref());
+        let probe = load_probe_config(merged_probe.as_ref())?;
+        let load_balancing = load_balancing_config_from_group(section)?;
+        groups.push(UplinkGroupConfig {
+            name: name.clone(),
+            uplinks: bucket,
+            probe,
+            load_balancing,
+        });
+    }
+
+    Ok(groups)
+}
+
+/// Field-by-field merge of a probe template with a per-group override.
+/// Sub-tables (ws/http/dns/tcp) are replaced whole-sale — if the group
+/// overrides `[uplink_group.probe.http]`, the template's `[probe.http]` is
+/// dropped entirely, not merged field-by-field.
+fn merge_probe_section(
+    template: Option<&ProbeSection>,
+    override_: Option<&ProbeSection>,
+) -> Option<ProbeSection> {
+    match (template, override_) {
+        (None, None) => None,
+        (Some(t), None) => Some(t.clone()),
+        (None, Some(o)) => Some(o.clone()),
+        (Some(t), Some(o)) => Some(ProbeSection {
+            interval_secs: o.interval_secs.or(t.interval_secs),
+            timeout_secs: o.timeout_secs.or(t.timeout_secs),
+            max_concurrent: o.max_concurrent.or(t.max_concurrent),
+            max_dials: o.max_dials.or(t.max_dials),
+            min_failures: o.min_failures.or(t.min_failures),
+            attempts: o.attempts.or(t.attempts),
+            ws: o.ws.clone().or_else(|| t.ws.clone()),
+            http: o.http.clone().or_else(|| t.http.clone()),
+            dns: o.dns.clone().or_else(|| t.dns.clone()),
+            tcp: o.tcp.clone().or_else(|| t.tcp.clone()),
+        }),
+    }
+}
+
+/// Adapter: build a `LoadBalancingConfig` from the LB fields embedded in
+/// `[[uplink_group]]` (same field names / defaults as legacy
+/// `[load_balancing]`).
+fn load_balancing_config_from_group(
+    section: &UplinkGroupSection,
+) -> Result<LoadBalancingConfig> {
+    let shim = LoadBalancingSection {
+        mode: section.mode,
+        routing_scope: section.routing_scope,
+        sticky_ttl_secs: section.sticky_ttl_secs,
+        hysteresis_ms: section.hysteresis_ms,
+        failure_cooldown_secs: section.failure_cooldown_secs,
+        tcp_chunk0_failover_timeout_secs: section.tcp_chunk0_failover_timeout_secs,
+        warm_standby_tcp: section.warm_standby_tcp,
+        warm_standby_udp: section.warm_standby_udp,
+        rtt_ewma_alpha: section.rtt_ewma_alpha,
+        failure_penalty_ms: section.failure_penalty_ms,
+        failure_penalty_max_ms: section.failure_penalty_max_ms,
+        failure_penalty_halflife_secs: section.failure_penalty_halflife_secs,
+        h3_downgrade_secs: section.h3_downgrade_secs,
+        udp_ws_keepalive_secs: section.udp_ws_keepalive_secs,
+        tcp_ws_standby_keepalive_secs: section.tcp_ws_standby_keepalive_secs,
+        tcp_active_keepalive_secs: section.tcp_active_keepalive_secs,
+        auto_failback: section.auto_failback,
+    };
+    load_balancing_config(Some(&shim))
+}
+
+/// Parse the `[[route]]` list into a `RoutingTableConfig`.
+///
+/// Returns `Ok(None)` when no `[[route]]` is declared (legacy bypass path).
+/// Otherwise validates:
+/// - exactly one rule has `default = true` (and it has no prefixes/file);
+/// - non-default rules have `prefixes` and/or `file`;
+/// - `via` references a declared group or the reserved `direct`/`drop`;
+/// - at most one of `fallback_via`/`fallback_direct`/`fallback_drop` is set.
+fn load_routing_table(
+    file: Option<&ConfigFile>,
+    groups: &[UplinkGroupConfig],
+) -> Result<Option<RoutingTableConfig>> {
+    let Some(route_sections) = file.and_then(|f| f.route.as_ref()) else {
+        return Ok(None);
+    };
+    if route_sections.is_empty() {
+        return Ok(None);
+    }
+
+    let group_names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();
+
+    let mut rules: Vec<RouteRule> = Vec::new();
+    let mut default_target: Option<RouteTarget> = None;
+    let mut default_fallback: Option<RouteTarget> = None;
+
+    for (index, section) in route_sections.iter().enumerate() {
+        let target = parse_route_target(
+            section.via.as_deref(),
+            &group_names,
+            &format!("[[route]] entry {}", index + 1),
+        )?;
+        let fallback =
+            parse_route_fallback(section, &group_names, &format!("[[route]] entry {}", index + 1))?;
+
+        let is_default = section.default.unwrap_or(false);
+        let has_prefixes = section.prefixes.as_ref().is_some_and(|v| !v.is_empty());
+        let has_file = section.file.is_some();
+
+        if is_default {
+            if has_prefixes || has_file {
+                bail!(
+                    "[[route]] entry {} has `default = true` and must not set prefixes/file",
+                    index + 1
+                );
+            }
+            if default_target.is_some() {
+                bail!("multiple [[route]] entries have `default = true`");
+            }
+            default_target = Some(target);
+            default_fallback = fallback;
+        } else {
+            if !has_prefixes && !has_file {
+                bail!(
+                    "[[route]] entry {} must set `prefixes` and/or `file` (or `default = true`)",
+                    index + 1
+                );
+            }
+            rules.push(RouteRule {
+                inline_prefixes: section.prefixes.clone().unwrap_or_default(),
+                file: section.file.clone(),
+                file_poll: Duration::from_secs(section.file_poll_secs.unwrap_or(60)),
+                target,
+                fallback,
+            });
+        }
+    }
+
+    let default_target = default_target.ok_or_else(|| {
+        anyhow!(
+            "[[route]] is declared but no entry has `default = true`; add one to match unlisted traffic"
+        )
+    })?;
+
+    Ok(Some(RoutingTableConfig {
+        rules,
+        default_target,
+        default_fallback,
+    }))
+}
+
+fn parse_route_target(
+    via: Option<&str>,
+    group_names: &[&str],
+    context: &str,
+) -> Result<RouteTarget> {
+    let via = via.ok_or_else(|| anyhow!("{context} is missing `via`"))?;
+    route_target_from_name(via, group_names, context)
+}
+
+fn parse_route_fallback(
+    section: &RouteSection,
+    group_names: &[&str],
+    context: &str,
+) -> Result<Option<RouteTarget>> {
+    let count = usize::from(section.fallback_via.is_some())
+        + usize::from(section.fallback_direct.unwrap_or(false))
+        + usize::from(section.fallback_drop.unwrap_or(false));
+    if count > 1 {
+        bail!(
+            "{context} has multiple fallbacks set; pick at most one of \
+             fallback_via / fallback_direct / fallback_drop"
+        );
+    }
+    if let Some(name) = section.fallback_via.as_deref() {
+        return Ok(Some(route_target_from_name(name, group_names, context)?));
+    }
+    if section.fallback_direct.unwrap_or(false) {
+        return Ok(Some(RouteTarget::Direct));
+    }
+    if section.fallback_drop.unwrap_or(false) {
+        return Ok(Some(RouteTarget::Drop));
+    }
+    Ok(None)
+}
+
+fn route_target_from_name(
+    name: &str,
+    group_names: &[&str],
+    context: &str,
+) -> Result<RouteTarget> {
+    if name.eq_ignore_ascii_case(DIRECT_TARGET) {
+        return Ok(RouteTarget::Direct);
+    }
+    if name.eq_ignore_ascii_case(DROP_TARGET) {
+        return Ok(RouteTarget::Drop);
+    }
+    if group_names.iter().any(|g| *g == name) {
+        return Ok(RouteTarget::Group(name.to_string()));
+    }
+    bail!(
+        "{context}: via = \"{name}\" does not match any declared group; \
+         known groups: {:?} (plus reserved `direct`, `drop`)",
+        group_names
+    )
+}
+
+fn load_probe_config(probe: Option<&ProbeSection>) -> Result<ProbeConfig> {
     let http = probe
         .and_then(|p| p.http.as_ref())
         .map(|http| HttpProbeConfig { url: http.url.clone() });
@@ -437,8 +777,7 @@ fn load_probe_config(outline: Option<&OutlineSection>) -> Result<ProbeConfig> {
     })
 }
 
-fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalancingConfig> {
-    let lb = outline.and_then(|o| o.load_balancing.as_ref());
+fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result<LoadBalancingConfig> {
     let rtt_ewma_alpha = lb.and_then(|l| l.rtt_ewma_alpha).unwrap_or(0.3);
     if !(rtt_ewma_alpha.is_finite() && 0.0 < rtt_ewma_alpha && rtt_ewma_alpha <= 1.0) {
         bail!("load_balancing.rtt_ewma_alpha must be in the range (0, 1]");
@@ -677,7 +1016,7 @@ pub(super) async fn load_bypass_config(
     let mut file_prefix_count = 0;
 
     if let Some(ref file) = section.file {
-        let file_prefixes = crate::bypass::read_prefixes_from_file(file).await?;
+        let file_prefixes = crate::routing::read_prefixes_from_file(file).await?;
         file_prefix_count = file_prefixes.len();
         prefixes.extend(file_prefixes);
     }
