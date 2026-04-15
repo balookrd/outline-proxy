@@ -122,11 +122,37 @@ fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Res
         .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))?;
     // Keep idle connections alive through NAT/middlebox timeouts that would
     // otherwise silently drop the TCP flow (common with SOCKS5-QUIC bridging).
+    apply_tcp_keepalive(stream, addr, 60, 10, 6)
+}
+
+/// Configure an inbound SOCKS5 client socket (the one we accepted from
+/// e.g. a TUN → SOCKS5 layer like sing-box / clash / mihomo).  These
+/// layers frequently apply aggressive per-connection idle timeouts
+/// (observed at 20 s with perfect clustering in the field), tearing
+/// down long-lived TCP tunnels (SSH, long-polling HTTPS, etc.) the
+/// moment no application bytes flow.  Enable TCP_NODELAY for
+/// interactive latency and a short TCP keepalive so the kernel emits
+/// zero-payload probes every ~10 s — conntrack in the TUN layer sees
+/// these as packet activity and does not declare the flow idle.
+pub fn configure_inbound_tcp_stream(stream: &TcpStream, peer: SocketAddr) -> Result<()> {
+    stream
+        .set_nodelay(true)
+        .with_context(|| format!("failed to enable TCP_NODELAY on inbound socket from {peer}"))?;
+    apply_tcp_keepalive(stream, peer, 10, 5, 6)
+}
+
+fn apply_tcp_keepalive(
+    stream: &TcpStream,
+    addr: SocketAddr,
+    idle_secs: u64,
+    interval_secs: u64,
+    #[allow(unused_variables)] retries: u32,
+) -> Result<()> {
     let keepalive = TcpKeepalive::new()
-        .with_time(Duration::from_secs(60))
-        .with_interval(Duration::from_secs(10));
+        .with_time(Duration::from_secs(idle_secs))
+        .with_interval(Duration::from_secs(interval_secs));
     #[cfg(target_os = "linux")]
-    let keepalive = keepalive.with_retries(6);
+    let keepalive = keepalive.with_retries(retries);
     // SAFETY: `ManuallyDrop` prevents socket2 from closing the fd, which
     // remains owned by `stream` throughout.
     let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_fd(stream.as_raw_fd()) });

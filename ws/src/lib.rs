@@ -141,6 +141,14 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
                 return Err(e).context("accept failed");
             },
         };
+        // Arm aggressive TCP keepalive on the inbound SOCKS5 socket so the
+        // TUN/SOCKS5 layer in front of us (sing-box, clash, mihomo) does not
+        // silently close long-lived idle flows like SSH.  Failures are
+        // non-fatal: log and keep the connection, since the effect is only
+        // degradation to the pre-fix behaviour.
+        if let Err(error) = transport::configure_inbound_tcp_stream(&stream, peer) {
+            debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
+        }
         let config = config.clone();
         let uplinks = uplinks.clone();
         tokio::spawn(async move {
