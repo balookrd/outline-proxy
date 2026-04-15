@@ -363,11 +363,19 @@ enum Http3StreamInner {
     Server {
         stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
         read_buf: BytesMut,
+        /// `Some(n)` while a `queue_send` is in-flight and `poll_drain` has
+        /// not yet returned `Ready`.  Holds the byte count that will be
+        /// reported back to the caller once the drain completes.
+        write_queued: Option<usize>,
     },
     /// Client-side h3 request stream
     Client {
         stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
         read_buf: BytesMut,
+        /// `Some(n)` while a `queue_send` is in-flight and `poll_drain` has
+        /// not yet returned `Ready`.  Holds the byte count that will be
+        /// reported back to the caller once the drain completes.
+        write_queued: Option<usize>,
     },
 }
 
@@ -403,6 +411,7 @@ impl Stream<Http3> {
             inner: StreamInner::Http3(Http3StreamInner::Server {
                 stream,
                 read_buf: BytesMut::with_capacity(64 * 1024),
+                write_queued: None,
             }),
             _marker: PhantomData,
         }
@@ -418,6 +427,7 @@ impl Stream<Http3> {
             inner: StreamInner::Http3(Http3StreamInner::Client {
                 stream,
                 read_buf: BytesMut::with_capacity(64 * 1024),
+                write_queued: None,
             }),
             _marker: PhantomData,
         }
@@ -469,7 +479,7 @@ impl AsyncRead for Stream<Http3> {
                     Poll::Pending => Poll::Pending,
                 }
             }
-            StreamInner::Http3(Http3StreamInner::Server { stream, read_buf }) => {
+            StreamInner::Http3(Http3StreamInner::Server { stream, read_buf, .. }) => {
                 // First drain buffered data
                 if !read_buf.is_empty() {
                     let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
@@ -501,7 +511,7 @@ impl AsyncRead for Stream<Http3> {
                     Poll::Pending => Poll::Pending,
                 }
             }
-            StreamInner::Http3(Http3StreamInner::Client { stream, read_buf }) => {
+            StreamInner::Http3(Http3StreamInner::Client { stream, read_buf, .. }) => {
                 // First drain buffered data
                 if !read_buf.is_empty() {
                     let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
@@ -557,25 +567,51 @@ impl AsyncWrite for Stream<Http3> {
                     Poll::Pending => Poll::Pending,
                 }
             }
-            StreamInner::Http3(Http3StreamInner::Server { stream, .. }) => {
-                let data = Bytes::copy_from_slice(buf);
-                let fut = stream.send_data(data);
-                tokio::pin!(fut);
-
-                match fut.poll(cx) {
-                    Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
-                    Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+            StreamInner::Http3(Http3StreamInner::Server {
+                stream,
+                write_queued,
+                ..
+            }) => {
+                // If no write is in-flight, queue new data synchronously.
+                // This sets h3-quinn's internal `writing` buffer exactly once.
+                if write_queued.is_none() {
+                    let data = Bytes::copy_from_slice(buf);
+                    let n = data.len();
+                    match stream.queue_send(data) {
+                        Ok(()) => *write_queued = Some(n),
+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+                    }
+                }
+                // Drain the queued write.  On Pending we keep write_queued set
+                // so the next poll skips queue_send and retries poll_drain.
+                match stream.poll_drain(cx) {
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
+                    Poll::Ready(Err(e)) => {
+                        *write_queued = None;
+                        Poll::Ready(Err(io::Error::other(e.to_string())))
+                    }
                     Poll::Pending => Poll::Pending,
                 }
             }
-            StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
-                let data = Bytes::copy_from_slice(buf);
-                let fut = stream.send_data(data);
-                tokio::pin!(fut);
-
-                match fut.poll(cx) {
-                    Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
-                    Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
+            StreamInner::Http3(Http3StreamInner::Client {
+                stream,
+                write_queued,
+                ..
+            }) => {
+                if write_queued.is_none() {
+                    let data = Bytes::copy_from_slice(buf);
+                    let n = data.len();
+                    match stream.queue_send(data) {
+                        Ok(()) => *write_queued = Some(n),
+                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+                    }
+                }
+                match stream.poll_drain(cx) {
+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
+                    Poll::Ready(Err(e)) => {
+                        *write_queued = None;
+                        Poll::Ready(Err(io::Error::other(e.to_string())))
+                    }
                     Poll::Pending => Poll::Pending,
                 }
             }
