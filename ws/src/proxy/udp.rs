@@ -8,7 +8,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, RouteTarget};
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
@@ -17,7 +17,45 @@ use crate::socks5::{
 };
 use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::types::{TargetAddr, socket_addr_to_target};
-use crate::uplink::{TransportKind, UplinkManager};
+use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
+
+/// Per-packet routing decision for UDP.
+///
+/// Group-based routing on UDP always uses the association's active uplink
+/// transport (selected from the default group at associate time) until
+/// per-packet group switching lands in a future iteration — the table
+/// decision is consulted only to classify Direct vs Drop vs Tunnel.
+enum UdpPacketRoute {
+    Direct,
+    Drop,
+    Tunnel,
+}
+
+async fn udp_packet_route(config: &AppConfig, target: &TargetAddr) -> UdpPacketRoute {
+    if let Some(table) = config.routing_table.as_ref() {
+        return match table.resolve(target).await.primary {
+            RouteTarget::Direct => UdpPacketRoute::Direct,
+            RouteTarget::Drop => UdpPacketRoute::Drop,
+            RouteTarget::Group(_) => UdpPacketRoute::Tunnel,
+        };
+    }
+    if let Some(bl) = config.bypass.as_ref() {
+        if bl.read().await.is_bypassed(target) {
+            return UdpPacketRoute::Direct;
+        }
+    }
+    UdpPacketRoute::Tunnel
+}
+
+fn need_bypass_socket(config: &AppConfig) -> bool {
+    if config.bypass.is_some() {
+        return true;
+    }
+    // Always allocate when routing is configured — any route may resolve to
+    // Direct. The socket cost is negligible compared to the alternative of
+    // checking every rule's target at associate time.
+    config.routing_table.is_some()
+}
 
 #[derive(Clone)]
 pub(super) struct ActiveUdpTransport {
@@ -37,9 +75,10 @@ fn udp_metric_payload_len(target: &TargetAddr, payload_len: usize) -> Result<usi
 pub(super) async fn handle_udp_associate(
     mut client: TcpStream,
     config: AppConfig,
-    uplinks: UplinkManager,
+    registry: UplinkRegistry,
     _client_hint: TargetAddr,
 ) -> Result<()> {
+    let uplinks = registry.default_group().clone();
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
@@ -49,16 +88,15 @@ pub(super) async fn handle_udp_associate(
         let udp_socket = Arc::new(udp_socket);
         let relay_addr = udp_socket.local_addr().context("failed to read UDP relay address")?;
 
-        // Optional socket for direct (bypass) UDP packets.
-        let bypass_socket = if config.bypass.is_some() {
+        // Optional socket for direct UDP packets.
+        let bypass_socket = if need_bypass_socket(&config) {
             let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
                 .await
-                .with_context(|| format!("failed to bind bypass UDP socket on {}", bind_ip))?;
+                .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
             Some(Arc::new(sock))
         } else {
             None
         };
-        let bypass = config.bypass.clone();
 
         let active_transport = Arc::new(Mutex::new(select_udp_transport(&uplinks, None).await?));
         let (initial_uplink_name, initial_weight) = {
@@ -80,7 +118,7 @@ pub(super) async fn handle_udp_associate(
         let active_transport_uplink = Arc::clone(&active_transport);
         let uplinks_uplink = uplinks.clone();
         let bypass_socket_uplink = bypass_socket.clone();
-        let bypass_uplink = bypass.clone();
+        let config_uplink = config.clone();
         let uplink = async move {
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
@@ -96,37 +134,45 @@ pub(super) async fn handle_udp_associate(
                     continue;
                 };
 
-                // Bypass: send directly without going through the uplink.
-                if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
-                    if bl.read().await.is_bypassed(&packet.target) {
-                        let metric_payload_len =
-                            udp_metric_payload_len(&packet.target, packet.payload.len())?;
-                        let target_addr = match &packet.target {
-                            crate::types::TargetAddr::IpV4(ip, port) => {
-                                SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
-                            },
-                            crate::types::TargetAddr::IpV6(ip, port) => {
-                                SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
-                            },
-                            crate::types::TargetAddr::Domain(_, _) => {
-                                unreachable!("domains return false from is_bypassed")
-                            },
-                        };
-                        sock.send_to(&packet.payload, target_addr)
-                            .await
-                            .context("bypass UDP send failed")?;
-                        metrics::add_udp_datagram(
-                            "client_to_upstream",
-                            metrics::BYPASS_UPLINK_LABEL,
-                        );
-                        metrics::add_bytes(
-                            "udp",
-                            "client_to_upstream",
-                            metrics::BYPASS_UPLINK_LABEL,
-                            metric_payload_len,
-                        );
+                match udp_packet_route(&config_uplink, &packet.target).await {
+                    UdpPacketRoute::Drop => {
+                        debug!(target = %packet.target, "UDP route: policy drop");
                         continue;
-                    }
+                    },
+                    UdpPacketRoute::Direct => {
+                        if let Some(sock) = &bypass_socket_uplink {
+                            let metric_payload_len =
+                                udp_metric_payload_len(&packet.target, packet.payload.len())?;
+                            let target_addr = match &packet.target {
+                                crate::types::TargetAddr::IpV4(ip, port) => {
+                                    SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
+                                },
+                                crate::types::TargetAddr::IpV6(ip, port) => {
+                                    SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
+                                },
+                                crate::types::TargetAddr::Domain(_, _) => {
+                                    warn!(target = %packet.target,
+                                        "UDP direct route cannot resolve domain targets; dropping");
+                                    continue;
+                                },
+                            };
+                            sock.send_to(&packet.payload, target_addr)
+                                .await
+                                .context("direct UDP send failed")?;
+                            metrics::add_udp_datagram(
+                                "client_to_upstream",
+                                metrics::BYPASS_UPLINK_LABEL,
+                            );
+                            metrics::add_bytes(
+                                "udp",
+                                "client_to_upstream",
+                                metrics::BYPASS_UPLINK_LABEL,
+                                metric_payload_len,
+                            );
+                            continue;
+                        }
+                    },
+                    UdpPacketRoute::Tunnel => {},
                 }
 
                 let mut payload = packet.target.to_wire_bytes()?;
@@ -348,21 +394,21 @@ pub(super) async fn handle_udp_associate(
 pub(super) async fn handle_udp_in_tcp(
     mut client: TcpStream,
     config: AppConfig,
-    uplinks: UplinkManager,
+    registry: UplinkRegistry,
     client_hint: TargetAddr,
 ) -> Result<()> {
+    let uplinks = registry.default_group().clone();
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
-        let bypass_socket = if config.bypass.is_some() {
+        let bypass_socket = if need_bypass_socket(&config) {
             let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
                 .await
-                .with_context(|| format!("failed to bind bypass UDP socket on {}", bind_ip))?;
+                .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
             Some(Arc::new(sock))
         } else {
             None
         };
-        let bypass = config.bypass.clone();
 
         let active_transport = Arc::new(Mutex::new(select_udp_transport(&uplinks, None).await?));
         let (initial_uplink_name, initial_weight) = {
@@ -384,43 +430,52 @@ pub(super) async fn handle_udp_in_tcp(
         let active_transport_uplink = Arc::clone(&active_transport);
         let uplinks_uplink = uplinks.clone();
         let bypass_socket_uplink = bypass_socket.clone();
-        let bypass_uplink = bypass.clone();
+        let config_uplink = config.clone();
         let uplink = async move {
             loop {
                 let Some(packet) = read_udp_tcp_packet(&mut client_read).await? else {
                     break;
                 };
 
-                if let (Some(sock), Some(bl)) = (&bypass_socket_uplink, &bypass_uplink) {
-                    if bl.read().await.is_bypassed(&packet.target) {
-                        let metric_payload_len =
-                            udp_metric_payload_len(&packet.target, packet.payload.len())?;
-                        let target_addr = match &packet.target {
-                            crate::types::TargetAddr::IpV4(ip, port) => {
-                                SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
-                            },
-                            crate::types::TargetAddr::IpV6(ip, port) => {
-                                SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
-                            },
-                            crate::types::TargetAddr::Domain(_, _) => {
-                                unreachable!("domains return false from is_bypassed")
-                            },
-                        };
-                        sock.send_to(&packet.payload, target_addr)
-                            .await
-                            .context("bypass UDP send failed")?;
-                        metrics::add_udp_datagram(
-                            "client_to_upstream",
-                            metrics::BYPASS_UPLINK_LABEL,
-                        );
-                        metrics::add_bytes(
-                            "udp",
-                            "client_to_upstream",
-                            metrics::BYPASS_UPLINK_LABEL,
-                            metric_payload_len,
-                        );
+                match udp_packet_route(&config_uplink, &packet.target).await {
+                    UdpPacketRoute::Drop => {
+                        debug!(target = %packet.target, "UDP-in-TCP route: policy drop");
                         continue;
-                    }
+                    },
+                    UdpPacketRoute::Direct => {
+                        if let Some(sock) = &bypass_socket_uplink {
+                            let metric_payload_len =
+                                udp_metric_payload_len(&packet.target, packet.payload.len())?;
+                            let target_addr = match &packet.target {
+                                crate::types::TargetAddr::IpV4(ip, port) => {
+                                    SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
+                                },
+                                crate::types::TargetAddr::IpV6(ip, port) => {
+                                    SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
+                                },
+                                crate::types::TargetAddr::Domain(_, _) => {
+                                    warn!(target = %packet.target,
+                                        "UDP-in-TCP direct route cannot resolve domain targets; dropping");
+                                    continue;
+                                },
+                            };
+                            sock.send_to(&packet.payload, target_addr)
+                                .await
+                                .context("direct UDP send failed")?;
+                            metrics::add_udp_datagram(
+                                "client_to_upstream",
+                                metrics::BYPASS_UPLINK_LABEL,
+                            );
+                            metrics::add_bytes(
+                                "udp",
+                                "client_to_upstream",
+                                metrics::BYPASS_UPLINK_LABEL,
+                                metric_payload_len,
+                            );
+                            continue;
+                        }
+                    },
+                    UdpPacketRoute::Tunnel => {},
                 }
 
                 let mut payload = packet.target.to_wire_bytes()?;

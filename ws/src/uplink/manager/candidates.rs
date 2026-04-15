@@ -108,6 +108,25 @@ impl UplinkManager {
         *self.inner.global_active_uplink.read().await
     }
 
+    /// Non-side-effecting health check used by the dispatch layer to decide
+    /// whether to route a connection here or to fall back to another target.
+    ///
+    /// Returns true when at least one transport-capable uplink in this group
+    /// is currently healthy (probe-confirmed or, when probes are disabled,
+    /// not in cooldown). Unlike [`tcp_candidates`] / [`udp_candidates`], this
+    /// method does not touch sticky routes or active-uplink state.
+    pub async fn has_any_healthy(&self, transport: TransportKind) -> bool {
+        let statuses = self.inner.statuses.read().await;
+        let now = Instant::now();
+        let scope = self.inner.load_balancing.routing_scope;
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
+            .any(|(index, _)| selection_health(&statuses[index], transport, now, scope))
+    }
+
     pub async fn active_uplink_index_for_transport(
         &self,
         transport: TransportKind,

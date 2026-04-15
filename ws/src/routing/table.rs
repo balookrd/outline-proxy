@@ -19,6 +19,7 @@ use crate::types::TargetAddr;
 use super::cidr::{CidrSet, read_prefixes_from_file};
 
 /// Compiled rule: CIDR set (shared, hot-reloadable) + target / fallback.
+#[derive(Debug)]
 pub struct CompiledRule {
     pub cidrs: Arc<RwLock<CidrSet>>,
     /// Inline prefixes from config — merged with file contents on each
@@ -30,6 +31,7 @@ pub struct CompiledRule {
     pub fallback: Option<RouteTarget>,
 }
 
+#[derive(Debug)]
 pub struct RoutingTable {
     pub rules: Vec<CompiledRule>,
     pub default_target: RouteTarget,

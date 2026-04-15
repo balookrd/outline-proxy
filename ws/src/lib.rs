@@ -75,15 +75,27 @@ pub async fn run(args: Args) -> Result<()> {
     run_with_config(config).await
 }
 
-pub async fn run_with_config(config: AppConfig) -> Result<()> {
+pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     let registry = UplinkRegistry::new(config.groups.clone())?;
     registry.initialize_strict_active_selection().await;
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();
     registry.spawn_standby_keepalive_loops();
 
-    // Until routing is wired (etap 5), proxy/TUN still dispatch through the
-    // default group only.
+    // Compile the policy routing table (if user declared [[route]]) and
+    // spawn per-rule file watchers for hot-reload.
+    if let Some(routing_cfg) = config.routing.clone() {
+        let table = std::sync::Arc::new(
+            crate::routing::RoutingTable::compile(&routing_cfg)
+                .await
+                .context("failed to compile routing table")?,
+        );
+        crate::routing::spawn_route_watchers(std::sync::Arc::clone(&table));
+        config.routing_table = Some(table);
+    }
+
+    // TUN still dispatches through the default group until routing is wired
+    // into the TUN path (etap 5b / future).
     let uplinks = registry.default_group().clone();
 
     if let Some(tun) = config.tun.clone() {
@@ -152,9 +164,9 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
         let config = config.clone();
-        let uplinks = uplinks.clone();
+        let registry = registry.clone();
         tokio::spawn(async move {
-            if let Err(error) = proxy::handle_client(stream, peer, config, uplinks).await {
+            if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {
                 if crate::error_text::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
                 } else if crate::error_text::is_client_write_disconnect(&error) {

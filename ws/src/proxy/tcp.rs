@@ -12,7 +12,9 @@ use tracing::{debug, info, warn};
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{SOCKS_STATUS_SUCCESS, send_reply};
+use crate::socks5::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
+
+use super::Dispatch;
 use crate::transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
@@ -152,15 +154,23 @@ where
 pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
     config: AppConfig,
-    uplinks: UplinkManager,
+    dispatch: Dispatch,
     target: TargetAddr,
 ) -> Result<()> {
-    if let Some(ref bypass) = config.bypass {
-        if bypass.read().await.is_bypassed(&target) {
-            info!(target = %target, "TCP bypass: direct connection");
+    let uplinks = match dispatch {
+        Dispatch::Direct => {
+            info!(target = %target, "TCP route: direct connection");
             return handle_tcp_direct(client, target).await;
-        }
-    }
+        },
+        Dispatch::Drop => {
+            info!(target = %target, "TCP route: policy drop");
+            return handle_tcp_drop(client, &target).await;
+        },
+        Dispatch::Group { name, manager } => {
+            debug!(target = %target, group = %name, "TCP route: dispatching via group");
+            manager
+        },
+    };
     let session = metrics::track_session("tcp");
     let result = async {
         let mut last_error = None;
@@ -648,6 +658,15 @@ pub(super) async fn handle_tcp_connect(
     .await;
     session.finish(result.is_ok());
     result
+}
+
+/// Send a SOCKS5 reply with REP=0x02 (connection not allowed by ruleset) and
+/// close the client connection. Used when a matched route has `via = "drop"`.
+async fn handle_tcp_drop(mut client: TcpStream, target: &TargetAddr) -> Result<()> {
+    let bound_addr = socket_addr_to_target(client.local_addr()?);
+    send_reply(&mut client, SOCKS_STATUS_NOT_ALLOWED, &bound_addr).await?;
+    debug!(target = %target, "TCP route: drop reply sent");
+    Ok(())
 }
 
 async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<()> {
