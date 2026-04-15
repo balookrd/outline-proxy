@@ -507,6 +507,168 @@ async fn load_config_rejects_missing_all_ingress() {
 }
 
 #[tokio::test]
+async fn load_config_new_shape_groups_and_routes() {
+    let path = std::env::temp_dir().join("outline-ws-rust-groups-routes.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [probe]
+        interval_secs = 120
+
+        [probe.http]
+        url = "http://example.com/"
+
+        [[uplink_group]]
+        name = "main"
+        mode = "active_active"
+        routing_scope = "per_flow"
+
+        [[uplink_group]]
+        name = "backup"
+        mode = "active_passive"
+        routing_scope = "global"
+
+        [uplink_group.probe]
+        interval_secs = 60
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[uplinks]]
+        name = "edge"
+        group = "backup"
+        tcp_ws_url = "wss://backup.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        prefixes = ["10.0.0.0/8", "192.168.0.0/16", "fc00::/7"]
+        via = "direct"
+
+        [[route]]
+        prefixes = ["1.1.1.1/32"]
+        via = "main"
+        fallback_via = "backup"
+
+        [[route]]
+        default = true
+        via = "main"
+        fallback_direct = true
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = super::load_config(&path, &args).await.unwrap();
+
+    // Groups parsed with per-group LB + merged probe.
+    assert_eq!(config.groups.len(), 2);
+    assert_eq!(config.groups[0].name, "main");
+    assert_eq!(config.groups[0].uplinks.len(), 1);
+    assert_eq!(config.groups[0].load_balancing.mode, LoadBalancingMode::ActiveActive);
+    assert_eq!(config.groups[0].load_balancing.routing_scope, RoutingScope::PerFlow);
+    // Group "main" has no probe override → inherits template interval (120 s).
+    assert_eq!(config.groups[0].probe.interval, Duration::from_secs(120));
+
+    assert_eq!(config.groups[1].name, "backup");
+    assert_eq!(config.groups[1].load_balancing.mode, LoadBalancingMode::ActivePassive);
+    assert_eq!(config.groups[1].load_balancing.routing_scope, RoutingScope::Global);
+    // Group "backup" overrides interval (60 s) but inherits http probe from template.
+    assert_eq!(config.groups[1].probe.interval, Duration::from_secs(60));
+    assert!(config.groups[1].probe.http.is_some());
+
+    // Routing table: 2 rules + 1 default, `direct` + group + fallback parsed.
+    let routing = config.routing.as_ref().expect("routing table must be built");
+    assert_eq!(routing.rules.len(), 2);
+    assert_eq!(routing.rules[0].target, super::RouteTarget::Direct);
+    assert_eq!(routing.rules[0].fallback, None);
+    assert_eq!(routing.rules[1].target, super::RouteTarget::Group("main".to_string()));
+    assert_eq!(routing.rules[1].fallback, Some(super::RouteTarget::Group("backup".to_string())));
+    assert_eq!(routing.default_target, super::RouteTarget::Group("main".to_string()));
+    assert_eq!(routing.default_fallback, Some(super::RouteTarget::Direct));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_route_with_bypass() {
+    let path = std::env::temp_dir().join("outline-ws-rust-route-bypass.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [bypass]
+        prefixes = ["10.0.0.0/8"]
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        default = true
+        via = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = super::load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("[bypass]") && msg.contains("[[route]]"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_unknown_group_in_route() {
+    let path = std::env::temp_dir().join("outline-ws-rust-route-unknown-group.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://main.example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        default = true
+        via = "nonexistent"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = super::load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("nonexistent"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn load_config_allows_tun_without_socks5_listener() {
     let path = std::env::temp_dir().join("outline-ws-rust-tun-only.toml");
     std::fs::write(
