@@ -63,13 +63,25 @@ What it changes:
 - adds `poll_drain(&mut self, cx) -> Poll<Result<(), StreamError>>` — polls until
   the write buffer is fully flushed (the second half), safe to call repeatedly
   without triggering the double-write error
+- adds `queue_grease(&mut self) -> Result<(), StreamError>` — synchronously queues
+  the GREASE frame (if `send_grease` is enabled) and clears the flag; no-op when
+  disabled
+- adds `poll_quic_finish(&mut self, cx) -> Poll<Result<(), StreamError>>` — polls
+  until the QUIC stream's send-side FIN is delivered; must be called only after
+  `poll_drain` returns Ready
 
 **`vendor/sockudo-ws`** (`src/stream/transport_stream.rs`, `src/http3/stream.rs`):
 - adds `write_queued: Option<usize>` to `Http3StreamInner::Server` and `::Client`
+  (and the standalone `Http3ServerStream` / `Http3ClientStream`)
 - rewrites `poll_write` as a two-phase state machine: `queue_send` is called only
   once per logical write (when `write_queued.is_none()`); subsequent polls after
   `Pending` go straight to `poll_drain`, never touching the h3-quinn write buffer
   a second time
+- adds `shutdown_started: bool` to the same types
+- rewrites `poll_shutdown` as a three-phase state machine: `queue_grease` (once),
+  `poll_drain` (flush the GREASE frame or no-op), `poll_quic_finish` (send FIN);
+  same drop-and-recreate bug existed in the original async `finish()` call when
+  the QUIC send buffer was full during GREASE frame transmission
 
 Vendored paths:
 - [vendor/h3](vendor/h3)

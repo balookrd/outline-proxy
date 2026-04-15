@@ -195,6 +195,7 @@ pub struct Http3ServerStream {
     stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     read_buf: BytesMut,
     write_queued: Option<usize>,
+    shutdown_started: bool,
 }
 
 impl Http3ServerStream {
@@ -204,6 +205,7 @@ impl Http3ServerStream {
             stream,
             read_buf: BytesMut::with_capacity(64 * 1024),
             write_queued: None,
+            shutdown_started: false,
         }
     }
 }
@@ -290,10 +292,18 @@ impl AsyncWrite for Http3ServerStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let fut = self.stream.finish();
-        tokio::pin!(fut);
-
-        match fut.poll(cx) {
+        if !self.shutdown_started {
+            match self.stream.queue_grease() {
+                Ok(()) => self.shutdown_started = true,
+                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            }
+        }
+        match self.stream.poll_drain(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            Poll::Ready(Ok(())) => {}
+        }
+        match self.stream.poll_quic_finish(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
@@ -321,6 +331,7 @@ pub struct Http3ClientStream {
     stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     read_buf: BytesMut,
     write_queued: Option<usize>,
+    shutdown_started: bool,
 }
 
 impl Http3ClientStream {
@@ -330,6 +341,7 @@ impl Http3ClientStream {
             stream,
             read_buf: BytesMut::with_capacity(64 * 1024),
             write_queued: None,
+            shutdown_started: false,
         }
     }
 }
@@ -415,10 +427,18 @@ impl AsyncWrite for Http3ClientStream {
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let fut = self.stream.finish();
-        tokio::pin!(fut);
-
-        match fut.poll(cx) {
+        if !self.shutdown_started {
+            match self.stream.queue_grease() {
+                Ok(()) => self.shutdown_started = true,
+                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            }
+        }
+        match self.stream.poll_drain(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+            Poll::Ready(Ok(())) => {}
+        }
+        match self.stream.poll_quic_finish(cx) {
             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
             Poll::Pending => Poll::Pending,
