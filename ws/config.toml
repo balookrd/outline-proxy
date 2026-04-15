@@ -37,21 +37,9 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
-# [bypass]
-# Bypass (direct connection, not through the tunnel) for SOCKS5 traffic.
-# Only IP targets are matched; domain names always go through the tunnel.
-#
-# Load from a file (one CIDR per line, # comments and blank lines are ignored):
-# file = "/etc/outline/bypass.txt"
-# file_poll_secs = 60   # how often to check the file for changes (default: 60)
-#
-# Inline prefixes (combined with file if both are set):
-# prefixes = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "fc00::/7"]
-#
-# Inverted (bypass everything NOT in the list; listed prefixes go through tunnel):
-# prefixes = ["8.8.8.8/32"]
-# invert = true
-
+# ── Probe template ──────────────────────────────────────────────────────────
+# Top-level [probe] is a template: each [[uplink_group]] inherits these
+# defaults, and [uplink_group.probe] overrides individual fields per group.
 [probe]
 interval_secs = 30
 timeout_secs = 10
@@ -69,9 +57,14 @@ server = "1.1.1.1"
 port = 53
 name = "example.com"
 
-[load_balancing]
+# ── Uplink groups ───────────────────────────────────────────────────────────
+# Each group is an isolated UplinkManager with its own probe loop, standby
+# pool, sticky-routes store, active-uplink state, and load-balancing policy.
+# Uplinks below are assigned to a group via `group = "..."`.
+[[uplink_group]]
+name = "main"
 mode = "active_active"          # "active_active" or "active_passive"
-routing_scope = "per_flow"      # "per_flow", "per_uplink", or "global"
+routing_scope = "per_flow"      # "per_flow" | "per_uplink" | "global"
 warm_standby_tcp = 1
 warm_standby_udp = 1
 sticky_ttl_secs = 300
@@ -83,8 +76,22 @@ failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 
+# Optional second group — useful for a fallback path with different LB mode.
+# [[uplink_group]]
+# name = "backup"
+# mode = "active_passive"
+# routing_scope = "global"
+#
+# # Per-group probe override (merged with the top-level template).
+# [uplink_group.probe]
+# interval_secs = 60
+
+# ── Uplinks ─────────────────────────────────────────────────────────────────
+# Each [[uplinks]] entry must set `group = "..."` matching an
+# [[uplink_group]].name above.
 [[uplinks]]
 name = "primary"
+group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
@@ -106,6 +113,7 @@ password = "Secret0"
 
 [[uplinks]]
 name = "backup"
+group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
@@ -116,10 +124,45 @@ udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-#[[uplinks]]
+# Direct Shadowsocks example (no WebSocket wrapper):
+# [[uplinks]]
 # name = "direct-ss"
+# group = "main"
 # transport = "shadowsocks"
 # tcp_addr = "ss.example.com:8388"
 # udp_addr = "ss.example.com:8388"
 # method = "chacha20-ietf-poly1305"
 # password = "Secret0"
+
+# ── Policy routing ──────────────────────────────────────────────────────────
+# First-match-wins: each [[route]] matches destination IPs against its CIDR
+# list; the rule's `via` target picks what to do. One rule must carry
+# `default = true` and applies when nothing else matches.
+#
+# `via` accepts either a declared group name or the reserved `direct`
+# (forward outside any uplink) / `drop` (SOCKS5 REP=0x02 for TCP, drop UDP).
+#
+# Optional fallback (mutually exclusive): `fallback_via = "<group>"`,
+# `fallback_direct = true`, `fallback_drop = true`. Used when the primary
+# group has zero healthy uplinks at dispatch time.
+#
+# Prefixes may be inline via `prefixes = [...]` and/or loaded from a file
+# (one CIDR per line, `#` comments). The file is hot-reloaded on mtime
+# change (poll interval: `file_poll_secs`, default 60).
+
+# RFC1918 / ULA / loopback — never through the tunnel.
+[[route]]
+prefixes = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "127.0.0.0/8", "::1/128"]
+via = "direct"
+
+# Everything else goes through the main group.
+[[route]]
+default = true
+via = "main"
+
+# Example with a file-backed CIDR list and fallback:
+# [[route]]
+# file = "/etc/outline-ws-rust/geoip-cn.list"
+# file_poll_secs = 60
+# via = "backup"
+# fallback_via = "main"

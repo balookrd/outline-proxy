@@ -14,8 +14,7 @@
 #   - tun.tcp.max_pending_server_bytes (64 KB vs 4 MB)
 #   - tun.tcp.max_buffered_client_bytes (64 KB, max allowed by protocol)
 #   - h2 flow-control windows         (256 KB / 512 KB vs 1 MB / 2 MB)
-#   - load_balancing: no warm standby, single uplink
-#   - probe: reduced concurrency
+#   - single group in active_passive mode, no warm standby, reduced probe rate
 
 # ── Log level ───────────────────────────────────────────────────────────────
 # Router builds (--no-default-features --features router) compile without the
@@ -90,7 +89,9 @@ max_retransmits = 8
 initial_stream_window_size = 262144
 initial_connection_window_size = 524288
 
-# ── Probing ──────────────────────────────────────────────────────────────────
+# ── Probe template ───────────────────────────────────────────────────────────
+# Top-level [probe] is shared across all groups unless a group overrides it
+# in [uplink_group.probe].
 [probe]
 interval_secs = 60
 timeout_secs = 10
@@ -102,11 +103,12 @@ attempts = 1
 [probe.ws]
 enabled = true
 
-# ── Load balancing ───────────────────────────────────────────────────────────
-[load_balancing]
+# ── Uplink group ─────────────────────────────────────────────────────────────
+# Single group in active_passive mode. No warm standby — saves RAM and CPU.
+[[uplink_group]]
+name = "main"
 mode = "active_passive"         # single active uplink, fail over on error
 routing_scope = "global"
-# No warm standby connections — saves RAM and CPU.
 warm_standby_tcp = 0
 warm_standby_udp = 0
 sticky_ttl_secs = 300
@@ -124,6 +126,7 @@ udp_ws_keepalive_secs = 60
 # is expensive on low-end MIPS/ARM. h2 over TLS is lighter.
 [[uplinks]]
 name = "primary"
+group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://your-server.example.com/SECRET/tcp"
 tcp_ws_mode = "h2"
@@ -133,3 +136,16 @@ method = "chacha20-ietf-poly1305"
 password = "YourPasswordHere"
 # ChaCha20-Poly1305 is preferred over AES-GCM on MIPS/ARM cores that lack
 # hardware AES acceleration. On routers with AES-NI use aes-256-gcm instead.
+
+# ── Optional: policy routing ─────────────────────────────────────────────────
+# Uncomment to route local/LAN/loopback traffic outside the tunnel and send
+# everything else through the main group (the default behaviour when
+# [[route]] is absent).
+#
+# [[route]]
+# prefixes = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+# via = "direct"
+#
+# [[route]]
+# default = true
+# via = "main"
