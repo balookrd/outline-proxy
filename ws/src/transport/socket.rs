@@ -1,9 +1,12 @@
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use socket2::{Domain, Protocol as SocketProtocol, Socket, Type};
+use socket2::{Domain, Protocol as SocketProtocol, Socket, TcpKeepalive, Type};
+use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::net::TcpStream;
 
 static UDP_RECV_BUF_BYTES: OnceLock<usize> = OnceLock::new();
@@ -116,7 +119,20 @@ pub(crate) fn bind_udp_socket(
 fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Result<()> {
     stream
         .set_nodelay(true)
-        .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))
+        .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))?;
+    // Keep idle connections alive through NAT/middlebox timeouts that would
+    // otherwise silently drop the TCP flow (common with SOCKS5-QUIC bridging).
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(10));
+    #[cfg(target_os = "linux")]
+    let keepalive = keepalive.with_retries(6);
+    // SAFETY: `ManuallyDrop` prevents socket2 from closing the fd, which
+    // remains owned by `stream` throughout.
+    let raw_socket = ManuallyDrop::new(unsafe { Socket::from_raw_fd(stream.as_raw_fd()) });
+    raw_socket
+        .set_tcp_keepalive(&keepalive)
+        .with_context(|| format!("failed to enable TCP keepalive for {addr}"))
 }
 
 fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
