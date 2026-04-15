@@ -173,7 +173,7 @@ impl TcpShadowsocksWriter {
                             None => { let _ = ws_sink.close().await; return; }
                         },
                         _ = ping_timer.tick() => {
-                            debug!(target: "transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
+                            debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
                             if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
                         }
                     }
@@ -191,7 +191,7 @@ impl TcpShadowsocksWriter {
                             },
                         },
                         _ = ping_timer.tick() => {
-                            debug!(target: "transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
+                            debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
                             if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
                         }
                     }
@@ -335,7 +335,7 @@ impl TcpShadowsocksWriter {
         if !header_done {
             return Ok(());
         }
-        debug!(target: "transport::tcp_keepalive", "sending Shadowsocks 0-length keepalive chunk");
+        debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending Shadowsocks 0-length keepalive chunk");
         self.send_payload_frame(&[]).await
     }
 
