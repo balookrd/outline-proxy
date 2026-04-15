@@ -62,6 +62,7 @@ where
     U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
     D: Future<Output = Result<()>> + Send + 'static,
 {
+    let started = tokio::time::Instant::now();
     let mut uplink_task = tokio::spawn(uplink);
     let mut downlink_task = tokio::spawn(downlink);
 
@@ -71,22 +72,63 @@ where
                 Ok(result) => result,
                 Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
             };
+            let elapsed_ms = started.elapsed().as_millis();
+            match &downlink_result {
+                Ok(()) => debug!(
+                    target: "outline_ws_rust::session_death",
+                    elapsed_ms,
+                    winner = "downlink",
+                    "downlink finished first, cleanly (server sent Close / upstream EOF)"
+                ),
+                Err(e) => debug!(
+                    target: "outline_ws_rust::session_death",
+                    elapsed_ms,
+                    winner = "downlink",
+                    error = %format!("{e:#}"),
+                    "downlink finished first with error"
+                ),
+            }
             uplink_task.abort();
             let _ = uplink_task.await;
             downlink_result
         }
         joined = &mut uplink_task => {
+            let elapsed_ms = started.elapsed().as_millis();
             match joined {
-                Ok(Ok(UplinkTaskResult::Finished)) => match downlink_task.await {
-                    Ok(result) => result,
-                    Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
-                },
+                Ok(Ok(UplinkTaskResult::Finished)) => {
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        elapsed_ms,
+                        winner = "uplink",
+                        outcome = "Finished",
+                        "uplink finished first (client EOF over socket transport), awaiting downlink"
+                    );
+                    match downlink_task.await {
+                        Ok(result) => result,
+                        Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+                    }
+                }
                 Ok(Ok(UplinkTaskResult::CloseSession)) => {
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        elapsed_ms,
+                        winner = "uplink",
+                        outcome = "CloseSession",
+                        "uplink requested session close (client EOF over websocket-backed transport)"
+                    );
                     downlink_task.abort();
                     let _ = downlink_task.await;
                     Ok(())
                 }
                 Ok(Err(error)) => {
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        elapsed_ms,
+                        winner = "uplink",
+                        outcome = "Error",
+                        error = %format!("{error:#}"),
+                        "uplink finished first with error"
+                    );
                     downlink_task.abort();
                     let _ = downlink_task.await;
                     Err(error)
