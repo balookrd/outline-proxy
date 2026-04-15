@@ -445,10 +445,15 @@ fn load_balancing_config(outline: Option<&OutlineSection>) -> Result<LoadBalanci
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
             .or(Some(Duration::from_secs(60))),
+        // Off by default: actively pinging idle warm-standby WebSocket sockets
+        // turned out to break some upstream stacks (HAProxy → outline-ss-server
+        // and similar bridges that do not gracefully handle Ping/Pong on a
+        // socket the client is not actively reading), poisoning every cached
+        // standby connection.  Users who genuinely need NAT-keepalive can
+        // opt in via `load_balancing.tcp_ws_standby_keepalive_secs`.
         tcp_ws_standby_keepalive_interval: lb
             .and_then(|l| l.tcp_ws_standby_keepalive_secs)
-            .map(Duration::from_secs)
-            .or(Some(Duration::from_secs(30))),
+            .map(Duration::from_secs),
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
     })
 }

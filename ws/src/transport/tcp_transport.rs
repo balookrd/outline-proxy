@@ -143,19 +143,19 @@ impl TcpShadowsocksWriter {
 
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+        // Note: an earlier iteration of this writer task fired a periodic
+        // WebSocket Ping (intended as an idle keepalive against HAProxy /
+        // nginx `proxy_*_timeout`).  In real deployments — HAProxy →
+        // outline-ss-server, plain outline-ss-server over H3 — those Pings
+        // poisoned the upstream Shadowsocks state and caused immediate
+        // chunk-0 EOF on the next data frame, the exact opposite of the
+        // intended effect.  Application-level keepalive that the upstream
+        // Shadowsocks daemon actually sees is provided by `send_keepalive`
+        // (a 0-length encrypted SS2022 chunk) driven from the SOCKS uplink
+        // task; nothing here injects WebSocket control frames.
         let writer_task = tokio::spawn(async move {
             let mut ws_sink = sink;
             let mut ctrl_open = true;
-            // Send a WebSocket Ping every 10 s when the stream is idle.
-            // Prevents reverse-proxy idle timeouts (e.g. HAProxy `timeout
-            // server`, nginx `proxy_read_timeout`) from dropping the WS leg
-            // of an otherwise quiet flow (SSH at idle, etc.).  10 s leaves
-            // comfortable headroom under the most aggressive 25 s timeout
-            // we have seen in the wild.
-            let mut ping_timer =
-                tokio::time::interval(std::time::Duration::from_secs(10));
-            ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            ping_timer.tick().await; // consume the immediate first tick
             loop {
                 if ctrl_open {
                     tokio::select! {
@@ -172,28 +172,18 @@ impl TcpShadowsocksWriter {
                             }
                             None => { let _ = ws_sink.close().await; return; }
                         },
-                        _ = ping_timer.tick() => {
-                            debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
-                            if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
-                        }
                     }
                 } else {
-                    tokio::select! {
-                        msg = data_rx.recv() => match msg {
-                            Some(m) => {
-                                if ws_sink.send(m).await.is_err() {
-                                    return;
-                                }
-                            },
-                            None => {
-                                let _ = ws_sink.close().await;
+                    match data_rx.recv().await {
+                        Some(m) => {
+                            if ws_sink.send(m).await.is_err() {
                                 return;
-                            },
+                            }
                         },
-                        _ = ping_timer.tick() => {
-                            debug!(target: "outline_ws_rust::transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
-                            if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
-                        }
+                        None => {
+                            let _ = ws_sink.close().await;
+                            return;
+                        },
                     }
                 }
             }
