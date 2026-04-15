@@ -9,11 +9,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
-/// Port we instrument with extra per-event debug logging to diagnose passive
-/// session drop.  Hard-coded to 22 (SSH) during the investigation; flip to
-/// `None` to disable.
-const DEBUG_PORT: Option<u16> = Some(22);
-
 use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
@@ -396,6 +391,7 @@ pub(super) async fn handle_tcp_connect(
                     warn!(
                         uplink = %active_uplink_name,
                         attempted_uplinks = ?attempted_uplinks,
+                        target = %target,
                         error = %error_text,
                         "TCP chunk-0 failure"
                     );
@@ -497,23 +493,12 @@ pub(super) async fn handle_tcp_connect(
         // Strict active-uplink reselection only affects new sessions and
         // chunk-0 failover; established TCP tunnels are not migrated
         // transparently and should only end on a real transport error.
-        let dbg22 = DEBUG_PORT.is_some_and(|p| target.port() == p);
-        if dbg22 {
-            debug!(
-                target: "outline_ws_rust::port_debug",
-                uplink = %active_uplink_name,
-                target = %target,
-                keepalive = ?config.load_balancing.tcp_active_keepalive_interval,
-                "port-debug: phase-2 started (first upstream chunk received)"
-            );
-        }
         let uplink_uplink_name = active_uplink_name.clone();
         let uplinks_uplink = uplinks.clone();
         let keepalive_interval = config.load_balancing.tcp_active_keepalive_interval;
         let uplink = async move {
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
-            let mut last_activity = std::time::Instant::now();
             loop {
                 // When a keepalive interval is set, race the client read against
                 // a sleep timer. If the timer fires first we send a Shadowsocks
@@ -523,30 +508,8 @@ pub(super) async fn handle_tcp_connect(
                 // kill long-lived sessions (SSH, etc.) after ~25–30 s of silence.
                 let read = if let Some(d) = keepalive_interval {
                     tokio::select! {
-                        result = client_read.read(&mut buf) => {
-                            let r = result.map_err(|e| {
-                                if dbg22 {
-                                    debug!(
-                                        target: "outline_ws_rust::port_debug",
-                                        uplink = %uplink_uplink_name,
-                                        idle_ms = last_activity.elapsed().as_millis(),
-                                        error = %e,
-                                        "port-debug: uplink — client read error"
-                                    );
-                                }
-                                anyhow::Error::from(e)
-                            }).context("client read failed")?;
-                            r
-                        }
+                        result = client_read.read(&mut buf) => result.context("client read failed")?,
                         _ = tokio::time::sleep(d) => {
-                            if dbg22 {
-                                debug!(
-                                    target: "outline_ws_rust::port_debug",
-                                    uplink = %uplink_uplink_name,
-                                    idle_ms = last_activity.elapsed().as_millis(),
-                                    "port-debug: uplink — sending SS keepalive (no client data)"
-                                );
-                            }
                             writer
                                 .send_keepalive()
                                 .await
@@ -555,19 +518,7 @@ pub(super) async fn handle_tcp_connect(
                         }
                     }
                 } else {
-                    let r = client_read.read(&mut buf).await;
-                    if dbg22 {
-                        if let Err(ref e) = r {
-                            debug!(
-                                target: "outline_ws_rust::port_debug",
-                                uplink = %uplink_uplink_name,
-                                idle_ms = last_activity.elapsed().as_millis(),
-                                error = %e,
-                                "port-debug: uplink — client read error (no keepalive configured)"
-                            );
-                        }
-                    }
-                    r.context("client read failed")?
+                    client_read.read(&mut buf).await.context("client read failed")?
                 };
                 if read == 0 {
                     // Client-side EOF.  Signal the upstream that we will not
@@ -581,15 +532,6 @@ pub(super) async fn handle_tcp_connect(
                     // would truncate them and kill long-lived sessions the
                     // moment the TUN hits its own idle timeout.  The downlink
                     // will finish naturally once the server echoes our close.
-                    if dbg22 {
-                        debug!(
-                            target: "outline_ws_rust::port_debug",
-                            uplink = %uplink_uplink_name,
-                            idle_ms = last_activity.elapsed().as_millis(),
-                            transport_supports_tcp_half_close = writer.supports_half_close(),
-                            "port-debug: uplink — client EOF"
-                        );
-                    }
                     debug!(
                         uplink = %uplink_uplink_name,
                         transport_supports_tcp_half_close = writer.supports_half_close(),
@@ -598,21 +540,8 @@ pub(super) async fn handle_tcp_connect(
                     writer.close().await?;
                     break;
                 }
-                last_activity = std::time::Instant::now();
                 metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
-                let send_result = writer.send_chunk(&buf[..read]).await;
-                if dbg22 {
-                    if let Err(ref e) = send_result {
-                        debug!(
-                            target: "outline_ws_rust::port_debug",
-                            uplink = %uplink_uplink_name,
-                            bytes = read,
-                            error = %e,
-                            "port-debug: uplink — upstream write error"
-                        );
-                    }
-                }
-                send_result?;
+                writer.send_chunk(&buf[..read]).await?;
                 chunks_sent += 1;
                 if chunks_sent == 1 {
                     debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
