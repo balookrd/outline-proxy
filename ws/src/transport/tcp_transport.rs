@@ -145,6 +145,14 @@ impl TcpShadowsocksWriter {
         let writer_task = tokio::spawn(async move {
             let mut ws_sink = sink;
             let mut ctrl_open = true;
+            // Send a WebSocket Ping every 20 s when the stream is idle.
+            // Prevents server-side idle timeouts (e.g. nginx proxy_read_timeout)
+            // from dropping the connection during quiet SSH sessions or any
+            // other long-lived flow with no user activity.
+            let mut ping_timer =
+                tokio::time::interval(std::time::Duration::from_secs(20));
+            ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ping_timer.tick().await; // consume the immediate first tick
             loop {
                 if ctrl_open {
                     tokio::select! {
@@ -161,18 +169,26 @@ impl TcpShadowsocksWriter {
                             }
                             None => { let _ = ws_sink.close().await; return; }
                         },
+                        _ = ping_timer.tick() => {
+                            if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
+                        }
                     }
                 } else {
-                    match data_rx.recv().await {
-                        Some(m) => {
-                            if ws_sink.send(m).await.is_err() {
+                    tokio::select! {
+                        msg = data_rx.recv() => match msg {
+                            Some(m) => {
+                                if ws_sink.send(m).await.is_err() {
+                                    return;
+                                }
+                            },
+                            None => {
+                                let _ = ws_sink.close().await;
                                 return;
-                            }
+                            },
                         },
-                        None => {
-                            let _ = ws_sink.close().await;
-                            return;
-                        },
+                        _ = ping_timer.tick() => {
+                            if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
+                        }
                     }
                 }
             }
