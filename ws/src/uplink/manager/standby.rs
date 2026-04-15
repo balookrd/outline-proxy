@@ -42,23 +42,52 @@ impl UplinkManager {
     }
 
     /// Pops one connection from the TCP standby pool without falling back to a
-    /// fresh dial.  Returns `None` if the pool is empty.  Callers can use this
-    /// to implement a silent retry: attempt the pool entry first; if it turns
-    /// out to be stale, fall back to `connect_tcp_ws_fresh` without recording
-    /// a runtime failure.
+    /// fresh dial.  Returns `None` if the pool is empty, or if the popped
+    /// entry fails a quick liveness peek (pre-flight check to avoid handing a
+    /// stale socket to a fresh SOCKS session).
+    ///
+    /// The background validation loop runs every 15 s; that is not tight
+    /// enough when the upstream closes idle WebSocket connections within a
+    /// 10–20 s window.  Re-peeking at acquisition time costs at most
+    /// `STANDBY_WS_PEEK_TIMEOUT` (1 ms) per take and closes the race where
+    /// a session is handed a socket that server already FIN'd between
+    /// validation cycles.  If the peek reports closure, the entry is
+    /// dropped and we return `None`; the caller transparently falls back
+    /// to `connect_tcp_ws_fresh`, and the pool refill task fills the slot.
     pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<AnyWsStream> {
+        use tokio_tungstenite::tungstenite::protocol::Message;
+
         if candidate.uplink.transport != UplinkTransport::Websocket {
             return None;
         }
-        let ws = self.inner.standby_pools[candidate.index]
-            .tcp
-            .lock()
-            .await
-            .pop_front()?;
-        self.spawn_refill(candidate.index, TransportKind::Tcp);
-        metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
-        debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
-        Some(ws)
+        loop {
+            let mut ws = self.inner.standby_pools[candidate.index]
+                .tcp
+                .lock()
+                .await
+                .pop_front()?;
+            self.spawn_refill(candidate.index, TransportKind::Tcp);
+
+            let alive = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                Err(_elapsed) => true, // would-block: socket still open
+                Ok(None) => false,
+                Ok(Some(Err(_))) => false,
+                Ok(Some(Ok(Message::Close(_)))) => false,
+                Ok(Some(Ok(_))) => true, // stray control/data frame, still usable
+            };
+            if !alive {
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    "discarded stale warm-standby TCP websocket at acquisition time"
+                );
+                metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "stale");
+                // drop `ws`, loop to try the next pool entry
+                continue;
+            }
+            metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
+            debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
+            return Some(ws);
+        }
     }
 
     /// Dials a fresh TCP WebSocket connection, bypassing the standby pool.
