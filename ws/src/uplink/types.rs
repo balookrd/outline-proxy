@@ -19,6 +19,9 @@ pub struct UplinkManager {
 }
 
 pub(super) struct UplinkManagerInner {
+    /// Name of the group this manager represents. Surfaced as the `group`
+    /// Prometheus label on every uplink-scoped metric emitted from within.
+    pub(super) group_name: String,
     pub(super) uplinks: Vec<Arc<UplinkConfig>>,
     pub(super) probe: ProbeConfig,
     pub(super) load_balancing: LoadBalancingConfig,
@@ -126,6 +129,9 @@ impl fmt::Display for RoutingKey {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UplinkManagerSnapshot {
+    /// Group this snapshot was generated for. Surfaced as the `group`
+    /// Prometheus label on snapshot-rendered metrics.
+    pub group: String,
     pub generated_at_unix_ms: u128,
     pub load_balancing_mode: String,
     pub routing_scope: String,
@@ -142,6 +148,9 @@ pub struct UplinkManagerSnapshot {
 pub struct UplinkSnapshot {
     pub index: usize,
     pub name: String,
+    /// Name of the uplink group this entry belongs to. Emitted as the
+    /// `group` Prometheus label alongside `uplink`.
+    pub group: String,
     pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,

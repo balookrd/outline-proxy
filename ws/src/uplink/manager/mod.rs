@@ -69,6 +69,7 @@ impl UplinkManager {
     }
 
     pub fn new(
+        group_name: impl Into<String>,
         uplinks: Vec<UplinkConfig>,
         probe: ProbeConfig,
         load_balancing: LoadBalancingConfig,
@@ -82,6 +83,7 @@ impl UplinkManager {
         let probe_max_dials = probe.max_dials;
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
+                group_name: group_name.into(),
                 uplinks: uplinks.into_iter().map(Arc::new).collect(),
                 probe,
                 load_balancing,
@@ -96,6 +98,12 @@ impl UplinkManager {
                 probe_wakeup: Arc::new(Notify::new()),
             }),
         })
+    }
+
+    /// Name of the group this manager represents. Used as the `group`
+    /// Prometheus label at metric emission sites.
+    pub fn group_name(&self) -> &str {
+        &self.inner.group_name
     }
 
     pub fn spawn_warm_standby_loop(&self) {
@@ -200,6 +208,7 @@ impl UplinkManager {
             uplinks.push(UplinkSnapshot {
                 index,
                 name: uplink.name.clone(),
+                group: self.inner.group_name.clone(),
                 weight: uplink.weight,
                 tcp_healthy: status.tcp_healthy,
                 udp_healthy: status.udp_healthy,
@@ -283,6 +292,7 @@ impl UplinkManager {
         };
 
         UplinkManagerSnapshot {
+            group: self.inner.group_name.clone(),
             generated_at_unix_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()

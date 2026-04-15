@@ -89,8 +89,8 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> 
 }
 
 async fn render_metrics_response(uplinks: UplinkRegistry) -> Result<MetricsResponse> {
-    let snapshot = uplinks.snapshot().await;
-    let body = render_prometheus(&snapshot)?;
+    let snapshots = uplinks.snapshots().await;
+    let body = render_prometheus(&snapshots)?;
     Ok(plain_response(StatusCode::OK, "text/plain; version=0.0.4", Bytes::from(body)))
 }
 

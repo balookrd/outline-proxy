@@ -1119,6 +1119,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
 }
 async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
     UplinkManager::new(
+        "test",
         vec![UplinkConfig {
             name: "test".to_string(),
             transport: UplinkTransport::Websocket,
