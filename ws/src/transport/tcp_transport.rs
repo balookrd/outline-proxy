@@ -483,16 +483,36 @@ impl TcpShadowsocksReader {
                     let next = match stream.next().await {
                         None => {
                             self.closed_cleanly = true;
+                            debug!(
+                                target: "outline_ws_rust::session_death",
+                                need = len,
+                                have = self.buffer.len(),
+                                "reader: websocket stream returned None (EOF without Close frame)"
+                            );
                             bail!("websocket closed");
                         },
                         Some(Ok(msg)) => msg,
-                        Some(Err(e)) => return Err(anyhow!("websocket read failed: {e}")),
+                        Some(Err(e)) => {
+                            debug!(
+                                target: "outline_ws_rust::session_death",
+                                need = len,
+                                have = self.buffer.len(),
+                                error = %format!("{e}"),
+                                "reader: websocket stream yielded error"
+                            );
+                            return Err(anyhow!("websocket read failed: {e}"));
+                        },
                     };
 
                     match next {
                         Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
-                        Message::Close(_) => {
+                        Message::Close(frame) => {
                             self.closed_cleanly = true;
+                            debug!(
+                                target: "outline_ws_rust::session_death",
+                                frame = ?frame,
+                                "reader: websocket received Close frame from upstream"
+                            );
                             bail!("websocket closed");
                         },
                         Message::Ping(payload) => {
