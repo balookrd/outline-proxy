@@ -161,6 +161,29 @@ where
         self.inner.send_data(buf).await
     }
 
+    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
+    /// before calling this again.
+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
+        self.inner.queue_send(buf)
+    }
+
+    /// Poll until the queued data has been flushed to the QUIC transport.
+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        self.inner.poll_drain(cx)
+    }
+
+    /// Synchronously queue the GREASE frame (if configured). See
+    /// [`crate::connection::RequestStream::queue_grease`].
+    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
+        self.inner.queue_grease()
+    }
+
+    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
+    /// See [`crate::connection::RequestStream::poll_quic_finish`].
+    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        self.inner.poll_quic_finish(cx)
+    }
+
     /// Stop a stream with an error code
     ///
     /// The code can be [`Code::H3_NO_ERROR`].
