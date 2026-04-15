@@ -37,7 +37,7 @@ use socket::connect_tcp_socket;
 use ws_stream::H1WsStream;
 
 pub use h2_io::init_h2_window_sizes;
-pub use socket::init_udp_socket_bufs;
+pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::AnyWsStream;
