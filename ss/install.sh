@@ -6,6 +6,9 @@ BINARY_NAME="outline-ss-rust"
 SERVICE_NAME="${SERVICE_NAME:-outline-ss-rust.service}"
 CHANNEL="${CHANNEL:-stable}"
 VERSION="${VERSION:-}"
+FORCE="${FORCE:-}"
+GITHUB_API="${GITHUB_API:-https://api.github.com}"
+GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
 INSTALL_BIN_DIR="${INSTALL_BIN_DIR:-/usr/local/bin}"
 INSTALL_BIN_PATH="${INSTALL_BIN_DIR}/${BINARY_NAME}"
@@ -20,6 +23,10 @@ SERVICE_PATH="${SYSTEMD_DIR}/${SERVICE_NAME}"
 SERVICE_USER="${SERVICE_USER:-outline-ss-rust}"
 SERVICE_GROUP="${SERVICE_GROUP:-outline-ss-rust}"
 SERVICE_WAS_ACTIVE=0
+INSTALLED_VERSION=""
+SKIP_UPDATE=0
+RELEASE_COMMIT=""
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${STATE_DIR}/nightly-commit}"
 
 TMP_DIR=""
 trap '[[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"' EXIT
@@ -65,6 +72,8 @@ Usage:
   SYSTEMD_DIR=${SYSTEMD_DIR}
   SERVICE_USER=${SERVICE_USER}
   SERVICE_GROUP=${SERVICE_GROUP}
+  FORCE=1            принудительно переустановить, даже если версия актуальна
+  GITHUB_TOKEN=...   GitHub token для обхода rate limit API
 EOF
 }
 
@@ -102,23 +111,21 @@ fetch_stdout() {
 }
 
 parse_args() {
-  if [[ "$#" -eq 0 ]]; then
-    return
-  fi
-
-  if [[ "$#" -eq 1 ]]; then
+  while [[ $# -gt 0 ]]; do
     case "$1" in
       -h|--help)
         show_usage
         exit 0
         ;;
+      -f|--force)
+        FORCE=1
+        ;;
       *)
         die "Неизвестный аргумент: $1. Используй --help для справки."
         ;;
     esac
-  fi
-
-  die "Скрипт не принимает позиционные аргументы. Используй --help для справки."
+    shift
+  done
 }
 
 prepare_tmp_dir() {
@@ -158,13 +165,76 @@ detect_arch() {
   esac
 }
 
+github_api_get() {
+  local url="$1"
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$url"
+  else
+    curl -fsSL \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      "$url"
+  fi
+}
+
 github_api_url() {
   local path="$1"
-  printf 'https://api.github.com/repos/%s/%s' "$REPO" "$path"
+  printf '%s/repos/%s/%s' "$GITHUB_API" "$REPO" "$path"
+}
+
+# Извлекает значение строкового поля из JSON-ответа GitHub API.
+release_field() {
+  local field="$1"
+  grep -oE "\"${field}\":[[:space:]]*\"([^\"\\\\]|\\\\.)*\"" \
+    | head -n1 \
+    | sed -E "s/^\"${field}\":[[:space:]]*\"(([^\"\\\\]|\\\\.)*)\"$/\\1/"
+}
+
+strip_v() { echo "${1#v}"; }
+
+# Возвращает короткий (12 символов) SHA коммита для тега nightly.
+# Сначала берёт target_commitish из release JSON; если это ветка, а не SHA —
+# делает доп. запрос к refs API и при annotated-теге разыменовывает его.
+get_nightly_commit_sha() {
+  local release_json="$1"
+  local commitish sha type ref_json tag_json
+
+  commitish="$(printf '%s' "$release_json" | release_field target_commitish)"
+
+  if [[ "$commitish" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "${commitish:0:12}"
+    return
+  fi
+
+  # target_commitish — имя ветки; резолвим через refs API
+  ref_json="$(github_api_get "$(github_api_url "git/ref/tags/nightly")" 2>/dev/null || true)"
+
+  [[ -n "$ref_json" ]] || { echo ""; return; }
+
+  type="$(printf '%s' "$ref_json" \
+    | grep -oE '"type":[[:space:]]*"[^"]+"' | head -n1 \
+    | sed -E 's/^"type":[[:space:]]*"([^"]+)"$/\1/')"
+  sha="$(printf '%s' "$ref_json" \
+    | grep -oE '"sha":[[:space:]]*"[^"]+"' | head -n1 \
+    | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+
+  if [[ "$type" == "tag" ]]; then
+    # Annotated tag — разыменовываем до commit-объекта
+    tag_json="$(github_api_get "$(github_api_url "git/tags/${sha}")" 2>/dev/null || true)"
+    sha="$(printf '%s' "$tag_json" \
+      | grep -oE '"sha":[[:space:]]*"[^"]+"' | tail -n1 \
+      | sed -E 's/^"sha":[[:space:]]*"([^"]+)"$/\1/')"
+  fi
+
+  echo "${sha:0:12}"
 }
 
 resolve_release() {
-  local api_path release_json tag_line url_line asset_pattern
+  local api_path release_json asset_pattern
 
   if [[ -n "$VERSION" ]]; then
     [[ "$VERSION" == v* ]] || die "VERSION должен быть в формате v1.2.3"
@@ -184,15 +254,21 @@ resolve_release() {
     esac
   fi
 
-  release_json="$(fetch_stdout "$(github_api_url "$api_path")")" || die "Не удалось получить release metadata из GitHub API"
+  release_json="$(github_api_get "$(github_api_url "$api_path")")" || die "Не удалось получить release metadata из GitHub API"
 
-  tag_line="$(printf '%s\n' "$release_json" | grep -m1 '"tag_name":')"
-  RELEASE_TAG="$(printf '%s\n' "$tag_line" | sed -E 's/.*"tag_name":[[:space:]]*"([^"]+)".*/\1/')"
-  [[ -n "$RELEASE_TAG" && "$RELEASE_TAG" != "$tag_line" ]] || die "Не удалось определить tag_name релиза"
+  RELEASE_TAG="$(printf '%s' "$release_json" | release_field tag_name)"
+  [[ -n "$RELEASE_TAG" ]] || die "Не удалось определить tag_name релиза"
+
+  if [[ "$CHANNEL" == "nightly" ]]; then
+    RELEASE_COMMIT="$(get_nightly_commit_sha "$release_json")"
+    [[ -n "$RELEASE_COMMIT" ]] || warn "Не удалось получить commit SHA для nightly — проверка версии будет пропущена"
+  fi
 
   asset_pattern="/${BINARY_NAME}-v[^/]*-${TARGET_TRIPLE}\\.tar\\.gz$"
-  url_line="$(printf '%s\n' "$release_json" | sed -nE 's/.*"browser_download_url":[[:space:]]*"([^"]+)".*/\1/p' | grep -E "$asset_pattern" | head -n1 || true)"
-  RELEASE_ASSET_URL="$url_line"
+  RELEASE_ASSET_URL="$(printf '%s' "$release_json" \
+    | grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' \
+    | sed -E 's/^"browser_download_url":[[:space:]]*"([^"]+)"$/\1/' \
+    | grep -E "$asset_pattern" | head -n1 || true)"
 
   [[ -n "$RELEASE_ASSET_URL" ]] || \
     die "Не удалось найти release-артефакт для ${TARGET_TRIPLE} в релизе ${RELEASE_TAG}"
@@ -306,6 +382,74 @@ install_binary() {
   log "Устанавливаю бинарь в ${INSTALL_BIN_PATH}"
   install -m 0755 "$tmp_bin" "${INSTALL_BIN_PATH}.tmp"
   mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
+  save_release_commit
+}
+
+get_installed_version() {
+  if [[ -x "$INSTALL_BIN_PATH" ]]; then
+    "$INSTALL_BIN_PATH" --version 2>/dev/null | awk '{print $2}' || true
+  fi
+}
+
+check_up_to_date() {
+  INSTALLED_VERSION="$(get_installed_version)"
+
+  if [[ -z "$INSTALLED_VERSION" ]]; then
+    log "Бинарь не установлен, выполняю первичную установку"
+    return
+  fi
+
+  if [[ "$CHANNEL" == "nightly" ]]; then
+    if [[ -z "$RELEASE_COMMIT" ]]; then
+      log "Nightly: commit SHA недоступен — устанавливаю безусловно"
+      return
+    fi
+
+    local stored_commit=""
+    [[ -f "$NIGHTLY_COMMIT_FILE" ]] && stored_commit="$(cat "$NIGHTLY_COMMIT_FILE" 2>/dev/null || true)"
+
+    if [[ -z "$stored_commit" ]]; then
+      log "Nightly: сохранённый коммит не найден, выполняю установку"
+    elif [[ "$stored_commit" == "$RELEASE_COMMIT" ]]; then
+      if [[ -n "$FORCE" ]]; then
+        log "Nightly: уже установлен коммит ${RELEASE_COMMIT}, но FORCE — продолжаю"
+      else
+        SKIP_UPDATE=1
+        log "Nightly: уже установлен актуальный коммит ${RELEASE_COMMIT} — обновление не требуется"
+        log "Используй --force или FORCE=1 для принудительной переустановки"
+      fi
+    else
+      log "Nightly: доступно обновление ${stored_commit} → ${RELEASE_COMMIT}"
+    fi
+    return
+  fi
+
+  local release_ver
+  release_ver="$(strip_v "$RELEASE_TAG")"
+
+  if [[ "$INSTALLED_VERSION" == "$release_ver" ]]; then
+    if [[ -n "$FORCE" ]]; then
+      log "Установлена актуальная версия ${INSTALLED_VERSION}, но FORCE — продолжаю"
+    else
+      SKIP_UPDATE=1
+      log "Уже установлена актуальная версия ${INSTALLED_VERSION} — обновление не требуется"
+      log "Используй --force или FORCE=1 для принудительной переустановки"
+    fi
+  else
+    log "Доступно обновление: ${INSTALLED_VERSION} → ${release_ver}"
+  fi
+}
+
+save_release_commit() {
+  if [[ -n "$RELEASE_COMMIT" ]]; then
+    mkdir -p "$(dirname "$NIGHTLY_COMMIT_FILE")"
+    printf '%s\n' "$RELEASE_COMMIT" > "$NIGHTLY_COMMIT_FILE"
+    chmod 0644 "$NIGHTLY_COMMIT_FILE"
+    log "Nightly commit: ${RELEASE_COMMIT}"
+  elif [[ -f "$NIGHTLY_COMMIT_FILE" ]]; then
+    rm -f "$NIGHTLY_COMMIT_FILE"
+    log "Удалён файл nightly-commit (переключение на stable)"
+  fi
 }
 
 remember_service_state() {
@@ -334,6 +478,11 @@ show_summary() {
   echo "Готово."
   echo "Channel: ${CHANNEL}"
   echo "Release: ${RELEASE_TAG}"
+  if [[ "$CHANNEL" == "nightly" && -n "$RELEASE_COMMIT" ]]; then
+    echo "Commit  : ${RELEASE_COMMIT}"
+  elif [[ -n "$INSTALLED_VERSION" && "$INSTALLED_VERSION" != "${RELEASE_TAG#v}" ]]; then
+    echo "Обновлено: ${INSTALLED_VERSION} → ${RELEASE_TAG#v}"
+  fi
   echo "Binary : ${INSTALL_BIN_PATH}"
   echo "Service: ${SERVICE_PATH}"
   echo "Config : ${CONFIG_PATH}"
@@ -365,6 +514,9 @@ main() {
   log "Архитектура: ${TARGET_TRIPLE}"
   log "Канал: ${CHANNEL}"
   log "Release: ${RELEASE_TAG}"
+
+  check_up_to_date
+  [[ "$SKIP_UPDATE" -eq 0 ]] || exit 0
 
   remember_service_state
   ensure_user_group
