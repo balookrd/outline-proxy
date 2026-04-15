@@ -160,6 +160,11 @@ pub struct LoadBalancingConfig {
     /// NAT/firewall idle timeouts. Runs in addition to the 15-second validation cycle.
     /// None disables the extra keepalive loop (validation every 15 s still runs).
     pub tcp_ws_standby_keepalive_interval: Option<Duration>,
+    /// How often to send a Shadowsocks keepalive frame on an idle active SOCKS TCP
+    /// session (SS2022 only — SS1 uplinks treat this as a no-op). Defeats upstream
+    /// proxy or NAT idle-timeout disconnections for long-lived flows like SSH.
+    /// None disables per-session keepalive (relies solely on OS TCP keepalive).
+    pub tcp_active_keepalive_interval: Option<Duration>,
     /// When false (default), the active uplink is only replaced when it fails.
     /// When true, traffic returns to the highest-priority healthy uplink once it
     /// has been stable for `min_failures` consecutive probe cycles.

@@ -34,6 +34,7 @@ fn lb() -> LoadBalancingConfig {
         h3_downgrade_duration: Duration::from_secs(60),
         udp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
+        tcp_active_keepalive_interval: None,
         auto_failback: false,
     }
 }
