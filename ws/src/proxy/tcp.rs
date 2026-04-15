@@ -25,6 +25,12 @@ const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
 enum UplinkTaskResult {
     Finished,
+    /// Kept in the signature of the drive loop for future use (protocols where
+    /// tearing down the upstream side eagerly on client EOF is actually
+    /// correct).  Not currently emitted from the SOCKS CONNECT path — see the
+    /// comment on client EOF in the uplink task for why we now wait for the
+    /// downlink to finish naturally instead.
+    #[allow(dead_code)]
     CloseSession,
 }
 
@@ -497,16 +503,24 @@ pub(super) async fn handle_tcp_connect(
                     .await
                     .context("client read failed")?;
                 if read == 0 {
-                    let supports_half_close = writer.supports_half_close();
-                    writer.close().await?;
-                    if supports_half_close {
-                        break;
-                    }
+                    // Client-side EOF.  Signal the upstream that we will not
+                    // send any more data (for WebSocket transport this emits a
+                    // Close frame; for a direct socket this half-closes the TCP
+                    // write side) and exit the uplink task.  The downlink task
+                    // is *not* aborted here: the server may still have in-flight
+                    // bytes to deliver — e.g. an SSH server sending its final
+                    // response after the client-side TUN/SOCKS5 layer half-
+                    // closed the flow — and tearing the upstream down eagerly
+                    // would truncate them and kill long-lived sessions the
+                    // moment the TUN hits its own idle timeout.  The downlink
+                    // will finish naturally once the server echoes our close.
                     debug!(
                         uplink = %uplink_uplink_name,
-                        "client closed websocket-backed SOCKS TCP session; tearing down upstream immediately"
+                        transport_supports_tcp_half_close = writer.supports_half_close(),
+                        "client closed SOCKS TCP session; initiating upstream half-close and awaiting downlink"
                     );
-                    return Ok(UplinkTaskResult::CloseSession);
+                    writer.close().await?;
+                    break;
                 }
                 metrics::add_bytes("tcp", "client_to_upstream", &uplink_uplink_name, read);
                 writer.send_chunk(&buf[..read]).await?;
