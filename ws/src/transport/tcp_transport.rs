@@ -8,6 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tracing::debug;
 
 use crate::crypto::{
     SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, increment_nonce,
@@ -145,12 +146,14 @@ impl TcpShadowsocksWriter {
         let writer_task = tokio::spawn(async move {
             let mut ws_sink = sink;
             let mut ctrl_open = true;
-            // Send a WebSocket Ping every 20 s when the stream is idle.
-            // Prevents server-side idle timeouts (e.g. nginx proxy_read_timeout)
-            // from dropping the connection during quiet SSH sessions or any
-            // other long-lived flow with no user activity.
+            // Send a WebSocket Ping every 10 s when the stream is idle.
+            // Prevents reverse-proxy idle timeouts (e.g. HAProxy `timeout
+            // server`, nginx `proxy_read_timeout`) from dropping the WS leg
+            // of an otherwise quiet flow (SSH at idle, etc.).  10 s leaves
+            // comfortable headroom under the most aggressive 25 s timeout
+            // we have seen in the wild.
             let mut ping_timer =
-                tokio::time::interval(std::time::Duration::from_secs(20));
+                tokio::time::interval(std::time::Duration::from_secs(10));
             ping_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ping_timer.tick().await; // consume the immediate first tick
             loop {
@@ -170,6 +173,7 @@ impl TcpShadowsocksWriter {
                             None => { let _ = ws_sink.close().await; return; }
                         },
                         _ = ping_timer.tick() => {
+                            debug!(target: "transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
                             if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
                         }
                     }
@@ -187,6 +191,7 @@ impl TcpShadowsocksWriter {
                             },
                         },
                         _ = ping_timer.tick() => {
+                            debug!(target: "transport::tcp_keepalive", "sending WebSocket Ping (idle keepalive)");
                             if ws_sink.send(Message::Ping(vec![].into())).await.is_err() { return; }
                         }
                     }
@@ -302,6 +307,36 @@ impl TcpShadowsocksWriter {
 
         self.write_frame(frame).await?;
         Ok(())
+    }
+
+    /// Sends a keepalive frame through the upstream transport without
+    /// delivering any application data to the destination. Used to defeat
+    /// idle-connection timeouts in upstream servers and reverse proxies that
+    /// look at *Shadowsocks* traffic (not just WebSocket frames) — e.g. an
+    /// outline-ss-server running behind HAProxy with a short `timeout
+    /// server`, where a WebSocket Ping resets only the WS leg up to HAProxy
+    /// but never reaches the Shadowsocks daemon behind it.
+    ///
+    /// For Shadowsocks 2022 this emits an encrypted 0-length data chunk that
+    /// the server will decrypt and forward as a 0-byte write to the
+    /// destination socket — a no-op that nonetheless resets the server's
+    /// idle timer.
+    ///
+    /// For Shadowsocks-1 (legacy AEAD) it is a no-op: the protocol has no
+    /// chunk framing on the data path, so any extra bytes would be
+    /// indistinguishable from real application data and corrupt the stream.
+    /// Such uplinks rely on the WebSocket Ping that the writer task sends
+    /// independently.
+    pub async fn send_keepalive(&mut self) -> Result<()> {
+        // SS2022 keepalive only makes sense after the request header has
+        // already been sent; before that, the very first chunk on the wire
+        // *is* the SS2022 header.
+        let header_done = self.ss2022.as_ref().is_some_and(|state| state.header_sent);
+        if !header_done {
+            return Ok(());
+        }
+        debug!(target: "transport::tcp_keepalive", "sending Shadowsocks 0-length keepalive chunk");
+        self.send_payload_frame(&[]).await
     }
 
     pub async fn close(&mut self) -> Result<()> {
