@@ -106,11 +106,12 @@ impl TunTcpEngine {
         key: &TcpFlowKey,
         ack: Vec<u8>,
         ip_family: &'static str,
+        group_name: &str,
         uplink_name: &str,
         event: &'static str,
     ) -> Result<()> {
         self.write_tun_packet_or_close_flow(key, &ack).await?;
-        metrics::record_tun_tcp_event(uplink_name, event);
+        metrics::record_tun_tcp_event(group_name, uplink_name, event);
         metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         Ok(())
     }
@@ -154,6 +155,13 @@ pub(super) async fn close_upstream_writer(
 
 pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> String {
     flow.lock().await.uplink_name.clone()
+}
+
+/// Fetches `(group_name, uplink_name)` for a flow — used where both are
+/// needed for the `group`/`uplink` Prometheus labels.
+pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (String, String) {
+    let state = flow.lock().await;
+    (state.manager.group_name().to_string(), state.uplink_name.clone())
 }
 
 pub(super) fn ip_to_target(ip: std::net::IpAddr, port: u16) -> crate::types::TargetAddr {

@@ -113,6 +113,7 @@ struct GroupUdpContext {
 struct UdpResponse {
     target: TargetAddr,
     payload: Vec<u8>,
+    group_name: String,
     uplink_name: String,
 }
 
@@ -217,6 +218,7 @@ async fn run_group_downlink(
                     .send(UdpResponse {
                         target,
                         payload: payload[consumed..].to_vec(),
+                        group_name: ctx.manager.group_name().to_string(),
                         uplink_name: replacement.uplink_name,
                     })
                     .await
@@ -232,6 +234,7 @@ async fn run_group_downlink(
             .send(UdpResponse {
                 target,
                 payload: payload[consumed..].to_vec(),
+                group_name: ctx.manager.group_name().to_string(),
                 uplink_name: name,
             })
             .await
@@ -375,10 +378,15 @@ pub(super) async fn handle_udp_associate(
                     metrics::record_dropped_oversized_udp_packet("outgoing");
                     continue;
                 }
-                metrics::add_udp_datagram("upstream_to_client", &response.uplink_name);
+                metrics::add_udp_datagram(
+                    "upstream_to_client",
+                    &response.group_name,
+                    &response.uplink_name,
+                );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
+                    &response.group_name,
                     &response.uplink_name,
                     response.payload.len(),
                 );
@@ -437,10 +445,15 @@ pub(super) async fn handle_udp_associate(
                     .send_to(&packet, client_addr)
                     .await
                     .context("bypass UDP relay send failed")?;
-                metrics::add_udp_datagram("upstream_to_client", metrics::BYPASS_UPLINK_LABEL);
+                metrics::add_udp_datagram(
+                    "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
                     metrics::BYPASS_UPLINK_LABEL,
                     metric_payload_len,
                 );
@@ -486,10 +499,15 @@ async fn send_udp_direct(
     sock.send_to(payload, target_addr)
         .await
         .context("direct UDP send failed")?;
-    metrics::add_udp_datagram("client_to_upstream", metrics::BYPASS_UPLINK_LABEL);
+    metrics::add_udp_datagram(
+        "client_to_upstream",
+        metrics::BYPASS_GROUP_LABEL,
+        metrics::BYPASS_UPLINK_LABEL,
+    );
     metrics::add_bytes(
         "udp",
         "client_to_upstream",
+        metrics::BYPASS_GROUP_LABEL,
         metrics::BYPASS_UPLINK_LABEL,
         metric_payload_len,
     );
@@ -508,6 +526,7 @@ async fn send_tunneled_udp(
         let active = ctx.active.lock().await;
         (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
     };
+    let group = ctx.manager.group_name();
     if let Err(error) = transport.send_packet(payload).await {
         if is_dropped_oversized_udp_error(&error) {
             return Ok(());
@@ -520,12 +539,18 @@ async fn send_tunneled_udp(
             }
             return Err(error);
         }
-        metrics::add_udp_datagram("client_to_upstream", &replacement.uplink_name);
-        metrics::add_bytes("udp", "client_to_upstream", &replacement.uplink_name, payload.len());
+        metrics::add_udp_datagram("client_to_upstream", group, &replacement.uplink_name);
+        metrics::add_bytes(
+            "udp",
+            "client_to_upstream",
+            group,
+            &replacement.uplink_name,
+            payload.len(),
+        );
         ctx.manager.report_active_traffic(replacement.index, TransportKind::Udp).await;
     } else {
-        metrics::add_udp_datagram("client_to_upstream", &uplink_name);
-        metrics::add_bytes("udp", "client_to_upstream", &uplink_name, payload.len());
+        metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
+        metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
         ctx.manager.report_active_traffic(active_index, TransportKind::Udp).await;
     }
     Ok(())
@@ -624,10 +649,15 @@ pub(super) async fn handle_udp_in_tcp(
                     "upstream UDP-in-TCP response",
                 )
                 .await?;
-                metrics::add_udp_datagram("upstream_to_client", &response.uplink_name);
+                metrics::add_udp_datagram(
+                    "upstream_to_client",
+                    &response.group_name,
+                    &response.uplink_name,
+                );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
+                    &response.group_name,
                     &response.uplink_name,
                     response.payload.len(),
                 );
@@ -654,10 +684,15 @@ pub(super) async fn handle_udp_in_tcp(
                     "bypass UDP-in-TCP response",
                 )
                 .await?;
-                metrics::add_udp_datagram("upstream_to_client", metrics::BYPASS_UPLINK_LABEL);
+                metrics::add_udp_datagram(
+                    "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
                     metrics::BYPASS_UPLINK_LABEL,
                     metric_payload_len,
                 );
@@ -756,8 +791,17 @@ async fn failover_udp_transport(
             error = %format!("{error:#}"),
             "runtime UDP failover activated"
         );
-        metrics::record_failover("udp", &failed_uplink_name, &replacement.uplink_name);
-        metrics::record_uplink_selected("udp", &replacement.uplink_name);
+        metrics::record_failover(
+            "udp",
+            uplinks.group_name(),
+            &failed_uplink_name,
+            &replacement.uplink_name,
+        );
+        metrics::record_uplink_selected(
+            "udp",
+            uplinks.group_name(),
+            &replacement.uplink_name,
+        );
         close_udp_transport(previous_transport, "failover").await;
         return Ok(replacement);
     }
@@ -799,8 +843,17 @@ async fn reconcile_global_udp_transport(
     )
     .await
     {
-        metrics::record_failover("udp", &replaced_uplink_name, &replacement.uplink_name);
-        metrics::record_uplink_selected("udp", &replacement.uplink_name);
+        metrics::record_failover(
+            "udp",
+            uplinks.group_name(),
+            &replaced_uplink_name,
+            &replacement.uplink_name,
+        );
+        metrics::record_uplink_selected(
+            "udp",
+            uplinks.group_name(),
+            &replacement.uplink_name,
+        );
         close_udp_transport(previous_transport, "global_switch").await;
     }
     Ok(())

@@ -28,6 +28,7 @@ fn should_skip_probe_cycle_for_recent_activity(
 }
 
 async fn run_probe_attempt_with_timeout(
+    group: String,
     uplink: Arc<crate::config::UplinkConfig>,
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -42,7 +43,8 @@ async fn run_probe_attempt_with_timeout(
         .saturating_mul(transport_budgets)
         .saturating_add(Duration::from_secs(1));
     let mut probe_task = tokio::spawn(async move {
-        probe_uplink(&uplink, &probe, dial_limit, effective_tcp_mode, effective_udp_mode).await
+        probe_uplink(&group, &uplink, &probe, dial_limit, effective_tcp_mode, effective_udp_mode)
+            .await
     });
     let timeout_sleep = sleep(timeout_duration);
     tokio::pin!(timeout_sleep);
@@ -121,6 +123,7 @@ impl UplinkManager {
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let probe_attempts = probe.attempts.max(1);
+            let group_name = self.inner.group_name.clone();
             // Use the effective TCP/UDP WS modes so that when H3 is in the
             // downgrade window the probe tests H2 connectivity instead.
             // This prevents the probe from clearing h3_*_downgrade_until
@@ -144,6 +147,7 @@ impl UplinkManager {
                 let mut outcome = Err(anyhow!("no probe attempts"));
                 for attempt in 0..probe_attempts {
                     outcome = run_probe_attempt_with_timeout(
+                        group_name.clone(),
                         Arc::clone(&uplink),
                         probe.clone(),
                         Arc::clone(&dial_limit),
@@ -438,6 +442,7 @@ impl UplinkManager {
             let probe = self.inner.probe.clone();
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
+            let group_name = self.inner.group_name.clone();
             recovery_tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
@@ -451,6 +456,7 @@ impl UplinkManager {
                     TransportKind::Udp => (uplink.tcp_ws_mode, WsTransportMode::H3),
                 };
                 let outcome = run_probe_attempt_with_timeout(
+                    group_name,
                     Arc::clone(&uplink),
                     probe,
                     dial_limit,

@@ -180,15 +180,15 @@ impl TunTcpEngine {
             }
         }
 
-        let uplink_name = {
+        let (group_name, uplink_name) = {
             let state = flow.lock().await;
-            state.uplink_name.clone()
+            (state.manager.group_name().to_string(), state.uplink_name.clone())
         };
         {
             let mut guard = self.inner.flows.write().await;
             guard.insert(key, flow);
         }
-        metrics::record_tun_tcp_event(&uplink_name, "flow_created");
+        metrics::record_tun_tcp_event(&group_name, &uplink_name, "flow_created");
 
         Ok(())
     }
@@ -199,7 +199,7 @@ impl TunTcpEngine {
             return;
         };
 
-        let (flow_id, uplink_name, _duration, upstream_writer, close_signal, rst_packet) = {
+        let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal, rst_packet) = {
             let mut state = flow.lock().await;
             let rst_packet = if matches!(state.status, TcpFlowStatus::Closed) {
                 None
@@ -217,6 +217,7 @@ impl TunTcpEngine {
             clear_flow_metrics(&mut state);
             (
                 state.id,
+                state.manager.group_name().to_string(),
                 state.uplink_name.clone(),
                 state.created_at.elapsed(),
                 state.upstream_writer.clone(),
@@ -235,7 +236,7 @@ impl TunTcpEngine {
             );
         }
         close_upstream_writer(upstream_writer).await;
-        metrics::record_tun_tcp_event(&uplink_name, reason);
+        metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
         debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
         self.maybe_shrink_flow_table().await;
     }
@@ -243,12 +244,13 @@ impl TunTcpEngine {
     pub(super) async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
         let flow = self.inner.flows.write().await.remove(key);
         if let Some(flow) = flow {
-            let (flow_id, uplink_name, _duration, upstream_writer, close_signal) = {
+            let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal) = {
                 let mut state = flow.lock().await;
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
                 (
                     state.id,
+                    state.manager.group_name().to_string(),
                     state.uplink_name.clone(),
                     state.created_at.elapsed(),
                     state.upstream_writer.clone(),
@@ -257,7 +259,7 @@ impl TunTcpEngine {
             };
             let _ = close_signal.send(true);
             close_upstream_writer(upstream_writer).await;
-            metrics::record_tun_tcp_event(&uplink_name, reason);
+            metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
             debug!(flow_id, uplink = %uplink_name, reason, "closed TUN TCP flow");
             self.maybe_shrink_flow_table().await;
         }

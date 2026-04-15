@@ -74,14 +74,19 @@ pub fn init() {
         for direction in ["client_to_upstream", "upstream_to_client"] {
             METRICS
                 .bytes_total
-                .with_label_values(&[protocol, direction, super::BYPASS_UPLINK_LABEL])
+                .with_label_values(&[
+                    protocol,
+                    direction,
+                    super::BYPASS_GROUP_LABEL,
+                    super::BYPASS_UPLINK_LABEL,
+                ])
                 .inc_by(0);
         }
     }
     for direction in ["client_to_upstream", "upstream_to_client"] {
         METRICS
             .udp_datagrams_total
-            .with_label_values(&[direction, super::BYPASS_UPLINK_LABEL])
+            .with_label_values(&[direction, super::BYPASS_GROUP_LABEL, super::BYPASS_UPLINK_LABEL])
             .inc_by(0);
     }
     for protocol in ["tcp", "udp"] {

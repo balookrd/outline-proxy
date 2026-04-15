@@ -89,8 +89,8 @@ impl TunUdpEngine {
             close_udp_flow(flow, "evicted").await;
         }
 
-        metrics::record_uplink_selected("udp", &candidate.uplink.name);
-        metrics::record_tun_flow_created(&candidate.uplink.name);
+        metrics::record_uplink_selected("udp", manager.group_name(), &candidate.uplink.name);
+        metrics::record_tun_flow_created(manager.group_name(), &candidate.uplink.name);
         debug!(
             flow_id,
             group = %manager.group_name(),
@@ -148,8 +148,18 @@ impl TunUdpEngine {
                             .map(|flow| flow.uplink_name.clone())
                             .unwrap_or_else(|| "unknown".to_string())
                     };
-                    metrics::add_udp_datagram("upstream_to_client", &uplink_name);
-                    metrics::add_bytes("udp", "upstream_to_client", &uplink_name, payload.len());
+                    metrics::add_udp_datagram(
+                        "upstream_to_client",
+                        manager.group_name(),
+                        &uplink_name,
+                    );
+                    metrics::add_bytes(
+                        "udp",
+                        "upstream_to_client",
+                        manager.group_name(),
+                        &uplink_name,
+                        payload.len(),
+                    );
                     engine.inner.writer.write_packet(&packet).await?;
                     metrics::record_tun_packet(
                         "upstream_to_tun",
@@ -254,7 +264,7 @@ impl TunUdpEngine {
         report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
         let replacement = self.create_flow(key.clone(), manager).await?;
-        metrics::record_failover("udp", uplink_name, &replacement.3);
+        metrics::record_failover("udp", manager.group_name(), uplink_name, &replacement.3);
         Ok(replacement)
     }
 }
@@ -305,6 +315,7 @@ fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowK
 
 pub(crate) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {
     metrics::record_tun_flow_closed(
+        flow.manager.group_name(),
         &flow.uplink_name,
         reason,
         Instant::now().saturating_duration_since(flow.created_at),
