@@ -368,15 +368,25 @@ impl UplinkManager {
                 if !probe_enabled {
                     status.tcp_healthy = Some(true);
                     status.tcp_consecutive_failures = 0;
+                    // When probe is disabled active traffic is the only health
+                    // signal, so clear the cooldown immediately.
+                    status.cooldown_until_tcp = None;
                 }
-                status.cooldown_until_tcp = None;
+                // When probe is enabled it is the authoritative source of health.
+                // Do not clear the cooldown from in-flight traffic: a session
+                // that was established *before* a runtime failure and is still
+                // exchanging data does not prove the uplink is healthy for *new*
+                // sessions.  The probe wakeup fired at failure time will clear
+                // the cooldown within seconds once it confirms connectivity.
+                // Clearing it here would let new sessions route to a recently-
+                // failed uplink before the probe has had a chance to confirm.
             },
             TransportKind::Udp => {
                 if !probe_enabled {
                     status.udp_healthy = Some(true);
                     status.udp_consecutive_failures = 0;
+                    status.cooldown_until_udp = None;
                 }
-                status.cooldown_until_udp = None;
             },
         }
     }
