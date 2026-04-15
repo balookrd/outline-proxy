@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use crate::bypass::BypassList;
+use crate::routing::RoutingTable;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 #[derive(Debug, Clone)]
@@ -35,8 +36,13 @@ pub struct AppConfig {
     pub bypass: Option<Arc<RwLock<BypassList>>>,
     /// New: explicit uplink groups, each with its own LB + probe configs.
     pub groups: Vec<UplinkGroupConfig>,
-    /// New: policy routing table. `None` until the new config is wired in.
+    /// Declarative policy routing config (parsed from `[[route]]`). `None`
+    /// when the legacy `[bypass]` path is used.
     pub routing: Option<RoutingTableConfig>,
+    /// Compiled, hot-reloadable routing table. Synthesised from either
+    /// `routing` (new config) or from `[bypass]` + default group (legacy).
+    /// Always present once [`finalize_runtime`] has been called.
+    pub routing_table: Option<Arc<RoutingTable>>,
 }
 
 /// New: a named collection of uplinks sharing a single LB + probe configuration.

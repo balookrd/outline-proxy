@@ -89,6 +89,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         bypass,
         groups,
         routing,
+        routing_table: None,
     })
 }
 
