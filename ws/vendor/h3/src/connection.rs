@@ -1048,6 +1048,60 @@ where
         Ok(())
     }
 
+    /// Synchronously queue `buf` for sending without blocking.
+    ///
+    /// This is the non-async equivalent of the first half of [`send_data`]: it
+    /// encodes the DATA frame header and hands the payload to the QUIC send
+    /// buffer, but does **not** wait for the data to be flushed.  The caller
+    /// must then drive [`poll_drain`] to `Poll::Ready` before calling
+    /// `queue_send` again.
+    ///
+    /// Returns `Err` immediately if the previous `queue_send` has not been
+    /// fully drained yet (i.e. the underlying h3-quinn write buffer is still
+    /// occupied).
+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
+        use crate::quic::SendStream as _;
+        self.stream
+            .send_data(Frame::Data(buf))
+            .map_err(|e| self.handle_quic_stream_error(e))
+    }
+
+    /// Poll until all data queued by [`queue_send`] has been flushed to the
+    /// QUIC transport layer.
+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        use crate::quic::SendStream as _;
+        self.stream
+            .poll_ready(cx)
+            .map_err(|e| self.handle_quic_stream_error(e))
+    }
+
+    /// Synchronously queue the GREASE frame (if configured) and clear the flag.
+    ///
+    /// Call this exactly **once** at the start of `poll_shutdown`.  Then drive
+    /// [`poll_drain`] to completion to flush the frame, and finally call
+    /// [`poll_quic_finish`] to send the QUIC FIN.  If no GREASE frame was
+    /// configured this is a cheap no-op.
+    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
+        if self.send_grease_frame {
+            use crate::quic::SendStream as _;
+            self.stream
+                .send_data(Frame::Grease)
+                .map_err(|e| self.handle_quic_stream_error(e))?;
+            self.send_grease_frame = false;
+        }
+        Ok(())
+    }
+
+    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
+    ///
+    /// Must be called only after [`poll_drain`] has returned `Poll::Ready(Ok(()))`.
+    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
+        use crate::quic::SendStream as _;
+        self.stream
+            .poll_finish(cx)
+            .map_err(|e| self.handle_quic_stream_error(e))
+    }
+
     /// Send a set of trailers to end the request.
     #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
     pub async fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), StreamError> {
