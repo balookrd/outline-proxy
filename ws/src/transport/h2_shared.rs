@@ -70,7 +70,14 @@ impl H2ConnectionKey {
 
 struct SharedH2Connection {
     id: u64,
-    send_request: Mutex<H2SendRequestHandle>,
+    // hyper's http2::SendRequest<B> is Send + Sync + Clone — concurrent stream
+    // opens on the same shared connection do not need a Mutex.  Using a Mutex
+    // serialises .ready().await calls: under load, one task blocking on
+    // .ready() holds the lock, which causes all other tasks to queue behind it.
+    // When the blocked task times out it counts as a runtime failure and sets a
+    // cooldown on a healthy uplink.  Using Clone instead lets every task call
+    // .ready() independently; hyper's H2 layer handles flow-control internally.
+    send_request: H2SendRequestHandle,
     closed: Arc<AtomicBool>,
     _driver_task: AbortOnDrop,
 }
@@ -94,8 +101,14 @@ impl SharedH2Connection {
             .body(Empty::new())
             .expect("request builder never fails");
 
+        // Clone the SendRequest handle so each concurrent open_websocket call
+        // proceeds independently.  hyper's http2::SendRequest is Send+Sync+Clone
+        // and internally manages per-connection concurrency via flow control.
+        // Previously we held a Mutex here, which caused all callers to queue
+        // behind a single .ready().await — any timeout became a false runtime
+        // failure on a healthy uplink.
         let response_future = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
-            let mut send_request = self.send_request.lock().await;
+            let mut send_request = self.send_request.clone();
             send_request
                 .ready()
                 .await
@@ -337,7 +350,7 @@ async fn connect_h2_connection(
 
     Ok(SharedH2Connection {
         id,
-        send_request: Mutex::new(send_request),
+        send_request,
         closed,
         _driver_task: driver_task,
     })
