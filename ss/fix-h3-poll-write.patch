@@ -1,57 +1,58 @@
 diff --git a/vendor/h3/src/client/stream.rs b/vendor/h3/src/client/stream.rs
-index ef64de7..a121e29 100644
+index a121e29..2f04c72 100644
 --- a/vendor/h3/src/client/stream.rs
 +++ b/vendor/h3/src/client/stream.rs
-@@ -245,6 +245,17 @@ where
-         self.inner.send_data(buf).await
+@@ -256,6 +256,18 @@ where
+         self.inner.poll_drain(cx)
      }
  
-+    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
-+    /// before calling this again.
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        self.inner.queue_send(buf)
++    /// Synchronously queue the GREASE frame (if configured). See
++    /// [`crate::connection::RequestStream::queue_grease`].
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        self.inner.queue_grease()
 +    }
 +
-+    /// Poll until the queued data has been flushed to the QUIC transport.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_drain(cx)
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    /// See [`crate::connection::RequestStream::poll_quic_finish`].
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_quic_finish(cx)
 +    }
 +
      /// Stop a stream with an error code
      ///
      /// The code can be [`Code::H3_NO_ERROR`].
 diff --git a/vendor/h3/src/connection.rs b/vendor/h3/src/connection.rs
-index 275e4c9..0f8fec6 100644
+index 0f8fec6..430260b 100644
 --- a/vendor/h3/src/connection.rs
 +++ b/vendor/h3/src/connection.rs
-@@ -1048,6 +1048,33 @@ where
-         Ok(())
+@@ -1075,6 +1075,33 @@ where
+             .map_err(|e| self.handle_quic_stream_error(e))
      }
  
-+    /// Synchronously queue `buf` for sending without blocking.
++    /// Synchronously queue the GREASE frame (if configured) and clear the flag.
 +    ///
-+    /// This is the non-async equivalent of the first half of [`send_data`]: it
-+    /// encodes the DATA frame header and hands the payload to the QUIC send
-+    /// buffer, but does **not** wait for the data to be flushed.  The caller
-+    /// must then drive [`poll_drain`] to `Poll::Ready` before calling
-+    /// `queue_send` again.
-+    ///
-+    /// Returns `Err` immediately if the previous `queue_send` has not been
-+    /// fully drained yet (i.e. the underlying h3-quinn write buffer is still
-+    /// occupied).
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        use crate::quic::SendStream as _;
-+        self.stream
-+            .send_data(Frame::Data(buf))
-+            .map_err(|e| self.handle_quic_stream_error(e))
++    /// Call this exactly **once** at the start of `poll_shutdown`.  Then drive
++    /// [`poll_drain`] to completion to flush the frame, and finally call
++    /// [`poll_quic_finish`] to send the QUIC FIN.  If no GREASE frame was
++    /// configured this is a cheap no-op.
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        if self.send_grease_frame {
++            use crate::quic::SendStream as _;
++            self.stream
++                .send_data(Frame::Grease)
++                .map_err(|e| self.handle_quic_stream_error(e))?;
++            self.send_grease_frame = false;
++        }
++        Ok(())
 +    }
 +
-+    /// Poll until all data queued by [`queue_send`] has been flushed to the
-+    /// QUIC transport layer.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    ///
++    /// Must be called only after [`poll_drain`] has returned `Poll::Ready(Ok(()))`.
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
 +        use crate::quic::SendStream as _;
 +        self.stream
-+            .poll_ready(cx)
++            .poll_finish(cx)
 +            .map_err(|e| self.handle_quic_stream_error(e))
 +    }
 +
@@ -59,243 +60,209 @@ index 275e4c9..0f8fec6 100644
      #[cfg_attr(feature = "tracing", instrument(skip_all, level = "trace"))]
      pub async fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), StreamError> {
 diff --git a/vendor/h3/src/server/stream.rs b/vendor/h3/src/server/stream.rs
-index fa1aecf..ae42ffa 100644
+index ae42ffa..4660cb2 100644
 --- a/vendor/h3/src/server/stream.rs
 +++ b/vendor/h3/src/server/stream.rs
-@@ -161,6 +161,17 @@ where
-         self.inner.send_data(buf).await
+@@ -172,6 +172,18 @@ where
+         self.inner.poll_drain(cx)
      }
  
-+    /// Non-blocking enqueue of `buf`. Drive [`poll_drain`] to completion
-+    /// before calling this again.
-+    pub fn queue_send(&mut self, buf: B) -> Result<(), StreamError> {
-+        self.inner.queue_send(buf)
++    /// Synchronously queue the GREASE frame (if configured). See
++    /// [`crate::connection::RequestStream::queue_grease`].
++    pub fn queue_grease(&mut self) -> Result<(), StreamError> {
++        self.inner.queue_grease()
 +    }
 +
-+    /// Poll until the queued data has been flushed to the QUIC transport.
-+    pub fn poll_drain(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
-+        self.inner.poll_drain(cx)
++    /// Poll until the QUIC stream send-side is fully finished (FIN delivered).
++    /// See [`crate::connection::RequestStream::poll_quic_finish`].
++    pub fn poll_quic_finish(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
++        self.inner.poll_quic_finish(cx)
 +    }
 +
      /// Stop a stream with an error code
      ///
      /// The code can be [`Code::H3_NO_ERROR`].
 diff --git a/vendor/sockudo-ws/src/http3/stream.rs b/vendor/sockudo-ws/src/http3/stream.rs
-index b93f4a0..6b417dc 100644
+index 6b417dc..bf556f3 100644
 --- a/vendor/sockudo-ws/src/http3/stream.rs
 +++ b/vendor/sockudo-ws/src/http3/stream.rs
-@@ -194,6 +194,7 @@ impl std::fmt::Debug for Http3Stream {
- pub struct Http3ServerStream {
+@@ -195,6 +195,7 @@ pub struct Http3ServerStream {
      stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
      read_buf: BytesMut,
-+    write_queued: Option<usize>,
+     write_queued: Option<usize>,
++    shutdown_started: bool,
  }
  
  impl Http3ServerStream {
-@@ -202,6 +203,7 @@ impl Http3ServerStream {
-         Self {
+@@ -204,6 +205,7 @@ impl Http3ServerStream {
              stream,
              read_buf: BytesMut::with_capacity(64 * 1024),
-+            write_queued: None,
+             write_queued: None,
++            shutdown_started: false,
          }
      }
  }
-@@ -264,14 +266,20 @@ impl AsyncWrite for Http3ServerStream {
-             return Poll::Ready(Ok(0));
-         }
+@@ -290,10 +292,18 @@ impl AsyncWrite for Http3ServerStream {
+     }
  
--        // h3's send_data takes Bytes
--        let data = Bytes::copy_from_slice(buf);
--        let fut = self.stream.send_data(data);
+     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+-        let fut = self.stream.finish();
 -        tokio::pin!(fut);
 -
 -        match fut.poll(cx) {
--            Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
--            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
-+        if self.write_queued.is_none() {
-+            let data = Bytes::copy_from_slice(buf);
-+            let n = data.len();
-+            match self.stream.queue_send(data) {
-+                Ok(()) => self.write_queued = Some(n),
++        if !self.shutdown_started {
++            match self.stream.queue_grease() {
++                Ok(()) => self.shutdown_started = true,
 +                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
 +            }
 +        }
 +        match self.stream.poll_drain(cx) {
-+            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.write_queued.take().unwrap())),
-+            Poll::Ready(Err(e)) => {
-+                self.write_queued = None;
-+                Poll::Ready(Err(io::Error::other(e.to_string())))
-+            }
++            Poll::Pending => return Poll::Pending,
++            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++            Poll::Ready(Ok(())) => {}
++        }
++        match self.stream.poll_quic_finish(cx) {
+             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
              Poll::Pending => Poll::Pending,
-         }
-     }
-@@ -312,6 +320,7 @@ unsafe impl Send for Http3ServerStream {}
- pub struct Http3ClientStream {
+@@ -321,6 +331,7 @@ pub struct Http3ClientStream {
      stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
      read_buf: BytesMut,
-+    write_queued: Option<usize>,
+     write_queued: Option<usize>,
++    shutdown_started: bool,
  }
  
  impl Http3ClientStream {
-@@ -320,6 +329,7 @@ impl Http3ClientStream {
-         Self {
+@@ -330,6 +341,7 @@ impl Http3ClientStream {
              stream,
              read_buf: BytesMut::with_capacity(64 * 1024),
-+            write_queued: None,
+             write_queued: None,
++            shutdown_started: false,
          }
      }
  }
-@@ -382,13 +392,20 @@ impl AsyncWrite for Http3ClientStream {
-             return Poll::Ready(Ok(0));
-         }
+@@ -415,10 +427,18 @@ impl AsyncWrite for Http3ClientStream {
+     }
  
--        let data = Bytes::copy_from_slice(buf);
--        let fut = self.stream.send_data(data);
+     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+-        let fut = self.stream.finish();
 -        tokio::pin!(fut);
 -
 -        match fut.poll(cx) {
--            Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
--            Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
-+        if self.write_queued.is_none() {
-+            let data = Bytes::copy_from_slice(buf);
-+            let n = data.len();
-+            match self.stream.queue_send(data) {
-+                Ok(()) => self.write_queued = Some(n),
++        if !self.shutdown_started {
++            match self.stream.queue_grease() {
++                Ok(()) => self.shutdown_started = true,
 +                Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
 +            }
 +        }
 +        match self.stream.poll_drain(cx) {
-+            Poll::Ready(Ok(())) => Poll::Ready(Ok(self.write_queued.take().unwrap())),
-+            Poll::Ready(Err(e)) => {
-+                self.write_queued = None;
-+                Poll::Ready(Err(io::Error::other(e.to_string())))
-+            }
++            Poll::Pending => return Poll::Pending,
++            Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++            Poll::Ready(Ok(())) => {}
++        }
++        match self.stream.poll_quic_finish(cx) {
+             Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+             Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
              Poll::Pending => Poll::Pending,
-         }
-     }
 diff --git a/vendor/sockudo-ws/src/stream/transport_stream.rs b/vendor/sockudo-ws/src/stream/transport_stream.rs
-index 0b15673..27bd24f 100644
+index 27bd24f..39d7b6d 100644
 --- a/vendor/sockudo-ws/src/stream/transport_stream.rs
 +++ b/vendor/sockudo-ws/src/stream/transport_stream.rs
-@@ -363,11 +363,19 @@ enum Http3StreamInner {
-     Server {
-         stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-         read_buf: BytesMut,
-+        /// `Some(n)` while a `queue_send` is in-flight and `poll_drain` has
-+        /// not yet returned `Ready`.  Holds the byte count that will be
-+        /// reported back to the caller once the drain completes.
-+        write_queued: Option<usize>,
+@@ -367,6 +367,9 @@ enum Http3StreamInner {
+         /// not yet returned `Ready`.  Holds the byte count that will be
+         /// reported back to the caller once the drain completes.
+         write_queued: Option<usize>,
++        /// `true` once `queue_grease` has been called during `poll_shutdown`.
++        /// Prevents re-calling it (and re-entering `send_data`) on retries.
++        shutdown_started: bool,
      },
      /// Client-side h3 request stream
      Client {
-         stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-         read_buf: BytesMut,
-+        /// `Some(n)` while a `queue_send` is in-flight and `poll_drain` has
-+        /// not yet returned `Ready`.  Holds the byte count that will be
-+        /// reported back to the caller once the drain completes.
-+        write_queued: Option<usize>,
+@@ -376,6 +379,9 @@ enum Http3StreamInner {
+         /// not yet returned `Ready`.  Holds the byte count that will be
+         /// reported back to the caller once the drain completes.
+         write_queued: Option<usize>,
++        /// `true` once `queue_grease` has been called during `poll_shutdown`.
++        /// Prevents re-calling it (and re-entering `send_data`) on retries.
++        shutdown_started: bool,
      },
  }
  
-@@ -403,6 +411,7 @@ impl Stream<Http3> {
-             inner: StreamInner::Http3(Http3StreamInner::Server {
+@@ -412,6 +418,7 @@ impl Stream<Http3> {
                  stream,
                  read_buf: BytesMut::with_capacity(64 * 1024),
-+                write_queued: None,
+                 write_queued: None,
++                shutdown_started: false,
              }),
              _marker: PhantomData,
          }
-@@ -418,6 +427,7 @@ impl Stream<Http3> {
-             inner: StreamInner::Http3(Http3StreamInner::Client {
+@@ -428,6 +435,7 @@ impl Stream<Http3> {
                  stream,
                  read_buf: BytesMut::with_capacity(64 * 1024),
-+                write_queued: None,
+                 write_queued: None,
++                shutdown_started: false,
              }),
              _marker: PhantomData,
          }
-@@ -469,7 +479,7 @@ impl AsyncRead for Stream<Http3> {
-                     Poll::Pending => Poll::Pending,
-                 }
-             }
--            StreamInner::Http3(Http3StreamInner::Server { stream, read_buf }) => {
-+            StreamInner::Http3(Http3StreamInner::Server { stream, read_buf, .. }) => {
-                 // First drain buffered data
-                 if !read_buf.is_empty() {
-                     let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
-@@ -501,7 +511,7 @@ impl AsyncRead for Stream<Http3> {
-                     Poll::Pending => Poll::Pending,
-                 }
-             }
--            StreamInner::Http3(Http3StreamInner::Client { stream, read_buf }) => {
-+            StreamInner::Http3(Http3StreamInner::Client { stream, read_buf, .. }) => {
-                 // First drain buffered data
-                 if !read_buf.is_empty() {
-                     let to_copy = std::cmp::min(buf.remaining(), read_buf.len());
-@@ -557,25 +567,51 @@ impl AsyncWrite for Stream<Http3> {
-                     Poll::Pending => Poll::Pending,
-                 }
-             }
+@@ -630,21 +638,51 @@ impl AsyncWrite for Stream<Http3> {
+                 Ok(()) => Poll::Ready(Ok(())),
+                 Err(e) => Poll::Ready(Err(io::Error::other(e))),
+             },
 -            StreamInner::Http3(Http3StreamInner::Server { stream, .. }) => {
--                let data = Bytes::copy_from_slice(buf);
--                let fut = stream.send_data(data);
+-                let fut = stream.finish();
 -                tokio::pin!(fut);
 -
 -                match fut.poll(cx) {
--                    Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
--                    Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
 +            StreamInner::Http3(Http3StreamInner::Server {
 +                stream,
-+                write_queued,
++                shutdown_started,
 +                ..
 +            }) => {
-+                // If no write is in-flight, queue new data synchronously.
-+                // This sets h3-quinn's internal `writing` buffer exactly once.
-+                if write_queued.is_none() {
-+                    let data = Bytes::copy_from_slice(buf);
-+                    let n = data.len();
-+                    match stream.queue_send(data) {
-+                        Ok(()) => *write_queued = Some(n),
++                // Phase 1: queue the GREASE frame exactly once (no-op if disabled).
++                // Re-calling send_data while `writing` is occupied causes
++                // H3_INTERNAL_ERROR, so guard with `shutdown_started`.
++                if !*shutdown_started {
++                    match stream.queue_grease() {
++                        Ok(()) => *shutdown_started = true,
 +                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
 +                    }
 +                }
-+                // Drain the queued write.  On Pending we keep write_queued set
-+                // so the next poll skips queue_send and retries poll_drain.
++                // Phase 2: drain the GREASE frame (or returns Ready immediately
++                // if no frame was queued).
 +                match stream.poll_drain(cx) {
-+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
-+                    Poll::Ready(Err(e)) => {
-+                        *write_queued = None;
-+                        Poll::Ready(Err(io::Error::other(e.to_string())))
-+                    }
++                    Poll::Pending => return Poll::Pending,
++                    Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                    Poll::Ready(Ok(())) => {}
++                }
++                // Phase 3: send QUIC FIN.
++                match stream.poll_quic_finish(cx) {
+                     Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                      Poll::Pending => Poll::Pending,
                  }
              }
 -            StreamInner::Http3(Http3StreamInner::Client { stream, .. }) => {
--                let data = Bytes::copy_from_slice(buf);
--                let fut = stream.send_data(data);
+-                let fut = stream.finish();
 -                tokio::pin!(fut);
 -
 -                match fut.poll(cx) {
--                    Poll::Ready(Ok(())) => Poll::Ready(Ok(buf.len())),
--                    Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
 +            StreamInner::Http3(Http3StreamInner::Client {
 +                stream,
-+                write_queued,
++                shutdown_started,
 +                ..
 +            }) => {
-+                if write_queued.is_none() {
-+                    let data = Bytes::copy_from_slice(buf);
-+                    let n = data.len();
-+                    match stream.queue_send(data) {
-+                        Ok(()) => *write_queued = Some(n),
++                if !*shutdown_started {
++                    match stream.queue_grease() {
++                        Ok(()) => *shutdown_started = true,
 +                        Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
 +                    }
 +                }
 +                match stream.poll_drain(cx) {
-+                    Poll::Ready(Ok(())) => Poll::Ready(Ok(write_queued.take().unwrap())),
-+                    Poll::Ready(Err(e)) => {
-+                        *write_queued = None;
-+                        Poll::Ready(Err(io::Error::other(e.to_string())))
-+                    }
++                    Poll::Pending => return Poll::Pending,
++                    Poll::Ready(Err(e)) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
++                    Poll::Ready(Ok(())) => {}
++                }
++                match stream.poll_quic_finish(cx) {
+                     Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+                     Poll::Ready(Err(e)) => Poll::Ready(Err(io::Error::other(e.to_string()))),
                      Poll::Pending => Poll::Pending,
-                 }
-             }
