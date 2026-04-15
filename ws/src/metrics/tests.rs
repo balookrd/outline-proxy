@@ -14,6 +14,7 @@ fn test_guard() -> std::sync::MutexGuard<'static, ()> {
 
 fn empty_snapshot() -> UplinkManagerSnapshot {
     UplinkManagerSnapshot {
+        group: "main".to_string(),
         generated_at_unix_ms: 0,
         load_balancing_mode: "active_active".to_string(),
         routing_scope: "per_flow".to_string(),
@@ -29,6 +30,7 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
     UplinkSnapshot {
         index: 0,
         name: name.to_string(),
+        group: "main".to_string(),
         weight: 1.0,
         tcp_healthy: None,
         udp_healthy: None,
@@ -64,7 +66,7 @@ fn render_prometheus_exports_session_histogram() {
     let session = track_session("tcp");
     session.finish(true);
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_session_duration_seconds_bucket"));
     assert!(rendered.contains("protocol=\"tcp\""));
     assert!(rendered.contains("result=\"success\""));
@@ -93,7 +95,7 @@ fn render_prometheus_exports_process_memory_metrics() {
         }),
     );
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_process_resident_memory_bytes 1234"));
     assert!(rendered.contains("outline_ws_rust_process_virtual_memory_bytes 4321"));
     assert!(rendered.contains("outline_ws_rust_process_heap_allocated_bytes 5678"));
@@ -117,7 +119,7 @@ fn render_prometheus_exports_transport_connect_metrics() {
     record_upstream_transport("tun_tcp", "tcp", "opened");
     record_upstream_transport("tun_tcp", "tcp", "closed");
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(
         rendered
             .contains("outline_ws_rust_transport_connects_active{mode=\"h2\",source=\"tun_tcp\"}")
@@ -161,7 +163,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     add_udp_datagram("upstream_to_client", BYPASS_UPLINK_LABEL);
     record_dropped_oversized_udp_packet("incoming");
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains(
         "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",protocol=\"tcp\",uplink=\"nuxt\"} 128"
     ));
@@ -211,7 +213,8 @@ fn render_prometheus_exports_routing_selection_info() {
     let _guard = test_guard();
     init();
 
-    let rendered = render_prometheus(&UplinkManagerSnapshot {
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
         generated_at_unix_ms: 0,
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
@@ -220,12 +223,18 @@ fn render_prometheus_exports_routing_selection_info() {
         udp_active_uplink: None,
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
-    })
+    }])
     .expect("render metrics");
 
-    assert!(rendered.contains("outline_ws_rust_selection_mode_info{mode=\"active_passive\"} 1"));
-    assert!(rendered.contains("outline_ws_rust_routing_scope_info{scope=\"global\"} 1"));
-    assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 1"));
+    assert!(rendered.contains(
+        "outline_ws_rust_selection_mode_info{group=\"main\",mode=\"active_passive\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_routing_scope_info{group=\"main\",scope=\"global\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 1"
+    ));
 }
 
 #[test]
@@ -233,7 +242,8 @@ fn render_prometheus_clears_previous_global_active_uplink() {
     let _guard = test_guard();
     init();
 
-    render_prometheus(&UplinkManagerSnapshot {
+    render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
         generated_at_unix_ms: 0,
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
@@ -242,10 +252,11 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         udp_active_uplink: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
-    })
+    }])
     .expect("render first metrics");
 
-    let rendered = render_prometheus(&UplinkManagerSnapshot {
+    let rendered = render_prometheus(&[UplinkManagerSnapshot {
+        group: "main".to_string(),
         generated_at_unix_ms: 0,
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
@@ -254,11 +265,15 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         udp_active_uplink: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
-    })
+    }])
     .expect("render second metrics");
 
-    assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"senko\"} 0"));
-    assert!(rendered.contains("outline_ws_rust_global_active_uplink_info{uplink=\"nuxt\"} 1"));
+    assert!(rendered.contains(
+        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"senko\"} 0"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_global_active_uplink_info{group=\"main\",uplink=\"nuxt\"} 1"
+    ));
 }
 
 #[test]
@@ -266,7 +281,7 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
     let _guard = test_guard();
     init();
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(
         metric_value(
             &rendered,
@@ -320,7 +335,7 @@ fn render_prometheus_exports_ipv6_fragment_activity_counters() {
     record_tun_ip_reassembly("ipv6", "success");
     set_tun_ip_fragment_sets_active("ipv6", 1);
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     let fragments =
         metric_value(&rendered, "outline_ws_rust_tun_ip_fragments_total{ip_family=\"ipv6\"}")
             .expect("ipv6 fragment counter");
@@ -339,7 +354,7 @@ fn init_exports_zero_value_request_and_session_series() {
     let _guard = test_guard();
     init();
 
-    let rendered = render_prometheus(&empty_snapshot()).expect("render metrics");
+    let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
     assert!(rendered.contains("outline_ws_rust_requests_total{command=\"connect\"} 0"));
     assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_associate\"} 0"));
     assert!(rendered.contains("outline_ws_rust_requests_total{command=\"udp_in_tcp\"} 0"));

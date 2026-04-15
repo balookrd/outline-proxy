@@ -462,7 +462,7 @@ impl Metrics {
         .expect("tun_tcp_smoothed_rtt_seconds metric");
         let uplink_health = GaugeVec::new(
             Opts::new("outline_ws_rust_uplink_health", "Current uplink health by transport."),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_health metric");
         let uplink_latency_seconds = GaugeVec::new(
@@ -470,7 +470,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_latency_seconds",
                 "Last observed uplink probe latency.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_latency_seconds metric");
         let uplink_rtt_ewma_seconds = GaugeVec::new(
@@ -478,7 +478,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_rtt_ewma_seconds",
                 "EWMA RTT latency used as the probe baseline.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_rtt_ewma_seconds metric");
         let uplink_penalty_seconds = GaugeVec::new(
@@ -486,7 +486,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_penalty_seconds",
                 "Current failure penalty applied to an uplink.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_penalty_seconds metric");
         let uplink_effective_latency_seconds = GaugeVec::new(
@@ -494,7 +494,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_effective_latency_seconds",
                 "Latency used for uplink ranking, including penalty.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_effective_latency_seconds metric");
         let uplink_score_seconds = GaugeVec::new(
@@ -502,12 +502,12 @@ impl Metrics {
                 "outline_ws_rust_uplink_score_seconds",
                 "Final weighted uplink selection score.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_score_seconds metric");
         let uplink_weight = GaugeVec::new(
             Opts::new("outline_ws_rust_uplink_weight", "Configured static weight for each uplink."),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("uplink_weight metric");
         let uplink_cooldown_seconds = GaugeVec::new(
@@ -515,7 +515,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_cooldown_seconds",
                 "Remaining cooldown time for an uplink.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_cooldown_seconds metric");
         let uplink_standby_ready = IntGaugeVec::new(
@@ -523,7 +523,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_standby_ready",
                 "Currently available warm-standby websocket connections.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_standby_ready metric");
         let selection_mode_info = IntGaugeVec::new(
@@ -531,12 +531,12 @@ impl Metrics {
                 "outline_ws_rust_selection_mode_info",
                 "Configured load-balancing selection mode.",
             ),
-            &["mode"],
+            &["group", "mode"],
         )
         .expect("selection_mode_info metric");
         let routing_scope_info = IntGaugeVec::new(
             Opts::new("outline_ws_rust_routing_scope_info", "Configured routing scope."),
-            &["scope"],
+            &["group", "scope"],
         )
         .expect("routing_scope_info metric");
         let global_active_uplink_info = IntGaugeVec::new(
@@ -544,7 +544,7 @@ impl Metrics {
                 "outline_ws_rust_global_active_uplink_info",
                 "Currently selected active uplink for global routing scope.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("global_active_uplink_info metric");
         let per_uplink_active_uplink_info = IntGaugeVec::new(
@@ -552,20 +552,23 @@ impl Metrics {
                 "outline_ws_rust_per_uplink_active_uplink_info",
                 "Currently selected active uplink per transport protocol for per_uplink routing scope.",
             ),
-            &["proto", "uplink"],
+            &["group", "proto", "uplink"],
         )
         .expect("per_uplink_active_uplink_info metric");
-        let sticky_routes_total = IntGauge::with_opts(Opts::new(
-            "outline_ws_rust_sticky_routes_total",
-            "Current number of sticky routes.",
-        ))
+        let sticky_routes_total = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_sticky_routes_total",
+                "Current number of sticky routes per uplink group.",
+            ),
+            &["group"],
+        )
         .expect("sticky_routes_total metric");
         let sticky_routes_by_uplink = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_sticky_routes_by_uplink",
                 "Current number of sticky routes pinned to each uplink.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("sticky_routes_by_uplink metric");
 

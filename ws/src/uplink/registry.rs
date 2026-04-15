@@ -61,7 +61,12 @@ impl UplinkRegistry {
             if by_name.insert(group.name.clone(), index).is_some() {
                 bail!("duplicate uplink group name \"{}\"", group.name);
             }
-            let manager = UplinkManager::new(group.uplinks, group.probe, group.load_balancing)?;
+            let manager = UplinkManager::new(
+                group.name.clone(),
+                group.uplinks,
+                group.probe,
+                group.load_balancing,
+            )?;
             managed.push(UplinkGroup { name: group.name, manager });
         }
         Ok(Self { groups: managed, by_name })
@@ -117,10 +122,14 @@ impl UplinkRegistry {
         }
     }
 
-    /// Snapshot of the default group. Multi-group snapshot rendering lands
-    /// with the `group` Prometheus label in etap 6.
-    pub async fn snapshot(&self) -> UplinkManagerSnapshot {
-        self.default_group().snapshot().await
+    /// Snapshot each group for Prometheus rendering. The returned vector
+    /// preserves declaration order, matching the `groups` view.
+    pub async fn snapshots(&self) -> Vec<UplinkManagerSnapshot> {
+        let mut out = Vec::with_capacity(self.groups.len());
+        for group in &self.groups {
+            out.push(group.manager.snapshot().await);
+        }
+        out
     }
 }
 

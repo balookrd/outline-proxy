@@ -114,6 +114,6 @@ struct Metrics {
     routing_scope_info: IntGaugeVec,
     global_active_uplink_info: IntGaugeVec,
     per_uplink_active_uplink_info: IntGaugeVec,
-    sticky_routes_total: IntGauge,
+    sticky_routes_total: IntGaugeVec,
     sticky_routes_by_uplink: IntGaugeVec,
 }

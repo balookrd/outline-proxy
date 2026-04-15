@@ -87,12 +87,9 @@ pub fn init() {
     for protocol in ["tcp", "udp"] {
         let _ = METRICS.sessions_active.with_label_values(&[protocol]);
     }
-    for mode in ["active_active", "active_passive"] {
-        METRICS.selection_mode_info.with_label_values(&[mode]).set(0);
-    }
-    for scope in ["per_flow", "per_uplink", "global"] {
-        METRICS.routing_scope_info.with_label_values(&[scope]).set(0);
-    }
+    // `selection_mode_info` and `routing_scope_info` now carry a `group`
+    // label; groups are not known at init() time, so zero-value series get
+    // emitted on first snapshot render instead of here.
     for result in
         ["started", "connected", "cancelled", "failed", "timeout", "discarded_closed_flow"]
     {
