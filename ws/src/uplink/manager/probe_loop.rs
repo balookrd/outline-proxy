@@ -4,10 +4,10 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use tokio::sync::Semaphore;
 use tokio::time::{Instant, sleep};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::config::ProbeConfig;
-use crate::types::UplinkTransport;
+use crate::types::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::probe_uplink;
 use super::super::selection::cooldown_active;
@@ -156,12 +156,14 @@ impl UplinkManager {
                         sleep(Duration::from_millis(500)).await;
                     }
                 }
-                (index, uplink, outcome)
+                (index, uplink, outcome, effective_tcp_mode)
             });
         }
 
+        let mut h3_recovery_needed: Vec<(usize, Arc<crate::config::UplinkConfig>)> = Vec::new();
+
         while let Some(joined) = tasks.join_next().await {
-            let (index, uplink, outcome) = match joined {
+            let (index, uplink, outcome, effective_tcp_mode) = match joined {
                 Ok(value) => value,
                 Err(error) => {
                     warn!(error = %error, "probe task failed");
@@ -238,9 +240,17 @@ impl UplinkManager {
                             // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
                             // effective (possibly downgraded) WS mode, so a successful probe
                             // only confirms H2 connectivity during a downgrade window — it does
-                            // not prove that H3 is healthy again.  H3 recovery is tested
-                            // naturally: once the downgrade timer expires, the next real
-                            // connection attempt uses H3 and resets the timer only if it fails.
+                            // not prove that H3 is healthy again.  Instead, schedule an H3
+                            // recovery re-probe below to confirm H3 liveness explicitly.
+                            if effective_tcp_mode == WsTransportMode::H2
+                                && uplink.transport == UplinkTransport::Websocket
+                                && uplink.tcp_ws_mode == WsTransportMode::H3
+                                && status
+                                    .h3_tcp_downgrade_until
+                                    .is_some_and(|t| t > now)
+                            {
+                                h3_recovery_needed.push((index, Arc::clone(&uplink)));
+                            }
                         }
                         if result.udp_applicable {
                             if !result.udp_ok {
@@ -352,8 +362,70 @@ impl UplinkManager {
                 self.clear_standby(index, TransportKind::Udp).await;
             }
         }
+
+        // H3 recovery re-probes: for each uplink where the H2 probe succeeded
+        // during a downgrade window, run an explicit H3 probe.  A successful H3
+        // result clears h3_tcp_downgrade_until immediately (instead of waiting
+        // for the full h3_downgrade_duration to expire) so traffic switches back
+        // to H3 as soon as the server is confirmed ready.  A failing result
+        // extends the downgrade window by another h3_downgrade_duration from now,
+        // preventing oscillation if H3 is still unstable.
+        if !h3_recovery_needed.is_empty() {
+            let mut recovery_tasks = tokio::task::JoinSet::new();
+            for (index, uplink) in h3_recovery_needed {
+                let probe = self.inner.probe.clone();
+                let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
+                let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
+                recovery_tasks.spawn(async move {
+                    let _permit = execution_limit
+                        .acquire_owned()
+                        .await
+                        .expect("probe execution semaphore closed");
+                    let outcome = run_probe_attempt_with_timeout(
+                        Arc::clone(&uplink),
+                        probe,
+                        dial_limit,
+                        WsTransportMode::H3,
+                    )
+                    .await;
+                    (index, uplink, outcome)
+                });
+            }
+            while let Some(joined) = recovery_tasks.join_next().await {
+                let (index, uplink, outcome) = match joined {
+                    Ok(value) => value,
+                    Err(error) => {
+                        warn!(error = %error, "H3 recovery probe task failed");
+                        continue;
+                    },
+                };
+                let now = Instant::now();
+                let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
+                let recovered = matches!(&outcome, Ok(r) if r.tcp_ok);
+                let mut statuses = self.inner.statuses.write().await;
+                let status = &mut statuses[index];
+                if recovered {
+                    info!(
+                        uplink = %uplink.name,
+                        "H3 recovery confirmed by re-probe, clearing downgrade window early"
+                    );
+                    status.h3_tcp_downgrade_until = None;
+                } else {
+                    let new_until = now + h3_downgrade_duration;
+                    if status.h3_tcp_downgrade_until.map_or(true, |t| t < new_until) {
+                        debug!(
+                            uplink = %uplink.name,
+                            downgrade_secs = h3_downgrade_duration.as_secs(),
+                            "H3 still unreachable after recovery probe, extending downgrade window"
+                        );
+                        status.h3_tcp_downgrade_until = Some(new_until);
+                    }
+                }
+            }
+        }
     }
 }
+
 
 #[cfg(test)]
 mod tests {
