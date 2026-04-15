@@ -1,93 +1,96 @@
-# Local Patches
+# Локальные патчи
 
-This repository currently vendors and patches two upstream crates to make the HTTP/3 WebSocket path practical.
+В этом репозитории вендорятся и патчатся два апстримных крейта, чтобы сделать HTTP/3 WebSocket путь работоспособным.
 
 ## h3
 
-Patch file: [h3-rfc9220-websocket.patch](/Users/mmalykhin/Documents/outline-ss-rust/h3-rfc9220-websocket.patch)
+Файл патча: [h3-rfc9220-websocket.patch](/Users/mmalykhin/Documents/outline-ss-rust/h3-rfc9220-websocket.patch)
 
-Why it exists:
-- upstream `h3 0.0.8` does not recognize `:protocol = websocket`
-- RFC 9220 WebSocket over HTTP/3 needs that pseudo-header value for Extended CONNECT
+Зачем нужен:
+- апстримный `h3 0.0.8` не распознаёт `:protocol = websocket`
+- RFC 9220 WebSocket over HTTP/3 требует это значение псевдозаголовка для Extended CONNECT
 
-What it changes:
-- adds `Protocol::WEBSOCKET`
-- teaches `h3` to parse and serialize `websocket` in `:protocol`
-- suppresses some noisy warnings in the vendored copy
+Что меняет:
+- добавляет `Protocol::WEBSOCKET`
+- учит `h3` разбирать и сериализовать `websocket` в `:protocol`
+- подавляет шумные предупреждения в вендорной копии
 
-Vendored path:
+Путь вендорного крейта:
 - [vendor/h3](/Users/mmalykhin/Documents/outline-ss-rust/vendor/h3)
 
-Cargo override:
+Переопределение в Cargo:
 - `[patch.crates-io] h3 = { path = "vendor/h3" }`
 
 ## sockudo-ws
 
-Patch file: [sockudo-ws-h3-noerror.patch](/Users/mmalykhin/Documents/outline-ss-rust/sockudo-ws-h3-noerror.patch)
+Файл патча: [sockudo-ws-h3-noerror.patch](/Users/mmalykhin/Documents/outline-ss-rust/sockudo-ws-h3-noerror.patch)
 
-Why it exists:
-- upstream `sockudo-ws 1.7.4` prints `HTTP/3 accept error` / `HTTP/3 connection error` for normal `H3_NO_ERROR` shutdowns
-- this creates misleading stderr noise even when RFC 9220 relay works correctly
+Зачем нужен:
+- апстримный `sockudo-ws 1.7.4` выводит `HTTP/3 accept error` / `HTTP/3 connection error` при штатном завершении с `H3_NO_ERROR`
+- это создаёт ложный шум в stderr даже когда RFC 9220 релей работает корректно
 
-What it changes:
-- treats `ApplicationClose: H3_NO_ERROR` as a normal close
-- suppresses those false-positive `eprintln!` messages
+Что меняет:
+- обрабатывает `ApplicationClose: H3_NO_ERROR` как нормальное закрытие
+- подавляет эти ложноположительные сообщения `eprintln!`
 
-Vendored path:
+Путь вендорного крейта:
 - [vendor/sockudo-ws](/Users/mmalykhin/Documents/outline-ss-rust/vendor/sockudo-ws)
 
-Cargo override:
+Переопределение в Cargo:
 - `[patch.crates-io] sockudo-ws = { path = "vendor/sockudo-ws" }`
 
 ## fix-h3-poll-write (h3 + sockudo-ws)
 
-Patch file: [fix-h3-poll-write.patch](fix-h3-poll-write.patch)
+Файл патча: [fix-h3-poll-write.patch](fix-h3-poll-write.patch)
 
-Why it exists:
-- `AsyncWrite::poll_write` in `sockudo-ws` created a new `send_data` future on
-  **every** call, including retries after `Poll::Pending`
-- when the QUIC send buffer was momentarily full, h3-quinn set its internal
-  `writing = Some(data)` on the first call but the future was dropped before
-  `poll_ready` could drain it; the next `poll_write` called `send_data` again
-  while `writing` was still occupied
-- h3-quinn detects the double-write and returns
-  `InternalError("internal error in the http stack")`, which the h3 layer
-  propagates as `ApplicationClose: H3_INTERNAL_ERROR`, closing the entire QUIC
-  connection and killing all multiplexed sessions on it
+Зачем нужен:
+- `AsyncWrite::poll_write` в `sockudo-ws` создавал новый future `send_data` при
+  **каждом** вызове, включая повторные попытки после `Poll::Pending`
+- когда QUIC send-буфер был временно заполнен, h3-quinn выставлял внутреннее
+  `writing = Some(data)` при первом вызове, но future дропался до того, как
+  `poll_ready` успевал его слить; следующий `poll_write` снова вызывал `send_data`
+  пока `writing` был занят
+- h3-quinn обнаруживает двойную запись и возвращает
+  `InternalError("internal error in the http stack")`, которую слой h3
+  транслирует в `ApplicationClose: H3_INTERNAL_ERROR`, закрывая всё QUIC-соединение
+  и убивая все мультиплексированные сессии на нём
+- та же проблема drop-and-recreate присутствовала в `poll_shutdown`: async-функция
+  `finish()` пересоздавала future при каждом вызове; если QUIC send-буфер был
+  заполнен во время отправки GREASE-фрейма, `send_data` снова видел `writing.is_some()`
+  и генерировал `H3_INTERNAL_ERROR`
 
-What it changes:
+Что меняет:
 
 **`vendor/h3`** (`src/connection.rs`, `src/server/stream.rs`, `src/client/stream.rs`):
-- adds `queue_send(&mut self, buf: B) -> Result<(), StreamError>` — synchronously
-  places data into the h3-quinn write buffer (the first half of `send_data`)
-- adds `poll_drain(&mut self, cx) -> Poll<Result<(), StreamError>>` — polls until
-  the write buffer is fully flushed (the second half), safe to call repeatedly
-  without triggering the double-write error
-- adds `queue_grease(&mut self) -> Result<(), StreamError>` — synchronously queues
-  the GREASE frame (if `send_grease` is enabled) and clears the flag; no-op when
-  disabled
-- adds `poll_quic_finish(&mut self, cx) -> Poll<Result<(), StreamError>>` — polls
-  until the QUIC stream's send-side FIN is delivered; must be called only after
-  `poll_drain` returns Ready
+- добавляет `queue_send(&mut self, buf: B) -> Result<(), StreamError>` — синхронно
+  помещает данные в write-буфер h3-quinn (первая половина `send_data`)
+- добавляет `poll_drain(&mut self, cx) -> Poll<Result<(), StreamError>>` — опрашивает
+  до полного сброса write-буфера (вторая половина), безопасен для повторных вызовов
+  без риска двойной записи
+- добавляет `queue_grease(&mut self) -> Result<(), StreamError>` — синхронно ставит
+  в очередь GREASE-фрейм (если `send_grease` включён) и сбрасывает флаг; no-op если
+  отключён
+- добавляет `poll_quic_finish(&mut self, cx) -> Poll<Result<(), StreamError>>` —
+  опрашивает до доставки QUIC FIN на стороне отправки; вызывать только после того,
+  как `poll_drain` вернул Ready
 
 **`vendor/sockudo-ws`** (`src/stream/transport_stream.rs`, `src/http3/stream.rs`):
-- adds `write_queued: Option<usize>` to `Http3StreamInner::Server` and `::Client`
-  (and the standalone `Http3ServerStream` / `Http3ClientStream`)
-- rewrites `poll_write` as a two-phase state machine: `queue_send` is called only
-  once per logical write (when `write_queued.is_none()`); subsequent polls after
-  `Pending` go straight to `poll_drain`, never touching the h3-quinn write buffer
-  a second time
-- adds `shutdown_started: bool` to the same types
-- rewrites `poll_shutdown` as a three-phase state machine: `queue_grease` (once),
-  `poll_drain` (flush the GREASE frame or no-op), `poll_quic_finish` (send FIN);
-  same drop-and-recreate bug existed in the original async `finish()` call when
-  the QUIC send buffer was full during GREASE frame transmission
+- добавляет `write_queued: Option<usize>` в `Http3StreamInner::Server` и `::Client`
+  (а также в `Http3ServerStream` / `Http3ClientStream`)
+- переписывает `poll_write` как двухфазный автомат состояний: `queue_send` вызывается
+  ровно один раз на логическую запись (когда `write_queued.is_none()`); последующие
+  опросы после `Pending` идут прямо в `poll_drain`, не касаясь write-буфера h3-quinn
+  повторно
+- добавляет `shutdown_started: bool` в те же типы
+- переписывает `poll_shutdown` как трёхфазный автомат состояний: `queue_grease`
+  (один раз), `poll_drain` (сброс GREASE-фрейма или no-op), `poll_quic_finish`
+  (отправка FIN)
 
-Vendored paths:
+Пути вендорных крейтов:
 - [vendor/h3](vendor/h3)
 - [vendor/sockudo-ws](vendor/sockudo-ws)
 
-## Notes
+## Примечания
 
-- The patch files in the repository root are documentation and review artifacts.
-- The actual builds use the vendored copies from `vendor/` through `[patch.crates-io]`.
+- Файлы патчей в корне репозитория — документация и артефакты для ревью.
+- В реальных сборках используются вендорные копии из `vendor/` через `[patch.crates-io]`.
