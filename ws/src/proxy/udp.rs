@@ -32,28 +32,20 @@ enum UdpPacketRoute {
 }
 
 async fn udp_packet_route(config: &AppConfig, target: &TargetAddr) -> UdpPacketRoute {
-    if let Some(table) = config.routing_table.as_ref() {
-        return match table.resolve(target).await.primary {
-            RouteTarget::Direct => UdpPacketRoute::Direct,
-            RouteTarget::Drop => UdpPacketRoute::Drop,
-            RouteTarget::Group(_) => UdpPacketRoute::Tunnel,
-        };
+    let Some(table) = config.routing_table.as_ref() else {
+        return UdpPacketRoute::Tunnel;
+    };
+    match table.resolve(target).await.primary {
+        RouteTarget::Direct => UdpPacketRoute::Direct,
+        RouteTarget::Drop => UdpPacketRoute::Drop,
+        RouteTarget::Group(_) => UdpPacketRoute::Tunnel,
     }
-    if let Some(bl) = config.bypass.as_ref() {
-        if bl.read().await.is_bypassed(target) {
-            return UdpPacketRoute::Direct;
-        }
-    }
-    UdpPacketRoute::Tunnel
 }
 
 fn need_bypass_socket(config: &AppConfig) -> bool {
-    if config.bypass.is_some() {
-        return true;
-    }
     // Always allocate when routing is configured — any route may resolve to
-    // Direct. The socket cost is negligible compared to the alternative of
-    // checking every rule's target at associate time.
+    // Direct. The socket cost is negligible compared to inspecting every
+    // rule's target at associate time.
     config.routing_table.is_some()
 }
 

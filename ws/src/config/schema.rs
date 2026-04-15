@@ -31,11 +31,13 @@ pub(crate) struct ConfigFile {
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
-    pub(super) bypass: Option<BypassSection>,
-    /// New: explicit uplink groups with per-group LB + probe config.
+    /// Explicit uplink groups with per-group LB + probe config.
     pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,
-    /// New: policy routes mapping CIDR prefixes to groups or `direct`.
+    /// Policy routes mapping CIDR prefixes to groups or `direct`/`drop`.
     pub(super) route: Option<Vec<RouteSection>>,
+    /// Legacy `[bypass]` section — retained only to surface a migration error
+    /// instead of silently ignoring the table.
+    pub(super) bypass: Option<toml::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -73,18 +75,6 @@ pub(crate) struct OutlineSection {
 #[derive(Debug, Deserialize)]
 pub(super) struct MetricsSection {
     pub(super) listen: Option<SocketAddr>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct BypassSection {
-    /// Inline CIDR prefixes (combined with `file` if both are set).
-    pub(super) prefixes: Option<Vec<String>>,
-    /// Path to a file with one CIDR per line (`#` comments and blank lines ignored).
-    pub(super) file: Option<PathBuf>,
-    /// How often to poll `file` for mtime changes, in seconds (default: 60).
-    pub(super) file_poll_secs: Option<u64>,
-    /// If true, bypass IPs NOT in the prefix list (tunnel only the listed prefixes).
-    pub(super) invert: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]

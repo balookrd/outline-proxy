@@ -314,7 +314,7 @@ async fn load_config_disables_probes_when_not_configured() {
 
     let args = super::Args::parse_from(["test"]);
     let config = super::load_config(&path, &args).await.unwrap();
-    assert!(!config.probe.enabled());
+    assert!(!config.groups[0].probe.enabled());
 
     let _ = std::fs::remove_file(path);
 }
@@ -450,7 +450,7 @@ async fn load_config_disables_probes_when_probe_section_has_no_checks() {
 
     let args = super::Args::parse_from(["test"]);
     let config = super::load_config(&path, &args).await.unwrap();
-    assert!(!config.probe.enabled());
+    assert!(!config.groups[0].probe.enabled());
 
     let _ = std::fs::remove_file(path);
 }
@@ -475,8 +475,9 @@ async fn load_config_supports_direct_shadowsocks_uplink() {
 
     let args = super::Args::parse_from(["test"]);
     let config = super::load_config(&path, &args).await.unwrap();
-    assert_eq!(config.uplinks.len(), 1);
-    let uplink = &config.uplinks[0];
+    assert_eq!(config.groups.len(), 1);
+    assert_eq!(config.groups[0].uplinks.len(), 1);
+    let uplink = &config.groups[0].uplinks[0];
     assert_eq!(uplink.transport, crate::types::UplinkTransport::Shadowsocks);
     assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
     assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
@@ -598,8 +599,8 @@ async fn load_config_new_shape_groups_and_routes() {
 }
 
 #[tokio::test]
-async fn load_config_rejects_route_with_bypass() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-bypass.toml");
+async fn load_config_rejects_legacy_bypass_section() {
+    let path = std::env::temp_dir().join("outline-ws-rust-legacy-bypass.toml");
     std::fs::write(
         &path,
         r#"
@@ -609,19 +610,9 @@ async fn load_config_rejects_route_with_bypass() {
         [bypass]
         prefixes = ["10.0.0.0/8"]
 
-        [[uplink_group]]
-        name = "main"
-
-        [[uplinks]]
-        name = "primary"
-        group = "main"
         tcp_ws_url = "wss://main.example.com/secret/tcp"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
-
-        [[route]]
-        default = true
-        via = "main"
         "#,
     )
     .unwrap();
@@ -629,7 +620,7 @@ async fn load_config_rejects_route_with_bypass() {
     let args = super::Args::parse_from(["test"]);
     let err = super::load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
-    assert!(msg.contains("[bypass]") && msg.contains("[[route]]"), "got: {msg}");
+    assert!(msg.contains("[bypass] was removed"), "got: {msg}");
 
     let _ = std::fs::remove_file(path);
 }

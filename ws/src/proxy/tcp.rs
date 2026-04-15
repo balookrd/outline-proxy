@@ -9,7 +9,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
-use crate::config::AppConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
@@ -153,7 +152,6 @@ where
 
 pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
-    config: AppConfig,
     dispatch: Dispatch,
     target: TargetAddr,
 ) -> Result<()> {
@@ -176,7 +174,7 @@ pub(super) async fn handle_tcp_connect(
         let mut last_error = None;
         let mut selected = None;
         let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Tcp);
-        let chunk0_attempt_timeout = config.load_balancing.tcp_chunk0_failover_timeout;
+        let chunk0_attempt_timeout = uplinks.load_balancing().tcp_chunk0_failover_timeout;
         let mut tried_indexes = std::collections::HashSet::new();
         loop {
             let candidates = uplinks.tcp_candidates(&target).await;
@@ -505,7 +503,7 @@ pub(super) async fn handle_tcp_connect(
         // transparently and should only end on a real transport error.
         let uplink_uplink_name = active_uplink_name.clone();
         let uplinks_uplink = uplinks.clone();
-        let keepalive_interval = config.load_balancing.tcp_active_keepalive_interval;
+        let keepalive_interval = uplinks.load_balancing().tcp_active_keepalive_interval;
         let uplink = async move {
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
             let mut chunks_sent: u64 = 0;
