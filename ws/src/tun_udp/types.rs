@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 
 use crate::transport::UdpWsTransport;
 use crate::tun_wire::IpVersion;
+use crate::uplink::UplinkManager;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct UdpFlowKey {
@@ -23,6 +24,10 @@ pub(super) struct UdpFlowState {
     pub(super) transport: Arc<UdpWsTransport>,
     pub(super) uplink_index: usize,
     pub(super) uplink_name: String,
+    /// The group's manager this flow was bound to at creation. All per-flow
+    /// operations (failover, strict-active checks, reconciliation) run
+    /// against this manager, not the engine's default group.
+    pub(super) manager: UplinkManager,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
 }

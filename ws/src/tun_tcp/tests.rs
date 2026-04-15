@@ -1257,6 +1257,8 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         },
         uplink_index: 0,
         uplink_name: "test".to_string(),
+        manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
+            .await,
         upstream_writer: Some(Arc::new(Mutex::new({
             let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
                 sink,

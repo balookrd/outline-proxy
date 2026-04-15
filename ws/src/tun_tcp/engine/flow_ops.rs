@@ -22,6 +22,7 @@ use super::super::{
     TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL, TcpFlowKey,
 };
 use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, ip_to_target};
+use crate::tun::TunRoute;
 
 impl TunTcpEngine {
     pub(super) async fn handle_new_flow(
@@ -40,12 +41,27 @@ impl TunTcpEngine {
             return Ok(());
         }
 
+        let target = ip_to_target(key.remote_ip, key.remote_port);
+        let manager = match self.inner.dispatch.resolve(&target).await {
+            TunRoute::Group { manager, .. } => manager,
+            TunRoute::Drop { reason } => {
+                let reset = build_reset_response(&packet)?;
+                self.inner.writer.write_packet(&reset).await?;
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_from_version(packet.version),
+                    "tcp_rst",
+                );
+                debug!(remote = %target, reason, "TUN TCP route: dropping flow");
+                return Ok(());
+            },
+        };
+
         if !self.begin_pending_connect(key.clone()).await {
-            debug!(remote = %ip_to_target(key.remote_ip, key.remote_port), "ignoring duplicate SYN while TUN TCP connect is already in progress");
+            debug!(remote = %target, "ignoring duplicate SYN while TUN TCP connect is already in progress");
             return Ok(());
         }
 
-        let target = ip_to_target(key.remote_ip, key.remote_port);
         let server_isn = rand::random::<u32>();
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
@@ -56,6 +72,7 @@ impl TunTcpEngine {
             key: key.clone(),
             uplink_index: usize::MAX,
             uplink_name: "connecting".to_string(),
+            manager: manager.clone(),
             upstream_writer: None,
             close_signal,
             maintenance_notify,

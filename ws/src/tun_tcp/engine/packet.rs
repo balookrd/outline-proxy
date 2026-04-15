@@ -29,12 +29,10 @@ impl TunTcpEngine {
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
     ) -> Result<()> {
-        if self.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
-            let active_uplink = self
-                .inner
-                .uplinks
-                .active_uplink_index_for_transport(TransportKind::Tcp)
-                .await;
+        let manager = { flow.lock().await.manager.clone() };
+        if manager.strict_active_uplink_for(TransportKind::Tcp) {
+            let active_uplink =
+                manager.active_uplink_index_for_transport(TransportKind::Tcp).await;
             let (should_abort, key) = {
                 let state = flow.lock().await;
                 (
@@ -252,6 +250,7 @@ impl TunTcpEngine {
         let key = state.key.clone();
         let uplink_index = state.uplink_index;
         let uplink_name = state.uplink_name.clone();
+        let flow_manager = state.manager.clone();
         let upstream_writer = state.upstream_writer.clone();
         if !packet.payload.is_empty()
             || (packet.flags & TCP_FLAG_FIN) != 0
@@ -309,6 +308,7 @@ impl TunTcpEngine {
                 if let Err(error) = send_result {
                     self.report_tcp_runtime_failure_and_abort(
                         &key,
+                        &flow_manager,
                         uplink_index,
                         &error,
                         "send_error",

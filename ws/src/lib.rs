@@ -98,12 +98,13 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         config.routing_table = Some(table);
     }
 
-    // TUN still dispatches through the default group until routing is wired
-    // into the TUN path (etap 5b / future).
-    let uplinks = registry.default_group().clone();
+    // TUN dispatches through the policy routing table, falling back to the
+    // default group when no [[route]] is configured.
+    let tun_routing =
+        crate::tun::TunRouting::new(registry.clone(), config.routing_table.clone());
 
     if let Some(tun) = config.tun.clone() {
-        crate::tun::spawn_tun_loop(tun, uplinks.clone())
+        crate::tun::spawn_tun_loop(tun, tun_routing)
             .await
             .context("failed to start TUN loop")?;
     }
