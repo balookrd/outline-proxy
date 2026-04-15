@@ -38,7 +38,7 @@ use crate::config::{AppConfig, Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 #[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
-use crate::uplink::{UplinkManager, log_uplink_summary};
+use crate::uplink::{UplinkRegistry, log_registry_summary};
 
 fn warn_about_tcp_probe_target(config: &AppConfig) {
     let Some(tcp_probe) = config.probe.tcp.as_ref() else {
@@ -76,15 +76,15 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 pub async fn run_with_config(config: AppConfig) -> Result<()> {
-    let uplinks = UplinkManager::new(
-        config.uplinks.clone(),
-        config.probe.clone(),
-        config.load_balancing.clone(),
-    )?;
-    uplinks.initialize_strict_active_selection().await;
-    uplinks.spawn_probe_loop();
-    uplinks.spawn_warm_standby_loop();
-    uplinks.spawn_standby_keepalive_loop();
+    let registry = UplinkRegistry::new(config.groups.clone())?;
+    registry.initialize_strict_active_selection().await;
+    registry.spawn_probe_loops();
+    registry.spawn_warm_standby_loops();
+    registry.spawn_standby_keepalive_loops();
+
+    // Until routing is wired (etap 5), proxy/TUN still dispatch through the
+    // default group only.
+    let uplinks = registry.default_group().clone();
 
     if let Some(tun) = config.tun.clone() {
         crate::tun::spawn_tun_loop(tun, uplinks.clone())
@@ -104,15 +104,16 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
 
     info!(
         socks5_listen = ?config.listen,
-        uplinks = uplinks.uplinks().len(),
+        groups = registry.groups().len(),
+        total_uplinks = registry.total_uplinks(),
         tun_enabled = config.tun.is_some(),
         "proxy started"
     );
     warn_about_tcp_probe_target(&config);
-    log_uplink_summary(&uplinks);
+    log_registry_summary(&registry);
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
-        spawn_metrics_server(metrics, uplinks.clone());
+        spawn_metrics_server(metrics, registry.clone());
     }
 
     let Some(listener) = listener else {

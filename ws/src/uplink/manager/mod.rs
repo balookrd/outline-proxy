@@ -287,7 +287,12 @@ impl UplinkManager {
 }
 
 pub fn log_uplink_summary(manager: &UplinkManager) {
+    log_uplink_summary_named(manager, "default");
+}
+
+pub fn log_uplink_summary_named(manager: &UplinkManager, group: &str) {
     info!(
+        group,
         uplinks = manager.uplinks().len(),
         mode = ?manager.inner.load_balancing.mode,
         routing_scope = ?manager.inner.load_balancing.routing_scope,
@@ -307,6 +312,6 @@ pub fn log_uplink_summary(manager: &UplinkManager) {
             .load_balancing
             .failure_penalty_halflife
             .as_secs(),
-        "uplink manager initialized"
+        "uplink group initialized"
     );
 }
