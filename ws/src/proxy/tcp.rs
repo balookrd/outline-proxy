@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
@@ -46,6 +47,20 @@ const POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 // while still being safe for periodic-push traffic (Telegram, FCM, etc. send
 // heartbeats every 30–60 s so their connections will never hit this timeout).
 const DIRECT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+
+// SOCKS_UPSTREAM_IDLE_TIMEOUT closes a SOCKS-through-uplink TCP session once
+// BOTH directions have been silent (no real payload bytes) for this long.
+// Keepalive frames emitted by the uplink task (see tcp_active_keepalive_secs)
+// do NOT count as activity — their purpose is to defeat middlebox idle
+// timeouts, but they only prove the local WebSocket writer task is alive, not
+// that the upstream server is still reading.  Without this watcher, sessions
+// where both the client and the server silently stall (no FIN, no RST, no
+// data) accumulate forever — the upstream transport, its tasks, and the
+// underlying H2/H3 stream stay pinned as long as the client keeps its TCP
+// socket open.  5 minutes is generous for interactive traffic (browsers hold
+// idle sockets for ~60–90 s before reusing them) and short enough that
+// abandoned sessions do not hoard FDs for a noticeable fraction of a day.
+const SOCKS_UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 enum UplinkTaskResult {
     Finished,
@@ -87,102 +102,232 @@ fn attempted_chunk0_uplink_names(
     attempted
 }
 
-async fn drive_tcp_session_tasks<U, D>(uplink: U, downlink: D) -> Result<()>
+/// Optional idle watcher wired into `drive_tcp_session_tasks`.
+///
+/// The caller creates an `mpsc::unbounded_channel::<()>` before spawning the
+/// uplink/downlink futures, clones the sender into both, then passes the
+/// receiver here along with the desired timeout.  Every activity token from
+/// either direction resets the internal deadline; a deadline expiry aborts
+/// both data tasks.  When both senders are dropped (tasks finished
+/// naturally), the watcher exits without firing.
+///
+/// Only genuine payload transfers must signal activity.  Keepalive frames
+/// must NOT signal activity — they only prove that the local WebSocket
+/// writer task is alive, not that the upstream server is still reading.
+/// Counting them as activity would make the watcher useless against the
+/// exact stall we are trying to detect.
+struct IdleWatcher {
+    activity_rx: mpsc::UnboundedReceiver<()>,
+    idle_timeout: Duration,
+}
+
+impl IdleWatcher {
+    fn new(activity_rx: mpsc::UnboundedReceiver<()>, idle_timeout: Duration) -> Self {
+        Self { activity_rx, idle_timeout }
+    }
+
+    /// Runs until the deadline expires (returns `true`) or the activity
+    /// channel is closed (returns `false`).
+    async fn run(mut self) -> bool {
+        loop {
+            match timeout(self.idle_timeout, self.activity_rx.recv()).await {
+                Ok(Some(())) => continue,
+                Ok(None) => return false,
+                Err(_) => return true,
+            }
+        }
+    }
+}
+
+async fn drive_tcp_session_tasks<U, D>(
+    uplink: U,
+    downlink: D,
+    idle: Option<IdleWatcher>,
+) -> Result<()>
 where
     U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
     D: Future<Output = Result<()>> + Send + 'static,
 {
     let started = tokio::time::Instant::now();
-    let mut uplink_task = tokio::spawn(uplink);
-    let mut downlink_task = tokio::spawn(downlink);
+    let uplink_task = tokio::spawn(uplink);
+    let downlink_task = tokio::spawn(downlink);
+    match idle {
+        Some(watcher) => drive_with_idle(uplink_task, downlink_task, watcher, started).await,
+        None => drive_without_idle(uplink_task, downlink_task, started).await,
+    }
+}
 
-    tokio::select! {
-        joined = &mut downlink_task => {
-            let downlink_result = match joined {
-                Ok(result) => result,
-                Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
-            };
-            let elapsed_ms = started.elapsed().as_millis();
-            match &downlink_result {
-                Ok(()) => debug!(
-                    target: "outline_ws_rust::session_death",
-                    elapsed_ms,
-                    winner = "downlink",
-                    "downlink finished first, cleanly (server sent Close / upstream EOF)"
-                ),
-                Err(e) => debug!(
-                    target: "outline_ws_rust::session_death",
-                    elapsed_ms,
-                    winner = "downlink",
-                    error = %format!("{e:#}"),
-                    "downlink finished first with error"
-                ),
-            }
-            uplink_task.abort();
-            let _ = uplink_task.await;
-            downlink_result
-        }
-        joined = &mut uplink_task => {
-            let elapsed_ms = started.elapsed().as_millis();
-            match joined {
-                Ok(Ok(UplinkTaskResult::Finished)) => {
+/// Handles the "downlink finished first" branch: the server closed cleanly or
+/// failed mid-stream.  Aborts the uplink task and returns the downlink result.
+async fn handle_downlink_first(
+    joined: std::result::Result<Result<()>, tokio::task::JoinError>,
+    uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    started: tokio::time::Instant,
+) -> Result<()> {
+    let downlink_result = match joined {
+        Ok(result) => result,
+        Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    match &downlink_result {
+        Ok(()) => debug!(
+            target: "outline_ws_rust::session_death",
+            elapsed_ms,
+            winner = "downlink",
+            "downlink finished first, cleanly (server sent Close / upstream EOF)"
+        ),
+        Err(e) => debug!(
+            target: "outline_ws_rust::session_death",
+            elapsed_ms,
+            winner = "downlink",
+            error = %format!("{e:#}"),
+            "downlink finished first with error"
+        ),
+    }
+    uplink_task.abort();
+    let _ = uplink_task.await;
+    downlink_result
+}
+
+/// Handles the "uplink finished first" branch.  Behaviour depends on the
+/// uplink task's outcome:
+///
+/// * `Finished` — client sent EOF over a socket transport; wait up to
+///   `POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT` for the downlink to flush, then
+///   forcibly close.
+/// * `CloseSession` — client sent EOF over a WebSocket-backed transport;
+///   abort the downlink immediately.
+/// * `Err` / `JoinError` — propagate the error after aborting the downlink.
+async fn handle_uplink_first(
+    joined: std::result::Result<Result<UplinkTaskResult>, tokio::task::JoinError>,
+    downlink_task: tokio::task::JoinHandle<Result<()>>,
+    started: tokio::time::Instant,
+) -> Result<()> {
+    let elapsed_ms = started.elapsed().as_millis();
+    match joined {
+        Ok(Ok(UplinkTaskResult::Finished)) => {
+            debug!(
+                target: "outline_ws_rust::session_death",
+                elapsed_ms,
+                winner = "uplink",
+                outcome = "Finished",
+                "uplink finished first (client EOF over socket transport), awaiting downlink"
+            );
+            // The client closed its side; we already sent FIN to the
+            // upstream.  Give the upstream a bounded window to flush
+            // any remaining data and send its own FIN.  Without a
+            // bound, a server that holds the connection half-open
+            // indefinitely (VPN, signalling, etc.) would keep this
+            // session and its socket FDs alive forever.
+            match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, downlink_task).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+                Err(_elapsed) => {
                     debug!(
                         target: "outline_ws_rust::session_death",
-                        elapsed_ms,
-                        winner = "uplink",
-                        outcome = "Finished",
-                        "uplink finished first (client EOF over socket transport), awaiting downlink"
+                        timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                        "downstream timed out after client EOF — forcibly closing session"
                     );
-                    // The client closed its side; we already sent FIN to the
-                    // upstream.  Give the upstream a bounded window to flush
-                    // any remaining data and send its own FIN.  Without a
-                    // bound, a server that holds the connection half-open
-                    // indefinitely (VPN, signalling, etc.) would keep this
-                    // session and its socket FDs alive forever.
-                    match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, downlink_task).await {
-                        Ok(Ok(result)) => result,
-                        Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
-                        Err(_elapsed) => {
-                            debug!(
-                                target: "outline_ws_rust::session_death",
-                                timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
-                                "downstream timed out after client EOF — forcibly closing session"
-                            );
-                            Ok(())
-                        }
-                    }
-                }
-                Ok(Ok(UplinkTaskResult::CloseSession)) => {
-                    debug!(
-                        target: "outline_ws_rust::session_death",
-                        elapsed_ms,
-                        winner = "uplink",
-                        outcome = "CloseSession",
-                        "uplink requested session close (client EOF over websocket-backed transport)"
-                    );
-                    downlink_task.abort();
-                    let _ = downlink_task.await;
                     Ok(())
                 }
-                Ok(Err(error)) => {
-                    debug!(
-                        target: "outline_ws_rust::session_death",
-                        elapsed_ms,
-                        winner = "uplink",
-                        outcome = "Error",
-                        error = %format!("{error:#}"),
-                        "uplink finished first with error"
-                    );
-                    downlink_task.abort();
-                    let _ = downlink_task.await;
-                    Err(error)
-                }
-                Err(error) => {
-                    downlink_task.abort();
-                    let _ = downlink_task.await;
-                    Err(anyhow!("SOCKS TCP uplink task failed: {error}"))
-                }
             }
+        }
+        Ok(Ok(UplinkTaskResult::CloseSession)) => {
+            debug!(
+                target: "outline_ws_rust::session_death",
+                elapsed_ms,
+                winner = "uplink",
+                outcome = "CloseSession",
+                "uplink requested session close (client EOF over websocket-backed transport)"
+            );
+            downlink_task.abort();
+            let _ = downlink_task.await;
+            Ok(())
+        }
+        Ok(Err(error)) => {
+            debug!(
+                target: "outline_ws_rust::session_death",
+                elapsed_ms,
+                winner = "uplink",
+                outcome = "Error",
+                error = %format!("{error:#}"),
+                "uplink finished first with error"
+            );
+            downlink_task.abort();
+            let _ = downlink_task.await;
+            Err(error)
+        }
+        Err(error) => {
+            downlink_task.abort();
+            let _ = downlink_task.await;
+            Err(anyhow!("SOCKS TCP uplink task failed: {error}"))
+        }
+    }
+}
+
+/// Classic two-arm driver used when no idle watcher is configured (tests,
+/// callers that manage idleness externally).
+async fn drive_without_idle(
+    mut uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    mut downlink_task: tokio::task::JoinHandle<Result<()>>,
+    started: tokio::time::Instant,
+) -> Result<()> {
+    tokio::select! {
+        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started).await,
+    }
+}
+
+/// Three-arm driver that races the data tasks against an idle watcher.
+///
+/// `biased` ordering gives priority to the data-task arms: if a data task
+/// completes at the same poll tick as the watcher, the data task wins and
+/// we log the usual `session_death` reason.  The watcher arm only wins when
+/// neither task is ready — i.e. the session is genuinely idle.
+async fn drive_with_idle(
+    mut uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    mut downlink_task: tokio::task::JoinHandle<Result<()>>,
+    watcher: IdleWatcher,
+    started: tokio::time::Instant,
+) -> Result<()> {
+    let idle_timeout_secs = watcher.idle_timeout.as_secs();
+    let watcher_fut = watcher.run();
+    tokio::pin!(watcher_fut);
+
+    tokio::select! {
+        biased;
+        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started).await,
+        fired = &mut watcher_fut => {
+            if fired {
+                debug!(
+                    target: "outline_ws_rust::session_death",
+                    elapsed_ms = started.elapsed().as_millis(),
+                    timeout_secs = idle_timeout_secs,
+                    winner = "idle",
+                    "SOCKS TCP session idle for too long — closing"
+                );
+            } else {
+                // Unreachable under normal execution: the activity channel
+                // only closes after both data tasks drop their senders, which
+                // they only do when their futures complete.  `biased` select
+                // ordering above would pick one of the task arms first in
+                // that case.  We can still land here on a pathological race
+                // where both handles and the watcher become ready in the
+                // very same poll — treat it as a silent close rather than
+                // panicking.
+                debug!(
+                    target: "outline_ws_rust::session_death",
+                    elapsed_ms = started.elapsed().as_millis(),
+                    winner = "idle_channel_closed",
+                    "activity channel closed concurrently with task completion"
+                );
+            }
+            uplink_task.abort();
+            downlink_task.abort();
+            let _ = uplink_task.await;
+            let _ = downlink_task.await;
+            Ok(())
         }
     }
 }
@@ -548,6 +693,19 @@ pub(super) async fn handle_tcp_connect(
         // Strict active-uplink reselection only affects new sessions and
         // chunk-0 failover; established TCP tunnels are not migrated
         // transparently and should only end on a real transport error.
+        // Idle-watcher activity channel: each data task signals a token after
+        // every successful non-keepalive payload transfer.  Keepalive frames
+        // deliberately do NOT signal activity — they only prove the local
+        // WebSocket writer task is alive, not that the upstream server is
+        // still reading, so counting them would defeat the watcher.  See
+        // `IdleWatcher` above.
+        let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
+        let activity_uplink = activity_tx.clone();
+        let activity_downlink = activity_tx.clone();
+        // Drop the original handle so the channel closes naturally once both
+        // data tasks finish and drop their clones.
+        drop(activity_tx);
+
         let uplink_uplink_name = active_uplink_name.clone();
         let uplinks_uplink = uplinks.clone();
         let keepalive_interval = uplinks.load_balancing().tcp_active_keepalive_interval;
@@ -603,6 +761,7 @@ pub(super) async fn handle_tcp_connect(
                     read,
                 );
                 writer.send_chunk(&buf[..read]).await?;
+                let _ = activity_uplink.send(());
                 chunks_sent += 1;
                 if chunks_sent == 1 {
                     debug!(uplink = %uplink_uplink_name, "first chunk sent to upstream");
@@ -628,6 +787,7 @@ pub(super) async fn handle_tcp_connect(
                 .write_all(&first_upstream_chunk)
                 .await
                 .context("client write failed")?;
+            let _ = activity_downlink.send(());
             uplinks_downlink
                 .report_active_traffic(active_index, TransportKind::Tcp)
                 .await;
@@ -664,6 +824,7 @@ pub(super) async fn handle_tcp_connect(
                     .write_all(&chunk)
                     .await
                     .context("client write failed")?;
+                let _ = activity_downlink.send(());
                 uplinks_downlink
                     .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
@@ -681,7 +842,12 @@ pub(super) async fn handle_tcp_connect(
         // waited forever for `uplink` when `downlink` had already reached EOF,
         // which kept the SOCKS5 -> WebSocket transport, its tasks, and the
         // underlying socket alive until the client finally closed too.
-        let result = drive_tcp_session_tasks(uplink, downlink).await;
+        let result = drive_tcp_session_tasks(
+            uplink,
+            downlink,
+            Some(IdleWatcher::new(activity_rx, SOCKS_UPSTREAM_IDLE_TIMEOUT)),
+        )
+        .await;
         // Report mid-stream upstream transport failures so that broken transports
         // (e.g. H3 APPLICATION_CLOSE received after session establishment) trigger
         // the H3→H2 downgrade and flush stale warm-standby connections immediately,
@@ -1071,7 +1237,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
             .await
             .expect("driver should return once downlink finishes")
             .unwrap();
@@ -1092,13 +1258,95 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
             .await
             .expect("driver should wait for downlink after client EOF")
             .unwrap();
         tokio::time::timeout(Duration::from_secs(1), downlink_completed.notified())
             .await
             .expect("downlink should be allowed to finish");
+    }
+
+    #[tokio::test]
+    async fn drive_tcp_session_tasks_idle_watcher_fires_and_aborts_both_tasks() {
+        let uplink_dropped = std::sync::Arc::new(Notify::new());
+        let downlink_dropped = std::sync::Arc::new(Notify::new());
+        let uplink_dropped_clone = std::sync::Arc::clone(&uplink_dropped);
+        let downlink_dropped_clone = std::sync::Arc::clone(&downlink_dropped);
+        let uplink = async move {
+            let _drop_signal = DropSignal { notify: uplink_dropped_clone };
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+        };
+        let downlink = async move {
+            let _drop_signal = DropSignal { notify: downlink_dropped_clone };
+            std::future::pending::<()>().await;
+            #[allow(unreachable_code)]
+            Ok::<(), anyhow::Error>(())
+        };
+
+        // Activity channel is never signalled, so the watcher must fire and
+        // abort both stalled tasks.  The senders are kept alive inside the
+        // data tasks' closures (they only drop when the tasks are aborted),
+        // mirroring how `handle_tcp_connect` wires them in.
+        let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
+        let _uplink_tx = activity_tx.clone();
+        let _downlink_tx = activity_tx.clone();
+        drop(activity_tx);
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            drive_tcp_session_tasks(
+                uplink,
+                downlink,
+                Some(IdleWatcher::new(activity_rx, Duration::from_millis(30))),
+            ),
+        )
+        .await
+        .expect("driver should return once the idle watcher fires")
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), uplink_dropped.notified())
+            .await
+            .expect("uplink should be dropped when idle fires");
+        tokio::time::timeout(Duration::from_secs(1), downlink_dropped.notified())
+            .await
+            .expect("downlink should be dropped when idle fires");
+    }
+
+    #[tokio::test]
+    async fn drive_tcp_session_tasks_activity_resets_idle_deadline() {
+        let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
+        let uplink_tx = activity_tx.clone();
+        let downlink_tx = activity_tx.clone();
+        drop(activity_tx);
+
+        let uplink = async move {
+            // Signal activity every 20 ms for 200 ms, then finish.  Keeps
+            // the 50 ms idle deadline alive so the watcher cannot fire.
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                let _ = uplink_tx.send(());
+            }
+            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+        };
+        let downlink = async move {
+            tokio::time::sleep(Duration::from_millis(210)).await;
+            drop(downlink_tx);
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            drive_tcp_session_tasks(
+                uplink,
+                downlink,
+                Some(IdleWatcher::new(activity_rx, Duration::from_millis(50))),
+            ),
+        )
+        .await
+        .expect("driver should return once tasks finish naturally")
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1114,7 +1362,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
             .await
             .expect("driver should return once websocket-backed client EOF is observed")
             .unwrap();
