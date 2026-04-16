@@ -127,18 +127,26 @@ impl Drop for H3ConnectionGuard {
     }
 }
 
+// The cache key is intentionally based on the *hostname* and port rather than
+// the resolved IP address.  Using the IP address would create a new cache entry
+// on every DNS rotation (round-robin CDN, failover, etc.), leaving the old
+// QUIC connection alive in the map forever because `is_open()` stays `true`
+// until the server eventually drops the idle connection.  A hostname-based key
+// means there is at most one shared H3 connection per logical server: when the
+// DNS answer changes, the old connection is kept until it fails naturally, at
+// which point a fresh connection is made to the (now re-resolved) new address.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H3ConnectionKey {
-    server_addr: SocketAddr,
     server_name: String,
+    server_port: u16,
     fwmark: Option<u32>,
 }
 
 impl H3ConnectionKey {
-    fn new(server_addr: SocketAddr, server_name: &str, fwmark: Option<u32>) -> Self {
+    fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
         Self {
-            server_addr,
             server_name: server_name.to_string(),
+            server_port,
             fwmark,
         }
     }
@@ -348,6 +356,16 @@ pub(crate) async fn connect_websocket_h3(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
+    let path = websocket_path(url);
+
+    if should_reuse_h3_connection(source) {
+        // DNS resolution is deferred to the slow path inside connect_h3_quic_reused
+        // so the cache key stays hostname-based and is not affected by DNS rotation.
+        let ws = connect_h3_quic_reused(host, port, &path, fwmark, ipv6_first, source).await?;
+        return Ok(AnyWsStream::H3 { inner: ws });
+    }
+
+    // Probes never share connections; resolve DNS upfront and try each address.
     let server_addrs =
         resolve_host_with_preference(host, port, "failed to resolve h3 websocket host", ipv6_first)
             .await?;
@@ -355,15 +373,9 @@ pub(crate) async fn connect_websocket_h3(
         bail!("DNS resolution returned no addresses for {host}:{port}");
     }
 
-    let path = websocket_path(url);
     let mut last_error = None;
     for server_addr in server_addrs {
-        let connect_result = if should_reuse_h3_connection(source) {
-            connect_h3_quic_reused(server_addr, host, &path, fwmark, source).await
-        } else {
-            connect_h3_quic_fresh(server_addr, host, &path, fwmark, source).await
-        };
-        match connect_result {
+        match connect_h3_quic_new(server_addr, host, port, &path, fwmark, None, source).await {
             Ok(ws) => return Ok(AnyWsStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
@@ -376,25 +388,28 @@ pub(crate) async fn connect_websocket_h3(
 }
 
 async fn connect_h3_quic_reused(
-    server_addr: SocketAddr,
     server_name: &str,
+    server_port: u16,
     path: &str,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<H3WsStream> {
-    let key = H3ConnectionKey::new(server_addr, server_name, fwmark);
+    let key = H3ConnectionKey::new(server_name, server_port, fwmark);
 
     // Fast path: reuse an already-established shared connection without locking.
+    // DNS is NOT resolved here — the key is hostname-based so cache lookups are
+    // independent of which IP address the server currently resolves to.
     if let Some(shared) = cached_shared_h3_connection(&key).await {
-        match shared.open_websocket(server_name, server_addr.port(), path).await {
+        match shared.open_websocket(server_name, server_port, path).await {
             Ok(ws) => {
                 crate::metrics::record_transport_connect(source, "h3", "reused");
                 return Ok(ws);
             },
             Err(error) => {
                 debug!(
-                    server_addr = %server_addr,
                     server_name,
+                    server_port,
                     error = %format!("{error:#}"),
                     "cached shared h3 connection failed to open websocket stream; reconnecting"
                 );
@@ -414,15 +429,15 @@ async fn connect_h3_quic_reused(
     // Re-check the cache under the lock: another waiter may have established
     // and cached a fresh connection while we were waiting.
     if let Some(shared) = cached_shared_h3_connection(&key).await {
-        match shared.open_websocket(server_name, server_addr.port(), path).await {
+        match shared.open_websocket(server_name, server_port, path).await {
             Ok(ws) => {
                 crate::metrics::record_transport_connect(source, "h3", "reused");
                 return Ok(ws);
             },
             Err(error) => {
                 debug!(
-                    server_addr = %server_addr,
                     server_name,
+                    server_port,
                     error = %format!("{error:#}"),
                     "shared h3 connection (post-lock recheck) failed to open websocket stream; reconnecting"
                 );
@@ -431,26 +446,65 @@ async fn connect_h3_quic_reused(
         }
     }
 
-    let mut transport_guard = TransportConnectGuard::new(source, "h3");
-    let shared =
-        Arc::new(connect_h3_connection(server_addr, server_name, fwmark, Some(key.clone())).await?);
-    let ws = shared.open_websocket(server_name, server_addr.port(), path).await?;
-    transport_guard.finish("success");
-    cache_shared_h3_connection(key, Arc::clone(&shared)).await;
-    Ok(ws)
+    // Resolve DNS only now — we actually need a new QUIC connection.  By
+    // deferring resolution to this point we always connect to the *current*
+    // address while keeping the cache key hostname-based.
+    let server_addrs = resolve_host_with_preference(
+        server_name,
+        server_port,
+        "failed to resolve h3 websocket host",
+        ipv6_first,
+    )
+    .await?;
+    if server_addrs.is_empty() {
+        bail!("DNS resolution returned no addresses for {server_name}:{server_port}");
+    }
+
+    let mut last_error = None;
+    for server_addr in server_addrs {
+        match connect_h3_quic_new(
+            server_addr,
+            server_name,
+            server_port,
+            path,
+            fwmark,
+            Some(key.clone()),
+            source,
+        )
+        .await
+        {
+            Ok(ws) => return Ok(ws),
+            Err(error) => last_error = Some(format!("{server_addr}: {error}")),
+        }
+    }
+
+    Err(anyhow!(
+        "failed to connect to any resolved h3 address for {server_name}:{server_port}: {}",
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
 }
 
-async fn connect_h3_quic_fresh(
+/// Establishes a brand-new QUIC + HTTP/3 connection to `server_addr`, opens
+/// one WebSocket stream on it, and — if `cache_key` is provided — inserts the
+/// connection into the shared cache for future reuse.
+async fn connect_h3_quic_new(
     server_addr: SocketAddr,
     server_name: &str,
+    server_port: u16,
     path: &str,
     fwmark: Option<u32>,
+    cache_key: Option<H3ConnectionKey>,
     source: &'static str,
 ) -> Result<H3WsStream> {
-    let mut connect_guard = TransportConnectGuard::new(source, "h3");
-    let shared = Arc::new(connect_h3_connection(server_addr, server_name, fwmark, None).await?);
-    let ws = shared.open_websocket(server_name, server_addr.port(), path).await?;
-    connect_guard.finish("success");
+    let mut transport_guard = TransportConnectGuard::new(source, "h3");
+    let shared = Arc::new(
+        connect_h3_connection(server_addr, server_name, fwmark, cache_key.clone()).await?,
+    );
+    let ws = shared.open_websocket(server_name, server_port, path).await?;
+    transport_guard.finish("success");
+    if let Some(key) = cache_key {
+        cache_shared_h3_connection(key, Arc::clone(&shared)).await;
+    }
     Ok(ws)
 }
 
@@ -561,6 +615,15 @@ async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u
     }
 }
 
+/// Remove all cache entries whose shared connection is no longer open.
+/// Called periodically from the warm-standby maintenance loop so dead entries
+/// do not linger indefinitely when no new request re-checks their key (e.g.
+/// after DNS rotation changes the resolved address for a server name).
+pub(crate) async fn gc_shared_h3_connections() {
+    let mut shared = h3_shared_connections().lock().await;
+    shared.retain(|_, conn| conn.is_open());
+}
+
 fn is_expected_h3_close(err: &str) -> bool {
     err.contains("H3_NO_ERROR")
         || err.contains("Connection closed by client")
@@ -635,13 +698,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn h3_shared_connection_key_distinguishes_server_name_and_fwmark() {
-        let addr: SocketAddr = "127.0.0.1:443".parse().unwrap();
-        let base = H3ConnectionKey::new(addr, "example.com", None);
+    fn h3_shared_connection_key_distinguishes_server_name_port_and_fwmark() {
+        let base = H3ConnectionKey::new("example.com", 443, None);
 
-        assert_eq!(base, H3ConnectionKey::new(addr, "example.com", None));
-        assert_ne!(base, H3ConnectionKey::new(addr, "example.net", None));
-        assert_ne!(base, H3ConnectionKey::new(addr, "example.com", Some(100)));
+        // Same key for any resolved IP — the key is hostname-based
+        assert_eq!(base, H3ConnectionKey::new("example.com", 443, None));
+        // Different hostname
+        assert_ne!(base, H3ConnectionKey::new("example.net", 443, None));
+        // Different fwmark
+        assert_ne!(base, H3ConnectionKey::new("example.com", 443, Some(100)));
+        // Different port
+        assert_ne!(base, H3ConnectionKey::new("example.com", 8443, None));
     }
 
     #[test]

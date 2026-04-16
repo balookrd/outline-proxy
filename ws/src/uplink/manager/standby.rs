@@ -456,8 +456,18 @@ impl UplinkManager {
 
             match ws {
                 Ok(ws) => {
-                    pool_vec.lock().await.push_back(ws);
-                    current_len += 1;
+                    // Re-check actual pool size before pushing — validate_pool
+                    // or keepalive_tcp_pool may have pushed entries back while
+                    // we were dialling, so the pool could already be at capacity.
+                    let mut guard = pool_vec.lock().await;
+                    if guard.len() >= desired {
+                        drop(guard);
+                        // Connection is dropped here; pool already full.
+                        break;
+                    }
+                    guard.push_back(ws);
+                    current_len = guard.len();
+                    drop(guard);
                     metrics::record_warm_standby_refill(
                         transport_label,
                         &self.inner.group_name,

@@ -49,6 +49,17 @@ pub(crate) use socket::bind_addr_for;
 #[cfg(feature = "h3")]
 pub(crate) use url_util::{format_authority, websocket_path};
 
+/// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
+/// whose underlying connection is no longer open.  Should be called
+/// periodically (e.g. every 15 s from the warm-standby maintenance loop) to
+/// prevent dead entries from accumulating when a cache key is never looked up
+/// again (DNS rotation, server IP change, etc.).
+pub async fn gc_shared_connections() {
+    h2_shared::gc_shared_h2_connections().await;
+    #[cfg(feature = "h3")]
+    crate::transport_h3::gc_shared_h3_connections().await;
+}
+
 pub async fn connect_websocket(
     url: &Url,
     mode: WsTransportMode,
