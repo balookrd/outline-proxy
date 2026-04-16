@@ -199,6 +199,127 @@ fn validate_uplink_names(groups: &[UplinkGroupConfig]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use url::Url;
+
+    use super::*;
+    use crate::config::{
+        LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
+        WsProbeConfig,
+    };
+    use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
+
+    fn make_uplink(name: &str) -> UplinkConfig {
+        UplinkConfig {
+            name: name.to_string(),
+            transport: UplinkTransport::Websocket,
+            tcp_ws_url: Some(Url::parse("wss://127.0.0.1:1/tcp").unwrap()),
+            tcp_ws_mode: WsTransportMode::Http1,
+            udp_ws_url: None,
+            udp_ws_mode: WsTransportMode::Http1,
+            tcp_addr: None,
+            udp_addr: None,
+            cipher: CipherKind::Chacha20IetfPoly1305,
+            password: "s3cr3t_password".to_string(),
+            weight: 1.0,
+            fwmark: None,
+            ipv6_first: false,
+        }
+    }
+
+    fn make_group(name: &str, uplink_names: &[&str]) -> UplinkGroupConfig {
+        UplinkGroupConfig {
+            name: name.to_string(),
+            uplinks: uplink_names.iter().map(|n| make_uplink(n)).collect(),
+            probe: ProbeConfig {
+                interval: Duration::from_secs(120),
+                timeout: Duration::from_secs(10),
+                max_concurrent: 4,
+                max_dials: 2,
+                min_failures: 3,
+                attempts: 1,
+                ws: WsProbeConfig { enabled: false },
+                http: None,
+                dns: None,
+                tcp: None,
+            },
+            load_balancing: LoadBalancingConfig {
+                mode: LoadBalancingMode::ActiveActive,
+                routing_scope: RoutingScope::PerFlow,
+                sticky_ttl: Duration::from_secs(300),
+                hysteresis: Duration::from_millis(50),
+                failure_cooldown: Duration::from_secs(10),
+                tcp_chunk0_failover_timeout: Duration::from_secs(10),
+                warm_standby_tcp: 0,
+                warm_standby_udp: 0,
+                rtt_ewma_alpha: 0.25,
+                failure_penalty: Duration::from_millis(500),
+                failure_penalty_max: Duration::from_secs(30),
+                failure_penalty_halflife: Duration::from_secs(60),
+                h3_downgrade_duration: Duration::from_secs(60),
+                udp_ws_keepalive_interval: None,
+                tcp_ws_standby_keepalive_interval: None,
+                tcp_active_keepalive_interval: None,
+                auto_failback: false,
+            },
+        }
+    }
+
+    // ── validate_uplink_names ─────────────────────────────────────────────────
+
+    #[test]
+    fn validate_rejects_duplicate_uplink_name_across_groups() {
+        let groups = vec![
+            make_group("g1", &["uplink-a", "uplink-b"]),
+            make_group("g2", &["uplink-b", "uplink-c"]), // "uplink-b" is a duplicate
+        ];
+        let err = validate_uplink_names(&groups).unwrap_err();
+        assert!(
+            err.to_string().contains("uplink-b"),
+            "error should name the duplicate uplink"
+        );
+        assert!(
+            err.to_string().contains("g1") && err.to_string().contains("g2"),
+            "error should mention both groups"
+        );
+    }
+
+    #[test]
+    fn validate_accepts_unique_uplink_names_across_groups() {
+        let groups = vec![
+            make_group("g1", &["uplink-a", "uplink-b"]),
+            make_group("g2", &["uplink-c", "uplink-d"]),
+        ];
+        assert!(validate_uplink_names(&groups).is_ok());
+    }
+
+    #[test]
+    fn validate_accepts_empty_group_list() {
+        // An empty list has no uplinks to conflict — validation passes.
+        assert!(validate_uplink_names(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_within_same_group() {
+        let groups = vec![make_group("g1", &["uplink-a", "uplink-a"])];
+        assert!(
+            validate_uplink_names(&groups).is_err(),
+            "duplicate within a single group must be rejected"
+        );
+    }
+
+    // ── UplinkRegistry::new ───────────────────────────────────────────────────
+
+    #[test]
+    fn registry_new_rejects_empty_group_list() {
+        let err = UplinkRegistry::new(vec![]).unwrap_err();
+        assert!(err.to_string().contains("no uplink groups"));
+    }
+}
+
 pub fn log_registry_summary(registry: &UplinkRegistry) {
     info!(
         groups = registry.groups().len(),

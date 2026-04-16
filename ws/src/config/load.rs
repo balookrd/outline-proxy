@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -52,8 +52,10 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
+    let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
+
     let groups = load_groups(outline.as_ref(), file.as_ref(), args)?;
-    let routing = load_routing_table(file.as_ref(), &groups)?;
+    let routing = load_routing_table(file.as_ref(), &groups, config_dir)?;
 
     let metrics = args
         .metrics_listen
@@ -75,12 +77,16 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
 
     // State file path priority: CLI flag > config key > default (config
-    // path with extension replaced by ".state.toml").
-    let state_path = args
-        .state_path
-        .clone()
-        .or_else(|| file.as_ref().and_then(|f| f.state_path.clone()))
-        .or_else(|| Some(path.with_extension("state.toml")));
+    // path with extension replaced by ".state.toml"). Relative paths in
+    // the config file are resolved against the config directory (not CWD);
+    // `..` components are rejected to keep the path predictable.
+    let state_path = if let Some(p) = args.state_path.clone() {
+        Some(p)
+    } else if let Some(p) = file.as_ref().and_then(|f| f.state_path.clone()) {
+        Some(resolve_config_path(&p, config_dir).context("invalid [state_path]")?)
+    } else {
+        Some(path.with_extension("state.toml"))
+    };
 
     Ok(AppConfig {
         listen,
@@ -586,6 +592,7 @@ fn load_balancing_config_from_group(
 fn load_routing_table(
     file: Option<&ConfigFile>,
     groups: &[UplinkGroupConfig],
+    config_dir: &Path,
 ) -> Result<Option<RoutingTableConfig>> {
     let Some(route_sections) = file.and_then(|f| f.route.as_ref()) else {
         return Ok(None);
@@ -632,9 +639,18 @@ fn load_routing_table(
                     index + 1
                 );
             }
+            let resolved_file = section
+                .file
+                .as_deref()
+                .map(|p| {
+                    resolve_config_path(p, config_dir).with_context(|| {
+                        format!("invalid file in [[route]] entry {}", index + 1)
+                    })
+                })
+                .transpose()?;
             rules.push(RouteRule {
                 inline_prefixes: section.prefixes.clone().unwrap_or_default(),
-                file: section.file.clone(),
+                file: resolved_file,
                 file_poll: Duration::from_secs(section.file_poll_secs.unwrap_or(60)),
                 target,
                 fallback,
@@ -654,6 +670,28 @@ fn load_routing_table(
         default_target,
         default_fallback,
     }))
+}
+
+/// Resolve a path from the config file:
+/// - reject any `..` component (defense-in-depth against pointing the
+///   process at files outside the config tree);
+/// - if absolute, return it verbatim;
+/// - if relative, anchor it at the config file's directory (so it doesn't
+///   silently depend on the process's working directory).
+fn resolve_config_path(raw: &Path, config_dir: &Path) -> Result<PathBuf> {
+    for comp in raw.components() {
+        if matches!(comp, Component::ParentDir) {
+            bail!(
+                "path {} must not contain `..` components",
+                raw.display()
+            );
+        }
+    }
+    if raw.is_absolute() {
+        Ok(raw.to_path_buf())
+    } else {
+        Ok(config_dir.join(raw))
+    }
 }
 
 fn parse_route_target(
@@ -997,6 +1035,148 @@ fn load_h2_config(h2: Option<&H2Section>) -> H2Config {
         initial_connection_window_size: h2
             .and_then(|s| s.initial_connection_window_size)
             .unwrap_or(2 * 1024 * 1024),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::schema::{DnsProbeSection, HttpProbeSection, TcpProbeSection, WsProbeSection};
+
+    fn probe(interval: Option<u64>, timeout: Option<u64>) -> ProbeSection {
+        ProbeSection {
+            interval_secs: interval,
+            timeout_secs: timeout,
+            max_concurrent: None,
+            max_dials: None,
+            min_failures: None,
+            attempts: None,
+            ws: None,
+            http: None,
+            dns: None,
+            tcp: None,
+        }
+    }
+
+    // ── merge_probe_section ───────────────────────────────────────────────────
+
+    #[test]
+    fn merge_both_none_yields_none() {
+        assert!(merge_probe_section(None, None).is_none());
+    }
+
+    #[test]
+    fn merge_only_template_returns_template() {
+        let t = probe(Some(60), Some(5));
+        let r = merge_probe_section(Some(&t), None).unwrap();
+        assert_eq!(r.interval_secs, Some(60));
+        assert_eq!(r.timeout_secs, Some(5));
+    }
+
+    #[test]
+    fn merge_only_override_returns_override() {
+        let o = probe(Some(120), Some(10));
+        let r = merge_probe_section(None, Some(&o)).unwrap();
+        assert_eq!(r.interval_secs, Some(120));
+        assert_eq!(r.timeout_secs, Some(10));
+    }
+
+    #[test]
+    fn merge_override_wins_when_both_set() {
+        let t = probe(Some(60), Some(5));
+        let o = probe(Some(120), Some(10));
+        let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
+        assert_eq!(r.interval_secs, Some(120));
+        assert_eq!(r.timeout_secs, Some(10));
+    }
+
+    #[test]
+    fn merge_template_fills_unset_override_fields() {
+        let t = probe(Some(60), Some(5));
+        let o = probe(None, Some(10)); // override sets only timeout
+        let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
+        assert_eq!(r.interval_secs, Some(60), "template interval should fill in");
+        assert_eq!(r.timeout_secs, Some(10), "override timeout should win");
+    }
+
+    #[test]
+    fn merge_override_sub_table_replaces_template_not_merges() {
+        let mut t = probe(Some(60), Some(5));
+        t.http = Some(HttpProbeSection {
+            url: "http://template.example.com/probe".parse().unwrap(),
+        });
+        t.dns = Some(DnsProbeSection {
+            server: "8.8.8.8".to_string(),
+            port: Some(53),
+            name: None,
+        });
+
+        let mut o = probe(None, None);
+        o.http = Some(HttpProbeSection {
+            url: "http://override.example.com/probe".parse().unwrap(),
+        });
+        // o.dns is not set — template's dns must survive
+
+        let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
+        assert_eq!(
+            r.http.unwrap().url.as_str(),
+            "http://override.example.com/probe",
+            "override http must replace template http"
+        );
+        assert_eq!(
+            r.dns.unwrap().server,
+            "8.8.8.8",
+            "template dns must survive when override does not set dns"
+        );
+    }
+
+    #[test]
+    fn merge_override_tcp_replaces_template_tcp() {
+        let mut t = probe(None, None);
+        t.tcp = Some(TcpProbeSection { host: "template.host".to_string(), port: Some(80) });
+        let mut o = probe(None, None);
+        o.tcp = Some(TcpProbeSection { host: "override.host".to_string(), port: Some(443) });
+        let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
+        assert_eq!(r.tcp.unwrap().host, "override.host");
+    }
+
+    #[test]
+    fn merge_ws_section_override_wins() {
+        let mut t = probe(None, None);
+        t.ws = Some(WsProbeSection { enabled: Some(true) });
+        let mut o = probe(None, None);
+        o.ws = Some(WsProbeSection { enabled: Some(false) });
+        let r = merge_probe_section(Some(&t), Some(&o)).unwrap();
+        assert_eq!(r.ws.unwrap().enabled, Some(false));
+    }
+
+    #[test]
+    fn resolve_config_path_rejects_parent_components() {
+        let err = resolve_config_path(Path::new("../etc/passwd"), Path::new("/etc/outline"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must not contain `..`"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_config_path_rejects_embedded_parent() {
+        let err = resolve_config_path(Path::new("lists/../../etc/passwd"), Path::new("/etc/outline"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must not contain `..`"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_config_path_keeps_absolute() {
+        let p = resolve_config_path(Path::new("/var/lib/outline/ru.lst"), Path::new("/etc/outline"))
+            .unwrap();
+        assert_eq!(p, PathBuf::from("/var/lib/outline/ru.lst"));
+    }
+
+    #[test]
+    fn resolve_config_path_joins_relative_with_config_dir() {
+        let p = resolve_config_path(Path::new("lists/ru.lst"), Path::new("/etc/outline")).unwrap();
+        assert_eq!(p, PathBuf::from("/etc/outline/lists/ru.lst"));
     }
 }
 

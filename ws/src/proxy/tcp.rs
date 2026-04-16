@@ -1387,6 +1387,89 @@ mod tests {
             .expect("downlink should be aborted after websocket-backed client EOF");
     }
 
+    /// `handle_tcp_drop` must send a SOCKS5 REP=0x02 (not allowed) reply and
+    /// return `Ok(())` without forwarding any data.
+    #[tokio::test]
+    async fn handle_tcp_drop_sends_not_allowed_reply() {
+        use tokio::io::AsyncReadExt;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Connect a fake SOCKS5 client and accept the server side.
+        let connect_fut = tokio::net::TcpStream::connect(addr);
+        let accept_fut = listener.accept();
+        let (connect_res, accept_res) = tokio::join!(connect_fut, accept_fut);
+        let mut client_side = connect_res.unwrap();
+        let (server_side, _) = accept_res.unwrap();
+
+        let target = crate::types::TargetAddr::IpV4("1.2.3.4".parse().unwrap(), 80);
+        handle_tcp_drop(server_side, &target).await.unwrap();
+
+        // SOCKS5 reply: VER REP RSV ATYP(IPv4) ADDR(4) PORT(2) = 10 bytes
+        let mut reply = [0u8; 10];
+        client_side.read_exact(&mut reply).await.unwrap();
+        assert_eq!(reply[0], 5, "VER must be 5");
+        assert_eq!(reply[1], SOCKS_STATUS_NOT_ALLOWED, "REP must be 0x02 (not allowed)");
+        assert_eq!(reply[2], 0, "RSV must be 0");
+        assert_eq!(reply[3], 1, "ATYP must be 1 (IPv4)");
+    }
+
+    /// `handle_tcp_direct` must close the session with `Ok(())` once both
+    /// directions have been silent for `DIRECT_IDLE_TIMEOUT`.
+    ///
+    /// Requires the `test-util` tokio feature (added to dev-dependencies).
+    /// Time is paused so the 120-second timeout fires without real waiting.
+    #[tokio::test(start_paused = true)]
+    async fn handle_tcp_direct_closes_session_after_idle_timeout() {
+        use std::net::Ipv4Addr;
+        use tokio::io::AsyncReadExt;
+
+        // Upstream: accepts but sends nothing (simulates idle server).
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream_port = upstream_listener.local_addr().unwrap().port();
+        let upstream_task = tokio::spawn(async move {
+            let (_stream, _) = upstream_listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        // Plumb a loopback pair to act as the SOCKS5 client connection.
+        let client_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client_listener_addr = client_listener.local_addr().unwrap();
+        let (connect_res, accept_res) = tokio::join!(
+            tokio::net::TcpStream::connect(client_listener_addr),
+            client_listener.accept()
+        );
+        let mut client_side = connect_res.unwrap();
+        let (server_side, _) = accept_res.unwrap();
+
+        let target = crate::types::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_port);
+        let direct_task = tokio::spawn(handle_tcp_direct(server_side, target, None));
+
+        // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.
+        let mut socks_reply = [0u8; 10];
+        client_side.read_exact(&mut socks_reply).await.unwrap();
+        assert_eq!(socks_reply[1], SOCKS_STATUS_SUCCESS, "expected SUCCESS reply");
+
+        // Advance mock time past the idle timeout and yield to let tasks run.
+        tokio::time::advance(DIRECT_IDLE_TIMEOUT + Duration::from_secs(1)).await;
+        // Multiple yields let the spawned select! arms process the fired timer.
+        for _ in 0..5 {
+            tokio::task::yield_now().await;
+        }
+
+        // The direct task must have completed.
+        assert!(
+            direct_task.is_finished(),
+            "handle_tcp_direct should return after idle timeout"
+        );
+        let result = direct_task.await.unwrap();
+        assert!(result.is_ok(), "handle_tcp_direct must return Ok(()) on idle timeout");
+
+        upstream_task.abort();
+        let _ = upstream_task.await;
+    }
+
     #[test]
     fn attempted_chunk0_uplink_names_preserves_attempt_order_without_duplicates() {
         let attempted = attempted_chunk0_uplink_names(
