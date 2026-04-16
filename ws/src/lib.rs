@@ -37,7 +37,7 @@ use crate::config::{AppConfig, Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 #[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
-use crate::uplink::{UplinkRegistry, log_registry_summary};
+use crate::uplink::{StateStore, UplinkRegistry, log_registry_summary};
 
 fn warn_about_tcp_probe_target(config: &AppConfig) {
     for group in &config.groups {
@@ -80,7 +80,41 @@ pub async fn run(args: Args) -> Result<()> {
 }
 
 pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
-    let registry = UplinkRegistry::new(config.groups.clone())?;
+    // Load (or create) the persistent state store, then build the registry
+    // with restored active-uplink selections.
+    let state_store = if let Some(path) = config.state_path.clone() {
+        // Probe write access before committing to the path.  On many
+        // deployments the config lives in /etc/ (owned by root) while the
+        // proxy runs as an unprivileged user — fail clearly instead of
+        // silently dropping every write later.
+        let probe = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .await;
+        match probe {
+            Ok(_) => {
+                let store: std::sync::Arc<StateStore> =
+                    StateStore::load_or_default(path).await;
+                store.clone().spawn_writer();
+                Some(store)
+            },
+            Err(e) => {
+                warn!(
+                    path = ?path,
+                    error = %e,
+                    "cannot write uplink state file — active-uplink selection \
+                     will not persist across restarts. \
+                     Fix permissions or point state_path to a writable location."
+                );
+                None
+            },
+        }
+    } else {
+        None
+    };
+    let registry = UplinkRegistry::new_with_state(config.groups.clone(), state_store).await?;
     registry.initialize_strict_active_selection().await;
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();

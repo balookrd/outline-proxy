@@ -36,6 +36,10 @@ pub struct AppConfig {
     /// back into the TUN device on hosts where all traffic is captured.
     /// Linux only; ignored on other platforms.
     pub direct_fwmark: Option<u32>,
+    /// Path to the uplink state file used to persist active-uplink selection
+    /// across restarts.  Derived from the config path at startup; `None`
+    /// disables persistence (e.g. in tests).
+    pub state_path: Option<PathBuf>,
 }
 
 /// New: a named collection of uplinks sharing a single LB + probe configuration.

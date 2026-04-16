@@ -133,6 +133,7 @@ tun2udp + tun2tcp"]
 - runtime failover
 - auto-failback disabled by default (`auto_failback = false`): switches only on failure, never proactively back to a recovered primary
 - warm-standby WebSocket pools for TCP and UDP
+- active-uplink selection persisted across restarts (TOML state file, debounced async writes)
 
 ### Health probing
 
@@ -382,6 +383,7 @@ Key differences from the default VM config:
 | Warm standby | 1 TCP + 1 UDP | disabled |
 | Load balancing mode | `active_active` | `active_passive` |
 | Transport mode | `h3` | `h2` (QUIC is heavy on MIPS/ARM) |
+| `state_path` | config dir (`.state.toml`) | point to writable path, e.g. `/var/lib/outline-ws-rust/state.toml` |
 
 Run with the router config:
 
@@ -588,6 +590,7 @@ via = "main"
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
   - `true`: when the current active is healthy and a candidate with a **higher `weight`** (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA RTT: this prevents spurious switches under load, when the active uplink's EWMA temporarily inflates due to slow connections while an idle backup looks better by latency. Failback always moves toward higher weight (`1.0 → 1.5 → 2.0`): switching to a lower-weight uplink via auto_failback is not possible — that requires a probe-confirmed failover.
 - `h3_downgrade_secs` (per-group, default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
+- `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
 - Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
 - Top-level `[probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[probe.http]` is dropped for that group.
 - Uplink names must be globally unique across all groups (Prometheus labels currently use `uplink="..."` without a group qualifier).
@@ -614,6 +617,7 @@ via = "main"
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
 - `--fwmark` / `OUTLINE_FWMARK`
+- `--state-path` / `STATE_PATH`
 
 ## Policy routing
 

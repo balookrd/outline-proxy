@@ -40,6 +40,12 @@ pub(crate) struct ConfigFile {
     /// Legacy `[bypass]` section — retained only to surface a migration error
     /// instead of silently ignoring the table.
     pub(super) bypass: Option<toml::Value>,
+    /// Override the path where active-uplink state is persisted.
+    /// Defaults to the config file path with extension replaced by
+    /// `.state.toml` (e.g. `config.toml` → `config.state.toml`).
+    /// Set to a writable location when the config directory is read-only
+    /// (e.g. `/var/lib/outline-ws/state.toml`).
+    pub(super) state_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
