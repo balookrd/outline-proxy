@@ -35,17 +35,17 @@ const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 const POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 // Direct TCP sessions (bypass-routed) are held open as long as both sides
-// keep the connection alive.  Push-notification clients, VPN keepalives, and
-// similar applications create long-lived sessions that may be genuinely idle
-// (no bytes in either direction) for extended periods — neither side sends
-// EOF.  Without a bound these accumulate indefinitely.
+// keep the connection alive.  Applications such as DNS-over-HTTPS/TLS clients
+// open a new TCP+TLS connection per query burst and then abandon the old one
+// without sending FIN — the HTTP/2 server keeps its side open.  Without a
+// bound these accumulate indefinitely.
 //
 // DIRECT_IDLE_TIMEOUT closes a direct session once BOTH directions have been
 // silent for this long.  Activity in either direction resets the timer.
-// 10 minutes is long enough for almost all real push / keepalive traffic
-// (Telegram heartbeats: ~30 s; FCM: ~28 min → those connections will keep
-//  sending keepalives so the timer never fires for them).
-const DIRECT_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+// 2 minutes is generous for DoH/DoT (a silent connection is always abandoned)
+// while still being safe for periodic-push traffic (Telegram, FCM, etc. send
+// heartbeats every 30–60 s so their connections will never hit this timeout).
+const DIRECT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 enum UplinkTaskResult {
     Finished,
