@@ -22,6 +22,7 @@ use tracing::{debug, warn};
 /// The subset of runtime state worth persisting across restarts.
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct PersistedState {
+    #[serde(default)]
     pub groups: HashMap<String, GroupActiveState>,
 }
 
