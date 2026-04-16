@@ -137,7 +137,12 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
         let poll = rule.file_poll;
         let table_for_version = Arc::clone(&table);
         tokio::spawn(async move {
-            let mut last_mtime: Option<SystemTime> = None;
+            // Seed from the file's current mtime so the first poll cycle does
+            // not reload a file that hasn't changed since compile() read it.
+            let mut last_mtime: Option<SystemTime> = tokio::fs::metadata(&file)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok());
             loop {
                 tokio::time::sleep(poll).await;
                 let mtime = tokio::fs::metadata(&file).await.ok().and_then(|m| m.modified().ok());

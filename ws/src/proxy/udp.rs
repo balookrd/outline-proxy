@@ -74,15 +74,26 @@ async fn classify_decision(
     };
     // Fallback applies when the primary is a group whose UDP pool has no
     // healthy uplinks at resolve time; Direct/Drop primaries are terminal.
-    if let RouteTarget::Group(name) = &primary {
-        if let Some(manager) = registry.group_by_name(name) {
-            if manager.has_any_healthy(TransportKind::Udp).await {
-                return as_route(primary);
-            }
-            if let Some(fb) = fallback {
-                debug!(primary = %name, fallback = ?fb, "UDP route: primary group unhealthy, using fallback");
-                return as_route(fb);
-            }
+    if let RouteTarget::Group(ref name) = primary {
+        let manager = registry.group_by_name(name);
+        if manager.is_none() {
+            // Unknown group — routing table referenced a group that was not
+            // found in the registry. Fall back to the default group, consistent
+            // with the TCP dispatch path (resolve_single_target).
+            debug!(
+                group = %name,
+                default = registry.default_group_name(),
+                "UDP route: unknown group, falling back to default"
+            );
+            return UdpPacketRoute::Tunnel(registry.default_group_name().to_string());
+        }
+        let manager = manager.unwrap();
+        if manager.has_any_healthy(TransportKind::Udp).await {
+            return as_route(primary);
+        }
+        if let Some(fb) = fallback {
+            debug!(primary = %name, fallback = ?fb, "UDP route: primary group unhealthy, using fallback");
+            return as_route(fb);
         }
     }
     as_route(primary)
@@ -172,9 +183,13 @@ async fn resolve_group_context(
 
     let mut map = registry_groups.map.lock().await;
     if let Some(existing) = map.get(group_name) {
-        // Lost the race; drop our just-dialed transport.
+        // Lost the race to another concurrent caller for the same group.
+        // Clone what we need, release the lock first, then close the
+        // duplicate transport — closing is async and must not hold the lock.
+        let existing = existing.clone();
+        drop(map);
         close_active_udp_transport(&active, "duplicate_group_context").await;
-        return Ok(existing.clone());
+        return Ok(existing);
     }
     map.insert(group_name.to_string(), ctx.clone());
     drop(map);

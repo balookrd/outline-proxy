@@ -918,14 +918,18 @@ async fn handle_tcp_direct(
     let (mut client_read, mut client_write) = client.into_split();
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
 
-    // Activity channel: c2u and u2c send a token after every successful read.
+    // Activity channel: c2u and u2c signal after every successful read.
     // The idle watcher resets its timer on each token; if the channel is silent
     // for DIRECT_IDLE_TIMEOUT it fires, closing the session.
-    let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    //
+    // Capacity-1 bounded channel: we only care about "any activity", not how
+    // many bytes moved, so a single queued token is enough.  try_send discards
+    // the signal when a token is already pending — cheaper than an unbounded
+    // channel that accumulates one node per read under high throughput.
+    // The watcher exits when both sender halves drop (channel closes → recv → None).
+    let (activity_tx, mut activity_rx) = tokio::sync::mpsc::channel::<()>(1);
     let activity_c2u = activity_tx.clone();
-    let activity_u2c = activity_tx.clone();
-    // Drop the original sender — the watcher exits when both task clones drop.
-    drop(activity_tx);
+    let activity_u2c = activity_tx;
 
     let c2u = async move {
         let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
@@ -934,7 +938,7 @@ async fn handle_tcp_direct(
             if read == 0 {
                 break;
             }
-            let _ = activity_c2u.send(());
+            let _ = activity_c2u.try_send(());
             metrics::add_bytes(
                 "tcp",
                 "client_to_upstream",
@@ -954,7 +958,7 @@ async fn handle_tcp_direct(
             if read == 0 {
                 break;
             }
-            let _ = activity_u2c.send(());
+            let _ = activity_u2c.try_send(());
             metrics::add_bytes(
                 "tcp",
                 "upstream_to_client",
@@ -1055,12 +1059,24 @@ async fn handle_tcp_direct(
                     Ok(())
                 }
                 Ok(false) => {
-                    // Both tasks completed before select picked them up; clean exit.
+                    // The idle channel closed — both data tasks already finished.
+                    // abort() is a no-op on a completed task; await to collect
+                    // their results and propagate any error instead of swallowing it.
                     c2u_task.abort();
                     u2c_task.abort();
-                    let _ = c2u_task.await;
-                    let _ = u2c_task.await;
-                    Ok(())
+                    let c2u_res = c2u_task.await;
+                    let u2c_res = u2c_task.await;
+                    match (c2u_res, u2c_res) {
+                        (Ok(Err(e)), _) => Err(e),
+                        (_, Ok(Err(e))) => Err(e),
+                        (Err(e), _) if !e.is_cancelled() => {
+                            Err(anyhow!("direct TCP c2u task panicked: {e}"))
+                        },
+                        (_, Err(e)) if !e.is_cancelled() => {
+                            Err(anyhow!("direct TCP u2c task panicked: {e}"))
+                        },
+                        _ => Ok(()),
+                    }
                 }
                 Err(e) => {
                     c2u_task.abort();
