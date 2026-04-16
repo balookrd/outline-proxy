@@ -6,10 +6,7 @@ use std::sync::{LazyLock, Mutex};
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-    match METRICS_TEST_GUARD.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
+    METRICS_TEST_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn empty_snapshot() -> UplinkManagerSnapshot {
