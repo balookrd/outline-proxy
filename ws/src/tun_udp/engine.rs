@@ -6,13 +6,20 @@ use anyhow::Result;
 use tokio::sync::Mutex;
 use tracing::debug;
 
+use std::net::SocketAddr;
+
+use anyhow::Context;
+use tokio::net::UdpSocket;
+use tracing::info;
+
 use crate::atomic_counter::CounterU64;
 use crate::metrics;
 use crate::transport::is_dropped_oversized_udp_error;
 use crate::tun::{SharedTunWriter, TunRoute, TunRouting};
+use crate::types::TargetAddr;
 use crate::uplink::TransportKind;
 
-use super::types::{FlowTable, UdpFlowKey};
+use super::types::{DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey};
 use super::wire::ParsedUdpPacket;
 
 #[derive(Clone)]
@@ -27,6 +34,8 @@ pub(super) struct TunUdpEngineInner {
     /// strict checks without flow context) reads `dispatch.default_group()`.
     pub(super) dispatch: TunRouting,
     pub(super) flows: FlowTable,
+    /// Direct (bypass) flows: per-flow UDP socket + reader task.
+    pub(super) direct_flows: DirectFlowTable,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
@@ -44,6 +53,7 @@ impl TunUdpEngine {
                 writer,
                 dispatch,
                 flows: Arc::new(Mutex::new(HashMap::new())),
+                direct_flows: Arc::new(Mutex::new(HashMap::new())),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
@@ -62,6 +72,32 @@ impl TunUdpEngine {
             remote_ip: packet.destination_ip,
             remote_port: packet.destination_port,
         };
+
+        // Check if this is an existing direct flow first.
+        {
+            let mut direct = self.inner.direct_flows.lock().await;
+            if let Some(flow) = direct.get_mut(&key) {
+                flow.last_seen = Instant::now();
+                let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
+                flow.socket
+                    .send_to(&packet.payload, target_addr)
+                    .await
+                    .context("direct UDP send failed")?;
+                metrics::add_udp_datagram(
+                    "client_to_upstream",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                );
+                metrics::add_bytes(
+                    "udp",
+                    "client_to_upstream",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                    packet.payload.len(),
+                );
+                return Ok(());
+            }
+        }
 
         let (existing, stale_flow) = {
             let guard = self.inner.flows.lock().await;
@@ -132,8 +168,12 @@ impl TunUdpEngine {
             },
             None => {
                 let route = self.inner.dispatch.resolve(&remote_target).await;
-                let manager = match route {
-                    TunRoute::Group { manager, .. } => manager,
+                match route {
+                    TunRoute::Direct { fwmark } => {
+                        return self
+                            .handle_direct_packet(key, &remote_target, &packet, fwmark)
+                            .await;
+                    },
                     TunRoute::Drop { reason } => {
                         debug!(
                             target = %remote_target,
@@ -142,9 +182,12 @@ impl TunUdpEngine {
                         );
                         return Ok(());
                     },
-                };
-                let (id, t, index, name) = self.create_flow(key.clone(), &manager).await?;
-                (id, t, index, name, manager)
+                    TunRoute::Group { manager, .. } => {
+                        let (id, t, index, name) =
+                            self.create_flow(key.clone(), &manager).await?;
+                        (id, t, index, name, manager)
+                    },
+                }
             },
         };
 
@@ -198,6 +241,126 @@ impl TunUdpEngine {
             );
         }
 
+        Ok(())
+    }
+
+    /// Handle a packet that resolved to `via = "direct"`: open (or reuse) a
+    /// plain UDP socket, send the datagram, and spawn a response reader that
+    /// writes synthetic IP+UDP packets back into the TUN device.
+    async fn handle_direct_packet(
+        &self,
+        key: UdpFlowKey,
+        remote_target: &TargetAddr,
+        packet: &ParsedUdpPacket,
+        fwmark: Option<u32>,
+    ) -> Result<()> {
+        let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
+        let bind_addr = match key.remote_ip {
+            std::net::IpAddr::V4(_) => SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+                0,
+            ),
+            std::net::IpAddr::V6(_) => SocketAddr::new(
+                std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+                0,
+            ),
+        };
+        let std_sock = crate::transport::bind_udp_socket(bind_addr, fwmark)
+            .with_context(|| format!("failed to bind direct UDP socket for TUN flow to {remote_target}"))?;
+        let sock = Arc::new(UdpSocket::from_std(std_sock)?);
+        sock.send_to(&packet.payload, target_addr)
+            .await
+            .context("direct TUN UDP send failed")?;
+
+        let flow_id = self
+            .inner
+            .next_flow_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let now = Instant::now();
+
+        // Spawn a reader task that receives responses on this socket and writes
+        // them as synthetic IP+UDP packets back into the TUN device.
+        let reader_sock = Arc::clone(&sock);
+        let writer = self.inner.writer.clone();
+        let reader_key = key.clone();
+        let direct_flows = Arc::clone(&self.inner.direct_flows);
+        let reader = tokio::spawn(async move {
+            let mut buf = vec![0u8; 65_535];
+            loop {
+                let (len, src_addr) = match reader_sock.recv_from(&mut buf).await {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                let src_target = crate::types::socket_addr_to_target(src_addr);
+                let response_packet = match super::wire::build_response_packet(
+                    reader_key.version,
+                    &src_target,
+                    reader_key.local_ip,
+                    reader_key.local_port,
+                    &buf[..len],
+                ) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                };
+                metrics::add_udp_datagram(
+                    "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                );
+                metrics::add_bytes(
+                    "udp",
+                    "upstream_to_client",
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                    len,
+                );
+                if writer.write_packet(&response_packet).await.is_err() {
+                    break;
+                }
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    super::ip_family_from_version(reader_key.version),
+                    "accepted",
+                );
+                // Update last_seen on the flow.
+                let mut guard = direct_flows.lock().await;
+                if let Some(flow) = guard.get_mut(&reader_key) {
+                    if flow.id == flow_id {
+                        flow.last_seen = Instant::now();
+                    }
+                }
+            }
+        });
+
+        self.inner.direct_flows.lock().await.insert(
+            key,
+            DirectUdpFlowState {
+                id: flow_id,
+                socket: sock,
+                _reader: reader,
+                created_at: now,
+                last_seen: now,
+            },
+        );
+
+        metrics::add_udp_datagram(
+            "client_to_upstream",
+            metrics::BYPASS_GROUP_LABEL,
+            metrics::BYPASS_UPLINK_LABEL,
+        );
+        metrics::add_bytes(
+            "udp",
+            "client_to_upstream",
+            metrics::BYPASS_GROUP_LABEL,
+            metrics::BYPASS_UPLINK_LABEL,
+            packet.payload.len(),
+        );
+        metrics::record_tun_flow_created(metrics::BYPASS_GROUP_LABEL, metrics::BYPASS_UPLINK_LABEL);
+        info!(
+            flow_id,
+            target = %remote_target,
+            "created direct TUN UDP flow"
+        );
         Ok(())
     }
 }

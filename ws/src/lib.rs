@@ -100,8 +100,11 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
 
     // TUN dispatches through the policy routing table, falling back to the
     // default group when no [[route]] is configured.
-    let tun_routing =
-        crate::tun::TunRouting::new(registry.clone(), config.routing_table.clone());
+    let tun_routing = crate::tun::TunRouting::new(
+        registry.clone(),
+        config.routing_table.clone(),
+        config.direct_fwmark,
+    );
 
     if let Some(tun) = config.tun.clone() {
         crate::tun::spawn_tun_loop(tun, tun_routing)

@@ -3,7 +3,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
 
+use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use crate::transport::UdpWsTransport;
 use crate::tun_wire::IpVersion;
@@ -33,3 +35,15 @@ pub(super) struct UdpFlowState {
 }
 
 pub(super) type FlowTable = Arc<Mutex<HashMap<UdpFlowKey, UdpFlowState>>>;
+
+/// State for a direct (bypass) UDP flow: a plain socket that forwards
+/// datagrams to the destination without any tunnel framing.
+pub(super) struct DirectUdpFlowState {
+    pub(super) id: u64,
+    pub(super) socket: Arc<UdpSocket>,
+    pub(super) _reader: JoinHandle<()>,
+    pub(super) created_at: Instant,
+    pub(super) last_seen: Instant,
+}
+
+pub(super) type DirectFlowTable = Arc<Mutex<HashMap<UdpFlowKey, DirectUdpFlowState>>>;

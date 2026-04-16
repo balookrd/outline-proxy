@@ -40,3 +40,4 @@ pub(super) use types::{
     AckEffect, BufferedClientSegment, ClientSegmentView, SequenceRange, ServerBacklogPressure,
     ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus,
 };
+pub(crate) use types::TunTcpUpstreamWriter;

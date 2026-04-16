@@ -250,6 +250,27 @@ impl TunUdpEngine {
         for flow in expired {
             close_udp_flow(flow, "idle_timeout").await;
         }
+
+        // Clean up idle direct (bypass) flows.
+        let mut direct = self.inner.direct_flows.lock().await;
+        let expired_keys: Vec<super::UdpFlowKey> = direct
+            .iter()
+            .filter_map(|(key, flow)| {
+                (now.saturating_duration_since(flow.last_seen) >= self.inner.idle_timeout)
+                    .then(|| key.clone())
+            })
+            .collect();
+        for key in expired_keys {
+            if let Some(flow) = direct.remove(&key) {
+                flow._reader.abort();
+                metrics::record_tun_flow_closed(
+                    metrics::BYPASS_GROUP_LABEL,
+                    metrics::BYPASS_UPLINK_LABEL,
+                    "idle_timeout",
+                    now.saturating_duration_since(flow.created_at),
+                );
+            }
+        }
     }
 
     pub(super) async fn recreate_flow_after_send_error(
