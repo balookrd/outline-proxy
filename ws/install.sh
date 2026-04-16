@@ -26,8 +26,8 @@ RAW_SERVICE_URL="${RAW_SERVICE_URL:-${RAW_BASE}/systemd/outline-ws-rust.service}
 RAW_TEMPLATE_URL="${RAW_TEMPLATE_URL:-${RAW_BASE}/systemd/outline-ws-rust@.service}"
 
 # Откуда качать config-файлы
-RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.yaml}"
-RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.yaml}"
+RAW_CONFIG_URL="${RAW_CONFIG_URL:-${RAW_BASE}/config.toml}"
+RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.toml}"
 
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
@@ -279,22 +279,22 @@ install_unit_files() {
 }
 
 download_default_config_if_missing() {
-  if [[ ! -f "${CONFIG_DIR}/config.yaml" ]]; then
+  if [[ ! -f "${CONFIG_DIR}/config.toml" ]]; then
     log "Скачивание default config"
-    curl -fsSL -o "${CONFIG_DIR}/config.yaml" "$RAW_CONFIG_URL"
-    chmod 600 "${CONFIG_DIR}/config.yaml"
+    curl -fsSL -o "${CONFIG_DIR}/config.toml" "$RAW_CONFIG_URL"
+    chmod 600 "${CONFIG_DIR}/config.toml"
   else
-    log "config.yaml уже существует — не перезаписываем"
+    log "config.toml уже существует — не перезаписываем"
   fi
 }
 
 download_instance_example_if_missing() {
   mkdir -p "${CONFIG_DIR}/instances"
 
-  if [[ ! -f "${CONFIG_DIR}/instances/example.yaml" ]]; then
+  if [[ ! -f "${CONFIG_DIR}/instances/example.toml" ]]; then
     log "Скачивание example instance config"
-    curl -fsSL -o "${CONFIG_DIR}/instances/example.yaml" "$RAW_INSTANCE_CONFIG_URL"
-    chmod 600 "${CONFIG_DIR}/instances/example.yaml"
+    curl -fsSL -o "${CONFIG_DIR}/instances/example.toml" "$RAW_INSTANCE_CONFIG_URL"
+    chmod 600 "${CONFIG_DIR}/instances/example.toml"
   else
     log "instance example уже существует — не перезаписываем"
   fi
@@ -447,8 +447,8 @@ main() {
   log "Готово"
   log "Обычный unit:   ${SYSTEMD_DIR}/${SERVICE_NAME}"
   log "Шаблонный unit: ${SYSTEMD_DIR}/${TEMPLATE_NAME}"
-  log "Обычный конфиг: ${CONFIG_DIR}/config.yaml"
-  log "Инстансы:       ${CONFIG_DIR}/instances/NAME.yaml"
+  log "Обычный конфиг: ${CONFIG_DIR}/config.toml"
+  log "Инстансы:       ${CONFIG_DIR}/instances/NAME.toml"
   log "Автозапуск после установки не выполняется"
   log "Запуск обычного сервиса: systemctl enable --now ${SERVICE_NAME}"
   log "Запуск инстанса:        systemctl enable --now outline-ws-rust@NAME.service"
