@@ -37,9 +37,6 @@ pub(crate) struct ConfigFile {
     pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,
     /// Policy routes mapping CIDR prefixes to groups or `direct`/`drop`.
     pub(super) route: Option<Vec<RouteSection>>,
-    /// Legacy `[bypass]` section — retained only to surface a migration error
-    /// instead of silently ignoring the table.
-    pub(super) bypass: Option<toml::Value>,
     /// Override the path where active-uplink state is persisted.
     /// Defaults to the config file path with extension replaced by
     /// `.state.toml` (e.g. `config.toml` → `config.state.toml`).

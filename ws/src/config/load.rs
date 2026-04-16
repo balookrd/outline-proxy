@@ -47,13 +47,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let listen = args.listen.or_else(|| socks5.and_then(|s| s.listen));
     let socks5_auth = load_socks5_auth_config(socks5, args)?;
 
-    if file.as_ref().and_then(|f| f.bypass.as_ref()).is_some() {
-        bail!(
-            "[bypass] was removed: migrate to a [[route]] with via = \"direct\" \
-             (or via = \"drop\"). See config.toml / README for examples"
-        );
-    }
-
     let groups = load_groups(outline.as_ref(), file.as_ref(), args)?;
     let routing = load_routing_table(file.as_ref(), &groups)?;
 

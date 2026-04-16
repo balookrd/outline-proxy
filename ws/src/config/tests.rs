@@ -599,33 +599,6 @@ async fn load_config_new_shape_groups_and_routes() {
 }
 
 #[tokio::test]
-async fn load_config_rejects_legacy_bypass_section() {
-    let path = std::env::temp_dir().join("outline-ws-rust-legacy-bypass.toml");
-    std::fs::write(
-        &path,
-        r#"
-        [socks5]
-        listen = "127.0.0.1:1080"
-
-        [bypass]
-        prefixes = ["10.0.0.0/8"]
-
-        tcp_ws_url = "wss://main.example.com/secret/tcp"
-        method = "chacha20-ietf-poly1305"
-        password = "Secret0"
-        "#,
-    )
-    .unwrap();
-
-    let args = super::Args::parse_from(["test"]);
-    let err = super::load_config(&path, &args).await.unwrap_err();
-    let msg = format!("{err:#}");
-    assert!(msg.contains("[bypass] was removed"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
-}
-
-#[tokio::test]
 async fn load_config_rejects_unknown_group_in_route() {
     let path = std::env::temp_dir().join("outline-ws-rust-route-unknown-group.toml");
     std::fs::write(
