@@ -4739,14 +4739,14 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",job=~\"$job\"},group)",
+        "definition": "label_values(outline_ws_rust_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
         "includeAll": true,
         "label": "Group",
         "name": "group",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",job=~\"$job\"},group)",
+          "query": "label_values(outline_ws_rust_bytes_total{instance=~\"$instance\",job=~\"$job\"},group)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
