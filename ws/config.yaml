@@ -1,0 +1,170 @@
+socks5:
+  # Optional. If omitted, the SOCKS5 listener is disabled.
+  listen: "[::]:1080"
+  # Optional local SOCKS5 auth for clients.
+  #
+  # users:
+  #   - username: alice
+  #     password: secret1
+  #   - username: bob
+  #     password: secret2
+
+metrics:
+  listen: "[::1]:9090"
+
+# tun:
+#   # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
+#   # Linux example:
+#   # path: /dev/net/tun
+#   # name: tun0
+#   # macOS / BSD example:
+#   # path: /dev/tun0
+#   # mtu: 1500
+#   # max_flows: 4096
+#   # idle_timeout_secs: 300
+#
+#   tcp:
+#     connect_timeout_secs: 10
+#     handshake_timeout_secs: 15
+#     half_close_timeout_secs: 60
+#     max_pending_server_bytes: 4194304
+#     backlog_abort_grace_secs: 3
+#     backlog_hard_limit_multiplier: 2
+#     backlog_no_progress_abort_secs: 8
+#     max_buffered_client_segments: 4096
+#     max_buffered_client_bytes: 262144
+#     max_retransmits: 12
+
+# Direct (bypass) routing
+# SO_MARK applied to sockets used by `via: direct` routes (both TCP connect
+# and UDP bind). Prevents direct traffic from being routed back into the TUN
+# device on hosts where all traffic is captured. Linux only; omit on other
+# platforms. Requires CAP_NET_ADMIN.
+# direct_fwmark: 100
+
+# Probe template
+# Top-level probe is a template: each uplink_group entry inherits these
+# defaults, and uplink_group[].probe overrides individual fields per group.
+probe:
+  interval_secs: 30
+  timeout_secs: 10
+  max_concurrent: 4
+  max_dials: 2
+  ws:
+    enabled: true
+  http:
+    url: "http://example.com/"
+  dns:
+    server: "1.1.1.1"
+    port: 53
+    name: "example.com"
+
+# Uplink groups
+# Each group is an isolated UplinkManager with its own probe loop, standby
+# pool, sticky-routes store, active-uplink state, and load-balancing policy.
+# Uplinks below are assigned to a group via `group: ...`.
+uplink_group:
+  - name: main
+    mode: active_active       # active_active or active_passive
+    routing_scope: per_flow   # per_flow | per_uplink | global
+    warm_standby_tcp: 1
+    warm_standby_udp: 1
+    sticky_ttl_secs: 300
+    hysteresis_ms: 50
+    failure_cooldown_secs: 10
+    tcp_chunk0_failover_timeout_secs: 10
+    rtt_ewma_alpha: 0.3
+    failure_penalty_ms: 500
+    failure_penalty_max_ms: 30000
+    failure_penalty_halflife_secs: 60
+
+  # Optional second group — useful for a fallback path with different LB mode.
+  # - name: backup
+  #   mode: active_passive
+  #   routing_scope: global
+  #
+  #   # Per-group probe override (merged with the top-level template).
+  #   probe:
+  #     interval_secs: 60
+
+# Uplinks
+# Each uplinks entry must set `group: ...` matching an uplink_group[].name above.
+uplinks:
+  - name: primary
+    group: main
+    transport: websocket
+    tcp_ws_url: "wss://example.com/SECRET/tcp"
+    weight: 1.0
+    # requested mode; runtime fallback order is h3 -> h2 -> http1
+    tcp_ws_mode: h3
+    # Linux only, requires CAP_NET_ADMIN if set
+    # fwmark: 100
+    # Prefer IPv6 addresses first for this uplink
+    # ipv6_first: true
+    udp_ws_url: "wss://example.com/SECRET/udp"
+    udp_ws_mode: h3
+    method: chacha20-ietf-poly1305
+    password: Secret0
+    # for ss2022 methods use a base64 PSK, for example:
+    # method: 2022-blake3-aes-128-gcm
+    # password: AQIDBAUGBwgJCgsMDQ4PEA==
+    # method: 2022-blake3-chacha20-poly1305
+    # password: AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
+
+  - name: backup
+    group: main
+    transport: websocket
+    tcp_ws_url: "wss://backup.example.com/SECRET/tcp"
+    weight: 0.8
+    # requested mode; runtime fallback order is h2 -> http1
+    tcp_ws_mode: h2
+    udp_ws_url: "wss://backup.example.com/SECRET/udp"
+    udp_ws_mode: h2
+    method: chacha20-ietf-poly1305
+    password: Secret0
+
+  # Direct Shadowsocks example (no WebSocket wrapper):
+  # - name: direct-ss
+  #   group: main
+  #   transport: shadowsocks
+  #   tcp_addr: "ss.example.com:8388"
+  #   udp_addr: "ss.example.com:8388"
+  #   method: chacha20-ietf-poly1305
+  #   password: Secret0
+
+# Policy routing
+# First-match-wins: each route entry matches destination IPs against its CIDR
+# list; the rule's `via` target picks what to do. One rule must carry
+# `default: true` and applies when nothing else matches.
+#
+# `via` accepts either a declared group name or the reserved `direct`
+# (forward outside any uplink) / `drop` (SOCKS5 REP=0x02 for TCP, drop UDP).
+#
+# Optional fallback (mutually exclusive): `fallback_via: <group>`,
+# `fallback_direct: true`, `fallback_drop: true`. Used when the primary
+# group has zero healthy uplinks at dispatch time.
+#
+# Prefixes may be inline via `prefixes: [...]` and/or loaded from a file
+# (one CIDR per line, `#` comments). The file is hot-reloaded on mtime
+# change (poll interval: file_poll_secs, default 60).
+
+route:
+  # RFC1918 / ULA / loopback — never through the tunnel.
+  - prefixes:
+      - "10.0.0.0/8"
+      - "172.16.0.0/12"
+      - "192.168.0.0/16"
+      - "fc00::/7"
+      - "127.0.0.0/8"
+      - "::1/128"
+    via: direct
+
+  # Everything else goes through the main group.
+  - default: true
+    via: main
+
+  # Example with a file-backed CIDR list and fallback:
+  # - file: /etc/outline-ws-rust/geoip-cn.list
+  #   file_poll_secs: 60
+  #   via: backup
+  #   fallback_via: main
