@@ -24,7 +24,8 @@ type WsStream = SplitStream<AnyWsStream>;
 enum TcpWriteTransport {
     Websocket {
         data_tx: Option<mpsc::Sender<Message>>,
-        writer_task: Option<AbortOnDrop>,
+        /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
+        _writer_task: Option<AbortOnDrop>,
     },
     Socket {
         writer: OwnedWriteHalf,
@@ -194,7 +195,7 @@ impl TcpShadowsocksWriter {
             Self {
                 transport: TcpWriteTransport::Websocket {
                     data_tx: Some(data_tx),
-                    writer_task: Some(AbortOnDrop::new(writer_task)),
+                    _writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
                 cipher,
                 key: derive_subkey(cipher, master_key, &salt)?,
@@ -331,11 +332,23 @@ impl TcpShadowsocksWriter {
 
     pub async fn close(&mut self) -> Result<()> {
         match &mut self.transport {
-            TcpWriteTransport::Websocket { data_tx, writer_task } => {
+            TcpWriteTransport::Websocket { data_tx, .. } => {
+                // Drop the sender — the writer task sees None from data_rx,
+                // sends a WebSocket Close frame, and exits on its own.
+                //
+                // We intentionally do NOT take and await the writer task here.
+                // The previous implementation called `writer_task.take()` +
+                // `task.finish().await`, which moved the real JoinHandle out of
+                // its AbortOnDrop wrapper.  If this future was then cancelled
+                // (e.g. by a probe timeout), the handle was *detached* instead
+                // of aborted — leaking the writer task, its SplitSink, the
+                // underlying H2 connection, and the TCP socket.
+                //
+                // Leaving the AbortOnDrop in place guarantees that when this
+                // TcpShadowsocksWriter is dropped, the writer task is aborted
+                // regardless of how the caller exits (normal return, error, or
+                // cancellation).
                 drop(data_tx.take());
-                if let Some(task) = writer_task.take() {
-                    task.finish().await;
-                }
             },
             TcpWriteTransport::Socket { writer } => {
                 writer.shutdown().await.context("socket shutdown failed")?;

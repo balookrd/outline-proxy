@@ -18,11 +18,6 @@ impl AbortOnDrop {
     pub(super) fn new(handle: JoinHandle<()>) -> Self {
         Self(handle)
     }
-
-    pub(super) async fn finish(mut self) {
-        let handle = std::mem::replace(&mut self.0, tokio::spawn(async {}));
-        let _ = handle.await;
-    }
 }
 
 pub(crate) struct TransportConnectGuard {
