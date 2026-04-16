@@ -31,6 +31,11 @@ pub struct AppConfig {
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
+    /// SO_MARK applied to sockets used by `via = "direct"` routes (both TCP
+    /// connect and UDP bind). Prevents direct traffic from being routed
+    /// back into the TUN device on hosts where all traffic is captured.
+    /// Linux only; ignored on other platforms.
+    pub direct_fwmark: Option<u32>,
 }
 
 /// New: a named collection of uplinks sharing a single LB + probe configuration.

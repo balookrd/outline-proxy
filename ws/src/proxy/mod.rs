@@ -17,7 +17,9 @@ use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
 /// Resolved dispatch plan for a single connection.
 pub(super) enum Dispatch {
     /// Route outside any uplink (equivalent to the legacy bypass direct path).
-    Direct,
+    /// `fwmark` is applied to the outbound socket (Linux SO_MARK) so direct
+    /// traffic does not loop back through TUN.
+    Direct { fwmark: Option<u32> },
     /// Policy-blocked (SOCKS5 REP=0x02 for TCP; silent drop for UDP).
     Drop,
     /// Dispatch via this group's uplink manager.
@@ -78,7 +80,7 @@ pub(super) async fn resolve_dispatch(
                 fallback: None,
             },
         };
-        return resolve_decision(registry, decision, transport).await;
+        return resolve_decision(registry, decision, transport, config.direct_fwmark).await;
     }
 
     Dispatch::Group {
@@ -91,20 +93,25 @@ async fn resolve_decision(
     registry: &UplinkRegistry,
     decision: RouteDecision,
     transport: TransportKind,
+    direct_fwmark: Option<u32>,
 ) -> Dispatch {
-    let primary = resolve_single_target(registry, &decision.primary);
+    let primary = resolve_single_target(registry, &decision.primary, direct_fwmark);
     if matches!(primary, Dispatch::Group { ref manager, .. } if !manager.has_any_healthy(transport).await)
         && let Some(fb) = decision.fallback
     {
         debug!(primary = ?decision.primary, fallback = ?fb, "primary target unhealthy, using fallback");
-        return resolve_single_target(registry, &fb);
+        return resolve_single_target(registry, &fb, direct_fwmark);
     }
     primary
 }
 
-fn resolve_single_target(registry: &UplinkRegistry, target: &RouteTarget) -> Dispatch {
+fn resolve_single_target(
+    registry: &UplinkRegistry,
+    target: &RouteTarget,
+    direct_fwmark: Option<u32>,
+) -> Dispatch {
     match target {
-        RouteTarget::Direct => Dispatch::Direct,
+        RouteTarget::Direct => Dispatch::Direct { fwmark: direct_fwmark },
         RouteTarget::Drop => Dispatch::Drop,
         RouteTarget::Group(name) => {
             let manager = registry
