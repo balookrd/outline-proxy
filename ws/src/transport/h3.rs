@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -153,13 +153,19 @@ struct SharedH3Connection {
     // (H3_NO_ERROR) prematurely. The h3 layer treats the last SendRequest
     // being dropped as a signal that no more requests will be made.
     send_request: Mutex<H3SendRequestHandle>,
+    /// Soft-close flag: set to `true` by `open_websocket` on timeout so no
+    /// new streams are opened, but existing streams continue to work
+    /// undisturbed.  Using `connection.close()` was too aggressive — it kills
+    /// ALL active H3 streams on the shared connection, causing a cascade of
+    /// reconnects and rapid FD growth.
+    closed: AtomicBool,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
 }
 
 impl SharedH3Connection {
     fn is_open(&self) -> bool {
-        self.connection.close_reason().is_none()
+        !self.closed.load(Ordering::Relaxed) && self.connection.close_reason().is_none()
     }
 
     async fn open_websocket(
@@ -168,7 +174,7 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
     ) -> Result<H3WsStream> {
-        if self.connection.close_reason().is_some() {
+        if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
 
@@ -189,7 +195,7 @@ impl SharedH3Connection {
         })
         .await
         .map_err(|_| {
-            self.connection.close(0x100u32.into(), b"open_websocket timeout");
+            self.closed.store(true, Ordering::Relaxed);
             anyhow!(
                 "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -199,7 +205,7 @@ impl SharedH3Connection {
         let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
             .await
             .map_err(|_| {
-                self.connection.close(0x100u32.into(), b"open_websocket timeout");
+                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -514,6 +520,7 @@ async fn connect_h3_connection(
         endpoint,
         connection: connection_handle.clone(),
         send_request: Mutex::new(send_request),
+        closed: AtomicBool::new(false),
         _connection_guard: H3ConnectionGuard(connection_handle),
         _driver_task: driver_task,
     })
