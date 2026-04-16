@@ -465,3 +465,100 @@ async fn routing_table_version_starts_at_zero() {
     let table = RoutingTable::compile(&cfg).await.unwrap();
     assert_eq!(table.version(), 0);
 }
+
+// ── 7. Inverted rules ────────────────────────────────────────────────────────
+
+fn inverted_rule(
+    prefixes: &[&str],
+    target: RouteTarget,
+    fallback: Option<RouteTarget>,
+) -> RouteRule {
+    RouteRule {
+        inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
+        file: None,
+        file_poll: Duration::from_secs(60),
+        target,
+        fallback,
+        invert: true,
+    }
+}
+
+#[tokio::test]
+async fn inverted_rule_routes_everything_not_in_set_through_primary() {
+    // Policy: "tunnel via `main`, but send 10.0.0.0/8 and 192.168.0.0/16
+    // directly." Expressed with an inverted rule: only addresses NOT in
+    // the private ranges match the tunnel rule; private ranges fall
+    // through to the default (Direct).
+    let cfg = RoutingTableConfig {
+        rules: vec![inverted_rule(
+            &["10.0.0.0/8", "192.168.0.0/16"],
+            RouteTarget::Group("main".into()),
+            None,
+        )],
+        default_target: RouteTarget::Direct,
+        default_fallback: None,
+    };
+    let table = RoutingTable::compile(&cfg).await.unwrap();
+
+    // Public IP: not in private ranges → inverted rule matches → tunnel.
+    assert_eq!(
+        table.resolve(&v4(8, 8, 8, 8)).await.primary,
+        RouteTarget::Group("main".into())
+    );
+    // Private IP: in the set → inverted rule does NOT match → default (Direct).
+    assert_eq!(
+        table.resolve(&v4(10, 1, 2, 3)).await.primary,
+        RouteTarget::Direct
+    );
+    assert_eq!(
+        table.resolve(&v4(192, 168, 1, 1)).await.primary,
+        RouteTarget::Direct
+    );
+}
+
+// ── 8. UDP route cache invalidation ──────────────────────────────────────────
+
+/// Mirrors the cache logic in `proxy::udp::resolve_udp_packet_route`:
+/// capture the routing-table version BEFORE resolving so a hot-reload that
+/// races with resolution invalidates the cached entry on the next lookup.
+#[tokio::test]
+async fn route_cache_invalidates_after_version_bump() {
+    use std::collections::HashMap;
+
+    let cfg = RoutingTableConfig {
+        rules: vec![route_rule(&["1.0.0.0/8"], RouteTarget::Direct, None)],
+        default_target: RouteTarget::Group("main".into()),
+        default_fallback: None,
+    };
+    let table = RoutingTable::compile(&cfg).await.unwrap();
+
+    // Cache: TargetAddr → (decision, version).
+    let mut cache: HashMap<TargetAddr, (RouteTarget, u64)> = HashMap::new();
+    let target = v4(1, 2, 3, 4);
+
+    // First resolve: cache miss → resolve & insert with pre-read version.
+    let (decision, version) = table.resolve_versioned(&target).await;
+    assert_eq!(decision.primary, RouteTarget::Direct);
+    assert_eq!(version, 0);
+    cache.insert(target.clone(), (decision.primary.clone(), version));
+
+    // Next lookup with unchanged version: cache hit.
+    let current = table.version();
+    let hit = cache.get(&target).map(|(_, v)| *v == current).unwrap_or(false);
+    assert!(hit, "expected cache hit when version unchanged");
+
+    // Simulate watcher reload: bump version.
+    table.version.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+
+    // Next lookup: cache miss (version mismatch) → re-resolve.
+    let current = table.version();
+    let hit = cache.get(&target).map(|(_, v)| *v == current).unwrap_or(false);
+    assert!(!hit, "cache must invalidate after version bump");
+
+    // Re-resolve and re-cache under the new version.
+    let (new_decision, new_version) = table.resolve_versioned(&target).await;
+    assert_eq!(new_version, 1);
+    cache.insert(target.clone(), (new_decision.primary, new_version));
+    let hit_again = cache.get(&target).map(|(_, v)| *v == current).unwrap_or(false);
+    assert!(hit_again, "re-resolved entry should be a hit at current version");
+}

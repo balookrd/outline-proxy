@@ -440,8 +440,25 @@ fn load_groups(
     let sections = group_sections.expect("checked above");
     let probe_template = outline.and_then(|o| o.probe.as_ref()).cloned();
 
-    // Validate group names.
+    // Each group becomes a distinct `group` label on every uplink-scoped
+    // Prometheus metric; unbounded groups would blow up series cardinality
+    // (and with it, scrape memory / disk). Cap well above any realistic
+    // deployment (10s of groups at most) but below where cardinality harms.
+    const MAX_UPLINK_GROUPS: usize = 64;
+    if sections.len() > MAX_UPLINK_GROUPS {
+        bail!(
+            "too many [[uplink_group]] entries ({}); maximum is {MAX_UPLINK_GROUPS} \
+             to bound metric label cardinality",
+            sections.len()
+        );
+    }
+
+    // Validate group names. `name_to_index` gives O(1) duplicate detection
+    // here and O(1) lookups further down (per-uplink `group` → index),
+    // avoiding what would otherwise be a quadratic scan over uplinks×groups.
     let mut names: Vec<String> = Vec::with_capacity(sections.len());
+    let mut name_to_index: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(sections.len());
     for (index, section) in sections.iter().enumerate() {
         let name = section
             .name
@@ -453,7 +470,7 @@ fn load_groups(
         if name.eq_ignore_ascii_case(DIRECT_TARGET) || name.eq_ignore_ascii_case(DROP_TARGET) {
             bail!("[[uplink_group]].name = \"{name}\" is reserved; pick another name");
         }
-        if names.iter().any(|n| n == &name) {
+        if name_to_index.insert(name.clone(), index).is_some() {
             bail!("duplicate [[uplink_group]] name: {name}");
         }
         names.push(name);
@@ -494,7 +511,7 @@ fn load_groups(
                 index + 1
             )
         })?;
-        let group_index = names.iter().position(|n| n == group_name).ok_or_else(|| {
+        let group_index = *name_to_index.get(group_name.as_str()).ok_or_else(|| {
             anyhow!(
                 "[[uplinks]] entry {} references unknown group \"{group_name}\"",
                 index + 1
@@ -597,8 +614,16 @@ fn load_routing_table(
     let Some(route_sections) = file.and_then(|f| f.route.as_ref()) else {
         return Ok(None);
     };
+    // An explicit but empty `[[route]]` array is almost certainly a config
+    // mistake (e.g. `route = []` in YAML, or all entries commented out) —
+    // silently dropping it would leave the proxy routing everything through
+    // the default group with no visible diagnostic. Fail loudly instead.
     if route_sections.is_empty() {
-        return Ok(None);
+        bail!(
+            "`[[route]]` section is present but empty; remove it entirely to \
+             disable policy routing, or add at least one rule (including a \
+             `default = true` entry)"
+        );
     }
 
     let group_names: Vec<&str> = groups.iter().map(|g| g.name.as_str()).collect();

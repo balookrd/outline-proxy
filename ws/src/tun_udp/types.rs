@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::transport::UdpWsTransport;
@@ -20,7 +20,6 @@ pub(super) struct UdpFlowKey {
     pub(super) remote_port: u16,
 }
 
-#[derive(Clone)]
 pub(super) struct UdpFlowState {
     pub(super) id: u64,
     pub(super) transport: Arc<UdpWsTransport>,
@@ -34,7 +33,13 @@ pub(super) struct UdpFlowState {
     pub(super) last_seen: Instant,
 }
 
-pub(super) type FlowTable = Arc<Mutex<HashMap<UdpFlowKey, UdpFlowState>>>;
+/// Flow map: `RwLock` on the map itself, `Arc<Mutex<_>>` per flow.
+///
+/// Hot path (per-packet) takes a short read-lock to clone the `Arc`, then
+/// works on the per-flow `Mutex` without blocking other flows. Mirrors the
+/// architecture in [`crate::tun_tcp`]. Rare map-level mutations (flow
+/// create / remove / idle eviction) take the write-lock.
+pub(super) type FlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<UdpFlowState>>>>>;
 
 /// State for a direct-routed UDP flow: a plain socket that forwards
 /// datagrams to the destination without any tunnel framing.
@@ -46,4 +51,5 @@ pub(super) struct DirectUdpFlowState {
     pub(super) last_seen: Instant,
 }
 
-pub(super) type DirectFlowTable = Arc<Mutex<HashMap<UdpFlowKey, DirectUdpFlowState>>>;
+pub(super) type DirectFlowTable =
+    Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<DirectUdpFlowState>>>>>;
