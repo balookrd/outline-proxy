@@ -11,7 +11,7 @@ Environment=NO_COLOR=1
 Environment=MIMALLOC_ARENA_RESERVE=262144
 # Persist active-uplink selection to the per-instance writable state directory.
 Environment=STATE_PATH=/var/lib/outline-ws-rust/%i/state.toml
-ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/instances/%i.toml
+ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/instances/%i.yaml
 Restart=on-failure
 RestartSec=3s
 
