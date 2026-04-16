@@ -37,6 +37,13 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
+# ── Direct (bypass) routing ──────────────────────────────────────────────────
+# SO_MARK applied to sockets used by `via = "direct"` routes (both TCP connect
+# and UDP bind). Prevents direct traffic from being routed back into the TUN
+# device on hosts where all traffic is captured. Linux only; omit on other
+# platforms. Requires CAP_NET_ADMIN.
+# direct_fwmark = 100
+
 # ── Probe template ──────────────────────────────────────────────────────────
 # Top-level [probe] is a template: each [[uplink_group]] inherits these
 # defaults, and [uplink_group.probe] overrides individual fields per group.

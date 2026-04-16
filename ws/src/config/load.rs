@@ -65,6 +65,8 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
     }
 
+    let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
+
     Ok(AppConfig {
         listen,
         socks5_auth,
@@ -76,6 +78,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         h2,
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
+        direct_fwmark,
     })
 }
 

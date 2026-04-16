@@ -33,10 +33,10 @@ mod ws_stream;
 
 use dns::resolve_server_addr;
 use h2_shared::connect_websocket_h2;
-use socket::connect_tcp_socket;
 use ws_stream::H1WsStream;
 
 pub use h2_io::init_h2_window_sizes;
+pub(crate) use socket::{bind_udp_socket, connect_tcp_socket};
 pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
@@ -44,7 +44,7 @@ pub use ws_stream::AnyWsStream;
 
 pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
-pub(crate) use socket::{bind_addr_for, bind_udp_socket};
+pub(crate) use socket::bind_addr_for;
 #[cfg(feature = "h3")]
 pub(crate) use url_util::{format_authority, websocket_path};
 

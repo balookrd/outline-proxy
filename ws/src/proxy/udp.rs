@@ -275,12 +275,15 @@ pub(super) async fn handle_udp_associate(
         let udp_socket = Arc::new(udp_socket);
         let relay_addr = udp_socket.local_addr().context("failed to read UDP relay address")?;
 
-        // Optional socket for direct UDP packets.
+        // Optional socket for direct UDP packets with fwmark to prevent
+        // loopback through TUN when all traffic is captured.
         let bypass_socket = if need_bypass_socket(&config) {
-            let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
-                .await
-                .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
-            Some(Arc::new(sock))
+            let std_sock = crate::transport::bind_udp_socket(
+                SocketAddr::new(bind_ip, 0),
+                config.direct_fwmark,
+            )
+            .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
+            Some(Arc::new(UdpSocket::from_std(std_sock)?))
         } else {
             None
         };
@@ -566,10 +569,12 @@ pub(super) async fn handle_udp_in_tcp(
     let result = async {
         let bind_ip = client.local_addr()?.ip();
         let bypass_socket = if need_bypass_socket(&config) {
-            let sock = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
-                .await
-                .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
-            Some(Arc::new(sock))
+            let std_sock = crate::transport::bind_udp_socket(
+                SocketAddr::new(bind_ip, 0),
+                config.direct_fwmark,
+            )
+            .with_context(|| format!("failed to bind direct UDP socket on {}", bind_ip))?;
+            Some(Arc::new(UdpSocket::from_std(std_sock)?))
         } else {
             None
         };

@@ -156,9 +156,9 @@ pub(super) async fn handle_tcp_connect(
     target: TargetAddr,
 ) -> Result<()> {
     let uplinks = match dispatch {
-        Dispatch::Direct => {
+        Dispatch::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
-            return handle_tcp_direct(client, target).await;
+            return handle_tcp_direct(client, target, fwmark).await;
         },
         Dispatch::Drop => {
             info!(target = %target, "TCP route: policy drop");
@@ -685,7 +685,11 @@ async fn handle_tcp_drop(mut client: TcpStream, target: &TargetAddr) -> Result<(
     Ok(())
 }
 
-async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<()> {
+async fn handle_tcp_direct(
+    mut client: TcpStream,
+    target: TargetAddr,
+    fwmark: Option<u32>,
+) -> Result<()> {
     let addr = match &target {
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
@@ -701,7 +705,7 @@ async fn handle_tcp_direct(mut client: TcpStream, target: TargetAddr) -> Result<
         .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
-    let upstream = TcpStream::connect(addr)
+    let upstream = crate::transport::connect_tcp_socket(addr, fwmark)
         .await
         .with_context(|| format!("direct TCP connect to {target} failed"))?;
 
