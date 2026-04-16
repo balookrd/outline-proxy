@@ -93,7 +93,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "sum(rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\"}[5m])) / clamp_min(sum(rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\"}[5m])), 1)",
+          "expr": "sum(rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[5m])) / clamp_min(sum(rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[5m])), 1)",
           "legendFormat": "probe share",
           "refId": "A"
         }
@@ -160,7 +160,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "sum(rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\"}[1m])) * 8",
+          "expr": "sum(rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m])) * 8",
           "legendFormat": "probe bps",
           "refId": "A"
         }
@@ -294,7 +294,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "sum(increase(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\"}[$__range]))",
+          "expr": "sum(increase(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__range]))",
           "legendFormat": "probe runs",
           "refId": "A"
         }
@@ -348,7 +348,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, protocol, direction) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{protocol}} {{direction}}",
           "refId": "A"
         }
@@ -389,7 +389,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, probe, direction) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, probe, direction) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{probe}} {{direction}}",
           "refId": "A"
         }
@@ -430,7 +430,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, probe, direction) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, probe, direction) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])) * 8), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{probe}} {{direction}}",
           "refId": "A"
         }
@@ -525,7 +525,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink, result) (increase(outline_ws_rust_warm_standby_refill_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink, result) (increase(outline_ws_rust_warm_standby_refill_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{transport}} {{uplink}} {{result}}",
           "refId": "A"
         }
@@ -566,12 +566,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_selected_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_selected_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} selected {{transport}} {{uplink}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, transport, from_uplink, to_uplink) (increase(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, from_uplink, to_uplink) (increase(outline_ws_rust_uplink_failovers_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} failover {{transport}} {{from_uplink}} -> {{to_uplink}}",
           "refId": "B"
         }
@@ -612,12 +612,12 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_runtime_failures_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_runtime_failures_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} failure {{transport}} {{uplink}}",
           "refId": "A"
         },
         {
-          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_runtime_failures_suppressed_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink) (increase(outline_ws_rust_uplink_runtime_failures_suppressed_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} suppressed {{transport}} {{uplink}}",
           "refId": "B"
         }
@@ -658,7 +658,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink, cause) (increase(outline_ws_rust_uplink_runtime_failure_causes_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink, cause) (increase(outline_ws_rust_uplink_runtime_failure_causes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{transport}} {{uplink}} {{cause}}",
           "refId": "A"
         }
@@ -699,7 +699,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink, signature) (increase(outline_ws_rust_uplink_runtime_failure_signatures_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink, signature) (increase(outline_ws_rust_uplink_runtime_failure_signatures_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{transport}} {{uplink}} {{signature}}",
           "refId": "A"
         }
@@ -740,7 +740,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, transport, uplink, detail) (increase(outline_ws_rust_uplink_runtime_failure_other_details_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, transport, uplink, detail) (increase(outline_ws_rust_uplink_runtime_failure_other_details_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{transport}} {{uplink}} {{detail}}",
           "refId": "A"
         }
@@ -781,7 +781,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, probe, result) (increase(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, probe, result) (increase(outline_ws_rust_probe_runs_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} {{probe}} {{result}}",
           "refId": "A"
         }
@@ -822,7 +822,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance, uplink, transport, reason, result) (increase(outline_ws_rust_probe_wakeups_total{job=~\"$job\",instance=~\"$instance\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance, uplink, transport, reason, result) (increase(outline_ws_rust_probe_wakeups_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[1m]))), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} {{uplink}} {{transport}} {{reason}} {{result}}",
           "refId": "A"
         }
@@ -863,7 +863,7 @@
       "pluginVersion": "12.3.2",
       "targets": [
         {
-          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\"}[$__rate_interval])), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
+          "expr": "label_replace((sum by (instance) (rate(outline_ws_rust_probe_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(outline_ws_rust_bytes_total{job=~\"$job\",instance=~\"$instance\",group=~\"$group\"}[$__rate_interval])), 1)), \"instance_short\", \"$1\", \"instance\", \"^([^.]+).*\")",
           "legendFormat": "{{instance_short}} probe share",
           "refId": "A"
         }
@@ -960,14 +960,14 @@
           "type": "prometheus",
           "uid": "${DS_PROMETHEUS}"
         },
-        "definition": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",job=~\"$job\"},group)",
+        "definition": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",group=~\"$group\",job=~\"$job\"},group)",
         "includeAll": true,
         "label": "Group",
         "name": "group",
         "options": [],
         "query": {
           "qryType": 1,
-          "query": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",job=~\"$job\"},group)",
+          "query": "label_values(outline_ws_rust_uplink_health{instance=~\"$instance\",group=~\"$group\",job=~\"$job\"},group)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
