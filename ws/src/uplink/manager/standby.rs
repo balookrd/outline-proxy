@@ -456,6 +456,16 @@ impl UplinkManager {
 
             match ws {
                 Ok(ws) => {
+                    // H2/H3 connections are shared (one socket per server, N
+                    // streams per socket), so pooling them is cheap.  HTTP/1
+                    // fallback streams each own their own TCP socket: pooling
+                    // them defeats the whole point and accumulates FDs silently
+                    // whenever H2 is temporarily unavailable.  Bail out instead
+                    // so the caller can retry or let the connection drop.
+                    if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) {
+                        break;
+                    }
+
                     // Re-check actual pool size before pushing — validate_pool
                     // or keepalive_tcp_pool may have pushed entries back while
                     // we were dialling, so the pool could already be at capacity.
@@ -531,6 +541,20 @@ impl UplinkManager {
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
+            // Http1 connections each own their own TCP socket.  Even though
+            // `is_connection_alive()` always returns true for Http1, keeping
+            // them in the pool would accumulate one FD per pool slot instead of
+            // sharing the single underlying TCP socket the way H2/H3 do.  Evict
+            // any that slipped in before the refill_pool guard was added.
+            if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = ?transport,
+                    "evicting Http1 fallback connection from warm-standby pool"
+                );
+                drop(ws);
+                continue;
+            }
             // Check liveness with a non-blocking read (1 ms timeout).
             // Many servers do not respond to WebSocket ping frames, so we use
             // a quick peek instead: if the server has closed the connection we

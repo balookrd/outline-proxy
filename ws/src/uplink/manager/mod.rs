@@ -36,8 +36,22 @@ impl UplinkManager {
         // Prime initial health before any client traffic arrives so the first
         // strict active-uplink choice is deterministic and probe-driven rather
         // than depending on which session wins the startup race.
+        //
+        // Skip the blocking probe when a persisted active-uplink selection was
+        // restored from the state store — the selection is already deterministic
+        // and the background probe loop (spawn_probe_loops) will validate it
+        // shortly after startup.  Blocking here in that case only delays the
+        // point at which the listener starts accepting traffic.
         if self.inner.probe.enabled() {
-            self.probe_all().await;
+            let already_selected = if self.strict_global_active_uplink() {
+                self.global_active_uplink_index().await.is_some()
+            } else {
+                self.active_uplink_index_for_transport(TransportKind::Tcp).await.is_some()
+                    || self.active_uplink_index_for_transport(TransportKind::Udp).await.is_some()
+            };
+            if !already_selected {
+                self.probe_all().await;
+            }
         }
 
         if self.strict_global_active_uplink() {
