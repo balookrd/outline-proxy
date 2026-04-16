@@ -45,7 +45,7 @@ pub async fn handle_client(
 
     match request {
         SocksRequest::Connect(target) => {
-            let dispatch = resolve_dispatch(&config, &registry, Some(&target), TransportKind::Tcp).await;
+            let dispatch = resolve_dispatch(&config, &registry, &target, TransportKind::Tcp).await;
             tcp::handle_tcp_connect(client, dispatch, target).await
         },
         SocksRequest::UdpAssociate(client_hint) => {
@@ -60,26 +60,21 @@ pub async fn handle_client(
     }
 }
 
-/// Resolve a single TCP target (destination known up-front) to a
-/// [`Dispatch`]. Falls through the route's fallback one level when the
-/// primary group has no healthy uplinks.
+/// Resolve a TCP target (destination known up-front) to a [`Dispatch`].
+/// Falls through the route's fallback one level when the primary group has
+/// no healthy uplinks.
 ///
 /// When `[[route]]` is absent, every target dispatches to the first
-/// declared group.
+/// declared group. UDP per-packet routing is handled separately inside the
+/// UDP associate loop and does not go through this function.
 pub(super) async fn resolve_dispatch(
     config: &AppConfig,
     registry: &UplinkRegistry,
-    target: Option<&TargetAddr>,
+    target: &TargetAddr,
     transport: TransportKind,
 ) -> Dispatch {
     if let Some(table) = config.routing_table.as_ref() {
-        let decision = match target {
-            Some(t) => table.resolve(t).await,
-            None => RouteDecision {
-                primary: RouteTarget::Group(registry.default_group_name().to_string()),
-                fallback: None,
-            },
-        };
+        let decision = table.resolve(target).await;
         return resolve_decision(registry, decision, transport, config.direct_fwmark).await;
     }
 

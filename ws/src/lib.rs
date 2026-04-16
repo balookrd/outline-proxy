@@ -92,12 +92,17 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         // deployments the config lives in /etc/ (owned by root) while the
         // proxy runs as an unprivileged user — fail clearly instead of
         // silently dropping every write later.
-        let probe = tokio::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .await;
+        let probe = {
+            let mut opts = tokio::fs::OpenOptions::new();
+            opts.write(true).create(true).truncate(false);
+            // Restrict newly created state files to the process owner.
+            // The file contains uplink names; readable-by-all is harmless
+            // but there's no reason to be permissive.
+            // tokio::fs::OpenOptions exposes mode() as an inherent method on Unix.
+            #[cfg(unix)]
+            opts.mode(0o600);
+            opts.open(&path).await
+        };
         match probe {
             Ok(_) => {
                 let store: std::sync::Arc<StateStore> =
