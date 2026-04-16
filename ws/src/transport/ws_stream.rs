@@ -11,6 +11,13 @@ use crate::transport_h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
 
+/// Trait for checking whether the shared multiplexed connection (H2 or H3)
+/// underlying a websocket stream is still usable. Implemented by
+/// `SharedH2Connection` and `SharedH3Connection`.
+pub(crate) trait SharedConnectionHealth: Send + Sync {
+    fn is_open(&self) -> bool;
+}
+
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
 
@@ -18,14 +25,14 @@ pin_project! {
     pub(super) struct H2WsStream {
         #[pin]
         inner: RawH2WsStream,
-        _shared_connection: Arc<dyn Send + Sync>,
+        _shared_connection: Arc<dyn SharedConnectionHealth>,
     }
 }
 
 impl H2WsStream {
     pub(super) fn new_shared(
         inner: RawH2WsStream,
-        shared_connection: Arc<dyn Send + Sync>,
+        shared_connection: Arc<dyn SharedConnectionHealth>,
     ) -> Self {
         Self {
             inner,
@@ -126,6 +133,25 @@ pin_project! {
         Http1 { #[pin] inner: H1WsStream },
         H2 { #[pin] inner: H2WsStream },
         H3 { #[pin] inner: H3WsStream },
+    }
+}
+
+impl AnyWsStream {
+    /// Returns `true` when the underlying shared connection (H2 / H3) is still
+    /// usable.  HTTP/1 streams always return `true` because they do not share a
+    /// multiplexed connection.  Used by the standby pool to detect and discard
+    /// websocket streams whose shared connection was marked broken (e.g. after
+    /// an `open_websocket` timeout) — the 1ms peek alone cannot catch this
+    /// because H2 keepalive may still succeed on the dying connection.
+    pub fn is_connection_alive(&self) -> bool {
+        match self {
+            AnyWsStream::Http1 { .. } => true,
+            AnyWsStream::H2 { inner } => inner._shared_connection.is_open(),
+            #[cfg(feature = "h3")]
+            AnyWsStream::H3 { inner } => inner.is_connection_alive(),
+            #[cfg(not(feature = "h3"))]
+            AnyWsStream::H3 { .. } => true,
+        }
     }
 }
 

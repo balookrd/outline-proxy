@@ -41,6 +41,7 @@ pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::AnyWsStream;
+pub(crate) use ws_stream::SharedConnectionHealth;
 
 pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};

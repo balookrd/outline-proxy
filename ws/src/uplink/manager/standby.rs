@@ -89,12 +89,20 @@ impl UplinkManager {
                 .pop_front()?;
             self.spawn_refill(candidate.index, TransportKind::Tcp);
 
-            let alive = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                Err(_elapsed) => true, // would-block: socket still open
-                Ok(None) => false,
-                Ok(Some(Err(_))) => false,
-                Ok(Some(Ok(Message::Close(_)))) => false,
-                Ok(Some(Ok(_))) => true, // stray control/data frame, still usable
+            // Check the underlying shared connection (H2/H3) first — if a
+            // previous open_websocket timeout marked it as broken, the 1ms
+            // peek alone would not catch it because H2 keepalive may still
+            // succeed on the dying connection.
+            let alive = if !ws.is_connection_alive() {
+                false
+            } else {
+                match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                    Err(_elapsed) => true, // would-block: socket still open
+                    Ok(None) => false,
+                    Ok(Some(Err(_))) => false,
+                    Ok(Some(Ok(Message::Close(_)))) => false,
+                    Ok(Some(Ok(_))) => true, // stray control/data frame, still usable
+                }
             };
             if !alive {
                 debug!(
@@ -309,25 +317,31 @@ impl UplinkManager {
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
-            let keepalive_result: Result<()> = match timeout(
-                STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
-                ws.send(Message::Ping(vec![].into())),
-            )
-            .await
-            {
-                Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
-                Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
-                Ok(Ok(())) => {
-                    match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                        Err(_elapsed) => Ok(()), // still open — nothing to read
-                        Ok(None) => Err(anyhow!("standby websocket stream ended")),
-                        Ok(Some(Err(error))) => Err(anyhow!("standby websocket error: {error}")),
-                        Ok(Some(Ok(Message::Close(frame)))) => {
-                            Err(anyhow!("standby websocket closed by server: {:?}", frame))
-                        },
-                        Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
-                    }
-                },
+            let keepalive_result: Result<()> = if !ws.is_connection_alive() {
+                Err(anyhow!("underlying shared connection is closed"))
+            } else {
+                match timeout(
+                    STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
+                    ws.send(Message::Ping(vec![].into())),
+                )
+                .await
+                {
+                    Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
+                    Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
+                    Ok(Ok(())) => {
+                        match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                            Err(_elapsed) => Ok(()), // still open — nothing to read
+                            Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                            Ok(Some(Err(error))) => {
+                                Err(anyhow!("standby websocket error: {error}"))
+                            },
+                            Ok(Some(Ok(Message::Close(frame)))) => {
+                                Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                            },
+                            Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
+                        }
+                    },
+                }
             };
             metrics::record_probe(
                 &self.inner.group_name,
@@ -512,14 +526,18 @@ impl UplinkManager {
             // a quick peek instead: if the server has closed the connection we
             // will see a Close frame or an error immediately; otherwise the
             // read times out and we treat the connection as still alive.
-            let alive_result: Result<()> = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                Err(_elapsed) => Ok(()), // still open — nothing to read
-                Ok(None) => Err(anyhow!("standby websocket stream ended")),
-                Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
-                Ok(Some(Ok(Message::Close(frame)))) => {
-                    Err(anyhow!("standby websocket closed by server: {:?}", frame))
-                },
-                Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
+            let alive_result: Result<()> = if !ws.is_connection_alive() {
+                Err(anyhow!("underlying shared connection is closed"))
+            } else {
+                match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                    Err(_elapsed) => Ok(()), // still open — nothing to read
+                    Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                    Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
+                    Ok(Some(Ok(Message::Close(frame)))) => {
+                        Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                    },
+                    Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
+                }
             };
             metrics::record_probe(
                 &self.inner.group_name,
