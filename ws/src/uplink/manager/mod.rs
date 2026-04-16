@@ -183,6 +183,30 @@ impl UplinkManager {
         self.keepalive_tcp_pool(index).await;
     }
 
+    /// Test helper: directly set TCP health / latency for uplink `index`.
+    #[doc(hidden)]
+    pub async fn test_set_tcp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
+        let mut statuses = self.inner.statuses.write().await;
+        statuses[index].tcp_healthy = Some(healthy);
+        statuses[index].tcp_latency = Some(Duration::from_millis(rtt_ms));
+        statuses[index].tcp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    }
+
+    /// Test helper: directly set UDP health / latency for uplink `index`.
+    #[doc(hidden)]
+    pub async fn test_set_udp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
+        let mut statuses = self.inner.statuses.write().await;
+        statuses[index].udp_healthy = Some(healthy);
+        statuses[index].udp_latency = Some(Duration::from_millis(rtt_ms));
+        statuses[index].udp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    }
+
+    /// Test helper: read tcp_healthy for uplink `index`.
+    #[doc(hidden)]
+    pub async fn test_tcp_healthy(&self, index: usize) -> Option<bool> {
+        self.inner.statuses.read().await[index].tcp_healthy
+    }
+
     pub fn uplinks(&self) -> &[Arc<UplinkConfig>] {
         &self.inner.uplinks
     }

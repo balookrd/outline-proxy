@@ -19,6 +19,15 @@ pub struct UplinkManager {
     pub(super) inner: Arc<UplinkManagerInner>,
 }
 
+impl std::fmt::Debug for UplinkManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UplinkManager")
+            .field("group", &self.inner.group_name)
+            .field("uplinks", &self.inner.uplinks.len())
+            .finish()
+    }
+}
+
 pub(super) struct UplinkManagerInner {
     /// Name of the group this manager represents. Surfaced as the `group`
     /// Prometheus label on every uplink-scoped metric emitted from within.
