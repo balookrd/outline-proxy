@@ -30,6 +30,9 @@ pub struct CompiledRule {
     pub file_poll: Duration,
     pub target: RouteTarget,
     pub fallback: Option<RouteTarget>,
+    /// When true, the rule matches addresses NOT in the CIDR set.
+    /// Domains still never match (they fall through to the default).
+    pub invert: bool,
 }
 
 #[derive(Debug)]
@@ -66,6 +69,7 @@ impl RoutingTable {
                 file_poll: rule.file_poll,
                 target: rule.target.clone(),
                 fallback: rule.fallback.clone(),
+                invert: rule.invert,
             });
         }
         Ok(Self {
@@ -83,10 +87,18 @@ impl RoutingTable {
     }
 
     /// First-match-wins resolve. Domains never match a CIDR rule and always
-    /// fall through to the default.
+    /// fall through to the default (including inverted rules — inverting an
+    /// empty match on a domain would incorrectly match everything).
     pub async fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        let is_domain = matches!(target, TargetAddr::Domain(_, _));
         for rule in &self.rules {
-            if rule.cidrs.read().await.contains(target) {
+            if is_domain {
+                // Domains skip all CIDR rules (inverted or not).
+                continue;
+            }
+            let in_set = rule.cidrs.read().await.contains(target);
+            let matched = if rule.invert { !in_set } else { in_set };
+            if matched {
                 return RouteDecision {
                     primary: rule.target.clone(),
                     fallback: rule.fallback.clone(),
@@ -193,6 +205,22 @@ mod tests {
             file_poll: Duration::from_secs(60),
             target,
             fallback,
+            invert: false,
+        }
+    }
+
+    fn inverted_rule(
+        prefixes: &[&str],
+        target: RouteTarget,
+        fallback: Option<RouteTarget>,
+    ) -> RouteRule {
+        RouteRule {
+            inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
+            file: None,
+            file_poll: Duration::from_secs(60),
+            target,
+            fallback,
+            invert: true,
         }
     }
 
@@ -282,5 +310,84 @@ mod tests {
         };
         let table = RoutingTable::compile(&cfg).await.unwrap();
         assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
+    }
+
+    #[tokio::test]
+    async fn inverted_rule_matches_addresses_not_in_set() {
+        // "tunnel only 1.0.0.0/8, everything else goes direct"
+        let cfg = RoutingTableConfig {
+            rules: vec![inverted_rule(
+                &["1.0.0.0/8"],
+                RouteTarget::Direct,
+                None,
+            )],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let table = RoutingTable::compile(&cfg).await.unwrap();
+
+        // 8.8.8.8 is NOT in 1.0.0.0/8 → inverted rule matches → Direct
+        assert_eq!(table.resolve(&v4(8, 8, 8, 8)).await.primary, RouteTarget::Direct);
+
+        // 1.2.3.4 IS in 1.0.0.0/8 → inverted rule does NOT match → falls to default
+        assert_eq!(
+            table.resolve(&v4(1, 2, 3, 4)).await.primary,
+            RouteTarget::Group("main".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn inverted_rule_does_not_match_domains() {
+        let cfg = RoutingTableConfig {
+            rules: vec![inverted_rule(
+                &["10.0.0.0/8"],
+                RouteTarget::Direct,
+                None,
+            )],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let table = RoutingTable::compile(&cfg).await.unwrap();
+
+        // Domain targets skip all CIDR rules (even inverted ones).
+        let dom = TargetAddr::Domain("example.com".into(), 80);
+        assert_eq!(
+            table.resolve(&dom).await.primary,
+            RouteTarget::Group("main".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn inverted_and_normal_rules_coexist() {
+        let cfg = RoutingTableConfig {
+            rules: vec![
+                // First: RFC1918 → direct (normal)
+                rule(&["10.0.0.0/8", "192.168.0.0/16"], RouteTarget::Direct, None),
+                // Second: everything NOT in RU list → tunnel via main (inverted)
+                inverted_rule(
+                    &["5.0.0.0/8"],
+                    RouteTarget::Group("main".into()),
+                    None,
+                ),
+            ],
+            default_target: RouteTarget::Group("backup".into()),
+            default_fallback: None,
+        };
+        let table = RoutingTable::compile(&cfg).await.unwrap();
+
+        // 10.1.1.1 → normal rule matches → Direct
+        assert_eq!(table.resolve(&v4(10, 1, 1, 1)).await.primary, RouteTarget::Direct);
+
+        // 8.8.8.8 → not RFC1918 (skip rule 1), not in 5.0.0.0/8 → inverted matches → main
+        assert_eq!(
+            table.resolve(&v4(8, 8, 8, 8)).await.primary,
+            RouteTarget::Group("main".into())
+        );
+
+        // 5.1.2.3 → not RFC1918 (skip rule 1), IS in 5.0.0.0/8 → inverted doesn't match → default
+        assert_eq!(
+            table.resolve(&v4(5, 1, 2, 3)).await.primary,
+            RouteTarget::Group("backup".into())
+        );
     }
 }
