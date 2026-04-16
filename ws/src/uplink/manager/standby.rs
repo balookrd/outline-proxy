@@ -221,8 +221,27 @@ impl UplinkManager {
         }
 
         let pool = &self.inner.standby_pools[candidate.index];
-        if let Some(ws) = pool.udp.lock().await.pop_front() {
+        // Loop past entries whose underlying shared connection has been
+        // torn down since the entry was pooled — otherwise we'd hand a
+        // zombie transport to the caller and probe-timeout-marked H2/H3
+        // connections would resurface here. Mirrors `try_take_tcp_standby`.
+        loop {
+            let Some(ws) = pool.udp.lock().await.pop_front() else { break };
             self.spawn_refill(candidate.index, TransportKind::Udp);
+            if !ws.is_connection_alive() {
+                metrics::record_warm_standby_acquire(
+                    "udp",
+                    &self.inner.group_name,
+                    &candidate.uplink.name,
+                    "stale",
+                );
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    "discarded stale warm-standby UDP websocket at acquisition time"
+                );
+                drop(ws);
+                continue;
+            }
             metrics::record_warm_standby_acquire(
                 "udp",
                 &self.inner.group_name,

@@ -50,15 +50,19 @@ async fn resolve_udp_packet_route(
     let Some(table) = config.routing_table.as_ref() else {
         return UdpPacketRoute::Tunnel(default_group);
     };
-    let version = table.version();
+    let current_version = table.version();
     if let Some((route, entry_version)) = cache.get(target) {
-        if *entry_version == version {
+        if *entry_version == current_version {
             return route.clone();
         }
     }
-    let decision = table.resolve(target).await;
+    // Tag the cached entry with the version captured *before* CIDR reads,
+    // not the post-resolve version — otherwise a reload that races with
+    // resolution would leave a stale decision tagged with the bumped
+    // version and never invalidate. See `RoutingTable::resolve_versioned`.
+    let (decision, resolve_version) = table.resolve_versioned(target).await;
     let route = classify_decision(registry, decision.primary, decision.fallback).await;
-    cache.insert(target.clone(), (route.clone(), version));
+    cache.insert(target.clone(), (route.clone(), resolve_version));
     route
 }
 
@@ -78,12 +82,22 @@ async fn classify_decision(
         let manager = registry.group_by_name(name);
         if manager.is_none() {
             // Unknown group — routing table referenced a group that was not
-            // found in the registry. Fall back to the default group, consistent
-            // with the TCP dispatch path (resolve_single_target).
-            debug!(
+            // found in the registry. Honour the declared fallback before
+            // falling back to the default (a declared fallback is an
+            // explicit escape hatch the user wrote; using it first is safer
+            // than silently substituting the default).
+            if let Some(fb) = fallback {
+                warn!(
+                    group = %name,
+                    fallback = ?fb,
+                    "UDP route: unknown group, using declared fallback"
+                );
+                return as_route(fb);
+            }
+            warn!(
                 group = %name,
                 default = registry.default_group_name(),
-                "UDP route: unknown group, falling back to default"
+                "UDP route: unknown group and no fallback; dispatching to default"
             );
             return UdpPacketRoute::Tunnel(registry.default_group_name().to_string());
         }
@@ -500,7 +514,9 @@ pub(super) async fn handle_udp_associate(
 }
 
 /// Forward a datagram to a directly-contacted server via the direct socket.
-/// Domain targets cannot be resolved here and are dropped with a warning.
+/// Domain targets are resolved through the shared DNS cache, mirroring the
+/// TCP direct path so SOCKS5 UDP ASSOCIATE clients that send `ATYP=03` can
+/// use policy-direct routing.
 async fn send_udp_direct(
     direct_socket: &Option<Arc<UdpSocket>>,
     target: &TargetAddr,
@@ -514,9 +530,22 @@ async fn send_udp_direct(
     let target_addr = match target {
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
-        TargetAddr::Domain(_, _) => {
-            warn!(target = %target, "UDP direct route cannot resolve domain targets; dropping");
-            return Ok(());
+        TargetAddr::Domain(host, port) => {
+            let resolved = crate::transport::resolve_host_with_preference(
+                host,
+                *port,
+                "UDP direct resolve",
+                false,
+            )
+            .await
+            .with_context(|| format!("UDP direct: failed to resolve {target}"))?;
+            match resolved.into_iter().next() {
+                Some(addr) => addr,
+                None => {
+                    warn!(target = %target, "UDP direct: DNS returned no addresses; dropping");
+                    return Ok(());
+                },
+            }
         },
     };
     sock.send_to(payload, target_addr)

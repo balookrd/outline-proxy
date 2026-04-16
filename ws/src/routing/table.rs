@@ -100,6 +100,20 @@ impl RoutingTable {
     /// fall through to the default (including inverted rules — inverting an
     /// empty match on a domain would incorrectly match everything).
     pub async fn resolve(&self, target: &TargetAddr) -> RouteDecision {
+        self.resolve_versioned(target).await.0
+    }
+
+    /// Resolve and return the version snapshot captured *before* the first
+    /// CIDR read. Callers that cache the decision should tag it with this
+    /// version (not the version at the time of insertion): if the watcher
+    /// bumps the version during resolution the caller will see a stale
+    /// snapshot on the next lookup and re-resolve, rather than tagging a
+    /// potentially-stale decision with the post-bump version.
+    pub async fn resolve_versioned(&self, target: &TargetAddr) -> (RouteDecision, u64) {
+        // Snapshot BEFORE any CIDR read so a concurrent reload invalidates
+        // the decision we are about to compute instead of silently shadowing
+        // it with the post-bump version.
+        let version = self.version.load(Ordering::Acquire);
         let is_domain = matches!(target, TargetAddr::Domain(_, _));
         for rule in &self.rules {
             if is_domain {
@@ -109,16 +123,22 @@ impl RoutingTable {
             let in_set = rule.cidrs.read().await.contains(target);
             let matched = if rule.invert { !in_set } else { in_set };
             if matched {
-                return RouteDecision {
-                    primary: rule.target.clone(),
-                    fallback: rule.fallback.clone(),
-                };
+                return (
+                    RouteDecision {
+                        primary: rule.target.clone(),
+                        fallback: rule.fallback.clone(),
+                    },
+                    version,
+                );
             }
         }
-        RouteDecision {
-            primary: self.default_target.clone(),
-            fallback: self.default_fallback.clone(),
-        }
+        (
+            RouteDecision {
+                primary: self.default_target.clone(),
+                fallback: self.default_fallback.clone(),
+            },
+            version,
+        )
     }
 }
 
@@ -491,6 +511,31 @@ mod tests {
             table.resolve(&v4(5, 1, 2, 3)).await.primary,
             RouteTarget::Group("backup".into())
         );
+    }
+
+    #[tokio::test]
+    async fn resolve_versioned_captures_pre_read_version() {
+        let cfg = RoutingTableConfig {
+            rules: vec![rule(&["1.0.0.0/8"], RouteTarget::Direct, None)],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let table = RoutingTable::compile(&cfg).await.unwrap();
+        assert_eq!(table.version(), 0);
+
+        let (_d, v_before) = table.resolve_versioned(&v4(1, 2, 3, 4)).await;
+        assert_eq!(v_before, 0, "version captured at resolve must be pre-bump");
+
+        // Simulate a watcher reload.
+        table.version.fetch_add(1, Ordering::AcqRel);
+
+        // A cache tagged with v_before=0 is now stale (current = 1) and will
+        // invalidate on the next lookup — which is exactly the desired
+        // behaviour: any decision resolved before the bump re-resolves.
+        assert_ne!(table.version(), v_before);
+
+        let (_d, v_after) = table.resolve_versioned(&v4(1, 2, 3, 4)).await;
+        assert_eq!(v_after, 1);
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 
 use std::net::SocketAddr;
@@ -52,8 +52,8 @@ impl TunUdpEngine {
             inner: Arc::new(TunUdpEngineInner {
                 writer,
                 dispatch,
-                flows: Arc::new(Mutex::new(HashMap::new())),
-                direct_flows: Arc::new(Mutex::new(HashMap::new())),
+                flows: Arc::new(RwLock::new(HashMap::new())),
+                direct_flows: Arc::new(RwLock::new(HashMap::new())),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
@@ -73,99 +73,87 @@ impl TunUdpEngine {
             remote_port: packet.destination_port,
         };
 
-        // Check if this is an existing direct flow first.
-        {
-            let mut direct = self.inner.direct_flows.lock().await;
-            if let Some(flow) = direct.get_mut(&key) {
-                flow.last_seen = Instant::now();
-                let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
-                flow.socket
-                    .send_to(&packet.payload, target_addr)
-                    .await
-                    .context("direct UDP send failed")?;
-                metrics::add_udp_datagram(
-                    "client_to_upstream",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                );
-                metrics::add_bytes(
-                    "udp",
-                    "client_to_upstream",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                    packet.payload.len(),
-                );
-                return Ok(());
-            }
+        // Check if this is an existing direct flow first. Clone the Arc
+        // under a short read-lock, then operate on the per-flow Mutex so
+        // concurrent packets on other flows are not serialised.
+        let direct_flow = {
+            let guard = self.inner.direct_flows.read().await;
+            guard.get(&key).map(Arc::clone)
+        };
+        if let Some(flow_handle) = direct_flow {
+            let mut flow = flow_handle.lock().await;
+            flow.last_seen = Instant::now();
+            let target_addr = SocketAddr::new(key.remote_ip, key.remote_port);
+            // `send_to().await` runs under the per-flow Mutex only — other
+            // direct flows remain unblocked while the kernel completes the
+            // send. Ordering of datagrams within this flow is preserved.
+            flow.socket
+                .send_to(&packet.payload, target_addr)
+                .await
+                .context("direct UDP send failed")?;
+            metrics::add_udp_datagram(
+                "client_to_upstream",
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
+            );
+            metrics::add_bytes(
+                "udp",
+                "client_to_upstream",
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
+                packet.payload.len(),
+            );
+            return Ok(());
         }
 
-        let (existing, stale_flow) = {
-            let guard = self.inner.flows.lock().await;
-            match guard.get(&key) {
-                Some(flow) => (
-                    Some((
-                        flow.id,
-                        Arc::clone(&flow.transport),
-                        flow.uplink_index,
-                        flow.uplink_name.clone(),
-                        flow.manager.clone(),
-                    )),
-                    None::<super::types::UdpFlowState>,
-                ),
-                None => (None, None),
-            }
-        };
+        // Tunnel-flow hot path: short read-lock, clone `Arc<Mutex<State>>`.
+        let existing_handle = self.inner.flows.read().await.get(&key).map(Arc::clone);
 
-        // Check per-flow strict-active-uplink against the flow's own group.
-        // A group in active_passive / global scope may have repointed; the
-        // flow must follow or be torn down.
-        let stale_flow = if let Some((.., flow_manager)) = existing.as_ref() {
-            if flow_manager.strict_active_uplink_for(TransportKind::Udp) {
-                let active_uplink = flow_manager
-                    .active_uplink_index_for_transport(TransportKind::Udp)
-                    .await;
-                let flow_index = existing.as_ref().map(|f| f.2);
-                if active_uplink.is_some_and(|active| Some(active) != flow_index) {
-                    let mut guard = self.inner.flows.lock().await;
-                    guard.remove(&key)
-                } else {
-                    stale_flow
-                }
-            } else {
-                stale_flow
-            }
-        } else {
-            stale_flow
-        };
-
-        if let Some(stale) = stale_flow {
-            super::lifecycle::close_udp_flow(stale, "global_switch").await;
-        }
-
-        // Re-check flow state after potential removal.
-        let existing = if existing.is_some() {
-            let guard = self.inner.flows.lock().await;
-            guard.get(&key).map(|flow| {
-                (
-                    flow.id,
-                    Arc::clone(&flow.transport),
-                    flow.uplink_index,
-                    flow.uplink_name.clone(),
-                    flow.manager.clone(),
-                )
-            })
+        // If this flow exists, snapshot what we need under the per-flow lock,
+        // update last_seen, and drop the lock before any .await on the send.
+        let existing_tuple = if let Some(handle) = existing_handle.as_ref() {
+            let mut flow = handle.lock().await;
+            flow.last_seen = Instant::now();
+            Some((
+                flow.id,
+                Arc::clone(&flow.transport),
+                flow.uplink_index,
+                flow.uplink_name.clone(),
+                flow.manager.clone(),
+            ))
         } else {
             None
         };
 
-        let (flow_id, transport, uplink_index, uplink_name, manager) = match existing {
-            Some(existing) => {
-                let mut guard = self.inner.flows.lock().await;
-                if let Some(flow) = guard.get_mut(&key) {
-                    flow.last_seen = Instant::now();
+        // Check per-flow strict-active-uplink against the flow's own group.
+        // A group in active_passive / global scope may have repointed; the
+        // flow must follow or be torn down. The removal takes the write-lock
+        // only if the flow is actually stale — common case is no-op.
+        let existing_tuple = if let Some((_, _, flow_index, _, ref flow_manager)) =
+            existing_tuple
+        {
+            if flow_manager.strict_active_uplink_for(TransportKind::Udp) {
+                let active_uplink = flow_manager
+                    .active_uplink_index_for_transport(TransportKind::Udp)
+                    .await;
+                if active_uplink.is_some_and(|active| active != flow_index) {
+                    let stale = self.inner.flows.write().await.remove(&key);
+                    if let Some(stale) = stale {
+                        super::lifecycle::close_udp_flow(stale, "global_switch").await;
+                    }
+                    None
+                } else {
+                    existing_tuple
                 }
-                existing
-            },
+            } else {
+                existing_tuple
+            }
+        } else {
+            existing_tuple
+        };
+
+        let (flow_id, transport, uplink_index, uplink_name, manager) = match existing_tuple {
+            Some(existing) => existing,
             None => {
                 let route = self.inner.dispatch.resolve(&remote_target).await;
                 match route {
@@ -322,9 +310,11 @@ impl TunUdpEngine {
                     super::ip_family_from_version(reader_key.version),
                     "accepted",
                 );
-                // Update last_seen on the flow.
-                let mut guard = direct_flows.lock().await;
-                if let Some(flow) = guard.get_mut(&reader_key) {
+                // Update last_seen on the flow. Read-lock to clone the Arc,
+                // then per-flow Mutex — does not block other flows' I/O.
+                let handle = direct_flows.read().await.get(&reader_key).map(Arc::clone);
+                if let Some(handle) = handle {
+                    let mut flow = handle.lock().await;
                     if flow.id == flow_id {
                         flow.last_seen = Instant::now();
                     }
@@ -332,15 +322,15 @@ impl TunUdpEngine {
             }
         });
 
-        self.inner.direct_flows.lock().await.insert(
+        self.inner.direct_flows.write().await.insert(
             key,
-            DirectUdpFlowState {
+            Arc::new(Mutex::new(DirectUdpFlowState {
                 id: flow_id,
                 socket: sock,
                 _reader: reader,
                 created_at: now,
                 last_seen: now,
-            },
+            })),
         );
 
         metrics::add_udp_datagram(

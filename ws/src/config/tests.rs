@@ -633,6 +633,29 @@ async fn load_config_rejects_unknown_group_in_route() {
 }
 
 #[tokio::test]
+async fn load_config_rejects_too_many_uplink_groups() {
+    let path = std::env::temp_dir().join("outline-ws-rust-too-many-groups.toml");
+    let mut body = String::from("[socks5]\nlisten = \"127.0.0.1:1080\"\n\n");
+    // 65 groups — one above the 64-group cap.
+    for i in 0..65 {
+        body.push_str(&format!("[[uplink_group]]\nname = \"g{i}\"\n\n"));
+        body.push_str(&format!(
+            "[[uplinks]]\nname = \"u{i}\"\ngroup = \"g{i}\"\n\
+             tcp_ws_url = \"wss://e.example.com/secret/tcp\"\n\
+             method = \"chacha20-ietf-poly1305\"\npassword = \"Secret0\"\n\n"
+        ));
+    }
+    std::fs::write(&path, body).unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = super::load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("too many") && msg.contains("64"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
 async fn load_config_allows_tun_without_socks5_listener() {
     let path = std::env::temp_dir().join("outline-ws-rust-tun-only.toml");
     std::fs::write(
@@ -664,6 +687,213 @@ async fn load_config_allows_tun_without_socks5_listener() {
     let config = super::load_config(&path, &args).await.unwrap();
     assert!(config.listen.is_none());
     assert!(config.tun.is_some());
+
+    let _ = std::fs::remove_file(path);
+}
+
+// ── Edge-case validation tests ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn load_config_rejects_invalid_yaml() {
+    let path = std::env::temp_dir().join("outline-ws-rust-invalid.yaml");
+    std::fs::write(
+        &path,
+        // Invalid YAML: unterminated mapping with bad indentation.
+        "socks5:\n  listen: [unterminated\n",
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("failed to parse"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_uplink_group_without_uplinks() {
+    let path = std::env::temp_dir().join("outline-ws-rust-group-no-uplinks.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("no [[uplinks]]") || msg.contains("no uplinks"),
+        "got: {msg}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_route_without_prefixes_or_file() {
+    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-rule.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        default = true
+        via = "main"
+
+        [[route]]
+        via = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("prefixes") && msg.contains("file"),
+        "got: {msg}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_empty_route_section() {
+    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-arr.yaml");
+    // YAML explicit empty array: simulate `route = []` via empty list.
+    // TOML doesn't allow literal empty `[[route]]` without entries, so use
+    // YAML where the user can type `route: []` explicitly.
+    std::fs::write(
+        &path,
+        r#"
+socks5:
+  listen: "127.0.0.1:1080"
+
+uplink_group:
+  - name: main
+
+uplinks:
+  - name: primary
+    group: main
+    tcp_ws_url: "wss://example.com/secret/tcp"
+    method: chacha20-ietf-poly1305
+    password: Secret0
+
+route: []
+"#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("empty") && msg.contains("route"),
+        "got: {msg}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_cli_override_with_uplink_group() {
+    let path = std::env::temp_dir().join("outline-ws-rust-cli-override.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        "#,
+    )
+    .unwrap();
+
+    // CLI override conflicts with new-shape config.
+    let args = super::Args::parse_from([
+        "test",
+        "--tcp-ws-url",
+        "wss://override.example.com/cli/tcp",
+    ]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("CLI uplink overrides") && msg.contains("[[uplink_group]]"),
+        "got: {msg}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_inverted_route_without_prefixes() {
+    let path = std::env::temp_dir().join("outline-ws-rust-route-invert-empty.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        default = true
+        via = "main"
+
+        [[route]]
+        invert = true
+        prefixes = []
+        via = "main"
+        "#,
+    )
+    .unwrap();
+
+    // This is caught at load_routing_table validation (no prefixes/file) —
+    // the inverted-empty-set safety net in RoutingTable::compile is a
+    // defense-in-depth layer behind that. Either message is acceptable.
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("prefixes") || msg.contains("invert"),
+        "got: {msg}"
+    );
 
     let _ = std::fs::remove_file(path);
 }

@@ -299,4 +299,31 @@ mod tests {
         let gs = store.group_state("any").await;
         assert_eq!(gs.global_active, None);
     }
+
+    #[tokio::test]
+    async fn state_store_empty_file_starts_fresh() {
+        // First-run scenario: the state file exists (e.g. pre-created by
+        // systemd-tmpfiles or an install script) but is empty. Must parse
+        // as an empty PersistedState without warnings, not fail or crash.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.toml");
+        tokio::fs::write(&path, b"").await.unwrap();
+        let store = StateStore::load_or_default(path).await;
+        let gs = store.group_state("any").await;
+        assert_eq!(gs.global_active, None);
+        assert_eq!(gs.tcp_active, None);
+        assert_eq!(gs.udp_active, None);
+    }
+
+    #[tokio::test]
+    async fn state_store_missing_file_starts_fresh() {
+        // No state file at all (clean install). Must not error; subsequent
+        // update + flush should create the file atomically.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("never-existed.toml");
+        assert!(!path.exists());
+        let store = StateStore::load_or_default(path.clone()).await;
+        let gs = store.group_state("any").await;
+        assert_eq!(gs.global_active, None);
+    }
 }

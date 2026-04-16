@@ -124,13 +124,20 @@ impl TunRouting {
             RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
             RouteTarget::Group(name) => {
                 let Some(manager) = self.registry.group_by_name(&name) else {
-                    warn!(group = %name, "TUN route references unknown group; dropping");
+                    // Config validation rejects unknown groups in `via`, but
+                    // defensively honour the declared fallback before dropping
+                    // — dropping silently would be a worse failure mode than
+                    // using the escape hatch the user wrote.
+                    warn!(group = %name, "TUN route references unknown group");
+                    if let Some(fb) = fallback {
+                        return Box::pin(self.materialize_target(fb, None)).await;
+                    }
                     return TunRoute::Drop { reason: "unknown_group" };
                 };
                 // Fallback applies only when the primary group has no
                 // healthy uplinks at resolve time; Direct/Drop primaries are
                 // terminal decisions.
-                if matches!(fallback, Some(_))
+                if fallback.is_some()
                     && !manager
                         .has_any_healthy(crate::uplink::TransportKind::Udp)
                         .await
