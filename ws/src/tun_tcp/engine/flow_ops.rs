@@ -42,8 +42,14 @@ impl TunTcpEngine {
         }
 
         let target = ip_to_target(key.remote_ip, key.remote_port);
-        let manager = match self.inner.dispatch.resolve(&target).await {
-            TunRoute::Group { manager, .. } => manager,
+        let route = self.inner.dispatch.resolve(&target).await;
+        let (manager, route) = match &route {
+            TunRoute::Group { manager, .. } => (manager.clone(), route.clone()),
+            TunRoute::Direct { .. } => {
+                // For direct flows, use a dummy manager (default group); the
+                // actual connect bypasses the uplink pipeline entirely.
+                (self.inner.dispatch.default_group().clone(), route)
+            },
             TunRoute::Drop { reason } => {
                 let reset = build_reset_response(&packet)?;
                 self.inner.writer.write_packet(&reset).await?;
@@ -73,6 +79,7 @@ impl TunTcpEngine {
             uplink_index: usize::MAX,
             uplink_name: "connecting".to_string(),
             manager: manager.clone(),
+            route: route.clone(),
             upstream_writer: None,
             close_signal,
             maintenance_notify,

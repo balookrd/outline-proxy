@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use crate::metrics;
-use crate::transport::TcpShadowsocksWriter;
+use super::state_machine::TunTcpUpstreamWriter;
 use crate::tun::{SharedTunWriter, TunRouting};
 use crate::tun_wire::IpVersion;
 use crate::uplink::{TransportKind, UplinkManager};
@@ -144,7 +144,7 @@ impl TunTcpEngine {
 }
 
 pub(super) async fn close_upstream_writer(
-    upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
+    upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
 ) {
     let Some(upstream_writer) = upstream_writer else {
         return;

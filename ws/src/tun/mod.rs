@@ -52,6 +52,7 @@ pub struct TunRouting {
     registry: UplinkRegistry,
     routing: Option<Arc<RoutingTable>>,
     default_group: UplinkManager,
+    direct_fwmark: Option<u32>,
 }
 
 /// Resolved routing decision for a new TUN flow.
@@ -62,15 +63,24 @@ pub enum TunRoute {
         name: String,
         manager: UplinkManager,
     },
-    /// Drop the flow silently (matches `via = "drop"` and — on TUN — also
-    /// `via = "direct"` since TUN cannot bypass itself).
+    /// Forward via a local socket (with optional SO_MARK to escape the TUN
+    /// routing loop). The TUN engine opens a plain TCP/UDP connection to the
+    /// destination, relays data bidirectionally, and synthesises IP response
+    /// packets back into the TUN device — same behaviour as the SOCKS5
+    /// `via = "direct"` path.
+    Direct { fwmark: Option<u32> },
+    /// Drop the flow silently (matches `via = "drop"`).
     Drop { reason: &'static str },
 }
 
 impl TunRouting {
-    pub fn new(registry: UplinkRegistry, routing: Option<Arc<RoutingTable>>) -> Self {
+    pub fn new(
+        registry: UplinkRegistry,
+        routing: Option<Arc<RoutingTable>>,
+        direct_fwmark: Option<u32>,
+    ) -> Self {
         let default_group = registry.default_group().clone();
-        Self { registry, routing, default_group }
+        Self { registry, routing, default_group, direct_fwmark }
     }
 
     /// Test-only helper: wrap a single [`UplinkManager`] as the sole group,
@@ -82,6 +92,7 @@ impl TunRouting {
             registry: UplinkRegistry::from_single_manager(manager.clone()),
             routing: None,
             default_group: manager,
+            direct_fwmark: None,
         }
     }
 
@@ -108,7 +119,7 @@ impl TunRouting {
     ) -> TunRoute {
         match primary {
             RouteTarget::Direct => {
-                TunRoute::Drop { reason: "policy_direct_on_tun" }
+                TunRoute::Direct { fwmark: self.direct_fwmark }
             },
             RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
             RouteTarget::Group(name) => {

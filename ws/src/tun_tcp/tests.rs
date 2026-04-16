@@ -1259,7 +1259,14 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         uplink_name: "test".to_string(),
         manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
             .await,
-        upstream_writer: Some(Arc::new(Mutex::new({
+        route: crate::tun::TunRoute::Group {
+            name: "test".to_string(),
+            manager: super::engine::tests::build_test_manager(
+                "ws://127.0.0.1:1/".parse().unwrap(),
+            )
+            .await,
+        },
+        upstream_writer: Some(Arc::new(Mutex::new(crate::tun_tcp::TunTcpUpstreamWriter::Tunneled({
             let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
                 sink,
                 cipher,
@@ -1269,7 +1276,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             .await
             .unwrap();
             writer
-        }))),
+        })))),
         close_signal,
         maintenance_notify: Arc::new(Notify::new()),
         status: super::TcpFlowStatus::Established,

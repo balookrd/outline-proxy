@@ -5,10 +5,38 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::sync::{Mutex, Notify, watch};
 
+use anyhow::{Context, Result};
+use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::OwnedWriteHalf;
+
 use crate::transport::TcpShadowsocksWriter;
+use crate::tun::TunRoute;
 use crate::uplink::UplinkManager;
 
 use super::super::TcpFlowKey;
+
+/// Abstraction over the upstream TCP write half — tunneled (Shadowsocks
+/// framing) or direct (plain bytes).
+pub enum TunTcpUpstreamWriter {
+    Tunneled(TcpShadowsocksWriter),
+    Direct(OwnedWriteHalf),
+}
+
+impl TunTcpUpstreamWriter {
+    pub(in crate::tun_tcp) async fn send_chunk(&mut self, data: &[u8]) -> Result<()> {
+        match self {
+            Self::Tunneled(w) => w.send_chunk(data).await,
+            Self::Direct(w) => w.write_all(data).await.context("direct TCP write failed"),
+        }
+    }
+
+    pub(in crate::tun_tcp) async fn close(&mut self) -> Result<()> {
+        match self {
+            Self::Tunneled(w) => w.close().await,
+            Self::Direct(w) => w.shutdown().await.context("direct TCP shutdown failed"),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::tun_tcp) enum TcpFlowStatus {
@@ -32,7 +60,10 @@ pub(in crate::tun_tcp) struct TcpFlowState {
     /// (strict-active checks, connect, runtime failover) go through this
     /// manager, not the engine's default group.
     pub(in crate::tun_tcp) manager: UplinkManager,
-    pub(in crate::tun_tcp) upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
+    /// The route this flow was created for — `Group` for tunneled flows,
+    /// `Direct` for local-socket bypass.
+    pub(in crate::tun_tcp) route: TunRoute,
+    pub(in crate::tun_tcp) upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
     pub(in crate::tun_tcp) close_signal: watch::Sender<bool>,
     pub(in crate::tun_tcp) maintenance_notify: Arc<Notify>,
     pub(in crate::tun_tcp) status: TcpFlowStatus,
