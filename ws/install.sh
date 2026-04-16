@@ -255,7 +255,9 @@ install_binary() {
   mkdir -p "$(dirname "$INSTALL_PATH")"
 
   if [[ -f "$INSTALL_PATH" ]]; then
-    cp -f "$INSTALL_PATH" "${INSTALL_PATH}.bak"
+    backup_path="${INSTALL_BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+    log "Делаю backup старого бинаря: ${backup_path}"
+    cp -a "$INSTALL_BIN_PATH" "$backup_path"
   fi
 
   install -m 0755 "$extracted" "$INSTALL_PATH"
