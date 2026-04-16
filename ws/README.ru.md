@@ -172,7 +172,9 @@ tun2udp + tun2tcp"]
 
 ## Структура репозитория
 
-- [`config.toml`](config.toml) — пример конфигурации
+- [`config.toml`](config.toml) — пример конфигурации (TOML)
+- [`config.yaml`](config.yaml) — пример конфигурации (YAML)
+- [`config-router.yaml`](config-router.yaml) — пример конфигурации для роутера (YAML)
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) — дашборд `tun2tcp`
@@ -244,7 +246,11 @@ rustup target add aarch64-unknown-linux-musl
 |---|---|---|
 | `h3` | ✓ | Транспорт H3/QUIC (тянет quinn + sockudo-ws/http3) |
 | `metrics` | ✓ | Prometheus-метрики (тянет prometheus + serde_json) |
-| `router` | — | Удобный псевдоним для `--no-default-features --features router` (отключает optional-фичи по умолчанию) |
+| `tun` | ✓ | Поддержка TUN-устройств (движки tun2udp + tun2tcp); отключить, чтобы полностью убрать TUN-код |
+| `mimalloc` | ✓ | Заменяет системный аллокатор на mimalloc; снижает RSS-фрагментацию при большом потоке соединений |
+| `env-filter` | ✓ | Динамический парсинг `RUST_LOG`; отключить, чтобы жёстко задать уровень `WARN` и сэкономить ~300 КБ на MIPS |
+| `multi-thread` | ✓ | Work-stealing планировщик Tokio; отключить, чтобы принудительно использовать `current_thread` и сэкономить ~100–200 КБ |
+| `router` | — | Удобный псевдоним для `--no-default-features --features router` (отключает все дефолтные фичи выше) |
 
 > **Почему отключать на роутерах:** `h3`/QUIC добавляет ~1–2 МБ к бинарю и накладные расходы на MIPS/ARM. `metrics` добавляет prometheus + serde_json и фоновый sampler. `router` отключает оба сразу.
 
@@ -445,7 +451,7 @@ socks5:
 
 ## Конфигурация
 
-По умолчанию процесс читает [`config.toml`](config.toml).
+По умолчанию процесс читает [`config.toml`](config.toml). Также поддерживается формат YAML (`.yaml` / `.yml`) — [`config.yaml`](config.yaml) является YAML-эквивалентом примера конфигурации.
 
 Пример:
 
@@ -598,6 +604,7 @@ via = "main"
 - Флаги CLI и переменные окружения переопределяют настройки из файла.
 - `--metrics-listen` включает метрики даже без секции `[metrics]` в конфиге.
 - `--tun-path` включает TUN даже без секции `[tun]` в конфиге.
+- `direct_fwmark` (опционально, top-level): значение `SO_MARK`, применяемое к TCP и UDP сокетам, открываемым для `direct`-маршрутизированных соединений. Используйте, когда bypass-трафик должен быть помечен для OS-level policy routing во избежание петель (например, чтобы bypass-маршрут сам не перехватывался TUN-интерфейсом).
 
 ### Полезные переопределения через CLI и переменные окружения
 
@@ -670,6 +677,10 @@ fallback_direct = true    # или: fallback_drop = true / fallback_via = "backu
 ### Hot-reload
 
 Для каждого правила с `file = "..."` запускается фоновая tokio-задача, которая опрашивает `mtime` каждые `file_poll_secs` секунд. При изменении CIDR-набор правила пересобирается из inline + перечитанного файла и атомарно подменяется (`Arc<RwLock<CidrSet>>`) — другие правила и структура таблицы не затрагиваются. Ошибка парсинга при reload оставляет предыдущий CIDR-набор и пишет warning.
+
+### Idle timeout прямых соединений
+
+`direct`-соединения имеют двунаправленный idle timeout 2 минуты. Если в обоих направлениях не проходит ни одного байта в течение 120 секунд — оба сокета закрываются и FD освобождаются. Это предотвращает неограниченное накопление FD от клиентов, которые открывают TCP-соединения (например, DNS-over-HTTPS, DNS-over-TLS) и бросают их без FIN — при этом сервер держит свою сторону открытой. Любая активность данных в любом направлении сбрасывает таймер, поэтому легитимные долгоживущие push-notification и keepalive соединения не затрагиваются.
 
 ### Fallback-семантика
 
@@ -1096,7 +1107,13 @@ SHADOWSOCKS_PASSWORD='Secret0' \
 cargo test --test real_server_h3 -- --nocapture
 ```
 
-Отдельный интеграционный тест для warm-standby:
+Интеграционные тесты изоляции групп, fallback и прямого диспатча:
+
+```bash
+cargo test --test group_routing -- --nocapture
+```
+
+Интеграционный тест warm-standby:
 
 ```bash
 cargo test --test standby_validation -- --nocapture
