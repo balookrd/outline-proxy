@@ -21,8 +21,14 @@ pub struct AppConfig {
     /// when no `[[route]]` is declared — traffic is then unconditionally
     /// routed through the first group.
     pub routing: Option<RoutingTableConfig>,
-    /// Compiled, hot-reloadable routing table. Built in `run_with_config`
-    /// from `routing` when present.
+    /// Compiled, hot-reloadable routing table.
+    ///
+    /// **Two-phase init contract:** always `None` after [`load_config`] returns.
+    /// [`run_with_config`] compiles `routing` into an `Arc<RoutingTable>`, stores
+    /// it here, and only then starts accepting connections. Code that reads this
+    /// field during request handling can therefore rely on it being `Some` whenever
+    /// `routing` is `Some`. Do NOT read this field before `run_with_config` has run
+    /// (e.g. in tests that call `load_config` directly) — use `routing` instead.
     pub routing_table: Option<Arc<RoutingTable>>,
     pub metrics: Option<MetricsConfig>,
     #[cfg(feature = "tun")]

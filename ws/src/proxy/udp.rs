@@ -99,10 +99,13 @@ async fn classify_decision(
     as_route(primary)
 }
 
-fn need_direct_socket(config: &AppConfig) -> bool {
-    // Always allocate when routing is configured — any route may resolve to
-    // Direct. The socket cost is negligible compared to inspecting every
-    // rule's target at associate time.
+/// Returns `true` when a per-association direct UDP socket must be pre-allocated.
+///
+/// We allocate eagerly whenever a routing table is active because any rule may
+/// resolve to `Direct` at packet time. Inspecting every rule's target up-front
+/// would couple this to routing internals and still require a fallback for
+/// dynamically reloaded rules; a single socket bind is cheap by comparison.
+fn routing_table_active(config: &AppConfig) -> bool {
     config.routing_table.is_some()
 }
 
@@ -128,14 +131,16 @@ struct UdpResponse {
     uplink_name: String,
 }
 
-/// Per-association map of group-name → context, plus the downlink task
-/// spawned for each active group.
-struct GroupUdpRegistry {
+/// Per-association map of group-name → per-group UDP context, plus the
+/// downlink tasks spawned for each active group. Owned exclusively by one
+/// UDP associate session; not shared with other associations or the global
+/// [`UplinkRegistry`].
+struct AssocGroupMap {
     map: Mutex<HashMap<String, GroupUdpContext>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
 }
 
-impl GroupUdpRegistry {
+impl AssocGroupMap {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
@@ -162,7 +167,7 @@ impl GroupUdpRegistry {
 /// transport and pushes responses into `responses`. All subsequent callers
 /// reuse the cached context.
 async fn resolve_group_context(
-    registry_groups: &Arc<GroupUdpRegistry>,
+    registry_groups: &Arc<AssocGroupMap>,
     registry: &UplinkRegistry,
     group_name: &str,
     responses: &mpsc::Sender<UdpResponse>,
@@ -292,7 +297,7 @@ pub(super) async fn handle_udp_associate(
 
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
-        let direct_socket = if need_direct_socket(&config) {
+        let direct_socket = if routing_table_active(&config) {
             let std_sock = crate::transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
@@ -304,7 +309,7 @@ pub(super) async fn handle_udp_associate(
         };
 
         let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
-        let groups = GroupUdpRegistry::new();
+        let groups = AssocGroupMap::new();
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
 
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &socket_addr_to_target(relay_addr)).await?;
@@ -583,7 +588,7 @@ pub(super) async fn handle_udp_in_tcp(
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
-        let direct_socket = if need_direct_socket(&config) {
+        let direct_socket = if routing_table_active(&config) {
             let std_sock = crate::transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
@@ -599,7 +604,7 @@ pub(super) async fn handle_udp_in_tcp(
         let (mut client_read, client_write) = client.into_split();
         let client_write = Arc::new(Mutex::new(client_write));
 
-        let groups = GroupUdpRegistry::new();
+        let groups = AssocGroupMap::new();
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
 
         let groups_uplink = Arc::clone(&groups);

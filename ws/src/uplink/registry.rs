@@ -37,22 +37,7 @@ impl UplinkRegistry {
         if groups.is_empty() {
             bail!("no uplink groups configured");
         }
-        let mut seen_uplink_names: HashMap<String, String> = HashMap::new();
-        for group in &groups {
-            for uplink in &group.uplinks {
-                if let Some(other_group) =
-                    seen_uplink_names.insert(uplink.name.clone(), group.name.clone())
-                {
-                    bail!(
-                        "uplink name \"{}\" is used in both groups \"{}\" and \"{}\"; \
-                         uplink names must be globally unique",
-                        uplink.name,
-                        other_group,
-                        group.name
-                    );
-                }
-            }
-        }
+        validate_uplink_names(&groups)?;
         let mut by_name = HashMap::with_capacity(groups.len());
         let mut managed = Vec::with_capacity(groups.len());
         for (index, group) in groups.into_iter().enumerate() {
@@ -82,22 +67,7 @@ impl UplinkRegistry {
         // Reject collisions on uplink names across groups so that Prometheus
         // labels (`uplink="…"`) remain unambiguous until etap 6 adds a `group`
         // label.
-        let mut seen_uplink_names: HashMap<String, String> = HashMap::new();
-        for group in &groups {
-            for uplink in &group.uplinks {
-                if let Some(other_group) =
-                    seen_uplink_names.insert(uplink.name.clone(), group.name.clone())
-                {
-                    bail!(
-                        "uplink name \"{}\" is used in both groups \"{}\" and \"{}\"; \
-                         uplink names must be globally unique",
-                        uplink.name,
-                        other_group,
-                        group.name
-                    );
-                }
-            }
-        }
+        validate_uplink_names(&groups)?;
 
         let mut by_name = HashMap::with_capacity(groups.len());
         let mut managed = Vec::with_capacity(groups.len());
@@ -204,6 +174,29 @@ impl UplinkRegistry {
             by_name,
         }
     }
+}
+
+/// Reject duplicate uplink names across all groups.
+///
+/// Uplink names must be globally unique so that Prometheus `uplink="…"` labels
+/// remain unambiguous. Called by both [`UplinkRegistry::new`] and
+/// [`UplinkRegistry::new_with_state`] to keep the check in one place.
+fn validate_uplink_names(groups: &[UplinkGroupConfig]) -> Result<()> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    for group in groups {
+        for uplink in &group.uplinks {
+            if let Some(other_group) = seen.insert(uplink.name.clone(), group.name.clone()) {
+                bail!(
+                    "uplink name \"{}\" is used in both groups \"{}\" and \"{}\"; \
+                     uplink names must be globally unique",
+                    uplink.name,
+                    other_group,
+                    group.name
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn log_registry_summary(registry: &UplinkRegistry) {
