@@ -11,6 +11,7 @@ use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use crate::transport::AnyWsStream;
 use crate::types::TargetAddr;
 
+use super::state::StateStore;
 use super::utils::transport_key_prefix;
 
 #[derive(Clone)]
@@ -36,6 +37,9 @@ pub(super) struct UplinkManagerInner {
     /// Notified when a runtime failure sets a fresh cooldown, so the probe
     /// loop wakes up immediately instead of waiting for the next interval.
     pub(super) probe_wakeup: Arc<Notify>,
+    /// Optional persistent state store.  When `Some`, active-uplink changes
+    /// are flushed to disk so they survive process restarts.
+    pub(super) state_store: Option<Arc<StateStore>>,
 }
 
 #[derive(Clone, Debug)]

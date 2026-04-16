@@ -1,3 +1,9 @@
+# Path for persisting the active-uplink selection across restarts.
+# Defaults to the config file path with extension replaced by ".state.toml"
+# (i.e. this file → config.state.toml in the same directory).
+# Override when the config directory is not writable by the process, e.g.:
+# state_path = "/var/lib/outline-ws-rust/state.toml"
+
 [socks5]
 # Optional. If omitted, the SOCKS5 listener is disabled.
 listen = "[::]:1080"

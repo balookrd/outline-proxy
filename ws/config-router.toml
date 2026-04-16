@@ -1,5 +1,11 @@
 # Router / embedded device configuration example.
 #
+# state_path: path for persisting active-uplink selection across restarts.
+# Defaults to the config file path with ".state.toml" extension.
+# On routers the config is often in /etc/ (read-only for the service user);
+# point state_path to a writable location instead:
+# state_path = "/var/lib/outline-ws-rust/state.toml"
+#
 # Tuned for devices with limited RAM (32–128 MB free) and a single slow CPU
 # core (MIPS/ARM ~500 MHz). Start with these values and adjust based on your
 # device's actual free memory.

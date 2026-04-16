@@ -76,4 +76,10 @@ pub struct Args {
     /// Has no effect when worker_threads=1 (current_thread scheduler has no extra threads).
     #[arg(long, env = "THREAD_STACK_SIZE_KB")]
     pub thread_stack_size_kb: Option<usize>,
+
+    /// Path for persisting active-uplink state across restarts.
+    /// Overrides the default (config path with .state.toml extension) and
+    /// the state_path key in the config file.
+    #[arg(long, env = "STATE_PATH")]
+    pub state_path: Option<PathBuf>,
 }

@@ -16,6 +16,7 @@ use tracing::info;
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 
 use super::selection::{effective_latency, selection_score};
+use super::state::StateStore;
 use super::types::{
     StandbyPool, StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerInner,
     UplinkManagerSnapshot, UplinkSnapshot, UplinkStatus,
@@ -74,6 +75,22 @@ impl UplinkManager {
         probe: ProbeConfig,
         load_balancing: LoadBalancingConfig,
     ) -> Result<Self> {
+        Self::new_with_state(group_name, uplinks, probe, load_balancing, None, None, None, None)
+    }
+
+    /// Like [`new`] but also accepts a [`StateStore`] for persistence and
+    /// optional initial active-uplink names to restore from a previous run.
+    /// Names that no longer match any configured uplink are silently ignored.
+    pub fn new_with_state(
+        group_name: impl Into<String>,
+        uplinks: Vec<UplinkConfig>,
+        probe: ProbeConfig,
+        load_balancing: LoadBalancingConfig,
+        state_store: Option<Arc<StateStore>>,
+        initial_global_active: Option<String>,
+        initial_tcp_active: Option<String>,
+        initial_udp_active: Option<String>,
+    ) -> Result<Self> {
         if uplinks.is_empty() {
             bail!("at least one uplink must be configured");
         }
@@ -81,21 +98,33 @@ impl UplinkManager {
         let count = uplinks.len();
         let probe_max_concurrent = probe.max_concurrent;
         let probe_max_dials = probe.max_dials;
+        let uplinks: Vec<Arc<UplinkConfig>> = uplinks.into_iter().map(Arc::new).collect();
+
+        // Resolve persisted names to indices.  Unknown names are ignored so
+        // that removing an uplink from config doesn't block startup.
+        let find = |name: Option<String>| -> Option<usize> {
+            name.and_then(|n| uplinks.iter().position(|u| u.name == n))
+        };
+        let global_active = RwLock::new(find(initial_global_active));
+        let tcp_active = RwLock::new(find(initial_tcp_active));
+        let udp_active = RwLock::new(find(initial_udp_active));
+
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
                 group_name: group_name.into(),
-                uplinks: uplinks.into_iter().map(Arc::new).collect(),
+                uplinks,
                 probe,
                 load_balancing,
                 statuses: RwLock::new(vec![UplinkStatus::default(); count]),
-                global_active_uplink: RwLock::new(None),
-                tcp_active_uplink: RwLock::new(None),
-                udp_active_uplink: RwLock::new(None),
+                global_active_uplink: global_active,
+                tcp_active_uplink: tcp_active,
+                udp_active_uplink: udp_active,
                 sticky_routes: RwLock::new(HashMap::new()),
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),
                 probe_execution_limit: Arc::new(Semaphore::new(probe_max_concurrent)),
                 probe_dial_limit: Arc::new(Semaphore::new(probe_max_dials)),
                 probe_wakeup: Arc::new(Notify::new()),
+                state_store,
             }),
         })
     }

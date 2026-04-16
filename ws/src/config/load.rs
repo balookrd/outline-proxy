@@ -25,10 +25,13 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         let raw = fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to read {}", path.display()))?;
-        Some(
-            toml::from_str::<ConfigFile>(&raw)
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        Some(match ext {
+            "yaml" | "yml" => serde_yml::from_str::<ConfigFile>(&raw)
                 .with_context(|| format!("failed to parse {}", path.display()))?,
-        )
+            _ => toml::from_str::<ConfigFile>(&raw)
+                .with_context(|| format!("failed to parse {}", path.display()))?,
+        })
     } else {
         None
     };
@@ -67,6 +70,14 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
 
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
 
+    // State file path priority: CLI flag > config key > default (config
+    // path with extension replaced by ".state.toml").
+    let state_path = args
+        .state_path
+        .clone()
+        .or_else(|| file.as_ref().and_then(|f| f.state_path.clone()))
+        .or_else(|| Some(path.with_extension("state.toml")));
+
     Ok(AppConfig {
         listen,
         socks5_auth,
@@ -79,6 +90,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         udp_recv_buf_bytes,
         udp_send_buf_bytes,
         direct_fwmark,
+        state_path,
     })
 }
 

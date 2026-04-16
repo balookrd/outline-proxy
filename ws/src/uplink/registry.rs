@@ -9,12 +9,14 @@
 //! returns the first configured group and is what lib.rs hands out.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
 use tracing::info;
 
 use crate::config::UplinkGroupConfig;
 
+use super::state::StateStore;
 use super::types::{UplinkManager, UplinkManagerSnapshot};
 
 /// A named [`UplinkManager`].
@@ -32,6 +34,48 @@ pub struct UplinkRegistry {
 
 impl UplinkRegistry {
     pub fn new(groups: Vec<UplinkGroupConfig>) -> Result<Self> {
+        if groups.is_empty() {
+            bail!("no uplink groups configured");
+        }
+        let mut seen_uplink_names: HashMap<String, String> = HashMap::new();
+        for group in &groups {
+            for uplink in &group.uplinks {
+                if let Some(other_group) =
+                    seen_uplink_names.insert(uplink.name.clone(), group.name.clone())
+                {
+                    bail!(
+                        "uplink name \"{}\" is used in both groups \"{}\" and \"{}\"; \
+                         uplink names must be globally unique",
+                        uplink.name,
+                        other_group,
+                        group.name
+                    );
+                }
+            }
+        }
+        let mut by_name = HashMap::with_capacity(groups.len());
+        let mut managed = Vec::with_capacity(groups.len());
+        for (index, group) in groups.into_iter().enumerate() {
+            if by_name.insert(group.name.clone(), index).is_some() {
+                bail!("duplicate uplink group name \"{}\"", group.name);
+            }
+            let manager = UplinkManager::new(
+                group.name.clone(),
+                group.uplinks,
+                group.probe,
+                group.load_balancing,
+            )?;
+            managed.push(UplinkGroup { name: group.name, manager });
+        }
+        Ok(Self { groups: managed, by_name })
+    }
+
+    /// Like [`new`] but restores active-uplink selection from `state_store`
+    /// (loaded by the caller) and wires it for future persistence.
+    pub async fn new_with_state(
+        groups: Vec<UplinkGroupConfig>,
+        state_store: Option<Arc<StateStore>>,
+    ) -> Result<Self> {
         if groups.is_empty() {
             bail!("no uplink groups configured");
         }
@@ -61,11 +105,22 @@ impl UplinkRegistry {
             if by_name.insert(group.name.clone(), index).is_some() {
                 bail!("duplicate uplink group name \"{}\"", group.name);
             }
-            let manager = UplinkManager::new(
+            // Load persisted active uplink names for this group (if any).
+            let (init_global, init_tcp, init_udp) = if let Some(store) = &state_store {
+                let gs = store.group_state(&group.name).await;
+                (gs.global_active, gs.tcp_active, gs.udp_active)
+            } else {
+                (None, None, None)
+            };
+            let manager = UplinkManager::new_with_state(
                 group.name.clone(),
                 group.uplinks,
                 group.probe,
                 group.load_balancing,
+                state_store.clone(),
+                init_global,
+                init_tcp,
+                init_udp,
             )?;
             managed.push(UplinkGroup { name: group.name, manager });
         }
