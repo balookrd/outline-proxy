@@ -1,6 +1,6 @@
 //! Sorted, merged IPv4/IPv6 CIDR set with O(log n) lookup.
 //!
-//! Used by policy routing rules and the legacy bypass list.
+//! Used by policy routing rules .
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;

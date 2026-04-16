@@ -61,7 +61,7 @@ pub(in crate::tun_tcp) struct TcpFlowState {
     /// manager, not the engine's default group.
     pub(in crate::tun_tcp) manager: UplinkManager,
     /// The route this flow was created for — `Group` for tunneled flows,
-    /// `Direct` for local-socket bypass.
+    /// `Direct` for local-socket direct route.
     pub(in crate::tun_tcp) route: TunRoute,
     pub(in crate::tun_tcp) upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
     pub(in crate::tun_tcp) close_signal: watch::Sender<bool>,

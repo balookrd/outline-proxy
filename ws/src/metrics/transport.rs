@@ -1,11 +1,11 @@
 use super::METRICS;
 use std::time::Duration;
 
-pub const BYPASS_UPLINK_LABEL: &str = "bypass";
-/// Group label used for traffic that bypasses all uplinks (direct route).
+pub const DIRECT_UPLINK_LABEL: &str = "direct";
+/// Group label used for traffic that routes outside all uplinks (direct route).
 /// Kept distinct from uplink group names so Grafana can separate direct
 /// traffic from tunnelled traffic by the `group` dimension alone.
-pub const BYPASS_GROUP_LABEL: &str = "direct";
+pub const DIRECT_GROUP_LABEL: &str = "direct";
 
 pub fn record_transport_connect(source: &'static str, mode: &'static str, result: &'static str) {
     METRICS

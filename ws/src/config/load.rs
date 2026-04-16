@@ -572,7 +572,7 @@ fn load_balancing_config_from_group(
 
 /// Parse the `[[route]]` list into a `RoutingTableConfig`.
 ///
-/// Returns `Ok(None)` when no `[[route]]` is declared (legacy bypass path).
+/// Returns `Ok(None)` when no `[[route]]` is declared (no routing table declared).
 /// Otherwise validates:
 /// - exactly one rule has `default = true` (and it has no prefixes/file);
 /// - non-default rules have `prefixes` and/or `file`;

@@ -359,6 +359,7 @@ pub(super) async fn run_http_probe(
         path
     };
 
+    let target_wire = target.to_wire_bytes()?;
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
     let (mut writer, mut reader) = {
@@ -434,7 +435,6 @@ pub(super) async fn run_http_probe(
             },
         }
     };
-    let target_wire = target.to_wire_bytes()?;
     let result = async {
         writer
             .send_chunk(&target_wire)
@@ -517,6 +517,7 @@ pub(super) async fn run_tcp_tunnel_probe(
         TargetAddr::Domain(probe.host.clone(), probe.port)
     };
 
+    let target_wire = target.to_wire_bytes()?;
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
     let (mut writer, mut reader) = {
@@ -596,7 +597,6 @@ pub(super) async fn run_tcp_tunnel_probe(
         }
     };
 
-    let target_wire = target.to_wire_bytes()?;
     let result = async {
         writer
             .send_chunk(&target_wire)
@@ -657,6 +657,11 @@ pub(super) async fn run_dns_probe(
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: crate::types::WsTransportMode,
 ) -> Result<bool> {
+    let dns_server = probe.target_addr()?;
+    let query = build_dns_query(&probe.name);
+    let mut payload = dns_server.to_wire_bytes()?;
+    payload.extend_from_slice(&query);
+
     let transport = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
@@ -699,11 +704,6 @@ pub(super) async fn run_dns_probe(
             },
         }
     };
-
-    let dns_server = probe.target_addr()?;
-    let query = build_dns_query(&probe.name);
-    let mut payload = dns_server.to_wire_bytes()?;
-    payload.extend_from_slice(&query);
 
     let result = async {
         transport

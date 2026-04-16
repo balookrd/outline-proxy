@@ -14,7 +14,7 @@ pub use self::process::{init, spawn_process_metrics_sampler, update_process_memo
 pub use self::session::{SessionTracker, track_session};
 pub use self::snapshot::render_prometheus;
 pub use self::transport::{
-    BYPASS_GROUP_LABEL, BYPASS_UPLINK_LABEL, add_bytes, add_probe_bytes,
+    DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, add_bytes, add_probe_bytes,
     add_transport_connects_active, add_udp_datagram, add_upstream_transports_active,
     record_dropped_oversized_udp_packet, record_failover, record_metrics_http_request,
     record_probe, record_probe_wakeup, record_request, record_runtime_failure,

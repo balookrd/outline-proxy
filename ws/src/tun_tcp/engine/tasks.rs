@@ -203,7 +203,7 @@ impl TunTcpEngine {
                         return;
                     }
                     clear_flow_metrics(&mut state);
-                    state.uplink_name = "bypass".to_string();
+                    state.uplink_name = "direct".to_string();
                     state.upstream_writer = Some(Arc::clone(&upstream_writer));
                     let pending = state.pending_client_data.drain(..).collect::<Vec<_>>();
                     let should_close = client_fin_seen(state.status);
@@ -232,8 +232,8 @@ impl TunTcpEngine {
                 );
                 metrics::record_uplink_selected(
                     "tcp",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                 );
                 info!(flow_id, remote = %target, "created direct TUN TCP flow");
                 return;
@@ -763,8 +763,8 @@ impl TunTcpEngine {
                                 metrics::add_bytes(
                                     "tcp",
                                     "upstream_to_client",
-                                    metrics::BYPASS_GROUP_LABEL,
-                                    metrics::BYPASS_UPLINK_LABEL,
+                                    metrics::DIRECT_GROUP_LABEL,
+                                    metrics::DIRECT_UPLINK_LABEL,
                                     n,
                                 );
                             },

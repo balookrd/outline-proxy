@@ -251,7 +251,7 @@ impl TunUdpEngine {
             close_udp_flow(flow, "idle_timeout").await;
         }
 
-        // Clean up idle direct (bypass) flows.
+        // Clean up idle direct-routed flows.
         let mut direct = self.inner.direct_flows.lock().await;
         let expired_keys: Vec<super::UdpFlowKey> = direct
             .iter()
@@ -264,8 +264,8 @@ impl TunUdpEngine {
             if let Some(flow) = direct.remove(&key) {
                 flow._reader.abort();
                 metrics::record_tun_flow_closed(
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                     "idle_timeout",
                     now.saturating_duration_since(flow.created_at),
                 );

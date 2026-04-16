@@ -36,7 +36,7 @@ pub(super) struct UdpFlowState {
 
 pub(super) type FlowTable = Arc<Mutex<HashMap<UdpFlowKey, UdpFlowState>>>;
 
-/// State for a direct (bypass) UDP flow: a plain socket that forwards
+/// State for a direct-routed UDP flow: a plain socket that forwards
 /// datagrams to the destination without any tunnel framing.
 pub(super) struct DirectUdpFlowState {
     pub(super) id: u64,

@@ -47,7 +47,7 @@ impl TunTcpEngine {
             TunRoute::Group { manager, .. } => (manager.clone(), route.clone()),
             TunRoute::Direct { .. } => {
                 // For direct flows, use a dummy manager (default group); the
-                // actual connect bypasses the uplink pipeline entirely.
+                // actual connect skips the uplink pipeline entirely.
                 (self.inner.dispatch.default_group().clone(), route)
             },
             TunRoute::Drop { reason } => {
