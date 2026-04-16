@@ -34,6 +34,19 @@ const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 // respond to our FIN.
 const POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
+// Direct TCP sessions (bypass-routed) are held open as long as both sides
+// keep the connection alive.  Push-notification clients, VPN keepalives, and
+// similar applications create long-lived sessions that may be genuinely idle
+// (no bytes in either direction) for extended periods — neither side sends
+// EOF.  Without a bound these accumulate indefinitely.
+//
+// DIRECT_IDLE_TIMEOUT closes a direct session once BOTH directions have been
+// silent for this long.  Activity in either direction resets the timer.
+// 10 minutes is long enough for almost all real push / keepalive traffic
+// (Telegram heartbeats: ~30 s; FCM: ~28 min → those connections will keep
+//  sending keepalives so the timer never fires for them).
+const DIRECT_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+
 enum UplinkTaskResult {
     Finished,
     /// Kept in the signature of the drive loop for future use (protocols where
@@ -739,6 +752,15 @@ async fn handle_tcp_direct(
     let (mut client_read, mut client_write) = client.into_split();
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
 
+    // Activity channel: c2u and u2c send a token after every successful read.
+    // The idle watcher resets its timer on each token; if the channel is silent
+    // for DIRECT_IDLE_TIMEOUT it fires, closing the session.
+    let (activity_tx, mut activity_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    let activity_c2u = activity_tx.clone();
+    let activity_u2c = activity_tx.clone();
+    // Drop the original sender — the watcher exits when both task clones drop.
+    drop(activity_tx);
+
     let c2u = async move {
         let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
         loop {
@@ -746,6 +768,7 @@ async fn handle_tcp_direct(
             if read == 0 {
                 break;
             }
+            let _ = activity_c2u.send(());
             metrics::add_bytes(
                 "tcp",
                 "client_to_upstream",
@@ -765,6 +788,7 @@ async fn handle_tcp_direct(
             if read == 0 {
                 break;
             }
+            let _ = activity_u2c.send(());
             metrics::add_bytes(
                 "tcp",
                 "upstream_to_client",
@@ -776,6 +800,22 @@ async fn handle_tcp_direct(
         }
         client_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
+    };
+
+    // Idle watcher: loops receiving activity tokens.  Each received token
+    // resets the DIRECT_IDLE_TIMEOUT deadline.  If the deadline expires before
+    // the next token (no data in either direction), the future returns,
+    // signalling that the session should be forcibly closed.  When the channel
+    // is closed (both tasks finished normally), recv() returns None and the
+    // watcher exits without triggering the idle path.
+    let idle_watcher = async move {
+        loop {
+            match timeout(DIRECT_IDLE_TIMEOUT, activity_rx.recv()).await {
+                Ok(Some(())) => continue,
+                Ok(None) => return false, // channel closed — tasks completed normally
+                Err(_elapsed) => return true, // idle timeout
+            }
+        }
     };
 
     // Drive both halves concurrently.
@@ -791,19 +831,25 @@ async fn handle_tcp_direct(
     // server that keeps the connection half-open indefinitely — e.g. a VPN or
     // signalling server — holds two socket FDs (inbound SOCKS + outbound
     // direct) open forever.
+    //
+    // If neither side closes and no data flows for DIRECT_IDLE_TIMEOUT, the
+    // idle watcher fires and we forcibly close both sides.
     let mut c2u_task = tokio::spawn(c2u);
     let mut u2c_task = tokio::spawn(u2c);
+    let mut idle_task = tokio::spawn(idle_watcher);
 
     tokio::select! {
         c2u_done = &mut c2u_task => {
+            idle_task.abort();
+            let _ = idle_task.await;
             match c2u_done {
                 Ok(Ok(())) => {
                     match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, &mut u2c_task).await {
                         Ok(Ok(result)) => result,
                         Ok(Err(e)) => Err(anyhow!("direct TCP u2c task failed: {e}")),
                         Err(_elapsed) => {
-                            debug!(
-                                target = %target,
+                            info!(
+                                %target,
                                 timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
                                 "direct TCP upstream did not close within timeout after client EOF"
                             );
@@ -818,11 +864,45 @@ async fn handle_tcp_direct(
             }
         }
         u2c_done = &mut u2c_task => {
+            idle_task.abort();
+            let _ = idle_task.await;
             c2u_task.abort();
             let _ = c2u_task.await;
             match u2c_done {
                 Ok(result) => result,
                 Err(e) => Err(anyhow!("direct TCP u2c task panicked: {e}")),
+            }
+        }
+        idle_done = &mut idle_task => {
+            match idle_done {
+                Ok(true) => {
+                    // Idle timeout — no data in either direction for DIRECT_IDLE_TIMEOUT.
+                    info!(
+                        %target,
+                        timeout_secs = DIRECT_IDLE_TIMEOUT.as_secs(),
+                        "direct TCP session idle timeout — closing"
+                    );
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let _ = c2u_task.await;
+                    let _ = u2c_task.await;
+                    Ok(())
+                }
+                Ok(false) => {
+                    // Both tasks completed before select picked them up; clean exit.
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let _ = c2u_task.await;
+                    let _ = u2c_task.await;
+                    Ok(())
+                }
+                Err(e) => {
+                    c2u_task.abort();
+                    u2c_task.abort();
+                    let _ = c2u_task.await;
+                    let _ = u2c_task.await;
+                    Err(anyhow!("direct TCP idle watcher panicked: {e}"))
+                }
             }
         }
     }
