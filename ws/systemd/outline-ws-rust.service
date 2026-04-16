@@ -13,7 +13,7 @@ Environment=MIMALLOC_ARENA_RESERVE=262144
 # The default path (same dir as config, .state.toml extension) would land in
 # /etc/ which is read-only under ProtectSystem=strict + DynamicUser.
 Environment=STATE_PATH=/var/lib/outline-ws-rust/state.toml
-ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config.toml
+ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config.yaml
 Restart=on-failure
 RestartSec=3s
 
