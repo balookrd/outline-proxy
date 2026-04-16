@@ -66,6 +66,12 @@ pin_project! {
     }
 }
 
+impl H3WsStream {
+    pub(crate) fn is_connection_alive(&self) -> bool {
+        self._shared_connection.is_open()
+    }
+}
+
 impl Stream for H3WsStream {
     type Item = Result<SockudoMessage, sockudo_ws::Error>;
 
@@ -183,6 +189,7 @@ impl SharedH3Connection {
         })
         .await
         .map_err(|_| {
+            self.connection.close(0x100u32.into(), b"open_websocket timeout");
             anyhow!(
                 "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -192,6 +199,7 @@ impl SharedH3Connection {
         let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
             .await
             .map_err(|_| {
+                self.connection.close(0x100u32.into(), b"open_websocket timeout");
                 anyhow!(
                     "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -211,6 +219,12 @@ impl SharedH3Connection {
             ),
             _shared_connection: Arc::clone(self),
         })
+    }
+}
+
+impl crate::transport::SharedConnectionHealth for SharedH3Connection {
+    fn is_open(&self) -> bool {
+        self.is_open()
     }
 }
 

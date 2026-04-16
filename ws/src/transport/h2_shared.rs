@@ -117,6 +117,7 @@ impl SharedH2Connection {
         })
         .await
         .map_err(|_| {
+            self.closed.store(true, Ordering::Relaxed);
             anyhow!(
                 "HTTP/2 websocket CONNECT send timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -126,6 +127,7 @@ impl SharedH2Connection {
         let mut response = timeout(OPEN_WEBSOCKET_TIMEOUT, response_future)
             .await
             .map_err(|_| {
+                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -139,6 +141,7 @@ impl SharedH2Connection {
         let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
             .map_err(|_| {
+                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket upgrade timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -146,10 +149,16 @@ impl SharedH2Connection {
             })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
-        let shared_connection: Arc<dyn Send + Sync> = self.clone();
+        let shared_connection: Arc<dyn super::ws_stream::SharedConnectionHealth> = self.clone();
         Ok(AnyWsStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
         })
+    }
+}
+
+impl super::ws_stream::SharedConnectionHealth for SharedH2Connection {
+    fn is_open(&self) -> bool {
+        self.is_open()
     }
 }
 
