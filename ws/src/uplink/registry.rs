@@ -20,13 +20,13 @@ use super::state::StateStore;
 use super::types::{UplinkManager, UplinkManagerSnapshot};
 
 /// A named [`UplinkManager`].
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UplinkGroup {
     pub name: String,
     pub manager: UplinkManager,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct UplinkRegistry {
     groups: Vec<UplinkGroup>,
     by_name: HashMap<String, usize>,
