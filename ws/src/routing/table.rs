@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -62,6 +62,16 @@ impl RoutingTable {
             let cidrs = build_cidr_set(rule)
                 .await
                 .with_context(|| format!("failed to build route {} CIDR set", index + 1))?;
+            // An inverted rule with an empty CIDR set would match every IP
+            // and silently swallow all traffic — almost certainly a misconfig
+            // (missing `prefixes` or an empty/unreadable `file`). Refuse it.
+            if rule.invert && cidrs.is_empty() {
+                bail!(
+                    "route {} has `invert = true` but no prefixes; \
+                     an inverted empty set would match every address",
+                    index + 1
+                );
+            }
             rules.push(CompiledRule {
                 cidrs: Arc::new(RwLock::new(cidrs)),
                 inline_prefixes: rule.inline_prefixes.clone(),
@@ -135,6 +145,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
         let cidrs = Arc::clone(&rule.cidrs);
         let inline = rule.inline_prefixes.clone();
         let poll = rule.file_poll;
+        let invert = rule.invert;
         let table_for_version = Arc::clone(&table);
         tokio::spawn(async move {
             // Seed from the file's current mtime so the first poll cycle does
@@ -152,6 +163,18 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                 last_mtime = mtime;
                 match reload_rule_cidrs(&file, &inline).await {
                     Ok(new_set) => {
+                        // Safety net: an inverted rule with an empty set
+                        // would match everything. Refuse the swap and keep
+                        // the previous (valid) set.
+                        if invert && new_set.is_empty() {
+                            warn!(
+                                rule_index = index,
+                                path = %file.display(),
+                                "refusing to reload inverted route with empty CIDR set — \
+                                 would match every address; keeping previous"
+                            );
+                            continue;
+                        }
                         let count_v4 = new_set.v4_range_count();
                         let count_v6 = new_set.v6_range_count();
                         *cidrs.write().await = new_set;
@@ -362,6 +385,80 @@ mod tests {
         );
     }
 
+    /// Test that `spawn_route_watchers` reloads a file-backed CIDR set when
+    /// the file changes on disk and bumps `RoutingTable::version`.
+    ///
+    /// Note: relies on the OS updating file mtime on write.  On APFS and ext4
+    /// (nanosecond resolution) this is always reliable; on HFS+ (1-second
+    /// resolution) there is a small chance of a false no-change if the write
+    /// happens in the same 1-second bucket as the initial compile.  The test
+    /// mitigates this by sleeping one full poll cycle (50 ms > file_poll =
+    /// 30 ms) before the re-write so the watcher seeds its mtime first.
+    #[tokio::test]
+    async fn watcher_reloads_cidr_file_and_bumps_version() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let tmp = std::env::temp_dir().join(format!(
+            "outline_route_watcher_test_{}.txt",
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos()
+        ));
+
+        // Initial content: 1.0.0.0/8
+        tokio::fs::write(&tmp, b"1.0.0.0/8\n").await.unwrap();
+
+        let cfg = RoutingTableConfig {
+            rules: vec![RouteRule {
+                inline_prefixes: vec![],
+                file: Some(tmp.clone()),
+                file_poll: Duration::from_millis(30),
+                target: RouteTarget::Direct,
+                fallback: None,
+                invert: false,
+            }],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let table = std::sync::Arc::new(RoutingTable::compile(&cfg).await.unwrap());
+        assert_eq!(table.version(), 0, "version must start at 0");
+
+        // Initial routing: 1.x.x.x → Direct, anything else → main
+        assert_eq!(table.resolve(&v4(1, 2, 3, 4)).await.primary, RouteTarget::Direct);
+        assert_eq!(
+            table.resolve(&v4(2, 2, 2, 2)).await.primary,
+            RouteTarget::Group("main".into())
+        );
+
+        spawn_route_watchers(std::sync::Arc::clone(&table));
+
+        // Let the watcher task start and seed its initial mtime (one poll cycle).
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Change the prefix file to 2.0.0.0/8 — mtime is updated by the OS on write.
+        tokio::fs::write(&tmp, b"2.0.0.0/8\n").await.unwrap();
+
+        // Poll until the watcher fires (up to 2 s).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            if table.version() >= 1 {
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                let _ = tokio::fs::remove_file(&tmp).await;
+                panic!("watcher did not reload the CIDR file within 2 s");
+            }
+        }
+        assert_eq!(table.version(), 1);
+
+        // After reload: 2.x.x.x → Direct, 1.x.x.x falls through to default (main)
+        assert_eq!(table.resolve(&v4(2, 2, 2, 2)).await.primary, RouteTarget::Direct);
+        assert_eq!(
+            table.resolve(&v4(1, 2, 3, 4)).await.primary,
+            RouteTarget::Group("main".into())
+        );
+
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+
     #[tokio::test]
     async fn inverted_and_normal_rules_coexist() {
         let cfg = RoutingTableConfig {
@@ -393,6 +490,20 @@ mod tests {
         assert_eq!(
             table.resolve(&v4(5, 1, 2, 3)).await.primary,
             RouteTarget::Group("backup".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn compile_rejects_inverted_rule_with_empty_cidr_set() {
+        let cfg = RoutingTableConfig {
+            rules: vec![inverted_rule(&[], RouteTarget::Direct, None)],
+            default_target: RouteTarget::Group("main".into()),
+            default_fallback: None,
+        };
+        let err = RoutingTable::compile(&cfg).await.unwrap_err().to_string();
+        assert!(
+            err.contains("invert = true") && err.contains("no prefixes"),
+            "unexpected error: {err}"
         );
     }
 }
