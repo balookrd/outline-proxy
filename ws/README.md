@@ -172,7 +172,9 @@ The project is intentionally practical, but there are still boundaries:
 
 ## Repository Layout
 
-- [`config.toml`](config.toml) - example configuration
+- [`config.toml`](config.toml) - example configuration (TOML)
+- [`config.yaml`](config.yaml) - example configuration (YAML)
+- [`config-router.yaml`](config-router.yaml) - example router configuration (YAML)
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
@@ -242,9 +244,13 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 
 | Feature | Default | Effect |
 |---|---|---|
-| `h3` | ✓ | Include H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Include Prometheus metrics endpoint (pulls in prometheus + serde_json) |
-| `router` | — | Convenience alias for `--no-default-features --features router` (disables the default optional features above) |
+| `h3` | ✓ | H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
+| `metrics` | ✓ | Prometheus metrics endpoint (pulls in prometheus + serde_json) |
+| `tun` | ✓ | TUN device support (tun2udp + tun2tcp engines); remove to exclude all TUN code |
+| `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn |
+| `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |
+| `multi-thread` | ✓ | Tokio work-stealing scheduler; disable to force `current_thread` and save ~100–200 KB |
+| `router` | — | Convenience alias for `--no-default-features --features router` (disables all defaults above) |
 
 > **Why disable for routers:** `h3`/QUIC adds ~1–2 MB of binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes both at once.
 
@@ -446,7 +452,7 @@ socks5:
 
 ## Configuration
 
-By default the process reads [`config.toml`](config.toml).
+By default the process reads [`config.toml`](config.toml). YAML format (`.yaml` / `.yml`) is also supported — [`config.yaml`](config.yaml) is the YAML equivalent of the default example.
 
 Example:
 
@@ -599,6 +605,7 @@ via = "main"
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
+- `direct_fwmark` (optional, top-level): `SO_MARK` value applied to TCP and UDP sockets opened for `direct`-routed connections. Use when bypass traffic must be tagged for OS-level policy routing to avoid loops (e.g. the bypass route must itself not be intercepted by the TUN interface).
 
 ### Useful CLI and env overrides
 
@@ -671,6 +678,10 @@ Internally each rule's inline + file prefixes are merged into a [`CidrSet`](src/
 ### Hot-reload
 
 Every rule with `file = "..."` gets a background tokio task that polls `mtime` every `file_poll_secs` seconds. On change the rule's CIDR set is rebuilt from its inline + reloaded file and swapped atomically (`Arc<RwLock<CidrSet>>`) — other rules and the table shape are unaffected. Parse errors on reload leave the previous CIDR set in place and log a warning.
+
+### Direct session idle timeout
+
+`direct` connections are subject to a 2-minute bidirectional idle timeout. If no bytes flow in either direction for 120 seconds, both sockets are closed and FDs reclaimed. This prevents unbounded FD accumulation from clients that open TCP connections (e.g. DNS-over-HTTPS, DNS-over-TLS) and abandon them without sending FIN — leaving the server half open indefinitely. Any data activity in either direction resets the timer, so legitimate long-lived push-notification and keepalive connections are unaffected.
 
 ### Fallback semantics
 
@@ -1101,7 +1112,13 @@ SHADOWSOCKS_PASSWORD='Secret0' \
 cargo test --test real_server_h3 -- --nocapture
 ```
 
-There is also a dedicated warm-standby integration test:
+Integration tests for group isolation, fallback, and direct dispatch:
+
+```bash
+cargo test --test group_routing -- --nocapture
+```
+
+Warm-standby integration test:
 
 ```bash
 cargo test --test standby_validation -- --nocapture
