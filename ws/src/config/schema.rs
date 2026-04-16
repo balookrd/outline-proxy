@@ -182,6 +182,9 @@ pub(super) struct RouteSection {
     pub(super) fallback_via: Option<String>,
     pub(super) fallback_direct: Option<bool>,
     pub(super) fallback_drop: Option<bool>,
+    /// If true, the rule matches addresses NOT in the prefix list.
+    /// Useful for "tunnel only listed prefixes, everything else goes direct".
+    pub(super) invert: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

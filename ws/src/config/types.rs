@@ -75,6 +75,8 @@ pub struct RouteRule {
     pub file_poll: Duration,
     pub target: RouteTarget,
     pub fallback: Option<RouteTarget>,
+    /// When true, the rule matches addresses NOT in the CIDR set.
+    pub invert: bool,
 }
 
 /// New: full routing table — ordered rules + explicit default.

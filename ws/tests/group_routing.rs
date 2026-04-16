@@ -107,6 +107,7 @@ fn route_rule(
         file_poll: Duration::from_secs(60),
         target,
         fallback,
+        invert: false,
     }
 }
 

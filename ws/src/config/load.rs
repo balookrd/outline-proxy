@@ -633,6 +633,7 @@ fn load_routing_table(
                 file_poll: Duration::from_secs(section.file_poll_secs.unwrap_or(60)),
                 target,
                 fallback,
+                invert: section.invert.unwrap_or(false),
             });
         }
     }
