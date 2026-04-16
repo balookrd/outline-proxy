@@ -503,15 +503,24 @@ fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
 }
 
 fn default_config_path_if_exists() -> Option<PathBuf> {
-    let path = PathBuf::from("config.toml");
-    path.exists().then_some(path)
+    for name in ["config.yaml", "config.yml", "config.toml"] {
+        let path = PathBuf::from(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
 }
 
 fn load_file_config(path: &Path) -> Result<FileConfig> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
-    toml::from_str(&contents)
-        .with_context(|| format!("failed to parse config file {}", path.display()))
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("yaml" | "yml") => serde_yml::from_str(&contents)
+            .with_context(|| format!("failed to parse config file {}", path.display())),
+        _ => toml::from_str(&contents)
+            .with_context(|| format!("failed to parse config file {}", path.display())),
+    }
 }
 
 fn normalize_access_key_file_extension(extension: Option<String>) -> String {
