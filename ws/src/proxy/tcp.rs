@@ -7,6 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
@@ -23,6 +24,15 @@ use crate::uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
+
+// After the client sends EOF (uplink task returns Finished), the server still
+// has the floor: it may flush in-flight data and then send its own FIN.
+// Without a bound, a server that never sends FIN (e.g. a VPN or signalling
+// server that holds the connection half-open indefinitely) keeps two socket
+// FDs alive forever — the inbound SOCKS socket and the outbound socket to the
+// upstream.  30 seconds is a generous window for any well-behaved server to
+// respond to our FIN.
+const POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum UplinkTaskResult {
     Finished,
@@ -110,9 +120,23 @@ where
                         outcome = "Finished",
                         "uplink finished first (client EOF over socket transport), awaiting downlink"
                     );
-                    match downlink_task.await {
-                        Ok(result) => result,
-                        Err(error) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+                    // The client closed its side; we already sent FIN to the
+                    // upstream.  Give the upstream a bounded window to flush
+                    // any remaining data and send its own FIN.  Without a
+                    // bound, a server that holds the connection half-open
+                    // indefinitely (VPN, signalling, etc.) would keep this
+                    // session and its socket FDs alive forever.
+                    match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, downlink_task).await {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
+                        Err(_elapsed) => {
+                            debug!(
+                                target: "outline_ws_rust::session_death",
+                                timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                                "downstream timed out after client EOF — forcibly closing session"
+                            );
+                            Ok(())
+                        }
                     }
                 }
                 Ok(Ok(UplinkTaskResult::CloseSession)) => {
@@ -715,7 +739,7 @@ async fn handle_tcp_direct(
     let (mut client_read, mut client_write) = client.into_split();
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
 
-    let c2u = async {
+    let c2u = async move {
         let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
         loop {
             let read = client_read.read(&mut buf).await?;
@@ -734,7 +758,7 @@ async fn handle_tcp_direct(
         upstream_write.shutdown().await?;
         Ok::<(), anyhow::Error>(())
     };
-    let u2c = async {
+    let u2c = async move {
         let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
         loop {
             let read = upstream_read.read(&mut buf).await?;
@@ -754,7 +778,54 @@ async fn handle_tcp_direct(
         Ok::<(), anyhow::Error>(())
     };
 
-    tokio::try_join!(c2u, u2c).map(|_| ())
+    // Drive both halves concurrently.
+    //
+    // When EITHER side errors, abort the other immediately.
+    //
+    // When the server closes first (u2c Ok), abort c2u — there is nothing
+    // more to forward and waiting for the client to also close is not
+    // necessary.
+    //
+    // When the CLIENT closes first (c2u Ok), give the server a bounded window
+    // to flush remaining data and send its own FIN.  Without the timeout a
+    // server that keeps the connection half-open indefinitely — e.g. a VPN or
+    // signalling server — holds two socket FDs (inbound SOCKS + outbound
+    // direct) open forever.
+    let mut c2u_task = tokio::spawn(c2u);
+    let mut u2c_task = tokio::spawn(u2c);
+
+    tokio::select! {
+        c2u_done = &mut c2u_task => {
+            match c2u_done {
+                Ok(Ok(())) => {
+                    match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, &mut u2c_task).await {
+                        Ok(Ok(result)) => result,
+                        Ok(Err(e)) => Err(anyhow!("direct TCP u2c task failed: {e}")),
+                        Err(_elapsed) => {
+                            debug!(
+                                target = %target,
+                                timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                                "direct TCP upstream did not close within timeout after client EOF"
+                            );
+                            u2c_task.abort();
+                            let _ = u2c_task.await;
+                            Ok(())
+                        }
+                    }
+                }
+                Ok(Err(e)) => { u2c_task.abort(); let _ = u2c_task.await; Err(e) }
+                Err(e) => { u2c_task.abort(); let _ = u2c_task.await; Err(anyhow!("direct TCP c2u task panicked: {e}")) }
+            }
+        }
+        u2c_done = &mut u2c_task => {
+            c2u_task.abort();
+            let _ = c2u_task.await;
+            match u2c_done {
+                Ok(result) => result,
+                Err(e) => Err(anyhow!("direct TCP u2c task panicked: {e}")),
+            }
+        }
+    }
 }
 
 async fn connect_tcp_uplink(
