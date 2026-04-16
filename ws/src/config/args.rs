@@ -57,12 +57,15 @@ pub struct Args {
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_PATH")]
     pub tun_path: Option<PathBuf>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_NAME")]
     pub tun_name: Option<String>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_MTU")]
     pub tun_mtu: Option<usize>,
 

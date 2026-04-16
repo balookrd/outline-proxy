@@ -99,6 +99,7 @@ pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
     contains_any(&lower_error(error), STANDBY_PROBE_FAILURES)
 }
 
+#[cfg(feature = "tun")]
 pub(crate) fn classify_tun_udp_forward_error(error: &Error) -> &'static str {
     let lower = lower_error(error);
     if lower.contains("all udp uplinks failed") {

@@ -144,13 +144,16 @@ pub fn record_metrics_http_request(_path: &str, _status: u16) {}
 
 // ── TUN ───────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tun")]
 pub fn record_tun_packet(
     _direction: &'static str,
     _ip_family: &'static str,
     _outcome: &'static str,
 ) {
 }
+#[cfg(feature = "tun")]
 pub fn record_tun_flow_created(_group: &str, _uplink: &str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_flow_closed(
     _group: &str,
     _uplink: &str,
@@ -158,26 +161,49 @@ pub fn record_tun_flow_closed(
     _duration: Duration,
 ) {
 }
+#[cfg(feature = "tun")]
 pub fn record_tun_icmp_local_reply(_ip_family: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_udp_forward_error(_reason: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_ip_fragment_received(_ip_family: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_ip_reassembly(_ip_family: &'static str, _result: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn set_tun_ip_fragment_sets_active(_ip_family: &'static str, _count: usize) {}
+#[cfg(feature = "tun")]
 pub fn set_tun_config(_max_flows: usize, _idle_timeout: Duration) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_tcp_event(_group: &str, _uplink: &str, _event: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_tcp_async_connect(_result: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_async_connects_active(_delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_flows_active(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_inflight_segments(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_inflight_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_pending_server_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_buffered_client_segments(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_zero_window_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_backlog_pressure_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_backlog_pressure_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_ack_progress_stall_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_ack_progress_stall_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_congestion_window_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_slow_start_threshold_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_retransmission_timeout_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_smoothed_rtt_seconds(_group: &str, _uplink: &str, _delta: f64) {}

@@ -247,6 +247,7 @@ impl Metrics {
             &["source", "protocol"],
         )
         .expect("upstream_transports_active metric");
+        #[cfg(feature = "tun")]
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -255,11 +256,13 @@ impl Metrics {
             &["direction", "ip_family", "outcome"],
         )
         .expect("tun_packets_total metric");
+        #[cfg(feature = "tun")]
         let tun_flows_total = IntCounterVec::new(
             Opts::new("outline_ws_rust_tun_flows_total", "Lifecycle events for TUN UDP flows."),
             &["event", "group", "uplink"],
         )
         .expect("tun_flows_total metric");
+        #[cfg(feature = "tun")]
         let tun_flow_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "outline_ws_rust_tun_flow_duration_seconds",
@@ -269,6 +272,7 @@ impl Metrics {
             &["reason", "group", "uplink"],
         )
         .expect("tun_flow_duration_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_flows_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_flows_active",
@@ -277,6 +281,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_flows_active metric");
+        #[cfg(feature = "tun")]
         let tun_icmp_local_replies_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_icmp_local_replies_total",
@@ -285,6 +290,7 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_icmp_local_replies_total metric");
+        #[cfg(feature = "tun")]
         let tun_udp_forward_errors_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_udp_forward_errors_total",
@@ -293,6 +299,7 @@ impl Metrics {
             &["reason"],
         )
         .expect("tun_udp_forward_errors_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_fragments_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_fragments_total",
@@ -301,6 +308,7 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_ip_fragments_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_reassemblies_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_reassemblies_total",
@@ -309,6 +317,7 @@ impl Metrics {
             &["ip_family", "result"],
         )
         .expect("tun_ip_reassemblies_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_fragment_sets_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_fragment_sets_active",
@@ -317,16 +326,19 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_ip_fragment_sets_active metric");
+        #[cfg(feature = "tun")]
         let tun_max_flows = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_max_flows",
             "Configured maximum number of TUN UDP flows.",
         ))
         .expect("tun_max_flows metric");
+        #[cfg(feature = "tun")]
         let tun_idle_timeout_seconds = Gauge::with_opts(Opts::new(
             "outline_ws_rust_tun_idle_timeout_seconds",
             "Configured idle timeout for TUN UDP flows.",
         ))
         .expect("tun_idle_timeout_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_events_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_events_total",
@@ -335,6 +347,7 @@ impl Metrics {
             &["group", "uplink", "event"],
         )
         .expect("tun_tcp_events_total metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_async_connects_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_async_connects_total",
@@ -343,11 +356,13 @@ impl Metrics {
             &["result"],
         )
         .expect("tun_tcp_async_connects_total metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_async_connects_active = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_tcp_async_connects_active",
             "Currently active async upstream connect attempts for TUN TCP flows.",
         ))
         .expect("tun_tcp_async_connects_active metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_flows_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_flows_active",
@@ -356,6 +371,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_flows_active metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_inflight_segments = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_inflight_segments",
@@ -364,6 +380,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_inflight_segments metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_inflight_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_inflight_bytes",
@@ -372,6 +389,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_inflight_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_pending_server_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_pending_server_bytes",
@@ -380,6 +398,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_pending_server_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_buffered_client_segments = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_buffered_client_segments",
@@ -388,6 +407,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_buffered_client_segments metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_zero_window_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_zero_window_flows",
@@ -396,6 +416,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_zero_window_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_backlog_pressure_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_backlog_pressure_flows",
@@ -404,6 +425,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_backlog_pressure_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_backlog_pressure_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_backlog_pressure_seconds",
@@ -412,6 +434,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_backlog_pressure_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_ack_progress_stall_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_ack_progress_stall_flows",
@@ -420,6 +443,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_ack_progress_stall_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_ack_progress_stall_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_ack_progress_stall_seconds",
@@ -428,6 +452,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_ack_progress_stall_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_congestion_window_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_congestion_window_bytes",
@@ -436,6 +461,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_congestion_window_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_slow_start_threshold_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_slow_start_threshold_bytes",
@@ -444,6 +470,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_slow_start_threshold_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_retransmission_timeout_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_retransmission_timeout_seconds",
@@ -452,6 +479,7 @@ impl Metrics {
             &["group", "uplink"],
         )
         .expect("tun_tcp_retransmission_timeout_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_smoothed_rtt_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_smoothed_rtt_seconds",
@@ -668,87 +696,115 @@ impl Metrics {
         registry
             .register(Box::new(upstream_transports_active.clone()))
             .expect("register upstream_transports_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flows_total.clone()))
             .expect("register tun_flows_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flow_duration_seconds.clone()))
             .expect("register tun_flow_duration_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flows_active.clone()))
             .expect("register tun_flows_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_icmp_local_replies_total.clone()))
             .expect("register tun_icmp_local_replies_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_udp_forward_errors_total.clone()))
             .expect("register tun_udp_forward_errors_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_fragments_total.clone()))
             .expect("register tun_ip_fragments_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_reassemblies_total.clone()))
             .expect("register tun_ip_reassemblies_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_fragment_sets_active.clone()))
             .expect("register tun_ip_fragment_sets_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_max_flows.clone()))
             .expect("register tun_max_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_idle_timeout_seconds.clone()))
             .expect("register tun_idle_timeout_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_events_total.clone()))
             .expect("register tun_tcp_events_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_async_connects_total.clone()))
             .expect("register tun_tcp_async_connects_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_async_connects_active.clone()))
             .expect("register tun_tcp_async_connects_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_flows_active.clone()))
             .expect("register tun_tcp_flows_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_inflight_segments.clone()))
             .expect("register tun_tcp_inflight_segments");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_inflight_bytes.clone()))
             .expect("register tun_tcp_inflight_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_pending_server_bytes.clone()))
             .expect("register tun_tcp_pending_server_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_buffered_client_segments.clone()))
             .expect("register tun_tcp_buffered_client_segments");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_zero_window_flows.clone()))
             .expect("register tun_tcp_zero_window_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_backlog_pressure_flows.clone()))
             .expect("register tun_tcp_backlog_pressure_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_backlog_pressure_seconds.clone()))
             .expect("register tun_tcp_backlog_pressure_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_ack_progress_stall_flows.clone()))
             .expect("register tun_tcp_ack_progress_stall_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_ack_progress_stall_seconds.clone()))
             .expect("register tun_tcp_ack_progress_stall_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_congestion_window_bytes.clone()))
             .expect("register tun_tcp_congestion_window_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_slow_start_threshold_bytes.clone()))
             .expect("register tun_tcp_slow_start_threshold_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_retransmission_timeout_seconds.clone()))
             .expect("register tun_tcp_retransmission_timeout_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_smoothed_rtt_seconds.clone()))
             .expect("register tun_tcp_smoothed_rtt_seconds");
@@ -841,33 +897,61 @@ impl Metrics {
             transport_connects_active,
             upstream_transports_total,
             upstream_transports_active,
+            #[cfg(feature = "tun")]
             tun_packets_total,
+            #[cfg(feature = "tun")]
             tun_flows_total,
+            #[cfg(feature = "tun")]
             tun_flow_duration_seconds,
+            #[cfg(feature = "tun")]
             tun_flows_active,
+            #[cfg(feature = "tun")]
             tun_icmp_local_replies_total,
+            #[cfg(feature = "tun")]
             tun_udp_forward_errors_total,
+            #[cfg(feature = "tun")]
             tun_ip_fragments_total,
+            #[cfg(feature = "tun")]
             tun_ip_reassemblies_total,
+            #[cfg(feature = "tun")]
             tun_ip_fragment_sets_active,
+            #[cfg(feature = "tun")]
             tun_max_flows,
+            #[cfg(feature = "tun")]
             tun_idle_timeout_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_events_total,
+            #[cfg(feature = "tun")]
             tun_tcp_async_connects_total,
+            #[cfg(feature = "tun")]
             tun_tcp_async_connects_active,
+            #[cfg(feature = "tun")]
             tun_tcp_flows_active,
+            #[cfg(feature = "tun")]
             tun_tcp_inflight_segments,
+            #[cfg(feature = "tun")]
             tun_tcp_inflight_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_pending_server_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_buffered_client_segments,
+            #[cfg(feature = "tun")]
             tun_tcp_zero_window_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_backlog_pressure_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_backlog_pressure_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_ack_progress_stall_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_ack_progress_stall_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_congestion_window_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_slow_start_threshold_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_retransmission_timeout_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_smoothed_rtt_seconds,
             uplink_health,
             uplink_latency_seconds,
