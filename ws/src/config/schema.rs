@@ -27,6 +27,7 @@ pub(crate) struct ConfigFile {
     pub(super) load_balancing: Option<LoadBalancingSection>,
     pub(super) outline: Option<OutlineSection>,
     pub(super) metrics: Option<MetricsSection>,
+    #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
@@ -82,6 +83,7 @@ pub(super) struct MetricsSection {
     pub(super) listen: Option<SocketAddr>,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
 pub(super) struct TunSection {
     pub(super) path: Option<PathBuf>,
@@ -102,6 +104,7 @@ pub(super) struct H2Section {
     pub(super) initial_connection_window_size: Option<u32>,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
 pub(super) struct TunTcpSection {
     pub(super) connect_timeout_secs: Option<u64>,

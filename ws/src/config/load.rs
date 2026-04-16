@@ -11,14 +11,18 @@ use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 use super::args::Args;
 use super::schema::{
     ConfigFile, H2Section, LoadBalancingSection, OutlineSection, ProbeSection, RouteSection,
-    TunSection, UplinkGroupSection, UplinkSection, resolve_outline_section,
+    UplinkGroupSection, UplinkSection, resolve_outline_section,
 };
+#[cfg(feature = "tun")]
+use super::schema::TunSection;
 use super::types::{
     AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
     MetricsConfig, ProbeConfig, RouteRule, RouteTarget, RoutingScope, RoutingTableConfig,
-    Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig, TunConfig, TunTcpConfig, UplinkConfig,
-    UplinkGroupConfig, WsProbeConfig,
+    Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig, UplinkConfig, UplinkGroupConfig,
+    WsProbeConfig,
 };
+#[cfg(feature = "tun")]
+use super::types::{TunConfig, TunTcpConfig};
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let file = if path.exists() {
@@ -39,6 +43,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let socks5 = file.as_ref().and_then(|f| f.socks5.as_ref());
     let outline = file.as_ref().and_then(resolve_outline_section);
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
+    #[cfg(feature = "tun")]
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
     let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
     let udp_recv_buf_bytes = file.as_ref().and_then(|f| f.udp_recv_buf_bytes);
@@ -54,11 +59,17 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .metrics_listen
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
+    #[cfg(feature = "tun")]
     let tun = load_tun_config(tun_section, args)?;
     let h2 = load_h2_config(h2_section);
 
+    #[cfg(feature = "tun")]
     if listen.is_none() && tun.is_none() {
         bail!("no ingress configured: set --listen / [socks5].listen and/or configure [tun]");
+    }
+    #[cfg(not(feature = "tun"))]
+    if listen.is_none() {
+        bail!("no ingress configured: set --listen / [socks5].listen");
     }
 
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
@@ -78,6 +89,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         routing,
         routing_table: None,
         metrics,
+        #[cfg(feature = "tun")]
         tun,
         h2,
         udp_recv_buf_bytes,
@@ -820,6 +832,7 @@ fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result<LoadBalanc
     })
 }
 
+#[cfg(feature = "tun")]
 fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<Option<TunConfig>> {
     let path = args
         .tun_path

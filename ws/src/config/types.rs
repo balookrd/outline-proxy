@@ -25,6 +25,7 @@ pub struct AppConfig {
     /// from `routing` when present.
     pub routing_table: Option<Arc<RoutingTable>>,
     pub metrics: Option<MetricsConfig>,
+    #[cfg(feature = "tun")]
     pub tun: Option<TunConfig>,
     pub h2: H2Config,
     /// Override kernel UDP receive buffer size (SO_RCVBUF). None = kernel default.
@@ -249,6 +250,7 @@ pub struct MetricsConfig {
     pub listen: SocketAddr,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Clone)]
 pub struct TunConfig {
     pub path: PathBuf,
@@ -271,6 +273,7 @@ pub struct TunConfig {
     pub defrag_max_bytes_per_set: usize,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Clone)]
 pub struct TunTcpConfig {
     pub connect_timeout: Duration,

@@ -10,7 +10,8 @@ edition = "2024"
 #          disables H3/QUIC and Prometheus metrics
 #          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 [features]
-default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc"]
+default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
+tun = []   # TUN device support (transparent proxy)
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
 metrics = ["dep:prometheus", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).

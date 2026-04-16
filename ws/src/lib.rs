@@ -18,10 +18,15 @@ pub mod transport;
 #[cfg(feature = "h3")]
 #[path = "transport/h3.rs"]
 pub(crate) mod transport_h3;
+#[cfg(feature = "tun")]
 pub mod tun;
+#[cfg(feature = "tun")]
 pub(crate) mod tun_defrag;
+#[cfg(feature = "tun")]
 pub mod tun_tcp;
+#[cfg(feature = "tun")]
 pub mod tun_udp;
+#[cfg(feature = "tun")]
 pub(crate) mod tun_wire;
 pub mod types;
 pub mod uplink;
@@ -134,16 +139,19 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
 
     // TUN dispatches through the policy routing table, falling back to the
     // default group when no [[route]] is configured.
-    let tun_routing = crate::tun::TunRouting::new(
-        registry.clone(),
-        config.routing_table.clone(),
-        config.direct_fwmark,
-    );
+    #[cfg(feature = "tun")]
+    {
+        let tun_routing = crate::tun::TunRouting::new(
+            registry.clone(),
+            config.routing_table.clone(),
+            config.direct_fwmark,
+        );
 
-    if let Some(tun) = config.tun.clone() {
-        crate::tun::spawn_tun_loop(tun, tun_routing)
-            .await
-            .context("failed to start TUN loop")?;
+        if let Some(tun) = config.tun.clone() {
+            crate::tun::spawn_tun_loop(tun, tun_routing)
+                .await
+                .context("failed to start TUN loop")?;
+        }
     }
 
     let listener = if let Some(listen) = config.listen {
@@ -156,11 +164,15 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         None
     };
 
+    #[cfg(feature = "tun")]
+    let tun_enabled = config.tun.is_some();
+    #[cfg(not(feature = "tun"))]
+    let tun_enabled = false;
     info!(
         socks5_listen = ?config.listen,
         groups = registry.groups().len(),
         total_uplinks = registry.total_uplinks(),
-        tun_enabled = config.tun.is_some(),
+        tun_enabled,
         "proxy started"
     );
     warn_about_tcp_probe_target(&config);
