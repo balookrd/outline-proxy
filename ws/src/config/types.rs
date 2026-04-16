@@ -55,7 +55,7 @@ pub struct UplinkGroupConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RouteTarget {
     /// Forward the connection outside any uplink (equivalent to the old
-    /// `[bypass]` behaviour).
+    /// `via = "direct"` behaviour).
     Direct,
     /// Silently drop the connection (TCP → SOCKS5 reply `REP=0x02`, UDP → drop).
     Drop,

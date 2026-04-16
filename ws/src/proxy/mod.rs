@@ -16,7 +16,7 @@ use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Resolved dispatch plan for a single connection.
 pub(super) enum Dispatch {
-    /// Route outside any uplink (equivalent to the legacy bypass direct path).
+    /// Route outside any uplink (via = "direct" route).
     /// `fwmark` is applied to the outbound socket (Linux SO_MARK) so direct
     /// traffic does not loop back through TUN.
     Direct { fwmark: Option<u32> },

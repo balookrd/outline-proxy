@@ -31,7 +31,7 @@ pub(crate) struct ConfigFile {
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
-    /// SO_MARK for direct (bypass) sockets. Linux only.
+    /// SO_MARK for direct-route sockets. Linux only.
     pub(super) direct_fwmark: Option<u32>,
     /// Explicit uplink groups with per-group LB + probe config.
     pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,

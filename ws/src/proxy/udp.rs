@@ -88,7 +88,7 @@ async fn classify_decision(
     as_route(primary)
 }
 
-fn need_bypass_socket(config: &AppConfig) -> bool {
+fn need_direct_socket(config: &AppConfig) -> bool {
     // Always allocate when routing is configured — any route may resolve to
     // Direct. The socket cost is negligible compared to inspecting every
     // rule's target at associate time.
@@ -277,7 +277,7 @@ pub(super) async fn handle_udp_associate(
 
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
-        let bypass_socket = if need_bypass_socket(&config) {
+        let direct_socket = if need_direct_socket(&config) {
             let std_sock = crate::transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
@@ -298,7 +298,7 @@ pub(super) async fn handle_udp_associate(
         let socket_uplink = Arc::clone(&udp_socket);
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
-        let bypass_socket_uplink = bypass_socket.clone();
+        let direct_socket_uplink = direct_socket.clone();
         let config_uplink = config.clone();
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
@@ -330,7 +330,7 @@ pub(super) async fn handle_udp_associate(
                         continue;
                     },
                     UdpPacketRoute::Direct => {
-                        send_udp_direct(&bypass_socket_uplink, &packet.target, &packet.payload)
+                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload)
                             .await?;
                         continue;
                     },
@@ -419,16 +419,16 @@ pub(super) async fn handle_udp_associate(
         let client_udp_addr_direct = Arc::clone(&client_udp_addr);
         let socket_direct = Arc::clone(&udp_socket);
         let direct_downlink = async move {
-            let Some(sock) = bypass_socket else {
+            let Some(sock) = direct_socket else {
                 std::future::pending::<()>().await;
                 unreachable!()
             };
             let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
                 let (len, src_addr) =
-                    sock.recv_from(&mut buf).await.context("bypass UDP recv failed")?;
+                    sock.recv_from(&mut buf).await.context("direct UDP recv failed")?;
                 let client_addr = client_udp_addr_direct.lock().await.ok_or_else(|| {
-                    anyhow!("received bypass UDP response before client sent any packet")
+                    anyhow!("received direct UDP response before client sent any packet")
                 })?;
                 let target = socket_addr_to_target(src_addr);
                 let metric_payload_len = udp_metric_payload_len(&target, len)?;
@@ -439,7 +439,7 @@ pub(super) async fn handle_udp_associate(
                         target = %target,
                         packet_len = packet.len(),
                         limit = MAX_UDP_RELAY_PACKET_SIZE,
-                        "dropping oversized bypass UDP response"
+                        "dropping oversized direct UDP response"
                     );
                     metrics::record_dropped_oversized_udp_packet("outgoing");
                     continue;
@@ -447,17 +447,17 @@ pub(super) async fn handle_udp_associate(
                 socket_direct
                     .send_to(&packet, client_addr)
                     .await
-                    .context("bypass UDP relay send failed")?;
+                    .context("direct UDP relay send failed")?;
                 metrics::add_udp_datagram(
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                     metric_payload_len,
                 );
             }
@@ -479,15 +479,15 @@ pub(super) async fn handle_udp_associate(
     result
 }
 
-/// Forward a datagram to a directly-contacted server via the bypass socket.
+/// Forward a datagram to a directly-contacted server via the direct socket.
 /// Domain targets cannot be resolved here and are dropped with a warning.
 async fn send_udp_direct(
-    bypass_socket: &Option<Arc<UdpSocket>>,
+    direct_socket: &Option<Arc<UdpSocket>>,
     target: &TargetAddr,
     payload: &[u8],
 ) -> Result<()> {
-    let Some(sock) = bypass_socket else {
-        warn!(target = %target, "UDP direct route requested but bypass socket not allocated; dropping");
+    let Some(sock) = direct_socket else {
+        warn!(target = %target, "UDP direct route requested but direct socket not allocated; dropping");
         return Ok(());
     };
     let metric_payload_len = udp_metric_payload_len(target, payload.len())?;
@@ -504,14 +504,14 @@ async fn send_udp_direct(
         .context("direct UDP send failed")?;
     metrics::add_udp_datagram(
         "client_to_upstream",
-        metrics::BYPASS_GROUP_LABEL,
-        metrics::BYPASS_UPLINK_LABEL,
+        metrics::DIRECT_GROUP_LABEL,
+        metrics::DIRECT_UPLINK_LABEL,
     );
     metrics::add_bytes(
         "udp",
         "client_to_upstream",
-        metrics::BYPASS_GROUP_LABEL,
-        metrics::BYPASS_UPLINK_LABEL,
+        metrics::DIRECT_GROUP_LABEL,
+        metrics::DIRECT_UPLINK_LABEL,
         metric_payload_len,
     );
     Ok(())
@@ -568,7 +568,7 @@ pub(super) async fn handle_udp_in_tcp(
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
-        let bypass_socket = if need_bypass_socket(&config) {
+        let direct_socket = if need_direct_socket(&config) {
             let std_sock = crate::transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
@@ -589,7 +589,7 @@ pub(super) async fn handle_udp_in_tcp(
 
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
-        let bypass_socket_uplink = bypass_socket.clone();
+        let direct_socket_uplink = direct_socket.clone();
         let config_uplink = config.clone();
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
@@ -612,7 +612,7 @@ pub(super) async fn handle_udp_in_tcp(
                         continue;
                     },
                     UdpPacketRoute::Direct => {
-                        send_udp_direct(&bypass_socket_uplink, &packet.target, &packet.payload)
+                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload)
                             .await?;
                         continue;
                     },
@@ -672,33 +672,33 @@ pub(super) async fn handle_udp_in_tcp(
 
         let client_write_direct = Arc::clone(&client_write);
         let direct_downlink = async move {
-            let Some(sock) = bypass_socket else {
+            let Some(sock) = direct_socket else {
                 std::future::pending::<()>().await;
                 unreachable!()
             };
             let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
                 let (len, src_addr) =
-                    sock.recv_from(&mut buf).await.context("bypass UDP recv failed")?;
+                    sock.recv_from(&mut buf).await.context("direct UDP recv failed")?;
                 let target = socket_addr_to_target(src_addr);
                 let metric_payload_len = udp_metric_payload_len(&target, len)?;
                 write_udp_tcp_response(
                     &client_write_direct,
                     &target,
                     &buf[..len],
-                    "bypass UDP-in-TCP response",
+                    "direct UDP-in-TCP response",
                 )
                 .await?;
                 metrics::add_udp_datagram(
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                     metric_payload_len,
                 );
             }

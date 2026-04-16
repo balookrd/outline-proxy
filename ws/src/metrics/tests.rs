@@ -147,7 +147,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     init();
     add_bytes("tcp", "client_to_upstream", "main", "nuxt", 128);
     add_bytes("udp", "upstream_to_client", "main", "senko", 256);
-    add_bytes("tcp", "upstream_to_client", BYPASS_GROUP_LABEL, BYPASS_UPLINK_LABEL, 512);
+    add_bytes("tcp", "upstream_to_client", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, 512);
     add_probe_bytes("main", "primary", "tcp", "http", "outgoing", 64);
     add_probe_bytes("main", "primary", "udp", "dns", "incoming", 96);
     record_probe_wakeup("main", "primary", "udp", "runtime_failure", "sent");
@@ -157,7 +157,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
     record_runtime_failure_other_detail("tcp", "main", "primary", "failed_to_read_chunk");
     add_udp_datagram("client_to_upstream", "main", "nuxt");
     add_udp_datagram("upstream_to_client", "main", "senko");
-    add_udp_datagram("upstream_to_client", BYPASS_GROUP_LABEL, BYPASS_UPLINK_LABEL);
+    add_udp_datagram("upstream_to_client", DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL);
     record_dropped_oversized_udp_packet("incoming");
 
     let rendered = render_prometheus(&[empty_snapshot()]).expect("render metrics");
@@ -168,7 +168,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
         "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"main\",protocol=\"udp\",uplink=\"senko\"} 256"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"tcp\",uplink=\"bypass\"} 512"
+        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 512"
     ));
     assert!(rendered.contains(
         "outline_ws_rust_probe_bytes_total{direction=\"outgoing\",group=\"main\",probe=\"http\",transport=\"tcp\",uplink=\"primary\"} 64"
@@ -198,7 +198,7 @@ fn render_prometheus_exports_traffic_metrics_with_uplink_labels() {
         "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"main\",uplink=\"senko\"} 1"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"bypass\"} 1"
+        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"direct\"} 1"
     ));
     assert!(
         rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"incoming\"} 1")
@@ -234,7 +234,7 @@ fn render_prometheus_exports_routing_selection_info() {
     ));
 }
 
-// Pull BYPASS_GROUP_LABEL into scope via existing glob import.
+// Pull DIRECT_GROUP_LABEL into scope via existing glob import.
 
 #[test]
 fn render_prometheus_clears_previous_global_active_uplink() {
@@ -366,16 +366,16 @@ fn init_exports_zero_value_request_and_session_series() {
         rendered.contains("outline_ws_rust_udp_oversized_dropped_total{direction=\"outgoing\"} 0")
     );
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"direct\",protocol=\"tcp\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_bytes_total{direction=\"client_to_upstream\",group=\"direct\",protocol=\"tcp\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"udp\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_bytes_total{direction=\"upstream_to_client\",group=\"direct\",protocol=\"udp\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"direct\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_udp_datagrams_total{direction=\"client_to_upstream\",group=\"direct\",uplink=\"direct\"} 0"
     ));
     assert!(rendered.contains(
-        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"bypass\"} 0"
+        "outline_ws_rust_udp_datagrams_total{direction=\"upstream_to_client\",group=\"direct\",uplink=\"direct\"} 0"
     ));
 }
 

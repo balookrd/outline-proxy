@@ -34,7 +34,7 @@ pub(super) struct TunUdpEngineInner {
     /// strict checks without flow context) reads `dispatch.default_group()`.
     pub(super) dispatch: TunRouting,
     pub(super) flows: FlowTable,
-    /// Direct (bypass) flows: per-flow UDP socket + reader task.
+    /// Direct-routed flows: per-flow UDP socket + reader task.
     pub(super) direct_flows: DirectFlowTable,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
@@ -85,14 +85,14 @@ impl TunUdpEngine {
                     .context("direct UDP send failed")?;
                 metrics::add_udp_datagram(
                     "client_to_upstream",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
                     "client_to_upstream",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                     packet.payload.len(),
                 );
                 return Ok(());
@@ -304,14 +304,14 @@ impl TunUdpEngine {
                 };
                 metrics::add_udp_datagram(
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                 );
                 metrics::add_bytes(
                     "udp",
                     "upstream_to_client",
-                    metrics::BYPASS_GROUP_LABEL,
-                    metrics::BYPASS_UPLINK_LABEL,
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
                     len,
                 );
                 if writer.write_packet(&response_packet).await.is_err() {
@@ -345,17 +345,17 @@ impl TunUdpEngine {
 
         metrics::add_udp_datagram(
             "client_to_upstream",
-            metrics::BYPASS_GROUP_LABEL,
-            metrics::BYPASS_UPLINK_LABEL,
+            metrics::DIRECT_GROUP_LABEL,
+            metrics::DIRECT_UPLINK_LABEL,
         );
         metrics::add_bytes(
             "udp",
             "client_to_upstream",
-            metrics::BYPASS_GROUP_LABEL,
-            metrics::BYPASS_UPLINK_LABEL,
+            metrics::DIRECT_GROUP_LABEL,
+            metrics::DIRECT_UPLINK_LABEL,
             packet.payload.len(),
         );
-        metrics::record_tun_flow_created(metrics::BYPASS_GROUP_LABEL, metrics::BYPASS_UPLINK_LABEL);
+        metrics::record_tun_flow_created(metrics::DIRECT_GROUP_LABEL, metrics::DIRECT_UPLINK_LABEL);
         info!(
             flow_id,
             target = %remote_target,

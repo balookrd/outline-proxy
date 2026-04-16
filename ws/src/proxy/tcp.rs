@@ -725,8 +725,8 @@ async fn handle_tcp_direct(
             metrics::add_bytes(
                 "tcp",
                 "client_to_upstream",
-                metrics::BYPASS_GROUP_LABEL,
-                metrics::BYPASS_UPLINK_LABEL,
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
                 read,
             );
             upstream_write.write_all(&buf[..read]).await?;
@@ -744,8 +744,8 @@ async fn handle_tcp_direct(
             metrics::add_bytes(
                 "tcp",
                 "upstream_to_client",
-                metrics::BYPASS_GROUP_LABEL,
-                metrics::BYPASS_UPLINK_LABEL,
+                metrics::DIRECT_GROUP_LABEL,
+                metrics::DIRECT_UPLINK_LABEL,
                 read,
             );
             client_write.write_all(&buf[..read]).await?;
