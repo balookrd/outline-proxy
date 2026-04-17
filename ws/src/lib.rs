@@ -2,7 +2,6 @@
 pub(crate) mod atomic_counter;
 pub mod config;
 pub mod crypto;
-pub(crate) mod dns_cache;
 pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
@@ -12,9 +11,6 @@ pub mod proxy;
 pub mod routing;
 pub mod socks5;
 pub mod transport;
-#[cfg(feature = "h3")]
-#[path = "transport/h3/mod.rs"]
-pub(crate) mod transport_h3;
 #[cfg(feature = "tun")]
 pub mod tun;
 pub mod types;

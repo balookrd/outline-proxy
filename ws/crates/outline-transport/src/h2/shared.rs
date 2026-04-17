@@ -32,7 +32,7 @@ use tracing::{debug, error};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
-use crate::transport::{
+use crate::{
     AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
     connect_tcp_socket, resolve_host_with_preference,
 };
@@ -390,7 +390,7 @@ async fn connect_h2_tcp_reused(
     if let Some(shared) = cached_shared_h2_connection(&key).await {
         match shared.open_websocket(target_uri).await {
             Ok(ws) => {
-                crate::metrics::record_transport_connect(source, "h2", "reused");
+                outline_metrics::record_transport_connect(source, "h2", "reused");
                 return Ok(ws);
             },
             Err(error) => {
@@ -417,7 +417,7 @@ async fn connect_h2_tcp_reused(
     if let Some(shared) = cached_shared_h2_connection(&key).await {
         match shared.open_websocket(target_uri).await {
             Ok(ws) => {
-                crate::metrics::record_transport_connect(source, "h2", "reused");
+                outline_metrics::record_transport_connect(source, "h2", "reused");
                 return Ok(ws);
             },
             Err(error) => {

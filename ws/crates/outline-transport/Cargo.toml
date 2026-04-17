@@ -1,0 +1,36 @@
+[package]
+name = "outline-transport"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
+
+[dependencies]
+anyhow = "1.0"
+bytes = "1.10"
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+h3 = { version = "0.0.8", optional = true }
+h3-quinn = { version = "0.0.10", optional = true }
+http = "1.3"
+http-body-util = "0.1"
+hyper = { version = "1.7", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+once_cell = { version = "1.21", optional = true }
+outline-metrics = { path = "../outline-metrics", default-features = false }
+pin-project-lite = "0.2"
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
+rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0", features = ["derive"] }
+shadowsocks-crypto = { path = "../shadowsocks-crypto" }
+socks5-proto = { path = "../socks5-proto" }
+sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
+socket2 = "0.5"
+tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+tracing = "0.1"
+url = { version = "2.5", features = ["serde"] }
+webpki-roots = "0.26"

@@ -9,11 +9,12 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::warn;
 use url::Url;
 
-use crate::crypto::{
+use shadowsocks_crypto::{
     SHADOWSOCKS_MAX_PAYLOAD, decrypt_udp_packet, decrypt_udp_packet_2022, encrypt_udp_packet,
     encrypt_udp_packet_2022,
 };
-use crate::types::{CipherKind, WsTransportMode};
+use shadowsocks_crypto::CipherKind;
+use crate::config_types::WsTransportMode;
 
 use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard, connect_websocket_with_source};
 
@@ -56,7 +57,7 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
 }
 
 impl UdpWsTransport {
-    pub(crate) fn from_websocket(
+    pub fn from_websocket(
         ws_stream: WsTransportStream,
         cipher: CipherKind,
         password: &str,
@@ -142,7 +143,7 @@ impl UdpWsTransport {
         })
     }
 
-    pub(crate) fn from_socket(
+    pub fn from_socket(
         socket: UdpSocket,
         cipher: CipherKind,
         password: &str,
@@ -212,7 +213,7 @@ impl UdpWsTransport {
                         cipher = %self.cipher,
                         "dropping oversized UDP packet before shadowsocks uplink send"
                     );
-                    crate::metrics::record_dropped_oversized_udp_packet("outgoing");
+                    outline_metrics::record_dropped_oversized_udp_packet("outgoing");
                     bail!(OVERSIZED_UDP_UPLINK_DROP_ERR);
                 }
                 socket

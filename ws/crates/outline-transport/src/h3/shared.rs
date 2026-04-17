@@ -28,7 +28,7 @@ use tracing::{debug, error};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
-use crate::transport::{
+use crate::{
     AbortOnDrop, WsTransportStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
     resolve_host_with_preference,
 };
@@ -169,7 +169,7 @@ impl SharedH3Connection {
     }
 }
 
-impl crate::transport::SharedConnectionHealth for SharedH3Connection {
+impl crate::SharedConnectionHealth for SharedH3Connection {
     fn is_open(&self) -> bool {
         self.is_open()
     }
@@ -344,7 +344,7 @@ async fn connect_h3_quic_reused(
     if let Some(shared) = cached_shared_h3_connection(&key).await {
         match shared.open_websocket(server_name, server_port, path).await {
             Ok(ws) => {
-                crate::metrics::record_transport_connect(source, "h3", "reused");
+                outline_metrics::record_transport_connect(source, "h3", "reused");
                 return Ok(ws);
             },
             Err(error) => {
@@ -372,7 +372,7 @@ async fn connect_h3_quic_reused(
     if let Some(shared) = cached_shared_h3_connection(&key).await {
         match shared.open_websocket(server_name, server_port, path).await {
             Ok(ws) => {
-                crate::metrics::record_transport_connect(source, "h3", "reused");
+                outline_metrics::record_transport_connect(source, "h3", "reused");
                 return Ok(ws);
             },
             Err(error) => {

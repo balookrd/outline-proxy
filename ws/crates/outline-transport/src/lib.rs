@@ -17,32 +17,36 @@ use url::Url;
 const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[cfg(feature = "h3")]
-use crate::transport_h3::connect_websocket_h3;
+use crate::h3::connect_websocket_h3;
 
-use crate::types::{ServerAddr, WsTransportMode};
-
+pub mod config_types;
 mod dns;
+mod dns_cache;
 mod guards;
 mod h2;
+#[cfg(feature = "h3")]
+pub(crate) mod h3;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
 mod ws_stream;
+
+pub use config_types::{ServerAddr, WsTransportMode};
 
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
 use ws_stream::H1WsStream;
 
 pub use h2::init_h2_window_sizes;
-pub(crate) use socket::{bind_udp_socket, connect_tcp_socket};
-pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
+pub use socket::{bind_udp_socket, configure_inbound_tcp_stream, connect_tcp_socket, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::WsTransportStream;
 pub(crate) use ws_stream::SharedConnectionHealth;
 
-pub(crate) use dns::resolve_host_with_preference;
-pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
+pub use dns::resolve_host_with_preference;
+pub use guards::UpstreamTransportGuard;
+pub(crate) use guards::{AbortOnDrop, TransportConnectGuard};
 pub(crate) use socket::bind_addr_for;
 
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
@@ -53,7 +57,7 @@ pub(crate) use socket::bind_addr_for;
 pub async fn gc_shared_connections() {
     h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
-    crate::transport_h3::gc_shared_h3_connections().await;
+    crate::h3::gc_shared_h3_connections().await;
 }
 
 pub async fn connect_websocket(
