@@ -34,7 +34,7 @@ use axum::{
     routing::any,
     serve::ListenerExt,
 };
-use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use futures_util::{FutureExt, SinkExt, StreamExt, stream::FuturesUnordered};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder as HyperBuilder,

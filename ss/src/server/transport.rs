@@ -7,6 +7,9 @@ use axum::{
     response::Response,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use futures_util::future::BoxFuture;
+
+use crate::nat::ResponseSender;
 
 pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
 pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
@@ -288,15 +291,44 @@ fn h3_close_message() -> H3Message {
     H3Message::Close(None)
 }
 
+struct WebSocketResponseSender {
+    tx: mpsc::Sender<Message>,
+    protocol: Protocol,
+}
+
+impl ResponseSender for WebSocketResponseSender {
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.tx.send(Message::Binary(data)).await.is_ok() })
+    }
+
+    fn protocol(&self) -> Protocol {
+        self.protocol
+    }
+}
+
+struct Http3ResponseSender {
+    tx: mpsc::Sender<H3Message>,
+}
+
+impl ResponseSender for Http3ResponseSender {
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.tx.send(H3Message::Binary(data)).await.is_ok() })
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Http3
+    }
+}
+
 fn make_ws_udp_response_sender(tx: mpsc::Sender<Message>, protocol: Protocol) -> UdpResponseSender {
-    UdpResponseSender::ws(tx, protocol)
+    UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol }))
 }
 
 fn make_h3_udp_response_sender(
     tx: mpsc::Sender<H3Message>,
     _protocol: Protocol,
 ) -> UdpResponseSender {
-    UdpResponseSender::h3(tx)
+    UdpResponseSender::new(Arc::new(Http3ResponseSender { tx }))
 }
 
 async fn relay_upstream_to_client_generic<Msg>(

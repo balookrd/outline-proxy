@@ -26,12 +26,11 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use axum::extract::ws::Message;
 use bytes::Bytes;
-use sockudo_ws::Message as H3Message;
+use futures_util::future::BoxFuture;
 use tokio::{
     net::UdpSocket,
-    sync::{Mutex, OnceCell, mpsc},
+    sync::{Mutex, OnceCell},
 };
 use tracing::{debug, warn};
 
@@ -59,61 +58,36 @@ pub(crate) struct NatKey {
 
 // ── Response sender abstraction ───────────────────────────────────────────────
 
-/// A cloneable handle to the outbound path of the currently active client
-/// session. Wraps both WebSocket transports and plain UDP sockets so the NAT
-/// reader task can deliver upstream responses without knowing the transport
-/// layer.
-#[derive(Clone)]
-pub(crate) struct UdpResponseSender {
-    inner: UdpResponseSenderInner,
-    protocol: Protocol,
+/// Transport-agnostic outbound path for a client session.
+///
+/// Implementations live in the transport modules (`server::transport`,
+/// `server::shadowsocks`); the NAT layer only sees this trait so it stays
+/// independent of WebSocket / HTTP/3 / raw-socket specifics.
+pub(crate) trait ResponseSender: Send + Sync {
+    /// Returns `false` when the receiving channel has been closed (session gone).
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool>;
+    fn protocol(&self) -> Protocol;
 }
 
+/// A cloneable handle to the outbound path of the currently active client
+/// session. Thin wrapper around a `dyn ResponseSender` so `NatEntry` can hold
+/// and replace the sender without caring about the concrete transport.
 #[derive(Clone)]
-enum UdpResponseSenderInner {
-    Ws(mpsc::Sender<Message>),
-    H3(mpsc::Sender<H3Message>),
-    Datagram {
-        socket: Arc<UdpSocket>,
-        client_addr: SocketAddr,
-    },
+pub(crate) struct UdpResponseSender {
+    inner: Arc<dyn ResponseSender>,
 }
 
 impl UdpResponseSender {
-    pub(crate) fn ws(tx: mpsc::Sender<Message>, protocol: Protocol) -> Self {
-        Self {
-            inner: UdpResponseSenderInner::Ws(tx),
-            protocol,
-        }
-    }
-
-    pub(crate) fn h3(tx: mpsc::Sender<H3Message>) -> Self {
-        Self {
-            inner: UdpResponseSenderInner::H3(tx),
-            protocol: Protocol::Http3,
-        }
-    }
-
-    pub(crate) fn datagram(socket: Arc<UdpSocket>, client_addr: SocketAddr) -> Self {
-        Self {
-            inner: UdpResponseSenderInner::Datagram { socket, client_addr },
-            protocol: Protocol::Socket,
-        }
+    pub(crate) fn new(inner: Arc<dyn ResponseSender>) -> Self {
+        Self { inner }
     }
 
     fn protocol(&self) -> Protocol {
-        self.protocol
+        self.inner.protocol()
     }
 
-    /// Returns `false` when the receiving channel has been closed (session gone).
     async fn send_bytes(&self, data: Bytes) -> bool {
-        match &self.inner {
-            UdpResponseSenderInner::Ws(tx) => tx.send(Message::Binary(data)).await.is_ok(),
-            UdpResponseSenderInner::H3(tx) => tx.send(H3Message::Binary(data)).await.is_ok(),
-            UdpResponseSenderInner::Datagram { socket, client_addr } => {
-                socket.send_to(&data, *client_addr).await.is_ok()
-            },
-        }
+        self.inner.send_bytes(data).await
     }
 }
 
@@ -422,10 +396,11 @@ mod tests {
     };
 
     use anyhow::Result;
-    use tokio::{net::UdpSocket, sync::mpsc};
+    use bytes::Bytes;
+    use futures_util::future::BoxFuture;
 
     use super::{
-        MAX_UDP_PAYLOAD_SIZE, NatKey, NatTable, UdpResponseSender,
+        MAX_UDP_PAYLOAD_SIZE, NatKey, NatTable, ResponseSender, UdpResponseSender,
         record_oversized_socket_response_drop,
     };
     use crate::{
@@ -433,6 +408,26 @@ mod tests {
         crypto::{UdpSession, UserKey},
         metrics::{Metrics, Protocol},
     };
+
+    /// Minimal `ResponseSender` double used to exercise the NAT layer without
+    /// pulling in the WebSocket/H3 transport crates.
+    struct TestResponseSender {
+        protocol: Protocol,
+    }
+
+    impl ResponseSender for TestResponseSender {
+        fn send_bytes(&self, _data: Bytes) -> BoxFuture<'_, bool> {
+            Box::pin(async { true })
+        }
+
+        fn protocol(&self) -> Protocol {
+            self.protocol
+        }
+    }
+
+    fn test_sender(protocol: Protocol) -> UdpResponseSender {
+        UdpResponseSender::new(Arc::new(TestResponseSender { protocol }))
+    }
 
     #[tokio::test]
     async fn drops_oversized_socket_udp_response_and_records_metric() -> Result<()> {
@@ -473,9 +468,7 @@ mod tests {
             "/tcp",
             "/udp",
         )?;
-        let socket = Arc::new(UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?);
-        let sender =
-            UdpResponseSender::datagram(socket, SocketAddr::from((Ipv4Addr::LOCALHOST, 40000)));
+        let sender = test_sender(Protocol::Socket);
 
         assert!(record_oversized_socket_response_drop(
             Some(&sender),
@@ -531,8 +524,7 @@ mod tests {
             "/tcp",
             "/udp",
         )?;
-        let (tx, _rx) = mpsc::channel(1);
-        let ws_sender = UdpResponseSender::ws(tx, Protocol::Http2);
+        let ws_sender = test_sender(Protocol::Http2);
 
         assert!(!record_oversized_socket_response_drop(
             Some(&ws_sender),
