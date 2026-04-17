@@ -1,4 +1,42 @@
+use std::io::{self, ErrorKind};
+
 use anyhow::Error;
+
+/// Walk the anyhow error chain looking for a `std::io::Error`.
+/// Returns the `ErrorKind` of the first one found, if any.
+///
+/// This is the type-safe companion to string-based "os error N" matching.
+/// It works when errors are chained with `.context(...)` (which preserves
+/// the original error as a `source()`), but not when they are formatted
+/// into the message with `bail!("...: {e}")` or `format!`.
+fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
+    error
+        .chain()
+        .find_map(|e| e.downcast_ref::<io::Error>())
+        .map(|e| e.kind())
+}
+
+/// Return true if any `std::io::Error` in the chain indicates a TCP-level
+/// disconnect: connection reset, broken pipe, unexpected EOF, or connection
+/// aborted.
+///
+/// Prefers `io::ErrorKind` over string matching because it is platform-
+/// independent (no "os error 104" vs "os error 54" across Linux/macOS) and
+/// resilient to error-message wording changes in OS libc or Tokio.
+fn is_transport_level_disconnect(error: &Error) -> bool {
+    if let Some(kind) = find_io_error_kind(error) {
+        return matches!(
+            kind,
+            ErrorKind::ConnectionReset
+                | ErrorKind::BrokenPipe
+                | ErrorKind::UnexpectedEof
+                | ErrorKind::ConnectionAborted
+        );
+    }
+    // Fallback for errors formatted into the message string rather than
+    // preserved as a chain source (e.g. bail!("...: {e}")).
+    contains_any(&lower_error(error), TRANSPORT_DISCONNECT_STRINGS)
+}
 
 const CLIENT_READ_FAILURES: &[&str] = &[
     "client read failed",
@@ -32,24 +70,30 @@ const WEBSOCKET_CLOSES: &[&str] = &[
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
 ];
-const TRANSPORT_DISCONNECTS: &[&str] = &[
+/// String-match fallback for transport disconnects.
+///
+/// Used only when the `io::Error` was formatted into the message string
+/// rather than preserved as a chain source.  The OS error code variants
+/// ("os error 104", "os error 54", "os error 32") are intentionally omitted
+/// here: they are handled type-safely by `is_transport_level_disconnect` via
+/// `io::ErrorKind`.  Keeping them would be harmless but is unnecessary.
+const TRANSPORT_DISCONNECT_STRINGS: &[&str] = &[
     "connection reset by peer",
     "broken pipe",
-    "os error 104",
-    "os error 54",
-    "os error 32",
     // Tokio's UnexpectedEof message produced by read_exact when the remote side
     // closes the connection before the full buffer is filled.
     "early eof",
 ];
-const STANDBY_PROBE_FAILURES: &[&str] = &[
+/// String patterns that indicate an expected standby-probe failure.
+///
+/// OS-error-code strings ("os error 104/54/32") are deliberately absent:
+/// the `is_expected_standby_probe_failure` function handles those through
+/// `is_transport_level_disconnect` → `io::ErrorKind` instead.
+const STANDBY_PROBE_FAILURE_STRINGS: &[&str] = &[
     "websocket probe received close frame",
     "websocket probe stream closed before pong",
     "connection reset by peer",
     "broken pipe",
-    "os error 104",
-    "os error 54",
-    "os error 32",
     "websocket ping/pong timed out",
     "timed out",
     // Quinn surfaces QUIC idle timeout as the bare word "Timeout" (not "timed out").
@@ -75,13 +119,11 @@ fn contains_any(text: &str, patterns: &[&str]) -> bool {
 }
 
 pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {
-    let lower = lower_error(error);
-    contains_any(&lower, CLIENT_READ_FAILURES) && contains_any(&lower, TRANSPORT_DISCONNECTS)
+    contains_any(&lower_error(error), CLIENT_READ_FAILURES) && is_transport_level_disconnect(error)
 }
 
 pub(crate) fn is_client_write_disconnect(error: &Error) -> bool {
-    let lower = lower_error(error);
-    contains_any(&lower, CLIENT_WRITE_FAILURES) && contains_any(&lower, TRANSPORT_DISCONNECTS)
+    contains_any(&lower_error(error), CLIENT_WRITE_FAILURES) && is_transport_level_disconnect(error)
 }
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
@@ -96,7 +138,8 @@ pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
 }
 
 pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
-    contains_any(&lower_error(error), STANDBY_PROBE_FAILURES)
+    is_transport_level_disconnect(error)
+        || contains_any(&lower_error(error), STANDBY_PROBE_FAILURE_STRINGS)
 }
 
 #[cfg(feature = "tun")]
@@ -243,5 +286,33 @@ mod tests {
         assert!(!is_expected_client_disconnect(&error));
         assert!(is_client_write_disconnect(&error));
         assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    /// io::ErrorKind::ConnectionReset is detected even when the OS code is
+    /// platform-specific (104 on Linux, 54 on macOS).  The typed path must
+    /// fire regardless of which numeric code the kernel used.
+    #[test]
+    fn typed_io_error_connection_reset_detected_regardless_of_os_code() {
+        use std::io;
+        let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
+        let error = anyhow::Error::from(io_err).context("client read failed");
+        assert!(is_expected_client_disconnect(&error));
+    }
+
+    /// io::ErrorKind::BrokenPipe is detected via the typed path.
+    #[test]
+    fn typed_io_error_broken_pipe_detected() {
+        use std::io;
+        let io_err = io::Error::from(io::ErrorKind::BrokenPipe);
+        let error = anyhow::Error::from(io_err).context("client write failed");
+        assert!(is_client_write_disconnect(&error));
+    }
+
+    /// An error that carries no io::Error in its chain but whose formatted
+    /// message contains the expected strings still passes string-fallback.
+    #[test]
+    fn string_fallback_still_works_for_formatted_messages() {
+        let error = anyhow!("client read failed: early eof");
+        assert!(is_expected_client_disconnect(&error));
     }
 }

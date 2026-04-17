@@ -10,6 +10,19 @@ use super::super::types::{
     CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager, UplinkStatus,
 };
 
+/// Hard cap on non-pinned per-flow sticky-route entries.
+///
+/// Pinned entries (the global active uplink and per-transport active uplinks in
+/// strict ActivePassive mode) are always stored regardless of this limit because
+/// there are at most `2 * num_uplinks` of them and they are critical for
+/// correctness.  Per-flow entries, however, grow one-per-unique-target and can
+/// reach millions under traffic from large NAT pools or many distinct clients.
+///
+/// When the cap is hit, new per-flow entries are silently dropped: the flow
+/// falls through to a fresh latency-ordered selection instead of a sticky one.
+/// This degrades stickiness for the marginal flows but preserves memory safety.
+const MAX_STICKY_ROUTES: usize = 100_000;
+
 impl UplinkManager {
     pub(super) async fn preferred_sticky_index(
         &self,
@@ -78,12 +91,18 @@ impl UplinkManager {
     }
 
     pub(super) async fn store_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {
+        let pinned = self.strict_pinned_route_key(routing_key);
         let mut sticky = self.inner.sticky_routes.write().await;
+        // Enforce the per-flow cap: drop new non-pinned entries when full.
+        // Already-present keys are always updated (they don't add to the count).
+        if !pinned && sticky.len() >= MAX_STICKY_ROUTES && !sticky.contains_key(routing_key) {
+            return;
+        }
         sticky.insert(
             routing_key.clone(),
             StickyRoute {
                 uplink_index,
-                expires_at: if self.strict_pinned_route_key(routing_key) {
+                expires_at: if pinned {
                     Instant::now() + Duration::from_secs(365 * 24 * 60 * 60)
                 } else {
                     Instant::now() + self.inner.load_balancing.sticky_ttl
