@@ -54,7 +54,7 @@ impl TunTcpEngine {
         if state.status == TcpFlowStatus::SynReceived
             && is_duplicate_syn(&packet, state.client_next_seq) {
                 metrics::record_tun_tcp_event(
-                    state.manager.group_name(),
+                    &state.group_name,
                     &state.uplink_name,
                     "duplicate_syn",
                 );
@@ -84,7 +84,7 @@ impl TunTcpEngine {
             },
             PacketValidation::ChallengeAck(event) => {
                 let key = state.key.clone();
-                let group_name = state.manager.group_name().to_string();
+                let group_name = state.group_name.clone();
                 let uplink_name = state.uplink_name.clone();
                 let ack = build_flow_ack_packet(
                     &state,
@@ -164,7 +164,7 @@ impl TunTcpEngine {
 
         if ack_effect.retransmit_now {
             metrics::record_tun_tcp_event(
-                state.manager.group_name(),
+                &state.group_name,
                 &state.uplink_name,
                 "fast_retransmit",
             );

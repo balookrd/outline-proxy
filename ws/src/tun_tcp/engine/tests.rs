@@ -177,7 +177,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
 
     upstream.send_chunk(b"ABCDEFGH").await;
     let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(first_data.payload, b"ABCD");
+    assert_eq!(first_data.payload, b"ABCD"[..]);
     assert_eq!(first_data.sequence_number, server_next_seq);
 
     for _ in 0..3 {
@@ -198,7 +198,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
     }
 
     let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(retransmitted.payload, b"ABCD");
+    assert_eq!(retransmitted.payload, b"ABCD"[..]);
     assert_eq!(retransmitted.sequence_number, server_next_seq);
 
     engine
@@ -217,7 +217,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         .unwrap();
 
     let second_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(second_data.payload, b"EFGH");
+    assert_eq!(second_data.payload, b"EFGH"[..]);
     assert_eq!(second_data.sequence_number, server_next_seq.wrapping_add(4));
 }
 
@@ -274,7 +274,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
 
     upstream.send_chunk(b"AB").await;
     let probe = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(probe.payload, b"A");
+    assert_eq!(probe.payload, b"A"[..]);
     assert_eq!(probe.sequence_number, server_next_seq);
 
     engine
@@ -293,7 +293,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         .unwrap();
 
     let data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(data.payload, b"AB");
+    assert_eq!(data.payload, b"AB"[..]);
     assert_eq!(data.sequence_number, server_next_seq);
 }
 
@@ -350,7 +350,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
 
     upstream.send_chunk(b"ABCD").await;
     let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(first_data.payload, b"AB");
+    assert_eq!(first_data.payload, b"AB"[..]);
 
     upstream.close().await;
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -371,7 +371,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         .unwrap();
 
     let second_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(second_data.payload, b"CD");
+    assert_eq!(second_data.payload, b"CD"[..]);
 
     engine
         .handle_packet(&build_client_packet(
@@ -446,7 +446,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
 
     upstream.send_chunk(b"AB").await;
     let first_data = parse_tcp_packet(&capture.next_packet().await).unwrap();
-    assert_eq!(first_data.payload, b"AB");
+    assert_eq!(first_data.payload, b"AB"[..]);
 
     let key = TcpFlowKey {
         version: IpVersion::V4,
@@ -471,7 +471,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
 
     let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
     assert_eq!(retransmitted.sequence_number, first_data.sequence_number);
-    assert_eq!(retransmitted.payload, b"AB");
+    assert_eq!(retransmitted.payload, b"AB"[..]);
 }
 
 #[tokio::test]

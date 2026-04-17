@@ -26,7 +26,7 @@ pub(in crate::tun_tcp) fn trim_packet_to_receive_window(
     if !trimmed.payload.is_empty() {
         let allowed_len = recv_window_end.wrapping_sub(trimmed.sequence_number) as usize;
         if trimmed.payload.len() > allowed_len {
-            trimmed.payload.truncate(allowed_len);
+            trimmed.payload = trimmed.payload.slice(..allowed_len);
             trimmed.flags &= !TCP_FLAG_FIN;
         }
     }
@@ -40,7 +40,7 @@ pub(in crate::tun_tcp) fn normalize_client_segment(
     normalize_client_segment_parts(
         packet.sequence_number,
         packet.flags,
-        &packet.payload,
+        &packet.payload,  // already &Bytes
         expected_seq,
     )
 }
@@ -48,7 +48,7 @@ pub(in crate::tun_tcp) fn normalize_client_segment(
 fn normalize_client_segment_parts(
     sequence_number: u32,
     flags: u8,
-    payload: &[u8],
+    payload: &Bytes,
     expected_seq: u32,
 ) -> ClientSegmentView {
     let original_payload_len = payload.len();
@@ -61,7 +61,7 @@ fn normalize_client_segment_parts(
     let payload = if overlap >= payload.len() {
         Bytes::new()
     } else {
-        Bytes::copy_from_slice(&payload[overlap..])
+        payload.slice(overlap..)
     };
 
     let fin = if (flags & TCP_FLAG_FIN) == 0 {
@@ -131,7 +131,7 @@ pub(in crate::tun_tcp) fn queue_future_segment(
                 BufferedClientSegment {
                     sequence_number: cursor,
                     flags: packet.flags & TCP_FLAG_ACK,
-                    payload: Bytes::copy_from_slice(&packet.payload[start_offset..end_offset]),
+                    payload: packet.payload.slice(start_offset..end_offset),
                 },
                 expected_seq,
             );
@@ -150,7 +150,7 @@ pub(in crate::tun_tcp) fn queue_future_segment(
             BufferedClientSegment {
                 sequence_number: cursor,
                 flags: packet.flags & TCP_FLAG_ACK,
-                payload: Bytes::copy_from_slice(&packet.payload[start_offset..]),
+                payload: packet.payload.slice(start_offset..),
             },
             expected_seq,
         );
