@@ -23,7 +23,7 @@ pub fn encrypt_udp_packet(
     let salt = &mut salt_buf[..salt_len];
     rand::thread_rng().fill_bytes(salt);
     let key = derive_subkey(cipher, master_key, salt)?;
-    let mut encrypted = encrypt(cipher, &key, &UDP_ZERO_NONCE, payload)?;
+    let mut encrypted = encrypt(cipher, &key[..cipher.key_len()], &UDP_ZERO_NONCE, payload)?;
     let mut packet = Vec::with_capacity(salt_len + encrypted.len());
     packet.extend_from_slice(salt);
     packet.append(&mut encrypted);
@@ -41,5 +41,5 @@ pub fn decrypt_udp_packet(cipher: CipherKind, master_key: &[u8], packet: &[u8]) 
     }
     let (salt, ciphertext) = packet.split_at(salt_len);
     let key = derive_subkey(cipher, master_key, salt)?;
-    decrypt(cipher, &key, &UDP_ZERO_NONCE, ciphertext)
+    decrypt(cipher, &key[..cipher.key_len()], &UDP_ZERO_NONCE, ciphertext)
 }
