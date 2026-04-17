@@ -16,7 +16,7 @@ pub mod routing;
 pub mod socks5;
 pub mod transport;
 #[cfg(feature = "h3")]
-#[path = "transport/h3.rs"]
+#[path = "transport/h3/mod.rs"]
 pub(crate) mod transport_h3;
 #[cfg(feature = "tun")]
 pub mod tun;
