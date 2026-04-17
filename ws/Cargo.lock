@@ -1307,6 +1307,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "libc",
  "once_cell",
  "outline-metrics",
  "parking_lot",
