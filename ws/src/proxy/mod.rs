@@ -2,6 +2,7 @@ mod tcp;
 mod udp;
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use anyhow::Result;
 use tokio::net::TcpStream;
@@ -32,7 +33,7 @@ pub(super) enum Dispatch {
 pub async fn handle_client(
     mut client: TcpStream,
     peer: SocketAddr,
-    config: AppConfig,
+    config: Arc<AppConfig>,
     registry: UplinkRegistry,
 ) -> Result<()> {
     let request = negotiate(&mut client, config.socks5_auth.as_ref()).await?;
