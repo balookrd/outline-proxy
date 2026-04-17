@@ -1,0 +1,10 @@
+[package]
+name = "outline-routing"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+socks5-proto = { path = "../socks5-proto" }
+tokio = { version = "1.44", features = ["fs", "sync"] }
+tracing = "0.1"

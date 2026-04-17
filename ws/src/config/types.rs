@@ -62,41 +62,10 @@ pub struct UplinkGroupConfig {
     pub load_balancing: LoadBalancingConfig,
 }
 
-/// New: what a matched route should do with the traffic.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RouteTarget {
-    /// Forward the connection outside any uplink (equivalent to the old
-    /// `via = "direct"` behaviour).
-    Direct,
-    /// Silently drop the connection (TCP → SOCKS5 reply `REP=0x02`, UDP → drop).
-    Drop,
-    /// Route through the named group.
-    Group(String),
-}
-
-/// New: one policy routing rule.
-///
-/// Prefixes come from `inline_prefixes` and/or `file`. When `file` is set,
-/// a background watcher polls `file_poll` for mtime changes and swaps the
-/// compiled CIDR set in place.
-#[derive(Debug, Clone)]
-pub struct RouteRule {
-    pub inline_prefixes: Vec<String>,
-    pub file: Option<PathBuf>,
-    pub file_poll: Duration,
-    pub target: RouteTarget,
-    pub fallback: Option<RouteTarget>,
-    /// When true, the rule matches addresses NOT in the CIDR set.
-    pub invert: bool,
-}
-
-/// New: full routing table — ordered rules + explicit default.
-#[derive(Debug, Clone)]
-pub struct RoutingTableConfig {
-    pub rules: Vec<RouteRule>,
-    pub default_target: RouteTarget,
-    pub default_fallback: Option<RouteTarget>,
-}
+// RouteTarget / RouteRule / RoutingTableConfig live in the `outline-routing`
+// workspace crate; re-exported so existing `crate::config::RouteTarget`
+// imports keep working.
+pub use outline_routing::{RouteRule, RouteTarget, RoutingTableConfig};
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.
 #[derive(Debug, Clone)]
