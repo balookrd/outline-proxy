@@ -165,6 +165,12 @@ impl UplinkRegistry {
 }
 
 impl UplinkRegistry {
+    /// Test-only ctor that supplies a fresh throwaway DnsCache.
+    #[cfg(test)]
+    pub fn new_for_test(groups: Vec<UplinkGroupConfig>) -> Result<Self> {
+        Self::new(groups, Arc::new(outline_transport::DnsCache::default()))
+    }
+
     /// Test-only helper: build a registry wrapping a single pre-constructed
     /// [`UplinkManager`] under its own group name. Lets TUN / proxy tests
     /// that already hand-build an `UplinkManager` stand up a minimal
@@ -321,7 +327,7 @@ mod tests {
 
     #[test]
     fn registry_new_rejects_empty_group_list() {
-        let err = UplinkRegistry::new(vec![]).unwrap_err();
+        let err = UplinkRegistry::new_for_test(vec![]).unwrap_err();
         assert!(err.to_string().contains("no uplink groups"));
     }
 }

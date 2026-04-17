@@ -154,7 +154,7 @@ async fn set_udp_status(manager: &UplinkManager, index: usize, healthy: bool, rt
 async fn active_passive_keeps_current_healthy_uplink() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -179,7 +179,7 @@ async fn active_passive_keeps_current_healthy_uplink() {
 
 #[tokio::test]
 async fn cold_start_active_active_prefers_higher_weight_without_probe_data() {
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("light", "wss://light.example.com/tcp"),
@@ -203,7 +203,7 @@ async fn cold_start_active_passive_prefers_higher_weight_without_probe_data() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("light", "wss://light.example.com/tcp"),
@@ -228,7 +228,7 @@ async fn cold_start_active_passive_prefers_higher_weight_over_better_rtt() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("light", "wss://light.example.com/tcp"),
@@ -255,7 +255,7 @@ async fn per_uplink_scope_shares_selected_uplink_across_targets() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::PerUplink;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -284,7 +284,7 @@ async fn strict_tcp_failover_candidates_include_backup_before_failure_is_recorde
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -323,7 +323,7 @@ async fn per_uplink_scope_does_not_expire_with_sticky_ttl() {
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::PerUplink;
     config.sticky_ttl = Duration::ZERO;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -365,7 +365,7 @@ async fn per_uplink_scope_ignores_penalty_in_selection_score() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::PerUplink;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -395,7 +395,7 @@ async fn global_scope_shares_selected_uplink_across_tcp_and_udp() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -425,7 +425,7 @@ async fn global_scope_keeps_tcp_available_when_udp_is_down() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -452,7 +452,7 @@ async fn global_scope_prioritizes_tcp_quality_over_udp_quality() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -482,7 +482,7 @@ async fn global_scope_keeps_udp_on_tcp_selected_uplink() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -511,7 +511,7 @@ async fn global_scope_keeps_current_active_uplink_until_cooldown_when_probe_disa
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -544,7 +544,7 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -597,7 +597,7 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -634,7 +634,7 @@ async fn global_scope_does_not_expire_with_sticky_ttl() {
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
     config.sticky_ttl = Duration::ZERO;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -663,7 +663,7 @@ async fn confirm_selected_uplink_updates_global_sticky_route() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -688,7 +688,7 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -730,7 +730,7 @@ async fn runtime_failover_promotes_global_active_when_probe_disabled() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -757,7 +757,7 @@ async fn initialize_strict_global_active_selection_sets_initial_active_before_tr
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -787,7 +787,7 @@ async fn initialize_strict_global_active_selection_does_not_override_existing_ac
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -814,7 +814,7 @@ async fn initialize_strict_global_active_selection_does_not_override_existing_ac
 
 #[tokio::test]
 async fn repeated_runtime_failure_during_cooldown_does_not_extend_penalty_or_cooldown() {
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![make_uplink("primary", "wss://primary.example.com/tcp")],
         probe_disabled(),
@@ -846,7 +846,7 @@ async fn repeated_runtime_failure_during_cooldown_does_not_extend_penalty_or_coo
 async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
     let mut probe = probe_disabled();
     probe.ws.enabled = true;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![make_uplink("primary", "wss://primary.example.com/tcp")],
         probe,
@@ -895,7 +895,7 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
     let mut config = lb();
     config.routing_scope = RoutingScope::Global;
     // Keep mode as ActiveActive (default in lb()).
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -952,7 +952,7 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![
             make_uplink("primary", "wss://primary.example.com/tcp"),
@@ -1009,7 +1009,7 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
     let mut config = lb();
     config.warm_standby_tcp = 1;
     let (url, mut message_rx, shutdown_tx, observer_task) = start_keepalive_observer().await;
-    let manager = UplinkManager::new(
+    let manager = UplinkManager::new_for_test(
         "test",
         vec![make_uplink("primary", url.as_str())],
         probe_disabled(),
@@ -1017,10 +1017,16 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
     )
     .unwrap();
 
-    let ws =
-        connect_websocket_with_source(&url, WsTransportMode::Http1, None, false, "test_standby")
-            .await
-            .unwrap();
+    let ws = connect_websocket_with_source(
+        manager.dns_cache(),
+        &url,
+        WsTransportMode::Http1,
+        None,
+        false,
+        "test_standby",
+    )
+    .await
+    .unwrap();
     manager.inner.standby_pools[0].tcp.lock().await.push_back(ws);
 
     manager.run_tcp_standby_keepalive(0).await;

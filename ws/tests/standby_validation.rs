@@ -112,6 +112,7 @@ async fn build_manager(
             tcp_active_keepalive_interval: None,
             auto_failback: false,
         },
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     )
     .expect("manager must build")
 }

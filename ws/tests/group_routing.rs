@@ -92,7 +92,7 @@ fn two_group_registry() -> UplinkRegistry {
             probe: probe_disabled(),
             load_balancing: lb(),
         },
-    ])
+    ], std::sync::Arc::new(outline_transport::DnsCache::default()))
     .unwrap()
 }
 
@@ -422,7 +422,7 @@ fn registry_rejects_duplicate_uplink_names_across_groups() {
             probe: probe_disabled(),
             load_balancing: lb(),
         },
-    ]);
+    ], std::sync::Arc::new(outline_transport::DnsCache::default()));
     let err = result.unwrap_err();
     assert!(
         format!("{err:#}").contains("shared-name"),
@@ -445,7 +445,7 @@ fn registry_rejects_duplicate_group_names() {
             probe: probe_disabled(),
             load_balancing: lb(),
         },
-    ]);
+    ], std::sync::Arc::new(outline_transport::DnsCache::default()));
     let err = result.unwrap_err();
     assert!(
         format!("{err:#}").contains("same"),

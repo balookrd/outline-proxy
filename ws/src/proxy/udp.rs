@@ -1133,7 +1133,7 @@ mod tests {
             auto_failback: false,
         };
 
-        let manager = UplinkManager::new("my-default", vec![uplink], probe, lb).unwrap();
+        let manager = UplinkManager::new_for_test("my-default", vec![uplink], probe, lb).unwrap();
         let registry = UplinkRegistry::from_single_manager(manager);
 
         // The routing table resolved to group "nonexistent" which is not in the registry.

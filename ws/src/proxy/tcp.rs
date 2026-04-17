@@ -1458,7 +1458,10 @@ mod tests {
         let (server_side, _) = accept_res.unwrap();
 
         let target = crate::types::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_port);
-        let direct_task = tokio::spawn(handle_tcp_direct(server_side, target, None));
+        let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
+        let direct_task = tokio::spawn(async move {
+            handle_tcp_direct(server_side, target, None, &dns_cache).await
+        });
 
         // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.
         let mut socks_reply = [0u8; 10];

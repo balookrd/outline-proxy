@@ -40,6 +40,7 @@ async fn tun_tcp_reassembles_out_of_order_client_segments_end_to_end() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -135,6 +136,7 @@ async fn tun_tcp_honors_client_window_and_retransmits_unacked_server_data() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -232,6 +234,7 @@ async fn tun_tcp_sends_zero_window_probe_and_resumes_after_window_reopens() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -308,6 +311,7 @@ async fn tun_tcp_defers_fin_until_buffered_server_data_is_acked() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -404,6 +408,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -485,6 +490,7 @@ async fn tun_tcp_invalid_high_ack_triggers_challenge_ack() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -556,6 +562,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -635,6 +642,7 @@ async fn tun_tcp_unexpected_syn_in_established_flow_is_challenge_acked() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -706,6 +714,7 @@ async fn tun_tcp_paws_rejects_stale_timestamp_segment() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -781,6 +790,7 @@ async fn tun_tcp_respects_peer_mss_for_server_segments() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -838,6 +848,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -958,6 +969,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let client_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -1090,6 +1102,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
         128,
         Duration::from_secs(60),
         test_tun_tcp_config(),
+        std::sync::Arc::new(outline_transport::DnsCache::default()),
     );
 
     let error = engine
@@ -1119,7 +1132,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
     let _ = std::fs::remove_file(path);
 }
 pub(in crate::tun::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
-    UplinkManager::new(
+    UplinkManager::new_for_test(
         "test",
         vec![UplinkConfig {
             name: "test".to_string(),
