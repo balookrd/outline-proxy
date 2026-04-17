@@ -18,8 +18,8 @@ use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use super::selection::{effective_latency, selection_score};
 use super::state::StateStore;
 use super::types::{
-    StandbyPool, StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerInner,
-    UplinkManagerSnapshot, UplinkSnapshot, UplinkStatus,
+    ActiveUplinks, StandbyPool, StickyRouteSnapshot, TransportKind, UplinkManager,
+    UplinkManagerInner, UplinkManagerSnapshot, UplinkSnapshot, UplinkStatus,
 };
 use super::utils::{
     current_penalty, duration_to_millis_option, load_balancing_mode_name, routing_scope_name,
@@ -120,10 +120,11 @@ impl UplinkManager {
         let find = |name: Option<String>| -> Option<usize> {
             name.and_then(|n| uplinks.iter().position(|u| u.name == n))
         };
-        let global_active = RwLock::new(find(initial_global_active));
-        let tcp_active = RwLock::new(find(initial_tcp_active));
-        let udp_active = RwLock::new(find(initial_udp_active));
-
+        let active_uplinks = RwLock::new(ActiveUplinks {
+            global: find(initial_global_active),
+            tcp: find(initial_tcp_active),
+            udp: find(initial_udp_active),
+        });
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {
                 group_name: group_name.into(),
@@ -131,9 +132,7 @@ impl UplinkManager {
                 probe,
                 load_balancing,
                 statuses: RwLock::new(vec![UplinkStatus::default(); count]),
-                global_active_uplink: global_active,
-                tcp_active_uplink: tcp_active,
-                udp_active_uplink: udp_active,
+                active_uplinks,
                 sticky_routes: RwLock::new(HashMap::new()),
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),
                 probe_execution_limit: Arc::new(Semaphore::new(probe_max_concurrent)),
@@ -246,9 +245,11 @@ impl UplinkManager {
     pub async fn snapshot(&self) -> UplinkManagerSnapshot {
         let now = Instant::now();
         let statuses = self.inner.statuses.read().await.clone();
-        let global_active_index = *self.inner.global_active_uplink.read().await;
-        let tcp_active_index = *self.inner.tcp_active_uplink.read().await;
-        let udp_active_index = *self.inner.udp_active_uplink.read().await;
+        let active = self.inner.active_uplinks.read().await;
+        let global_active_index = active.global;
+        let tcp_active_index = active.tcp;
+        let udp_active_index = active.udp;
+        drop(active);
 
         let mut uplinks = Vec::with_capacity(self.inner.uplinks.len());
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {

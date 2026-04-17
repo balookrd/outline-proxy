@@ -28,6 +28,19 @@ impl std::fmt::Debug for UplinkManager {
     }
 }
 
+/// Combined active-uplink selection state.  All three indices are written
+/// together on selection events and read together in snapshots, so a single
+/// lock is cheaper than three.
+#[derive(Clone, Default)]
+pub(super) struct ActiveUplinks {
+    /// Global active index (used in `strict_global_active` mode).
+    pub(super) global: Option<usize>,
+    /// Per-transport TCP active index (used in `strict_per_uplink` mode).
+    pub(super) tcp: Option<usize>,
+    /// Per-transport UDP active index (used in `strict_per_uplink` mode).
+    pub(super) udp: Option<usize>,
+}
+
 pub(super) struct UplinkManagerInner {
     /// Name of the group this manager represents. Surfaced as the `group`
     /// Prometheus label on every uplink-scoped metric emitted from within.
@@ -36,9 +49,7 @@ pub(super) struct UplinkManagerInner {
     pub(super) probe: ProbeConfig,
     pub(super) load_balancing: LoadBalancingConfig,
     pub(super) statuses: RwLock<Vec<UplinkStatus>>,
-    pub(super) global_active_uplink: RwLock<Option<usize>>,
-    pub(super) tcp_active_uplink: RwLock<Option<usize>>,
-    pub(super) udp_active_uplink: RwLock<Option<usize>>,
+    pub(super) active_uplinks: RwLock<ActiveUplinks>,
     pub(super) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     pub(super) standby_pools: Vec<StandbyPool>,
     pub(super) probe_execution_limit: Arc<Semaphore>,
