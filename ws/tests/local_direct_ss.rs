@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 
-use outline_ws_rust::crypto::{
+use shadowsocks_crypto::{
     SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, derive_subkey, encrypt, encrypt_udp_packet,
     increment_nonce,
 };
@@ -267,7 +267,7 @@ struct TcpSsStream {
 enum TcpSsReadError {
     CleanEof,
     Io(std::io::Error),
-    Crypto(outline_ws_rust::crypto::CryptoError),
+    Crypto(shadowsocks_crypto::CryptoError),
 }
 
 impl TcpSsStream {

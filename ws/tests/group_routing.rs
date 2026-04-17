@@ -13,9 +13,9 @@ use outline_ws_rust::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RouteRule, RouteTarget, RoutingScope,
     RoutingTableConfig, UplinkConfig, UplinkGroupConfig, WsProbeConfig,
 };
-use outline_ws_rust::routing::RoutingTable;
+use outline_routing::RoutingTable;
 use outline_ws_rust::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
-use outline_ws_rust::uplink::{TransportKind, UplinkRegistry};
+use outline_uplink::{TransportKind, UplinkRegistry};
 use url::Url;
 
 // ── Test helpers ─────────────────────────────────────────────────────────────
