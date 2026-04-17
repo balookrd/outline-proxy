@@ -48,7 +48,7 @@ pub(super) struct UplinkManagerInner {
     pub(super) uplinks: Vec<Arc<UplinkConfig>>,
     pub(super) probe: ProbeConfig,
     pub(super) load_balancing: LoadBalancingConfig,
-    pub(super) statuses: RwLock<Vec<UplinkStatus>>,
+    pub(super) statuses: RwLock<Arc<Vec<UplinkStatus>>>,
     pub(super) active_uplinks: RwLock<ActiveUplinks>,
     pub(super) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     pub(super) standby_pools: Vec<StandbyPool>,
@@ -60,6 +60,22 @@ pub(super) struct UplinkManagerInner {
     /// Optional persistent state store.  When `Some`, active-uplink changes
     /// are flushed to disk so they survive process restarts.
     pub(super) state_store: Option<Arc<StateStore>>,
+}
+
+impl UplinkManagerInner {
+    /// Clone-modify-replace: the only correct way to mutate statuses.
+    /// Clones the current Vec, applies `f`, wraps in a new Arc.
+    /// Callers never mutate through an Arc (which would be shared), only
+    /// through the owned clone.
+    pub(super) async fn modify_statuses<F>(&self, f: F)
+    where
+        F: FnOnce(&mut Vec<UplinkStatus>),
+    {
+        let mut lock = self.statuses.write().await;
+        let mut new = (**lock).clone();
+        f(&mut new);
+        *lock = Arc::new(new);
+    }
 }
 
 /// All per-transport runtime state for a single uplink.

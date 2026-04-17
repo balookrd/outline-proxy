@@ -29,7 +29,7 @@ impl UplinkManager {
         if uplink.transport == UplinkTransport::Websocket
             && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
         {
-            let statuses = self.inner.statuses.read().await;
+            let statuses = self.inner.statuses.read().await.clone();
             let status = &statuses[index];
             if status
                 .tcp
@@ -51,7 +51,7 @@ impl UplinkManager {
         if uplink.transport == UplinkTransport::Websocket
             && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
         {
-            let statuses = self.inner.statuses.read().await;
+            let statuses = self.inner.statuses.read().await.clone();
             let status = &statuses[index];
             if status
                 .udp

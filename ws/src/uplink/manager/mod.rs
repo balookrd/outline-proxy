@@ -131,7 +131,7 @@ impl UplinkManager {
                 uplinks,
                 probe,
                 load_balancing,
-                statuses: RwLock::new(vec![UplinkStatus::default(); count]),
+                statuses: RwLock::new(Arc::new(vec![UplinkStatus::default(); count])),
                 active_uplinks,
                 sticky_routes: RwLock::new(HashMap::new()),
                 standby_pools: (0..count).map(|_| StandbyPool::new()).collect(),
@@ -204,25 +204,27 @@ impl UplinkManager {
     /// Test helper: directly set TCP health / latency for uplink `index`.
     #[doc(hidden)]
     pub async fn test_set_tcp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
-        let mut statuses = self.inner.statuses.write().await;
-        statuses[index].tcp.healthy = Some(healthy);
-        statuses[index].tcp.latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        self.inner.modify_statuses(|statuses| {
+            statuses[index].tcp.healthy = Some(healthy);
+            statuses[index].tcp.latency = Some(Duration::from_millis(rtt_ms));
+            statuses[index].tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        }).await;
     }
 
     /// Test helper: directly set UDP health / latency for uplink `index`.
     #[doc(hidden)]
     pub async fn test_set_udp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
-        let mut statuses = self.inner.statuses.write().await;
-        statuses[index].udp.healthy = Some(healthy);
-        statuses[index].udp.latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        self.inner.modify_statuses(|statuses| {
+            statuses[index].udp.healthy = Some(healthy);
+            statuses[index].udp.latency = Some(Duration::from_millis(rtt_ms));
+            statuses[index].udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        }).await;
     }
 
     /// Test helper: read tcp_healthy for uplink `index`.
     #[doc(hidden)]
     pub async fn test_tcp_healthy(&self, index: usize) -> Option<bool> {
-        self.inner.statuses.read().await[index].tcp.healthy
+        self.inner.statuses.read().await.clone()[index].tcp.healthy
     }
 
     pub fn uplinks(&self) -> &[Arc<UplinkConfig>] {
