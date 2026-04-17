@@ -5,28 +5,93 @@ use std::time::Duration;
 
 use anyhow::Result;
 use serde::Deserialize;
-use tokio::sync::RwLock;
 use url::Url;
 
-use crate::bypass::BypassList;
+use crate::routing::RoutingTable;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen: Option<SocketAddr>,
     pub socks5_auth: Option<Socks5AuthConfig>,
-    pub uplinks: Vec<UplinkConfig>,
-    pub probe: ProbeConfig,
-    pub load_balancing: LoadBalancingConfig,
+    /// Uplink groups — each is an isolated `UplinkManager` with its own
+    /// probe loop, standby pools, sticky routes, and LB config.
+    pub groups: Vec<UplinkGroupConfig>,
+    /// Declarative policy routing config (parsed from `[[route]]`). `None`
+    /// when no `[[route]]` is declared — traffic is then unconditionally
+    /// routed through the first group.
+    pub routing: Option<RoutingTableConfig>,
+    /// Compiled, hot-reloadable routing table.
+    ///
+    /// **Two-phase init contract:** always `None` after [`load_config`] returns.
+    /// [`run_with_config`] compiles `routing` into an `Arc<RoutingTable>`, stores
+    /// it here, and only then starts accepting connections. Code that reads this
+    /// field during request handling can therefore rely on it being `Some` whenever
+    /// `routing` is `Some`. Do NOT read this field before `run_with_config` has run
+    /// (e.g. in tests that call `load_config` directly) — use `routing` instead.
+    pub routing_table: Option<Arc<RoutingTable>>,
     pub metrics: Option<MetricsConfig>,
+    #[cfg(feature = "tun")]
     pub tun: Option<TunConfig>,
     pub h2: H2Config,
     /// Override kernel UDP receive buffer size (SO_RCVBUF). None = kernel default.
     pub udp_recv_buf_bytes: Option<usize>,
     /// Override kernel UDP send buffer size (SO_SNDBUF). None = kernel default.
     pub udp_send_buf_bytes: Option<usize>,
-    /// Optional bypass list for SOCKS5 connections. Shared + hot-reloadable.
-    pub bypass: Option<Arc<RwLock<BypassList>>>,
+    /// SO_MARK applied to sockets used by `via = "direct"` routes (both TCP
+    /// connect and UDP bind). Prevents direct traffic from being routed
+    /// back into the TUN device on hosts where all traffic is captured.
+    /// Linux only; ignored on other platforms.
+    pub direct_fwmark: Option<u32>,
+    /// Path to the uplink state file used to persist active-uplink selection
+    /// across restarts.  Derived from the config path at startup; `None`
+    /// disables persistence (e.g. in tests).
+    pub state_path: Option<PathBuf>,
+}
+
+/// New: a named collection of uplinks sharing a single LB + probe configuration.
+#[derive(Debug, Clone)]
+pub struct UplinkGroupConfig {
+    pub name: String,
+    pub uplinks: Vec<UplinkConfig>,
+    pub probe: ProbeConfig,
+    pub load_balancing: LoadBalancingConfig,
+}
+
+/// New: what a matched route should do with the traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RouteTarget {
+    /// Forward the connection outside any uplink (equivalent to the old
+    /// `via = "direct"` behaviour).
+    Direct,
+    /// Silently drop the connection (TCP → SOCKS5 reply `REP=0x02`, UDP → drop).
+    Drop,
+    /// Route through the named group.
+    Group(String),
+}
+
+/// New: one policy routing rule.
+///
+/// Prefixes come from `inline_prefixes` and/or `file`. When `file` is set,
+/// a background watcher polls `file_poll` for mtime changes and swaps the
+/// compiled CIDR set in place.
+#[derive(Debug, Clone)]
+pub struct RouteRule {
+    pub inline_prefixes: Vec<String>,
+    pub file: Option<PathBuf>,
+    pub file_poll: Duration,
+    pub target: RouteTarget,
+    pub fallback: Option<RouteTarget>,
+    /// When true, the rule matches addresses NOT in the CIDR set.
+    pub invert: bool,
+}
+
+/// New: full routing table — ordered rules + explicit default.
+#[derive(Debug, Clone)]
+pub struct RoutingTableConfig {
+    pub rules: Vec<RouteRule>,
+    pub default_target: RouteTarget,
+    pub default_fallback: Option<RouteTarget>,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.
@@ -191,6 +256,7 @@ pub struct MetricsConfig {
     pub listen: SocketAddr,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Clone)]
 pub struct TunConfig {
     pub path: PathBuf,
@@ -213,6 +279,7 @@ pub struct TunConfig {
     pub defrag_max_bytes_per_set: usize,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Clone)]
 pub struct TunTcpConfig {
     pub connect_timeout: Duration,

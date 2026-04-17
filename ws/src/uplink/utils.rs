@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -6,6 +8,22 @@ use crate::config::{LoadBalancingConfig, LoadBalancingMode, RoutingScope};
 use crate::types::TargetAddr;
 
 use super::types::{PenaltyState, RoutingKey, TransportKind};
+
+/// Maximum number of distinct normalized `detail` label values that the
+/// `uplink_runtime_failure_other_details_total` metric may track globally.
+///
+/// `normalize_other_runtime_failure_detail` routes errors that did not match
+/// any known signature through this limit.  Once `MAX_DETAIL_CARDINALITY`
+/// unique values have been observed, further unseen values are replaced by the
+/// sentinel `"other_overflow"` so that a burst of novel error texts cannot
+/// cause unbounded growth in the Prometheus label cardinality.
+///
+/// 64 is intentionally conservative: any deployment with more than 64
+/// distinct *un-classifiable* error patterns has a far bigger problem than
+/// metric cardinality.
+const MAX_DETAIL_CARDINALITY: usize = 64;
+
+static DETAIL_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 pub(super) fn update_rtt_ewma(
     current: &mut Option<Duration>,
@@ -124,6 +142,13 @@ pub(super) fn classify_runtime_failure_signature(error_text: &str) -> &'static s
 }
 
 pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
+    let normalized = normalize_detail_string(error_text);
+    intern_detail(normalized)
+}
+
+/// Normalize an error string to a compact, metric-safe token.
+/// Returns `[a-z_#]+`, max 48 characters, digits replaced by `#`.
+fn normalize_detail_string(error_text: &str) -> String {
     let first_line = error_text
         .lines()
         .find(|line| !line.trim().is_empty())
@@ -156,5 +181,75 @@ pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String
         "other".to_string()
     } else {
         normalized
+    }
+}
+
+/// Guard against unbounded Prometheus label cardinality.
+///
+/// Returns `detail` unchanged if it has been seen before or if the global
+/// pool has not yet reached `MAX_DETAIL_CARDINALITY`.  Once the cap is hit,
+/// any *new* unseen value is replaced by `"other_overflow"` so the number
+/// of distinct `detail` label values emitted to Prometheus is bounded.
+fn intern_detail(detail: String) -> String {
+    let pool = DETAIL_SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    // Unwrap: poisoning can only happen on panic inside the lock, which we
+    // never do.  Recovering from a poisoned mutex is not worth the complexity.
+    let mut seen = pool.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.contains(&detail) {
+        return detail;
+    }
+    if seen.len() >= MAX_DETAIL_CARDINALITY {
+        return "other_overflow".to_string();
+    }
+    seen.insert(detail.clone());
+    detail
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_DETAIL_CARDINALITY, intern_detail, normalize_detail_string};
+
+    #[test]
+    fn normalize_replaces_digits_and_special_chars() {
+        let result = normalize_detail_string("connect to 192.168.1.1:8080 failed");
+        assert!(!result.chars().any(|c| c.is_ascii_digit()));
+        assert!(result.len() <= 48);
+    }
+
+    #[test]
+    fn normalize_trims_leading_trailing_underscores() {
+        let result = normalize_detail_string("!!!error!!!");
+        assert!(!result.starts_with('_') && !result.ends_with('_'));
+    }
+
+    /// intern_detail must return only valid metric label strings (ASCII
+    /// alphanumeric + underscore) regardless of what the global pool contains.
+    #[test]
+    fn intern_detail_output_is_always_a_valid_metric_label() {
+        // Feed more values than the cap to guarantee we exercise both the
+        // normal and the overflow path, no matter how many other tests have
+        // already populated the shared pool.
+        for i in 0..MAX_DETAIL_CARDINALITY + 10 {
+            let input = format!("intern_label_test_probe_{i:04}");
+            let out = intern_detail(input);
+            assert!(!out.is_empty(), "output must be non-empty");
+            assert!(
+                out.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'),
+                "output must be a valid metric label, got: {out:?}"
+            );
+        }
+    }
+
+    /// Once a value has been interned it must be returned unchanged on
+    /// subsequent calls (idempotent).  This holds whether the value was
+    /// inserted on first call or was already in the pool from a prior call.
+    #[test]
+    fn intern_detail_is_idempotent_for_already_seen_values() {
+        let known = "idempotency_probe_value";
+        let first = intern_detail(known.to_string());
+        let second = intern_detail(known.to_string());
+        // Both calls must return the same string (either the value itself
+        // or "other_overflow" — but consistently the same).
+        assert_eq!(first, second);
     }
 }

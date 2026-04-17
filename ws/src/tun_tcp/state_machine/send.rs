@@ -303,44 +303,54 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         .map(|duration| duration.as_micros() as u64)
         .unwrap_or(0);
 
+    let group = state.manager.group_name();
     let uplink = state.uplink_name.as_str();
     if !state.reported_active {
-        metrics::add_tun_tcp_flows_active(uplink, 1);
+        metrics::add_tun_tcp_flows_active(group, uplink, 1);
         state.reported_active = true;
     }
     apply_usize_gauge_delta(
+        group,
         uplink,
         inflight_segments,
         &mut state.reported_inflight_segments,
         metrics::add_tun_tcp_inflight_segments,
     );
     apply_usize_gauge_delta(
+        group,
         uplink,
         inflight_bytes,
         &mut state.reported_inflight_bytes,
         metrics::add_tun_tcp_inflight_bytes,
     );
     apply_usize_gauge_delta(
+        group,
         uplink,
         pending_server_bytes,
         &mut state.reported_pending_server_bytes,
         metrics::add_tun_tcp_pending_server_bytes,
     );
     apply_usize_gauge_delta(
+        group,
         uplink,
         buffered_client_segments,
         &mut state.reported_buffered_client_segments,
         metrics::add_tun_tcp_buffered_client_segments,
     );
     if zero_window != state.reported_zero_window {
-        metrics::add_tun_tcp_zero_window_flows(uplink, if zero_window { 1 } else { -1 });
+        metrics::add_tun_tcp_zero_window_flows(group, uplink, if zero_window { 1 } else { -1 });
         state.reported_zero_window = zero_window;
     }
     if backlog_pressure != state.reported_backlog_pressure {
-        metrics::add_tun_tcp_backlog_pressure_flows(uplink, if backlog_pressure { 1 } else { -1 });
+        metrics::add_tun_tcp_backlog_pressure_flows(
+            group,
+            uplink,
+            if backlog_pressure { 1 } else { -1 },
+        );
         state.reported_backlog_pressure = backlog_pressure;
     }
     apply_u64_seconds_gauge_delta(
+        group,
         uplink,
         backlog_pressure_us,
         &mut state.reported_backlog_pressure_us,
@@ -348,36 +358,42 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     );
     if ack_progress_stall != state.reported_ack_progress_stall {
         metrics::add_tun_tcp_ack_progress_stall_flows(
+            group,
             uplink,
             if ack_progress_stall { 1 } else { -1 },
         );
         state.reported_ack_progress_stall = ack_progress_stall;
     }
     apply_u64_seconds_gauge_delta(
+        group,
         uplink,
         ack_progress_stall_us,
         &mut state.reported_ack_progress_stall_us,
         metrics::add_tun_tcp_ack_progress_stall_seconds,
     );
     apply_usize_gauge_delta(
+        group,
         uplink,
         congestion_window,
         &mut state.reported_congestion_window,
         metrics::add_tun_tcp_congestion_window_bytes,
     );
     apply_usize_gauge_delta(
+        group,
         uplink,
         slow_start_threshold,
         &mut state.reported_slow_start_threshold,
         metrics::add_tun_tcp_slow_start_threshold_bytes,
     );
     apply_u64_seconds_gauge_delta(
+        group,
         uplink,
         retransmission_timeout_us,
         &mut state.reported_retransmission_timeout_us,
         metrics::add_tun_tcp_retransmission_timeout_seconds,
     );
     apply_u64_seconds_gauge_delta(
+        group,
         uplink,
         smoothed_rtt_us,
         &mut state.reported_smoothed_rtt_us,
@@ -386,21 +402,31 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
 }
 
 pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
+    let group = state.manager.group_name();
     let uplink = state.uplink_name.as_str();
     if state.reported_active {
-        metrics::add_tun_tcp_flows_active(uplink, -1);
+        metrics::add_tun_tcp_flows_active(group, uplink, -1);
         state.reported_active = false;
     }
     if state.reported_inflight_segments != 0 {
-        metrics::add_tun_tcp_inflight_segments(uplink, -(state.reported_inflight_segments as i64));
+        metrics::add_tun_tcp_inflight_segments(
+            group,
+            uplink,
+            -(state.reported_inflight_segments as i64),
+        );
         state.reported_inflight_segments = 0;
     }
     if state.reported_inflight_bytes != 0 {
-        metrics::add_tun_tcp_inflight_bytes(uplink, -(state.reported_inflight_bytes as i64));
+        metrics::add_tun_tcp_inflight_bytes(
+            group,
+            uplink,
+            -(state.reported_inflight_bytes as i64),
+        );
         state.reported_inflight_bytes = 0;
     }
     if state.reported_pending_server_bytes != 0 {
         metrics::add_tun_tcp_pending_server_bytes(
+            group,
             uplink,
             -(state.reported_pending_server_bytes as i64),
         );
@@ -408,32 +434,35 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     }
     if state.reported_buffered_client_segments != 0 {
         metrics::add_tun_tcp_buffered_client_segments(
+            group,
             uplink,
             -(state.reported_buffered_client_segments as i64),
         );
         state.reported_buffered_client_segments = 0;
     }
     if state.reported_zero_window {
-        metrics::add_tun_tcp_zero_window_flows(uplink, -1);
+        metrics::add_tun_tcp_zero_window_flows(group, uplink, -1);
         state.reported_zero_window = false;
     }
     if state.reported_backlog_pressure {
-        metrics::add_tun_tcp_backlog_pressure_flows(uplink, -1);
+        metrics::add_tun_tcp_backlog_pressure_flows(group, uplink, -1);
         state.reported_backlog_pressure = false;
     }
     if state.reported_backlog_pressure_us != 0 {
         metrics::add_tun_tcp_backlog_pressure_seconds(
+            group,
             uplink,
             -(state.reported_backlog_pressure_us as f64) / 1_000_000.0,
         );
         state.reported_backlog_pressure_us = 0;
     }
     if state.reported_ack_progress_stall {
-        metrics::add_tun_tcp_ack_progress_stall_flows(uplink, -1);
+        metrics::add_tun_tcp_ack_progress_stall_flows(group, uplink, -1);
         state.reported_ack_progress_stall = false;
     }
     if state.reported_ack_progress_stall_us != 0 {
         metrics::add_tun_tcp_ack_progress_stall_seconds(
+            group,
             uplink,
             -(state.reported_ack_progress_stall_us as f64) / 1_000_000.0,
         );
@@ -441,6 +470,7 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     }
     if state.reported_congestion_window != 0 {
         metrics::add_tun_tcp_congestion_window_bytes(
+            group,
             uplink,
             -(state.reported_congestion_window as i64),
         );
@@ -448,6 +478,7 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     }
     if state.reported_slow_start_threshold != 0 {
         metrics::add_tun_tcp_slow_start_threshold_bytes(
+            group,
             uplink,
             -(state.reported_slow_start_threshold as i64),
         );
@@ -455,6 +486,7 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     }
     if state.reported_retransmission_timeout_us != 0 {
         metrics::add_tun_tcp_retransmission_timeout_seconds(
+            group,
             uplink,
             -((state.reported_retransmission_timeout_us as f64) / 1_000_000.0),
         );
@@ -462,6 +494,7 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     }
     if state.reported_smoothed_rtt_us != 0 {
         metrics::add_tun_tcp_smoothed_rtt_seconds(
+            group,
             uplink,
             -((state.reported_smoothed_rtt_us as f64) / 1_000_000.0),
         );
@@ -470,27 +503,29 @@ pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
 }
 
 fn apply_usize_gauge_delta(
+    group: &str,
     uplink: &str,
     current: usize,
     reported: &mut usize,
-    record: fn(&str, i64),
+    record: fn(&str, &str, i64),
 ) {
     let delta = current as i64 - *reported as i64;
     if delta != 0 {
-        record(uplink, delta);
+        record(group, uplink, delta);
         *reported = current;
     }
 }
 
 fn apply_u64_seconds_gauge_delta(
+    group: &str,
     uplink: &str,
     current: u64,
     reported: &mut u64,
-    record: fn(&str, f64),
+    record: fn(&str, &str, f64),
 ) {
     let delta = current as f64 - *reported as f64;
     if delta != 0.0 {
-        record(uplink, delta / 1_000_000.0);
+        record(group, uplink, delta / 1_000_000.0);
         *reported = current;
     }
 }

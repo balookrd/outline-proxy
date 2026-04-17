@@ -10,7 +10,7 @@ use crate::metrics;
 use crate::transport::{
     AnyWsStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
-use crate::types::UplinkTransport;
+use crate::types::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::is_expected_standby_probe_failure;
 use super::super::types::{TransportKind, UplinkCandidate, UplinkManager};
@@ -32,7 +32,8 @@ impl UplinkManager {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
             if status
-                .h3_tcp_downgrade_until
+                .tcp
+                .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::types::WsTransportMode::H2;
@@ -53,7 +54,8 @@ impl UplinkManager {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
             if status
-                .h3_udp_downgrade_until
+                .udp
+                .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::types::WsTransportMode::H2;
@@ -89,23 +91,41 @@ impl UplinkManager {
                 .pop_front()?;
             self.spawn_refill(candidate.index, TransportKind::Tcp);
 
-            let alive = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                Err(_elapsed) => true, // would-block: socket still open
-                Ok(None) => false,
-                Ok(Some(Err(_))) => false,
-                Ok(Some(Ok(Message::Close(_)))) => false,
-                Ok(Some(Ok(_))) => true, // stray control/data frame, still usable
+            // Check the underlying shared connection (H2/H3) first — if a
+            // previous open_websocket timeout marked it as broken, the 1ms
+            // peek alone would not catch it because H2 keepalive may still
+            // succeed on the dying connection.
+            let alive = if !ws.is_connection_alive() {
+                false
+            } else {
+                match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                    Err(_elapsed) => true, // would-block: socket still open
+                    Ok(None) => false,
+                    Ok(Some(Err(_))) => false,
+                    Ok(Some(Ok(Message::Close(_)))) => false,
+                    Ok(Some(Ok(_))) => true, // stray control/data frame, still usable
+                }
             };
             if !alive {
                 debug!(
                     uplink = %candidate.uplink.name,
                     "discarded stale warm-standby TCP websocket at acquisition time"
                 );
-                metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "stale");
+                metrics::record_warm_standby_acquire(
+                    "tcp",
+                    &self.inner.group_name,
+                    &candidate.uplink.name,
+                    "stale",
+                );
                 // drop `ws`, loop to try the next pool entry
                 continue;
             }
-            metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "hit");
+            metrics::record_warm_standby_acquire(
+                "tcp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "hit",
+            );
             debug!(uplink = %candidate.uplink.name, "using warm-standby TCP websocket");
             return Some(ws);
         }
@@ -120,7 +140,12 @@ impl UplinkManager {
         if candidate.uplink.transport != UplinkTransport::Websocket {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
-        metrics::record_warm_standby_acquire("tcp", &candidate.uplink.name, "miss");
+        metrics::record_warm_standby_acquire(
+            "tcp",
+            &self.inner.group_name,
+            &candidate.uplink.name,
+            "miss",
+        );
         let mode = self.effective_tcp_ws_mode(candidate.index).await;
         debug!(
             uplink = %candidate.uplink.name,
@@ -169,7 +194,12 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<UdpWsTransport> {
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-            metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
+            metrics::record_warm_standby_acquire(
+                "udp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "miss",
+            );
             let udp_addr = candidate.uplink.udp_addr.as_ref().ok_or_else(|| {
                 anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
             })?;
@@ -193,9 +223,33 @@ impl UplinkManager {
         }
 
         let pool = &self.inner.standby_pools[candidate.index];
-        if let Some(ws) = pool.udp.lock().await.pop_front() {
+        // Loop past entries whose underlying shared connection has been
+        // torn down since the entry was pooled — otherwise we'd hand a
+        // zombie transport to the caller and probe-timeout-marked H2/H3
+        // connections would resurface here. Mirrors `try_take_tcp_standby`.
+        loop {
+            let Some(ws) = pool.udp.lock().await.pop_front() else { break };
             self.spawn_refill(candidate.index, TransportKind::Udp);
-            metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "hit");
+            if !ws.is_connection_alive() {
+                metrics::record_warm_standby_acquire(
+                    "udp",
+                    &self.inner.group_name,
+                    &candidate.uplink.name,
+                    "stale",
+                );
+                debug!(
+                    uplink = %candidate.uplink.name,
+                    "discarded stale warm-standby UDP websocket at acquisition time"
+                );
+                drop(ws);
+                continue;
+            }
+            metrics::record_warm_standby_acquire(
+                "udp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "hit",
+            );
             debug!(uplink = %candidate.uplink.name, "using warm-standby UDP websocket");
             return Ok(UdpWsTransport::from_websocket(
                 ws,
@@ -206,7 +260,12 @@ impl UplinkManager {
             )?);
         }
 
-        metrics::record_warm_standby_acquire("udp", &candidate.uplink.name, "miss");
+        metrics::record_warm_standby_acquire(
+            "udp",
+            &self.inner.group_name,
+            &candidate.uplink.name,
+            "miss",
+        );
         debug!(uplink = %candidate.uplink.name, "no warm-standby UDP websocket available, dialing on-demand");
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
             anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
@@ -279,27 +338,34 @@ impl UplinkManager {
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
-            let keepalive_result: Result<()> = match timeout(
-                STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
-                ws.send(Message::Ping(vec![].into())),
-            )
-            .await
-            {
-                Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
-                Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
-                Ok(Ok(())) => {
-                    match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                        Err(_elapsed) => Ok(()), // still open — nothing to read
-                        Ok(None) => Err(anyhow!("standby websocket stream ended")),
-                        Ok(Some(Err(error))) => Err(anyhow!("standby websocket error: {error}")),
-                        Ok(Some(Ok(Message::Close(frame)))) => {
-                            Err(anyhow!("standby websocket closed by server: {:?}", frame))
-                        },
-                        Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
-                    }
-                },
+            let keepalive_result: Result<()> = if !ws.is_connection_alive() {
+                Err(anyhow!("underlying shared connection is closed"))
+            } else {
+                match timeout(
+                    STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
+                    ws.send(Message::Ping(vec![].into())),
+                )
+                .await
+                {
+                    Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
+                    Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
+                    Ok(Ok(())) => {
+                        match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                            Err(_elapsed) => Ok(()), // still open — nothing to read
+                            Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                            Ok(Some(Err(error))) => {
+                                Err(anyhow!("standby websocket error: {error}"))
+                            },
+                            Ok(Some(Ok(Message::Close(frame)))) => {
+                                Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                            },
+                            Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
+                        }
+                    },
+                }
             };
             metrics::record_probe(
+                &self.inner.group_name,
                 &uplink.name,
                 "tcp",
                 "standby_ws_keepalive",
@@ -373,13 +439,17 @@ impl UplinkManager {
                 break;
             }
 
-            let ws = match transport {
+            // Carry the configured mode alongside the dial result so the Http1
+        // fallback guard below can distinguish "explicitly Http1" (pool it)
+        // from "H2/H3 fell back to Http1" (discard, avoid FD accumulation).
+        let (ws, mode_is_http1) = match transport {
                 TransportKind::Tcp => {
                     let mode = self.effective_tcp_ws_mode(index).await;
+                    let is_http1 = matches!(mode, WsTransportMode::Http1);
                     let Some(tcp_ws_url) = uplink.tcp_ws_url.as_ref() else {
                         break;
                     };
-                    connect_websocket_with_source(
+                    let result = connect_websocket_with_source(
                         tcp_ws_url,
                         mode,
                         uplink.fwmark,
@@ -387,7 +457,8 @@ impl UplinkManager {
                         "standby_tcp",
                     )
                     .await
-                    .with_context(|| format!("failed to preconnect to {}", tcp_ws_url))
+                    .with_context(|| format!("failed to preconnect to {}", tcp_ws_url));
+                    (result, is_http1)
                 },
                 TransportKind::Udp => {
                     if uplink.transport != UplinkTransport::Websocket {
@@ -397,7 +468,8 @@ impl UplinkManager {
                         break;
                     };
                     let mode = self.effective_udp_ws_mode(index).await;
-                    connect_websocket_with_source(
+                    let is_http1 = matches!(mode, WsTransportMode::Http1);
+                    let result = connect_websocket_with_source(
                         url,
                         mode,
                         uplink.fwmark,
@@ -405,15 +477,42 @@ impl UplinkManager {
                         "standby_udp",
                     )
                     .await
-                    .with_context(|| format!("failed to preconnect to {}", url))
+                    .with_context(|| format!("failed to preconnect to {}", url));
+                    (result, is_http1)
                 },
             };
 
             match ws {
                 Ok(ws) => {
-                    pool_vec.lock().await.push_back(ws);
-                    current_len += 1;
-                    metrics::record_warm_standby_refill(transport_label, &uplink.name, true);
+                    // H2/H3 connections are shared (one socket per server, N
+                    // streams per socket), so pooling them is cheap.  When
+                    // H2/H3 is configured but the server fell back to Http1,
+                    // each "standby" slot owns its own TCP socket — pooling
+                    // defeats the purpose and accumulates FDs silently.  Bail
+                    // out in that case.  When Http1 is *explicitly* configured,
+                    // pooling a single Http1 connection is the intended behavior.
+                    if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
+                        break;
+                    }
+
+                    // Re-check actual pool size before pushing — validate_pool
+                    // or keepalive_tcp_pool may have pushed entries back while
+                    // we were dialling, so the pool could already be at capacity.
+                    let mut guard = pool_vec.lock().await;
+                    if guard.len() >= desired {
+                        drop(guard);
+                        // Connection is dropped here; pool already full.
+                        break;
+                    }
+                    guard.push_back(ws);
+                    current_len = guard.len();
+                    drop(guard);
+                    metrics::record_warm_standby_refill(
+                        transport_label,
+                        &self.inner.group_name,
+                        &uplink.name,
+                        true,
+                    );
                     debug!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -422,7 +521,12 @@ impl UplinkManager {
                     );
                 },
                 Err(error) => {
-                    metrics::record_warm_standby_refill(transport_label, &uplink.name, false);
+                    metrics::record_warm_standby_refill(
+                        transport_label,
+                        &self.inner.group_name,
+                        &uplink.name,
+                        false,
+                    );
                     warn!(
                         uplink = %uplink.name,
                         transport = ?transport,
@@ -449,6 +553,20 @@ impl UplinkManager {
         }
 
         let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        // Determine if this transport is explicitly configured as Http1.
+        // Http1 connections that slipped in as H2/H3 fallbacks must be evicted;
+        // those present because Http1 is the configured mode should be
+        // validated normally via the timeout-peek below.
+        let mode_is_http1 = match transport {
+            TransportKind::Tcp => matches!(
+                self.effective_tcp_ws_mode(index).await,
+                WsTransportMode::Http1
+            ),
+            TransportKind::Udp => matches!(
+                self.effective_udp_ws_mode(index).await,
+                WsTransportMode::Http1
+            ),
+        };
         let pool = &self.inner.standby_pools[index];
         let mut drained = std::collections::VecDeque::new();
         {
@@ -466,21 +584,40 @@ impl UplinkManager {
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
+            // Evict Http1 connections that are present as H2/H3 fallbacks.
+            // These each own their own TCP socket, so keeping them in the pool
+            // accumulates FDs without sharing the underlying connection.
+            // When Http1 is the explicitly configured mode, skip eviction and
+            // let the standard timeout-peek decide liveness instead.
+            if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = ?transport,
+                    "evicting Http1 fallback connection from warm-standby pool"
+                );
+                drop(ws);
+                continue;
+            }
             // Check liveness with a non-blocking read (1 ms timeout).
             // Many servers do not respond to WebSocket ping frames, so we use
             // a quick peek instead: if the server has closed the connection we
             // will see a Close frame or an error immediately; otherwise the
             // read times out and we treat the connection as still alive.
-            let alive_result: Result<()> = match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
-                Err(_elapsed) => Ok(()), // still open — nothing to read
-                Ok(None) => Err(anyhow!("standby websocket stream ended")),
-                Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
-                Ok(Some(Ok(Message::Close(frame)))) => {
-                    Err(anyhow!("standby websocket closed by server: {:?}", frame))
-                },
-                Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
+            let alive_result: Result<()> = if !ws.is_connection_alive() {
+                Err(anyhow!("underlying shared connection is closed"))
+            } else {
+                match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
+                    Err(_elapsed) => Ok(()), // still open — nothing to read
+                    Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                    Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
+                    Ok(Some(Ok(Message::Close(frame)))) => {
+                        Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                    },
+                    Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
+                }
             };
             metrics::record_probe(
+                &self.inner.group_name,
                 &uplink.name,
                 match transport {
                     TransportKind::Tcp => "tcp",

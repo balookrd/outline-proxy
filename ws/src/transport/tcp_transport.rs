@@ -24,7 +24,8 @@ type WsStream = SplitStream<AnyWsStream>;
 enum TcpWriteTransport {
     Websocket {
         data_tx: Option<mpsc::Sender<Message>>,
-        writer_task: Option<AbortOnDrop>,
+        /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
+        _writer_task: Option<AbortOnDrop>,
     },
     Socket {
         writer: OwnedWriteHalf,
@@ -194,7 +195,7 @@ impl TcpShadowsocksWriter {
             Self {
                 transport: TcpWriteTransport::Websocket {
                     data_tx: Some(data_tx),
-                    writer_task: Some(AbortOnDrop::new(writer_task)),
+                    _writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
                 cipher,
                 key: derive_subkey(cipher, master_key, &salt)?,
@@ -250,10 +251,10 @@ impl TcpShadowsocksWriter {
                     .0;
                 let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
                 let encrypted_fixed = encrypt(self.cipher, &self.key, &self.nonce, &fixed_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 let encrypted_variable =
                     encrypt(self.cipher, &self.key, &self.nonce, &variable_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
 
                 let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
                 let mut frame = Vec::with_capacity(
@@ -281,10 +282,10 @@ impl TcpShadowsocksWriter {
     async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
         let len = (payload.len() as u16).to_be_bytes();
         let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
         let mut frame =
@@ -331,11 +332,23 @@ impl TcpShadowsocksWriter {
 
     pub async fn close(&mut self) -> Result<()> {
         match &mut self.transport {
-            TcpWriteTransport::Websocket { data_tx, writer_task } => {
+            TcpWriteTransport::Websocket { data_tx, .. } => {
+                // Drop the sender — the writer task sees None from data_rx,
+                // sends a WebSocket Close frame, and exits on its own.
+                //
+                // We intentionally do NOT take and await the writer task here.
+                // The previous implementation called `writer_task.take()` +
+                // `task.finish().await`, which moved the real JoinHandle out of
+                // its AbortOnDrop wrapper.  If this future was then cancelled
+                // (e.g. by a probe timeout), the handle was *detached* instead
+                // of aborted — leaking the writer task, its SplitSink, the
+                // underlying H2 connection, and the TCP socket.
+                //
+                // Leaving the AbortOnDrop in place guarantees that when this
+                // TcpShadowsocksWriter is dropped, the writer task is aborted
+                // regardless of how the caller exits (normal return, error, or
+                // cancellation).
                 drop(data_tx.take());
-                if let Some(task) = writer_task.take() {
-                    task.finish().await;
-                }
             },
             TcpWriteTransport::Socket { writer } => {
                 writer.shutdown().await.context("socket shutdown failed")?;
@@ -427,13 +440,13 @@ impl TcpShadowsocksReader {
                 let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
                 let encrypted_header = self.read_exact_from_ws(header_len).await?;
                 let header = decrypt(self.cipher, &key, &self.nonce, &encrypted_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 let payload_len =
                     parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
                 let encrypted_payload =
                     self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
                 let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 if let Some(state) = &mut self.ss2022 {
                     state.response_header_read = true;
                 }
@@ -449,7 +462,7 @@ impl TcpShadowsocksReader {
 
         let encrypted_len = self.read_exact_from_ws(2 + SHADOWSOCKS_TAG_LEN).await?;
         let len = decrypt(self.cipher, &key, &self.nonce, &encrypted_len)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         if len.len() != 2 {
             bail!("invalid decrypted length block");
@@ -461,7 +474,7 @@ impl TcpShadowsocksReader {
 
         let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
         let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
         Ok(payload)
     }
 

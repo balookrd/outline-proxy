@@ -5,6 +5,7 @@ mod snapshot;
 #[cfg(test)]
 mod tests;
 mod transport;
+#[cfg(feature = "tun")]
 mod tun;
 
 use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
@@ -14,14 +15,16 @@ pub use self::process::{init, spawn_process_metrics_sampler, update_process_memo
 pub use self::session::{SessionTracker, track_session};
 pub use self::snapshot::render_prometheus;
 pub use self::transport::{
-    BYPASS_UPLINK_LABEL, add_bytes, add_probe_bytes, add_transport_connects_active,
-    add_udp_datagram, add_upstream_transports_active, record_dropped_oversized_udp_packet,
-    record_failover, record_metrics_http_request, record_probe, record_probe_wakeup,
-    record_request, record_runtime_failure, record_runtime_failure_cause,
-    record_runtime_failure_other_detail, record_runtime_failure_signature,
-    record_runtime_failure_suppressed, record_transport_connect, record_uplink_selected,
-    record_upstream_transport, record_warm_standby_acquire, record_warm_standby_refill,
+    DIRECT_GROUP_LABEL, DIRECT_UPLINK_LABEL, add_bytes, add_probe_bytes,
+    add_transport_connects_active, add_udp_datagram, add_upstream_transports_active,
+    record_dropped_oversized_udp_packet, record_failover, record_metrics_http_request,
+    record_probe, record_probe_wakeup, record_request, record_runtime_failure,
+    record_runtime_failure_cause, record_runtime_failure_other_detail,
+    record_runtime_failure_signature, record_runtime_failure_suppressed,
+    record_transport_connect, record_uplink_selected, record_upstream_transport,
+    record_warm_standby_acquire, record_warm_standby_refill,
 };
+#[cfg(feature = "tun")]
 pub use self::tun::{
     add_tun_tcp_ack_progress_stall_flows, add_tun_tcp_ack_progress_stall_seconds,
     add_tun_tcp_async_connects_active, add_tun_tcp_backlog_pressure_flows,
@@ -69,37 +72,66 @@ struct Metrics {
     process_open_fds: Gauge,
     process_threads: Gauge,
     process_fd_by_type: GaugeVec,
+    process_sockets_by_state: IntGaugeVec,
     transport_connects_total: IntCounterVec,
     transport_connects_active: IntGaugeVec,
     upstream_transports_total: IntCounterVec,
     upstream_transports_active: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_packets_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_flows_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_flow_duration_seconds: HistogramVec,
+    #[cfg(feature = "tun")]
     tun_flows_active: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_icmp_local_replies_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_udp_forward_errors_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_ip_fragments_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_ip_reassemblies_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_ip_fragment_sets_active: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_max_flows: IntGauge,
+    #[cfg(feature = "tun")]
     tun_idle_timeout_seconds: Gauge,
+    #[cfg(feature = "tun")]
     tun_tcp_events_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_tcp_async_connects_total: IntCounterVec,
+    #[cfg(feature = "tun")]
     tun_tcp_async_connects_active: IntGauge,
+    #[cfg(feature = "tun")]
     tun_tcp_flows_active: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_inflight_segments: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_inflight_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_pending_server_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_buffered_client_segments: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_zero_window_flows: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_backlog_pressure_flows: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_backlog_pressure_seconds: GaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_ack_progress_stall_flows: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_ack_progress_stall_seconds: GaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_congestion_window_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_slow_start_threshold_bytes: IntGaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_retransmission_timeout_seconds: GaugeVec,
+    #[cfg(feature = "tun")]
     tun_tcp_smoothed_rtt_seconds: GaugeVec,
     uplink_health: GaugeVec,
     uplink_latency_seconds: GaugeVec,
@@ -114,6 +146,6 @@ struct Metrics {
     routing_scope_info: IntGaugeVec,
     global_active_uplink_info: IntGaugeVec,
     per_uplink_active_uplink_info: IntGaugeVec,
-    sticky_routes_total: IntGauge,
+    sticky_routes_total: IntGaugeVec,
     sticky_routes_by_uplink: IntGaugeVec,
 }

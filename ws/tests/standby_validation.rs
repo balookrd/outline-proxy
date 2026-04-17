@@ -65,6 +65,7 @@ async fn build_manager(
     warm_standby_udp: usize,
 ) -> UplinkManager {
     UplinkManager::new(
+        "test",
         vec![UplinkConfig {
             name: "test".to_string(),
             transport: UplinkTransport::Websocket,

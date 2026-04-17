@@ -1,4 +1,5 @@
 use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::net::Ipv6Addr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use rand::random;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -20,7 +21,10 @@ use crate::tun_wire::{
     IPV6_NEXT_HEADER_NONE, IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16,
     ipv6_payload_checksum, locate_ipv6_payload, locate_ipv6_upper_layer,
 };
-use crate::uplink::UplinkManager;
+use crate::config::RouteTarget;
+use crate::routing::RoutingTable;
+use crate::types::TargetAddr;
+use crate::uplink::{UplinkManager, UplinkRegistry};
 
 const IPV6_MIN_PATH_MTU: usize = 1280;
 const EBUSY_OS_ERROR: i32 = 16;
@@ -30,9 +34,142 @@ const TUN_OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(250);
 #[cfg(test)]
 mod tests;
 
+/// A cheaply-cloneable handle for writing IP packets to a TUN device.
+///
+/// Internally uses a `std::sync::Mutex<std::fs::File>` (not tokio's async
+/// mutex) for two reasons:
+///
+/// 1. **No internal write buffer**: `std::fs::File::write_all` issues a single
+///    `write(2)` syscall directly, which is what TUN requires — each `write(2)`
+///    delivers exactly one IP packet to the kernel.  `tokio::fs::File` has an
+///    internal write buffer and needs an explicit `flush()` after each
+///    `write_all`, doubling the async I/O per packet.
+///
+/// 2. **Short critical section**: a `write(2)` to a TUN device is a kernel
+///    memcpy into a ring buffer — typically ≤ 10 µs.  Holding a `std::sync::Mutex`
+///    for that duration is safe and avoids the overhead of a tokio async-mutex
+///    queue (which is significant when hundreds of concurrent flows compete).
 #[derive(Clone)]
 pub(crate) struct SharedTunWriter {
-    inner: Arc<Mutex<File>>,
+    inner: Arc<std::sync::Mutex<std::fs::File>>,
+}
+
+/// Per-flow dispatch context for the TUN path.
+///
+/// Resolves destination targets through the policy routing table to pick a
+/// group's [`UplinkManager`]. `direct` and `drop` rules on the TUN side both
+/// result in the packet being dropped — TUN cannot synthesise a "host's own
+/// networking stack" path without fwmark/SO_BINDTODEVICE plumbing, which is
+/// OS-specific and out of scope for this module. Users that want part of
+/// their traffic to go outside the tunnel should exclude those prefixes
+/// from the TUN routing table on the host.
+#[derive(Clone)]
+pub struct TunRouting {
+    registry: UplinkRegistry,
+    routing: Option<Arc<RoutingTable>>,
+    default_group: UplinkManager,
+    direct_fwmark: Option<u32>,
+}
+
+/// Resolved routing decision for a new TUN flow.
+#[derive(Clone)]
+pub enum TunRoute {
+    /// Forward this flow through the named group's uplink manager.
+    Group {
+        name: String,
+        manager: UplinkManager,
+    },
+    /// Forward via a local socket (with optional SO_MARK to escape the TUN
+    /// routing loop). The TUN engine opens a plain TCP/UDP connection to the
+    /// destination, relays data bidirectionally, and synthesises IP response
+    /// packets back into the TUN device — same behaviour as the SOCKS5
+    /// `via = "direct"` path.
+    Direct { fwmark: Option<u32> },
+    /// Drop the flow silently (matches `via = "drop"`).
+    Drop { reason: &'static str },
+}
+
+impl TunRouting {
+    pub fn new(
+        registry: UplinkRegistry,
+        routing: Option<Arc<RoutingTable>>,
+        direct_fwmark: Option<u32>,
+    ) -> Self {
+        let default_group = registry.default_group().clone();
+        Self { registry, routing, default_group, direct_fwmark }
+    }
+
+    /// Test-only helper: wrap a single [`UplinkManager`] as the sole group,
+    /// with no routing table. Used by TUN engine tests that pre-build an
+    /// `UplinkManager` directly.
+    #[cfg(test)]
+    pub fn from_single_manager(manager: UplinkManager) -> Self {
+        Self {
+            registry: UplinkRegistry::from_single_manager(manager.clone()),
+            routing: None,
+            default_group: manager,
+            direct_fwmark: None,
+        }
+    }
+
+    pub fn default_group(&self) -> &UplinkManager {
+        &self.default_group
+    }
+
+    /// Resolve a TUN flow's destination to a group manager.
+    pub async fn resolve(&self, target: &TargetAddr) -> TunRoute {
+        let Some(table) = self.routing.as_ref() else {
+            return TunRoute::Group {
+                name: self.registry.default_group_name().to_string(),
+                manager: self.default_group.clone(),
+            };
+        };
+        let decision = table.resolve(target).await;
+        self.materialize_target(decision.primary, decision.fallback).await
+    }
+
+    async fn materialize_target(
+        &self,
+        primary: RouteTarget,
+        fallback: Option<RouteTarget>,
+    ) -> TunRoute {
+        match primary {
+            RouteTarget::Direct => {
+                TunRoute::Direct { fwmark: self.direct_fwmark }
+            },
+            RouteTarget::Drop => TunRoute::Drop { reason: "policy_drop" },
+            RouteTarget::Group(name) => {
+                let Some(manager) = self.registry.group_by_name(&name) else {
+                    // Config validation rejects unknown groups in `via`, but
+                    // defensively honour the declared fallback before dropping
+                    // — dropping silently would be a worse failure mode than
+                    // using the escape hatch the user wrote.
+                    warn!(group = %name, "TUN route references unknown group");
+                    if let Some(fb) = fallback {
+                        return Box::pin(self.materialize_target(fb, None)).await;
+                    }
+                    return TunRoute::Drop { reason: "unknown_group" };
+                };
+                // Fallback applies only when the primary group has no
+                // healthy uplinks at resolve time; Direct/Drop primaries are
+                // terminal decisions.
+                if fallback.is_some()
+                    && !manager
+                        .has_any_healthy(crate::uplink::TransportKind::Udp)
+                        .await
+                    && !manager
+                        .has_any_healthy(crate::uplink::TransportKind::Tcp)
+                        .await
+                {
+                    if let Some(fb) = fallback {
+                        // Recurse once — fallback doesn't chain further.
+                        return Box::pin(self.materialize_target(fb, None)).await;
+                    }
+                }
+                TunRoute::Group { name, manager: manager.clone() }
+            },
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,7 +180,7 @@ enum PacketDisposition {
     Unsupported(&'static str),
 }
 
-pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result<()> {
+pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()> {
     let tun_path = config.path.clone();
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
@@ -51,9 +188,11 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let device = open_tun_device_with_retry(&config)
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
+    // The reader uses tokio::fs::File for non-blocking async reads.
+    // The writer keeps the raw std::fs::File — see SharedTunWriter for rationale.
     let reader = File::from_std(device.try_clone().context("failed to clone TUN file descriptor")?);
     let writer = SharedTunWriter {
-        inner: Arc::new(Mutex::new(File::from_std(device))),
+        inner: Arc::new(std::sync::Mutex::new(device)),
     };
 
     let idle_timeout = config.idle_timeout;
@@ -62,10 +201,10 @@ pub async fn spawn_tun_loop(config: TunConfig, uplinks: UplinkManager) -> Result
     let defrag_max_fragments_per_set = config.defrag_max_fragments_per_set;
     let defrag_max_total_bytes = config.defrag_max_total_bytes;
     let defrag_max_bytes_per_set = config.defrag_max_bytes_per_set;
-    let udp_engine = TunUdpEngine::new(writer.clone(), uplinks.clone(), max_flows, idle_timeout);
+    let udp_engine = TunUdpEngine::new(writer.clone(), routing.clone(), max_flows, idle_timeout);
     let tcp_engine = TunTcpEngine::new(
         writer.clone(),
-        uplinks.clone(),
+        routing.clone(),
         max_flows,
         idle_timeout,
         config.tcp.clone(),
@@ -319,29 +458,38 @@ fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {
 
 impl SharedTunWriter {
     #[cfg(test)]
-    pub(crate) fn new(file: File) -> Self {
-        Self { inner: Arc::new(Mutex::new(file)) }
+    pub(crate) fn new(file: std::fs::File) -> Self {
+        Self { inner: Arc::new(std::sync::Mutex::new(file)) }
     }
 
+    /// Write one IP packet to the TUN device.
+    ///
+    /// Uses a synchronous `write_all(2)` call through a `std::sync::Mutex`.
+    /// The critical section is bounded by a single kernel memcpy (≤ 10 µs for
+    /// typical MTU-sized packets), so holding a sync mutex is safe here and
+    /// avoids the overhead of an async-mutex queue under concurrent callers.
+    ///
+    /// The function signature is `async` for compatibility with the many call
+    /// sites that use `.await`, but it never actually suspends.
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
-        let mut writer = self.inner.lock().await;
-        writer
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .write_all(packet)
-            .await
-            .context("failed to write packet to TUN")?;
-        writer.flush().await.context("failed to flush TUN packet")?;
-        Ok(())
+            .context("failed to write packet to TUN")
     }
 
+    /// Write a batch of IP packets to the TUN device, one `write(2)` per packet.
+    ///
+    /// Each call to `write_all` issues a separate `write(2)` syscall, which is
+    /// required by TUN: the kernel delivers one IP packet per `write(2)`.
+    /// The mutex is acquired once and held for the entire batch to avoid the
+    /// overhead of repeated lock/unlock cycles.
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
-        let mut writer = self.inner.lock().await;
+        let mut writer = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for packet in packets {
-            writer
-                .write_all(packet)
-                .await
-                .context("failed to write packet to TUN")?;
+            writer.write_all(packet).context("failed to write packet to TUN")?;
         }
-        writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
     }
 }

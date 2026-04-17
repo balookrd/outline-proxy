@@ -16,6 +16,8 @@ pub const SOCKS_AUTH_METHOD_NO_AUTH: u8 = 0x00;
 pub const SOCKS_AUTH_METHOD_USERNAME_PASSWORD: u8 = 0x02;
 pub const SOCKS_AUTH_METHOD_NO_ACCEPTABLE: u8 = 0xff;
 pub const SOCKS_STATUS_SUCCESS: u8 = 0x00;
+/// RFC 1928 REP=0x02 — connection not allowed by ruleset (policy drop).
+pub const SOCKS_STATUS_NOT_ALLOWED: u8 = 0x02;
 pub const SOCKS_STATUS_COMMAND_NOT_SUPPORTED: u8 = 0x07;
 pub const SOCKS_STATUS_ADDRESS_NOT_SUPPORTED: u8 = 0x08;
 

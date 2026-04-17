@@ -6,7 +6,8 @@ use std::time::Duration;
 use crate::memory::ProcessFdSnapshot;
 use crate::uplink::UplinkManagerSnapshot;
 
-pub const BYPASS_UPLINK_LABEL: &str = "bypass";
+pub const DIRECT_UPLINK_LABEL: &str = "direct";
+pub const DIRECT_GROUP_LABEL: &str = "direct";
 
 // ── Process ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ pub fn track_session(_protocol: &'static str) -> SessionTracker {
 
 // ── Snapshot ──────────────────────────────────────────────────────────────────
 
-pub fn render_prometheus(_: &UplinkManagerSnapshot) -> anyhow::Result<String> {
+pub fn render_prometheus(_: &[UplinkManagerSnapshot]) -> anyhow::Result<String> {
     Ok(String::new())
 }
 
@@ -58,24 +59,49 @@ pub fn record_upstream_transport(
 pub fn add_upstream_transports_active(_source: &'static str, _protocol: &'static str, _delta: i64) {
 }
 pub fn record_request(_command: &'static str) {}
-pub fn add_bytes(_protocol: &'static str, _direction: &'static str, _uplink: &str, _bytes: usize) {}
-pub fn add_udp_datagram(_direction: &'static str, _uplink: &str) {}
+pub fn add_bytes(
+    _protocol: &'static str,
+    _direction: &'static str,
+    _group: &str,
+    _uplink: &str,
+    _bytes: usize,
+) {
+}
+pub fn add_udp_datagram(_direction: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_dropped_oversized_udp_packet(_direction: &'static str) {}
-pub fn record_uplink_selected(_transport: &'static str, _uplink: &str) {}
-pub fn record_runtime_failure(_transport: &'static str, _uplink: &str) {}
-pub fn record_runtime_failure_cause(_transport: &'static str, _uplink: &str, _cause: &'static str) {
+pub fn record_uplink_selected(_transport: &'static str, _group: &str, _uplink: &str) {}
+pub fn record_runtime_failure(_transport: &'static str, _group: &str, _uplink: &str) {}
+pub fn record_runtime_failure_cause(
+    _transport: &'static str,
+    _group: &str,
+    _uplink: &str,
+    _cause: &'static str,
+) {
 }
 pub fn record_runtime_failure_signature(
     _transport: &'static str,
+    _group: &str,
     _uplink: &str,
     _signature: &'static str,
 ) {
 }
-pub fn record_runtime_failure_other_detail(_transport: &'static str, _uplink: &str, _detail: &str) {
+pub fn record_runtime_failure_other_detail(
+    _transport: &'static str,
+    _group: &str,
+    _uplink: &str,
+    _detail: &str,
+) {
 }
-pub fn record_runtime_failure_suppressed(_transport: &'static str, _uplink: &str) {}
-pub fn record_failover(_transport: &'static str, _from_uplink: &str, _to_uplink: &str) {}
+pub fn record_runtime_failure_suppressed(_transport: &'static str, _group: &str, _uplink: &str) {}
+pub fn record_failover(
+    _transport: &'static str,
+    _group: &str,
+    _from_uplink: &str,
+    _to_uplink: &str,
+) {
+}
 pub fn record_probe(
+    _group: &str,
     _uplink: &str,
     _transport: &'static str,
     _probe: &'static str,
@@ -84,6 +110,7 @@ pub fn record_probe(
 ) {
 }
 pub fn add_probe_bytes(
+    _group: &str,
     _uplink: &str,
     _transport: &'static str,
     _protocol: &'static str,
@@ -92,6 +119,7 @@ pub fn add_probe_bytes(
 ) {
 }
 pub fn record_probe_wakeup(
+    _group: &str,
     _uplink: &str,
     _transport: &'static str,
     _reason: &'static str,
@@ -100,43 +128,82 @@ pub fn record_probe_wakeup(
 }
 pub fn record_warm_standby_acquire(
     _transport: &'static str,
+    _group: &str,
     _uplink: &str,
     _outcome: &'static str,
 ) {
 }
-pub fn record_warm_standby_refill(_transport: &'static str, _uplink: &str, _success: bool) {}
+pub fn record_warm_standby_refill(
+    _transport: &'static str,
+    _group: &str,
+    _uplink: &str,
+    _success: bool,
+) {
+}
 pub fn record_metrics_http_request(_path: &str, _status: u16) {}
 
 // ── TUN ───────────────────────────────────────────────────────────────────────
 
+#[cfg(feature = "tun")]
 pub fn record_tun_packet(
     _direction: &'static str,
     _ip_family: &'static str,
     _outcome: &'static str,
 ) {
 }
-pub fn record_tun_flow_created(_uplink: &str) {}
-pub fn record_tun_flow_closed(_uplink: &str, _reason: &'static str, _duration: Duration) {}
+#[cfg(feature = "tun")]
+pub fn record_tun_flow_created(_group: &str, _uplink: &str) {}
+#[cfg(feature = "tun")]
+pub fn record_tun_flow_closed(
+    _group: &str,
+    _uplink: &str,
+    _reason: &'static str,
+    _duration: Duration,
+) {
+}
+#[cfg(feature = "tun")]
 pub fn record_tun_icmp_local_reply(_ip_family: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_udp_forward_error(_reason: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_ip_fragment_received(_ip_family: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_ip_reassembly(_ip_family: &'static str, _result: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn set_tun_ip_fragment_sets_active(_ip_family: &'static str, _count: usize) {}
+#[cfg(feature = "tun")]
 pub fn set_tun_config(_max_flows: usize, _idle_timeout: Duration) {}
-pub fn record_tun_tcp_event(_uplink: &str, _event: &'static str) {}
+#[cfg(feature = "tun")]
+pub fn record_tun_tcp_event(_group: &str, _uplink: &str, _event: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn record_tun_tcp_async_connect(_result: &'static str) {}
+#[cfg(feature = "tun")]
 pub fn add_tun_tcp_async_connects_active(_delta: i64) {}
-pub fn add_tun_tcp_flows_active(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_inflight_segments(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_inflight_bytes(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_pending_server_bytes(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_buffered_client_segments(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_zero_window_flows(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_backlog_pressure_flows(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_backlog_pressure_seconds(_uplink: &str, _delta: f64) {}
-pub fn add_tun_tcp_ack_progress_stall_flows(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_ack_progress_stall_seconds(_uplink: &str, _delta: f64) {}
-pub fn add_tun_tcp_congestion_window_bytes(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_slow_start_threshold_bytes(_uplink: &str, _delta: i64) {}
-pub fn add_tun_tcp_retransmission_timeout_seconds(_uplink: &str, _delta: f64) {}
-pub fn add_tun_tcp_smoothed_rtt_seconds(_uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_flows_active(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_inflight_segments(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_inflight_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_pending_server_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_buffered_client_segments(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_zero_window_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_backlog_pressure_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_backlog_pressure_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_ack_progress_stall_flows(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_ack_progress_stall_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_congestion_window_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_slow_start_threshold_bytes(_group: &str, _uplink: &str, _delta: i64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_retransmission_timeout_seconds(_group: &str, _uplink: &str, _delta: f64) {}
+#[cfg(feature = "tun")]
+pub fn add_tun_tcp_smoothed_rtt_seconds(_group: &str, _uplink: &str, _delta: f64) {}

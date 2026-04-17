@@ -8,8 +8,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use crate::metrics;
-use crate::transport::TcpShadowsocksWriter;
-use crate::tun::SharedTunWriter;
+use super::state_machine::TunTcpUpstreamWriter;
+use crate::tun::{SharedTunWriter, TunRouting};
 use crate::tun_wire::IpVersion;
 use crate::uplink::{TransportKind, UplinkManager};
 
@@ -22,7 +22,7 @@ mod flow_ops;
 mod packet;
 mod tasks;
 #[cfg(test)]
-mod tests;
+pub(in crate::tun_tcp) mod tests;
 
 #[derive(Clone)]
 pub struct TunTcpEngine {
@@ -31,7 +31,7 @@ pub struct TunTcpEngine {
 
 pub(super) struct TunTcpEngineInner {
     pub(super) writer: SharedTunWriter,
-    pub(super) uplinks: UplinkManager,
+    pub(super) dispatch: TunRouting,
     pub(super) flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
     pub(super) pending_connects: Mutex<HashSet<TcpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
@@ -43,7 +43,7 @@ pub(super) struct TunTcpEngineInner {
 impl TunTcpEngine {
     pub(crate) fn new(
         writer: SharedTunWriter,
-        uplinks: UplinkManager,
+        dispatch: TunRouting,
         max_flows: usize,
         idle_timeout: Duration,
         tcp: TunTcpConfig,
@@ -51,7 +51,7 @@ impl TunTcpEngine {
         let engine = Self {
             inner: Arc::new(TunTcpEngineInner {
                 writer,
-                uplinks,
+                dispatch,
                 flows: RwLock::new(HashMap::new()),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: CounterU64::new(1),
@@ -62,6 +62,7 @@ impl TunTcpEngine {
         };
         engine
     }
+
 
     pub async fn handle_packet(&self, packet: &[u8]) -> Result<()> {
         let parsed = parse_tcp_packet(packet)?;
@@ -105,25 +106,26 @@ impl TunTcpEngine {
         key: &TcpFlowKey,
         ack: Vec<u8>,
         ip_family: &'static str,
+        group_name: &str,
         uplink_name: &str,
         event: &'static str,
     ) -> Result<()> {
         self.write_tun_packet_or_close_flow(key, &ack).await?;
-        metrics::record_tun_tcp_event(uplink_name, event);
+        metrics::record_tun_tcp_event(group_name, uplink_name, event);
         metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         Ok(())
     }
 
     pub(super) async fn report_tcp_runtime_failure(
         &self,
+        manager: &UplinkManager,
         uplink_index: usize,
         error: &anyhow::Error,
     ) {
         if uplink_index == usize::MAX {
             return;
         }
-        self.inner
-            .uplinks
+        manager
             .report_runtime_failure(uplink_index, TransportKind::Tcp, error)
             .await;
     }
@@ -131,17 +133,18 @@ impl TunTcpEngine {
     pub(super) async fn report_tcp_runtime_failure_and_abort(
         &self,
         key: &TcpFlowKey,
+        manager: &UplinkManager,
         uplink_index: usize,
         error: &anyhow::Error,
         reason: &'static str,
     ) {
-        self.report_tcp_runtime_failure(uplink_index, error).await;
+        self.report_tcp_runtime_failure(manager, uplink_index, error).await;
         self.abort_flow_with_rst(key, reason).await;
     }
 }
 
 pub(super) async fn close_upstream_writer(
-    upstream_writer: Option<Arc<Mutex<TcpShadowsocksWriter>>>,
+    upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
 ) {
     let Some(upstream_writer) = upstream_writer else {
         return;
@@ -152,6 +155,13 @@ pub(super) async fn close_upstream_writer(
 
 pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> String {
     flow.lock().await.uplink_name.clone()
+}
+
+/// Fetches `(group_name, uplink_name)` for a flow — used where both are
+/// needed for the `group`/`uplink` Prometheus labels.
+pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (String, String) {
+    let state = flow.lock().await;
+    (state.manager.group_name().to_string(), state.uplink_name.clone())
 }
 
 pub(super) fn ip_to_target(ip: std::net::IpAddr, port: u16) -> crate::types::TargetAddr {

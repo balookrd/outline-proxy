@@ -20,14 +20,16 @@ fn should_skip_probe_cycle_for_recent_activity(
     interval: Duration,
 ) -> bool {
     let tcp_active = status
-        .last_active_tcp
+        .tcp
+        .last_active
         .is_some_and(|t| now.duration_since(t) < interval);
-    let tcp_currently_healthy = status.tcp_healthy == Some(true);
+    let tcp_currently_healthy = status.tcp.healthy == Some(true);
     let tcp_no_cooldown = !cooldown_active(status, TransportKind::Tcp, now);
     tcp_active && tcp_currently_healthy && tcp_no_cooldown
 }
 
 async fn run_probe_attempt_with_timeout(
+    group: String,
     uplink: Arc<crate::config::UplinkConfig>,
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
@@ -42,7 +44,8 @@ async fn run_probe_attempt_with_timeout(
         .saturating_mul(transport_budgets)
         .saturating_add(Duration::from_secs(1));
     let mut probe_task = tokio::spawn(async move {
-        probe_uplink(&uplink, &probe, dial_limit, effective_tcp_mode, effective_udp_mode).await
+        probe_uplink(&group, &uplink, &probe, dial_limit, effective_tcp_mode, effective_udp_mode)
+            .await
     });
     let timeout_sleep = sleep(timeout_duration);
     tokio::pin!(timeout_sleep);
@@ -104,11 +107,11 @@ impl UplinkManager {
                 // strict selection move new sessions away from it.
                 if should_skip_probe_cycle_for_recent_activity(s, now, threshold) {
                     let udp_active =
-                        s.last_active_udp.map_or(false, |t| now.duration_since(t) < threshold);
+                        s.udp.last_active.map_or(false, |t| now.duration_since(t) < threshold);
                     debug!(
                         uplink = %uplink.name,
-                        last_active_tcp_ms = s.last_active_tcp.map(|t| now.duration_since(t).as_millis()),
-                        last_active_udp_ms = s.last_active_udp.map(|t| now.duration_since(t).as_millis()),
+                        last_active_tcp_ms = s.tcp.last_active.map(|t| now.duration_since(t).as_millis()),
+                        last_active_udp_ms = s.udp.last_active.map(|t| now.duration_since(t).as_millis()),
                         udp_also_active = udp_active,
                         "skipping probe cycle: real traffic observed and uplink is healthy"
                     );
@@ -121,6 +124,7 @@ impl UplinkManager {
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let probe_attempts = probe.attempts.max(1);
+            let group_name = self.inner.group_name.clone();
             // Use the effective TCP/UDP WS modes so that when H3 is in the
             // downgrade window the probe tests H2 connectivity instead.
             // This prevents the probe from clearing h3_*_downgrade_until
@@ -144,6 +148,7 @@ impl UplinkManager {
                 let mut outcome = Err(anyhow!("no probe attempts"));
                 for attempt in 0..probe_attempts {
                     outcome = run_probe_attempt_with_timeout(
+                        group_name.clone(),
                         Arc::clone(&uplink),
                         probe.clone(),
                         Arc::clone(&dial_limit),
@@ -185,26 +190,26 @@ impl UplinkManager {
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
                         status.last_checked = Some(now);
-                        status.tcp_latency = result.tcp_latency;
-                        status.udp_latency = result.udp_latency;
+                        status.tcp.latency = result.tcp_latency;
+                        status.udp.latency = result.udp_latency;
                         update_rtt_ewma(
-                            &mut status.tcp_rtt_ewma,
+                            &mut status.tcp.rtt_ewma,
                             result.tcp_latency,
                             self.inner.load_balancing.rtt_ewma_alpha,
                         );
                         update_rtt_ewma(
-                            &mut status.udp_rtt_ewma,
+                            &mut status.udp.rtt_ewma,
                             result.udp_latency,
                             self.inner.load_balancing.rtt_ewma_alpha,
                         );
                         if !result.tcp_ok {
-                            status.tcp_consecutive_successes = 0;
-                            status.tcp_consecutive_failures =
-                                status.tcp_consecutive_failures.saturating_add(1);
-                            if status.tcp_consecutive_failures >= min_failures as u32 {
-                                status.tcp_healthy = Some(false);
+                            status.tcp.consecutive_successes = 0;
+                            status.tcp.consecutive_failures =
+                                status.tcp.consecutive_failures.saturating_add(1);
+                            if status.tcp.consecutive_failures >= min_failures as u32 {
+                                status.tcp.healthy = Some(false);
                                 add_penalty(
-                                    &mut status.tcp_penalty,
+                                    &mut status.tcp.penalty,
                                     now,
                                     &self.inner.load_balancing,
                                 );
@@ -224,24 +229,24 @@ impl UplinkManager {
                             {
                                 let downgrade_until =
                                     now + self.inner.load_balancing.h3_downgrade_duration;
-                                if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
+                                if status.tcp.h3_downgrade_until.map_or(true, |t| t < now) {
                                     warn!(
                                         uplink = %uplink.name,
                                         downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
                                         "H3 TCP probe failed, downgrading to H2 for next probe cycle"
                                     );
                                 }
-                                status.h3_tcp_downgrade_until = Some(downgrade_until);
+                                status.tcp.h3_downgrade_until = Some(downgrade_until);
                             }
                         } else {
-                            status.tcp_consecutive_failures = 0;
-                            status.tcp_consecutive_successes =
-                                status.tcp_consecutive_successes.saturating_add(1);
-                            status.tcp_healthy = Some(true);
+                            status.tcp.consecutive_failures = 0;
+                            status.tcp.consecutive_successes =
+                                status.tcp.consecutive_successes.saturating_add(1);
+                            status.tcp.healthy = Some(true);
                             // Only clear runtime-failure cooldown when the probe confirms TCP is
                             // healthy. Clearing unconditionally would make a recently-failed
                             // uplink immediately eligible again, causing oscillation under load.
-                            status.cooldown_until_tcp = None;
+                            status.tcp.cooldown_until = None;
                             // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
                             // effective (possibly downgraded) WS mode, so a successful probe
                             // only confirms H2 connectivity during a downgrade window — it does
@@ -251,7 +256,8 @@ impl UplinkManager {
                                 && uplink.transport == UplinkTransport::Websocket
                                 && uplink.tcp_ws_mode == WsTransportMode::H3
                                 && status
-                                    .h3_tcp_downgrade_until
+                                    .tcp
+                                    .h3_downgrade_until
                                     .is_some_and(|t| t > now)
                             {
                                 h3_tcp_recovery_needed.push((index, Arc::clone(&uplink)));
@@ -259,12 +265,12 @@ impl UplinkManager {
                         }
                         if result.udp_applicable {
                             if !result.udp_ok {
-                                status.udp_consecutive_failures =
-                                    status.udp_consecutive_failures.saturating_add(1);
-                                if status.udp_consecutive_failures >= min_failures as u32 {
-                                    status.udp_healthy = Some(false);
+                                status.udp.consecutive_failures =
+                                    status.udp.consecutive_failures.saturating_add(1);
+                                if status.udp.consecutive_failures >= min_failures as u32 {
+                                    status.udp.healthy = Some(false);
                                     add_penalty(
-                                        &mut status.udp_penalty,
+                                        &mut status.udp.penalty,
                                         now,
                                         &self.inner.load_balancing,
                                     );
@@ -275,21 +281,21 @@ impl UplinkManager {
                                 {
                                     let downgrade_until =
                                         now + self.inner.load_balancing.h3_downgrade_duration;
-                                    if status.h3_udp_downgrade_until.map_or(true, |t| t < now) {
+                                    if status.udp.h3_downgrade_until.map_or(true, |t| t < now) {
                                         warn!(
                                             uplink = %uplink.name,
                                             downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
                                             "H3 UDP probe failed, downgrading to H2 for next probe cycle"
                                         );
                                     }
-                                    status.h3_udp_downgrade_until = Some(downgrade_until);
+                                    status.udp.h3_downgrade_until = Some(downgrade_until);
                                 }
                             } else {
-                                status.udp_consecutive_failures = 0;
-                                status.udp_consecutive_successes =
-                                    status.udp_consecutive_successes.saturating_add(1);
-                                status.udp_healthy = Some(true);
-                                status.cooldown_until_udp = None;
+                                status.udp.consecutive_failures = 0;
+                                status.udp.consecutive_successes =
+                                    status.udp.consecutive_successes.saturating_add(1);
+                                status.udp.healthy = Some(true);
+                                status.udp.cooldown_until = None;
                                 // Schedule UDP H3 recovery re-probe — mirror of the
                                 // TCP path.  Successful H2 probe doesn't prove H3 is
                                 // back, so verify it explicitly below.
@@ -297,7 +303,8 @@ impl UplinkManager {
                                     && uplink.transport == UplinkTransport::Websocket
                                     && uplink.udp_ws_mode == WsTransportMode::H3
                                     && status
-                                        .h3_udp_downgrade_until
+                                        .udp
+                                        .h3_downgrade_until
                                         .is_some_and(|t| t > now)
                                 {
                                     h3_udp_recovery_needed.push((index, Arc::clone(&uplink)));
@@ -308,8 +315,8 @@ impl UplinkManager {
                             status.last_error = None;
                         }
                         (
-                            status.tcp_rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                            status.udp_rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                            status.tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                            status.udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
                         )
                     };
                     debug!(
@@ -334,24 +341,24 @@ impl UplinkManager {
                         let mut statuses = self.inner.statuses.write().await;
                         let status = &mut statuses[index];
                         status.last_checked = Some(now);
-                        status.tcp_consecutive_successes = 0;
-                        status.tcp_consecutive_failures =
-                            status.tcp_consecutive_failures.saturating_add(1);
-                        if status.tcp_consecutive_failures >= min_failures as u32 {
-                            status.tcp_healthy = Some(false);
-                            add_penalty(&mut status.tcp_penalty, now, &self.inner.load_balancing);
+                        status.tcp.consecutive_successes = 0;
+                        status.tcp.consecutive_failures =
+                            status.tcp.consecutive_failures.saturating_add(1);
+                        if status.tcp.consecutive_failures >= min_failures as u32 {
+                            status.tcp.healthy = Some(false);
+                            add_penalty(&mut status.tcp.penalty, now, &self.inner.load_balancing);
                         }
                         // Only penalise UDP when it is actually configured.
                         // The probe Err path is usually a TCP connect failure;
                         // penalising UDP here when there is no udp_ws_url would
                         // permanently mark UDP unhealthy for TCP-only uplinks.
                         if uplink.supports_udp() {
-                            status.udp_consecutive_failures =
-                                status.udp_consecutive_failures.saturating_add(1);
-                            if status.udp_consecutive_failures >= min_failures as u32 {
-                                status.udp_healthy = Some(false);
+                            status.udp.consecutive_failures =
+                                status.udp.consecutive_failures.saturating_add(1);
+                            if status.udp.consecutive_failures >= min_failures as u32 {
+                                status.udp.healthy = Some(false);
                                 add_penalty(
-                                    &mut status.udp_penalty,
+                                    &mut status.udp.penalty,
                                     now,
                                     &self.inner.load_balancing,
                                 );
@@ -364,7 +371,7 @@ impl UplinkManager {
                         {
                             let downgrade_until =
                                 now + self.inner.load_balancing.h3_downgrade_duration;
-                            if status.h3_tcp_downgrade_until.map_or(true, |t| t < now) {
+                            if status.tcp.h3_downgrade_until.map_or(true, |t| t < now) {
                                 warn!(
                                     uplink = %uplink.name,
                                     error = %format!("{error:#}"),
@@ -372,7 +379,7 @@ impl UplinkManager {
                                     "H3 probe connection failed, downgrading TCP to H2"
                                 );
                             }
-                            status.h3_tcp_downgrade_until = Some(downgrade_until);
+                            status.tcp.h3_downgrade_until = Some(downgrade_until);
                         }
                         // Same for UDP — when the uplink supports UDP and is on H3,
                         // a probe-level failure also forces UDP H2 fallback so the
@@ -383,7 +390,7 @@ impl UplinkManager {
                         {
                             let downgrade_until =
                                 now + self.inner.load_balancing.h3_downgrade_duration;
-                            if status.h3_udp_downgrade_until.map_or(true, |t| t < now) {
+                            if status.udp.h3_downgrade_until.map_or(true, |t| t < now) {
                                 warn!(
                                     uplink = %uplink.name,
                                     error = %format!("{error:#}"),
@@ -391,7 +398,7 @@ impl UplinkManager {
                                     "H3 probe connection failed, downgrading UDP to H2"
                                 );
                             }
-                            status.h3_udp_downgrade_until = Some(downgrade_until);
+                            status.udp.h3_downgrade_until = Some(downgrade_until);
                         }
                         status.last_error = Some(format!("{error:#}"));
                     }
@@ -438,6 +445,7 @@ impl UplinkManager {
             let probe = self.inner.probe.clone();
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
+            let group_name = self.inner.group_name.clone();
             recovery_tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
@@ -451,6 +459,7 @@ impl UplinkManager {
                     TransportKind::Udp => (uplink.tcp_ws_mode, WsTransportMode::H3),
                 };
                 let outcome = run_probe_attempt_with_timeout(
+                    group_name,
                     Arc::clone(&uplink),
                     probe,
                     dial_limit,
@@ -478,8 +487,8 @@ impl UplinkManager {
             let mut statuses = self.inner.statuses.write().await;
             let status = &mut statuses[index];
             let downgrade_field = match which {
-                TransportKind::Tcp => &mut status.h3_tcp_downgrade_until,
-                TransportKind::Udp => &mut status.h3_udp_downgrade_until,
+                TransportKind::Tcp => &mut status.tcp.h3_downgrade_until,
+                TransportKind::Udp => &mut status.udp.h3_downgrade_until,
             };
             if recovered {
                 info!(
@@ -519,8 +528,11 @@ mod tests {
     fn recent_healthy_traffic_skips_probe_without_cooldown() {
         let now = Instant::now();
         let status = UplinkStatus {
-            tcp_healthy: Some(true),
-            last_active_tcp: Some(now - Duration::from_secs(1)),
+            tcp: crate::uplink::types::PerTransportStatus {
+                healthy: Some(true),
+                last_active: Some(now - Duration::from_secs(1)),
+                ..Default::default()
+            },
             ..UplinkStatus::default()
         };
 
@@ -535,9 +547,12 @@ mod tests {
     fn active_cooldown_prevents_probe_skip_even_with_recent_traffic() {
         let now = Instant::now();
         let status = UplinkStatus {
-            tcp_healthy: Some(true),
-            last_active_tcp: Some(now - Duration::from_secs(1)),
-            cooldown_until_tcp: Some(now + Duration::from_secs(10)),
+            tcp: crate::uplink::types::PerTransportStatus {
+                healthy: Some(true),
+                last_active: Some(now - Duration::from_secs(1)),
+                cooldown_until: Some(now + Duration::from_secs(10)),
+                ..Default::default()
+            },
             ..UplinkStatus::default()
         };
 

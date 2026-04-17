@@ -92,7 +92,7 @@ tun2udp + tun2tcp"]
 - pipelined SOCKS5 handshake compatibility for `hev-socks5-tunnel`
 - SOCKS5 UDP fragmentation reassembly on inbound client traffic
 - IPv4, IPv6, and domain-name targets
-- optional bypass list for direct (non-tunneled) connections by IP prefix, file-backed with hot-reload
+- declarative policy routing by destination CIDR with per-rule file-backed lists (hot-reloaded), per-rule fallback (`fallback_via` / `fallback_direct` / `fallback_drop`), and a `direct` / `drop` built-in targets for bypass or policy blocks
 
 ### Outline transports
 
@@ -133,6 +133,7 @@ tun2udp + tun2tcp"]
 - runtime failover
 - auto-failback disabled by default (`auto_failback = false`): switches only on failure, never proactively back to a recovered primary
 - warm-standby WebSocket pools for TCP and UDP
+- active-uplink selection persisted across restarts (TOML state file, debounced async writes)
 
 ### Health probing
 
@@ -163,7 +164,6 @@ tun2udp + tun2tcp"]
 
 The project is intentionally practical, but there are still boundaries:
 
-- Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
 - `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
@@ -171,7 +171,9 @@ The project is intentionally practical, but there are still boundaries:
 
 ## Repository Layout
 
-- [`config.toml`](config.toml) - example configuration
+- [`config.toml`](config.toml) - example configuration (TOML)
+- [`config.yaml`](config.yaml) - example configuration (YAML)
+- [`config-router.yaml`](config-router.yaml) - example router configuration (YAML)
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
@@ -241,9 +243,13 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 
 | Feature | Default | Effect |
 |---|---|---|
-| `h3` | ✓ | Include H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Include Prometheus metrics endpoint (pulls in prometheus + serde_json) |
-| `router` | — | Convenience alias for `--no-default-features --features router` (disables the default optional features above) |
+| `h3` | ✓ | H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
+| `metrics` | ✓ | Prometheus metrics endpoint (pulls in prometheus + serde_json) |
+| `tun` | ✓ | TUN device support (tun2udp + tun2tcp engines); remove to exclude all TUN code |
+| `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn |
+| `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |
+| `multi-thread` | ✓ | Tokio work-stealing scheduler; disable to force `current_thread` and save ~100–200 KB |
+| `router` | — | Convenience alias for `--no-default-features --features router` (disables all defaults above) |
 
 > **Why disable for routers:** `h3`/QUIC adds ~1–2 MB of binary size and runtime overhead on MIPS/ARM. `metrics` adds prometheus + serde_json and a background sampling task. The `router` feature removes both at once.
 
@@ -382,6 +388,7 @@ Key differences from the default VM config:
 | Warm standby | 1 TCP + 1 UDP | disabled |
 | Load balancing mode | `active_active` | `active_passive` |
 | Transport mode | `h3` | `h2` (QUIC is heavy on MIPS/ARM) |
+| `state_path` | config dir (`.state.toml`) | point to writable path, e.g. `/var/lib/outline-ws-rust/state.toml` |
 
 Run with the router config:
 
@@ -444,7 +451,7 @@ socks5:
 
 ## Configuration
 
-By default the process reads [`config.toml`](config.toml).
+By default the process reads [`config.toml`](config.toml). YAML format (`.yaml` / `.yml`) is also supported — [`config.yaml`](config.yaml) is the YAML equivalent of the default example.
 
 Example:
 
@@ -488,6 +495,8 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
+# Top-level [probe] acts as a template inherited by every [[uplink_group]].
+# Individual groups can override any field via [uplink_group.probe].
 [probe]
 interval_secs = 30
 timeout_secs = 10
@@ -501,14 +510,18 @@ enabled = true
 [probe.http]
 url = "http://example.com/"
 
-`probe.http` sends an HTTP `HEAD` request, not `GET`, so health checks do not download response bodies through the uplink.
+# `probe.http` sends an HTTP `HEAD` request (not `GET`), so health checks do
+# not download response bodies through the uplink.
 
 [probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
 
-[load_balancing]
+# Each uplink group is an isolated UplinkManager with its own probe loop,
+# standby pool, sticky-routes store, active-uplink state, and LB policy.
+[[uplink_group]]
+name = "main"
 mode = "active_active"
 routing_scope = "per_flow"
 warm_standby_tcp = 1
@@ -522,10 +535,13 @@ failure_penalty_ms = 500
 failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 h3_downgrade_secs = 60
-# auto_failback = false   # default: switch only on failure, never proactively back to primary
+# auto_failback = false
 
+# Each [[uplinks]] entry must declare `group = "..."` matching an
+# [[uplink_group]].name above.
 [[uplinks]]
 name = "primary"
+group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
@@ -539,6 +555,7 @@ password = "Secret0"
 
 [[uplinks]]
 name = "backup"
+group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
@@ -548,13 +565,16 @@ udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-[[uplinks]]
-name = "direct-ss"
-transport = "shadowsocks"
-tcp_addr = "ss.example.com:8388"
-udp_addr = "ss.example.com:8388"
-method = "chacha20-ietf-poly1305"
-password = "Secret0"
+# Optional policy routing — first-match-wins by destination CIDR.
+# `via` accepts a group name or the reserved `direct` / `drop` targets.
+# Omit [[route]] entirely to send everything through the first group.
+[[route]]
+prefixes = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7"]
+via = "direct"
+
+[[route]]
+default = true
+via = "main"
 ```
 
 ### Key config behavior
@@ -574,12 +594,19 @@ password = "Secret0"
 - `[load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
   - `true`: when the current active is healthy and a candidate with a **higher `weight`** (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA RTT: this prevents spurious switches under load, when the active uplink's EWMA temporarily inflates due to slow connections while an idle backup looks better by latency. Failback always moves toward higher weight (`1.0 → 1.5 → 2.0`): switching to a lower-weight uplink via auto_failback is not possible — that requires a probe-confirmed failover.
-- `[load_balancing] h3_downgrade_secs` (default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
-- The canonical config format is `probe`, `load_balancing`, and `uplinks` without the `outline.` prefix.
-- The legacy `[outline]` format is still accepted for backward compatibility, and remains the least confusing way to express a single-uplink shorthand TOML config.
+- `h3_downgrade_secs` (per-group, default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
+- `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
+- Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
+- Top-level `[probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[probe.http]` is dropped for that group.
+- Uplink names must be globally unique across all groups (Prometheus labels currently use `uplink="..."` without a group qualifier).
+- The legacy `[bypass]` section has been removed. Migrate bypass prefixes to a `[[route]]` with `via = "direct"`. Loading a config that still has a `[bypass]` table fails with an explicit migration error.
+- The legacy `[outline]` format is still accepted as a single-uplink shorthand, and CLI flags (`--tcp-ws-url`, `--password`, ...) synthesise a single-uplink `default` group.
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
+- `direct_fwmark` (optional, top-level): `SO_MARK` value applied to TCP and UDP sockets opened for `direct`-routed connections. Use when bypass traffic must be tagged for OS-level policy routing to avoid loops (e.g. the bypass route must itself not be intercepted by the TUN interface).
+- SOCKS5 → upstream TCP sessions are subject to a 5-minute bidirectional idle timeout. If no bytes flow in either direction for 300 seconds, the tunnel is closed and FDs are reclaimed. Any data activity in either direction resets the timer. This prevents FD accumulation from abandoned connections, particularly under TUN interceptors that open many TCP sessions and release them without FIN.
+- Half-open TCP sessions (client sent EOF, proxy is waiting for upstream FIN) are closed after 30 seconds. This prevents sockets from staying half-open indefinitely when the upstream does not acknowledge the client's disconnect.
 
 ### Useful CLI and env overrides
 
@@ -598,57 +625,68 @@ password = "Secret0"
 - `--tun-name` / `TUN_NAME`
 - `--tun-mtu` / `TUN_MTU`
 - `--fwmark` / `OUTLINE_FWMARK`
+- `--state-path` / `STATE_PATH`
 
-## SOCKS5 Bypass
+## Policy routing
 
-The `[bypass]` section lets you route selected SOCKS5 TCP and UDP connections directly to the internet instead of through the tunnel. Matching is done on the resolved IP address; domain-name targets are never bypassed.
+Declarative routing by destination CIDR, evaluated first-match-wins with an explicit `default = true` rule. Each rule picks one of three targets via `via = "..."`:
 
-### Bypass config
+- **a group name** (one of the declared `[[uplink_group]]`s) — the connection goes through that group's uplink manager;
+- **`direct`** — forwarded outside any uplink (equivalent to the old `[bypass]` behaviour);
+- **`drop`** — SOCKS5 `REP=0x02 (connection not allowed)` for TCP, silent drop for UDP.
+
+Matching is done on resolved IP addresses; domain-name targets never match a rule and fall through to the default.
+
+### Route config
 
 ```toml
-[bypass]
-# Load prefixes from a file (one CIDR per line; # comments and blank lines ignored).
-file = "/etc/outline-ws-rust/bypass.txt"
-# How often to poll the file for mtime changes and reload it (default: 60 s).
+# RFC 1918 / ULA / loopback — never through a tunnel.
+[[route]]
+prefixes = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "fc00::/7", "127.0.0.0/8", "::1/128"]
+via = "direct"
+
+# Country or GeoIP list loaded from a file and hot-reloaded on mtime change.
+[[route]]
+file = "/etc/outline-ws-rust/geoip-cn.list"
 file_poll_secs = 60
+via = "backup"
+fallback_via = "main"     # try "main" if "backup" has no healthy uplinks
 
-# Inline prefixes — combined with `file` if both are set.
-# prefixes = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12", "fc00::/7"]
+# Block a specific range.
+[[route]]
+prefixes = ["198.51.100.0/24"]
+via = "drop"
 
-# Inverted mode: bypass everything NOT in the list (only listed prefixes go through the tunnel).
-# invert = false  # default
+# Explicit default — matches everything not caught above.
+[[route]]
+default = true
+via = "main"
+fallback_direct = true    # or: fallback_drop = true / fallback_via = "backup"
 ```
 
-### Bypass file format
+Rule fields:
 
-One CIDR per line. `#` comments and blank lines are ignored. Both IPv4 and IPv6 prefixes are accepted.
-
-```
-# RFC 1918 private ranges
-10.0.0.0/8
-172.16.0.0/12
-192.168.0.0/16
-
-# IPv6 ULA
-fc00::/7
-
-# Country-level blocks (example)
-100.43.72.0/24
-2001:1428::/32
-2001:1900:5:2:2::4841/128
-```
-
-### How hot-reload works
-
-A background tokio task polls the file's `mtime` every `file_poll_secs` seconds. When a change is detected the file is re-read and the in-memory prefix list is atomically replaced via `Arc<RwLock<>>`. Read-side lookup (per new SOCKS5 connection) holds a shared read-lock for the duration of a single `is_bypassed` call — typically a few microseconds. On reload error the previous list is kept and a warning is logged.
+- `prefixes` / `file`: inline list and/or path to a file (one CIDR per line, `#` comments and blank lines ignored). Both are merged.
+- `file_poll_secs`: how often (in seconds) to `stat` the file and reload its CIDRs on mtime change. Default `60`.
+- `via`: target for matching traffic. Required (except on `default = true` rules, where it picks the fallthrough target).
+- `fallback_via` / `fallback_direct` / `fallback_drop`: mutually exclusive; consulted when the primary `via` is a group that has zero healthy uplinks at dispatch time.
+- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set `prefixes` or `file`.
 
 ### Prefix matching
 
-Internally prefixes are converted to sorted `[start, end]` integer ranges (IPv4 as `u32`, IPv6 as `u128`), with overlapping and adjacent ranges merged. Lookup uses `partition_point` (binary search) — O(log n), no extra dependencies, cache-friendly linear memory.
+Internally each rule's inline + file prefixes are merged into a [`CidrSet`](src/routing/cidr.rs) — sorted `[start, end]` ranges (IPv4 as `u32`, IPv6 as `u128`) with overlapping and adjacent ranges merged. Lookup uses `partition_point` (binary search), O(log n) per rule.
 
-### Inverted mode
+### Hot-reload
 
-Set `invert = true` to tunnel only the listed prefixes and bypass everything else. Useful when the tunnel list is small and the bypass list is the majority of traffic.
+Every rule with `file = "..."` gets a background tokio task that polls `mtime` every `file_poll_secs` seconds. On change the rule's CIDR set is rebuilt from its inline + reloaded file and swapped atomically (`Arc<RwLock<CidrSet>>`) — other rules and the table shape are unaffected. Parse errors on reload leave the previous CIDR set in place and log a warning.
+
+### Direct session idle timeout
+
+`direct` connections are subject to a 2-minute bidirectional idle timeout. If no bytes flow in either direction for 120 seconds, both sockets are closed and FDs reclaimed. This prevents unbounded FD accumulation from clients that open TCP connections (e.g. DNS-over-HTTPS, DNS-over-TLS) and abandon them without sending FIN — leaving the server half open indefinitely. Any data activity in either direction resets the timer, so legitimate long-lived push-notification and keepalive connections are unaffected.
+
+### Fallback semantics
+
+When the primary `via` resolves to a group with no currently-healthy uplinks, the rule's fallback target is tried instead (one level, no recursion). Health is checked non-side-effectingly at dispatch time via `UplinkManager::has_any_healthy(transport)`; this is cheaper than building a candidate list and does not touch sticky-routes state. If the primary group recovers mid-session, future connections go through it normally — fallback is only consulted at dispatch.
 
 ## Transport Modes
 
@@ -721,6 +759,8 @@ Selection pipeline:
 4. Final score is `effective_latency / weight`.
 5. Sticky routing and hysteresis reduce avoidable switches.
 6. Warm-standby pools reduce connection setup latency.
+
+**Sticky-route cap:** the sticky-route table is bounded at 100,000 per-flow entries. Under traffic from large NAT pools or many distinct clients in `per_flow` routing scope, the table would otherwise grow unboundedly. New per-flow entries beyond the cap are silently dropped — the flow falls back to a fresh latency-ordered selection instead of a sticky one. Global and per-transport pinned entries (used in `global` and `per_uplink` scopes) are always stored regardless of this limit.
 
 Routing scope behavior:
 
@@ -1075,7 +1115,13 @@ SHADOWSOCKS_PASSWORD='Secret0' \
 cargo test --test real_server_h3 -- --nocapture
 ```
 
-There is also a dedicated warm-standby integration test:
+Integration tests for group isolation, fallback, and direct dispatch:
+
+```bash
+cargo test --test group_routing -- --nocapture
+```
+
+Warm-standby integration test:
 
 ```bash
 cargo test --test standby_validation -- --nocapture

@@ -2,6 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::anyhow;
+use bytes::Bytes;
+use tokio::io::AsyncReadExt;
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, watch};
 use tokio::time::{sleep_until, timeout};
 use tracing::{debug, info, warn};
@@ -65,8 +68,8 @@ impl TunTcpEngine {
                             engine.close_flow(&key, "write_tun_error").await;
                             return;
                         }
-                        let uplink_name = key_uplink_name(&flow).await;
-                        metrics::record_tun_tcp_event(&uplink_name, event);
+                        let (group_name, uplink_name) = super::key_group_and_uplink(&flow).await;
+                        metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
                         metrics::record_tun_packet("upstream_to_tun", ip_family, packet_metric);
                     },
                     Ok(FlowMaintenancePlan::Wait(deadline)) => match deadline {
@@ -128,6 +131,115 @@ impl TunTcpEngine {
             metrics::record_tun_tcp_async_connect("started");
             let _active_guard = AsyncConnectActiveGuard;
 
+            // Use the flow's bound manager and route — set by handle_new_flow.
+            let (manager, route) = {
+                let state = flow.lock().await;
+                (state.manager.clone(), state.route.clone())
+            };
+
+            let is_direct = matches!(route, crate::tun::TunRoute::Direct { .. });
+
+            if is_direct {
+                // Direct: plain TcpStream, no Shadowsocks framing.
+                let fwmark = match route {
+                    crate::tun::TunRoute::Direct { fwmark } => fwmark,
+                    _ => None,
+                };
+                let addr = match crate::transport::resolve_host_with_preference(
+                    &format!("{}", target),
+                    0, // port already in SocketAddr
+                    "resolve direct target",
+                    false,
+                )
+                .await
+                {
+                    Ok(addrs) if !addrs.is_empty() => addrs[0],
+                    _ => {
+                        // Fallback: construct from the TargetAddr directly
+                        match &target {
+                            crate::types::TargetAddr::IpV4(ip, port) => {
+                                std::net::SocketAddr::new(std::net::IpAddr::V4(*ip), *port)
+                            },
+                            crate::types::TargetAddr::IpV6(ip, port) => {
+                                std::net::SocketAddr::new(std::net::IpAddr::V6(*ip), *port)
+                            },
+                            crate::types::TargetAddr::Domain(_, _) => {
+                                metrics::record_tun_tcp_async_connect("failed");
+                                warn!(flow_id, remote = %target, "direct TUN TCP: domain targets not supported");
+                                engine.abort_flow_with_rst(&key, "connect_failed").await;
+                                return;
+                            },
+                        }
+                    },
+                };
+                let stream = match timeout(
+                    engine.inner.tcp.connect_timeout,
+                    crate::transport::connect_tcp_socket(addr, fwmark),
+                )
+                .await
+                {
+                    Ok(Ok(stream)) => stream,
+                    Ok(Err(error)) => {
+                        metrics::record_tun_tcp_async_connect("failed");
+                        warn!(flow_id, remote = %target, error = %format!("{error:#}"), "failed to establish direct TUN TCP connection");
+                        engine.abort_flow_with_rst(&key, "connect_failed").await;
+                        return;
+                    },
+                    Err(_) => {
+                        metrics::record_tun_tcp_async_connect("timeout");
+                        warn!(flow_id, remote = %target, "timed out establishing direct TUN TCP connection");
+                        engine.abort_flow_with_rst(&key, "connect_timeout").await;
+                        return;
+                    },
+                };
+                let (read_half, write_half) = stream.into_split();
+                let upstream_writer = Arc::new(Mutex::new(
+                    super::super::state_machine::TunTcpUpstreamWriter::Direct(write_half),
+                ));
+                {
+                    let mut state = flow.lock().await;
+                    if matches!(state.status, TcpFlowStatus::Closed) {
+                        metrics::record_tun_tcp_async_connect("discarded_closed_flow");
+                        return;
+                    }
+                    clear_flow_metrics(&mut state);
+                    state.uplink_name = "direct".to_string();
+                    state.upstream_writer = Some(Arc::clone(&upstream_writer));
+                    let pending = state.pending_client_data.drain(..).collect::<Vec<_>>();
+                    let should_close = client_fin_seen(state.status);
+                    sync_flow_metrics_and_wake(&mut state);
+                    // Send pending data.
+                    for payload in pending {
+                        let mut w = upstream_writer.lock().await;
+                        if let Err(error) = w.send_chunk(&payload).await {
+                            drop(w);
+                            warn!(flow_id, error = %format!("{error:#}"), "direct TUN TCP send error");
+                            engine.abort_flow_with_rst(&key, "send_error").await;
+                            return;
+                        }
+                    }
+                    if should_close {
+                        close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
+                    }
+                }
+                metrics::record_tun_tcp_async_connect("connected");
+                // Spawn a plain reader for the direct stream.
+                engine.spawn_direct_upstream_reader(
+                    key.clone(),
+                    flow.clone(),
+                    read_half,
+                    close_rx,
+                );
+                metrics::record_uplink_selected(
+                    "tcp",
+                    metrics::DIRECT_GROUP_LABEL,
+                    metrics::DIRECT_UPLINK_LABEL,
+                );
+                info!(flow_id, remote = %target, "created direct TUN TCP flow");
+                return;
+            }
+
+            // Tunneled path (existing).
             let connected = tokio::select! {
                 _ = close_rx.changed() => {
                     if *close_rx.borrow() {
@@ -140,7 +252,7 @@ impl TunTcpEngine {
                 }
                 result = timeout(
                     engine.inner.tcp.connect_timeout,
-                    select_tcp_candidate_and_connect(&engine.inner.uplinks, &target),
+                    select_tcp_candidate_and_connect(&manager, &target),
                 ) => result,
             };
 
@@ -160,7 +272,9 @@ impl TunTcpEngine {
                 },
             };
 
-            let upstream_writer = Arc::new(Mutex::new(upstream_writer));
+            let upstream_writer = Arc::new(Mutex::new(
+                super::super::state_machine::TunTcpUpstreamWriter::Tunneled(upstream_writer),
+            ));
             let (pending_payloads, should_close_client_half) = {
                 let mut state = flow.lock().await;
                 if matches!(state.status, TcpFlowStatus::Closed) {
@@ -196,6 +310,7 @@ impl TunTcpEngine {
                     engine
                         .report_tcp_runtime_failure_and_abort(
                             &key,
+                            &manager,
                             candidate.index,
                             &error,
                             "send_error",
@@ -206,6 +321,7 @@ impl TunTcpEngine {
                 metrics::add_bytes(
                     "tcp",
                     "client_to_upstream",
+                    manager.group_name(),
                     &candidate.uplink.name,
                     payload.len(),
                 );
@@ -215,7 +331,11 @@ impl TunTcpEngine {
                 close_upstream_writer(Some(Arc::clone(&upstream_writer))).await;
             }
 
-            metrics::record_uplink_selected("tcp", &candidate.uplink.name);
+            metrics::record_uplink_selected(
+                "tcp",
+                manager.group_name(),
+                &candidate.uplink.name,
+            );
             info!(
                 flow_id,
                 uplink = %candidate.uplink.name,
@@ -236,10 +356,9 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
-                    let active_uplink = engine
-                        .inner
-                        .uplinks
+                let manager = { flow.lock().await.manager.clone() };
+                if manager.strict_active_uplink_for(TransportKind::Tcp) {
+                    let active_uplink = manager
                         .active_uplink_index_for_transport(TransportKind::Tcp)
                         .await;
                     let should_abort = {
@@ -295,15 +414,15 @@ impl TunTcpEngine {
 
                         if backlog_pressure.should_abort {
                             let uplink_name = key_uplink_name(&flow).await;
-                            let uplink_index = {
+                            let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
-                                state.uplink_index
+                                (state.uplink_index, state.manager.clone())
                             };
                             let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
-                            engine.report_tcp_runtime_failure(uplink_index, &error).await;
-                            let (cooldown_ms, penalty_ms) = engine
-                                .inner
-                                .uplinks
+                            engine
+                                .report_tcp_runtime_failure(&flow_manager, uplink_index, &error)
+                                .await;
+                            let (cooldown_ms, penalty_ms) = flow_manager
                                 .runtime_failure_debug_state(uplink_index, TransportKind::Tcp)
                                 .await;
                             warn!(
@@ -333,9 +452,14 @@ impl TunTcpEngine {
 
                         match flush {
                             Ok(flush) => {
+                                let (group_name, uplink_name) =
+                                    super::key_group_and_uplink(&flow).await;
                                 if flush.window_stalled {
-                                    let uplink_name = key_uplink_name(&flow).await;
-                                    metrics::record_tun_tcp_event(&uplink_name, "window_stall");
+                                    metrics::record_tun_tcp_event(
+                                        &group_name,
+                                        &uplink_name,
+                                        "window_stall",
+                                    );
                                     metrics::record_tun_packet(
                                         "upstream_to_tun",
                                         ip_family,
@@ -357,8 +481,8 @@ impl TunTcpEngine {
                                     );
                                 }
                                 if let Some(packet) = flush.probe_packet {
-                                    let uplink_name = key_uplink_name(&flow).await;
                                     metrics::record_tun_tcp_event(
+                                        &group_name,
                                         &uplink_name,
                                         "zero_window_probe",
                                     );
@@ -376,8 +500,8 @@ impl TunTcpEngine {
                                     );
                                 }
                                 if let Some(packet) = flush.fin_packet {
-                                    let uplink_name = key_uplink_name(&flow).await;
                                     metrics::record_tun_tcp_event(
+                                        &group_name,
                                         &uplink_name,
                                         "deferred_fin_sent",
                                     );
@@ -397,6 +521,7 @@ impl TunTcpEngine {
                                 metrics::add_bytes(
                                     "tcp",
                                     "upstream_to_client",
+                                    &group_name,
                                     &uplink_name,
                                     chunk_len,
                                 );
@@ -416,15 +541,22 @@ impl TunTcpEngine {
                         // Clean WebSocket closes (FIN, Close frame) do not
                         // indicate an uplink problem and are not reported.
                         if !upstream_reader.closed_cleanly {
-                            let uplink_index = flow.lock().await.uplink_index;
+                            let (uplink_index, flow_manager) = {
+                                let state = flow.lock().await;
+                                (state.uplink_index, state.manager.clone())
+                            };
                             if crate::error_text::is_websocket_closed(&error) {
-                                engine
-                                    .inner
-                                    .uplinks
+                                flow_manager
                                     .report_upstream_close(uplink_index, TransportKind::Tcp)
                                     .await;
                             } else {
-                                engine.report_tcp_runtime_failure(uplink_index, &error).await;
+                                engine
+                                    .report_tcp_runtime_failure(
+                                        &flow_manager,
+                                        uplink_index,
+                                        &error,
+                                    )
+                                    .await;
                             }
                         }
                         debug!(error = %format!("{error:#}"), "upstream TCP flow reader ended");
@@ -444,10 +576,15 @@ impl TunTcpEngine {
 
                         match flush {
                             Ok(flush) => {
-                                let uplink_name = key_uplink_name(&flow).await;
+                                let (group_name, uplink_name) =
+                                    super::key_group_and_uplink(&flow).await;
                                 let ip_family = ip_family_from_version(key.version);
                                 if flush.window_stalled {
-                                    metrics::record_tun_tcp_event(&uplink_name, "window_stall");
+                                    metrics::record_tun_tcp_event(
+                                        &group_name,
+                                        &uplink_name,
+                                        "window_stall",
+                                    );
                                     metrics::record_tun_packet(
                                         "upstream_to_tun",
                                         ip_family,
@@ -470,6 +607,7 @@ impl TunTcpEngine {
                                 }
                                 if let Some(packet) = flush.probe_packet {
                                     metrics::record_tun_tcp_event(
+                                        &group_name,
                                         &uplink_name,
                                         "zero_window_probe",
                                     );
@@ -488,6 +626,7 @@ impl TunTcpEngine {
                                 }
                                 if let Some(fin) = flush.fin_packet {
                                     metrics::record_tun_tcp_event(
+                                        &group_name,
                                         &uplink_name,
                                         "deferred_fin_sent",
                                     );
@@ -519,6 +658,129 @@ impl TunTcpEngine {
                         if should_close {
                             engine.close_flow(&key, "upstream_closed").await;
                         }
+                        return;
+                    },
+                }
+            }
+        });
+    }
+
+    /// Simpler reader for direct (non-tunneled) TCP flows: reads raw bytes
+    /// from the plain `OwnedReadHalf` and pushes them through the same TCP
+    /// state machine that synthesises IP packets for the TUN device.
+    pub(super) fn spawn_direct_upstream_reader(
+        &self,
+        key: TcpFlowKey,
+        flow: Arc<Mutex<TcpFlowState>>,
+        mut read_half: OwnedReadHalf,
+        mut close_rx: watch::Receiver<bool>,
+    ) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 16_384];
+            loop {
+                let read_result = tokio::select! {
+                    _ = close_rx.changed() => {
+                        if *close_rx.borrow() {
+                            return;
+                        }
+                        continue;
+                    }
+                    result = read_half.read(&mut buf) => result,
+                };
+                match read_result {
+                    Ok(0) => {
+                        // EOF — upstream closed.
+                        let ip_family = ip_family_from_version(key.version);
+                        let flush = {
+                            let mut state = flow.lock().await;
+                            if matches!(state.status, TcpFlowStatus::Closed) {
+                                return;
+                            }
+                            state.server_fin_pending = true;
+                            let flush = flush_server_output(&mut state);
+                            sync_flow_metrics_and_wake(&mut state);
+                            flush
+                        };
+                        match flush {
+                            Ok(flush) => {
+                                for packet in flush.data_packets {
+                                    if engine.inner.writer.write_packet(&packet).await.is_err() {
+                                        engine.close_flow(&key, "write_tun_error").await;
+                                        return;
+                                    }
+                                    metrics::record_tun_packet(
+                                        "upstream_to_tun",
+                                        ip_family,
+                                        "tcp_data",
+                                    );
+                                }
+                                if let Some(fin) = flush.fin_packet {
+                                    if engine.inner.writer.write_packet(&fin).await.is_err() {
+                                        engine.close_flow(&key, "write_tun_error").await;
+                                        return;
+                                    }
+                                    metrics::record_tun_packet(
+                                        "upstream_to_tun",
+                                        ip_family,
+                                        "tcp_fin",
+                                    );
+                                }
+                            },
+                            Err(_) => {
+                                engine.close_flow(&key, "build_packet_error").await;
+                            },
+                        }
+                        return;
+                    },
+                    Ok(n) => {
+                        let chunk = Bytes::copy_from_slice(&buf[..n]);
+                        let ip_family = ip_family_from_version(key.version);
+                        let flush = {
+                            let mut state = flow.lock().await;
+                            if matches!(state.status, TcpFlowStatus::Closed) {
+                                return;
+                            }
+                            state.last_seen = Instant::now();
+                            state.pending_server_data.push_back(chunk);
+                            let flush = flush_server_output(&mut state);
+                            sync_flow_metrics_and_wake(&mut state);
+                            flush
+                        };
+                        match flush {
+                            Ok(flush) => {
+                                for packet in flush.data_packets {
+                                    if engine.inner.writer.write_packet(&packet).await.is_err() {
+                                        engine.close_flow(&key, "write_tun_error").await;
+                                        return;
+                                    }
+                                    metrics::record_tun_packet(
+                                        "upstream_to_tun",
+                                        ip_family,
+                                        "tcp_data",
+                                    );
+                                }
+                                metrics::add_bytes(
+                                    "tcp",
+                                    "upstream_to_client",
+                                    metrics::DIRECT_GROUP_LABEL,
+                                    metrics::DIRECT_UPLINK_LABEL,
+                                    n,
+                                );
+                            },
+                            Err(error) => {
+                                warn!(
+                                    error = %format!("{error:#}"),
+                                    "failed to flush direct TUN TCP data"
+                                );
+                                engine.close_flow(&key, "build_packet_error").await;
+                                return;
+                            },
+                        }
+                    },
+                    Err(error) => {
+                        debug!(error = %format!("{error:#}"), "direct upstream TCP reader ended");
+                        engine.close_flow(&key, "read_error").await;
                         return;
                     },
                 }

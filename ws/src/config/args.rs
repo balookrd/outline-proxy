@@ -57,12 +57,15 @@ pub struct Args {
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_PATH")]
     pub tun_path: Option<PathBuf>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_NAME")]
     pub tun_name: Option<String>,
 
+    #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_MTU")]
     pub tun_mtu: Option<usize>,
 
@@ -76,4 +79,10 @@ pub struct Args {
     /// Has no effect when worker_threads=1 (current_thread scheduler has no extra threads).
     #[arg(long, env = "THREAD_STACK_SIZE_KB")]
     pub thread_stack_size_kb: Option<usize>,
+
+    /// Path for persisting active-uplink state across restarts.
+    /// Overrides the default (config path with .state.toml extension) and
+    /// the state_path key in the config file.
+    #[arg(long, env = "STATE_PATH")]
+    pub state_path: Option<PathBuf>,
 }

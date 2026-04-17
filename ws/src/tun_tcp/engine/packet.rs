@@ -21,7 +21,7 @@ use super::super::state_machine::{
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
 use super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN};
-use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, key_uplink_name};
+use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version};
 
 impl TunTcpEngine {
     pub(super) async fn handle_existing_flow(
@@ -29,12 +29,10 @@ impl TunTcpEngine {
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
     ) -> Result<()> {
-        if self.inner.uplinks.strict_active_uplink_for(TransportKind::Tcp) {
-            let active_uplink = self
-                .inner
-                .uplinks
-                .active_uplink_index_for_transport(TransportKind::Tcp)
-                .await;
+        let manager = { flow.lock().await.manager.clone() };
+        if manager.strict_active_uplink_for(TransportKind::Tcp) {
+            let active_uplink =
+                manager.active_uplink_index_for_transport(TransportKind::Tcp).await;
             let (should_abort, key) = {
                 let state = flow.lock().await;
                 (
@@ -55,7 +53,11 @@ impl TunTcpEngine {
 
         if state.status == TcpFlowStatus::SynReceived {
             if is_duplicate_syn(&packet, state.client_next_seq) {
-                metrics::record_tun_tcp_event(&state.uplink_name, "duplicate_syn");
+                metrics::record_tun_tcp_event(
+                    state.manager.group_name(),
+                    &state.uplink_name,
+                    "duplicate_syn",
+                );
                 let syn_ack = build_flow_syn_ack_packet(
                     &state,
                     state.server_seq.wrapping_sub(1),
@@ -83,6 +85,7 @@ impl TunTcpEngine {
             },
             PacketValidation::ChallengeAck(event) => {
                 let key = state.key.clone();
+                let group_name = state.manager.group_name().to_string();
                 let uplink_name = state.uplink_name.clone();
                 let ack = build_flow_ack_packet(
                     &state,
@@ -91,8 +94,15 @@ impl TunTcpEngine {
                     TCP_FLAG_ACK,
                 )?;
                 drop(state);
-                self.write_ack_packet_with_event(&key, ack, ip_family, &uplink_name, event)
-                    .await?;
+                self.write_ack_packet_with_event(
+                    &key,
+                    ack,
+                    ip_family,
+                    &group_name,
+                    &uplink_name,
+                    event,
+                )
+                .await?;
                 return Ok(());
             },
         }
@@ -154,7 +164,11 @@ impl TunTcpEngine {
         }
 
         if ack_effect.retransmit_now {
-            metrics::record_tun_tcp_event(&state.uplink_name, "fast_retransmit");
+            metrics::record_tun_tcp_event(
+                state.manager.group_name(),
+                &state.uplink_name,
+                "fast_retransmit",
+            );
             if let Some(packet) = retransmit_oldest_unacked_packet(&mut state)? {
                 if retransmit_budget_exhausted(&state, &self.inner.tcp) {
                     let key = state.key.clone();
@@ -252,6 +266,7 @@ impl TunTcpEngine {
         let key = state.key.clone();
         let uplink_index = state.uplink_index;
         let uplink_name = state.uplink_name.clone();
+        let flow_manager = state.manager.clone();
         let upstream_writer = state.upstream_writer.clone();
         if !packet.payload.is_empty()
             || (packet.flags & TCP_FLAG_FIN) != 0
@@ -277,7 +292,10 @@ impl TunTcpEngine {
             sync_flow_metrics_and_wake(&mut state);
             drop(state);
             if flush.window_stalled {
-                metrics::record_tun_tcp_event(&key_uplink_name(&flow).await, "window_stall");
+                {
+                    let (g, u) = super::key_group_and_uplink(&flow).await;
+                    metrics::record_tun_tcp_event(&g, &u, "window_stall");
+                }
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
             }
             for packet in flush.data_packets {
@@ -309,6 +327,7 @@ impl TunTcpEngine {
                 if let Err(error) = send_result {
                     self.report_tcp_runtime_failure_and_abort(
                         &key,
+                        &flow_manager,
                         uplink_index,
                         &error,
                         "send_error",
@@ -319,6 +338,7 @@ impl TunTcpEngine {
                 metrics::add_bytes(
                     "tcp",
                     "client_to_upstream",
+                    flow_manager.group_name(),
                     &uplink_name,
                     pending_payload.len(),
                 );
@@ -342,7 +362,10 @@ impl TunTcpEngine {
         }
 
         if flush.window_stalled {
-            metrics::record_tun_tcp_event(&key_uplink_name(&flow).await, "window_stall");
+            {
+                let (g, u) = super::key_group_and_uplink(&flow).await;
+                metrics::record_tun_tcp_event(&g, &u, "window_stall");
+            }
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
@@ -350,12 +373,18 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {
-            metrics::record_tun_tcp_event(&key_uplink_name(&flow).await, "zero_window_probe");
+            {
+                let (g, u) = super::key_group_and_uplink(&flow).await;
+                metrics::record_tun_tcp_event(&g, &u, "zero_window_probe");
+            }
             self.write_tun_packet_or_close_flow(&key, &packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
         }
         if let Some(packet) = flush.fin_packet {
-            metrics::record_tun_tcp_event(&key_uplink_name(&flow).await, "deferred_fin_sent");
+            {
+                let (g, u) = super::key_group_and_uplink(&flow).await;
+                metrics::record_tun_tcp_event(&g, &u, "deferred_fin_sent");
+            }
             self.write_tun_packet_or_close_flow(&key, &packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
         }

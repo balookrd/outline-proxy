@@ -1,0 +1,154 @@
+# Router / embedded device configuration example.
+#
+# Tuned for devices with limited RAM (32–128 MB free) and a single slow CPU
+# core (MIPS/ARM ~500 MHz). Start with these values and adjust based on your
+# device's actual free memory.
+#
+# Key differences from the VM default (config.yaml):
+#   - worker_threads: 1               (single tokio thread, avoids scheduler overhead)
+#   - tun.max_flows: 128              (reduce flow table from 4096)
+#   - tun.defrag_max_fragment_sets    (concurrent reassembly sets: 64 vs 1024)
+#   - tun.defrag_max_fragments_per_set (chunks per set: 16 vs 64)
+#   - tun.defrag_max_total_bytes      (IP fragment buffer: 2 MB vs 16 MB)
+#   - tun.defrag_max_bytes_per_set    (per-source fragment buffer: 16 KB vs 128 KB)
+#   - tun.tcp.max_pending_server_bytes (64 KB vs 4 MB)
+#   - tun.tcp.max_buffered_client_bytes (64 KB, max allowed by protocol)
+#   - h2 flow-control windows         (256 KB / 512 KB vs 1 MB / 2 MB)
+#   - single group in active_passive mode, no warm standby, reduced probe rate
+
+# Log level
+# Router builds (--no-default-features --features router) compile without the
+# env-filter feature, so RUST_LOG is ignored and the level is fixed at WARN.
+# This saves ~300 KB on MIPS by eliminating the regex engine.
+#
+# To get dynamic RUST_LOG support at the cost of binary size, add
+# --features env-filter to the build command.
+
+# UDP socket buffers
+# Override SO_RCVBUF / SO_SNDBUF for every outbound UDP socket (shadowsocks
+# and QUIC). OpenWrt defaults are often 87–130 KiB which can cause drops under
+# bursts. 208 KiB is a reasonable ceiling for 32 MB RAM devices.
+# The kernel silently caps requests above /proc/sys/net/core/rmem_max (Linux);
+# set rmem_max/wmem_max in /etc/sysctl.conf if you need larger values.
+# Comment out to leave kernel defaults unchanged.
+udp_recv_buf_bytes: 212992  # 208 KiB
+udp_send_buf_bytes: 212992  # 208 KiB
+
+# Worker threads
+# Router builds compiled without --features multi-thread always use the
+# current_thread scheduler regardless. --worker-threads has no effect.
+
+socks5:
+  listen: "127.0.0.1:1080"
+  # No auth needed on a trusted local network.
+
+tun:
+  # Adjust path and name for your platform:
+  # Linux:   path: /dev/net/tun
+  #          name: tun0
+  # OpenWrt: path: /dev/tun0  (after opkg install kmod-tun)
+  # path: /dev/tun0
+  # name: tun0
+  mtu: 1500
+
+  # Reduced flow table — 128 concurrent TCP flows is enough for a household.
+  max_flows: 128
+  idle_timeout_secs: 120
+
+  # IP fragment reassembly limits.
+  # Sets: how many concurrent flows can be reassembled simultaneously.
+  # Fragments per set: max chunks before a set is dropped.
+  # Bytes limits cap peak memory usage.
+  defrag_max_fragment_sets: 64       # vs 1024 on VM
+  defrag_max_fragments_per_set: 16   # vs 64 on VM
+  defrag_max_total_bytes: 2097152    # 2 MiB vs 16 MiB on VM
+  defrag_max_bytes_per_set: 16384    # 16 KiB vs 128 KiB on VM
+
+  tcp:
+    connect_timeout_secs: 10
+    handshake_timeout_secs: 15
+    half_close_timeout_secs: 30
+
+    # Downstream send buffer per TCP flow. Keep small on routers.
+    # Protocol maximum is 262144; 65536 is a good balance.
+    max_pending_server_bytes: 65536
+
+    # Client receive buffer. Maximum allowed by the TCP window scale is 262144.
+    # 65536 is fine for interactive and streaming traffic on slow links.
+    max_buffered_client_bytes: 65536
+    max_buffered_client_segments: 512
+
+    backlog_abort_grace_secs: 3
+    backlog_hard_limit_multiplier: 2
+    backlog_no_progress_abort_secs: 8
+    max_retransmits: 8
+
+# HTTP/2 flow-control windows
+# Smaller windows reduce peak memory at the cost of throughput on high-RTT
+# links. 256 KB stream / 512 KB connection is comfortable for typical traffic.
+h2:
+  initial_stream_window_size: 262144
+  initial_connection_window_size: 524288
+
+# Probe template
+# Top-level probe is shared across all groups unless a group overrides it
+# in uplink_group[].probe.
+probe:
+  interval_secs: 60
+  timeout_secs: 10
+  max_concurrent: 1
+  max_dials: 1
+  min_failures: 2
+  attempts: 1
+  ws:
+    enabled: true
+
+# Uplink group
+# Single group in active_passive mode. No warm standby — saves RAM and CPU.
+uplink_group:
+  - name: main
+    mode: active_passive      # single active uplink, fail over on error
+    routing_scope: global
+    warm_standby_tcp: 0
+    warm_standby_udp: 0
+    sticky_ttl_secs: 300
+    hysteresis_ms: 100
+    failure_cooldown_secs: 30
+    rtt_ewma_alpha: 0.3
+    failure_penalty_ms: 1000
+    failure_penalty_max_ms: 60000
+    failure_penalty_halflife_secs: 120
+    # Keepalive on the active UDP path to prevent NAT timeouts.
+    udp_ws_keepalive_secs: 60
+
+# Uplinks
+# Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that
+# is expensive on low-end MIPS/ARM. h2 over TLS is lighter.
+uplinks:
+  - name: primary
+    group: main
+    transport: websocket
+    tcp_ws_url: "wss://your-server.example.com/SECRET/tcp"
+    tcp_ws_mode: h2
+    udp_ws_url: "wss://your-server.example.com/SECRET/udp"
+    udp_ws_mode: h2
+    method: chacha20-ietf-poly1305
+    password: YourPasswordHere
+    # ChaCha20-Poly1305 is preferred over AES-GCM on MIPS/ARM cores that lack
+    # hardware AES acceleration. On routers with AES-NI use aes-256-gcm instead.
+
+# Optional: policy routing
+# Uncomment to route local/LAN/loopback traffic outside the tunnel and send
+# everything else through the main group (the default behaviour when
+# route is absent).
+#
+# route:
+#   - prefixes:
+#       - "10.0.0.0/8"
+#       - "172.16.0.0/12"
+#       - "192.168.0.0/16"
+#       - "fc00::/7"
+#     via: direct
+#
+#   - default: true
+#     via: main

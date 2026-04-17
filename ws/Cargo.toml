@@ -10,7 +10,8 @@ edition = "2024"
 #          disables H3/QUIC and Prometheus metrics
 #          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 [features]
-default = ["h3", "metrics", "env-filter", "multi-thread"]
+default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
+tun = []   # TUN device support (transparent proxy)
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
 metrics = ["dep:prometheus", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
@@ -19,6 +20,7 @@ env-filter = ["tracing-subscriber/env-filter"]
 # multi-thread: tokio work-stealing scheduler. Disabled in router builds (always
 # single-threaded), removing ~100–200 KB of scheduler code on MIPS.
 multi-thread = ["tokio/rt-multi-thread"]
+mimalloc = ["dep:mimalloc"]
 router = []  # convenience alias: use with --no-default-features --features router
 
 [dependencies]
@@ -40,6 +42,7 @@ hyper = { version = "1.7", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
 md5 = "0.7"
+mimalloc = { version = "0.1", default-features = false, optional = true }
 pin-project-lite = "0.2"
 once_cell = { version = "1.21", optional = true }
 prometheus = { version = "0.13", optional = true }
@@ -48,6 +51,7 @@ rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
+serde_yml = "0.0.12"
 sha1 = "0.10"
 sockudo-ws = { path = "vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
 socket2 = "0.5"
@@ -59,6 +63,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "tracing-log"] }
 url = { version = "2.5", features = ["serde"] }
 webpki-roots = "0.26"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 opt-level = 3

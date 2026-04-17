@@ -49,19 +49,27 @@ const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 // matches the bound used for HTTP/1 websocket handshakes.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+// The cache key is intentionally based on the *hostname* and port rather than
+// the resolved IP address.  Using the IP address would create a new cache entry
+// on every DNS rotation (round-robin CDN, failover, etc.), leaving the old
+// TCP socket alive in the map forever because `is_open()` stays `true` until
+// the server eventually drops the idle connection.  A hostname-based key means
+// there is at most one shared H2 connection per logical server: when the DNS
+// answer changes, the old connection is kept until it fails naturally, at which
+// point a fresh connection is made to the (now re-resolved) new address.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H2ConnectionKey {
-    server_addr: SocketAddr,
     server_name: String,
+    server_port: u16,
     secure: bool,
     fwmark: Option<u32>,
 }
 
 impl H2ConnectionKey {
-    fn new(server_addr: SocketAddr, server_name: &str, secure: bool, fwmark: Option<u32>) -> Self {
+    fn new(server_name: &str, server_port: u16, secure: bool, fwmark: Option<u32>) -> Self {
         Self {
-            server_addr,
             server_name: server_name.to_string(),
+            server_port,
             secure,
             fwmark,
         }
@@ -117,6 +125,7 @@ impl SharedH2Connection {
         })
         .await
         .map_err(|_| {
+            self.closed.store(true, Ordering::Relaxed);
             anyhow!(
                 "HTTP/2 websocket CONNECT send timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -126,6 +135,7 @@ impl SharedH2Connection {
         let mut response = timeout(OPEN_WEBSOCKET_TIMEOUT, response_future)
             .await
             .map_err(|_| {
+                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -139,6 +149,7 @@ impl SharedH2Connection {
         let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
             .map_err(|_| {
+                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket upgrade timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -146,10 +157,16 @@ impl SharedH2Connection {
             })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
-        let shared_connection: Arc<dyn Send + Sync> = self.clone();
+        let shared_connection: Arc<dyn super::ws_stream::SharedConnectionHealth> = self.clone();
         Ok(AnyWsStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
         })
+    }
+}
+
+impl super::ws_stream::SharedConnectionHealth for SharedH2Connection {
+    fn is_open(&self) -> bool {
+        self.is_open()
     }
 }
 
@@ -187,12 +204,6 @@ pub(super) async fn connect_websocket_h2(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let server_addr =
-        resolve_host_with_preference(host, port, "failed to resolve h2 websocket host", ipv6_first)
-            .await?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let secure = match url.scheme() {
         "ws" => false,
         "wss" => true,
@@ -201,23 +212,39 @@ pub(super) async fn connect_websocket_h2(
     let target_uri = websocket_target_uri(url)?;
 
     if should_reuse_h2_connection(source) {
-        connect_h2_reused(server_addr, host, secure, &target_uri, fwmark, source).await
+        // DNS resolution is deferred to the slow path inside connect_h2_reused
+        // so the cache key stays hostname-based and is not affected by DNS rotation.
+        connect_h2_reused(host, port, secure, &target_uri, fwmark, ipv6_first, source).await
     } else {
+        // Probes never share connections; resolve DNS upfront for the fresh dial.
+        let server_addr = resolve_host_with_preference(
+            host,
+            port,
+            "failed to resolve h2 websocket host",
+            ipv6_first,
+        )
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
         connect_h2_fresh(server_addr, host, secure, &target_uri, fwmark, source).await
     }
 }
 
 async fn connect_h2_reused(
-    server_addr: SocketAddr,
     server_name: &str,
+    server_port: u16,
     secure: bool,
     target_uri: &str,
     fwmark: Option<u32>,
+    ipv6_first: bool,
     source: &'static str,
 ) -> Result<AnyWsStream> {
-    let key = H2ConnectionKey::new(server_addr, server_name, secure, fwmark);
+    let key = H2ConnectionKey::new(server_name, server_port, secure, fwmark);
 
     // Fast path: reuse an already-established shared connection without locking.
+    // DNS is NOT resolved here — the key is hostname-based so cache lookups are
+    // independent of which IP address the server currently resolves to.
     if let Some(shared) = cached_shared_h2_connection(&key).await {
         match shared.open_websocket(target_uri).await {
             Ok(ws) => {
@@ -226,8 +253,8 @@ async fn connect_h2_reused(
             },
             Err(error) => {
                 debug!(
-                    server_addr = %server_addr,
                     server_name,
+                    server_port,
                     secure,
                     error = %format!("{error:#}"),
                     "cached shared h2 connection failed to open websocket stream; reconnecting"
@@ -253,8 +280,8 @@ async fn connect_h2_reused(
             },
             Err(error) => {
                 debug!(
-                    server_addr = %server_addr,
                     server_name,
+                    server_port,
                     secure,
                     error = %format!("{error:#}"),
                     "shared h2 connection (post-lock recheck) failed to open websocket stream; reconnecting"
@@ -263,6 +290,20 @@ async fn connect_h2_reused(
             },
         }
     }
+
+    // Resolve DNS only now — we actually need a new TCP connection.  By
+    // deferring resolution to this point we always connect to the *current*
+    // address while keeping the cache key hostname-based.
+    let server_addr = resolve_host_with_preference(
+        server_name,
+        server_port,
+        "failed to resolve h2 websocket host",
+        ipv6_first,
+    )
+    .await?
+    .into_iter()
+    .next()
+    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {server_name}:{server_port}"))?;
 
     let mut transport_guard = TransportConnectGuard::new(source, "h2");
     let shared = Arc::new(
@@ -389,6 +430,15 @@ async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u
     }
 }
 
+/// Remove all cache entries whose shared connection is no longer open.
+/// Called periodically from the warm-standby maintenance loop so dead entries
+/// do not linger indefinitely when no new request re-checks their key (e.g.
+/// after DNS rotation changes the resolved address for a server name).
+pub(super) async fn gc_shared_h2_connections() {
+    let mut shared = h2_shared_connections().lock().await;
+    shared.retain(|_, conn| conn.is_open());
+}
+
 fn is_expected_h2_close(error: &str) -> bool {
     error.contains("connection closed")
         || error.contains("operation was canceled")
@@ -398,16 +448,22 @@ fn is_expected_h2_close(error: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{H2ConnectionKey, should_reuse_h2_connection};
-    use std::net::{Ipv4Addr, SocketAddr};
 
     #[test]
-    fn h2_shared_connection_key_distinguishes_scheme_server_name_and_fwmark() {
-        let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 443));
-        let base = H2ConnectionKey::new(server_addr, "one.example", true, None);
+    fn h2_shared_connection_key_distinguishes_scheme_server_name_port_and_fwmark() {
+        let base = H2ConnectionKey::new("one.example", 443, true, None);
 
-        assert_ne!(base, H2ConnectionKey::new(server_addr, "two.example", true, None));
-        assert_ne!(base, H2ConnectionKey::new(server_addr, "one.example", false, None));
-        assert_ne!(base, H2ConnectionKey::new(server_addr, "one.example", true, Some(42)));
+        // Different hostname
+        assert_ne!(base, H2ConnectionKey::new("two.example", 443, true, None));
+        // Different scheme (wss vs ws)
+        assert_ne!(base, H2ConnectionKey::new("one.example", 443, false, None));
+        // Different fwmark
+        assert_ne!(base, H2ConnectionKey::new("one.example", 443, true, Some(42)));
+        // Different port — must produce a distinct key even though scheme is the same
+        assert_ne!(base, H2ConnectionKey::new("one.example", 8443, true, None));
+        // Same IP-resolved address must NOT be distinguishable — the key is hostname-based
+        // so two logical uplinks pointing at the same host:port share one connection.
+        assert_eq!(base, H2ConnectionKey::new("one.example", 443, true, None));
     }
 
     #[test]
