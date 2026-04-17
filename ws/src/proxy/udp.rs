@@ -331,6 +331,12 @@ pub(super) async fn handle_udp_associate(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
+        let dns_cache_uplink = Arc::clone(
+            config
+                .dns_cache
+                .as_ref()
+                .expect("dns_cache initialised in run_with_config"),
+        );
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
@@ -362,7 +368,7 @@ pub(super) async fn handle_udp_associate(
                         continue;
                     },
                     UdpPacketRoute::Direct => {
-                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload)
+                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload, &dns_cache_uplink)
                             .await?;
                         continue;
                     },
@@ -519,6 +525,7 @@ async fn send_udp_direct(
     direct_socket: &Option<Arc<UdpSocket>>,
     target: &TargetAddr,
     payload: &[u8],
+    cache: &crate::transport::DnsCache,
 ) -> Result<()> {
     let Some(sock) = direct_socket else {
         warn!(target = %target, "UDP direct route requested but direct socket not allocated; dropping");
@@ -530,6 +537,7 @@ async fn send_udp_direct(
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
         TargetAddr::Domain(host, port) => {
             let resolved = crate::transport::resolve_host_with_preference(
+                cache,
                 host,
                 *port,
                 "UDP direct resolve",
@@ -537,7 +545,7 @@ async fn send_udp_direct(
             )
             .await
             .with_context(|| format!("UDP direct: failed to resolve {target}"))?;
-            match resolved.into_iter().next() {
+            match resolved.first().copied() {
                 Some(addr) => addr,
                 None => {
                     warn!(target = %target, "UDP direct: DNS returned no addresses; dropping");
@@ -648,6 +656,12 @@ pub(super) async fn handle_udp_in_tcp(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
+        let dns_cache_uplink = Arc::clone(
+            config
+                .dns_cache
+                .as_ref()
+                .expect("dns_cache initialised in run_with_config"),
+        );
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
@@ -670,7 +684,7 @@ pub(super) async fn handle_udp_in_tcp(
                         continue;
                     },
                     UdpPacketRoute::Direct => {
-                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload)
+                        send_udp_direct(&direct_socket_uplink, &packet.target, &packet.payload, &dns_cache_uplink)
                             .await?;
                         continue;
                     },

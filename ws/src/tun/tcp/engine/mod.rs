@@ -37,6 +37,7 @@ pub(super) struct TunTcpEngineInner {
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
     pub(super) tcp: TunTcpConfig,
+    pub(super) dns_cache: Arc<crate::transport::DnsCache>,
 }
 
 impl TunTcpEngine {
@@ -46,6 +47,7 @@ impl TunTcpEngine {
         max_flows: usize,
         idle_timeout: Duration,
         tcp: TunTcpConfig,
+        dns_cache: Arc<crate::transport::DnsCache>,
     ) -> Self {
         let engine = Self {
             inner: Arc::new(TunTcpEngineInner {
@@ -57,10 +59,15 @@ impl TunTcpEngine {
                 max_flows,
                 idle_timeout,
                 tcp,
+                dns_cache,
             }),
         };
         engine.spawn_cleanup_loop();
         engine
+    }
+
+    pub fn dns_cache(&self) -> &crate::transport::DnsCache {
+        &self.inner.dns_cache
     }
 
 

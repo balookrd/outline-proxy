@@ -34,7 +34,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::{
     AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
-    connect_tcp_socket, resolve_host_with_preference,
+    DnsCache, connect_tcp_socket, resolve_host_with_preference,
 };
 
 use super::{H2WsStream, websocket_h2_target_uri};
@@ -337,6 +337,7 @@ fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 pub(crate) async fn connect_websocket_h2(
+    cache: &DnsCache,
     url: &Url,
     fwmark: Option<u32>,
     ipv6_first: bool,
@@ -356,24 +357,26 @@ pub(crate) async fn connect_websocket_h2(
     if should_reuse_h2_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_h2_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        connect_h2_tcp_reused(host, port, secure, &target_uri, fwmark, ipv6_first, source).await
+        connect_h2_tcp_reused(cache, host, port, secure, &target_uri, fwmark, ipv6_first, source).await
     } else {
         // Probes never share connections; resolve DNS upfront for the fresh dial.
         let server_addr = resolve_host_with_preference(
+            cache,
             host,
             port,
             "failed to resolve h2 websocket host",
             ipv6_first,
         )
         .await?
-        .into_iter()
-        .next()
+        .first()
+        .copied()
         .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
         connect_h2_tcp_new(server_addr, host, secure, &target_uri, fwmark, source).await
     }
 }
 
 async fn connect_h2_tcp_reused(
+    cache: &DnsCache,
     server_name: &str,
     server_port: u16,
     secure: bool,
@@ -437,14 +440,15 @@ async fn connect_h2_tcp_reused(
     // deferring resolution to this point we always connect to the *current*
     // address while keeping the cache key hostname-based.
     let server_addr = resolve_host_with_preference(
+        cache,
         server_name,
         server_port,
         "failed to resolve h2 websocket host",
         ipv6_first,
     )
     .await?
-    .into_iter()
-    .next()
+    .first()
+    .copied()
     .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {server_name}:{server_port}"))?;
 
     let mut transport_guard = TransportConnectGuard::new(source, "h2");

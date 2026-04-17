@@ -183,7 +183,11 @@ enum PacketDisposition {
     Unsupported(&'static str),
 }
 
-pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()> {
+pub async fn spawn_tun_loop(
+    config: TunConfig,
+    routing: TunRouting,
+    dns_cache: Arc<crate::transport::DnsCache>,
+) -> Result<()> {
     let tun_path = config.path.clone();
     let tun_name = config.name.clone();
     let tun_mtu = config.mtu;
@@ -211,6 +215,7 @@ pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()
         max_flows,
         idle_timeout,
         config.tcp.clone(),
+        dns_cache,
     );
     metrics::set_tun_config(max_flows, idle_timeout);
     tokio::spawn(async move {

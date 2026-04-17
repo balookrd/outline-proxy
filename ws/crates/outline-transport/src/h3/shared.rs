@@ -30,7 +30,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::{
     AbortOnDrop, WsTransportStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
-    resolve_host_with_preference,
+    DnsCache, resolve_host_with_preference,
 };
 
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
@@ -284,6 +284,7 @@ fn h3_shared_connections() -> &'static RwLock<HashMap<H3ConnectionKey, Arc<Share
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 pub(crate) async fn connect_websocket_h3(
+    cache: &DnsCache,
     url: &Url,
     fwmark: Option<u32>,
     ipv6_first: bool,
@@ -302,20 +303,25 @@ pub(crate) async fn connect_websocket_h3(
     if should_reuse_h3_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_h3_quic_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        let ws = connect_h3_quic_reused(host, port, &path, fwmark, ipv6_first, source).await?;
+        let ws = connect_h3_quic_reused(cache, host, port, &path, fwmark, ipv6_first, source).await?;
         return Ok(WsTransportStream::H3 { inner: ws });
     }
 
     // Probes never share connections; resolve DNS upfront and try each address.
-    let server_addrs =
-        resolve_host_with_preference(host, port, "failed to resolve h3 websocket host", ipv6_first)
-            .await?;
+    let server_addrs = resolve_host_with_preference(
+        cache,
+        host,
+        port,
+        "failed to resolve h3 websocket host",
+        ipv6_first,
+    )
+    .await?;
     if server_addrs.is_empty() {
         bail!("DNS resolution returned no addresses for {host}:{port}");
     }
 
     let mut last_error = None;
-    for server_addr in server_addrs {
+    for server_addr in server_addrs.iter().copied() {
         match connect_h3_quic_new(server_addr, host, port, &path, fwmark, None, source).await {
             Ok(ws) => return Ok(WsTransportStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
@@ -329,6 +335,7 @@ pub(crate) async fn connect_websocket_h3(
 }
 
 async fn connect_h3_quic_reused(
+    cache: &DnsCache,
     server_name: &str,
     server_port: u16,
     path: &str,
@@ -391,6 +398,7 @@ async fn connect_h3_quic_reused(
     // deferring resolution to this point we always connect to the *current*
     // address while keeping the cache key hostname-based.
     let server_addrs = resolve_host_with_preference(
+        cache,
         server_name,
         server_port,
         "failed to resolve h3 websocket host",
@@ -402,7 +410,7 @@ async fn connect_h3_quic_reused(
     }
 
     let mut last_error = None;
-    for server_addr in server_addrs {
+    for server_addr in server_addrs.iter().copied() {
         match connect_h3_quic_new(
             server_addr,
             server_name,

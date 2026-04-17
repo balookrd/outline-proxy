@@ -10,7 +10,7 @@ use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use crate::transport::{
-    TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
+    DnsCache, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
     connect_websocket_with_source,
 };
@@ -19,6 +19,7 @@ use crate::types::{TargetAddr, UplinkTransport};
 use super::types::ProbeOutcome;
 
 pub(super) async fn probe_uplink(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
@@ -28,13 +29,13 @@ pub(super) async fn probe_uplink(
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency) = timeout(
         probe.timeout,
-        run_tcp_probe(group, uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
+        run_tcp_probe(cache, group, uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
     )
     .await
     .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
     let (udp_ok, udp_applicable, udp_latency) = timeout(
         probe.timeout,
-        run_udp_probe(group, uplink, probe, dial_limit, effective_udp_mode),
+        run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode),
     )
     .await
     .map_err(|_| anyhow!("udp probe timed out after {:?}", probe.timeout))??;
@@ -49,6 +50,7 @@ pub(super) async fn probe_uplink(
 }
 
 pub(super) async fn run_tcp_probe(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
@@ -61,6 +63,7 @@ pub(super) async fn run_tcp_probe(
         let result = match uplink.transport {
             UplinkTransport::Websocket => {
                 run_ws_probe(
+                    cache,
                     group,
                     &uplink.name,
                     "tcp",
@@ -76,7 +79,7 @@ pub(super) async fn run_tcp_probe(
                 .await
             },
             UplinkTransport::Shadowsocks => {
-                run_tcp_socket_probe(uplink, Arc::clone(&dial_limit)).await
+                run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
             },
         };
         crate::metrics::record_probe(
@@ -92,6 +95,7 @@ pub(super) async fn run_tcp_probe(
     if let Some(http_probe) = &probe.http {
         let probe_started = Instant::now();
         let result = run_http_probe(
+                    cache,
             group,
             uplink,
             http_probe,
@@ -113,6 +117,7 @@ pub(super) async fn run_tcp_probe(
     if let Some(tcp_probe) = &probe.tcp {
         let probe_started = Instant::now();
         let result = run_tcp_tunnel_probe(
+                    cache,
             group,
             uplink,
             tcp_probe,
@@ -138,6 +143,7 @@ pub(super) async fn run_tcp_probe(
 }
 
 pub(super) async fn run_udp_probe(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
@@ -154,6 +160,7 @@ pub(super) async fn run_udp_probe(
         let result = match uplink.transport {
             UplinkTransport::Websocket => {
                 run_ws_probe(
+                    cache,
                     group,
                     &uplink.name,
                     "udp",
@@ -169,7 +176,7 @@ pub(super) async fn run_udp_probe(
                 .await
             },
             UplinkTransport::Shadowsocks => {
-                run_udp_socket_probe(uplink, Arc::clone(&dial_limit)).await
+                run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
             },
         };
         crate::metrics::record_probe(
@@ -185,6 +192,7 @@ pub(super) async fn run_udp_probe(
     if let Some(dns_probe) = &probe.dns {
         let probe_started = Instant::now();
         let result = run_dns_probe(
+                    cache,
             group,
             uplink,
             dns_probe,
@@ -211,6 +219,7 @@ pub(super) async fn run_udp_probe(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
+    cache: &DnsCache,
     _group: &str,
     uplink_name: &str,
     transport: &'static str,
@@ -225,7 +234,7 @@ pub(super) async fn run_ws_probe(
     // Many servers do not respond to WebSocket ping control frames (they expect
     // Shadowsocks data immediately), so we do not send a ping here.  The
     // data-path is checked by the http / dns sub-probes that follow.
-    let mut ws_stream = connect_websocket_with_source(url, mode, fwmark, false, "probe_ws")
+    let mut ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, false, "probe_ws")
         .await
         .with_context(|| format!("failed to connect WebSocket probe to {url}"))?;
 
@@ -250,6 +259,7 @@ pub(super) async fn run_ws_probe(
 }
 
 pub(super) async fn run_tcp_socket_probe(
+    cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
 ) -> Result<()> {
@@ -259,12 +269,13 @@ pub(super) async fn run_tcp_socket_probe(
         .as_ref()
         .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?;
     let _stream =
-        connect_shadowsocks_tcp_with_source(addr, uplink.fwmark, uplink.ipv6_first, "probe_tcp")
+        connect_shadowsocks_tcp_with_source(cache, addr, uplink.fwmark, uplink.ipv6_first, "probe_tcp")
             .await?;
     Ok(())
 }
 
 pub(super) async fn run_udp_socket_probe(
+    cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
 ) -> Result<()> {
@@ -274,7 +285,7 @@ pub(super) async fn run_udp_socket_probe(
         .as_ref()
         .ok_or_else(|| anyhow!("uplink {} missing udp_addr", uplink.name))?;
     let _socket =
-        connect_shadowsocks_udp_with_source(addr, uplink.fwmark, uplink.ipv6_first, "probe_udp")
+        connect_shadowsocks_udp_with_source(cache, addr, uplink.fwmark, uplink.ipv6_first, "probe_udp")
             .await?;
     Ok(())
 }
@@ -323,6 +334,7 @@ async fn close_probe_udp_transport(
 }
 
 pub(super) async fn run_http_probe(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &HttpProbeConfig,
@@ -367,7 +379,7 @@ pub(super) async fn run_http_probe(
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
-                let ws_stream = connect_websocket_with_source(
+                let ws_stream = connect_websocket_with_source(cache, 
                     uplink
                         .tcp_ws_url
                         .as_ref()
@@ -401,7 +413,7 @@ pub(super) async fn run_http_probe(
                 (writer, reader)
             },
             UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(
+                let stream = connect_shadowsocks_tcp_with_source(cache, 
                     uplink
                         .tcp_addr
                         .as_ref()
@@ -503,6 +515,7 @@ pub(super) async fn run_http_probe(
 }
 
 pub(super) async fn run_tcp_tunnel_probe(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &TcpProbeConfig,
@@ -525,7 +538,7 @@ pub(super) async fn run_tcp_tunnel_probe(
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
-                let ws_stream = connect_websocket_with_source(
+                let ws_stream = connect_websocket_with_source(cache, 
                     uplink
                         .tcp_ws_url
                         .as_ref()
@@ -562,7 +575,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                 (writer, reader)
             },
             UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(
+                let stream = connect_shadowsocks_tcp_with_source(cache, 
                     uplink
                         .tcp_addr
                         .as_ref()
@@ -652,6 +665,7 @@ pub(super) async fn run_tcp_tunnel_probe(
 }
 
 pub(super) async fn run_dns_probe(
+    cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
@@ -670,7 +684,7 @@ pub(super) async fn run_dns_probe(
                 let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
                     anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
                 })?;
-                UdpWsTransport::connect(
+                UdpWsTransport::connect(cache, 
                     udp_ws_url,
                     effective_udp_mode,
                     uplink.cipher,
@@ -686,7 +700,7 @@ pub(super) async fn run_dns_probe(
                 })?
             },
             UplinkTransport::Shadowsocks => {
-                let socket = connect_shadowsocks_udp_with_source(
+                let socket = connect_shadowsocks_udp_with_source(cache, 
                     uplink.udp_addr.as_ref().ok_or_else(|| {
                         anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name)
                     })?,

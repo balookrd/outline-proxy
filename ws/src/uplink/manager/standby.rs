@@ -137,6 +137,7 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<WsTransportStream> {
+        let cache = self.inner.dns_cache.as_ref();
         if candidate.uplink.transport != UplinkTransport::Websocket {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
@@ -154,7 +155,7 @@ impl UplinkManager {
         );
         let started = Instant::now();
         let ws =
-            connect_websocket_with_source(
+            connect_websocket_with_source(cache, 
                 candidate.uplink.tcp_ws_url.as_ref().ok_or_else(|| {
                     anyhow!("uplink {} missing tcp_ws_url", candidate.uplink.name)
                 })?,
@@ -193,6 +194,7 @@ impl UplinkManager {
         candidate: &UplinkCandidate,
         source: &'static str,
     ) -> Result<UdpWsTransport> {
+        let cache = self.inner.dns_cache.as_ref();
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
             metrics::record_warm_standby_acquire(
                 "udp",
@@ -204,7 +206,7 @@ impl UplinkManager {
                 anyhow!("udp_addr is not configured for uplink {}", candidate.uplink.name)
             })?;
             let started = Instant::now();
-            let socket = connect_shadowsocks_udp_with_source(
+            let socket = connect_shadowsocks_udp_with_source(cache, 
                 udp_addr,
                 candidate.uplink.fwmark,
                 candidate.uplink.ipv6_first,
@@ -272,7 +274,7 @@ impl UplinkManager {
         })?;
         let mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
-        let transport = UdpWsTransport::connect(
+        let transport = UdpWsTransport::connect(cache, 
             udp_ws_url,
             mode,
             candidate.uplink.cipher,
@@ -403,6 +405,7 @@ impl UplinkManager {
     }
 
     async fn refill_pool(&self, index: usize, transport: TransportKind) {
+        let cache = self.inner.dns_cache.as_ref();
         let desired = match transport {
             TransportKind::Tcp => self.inner.load_balancing.warm_standby_tcp,
             TransportKind::Udp => self.inner.load_balancing.warm_standby_udp,
@@ -449,7 +452,7 @@ impl UplinkManager {
                     let Some(tcp_ws_url) = uplink.tcp_ws_url.as_ref() else {
                         break;
                     };
-                    let result = connect_websocket_with_source(
+                    let result = connect_websocket_with_source(cache, 
                         tcp_ws_url,
                         mode,
                         uplink.fwmark,
@@ -469,7 +472,7 @@ impl UplinkManager {
                     };
                     let mode = self.effective_udp_ws_mode(index).await;
                     let is_http1 = matches!(mode, WsTransportMode::Http1);
-                    let result = connect_websocket_with_source(
+                    let result = connect_websocket_with_source(cache, 
                         url,
                         mode,
                         uplink.fwmark,

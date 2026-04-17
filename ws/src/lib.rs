@@ -109,7 +109,17 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     } else {
         None
     };
-    let registry = UplinkRegistry::new_with_state(config.groups.clone(), state_store).await?;
+    // Shared DNS cache used by every transport resolve path. Owned by
+    // AppConfig so the runtime paths receive the same Arc<DnsCache>.
+    config.dns_cache = Some(std::sync::Arc::new(
+        outline_transport::DnsCache::new(outline_transport::DEFAULT_DNS_CACHE_TTL),
+    ));
+    let dns_cache = config
+        .dns_cache
+        .clone()
+        .expect("dns_cache just initialised");
+    let registry =
+        UplinkRegistry::new_with_state(config.groups.clone(), state_store, dns_cache).await?;
     registry.initialize_strict_active_selection().await;
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();
@@ -138,7 +148,11 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         );
 
         if let Some(tun) = config.tun.clone() {
-            crate::tun::spawn_tun_loop(tun, tun_routing)
+            let tun_dns_cache = config
+                .dns_cache
+                .clone()
+                .expect("dns_cache initialised above");
+            crate::tun::spawn_tun_loop(tun, tun_routing, tun_dns_cache)
                 .await
                 .context("failed to start TUN loop")?;
         }

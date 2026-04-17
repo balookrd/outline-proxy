@@ -59,6 +59,10 @@ pub(super) struct UplinkManagerInner {
     /// Optional persistent state store.  When `Some`, active-uplink changes
     /// are flushed to disk so they survive process restarts.
     pub(super) state_store: Option<Arc<StateStore>>,
+    /// Shared DNS cache used by all transport resolve paths (probe, standby,
+    /// reconnect). Owned at app scope by `AppConfig::dns_cache` and cloned
+    /// into every manager at construction time.
+    pub(super) dns_cache: Arc<outline_transport::DnsCache>,
 }
 
 impl UplinkManagerInner {

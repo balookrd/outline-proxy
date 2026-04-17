@@ -33,7 +33,10 @@ pub struct UplinkRegistry {
 }
 
 impl UplinkRegistry {
-    pub fn new(groups: Vec<UplinkGroupConfig>) -> Result<Self> {
+    pub fn new(
+        groups: Vec<UplinkGroupConfig>,
+        dns_cache: Arc<outline_transport::DnsCache>,
+    ) -> Result<Self> {
         if groups.is_empty() {
             bail!("no uplink groups configured");
         }
@@ -49,6 +52,7 @@ impl UplinkRegistry {
                 group.uplinks,
                 group.probe,
                 group.load_balancing,
+                Arc::clone(&dns_cache),
             )?;
             managed.push(UplinkGroup { name: group.name, manager });
         }
@@ -60,6 +64,7 @@ impl UplinkRegistry {
     pub async fn new_with_state(
         groups: Vec<UplinkGroupConfig>,
         state_store: Option<Arc<StateStore>>,
+        dns_cache: Arc<outline_transport::DnsCache>,
     ) -> Result<Self> {
         if groups.is_empty() {
             bail!("no uplink groups configured");
@@ -87,6 +92,7 @@ impl UplinkRegistry {
                 group.uplinks,
                 group.probe,
                 group.load_balancing,
+                Arc::clone(&dns_cache),
                 state_store.clone(),
                 init_global,
                 init_tcp,

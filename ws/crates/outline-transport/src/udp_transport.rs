@@ -16,7 +16,7 @@ use shadowsocks_crypto::{
 use shadowsocks_crypto::CipherKind;
 use crate::config_types::WsTransportMode;
 
-use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard, connect_websocket_with_source};
+use super::{AbortOnDrop, DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 
 type WsStream = SplitStream<WsTransportStream>;
 
@@ -170,6 +170,7 @@ impl UdpWsTransport {
 
     #[allow(clippy::too_many_arguments)]
     pub async fn connect(
+        cache: &DnsCache,
         url: &Url,
         mode: WsTransportMode,
         cipher: CipherKind,
@@ -179,7 +180,7 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let ws_stream = connect_websocket_with_source(url, mode, fwmark, ipv6_first, source)
+        let ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, source)
             .await
             .with_context(|| format!("failed to connect to {}", url))?;
         Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)
