@@ -11,8 +11,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
 
 use crate::crypto::{
-    SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, encrypt_into, increment_nonce,
-    validate_ss2022_timestamp,
+    AeadCipher, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce, validate_ss2022_timestamp,
 };
 use crate::types::{CipherKind, TargetAddr};
 
@@ -55,8 +54,9 @@ struct Ss2022TcpReaderState {
 pub struct TcpShadowsocksWriter {
     transport: TcpWriteTransport,
     cipher: CipherKind,
-    /// Derived session subkey.  Active portion: `&key[..cipher.key_len()]`.
-    key: [u8; 32],
+    /// Session cipher instance with the key schedule pre-computed; reused for
+    /// every frame to avoid per-chunk AES key expansion.
+    cipher_state: AeadCipher,
     nonce: [u8; 12],
     pending_salt: Option<[u8; 32]>,
     ss2022: Option<Ss2022TcpWriterState>,
@@ -68,9 +68,9 @@ pub struct TcpShadowsocksReader {
     cipher: CipherKind,
     /// Master key stored on the stack.  Active portion: `&master_key[..cipher.key_len()]`.
     master_key: [u8; 32],
-    /// Lazily-derived session subkey (set after reading the response salt).
-    /// Active portion: `&key[..cipher.key_len()]`.
-    key: Option<[u8; 32]>,
+    /// Lazily-initialised session cipher (built after reading the response
+    /// salt and deriving the subkey).  `None` until the first chunk arrives.
+    cipher_state: Option<AeadCipher>,
     nonce: [u8; 12],
     buffer: Vec<u8>,
     ss2022: Option<Ss2022TcpReaderState>,
@@ -194,6 +194,8 @@ impl TcpShadowsocksWriter {
             }
         });
 
+        let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
+        let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok((
             Self {
                 transport: TcpWriteTransport::Websocket {
@@ -201,7 +203,7 @@ impl TcpShadowsocksWriter {
                     _writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
                 cipher,
-                key: derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?,
+                cipher_state,
                 nonce: [0u8; 12],
                 pending_salt: Some(salt),
                 ss2022: cipher
@@ -221,10 +223,12 @@ impl TcpShadowsocksWriter {
     ) -> Result<Self> {
         let mut salt = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
+        let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
+        let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok(Self {
             transport: TcpWriteTransport::Socket { writer },
             cipher,
-            key: derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?,
+            cipher_state,
             nonce: [0u8; 12],
             pending_salt: Some(salt),
             ss2022: cipher
@@ -254,10 +258,9 @@ impl TcpShadowsocksWriter {
                 .context("invalid ss2022 initial target header")?
                 .0;
             let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
-            let key = &self.key[..self.cipher.key_len()];
-            let encrypted_fixed = encrypt(self.cipher, key, &self.nonce, &fixed_header)?;
+            let encrypted_fixed = self.cipher_state.encrypt(&self.nonce, &fixed_header)?;
             increment_nonce(&mut self.nonce)?;
-            let encrypted_variable = encrypt(self.cipher, key, &self.nonce, &variable_header)?;
+            let encrypted_variable = self.cipher_state.encrypt(&self.nonce, &variable_header)?;
             increment_nonce(&mut self.nonce)?;
 
             let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
@@ -291,11 +294,10 @@ impl TcpShadowsocksWriter {
         if let Some(salt) = self.pending_salt.take() {
             frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
         }
-        let key = &self.key[..self.cipher.key_len()];
         let len = (payload.len() as u16).to_be_bytes();
-        encrypt_into(self.cipher, key, &self.nonce, &len, &mut frame)?;
+        self.cipher_state.encrypt_into(&self.nonce, &len, &mut frame)?;
         increment_nonce(&mut self.nonce)?;
-        encrypt_into(self.cipher, key, &self.nonce, payload, &mut frame)?;
+        self.cipher_state.encrypt_into(&self.nonce, payload, &mut frame)?;
         increment_nonce(&mut self.nonce)?;
         self.write_frame(frame).await?;
         Ok(())
@@ -388,7 +390,7 @@ impl TcpShadowsocksReader {
             transport: TcpReadTransport::Websocket { stream, ctrl_tx },
             cipher,
             master_key: mk,
-            key: None,
+            cipher_state: None,
             nonce: [0u8; 12],
             buffer: Vec::new(),
             ss2022: None,
@@ -409,7 +411,7 @@ impl TcpShadowsocksReader {
             transport: TcpReadTransport::Socket { reader },
             cipher,
             master_key: mk,
-            key: None,
+            cipher_state: None,
             nonce: [0u8; 12],
             buffer: Vec::new(),
             ss2022: None,
@@ -427,13 +429,13 @@ impl TcpShadowsocksReader {
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
-        if self.key.is_none() {
+        if self.cipher_state.is_none() {
             let salt = self.read_exact_from_ws(self.cipher.salt_len()).await?;
-            self.key =
-                Some(derive_subkey(self.cipher, &self.master_key[..self.cipher.key_len()], &salt)?);
+            let key =
+                derive_subkey(self.cipher, &self.master_key[..self.cipher.key_len()], &salt)?;
+            self.cipher_state =
+                Some(AeadCipher::new(self.cipher, &key[..self.cipher.key_len()])?);
         }
-        // Option<[u8; 32]> is Copy — no heap allocation on this read.
-        let key = self.key.ok_or_else(|| anyhow!("missing derived key"))?;
 
         let need_ss2022_response_header =
             self.ss2022.as_ref().is_some_and(|state| !state.response_header_read);
@@ -443,35 +445,28 @@ impl TcpShadowsocksReader {
                 .as_ref()
                 .map(|state| (state.request_salt, self.cipher.salt_len()))
                 .ok_or_else(|| anyhow!("missing ss2022 request salt"))?;
-            {
-                let key_slice = &key[..self.cipher.key_len()];
-                let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
-                let encrypted_header = self.read_exact_from_ws(header_len).await?;
-                let header = decrypt(self.cipher, key_slice, &self.nonce, &encrypted_header)?;
-                increment_nonce(&mut self.nonce)?;
-                let payload_len =
-                    parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header)?;
-                let encrypted_payload =
-                    self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
-                let payload = decrypt(self.cipher, key_slice, &self.nonce, &encrypted_payload)?;
-                increment_nonce(&mut self.nonce)?;
-                if let Some(state) = &mut self.ss2022 {
-                    state.response_header_read = true;
-                }
-                if !payload.is_empty() {
-                    return Ok(payload);
-                }
-                // Empty initial payload is valid in SS2022 (the server had no
-                // target data to bundle yet).  Fall through to read the first
-                // real data frame so callers never see an empty-payload return
-                // that would be misinterpreted as EOF.
+            let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
+            let encrypted_header = self.read_exact_from_ws(header_len).await?;
+            let header = self.decrypt_with_session(&encrypted_header)?;
+            let payload_len =
+                parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header)?;
+            let encrypted_payload =
+                self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
+            let payload = self.decrypt_with_session(&encrypted_payload)?;
+            if let Some(state) = &mut self.ss2022 {
+                state.response_header_read = true;
             }
+            if !payload.is_empty() {
+                return Ok(payload);
+            }
+            // Empty initial payload is valid in SS2022 (the server had no
+            // target data to bundle yet).  Fall through to read the first
+            // real data frame so callers never see an empty-payload return
+            // that would be misinterpreted as EOF.
         }
 
-        let key_slice = &key[..self.cipher.key_len()];
         let encrypted_len = self.read_exact_from_ws(2 + SHADOWSOCKS_TAG_LEN).await?;
-        let len = decrypt(self.cipher, key_slice, &self.nonce, &encrypted_len)?;
-        increment_nonce(&mut self.nonce)?;
+        let len = self.decrypt_with_session(&encrypted_len)?;
 
         if len.len() != 2 {
             bail!("invalid decrypted length block");
@@ -482,9 +477,20 @@ impl TcpShadowsocksReader {
         }
 
         let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
-        let payload = decrypt(self.cipher, key_slice, &self.nonce, &encrypted_payload)?;
+        self.decrypt_with_session(&encrypted_payload)
+    }
+
+    /// Decrypt `ciphertext` with the session cipher and advance the nonce.
+    /// Kept as a tight helper so the session-cipher borrow does not straddle
+    /// the surrounding `read_exact_from_ws` `&mut self` calls.
+    fn decrypt_with_session(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
+        let plaintext = self
+            .cipher_state
+            .as_ref()
+            .ok_or_else(|| anyhow!("missing session cipher"))?
+            .decrypt(&self.nonce, ciphertext)?;
         increment_nonce(&mut self.nonce)?;
-        Ok(payload)
+        Ok(plaintext)
     }
 
     async fn read_exact_from_ws(&mut self, len: usize) -> Result<Vec<u8>> {

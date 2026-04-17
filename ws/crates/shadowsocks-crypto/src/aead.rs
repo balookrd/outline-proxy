@@ -8,37 +8,106 @@ use crate::cipher_kind::CipherKind;
 pub const SHADOWSOCKS_TAG_LEN: usize = 16;
 pub const SHADOWSOCKS_MAX_PAYLOAD: usize = 0xffff;
 
+/// A pre-initialised AEAD cipher instance.
+///
+/// Constructing an `Aes128Gcm` / `Aes256Gcm` / `ChaCha20Poly1305` from a key
+/// performs the per-key setup (AES key expansion, etc.). Doing that once per
+/// session and then reusing the instance for every chunk avoids the setup
+/// cost on the hot path — `TcpShadowsocksWriter::send_payload_frame` encrypts
+/// twice per frame (length block + payload), so an active session performs
+/// this key setup thousands of times over its lifetime without an instance
+/// cache.
+pub enum AeadCipher {
+    Chacha(ChaCha20Poly1305),
+    Aes128(Aes128Gcm),
+    Aes256(Aes256Gcm),
+}
+
+impl AeadCipher {
+    pub fn new(cipher: CipherKind, key: &[u8]) -> Result<Self> {
+        match cipher {
+            CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => Ok(
+                Self::Chacha(ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?),
+            ),
+            CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => Ok(Self::Aes128(
+                Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?,
+            )),
+            CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => Ok(Self::Aes256(
+                Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?,
+            )),
+        }
+    }
+
+    pub fn encrypt(&self, nonce: &[u8; 12], payload: &[u8]) -> Result<Vec<u8>> {
+        let mut buffer = payload.to_vec();
+        let tag = match self {
+            Self::Chacha(c) => c
+                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer)
+                .map_err(|_| anyhow!("chacha20 encryption failed"))?,
+            Self::Aes128(c) => c
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
+                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?,
+            Self::Aes256(c) => c
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
+                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?,
+        };
+        buffer.extend_from_slice(&tag);
+        Ok(buffer)
+    }
+
+    /// Encrypt `payload` in-place into `out`, appending ciphertext + tag.
+    pub fn encrypt_into(&self, nonce: &[u8; 12], payload: &[u8], out: &mut Vec<u8>) -> Result<()> {
+        let start = out.len();
+        out.extend_from_slice(payload);
+        let tag = match self {
+            Self::Chacha(c) => c
+                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("chacha20 encryption failed"))?,
+            Self::Aes128(c) => c
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?,
+            Self::Aes256(c) => c
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?,
+        };
+        out.extend_from_slice(&tag);
+        Ok(())
+    }
+
+    pub fn decrypt(&self, nonce: &[u8; 12], payload: &[u8]) -> Result<Vec<u8>> {
+        if payload.len() < SHADOWSOCKS_TAG_LEN {
+            bail!("ciphertext is shorter than tag");
+        }
+        let split_at = payload.len() - SHADOWSOCKS_TAG_LEN;
+        let mut buffer = payload[..split_at].to_vec();
+        let tag = &payload[split_at..];
+        match self {
+            Self::Chacha(c) => c
+                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .map_err(|_| anyhow!("chacha20 decryption failed"))?,
+            Self::Aes128(c) => c
+                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .map_err(|_| anyhow!("aes-128-gcm decryption failed"))?,
+            Self::Aes256(c) => c
+                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .map_err(|_| anyhow!("aes-256-gcm decryption failed"))?,
+        };
+        Ok(buffer)
+    }
+}
+
+/// One-shot encrypt — constructs a fresh [`AeadCipher`] for every call.
+/// Prefer [`AeadCipher::new`] + [`AeadCipher::encrypt`] on the hot path so the
+/// per-key setup is amortised across many frames; this helper is kept for
+/// call sites where a session cipher would add no benefit (UDP packets that
+/// use a per-datagram key).
 pub fn encrypt(
     cipher: CipherKind,
     key: &[u8],
     nonce: &[u8; 12],
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let mut buffer = payload.to_vec();
-    match cipher {
-        CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
-            let cipher = ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?;
-            let tag = cipher
-                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("chacha20 encryption failed"))?;
-            buffer.extend_from_slice(&tag);
-        },
-        CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
-            let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
-            let tag = cipher
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?;
-            buffer.extend_from_slice(&tag);
-        },
-        CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
-            let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
-            let tag = cipher
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?;
-            buffer.extend_from_slice(&tag);
-        },
-    }
-    Ok(buffer)
+    AeadCipher::new(cipher, key)?.encrypt(nonce, payload)
 }
 
 pub fn decrypt(
@@ -47,56 +116,9 @@ pub fn decrypt(
     nonce: &[u8; 12],
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    if payload.len() < SHADOWSOCKS_TAG_LEN {
-        bail!("ciphertext is shorter than tag");
-    }
-
-    let split_at = payload.len() - SHADOWSOCKS_TAG_LEN;
-    let mut buffer = payload[..split_at].to_vec();
-    let tag = &payload[split_at..];
-
-    match cipher {
-        CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
-            let cipher = ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?;
-            cipher
-                .decrypt_in_place_detached(
-                    ChaNonce::from_slice(nonce),
-                    b"",
-                    &mut buffer,
-                    tag.into(),
-                )
-                .map_err(|_| anyhow!("chacha20 decryption failed"))?;
-        },
-        CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
-            let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
-            cipher
-                .decrypt_in_place_detached(
-                    AesNonce::from_slice(nonce),
-                    b"",
-                    &mut buffer,
-                    tag.into(),
-                )
-                .map_err(|_| anyhow!("aes-128-gcm decryption failed"))?;
-        },
-        CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
-            let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
-            cipher
-                .decrypt_in_place_detached(
-                    AesNonce::from_slice(nonce),
-                    b"",
-                    &mut buffer,
-                    tag.into(),
-                )
-                .map_err(|_| anyhow!("aes-256-gcm decryption failed"))?;
-        },
-    }
-    Ok(buffer)
+    AeadCipher::new(cipher, key)?.decrypt(nonce, payload)
 }
 
-/// Encrypt `payload` in-place into `out`, appending ciphertext + tag.
-/// `out` may already contain data (e.g. a frame being built); encryption
-/// appends after whatever is there.  This avoids the two intermediate
-/// allocations that `encrypt` + `Vec::extend_from_slice` would require.
 pub fn encrypt_into(
     cipher: CipherKind,
     key: &[u8],
@@ -104,30 +126,7 @@ pub fn encrypt_into(
     payload: &[u8],
     out: &mut Vec<u8>,
 ) -> Result<()> {
-    let start = out.len();
-    out.extend_from_slice(payload);
-    let tag = match cipher {
-        CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
-            let cipher = ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?;
-            cipher
-                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("chacha20 encryption failed"))?
-        },
-        CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
-            let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
-            cipher
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?
-        },
-        CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
-            let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
-            cipher
-                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?
-        },
-    };
-    out.extend_from_slice(&tag);
-    Ok(())
+    AeadCipher::new(cipher, key)?.encrypt_into(nonce, payload, out)
 }
 
 /// Increments the AEAD nonce by 1 (little-endian, as required by Shadowsocks).
@@ -146,7 +145,6 @@ pub fn increment_nonce(nonce: &mut [u8; 12]) -> Result<()> {
             return Ok(());
         }
     }
-    // Every byte carried: the nonce has wrapped around to [0; 12].
     bail!(
         "AEAD nonce overflow: nonce wrapped to zero — \
          close this connection to prevent (key, nonce) reuse"
