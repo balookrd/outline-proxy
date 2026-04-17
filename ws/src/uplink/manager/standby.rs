@@ -10,7 +10,7 @@ use crate::metrics;
 use crate::transport::{
     AnyWsStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
-use crate::types::UplinkTransport;
+use crate::types::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::is_expected_standby_probe_failure;
 use super::super::types::{TransportKind, UplinkCandidate, UplinkManager};
@@ -439,13 +439,17 @@ impl UplinkManager {
                 break;
             }
 
-            let ws = match transport {
+            // Carry the configured mode alongside the dial result so the Http1
+        // fallback guard below can distinguish "explicitly Http1" (pool it)
+        // from "H2/H3 fell back to Http1" (discard, avoid FD accumulation).
+        let (ws, mode_is_http1) = match transport {
                 TransportKind::Tcp => {
                     let mode = self.effective_tcp_ws_mode(index).await;
+                    let is_http1 = matches!(mode, WsTransportMode::Http1);
                     let Some(tcp_ws_url) = uplink.tcp_ws_url.as_ref() else {
                         break;
                     };
-                    connect_websocket_with_source(
+                    let result = connect_websocket_with_source(
                         tcp_ws_url,
                         mode,
                         uplink.fwmark,
@@ -453,7 +457,8 @@ impl UplinkManager {
                         "standby_tcp",
                     )
                     .await
-                    .with_context(|| format!("failed to preconnect to {}", tcp_ws_url))
+                    .with_context(|| format!("failed to preconnect to {}", tcp_ws_url));
+                    (result, is_http1)
                 },
                 TransportKind::Udp => {
                     if uplink.transport != UplinkTransport::Websocket {
@@ -463,7 +468,8 @@ impl UplinkManager {
                         break;
                     };
                     let mode = self.effective_udp_ws_mode(index).await;
-                    connect_websocket_with_source(
+                    let is_http1 = matches!(mode, WsTransportMode::Http1);
+                    let result = connect_websocket_with_source(
                         url,
                         mode,
                         uplink.fwmark,
@@ -471,19 +477,21 @@ impl UplinkManager {
                         "standby_udp",
                     )
                     .await
-                    .with_context(|| format!("failed to preconnect to {}", url))
+                    .with_context(|| format!("failed to preconnect to {}", url));
+                    (result, is_http1)
                 },
             };
 
             match ws {
                 Ok(ws) => {
                     // H2/H3 connections are shared (one socket per server, N
-                    // streams per socket), so pooling them is cheap.  HTTP/1
-                    // fallback streams each own their own TCP socket: pooling
-                    // them defeats the whole point and accumulates FDs silently
-                    // whenever H2 is temporarily unavailable.  Bail out instead
-                    // so the caller can retry or let the connection drop.
-                    if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) {
+                    // streams per socket), so pooling them is cheap.  When
+                    // H2/H3 is configured but the server fell back to Http1,
+                    // each "standby" slot owns its own TCP socket — pooling
+                    // defeats the purpose and accumulates FDs silently.  Bail
+                    // out in that case.  When Http1 is *explicitly* configured,
+                    // pooling a single Http1 connection is the intended behavior.
+                    if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
                         break;
                     }
 
@@ -545,6 +553,20 @@ impl UplinkManager {
         }
 
         let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        // Determine if this transport is explicitly configured as Http1.
+        // Http1 connections that slipped in as H2/H3 fallbacks must be evicted;
+        // those present because Http1 is the configured mode should be
+        // validated normally via the timeout-peek below.
+        let mode_is_http1 = match transport {
+            TransportKind::Tcp => matches!(
+                self.effective_tcp_ws_mode(index).await,
+                WsTransportMode::Http1
+            ),
+            TransportKind::Udp => matches!(
+                self.effective_udp_ws_mode(index).await,
+                WsTransportMode::Http1
+            ),
+        };
         let pool = &self.inner.standby_pools[index];
         let mut drained = std::collections::VecDeque::new();
         {
@@ -562,12 +584,12 @@ impl UplinkManager {
         let mut alive = std::collections::VecDeque::with_capacity(drained.len());
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
-            // Http1 connections each own their own TCP socket.  Even though
-            // `is_connection_alive()` always returns true for Http1, keeping
-            // them in the pool would accumulate one FD per pool slot instead of
-            // sharing the single underlying TCP socket the way H2/H3 do.  Evict
-            // any that slipped in before the refill_pool guard was added.
-            if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) {
+            // Evict Http1 connections that are present as H2/H3 fallbacks.
+            // These each own their own TCP socket, so keeping them in the pool
+            // accumulates FDs without sharing the underlying connection.
+            // When Http1 is the explicitly configured mode, skip eviction and
+            // let the standard timeout-peek decide liveness instead.
+            if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
                 debug!(
                     uplink = %uplink.name,
                     transport = ?transport,
