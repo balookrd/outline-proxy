@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Mutex;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
 const TTL: Duration = Duration::from_secs(60);
@@ -11,16 +11,16 @@ struct Entry {
 }
 
 pub(crate) struct DnsCache {
-    inner: Mutex<HashMap<(String, u16), Entry>>,
+    inner: RwLock<HashMap<(String, u16), Entry>>,
 }
 
 impl DnsCache {
     pub(crate) fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self { inner: RwLock::new(HashMap::new()) }
     }
 
     pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.read().unwrap();
         let entry = map.get(&(host.to_string(), port))?;
         if Instant::now() < entry.expires_at {
             Some(entry.addrs.clone())
@@ -30,12 +30,12 @@ impl DnsCache {
     }
 
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
-        let map = self.inner.lock().unwrap();
+        let map = self.inner.read().unwrap();
         map.get(&(host.to_string(), port)).map(|entry| entry.addrs.clone())
     }
 
     pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {
-        let mut map = self.inner.lock().unwrap();
+        let mut map = self.inner.write().unwrap();
         map.insert((host.to_string(), port), Entry { addrs, expires_at: Instant::now() + TTL });
     }
 }
