@@ -11,7 +11,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
 
 use crate::crypto::{
-    SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, increment_nonce,
+    SHADOWSOCKS_TAG_LEN, decrypt, derive_subkey, encrypt, encrypt_into, increment_nonce,
     validate_ss2022_timestamp,
 };
 use crate::types::{CipherKind, TargetAddr};
@@ -43,12 +43,12 @@ enum TcpReadTransport {
 }
 
 struct Ss2022TcpWriterState {
-    request_salt: Vec<u8>,
+    request_salt: [u8; 32],
     header_sent: bool,
 }
 
 struct Ss2022TcpReaderState {
-    request_salt: Vec<u8>,
+    request_salt: [u8; 32],
     response_header_read: bool,
 }
 
@@ -57,7 +57,7 @@ pub struct TcpShadowsocksWriter {
     cipher: CipherKind,
     key: Vec<u8>,
     nonce: [u8; 12],
-    pending_salt: Option<Vec<u8>>,
+    pending_salt: Option<[u8; 32]>,
     ss2022: Option<Ss2022TcpWriterState>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
@@ -139,8 +139,8 @@ impl TcpShadowsocksWriter {
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<(Self, mpsc::Sender<Message>)> {
-        let mut salt = vec![0u8; cipher.salt_len()];
-        rand::thread_rng().fill_bytes(&mut salt);
+        let mut salt = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
 
         let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
@@ -190,7 +190,6 @@ impl TcpShadowsocksWriter {
             }
         });
 
-        let request_salt = salt.clone();
         Ok((
             Self {
                 transport: TcpWriteTransport::Websocket {
@@ -198,12 +197,12 @@ impl TcpShadowsocksWriter {
                     _writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
                 cipher,
-                key: derive_subkey(cipher, master_key, &salt)?,
+                key: derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?,
                 nonce: [0u8; 12],
                 pending_salt: Some(salt),
                 ss2022: cipher
                     .is_ss2022()
-                    .then_some(Ss2022TcpWriterState { request_salt, header_sent: false }),
+                    .then_some(Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
                 _lifetime: lifetime,
             },
             ctrl_tx,
@@ -216,14 +215,14 @@ impl TcpShadowsocksWriter {
         master_key: &[u8],
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Result<Self> {
-        let mut salt = vec![0u8; cipher.salt_len()];
-        rand::thread_rng().fill_bytes(&mut salt);
+        let mut salt = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut salt[..cipher.salt_len()]);
         Ok(Self {
             transport: TcpWriteTransport::Socket { writer },
             cipher,
-            key: derive_subkey(cipher, master_key, &salt)?,
+            key: derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?,
             nonce: [0u8; 12],
-            pending_salt: Some(salt.clone()),
+            pending_salt: Some(salt),
             ss2022: cipher
                 .is_ss2022()
                 .then_some(Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
@@ -231,8 +230,8 @@ impl TcpShadowsocksWriter {
         })
     }
 
-    pub fn request_salt(&self) -> Option<&[u8]> {
-        self.ss2022.as_ref().map(|state| state.request_salt.as_slice())
+    pub fn request_salt(&self) -> Option<[u8; 32]> {
+        self.ss2022.as_ref().map(|state| state.request_salt)
     }
 
     pub fn supports_half_close(&self) -> bool {
@@ -245,32 +244,33 @@ impl TcpShadowsocksWriter {
         }
 
         if let Some(state) = &mut self.ss2022
-            && !state.header_sent {
-                let target = TargetAddr::from_wire_bytes(payload)
-                    .context("invalid ss2022 initial target header")?
-                    .0;
-                let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
-                let encrypted_fixed = encrypt(self.cipher, &self.key, &self.nonce, &fixed_header)?;
-                increment_nonce(&mut self.nonce)?;
-                let encrypted_variable =
-                    encrypt(self.cipher, &self.key, &self.nonce, &variable_header)?;
-                increment_nonce(&mut self.nonce)?;
+            && !state.header_sent
+        {
+            let target = TargetAddr::from_wire_bytes(payload)
+                .context("invalid ss2022 initial target header")?
+                .0;
+            let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
+            let encrypted_fixed = encrypt(self.cipher, &self.key, &self.nonce, &fixed_header)?;
+            increment_nonce(&mut self.nonce)?;
+            let encrypted_variable =
+                encrypt(self.cipher, &self.key, &self.nonce, &variable_header)?;
+            increment_nonce(&mut self.nonce)?;
 
-                let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
-                let mut frame = Vec::with_capacity(
-                    pending_salt_len + encrypted_fixed.len() + encrypted_variable.len(),
-                );
-                if let Some(salt) = self.pending_salt.take() {
-                    state.request_salt = salt.clone();
-                    frame.extend_from_slice(&salt);
-                }
-                frame.extend_from_slice(&encrypted_fixed);
-                frame.extend_from_slice(&encrypted_variable);
-                state.header_sent = true;
-
-                self.write_frame(frame).await?;
-                return Ok(());
+            let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
+            let mut frame = Vec::with_capacity(
+                salt_len + encrypted_fixed.len() + encrypted_variable.len(),
+            );
+            if let Some(salt) = self.pending_salt.take() {
+                state.request_salt = salt;
+                frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
             }
+            frame.extend_from_slice(&encrypted_fixed);
+            frame.extend_from_slice(&encrypted_variable);
+            state.header_sent = true;
+
+            self.write_frame(frame).await?;
+            return Ok(());
+        }
 
         for chunk in payload.chunks(self.cipher.max_payload_len()) {
             self.send_payload_frame(chunk).await?;
@@ -279,22 +279,19 @@ impl TcpShadowsocksWriter {
     }
 
     async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
-        let len = (payload.len() as u16).to_be_bytes();
-        let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
-        increment_nonce(&mut self.nonce)?;
-
-        let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
-        increment_nonce(&mut self.nonce)?;
-
-        let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
-        let mut frame =
-            Vec::with_capacity(pending_salt_len + encrypted_len.len() + encrypted_payload.len());
+        let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
+        let frame_capacity = salt_len
+            + 2 + SHADOWSOCKS_TAG_LEN   // encrypted length field
+            + payload.len() + SHADOWSOCKS_TAG_LEN; // encrypted payload
+        let mut frame = Vec::with_capacity(frame_capacity);
         if let Some(salt) = self.pending_salt.take() {
-            frame.extend_from_slice(&salt);
+            frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
         }
-        frame.extend_from_slice(&encrypted_len);
-        frame.extend_from_slice(&encrypted_payload);
-
+        let len = (payload.len() as u16).to_be_bytes();
+        encrypt_into(self.cipher, &self.key, &self.nonce, &len, &mut frame)?;
+        increment_nonce(&mut self.nonce)?;
+        encrypt_into(self.cipher, &self.key, &self.nonce, payload, &mut frame)?;
+        increment_nonce(&mut self.nonce)?;
         self.write_frame(frame).await?;
         Ok(())
     }
@@ -412,7 +409,7 @@ impl TcpShadowsocksReader {
         }
     }
 
-    pub(crate) fn with_request_salt(mut self, request_salt: Option<Vec<u8>>) -> Self {
+    pub(crate) fn with_request_salt(mut self, request_salt: Option<[u8; 32]>) -> Self {
         self.ss2022 = request_salt.map(|request_salt| Ss2022TcpReaderState {
             request_salt,
             response_header_read: false,
@@ -430,10 +427,10 @@ impl TcpShadowsocksReader {
         let need_ss2022_response_header =
             self.ss2022.as_ref().is_some_and(|state| !state.response_header_read);
         if need_ss2022_response_header {
-            let request_salt = self
+            let (request_salt, salt_len) = self
                 .ss2022
                 .as_ref()
-                .map(|state| state.request_salt.clone())
+                .map(|state| (state.request_salt, self.cipher.salt_len()))
                 .ok_or_else(|| anyhow!("missing ss2022 request salt"))?;
             {
                 let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
@@ -441,7 +438,7 @@ impl TcpShadowsocksReader {
                 let header = decrypt(self.cipher, &key, &self.nonce, &encrypted_header)?;
                 increment_nonce(&mut self.nonce)?;
                 let payload_len =
-                    parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
+                    parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header)?;
                 let encrypted_payload =
                     self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
                 let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;

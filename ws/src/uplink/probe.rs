@@ -389,7 +389,7 @@ pub(super) async fn run_http_probe(
                     Arc::clone(&lifetime),
                 )
                 .await?;
-                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let request_salt = writer.request_salt();
                 let reader = TcpShadowsocksReader::new(
                     ws_stream,
                     uplink.cipher,
@@ -424,7 +424,7 @@ pub(super) async fn run_http_probe(
                     &master_key,
                     Arc::clone(&lifetime),
                 )?;
-                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let request_salt = writer.request_salt();
                 let reader = TcpShadowsocksReader::new_socket(
                     reader_half,
                     uplink.cipher,
@@ -550,7 +550,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                     Arc::clone(&lifetime),
                 )
                 .await?;
-                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let request_salt = writer.request_salt();
                 let reader = TcpShadowsocksReader::new(
                     ws_stream,
                     uplink.cipher,
@@ -585,7 +585,7 @@ pub(super) async fn run_tcp_tunnel_probe(
                     &master_key,
                     Arc::clone(&lifetime),
                 )?;
-                let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+                let request_salt = writer.request_salt();
                 let reader = TcpShadowsocksReader::new_socket(
                     reader_half,
                     uplink.cipher,

@@ -1311,7 +1311,7 @@ async fn handle_test_tcp_upstream(
     let lifetime = UpstreamTransportGuard::new("test", "tcp");
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(sink, cipher, &master_key, Arc::clone(&lifetime)).await?;
-    let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+    let request_salt = writer.request_salt();
     let mut reader = TcpShadowsocksReader::new(stream, cipher, &master_key, lifetime, ctrl_tx)
         .with_request_salt(request_salt);
 

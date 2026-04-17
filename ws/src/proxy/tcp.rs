@@ -1174,7 +1174,7 @@ async fn do_tcp_ss_setup(
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let request_salt = writer.request_salt().map(|salt| salt.to_vec());
+    let request_salt = writer.request_salt();
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt);
@@ -1211,7 +1211,7 @@ async fn do_tcp_ss_setup_socket(
     )?;
     let reader =
         TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-            .with_request_salt(writer.request_salt().map(|salt| salt.to_vec()));
+            .with_request_salt(writer.request_salt());
     let target_wire = target.to_wire_bytes()?;
     writer
         .send_chunk(&target_wire)
