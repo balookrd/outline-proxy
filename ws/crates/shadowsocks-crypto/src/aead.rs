@@ -3,7 +3,7 @@ use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, Nonce as AesNonce};
 use anyhow::{Context, Result, anyhow, bail};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaNonce};
 
-use crate::types::CipherKind;
+use crate::cipher_kind::CipherKind;
 
 pub const SHADOWSOCKS_TAG_LEN: usize = 16;
 pub const SHADOWSOCKS_MAX_PAYLOAD: usize = 0xffff;

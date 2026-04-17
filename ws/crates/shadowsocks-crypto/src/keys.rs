@@ -3,7 +3,7 @@ use base64::Engine;
 use hkdf::Hkdf;
 use sha1::Sha1;
 
-use crate::types::CipherKind;
+use crate::cipher_kind::CipherKind;
 
 pub const SHADOWSOCKS_INFO: &[u8] = b"ss-subkey";
 pub const SHADOWSOCKS_2022_INFO: &str = "shadowsocks 2022 session subkey";

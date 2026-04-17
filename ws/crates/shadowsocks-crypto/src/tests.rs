@@ -1,6 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::types::CipherKind;
+use crate::cipher_kind::CipherKind;
 
 use super::aead::increment_nonce;
 use super::keys::evp_bytes_to_key;

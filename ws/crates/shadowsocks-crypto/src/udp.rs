@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 use rand::RngCore;
 
-use crate::types::CipherKind;
+use crate::cipher_kind::CipherKind;
 
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;
