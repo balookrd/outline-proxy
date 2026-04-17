@@ -88,8 +88,19 @@ impl UplinkManager {
         uplinks: Vec<UplinkConfig>,
         probe: ProbeConfig,
         load_balancing: LoadBalancingConfig,
+        dns_cache: Arc<outline_transport::DnsCache>,
     ) -> Result<Self> {
-        Self::new_with_state(group_name, uplinks, probe, load_balancing, None, None, None, None)
+        Self::new_with_state(
+            group_name,
+            uplinks,
+            probe,
+            load_balancing,
+            dns_cache,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Like [`new`] but also accepts a [`StateStore`] for persistence and
@@ -101,6 +112,7 @@ impl UplinkManager {
         uplinks: Vec<UplinkConfig>,
         probe: ProbeConfig,
         load_balancing: LoadBalancingConfig,
+        dns_cache: Arc<outline_transport::DnsCache>,
         state_store: Option<Arc<StateStore>>,
         initial_global_active: Option<String>,
         initial_tcp_active: Option<String>,
@@ -139,6 +151,7 @@ impl UplinkManager {
                 probe_dial_limit: Arc::new(Semaphore::new(probe_max_dials)),
                 probe_wakeup: Arc::new(Notify::new()),
                 state_store,
+                dns_cache,
             }),
         })
     }
@@ -147,6 +160,12 @@ impl UplinkManager {
     /// Prometheus label at metric emission sites.
     pub fn group_name(&self) -> &str {
         &self.inner.group_name
+    }
+
+    /// Shared DNS cache used by every transport resolve path belonging to
+    /// this manager (probe, standby refills, on-demand TCP/UDP connects).
+    pub fn dns_cache(&self) -> &outline_transport::DnsCache {
+        &self.inner.dns_cache
     }
 
     pub fn spawn_warm_standby_loop(&self) {

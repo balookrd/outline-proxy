@@ -94,6 +94,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         groups,
         routing,
         routing_table: None,
+        dns_cache: None,
         metrics,
         #[cfg(feature = "tun")]
         tun,

@@ -28,7 +28,9 @@ fn should_skip_probe_cycle_for_recent_activity(
     tcp_active && tcp_currently_healthy && tcp_no_cooldown
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_probe_attempt_with_timeout(
+    dns_cache: Arc<crate::transport::DnsCache>,
     group: String,
     uplink: Arc<crate::config::UplinkConfig>,
     probe: ProbeConfig,
@@ -44,8 +46,16 @@ async fn run_probe_attempt_with_timeout(
         .saturating_mul(transport_budgets)
         .saturating_add(Duration::from_secs(1));
     let mut probe_task = tokio::spawn(async move {
-        probe_uplink(&group, &uplink, &probe, dial_limit, effective_tcp_mode, effective_udp_mode)
-            .await
+        probe_uplink(
+            &dns_cache,
+            &group,
+            &uplink,
+            &probe,
+            dial_limit,
+            effective_tcp_mode,
+            effective_udp_mode,
+        )
+        .await
     });
     let timeout_sleep = sleep(timeout_duration);
     tokio::pin!(timeout_sleep);
@@ -125,6 +135,7 @@ impl UplinkManager {
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let probe_attempts = probe.attempts.max(1);
             let group_name = self.inner.group_name.clone();
+            let dns_cache = Arc::clone(&self.inner.dns_cache);
             // Use the effective TCP/UDP WS modes so that when H3 is in the
             // downgrade window the probe tests H2 connectivity instead.
             // This prevents the probe from clearing h3_*_downgrade_until
@@ -148,6 +159,7 @@ impl UplinkManager {
                 let mut outcome = Err(anyhow!("no probe attempts"));
                 for attempt in 0..probe_attempts {
                     outcome = run_probe_attempt_with_timeout(
+                        Arc::clone(&dns_cache),
                         group_name.clone(),
                         Arc::clone(&uplink),
                         probe.clone(),
@@ -462,6 +474,7 @@ impl UplinkManager {
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let group_name = self.inner.group_name.clone();
+            let dns_cache = Arc::clone(&self.inner.dns_cache);
             recovery_tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()
@@ -475,6 +488,7 @@ impl UplinkManager {
                     TransportKind::Udp => (uplink.tcp_ws_mode, WsTransportMode::H3),
                 };
                 let outcome = run_probe_attempt_with_timeout(
+                    Arc::clone(&dns_cache),
                     group_name,
                     Arc::clone(&uplink),
                     probe,

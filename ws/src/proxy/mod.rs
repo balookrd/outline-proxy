@@ -48,10 +48,14 @@ pub async fn handle_client(
         SocksRequest::UdpInTcp(_) => "udp_in_tcp",
     });
 
+    let dns_cache = config
+        .dns_cache
+        .clone()
+        .expect("dns_cache initialised in run_with_config");
     match request {
         SocksRequest::Connect(target) => {
             let dispatch = resolve_dispatch(&config, &registry, &target, TransportKind::Tcp).await;
-            tcp::handle_tcp_connect(client, dispatch, target).await
+            tcp::handle_tcp_connect(client, dispatch, target, dns_cache).await
         },
         SocksRequest::UdpAssociate(client_hint) => {
             // UDP associate has no target yet — pick the default group. The

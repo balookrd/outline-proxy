@@ -7,6 +7,8 @@ use anyhow::Result;
 use serde::Deserialize;
 use url::Url;
 
+use outline_transport::DnsCache;
+
 use crate::routing::RoutingTable;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
@@ -34,6 +36,14 @@ pub struct AppConfig {
     /// `routing` is `Some`. Do NOT read this field before `run_with_config` has run
     /// (e.g. in tests that call `load_config` directly) — use `routing` instead.
     pub routing_table: Option<Arc<RoutingTable>>,
+    /// Shared DNS cache used by transport resolve paths.
+    ///
+    /// **Two-phase init contract** (same as `routing_table`): always `None`
+    /// after `load_config` returns; `run_with_config` instantiates an
+    /// `Arc<DnsCache>` with [`outline_transport::DEFAULT_DNS_CACHE_TTL`]
+    /// and stores it here before accepting connections. Runtime paths
+    /// (proxy / tun / uplink) unwrap it once per session.
+    pub dns_cache: Option<Arc<DnsCache>>,
     pub metrics: Option<MetricsConfig>,
     #[cfg(feature = "tun")]
     pub tun: Option<TunConfig>,

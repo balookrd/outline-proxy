@@ -343,11 +343,12 @@ pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
     dispatch: DispatchTarget,
     target: TargetAddr,
+    dns_cache: std::sync::Arc<crate::transport::DnsCache>,
 ) -> Result<()> {
     let uplinks = match dispatch {
         DispatchTarget::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
-            return handle_tcp_direct(client, target, fwmark).await;
+            return handle_tcp_direct(client, target, fwmark, &dns_cache).await;
         },
         DispatchTarget::Drop => {
             info!(target = %target, "TCP route: policy drop");
@@ -902,19 +903,21 @@ async fn handle_tcp_direct(
     mut client: TcpStream,
     target: TargetAddr,
     fwmark: Option<u32>,
+    cache: &crate::transport::DnsCache,
 ) -> Result<()> {
     let addr = match &target {
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
         TargetAddr::Domain(host, port) => crate::transport::resolve_host_with_preference(
+            cache,
             host,
             *port,
             &format!("failed to resolve {target}"),
             false,
         )
         .await?
-        .into_iter()
-        .next()
+        .first()
+        .copied()
         .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
@@ -1105,8 +1108,9 @@ async fn connect_tcp_uplink(
     candidate: &crate::uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
+    let cache = uplinks.dns_cache();
     if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-        let stream = connect_shadowsocks_tcp_with_source(
+        let stream = connect_shadowsocks_tcp_with_source(cache,
             candidate
                 .uplink
                 .tcp_addr

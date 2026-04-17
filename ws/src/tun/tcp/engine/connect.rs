@@ -105,8 +105,9 @@ async fn connect_tcp_uplink(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+    let cache = uplinks.dns_cache();
     if candidate.uplink.transport == UplinkTransport::Shadowsocks {
-        let stream = connect_shadowsocks_tcp_with_source(
+        let stream = connect_shadowsocks_tcp_with_source(cache,
             candidate
                 .uplink
                 .tcp_addr

@@ -207,6 +207,7 @@ impl TunTcpEngine {
                     _ => None,
                 };
                 let addr = match crate::transport::resolve_host_with_preference(
+                    engine.dns_cache(),
                     &format!("{}", target),
                     0, // port already in SocketAddr
                     "resolve direct target",

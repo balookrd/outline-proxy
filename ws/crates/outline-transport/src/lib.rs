@@ -32,6 +32,7 @@ mod udp_transport;
 mod ws_stream;
 
 pub use config_types::{ServerAddr, WsTransportMode};
+pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
@@ -61,15 +62,17 @@ pub async fn gc_shared_connections() {
 }
 
 pub async fn connect_websocket(
+    cache: &DnsCache,
     url: &Url,
     mode: WsTransportMode,
     fwmark: Option<u32>,
     ipv6_first: bool,
 ) -> Result<WsTransportStream> {
-    connect_websocket_with_source(url, mode, fwmark, ipv6_first, "direct").await
+    connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, "direct").await
 }
 
 pub async fn connect_websocket_with_source(
+    cache: &DnsCache,
     url: &Url,
     mode: WsTransportMode,
     fwmark: Option<u32>,
@@ -78,11 +81,11 @@ pub async fn connect_websocket_with_source(
 ) -> Result<WsTransportStream> {
     match mode {
         WsTransportMode::Http1 => {
-            let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+            let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             Ok(WsTransportStream::Http1 { inner: ws_stream })
         },
-        WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
+        WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 Ok(stream)
@@ -94,13 +97,13 @@ pub async fn connect_websocket_with_source(
                     fallback = "http1",
                     "h2 websocket connect failed, falling back"
                 );
-                let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+                let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(WsTransportStream::Http1 { inner: ws_stream })
             },
         },
         #[cfg(feature = "h3")]
-        WsTransportMode::H3 => match connect_websocket_h3(url, fwmark, ipv6_first, source).await {
+        WsTransportMode::H3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 Ok(stream)
@@ -112,7 +115,7 @@ pub async fn connect_websocket_with_source(
                     fallback = "h2",
                     "h3 websocket connect failed, falling back"
                 );
-                match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
+                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         Ok(stream)
@@ -125,7 +128,7 @@ pub async fn connect_websocket_with_source(
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
                         let ws_stream =
-                            connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                         Ok(WsTransportStream::Http1 { inner: ws_stream })
                     },
@@ -135,7 +138,7 @@ pub async fn connect_websocket_with_source(
         #[cfg(not(feature = "h3"))]
         WsTransportMode::H3 => {
             warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
-            match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
+            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                     Ok(stream)
@@ -143,7 +146,7 @@ pub async fn connect_websocket_with_source(
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
                     let ws_stream =
-                        connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
+                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
                     Ok(WsTransportStream::Http1 { inner: ws_stream })
                 },
@@ -153,26 +156,28 @@ pub async fn connect_websocket_with_source(
 }
 
 pub async fn connect_shadowsocks_tcp_with_source(
+    cache: &DnsCache,
     addr: &ServerAddr,
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<TcpStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "tcp");
-    let server_addr = resolve_server_addr(addr, ipv6_first).await?;
+    let server_addr = resolve_server_addr(cache, addr, ipv6_first).await?;
     let stream = connect_tcp_socket(server_addr, fwmark).await?;
     connect_guard.finish("success");
     Ok(stream)
 }
 
 pub async fn connect_shadowsocks_udp_with_source(
+    cache: &DnsCache,
     addr: &ServerAddr,
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<UdpSocket> {
     let mut connect_guard = TransportConnectGuard::new(source, "udp");
-    let server_addr = resolve_server_addr(addr, ipv6_first).await?;
+    let server_addr = resolve_server_addr(cache, addr, ipv6_first).await?;
     let bind_addr = bind_addr_for(server_addr);
     let socket = if fwmark.is_some() {
         UdpSocket::from_std(bind_udp_socket(bind_addr, fwmark)?)
@@ -191,6 +196,7 @@ pub async fn connect_shadowsocks_udp_with_source(
 }
 
 async fn connect_websocket_http1(
+    cache: &DnsCache,
     url: &Url,
     fwmark: Option<u32>,
     ipv6_first: bool,
@@ -202,10 +208,10 @@ async fn connect_websocket_http1(
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let server_addr =
-        resolve_host_with_preference(host, port, "failed to resolve websocket host", ipv6_first)
+        resolve_host_with_preference(cache, host, port, "failed to resolve websocket host", ipv6_first)
             .await?
-            .into_iter()
-            .next()
+            .first()
+            .copied()
             .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
     let ws_stream = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
         let tcp = connect_tcp_socket(server_addr, fwmark).await?;
