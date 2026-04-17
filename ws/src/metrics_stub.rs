@@ -29,14 +29,22 @@ pub fn update_process_memory(
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
-pub struct SessionTracker;
+pub struct SessionTracker {
+    finished: bool,
+}
 
 impl SessionTracker {
-    pub fn finish(self, _success: bool) {}
+    pub fn finish(mut self, _success: bool) {
+        self.finished = true;
+    }
+}
+
+impl Drop for SessionTracker {
+    fn drop(&mut self) {}
 }
 
 pub fn track_session(_protocol: &'static str) -> SessionTracker {
-    SessionTracker
+    SessionTracker { finished: false }
 }
 
 // ── Snapshot ──────────────────────────────────────────────────────────────────
