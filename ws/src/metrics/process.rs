@@ -27,6 +27,15 @@ pub fn init() {
     for kind in ["socket", "pipe", "anon_inode", "regular_file", "other"] {
         METRICS.process_fd_by_type.with_label_values(&[kind]).set(0.0);
     }
+    for protocol in ["tcp", "udp"] {
+        for family in ["ipv4", "ipv6"] {
+            let baseline_state = if protocol == "tcp" { "established" } else { "connected" };
+            METRICS
+                .process_sockets_by_state
+                .with_label_values(&[protocol, family, baseline_state])
+                .set(0);
+        }
+    }
     for source in [
         "direct",
         "socks_tcp",
@@ -200,4 +209,25 @@ pub fn update_process_memory(
         .process_fd_by_type
         .with_label_values(&["other"])
         .set(snapshot.other as f64);
+    if let Some(states) = snapshot.socket_states.as_ref() {
+        // Reset to drop label series whose count dropped to zero (e.g. last
+        // CLOSE_WAIT closed since previous sample). Then re-emit observed rows
+        // plus the always-present zero baseline so panels stay continuous.
+        METRICS.process_sockets_by_state.reset();
+        for protocol in ["tcp", "udp"] {
+            for family in ["ipv4", "ipv6"] {
+                let baseline_state = if protocol == "tcp" { "established" } else { "connected" };
+                METRICS
+                    .process_sockets_by_state
+                    .with_label_values(&[protocol, family, baseline_state])
+                    .set(0);
+            }
+        }
+        for entry in states {
+            METRICS
+                .process_sockets_by_state
+                .with_label_values(&[entry.protocol, entry.family, entry.state])
+                .set(i64::try_from(entry.count).unwrap_or(i64::MAX));
+        }
+    }
 }

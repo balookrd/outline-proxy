@@ -89,6 +89,20 @@ fn render_prometheus_exports_process_memory_metrics() {
             anon_inodes: 5,
             regular_files: 6,
             other: 1,
+            socket_states: Some(vec![
+                crate::memory::SocketStateCount {
+                    protocol: "tcp",
+                    family: "ipv4",
+                    state: "established",
+                    count: 12,
+                },
+                crate::memory::SocketStateCount {
+                    protocol: "tcp",
+                    family: "ipv4",
+                    state: "close_wait",
+                    count: 3,
+                },
+            ]),
         }),
     );
 
@@ -101,6 +115,12 @@ fn render_prometheus_exports_process_memory_metrics() {
     assert!(rendered.contains("outline_ws_rust_process_threads 9"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"socket\"} 20"));
     assert!(rendered.contains("outline_ws_rust_process_fd_by_type{kind=\"pipe\"} 10"));
+    assert!(rendered.contains(
+        "outline_ws_rust_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"established\"} 12"
+    ));
+    assert!(rendered.contains(
+        "outline_ws_rust_process_sockets_by_state{family=\"ipv4\",protocol=\"tcp\",state=\"close_wait\"} 3"
+    ));
 }
 
 #[test]

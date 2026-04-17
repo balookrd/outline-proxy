@@ -1,5 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 #[cfg(target_os = "linux")]
+use std::collections::HashSet;
+#[cfg(target_os = "linux")]
 use std::fs;
 use std::hash::{BuildHasher, Hash};
 use tracing::debug;
@@ -8,7 +10,7 @@ use tracing::info;
 
 const SHRINK_MIN_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ProcessMemorySnapshot {
     pub rss_bytes: Option<u64>,
     pub virtual_bytes: Option<u64>,
@@ -37,7 +39,7 @@ impl Default for ProcessMemorySnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ProcessFdSnapshot {
     pub total: u64,
     pub sockets: u64,
@@ -45,6 +47,23 @@ pub struct ProcessFdSnapshot {
     pub anon_inodes: u64,
     pub regular_files: u64,
     pub other: u64,
+    /// Per-(protocol, family, state) counts of TCP/UDP sockets currently
+    /// owned by this process, derived from `/proc/self/net/{tcp,tcp6,udp,udp6}`
+    /// intersected with the inodes listed in `/proc/self/fd`. `None` means
+    /// the snapshot is unavailable on this platform; an empty `Vec` means it
+    /// was attempted and yielded no rows. `protocol` is `tcp`/`udp`,
+    /// `family` is `ipv4`/`ipv6`, and `state` is one of the lowercase TCP
+    /// state names (`established`, `close_wait`, …) or `connected`/`unconnected`
+    /// for UDP.
+    pub socket_states: Option<Vec<SocketStateCount>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SocketStateCount {
+    pub protocol: &'static str,
+    pub family: &'static str,
+    pub state: &'static str,
+    pub count: u64,
 }
 
 pub fn maybe_shrink_hash_map<K, V, S>(map: &mut HashMap<K, V, S>)
@@ -69,6 +88,7 @@ fn should_shrink(len: usize, capacity: usize) -> bool {
 
 pub fn sample_process_memory() -> ProcessMemorySnapshot {
     let fd_snapshot = sample_process_fd_snapshot();
+    let open_fds = fd_snapshot.as_ref().map(|snapshot| snapshot.total);
     let (heap_bytes, heap_allocated_bytes, heap_free_bytes, heap_mode) =
         sample_process_heap_state();
     let snapshot = ProcessMemorySnapshot {
@@ -78,7 +98,7 @@ pub fn sample_process_memory() -> ProcessMemorySnapshot {
         heap_allocated_bytes,
         heap_free_bytes,
         heap_mode,
-        open_fds: fd_snapshot.map(|snapshot| snapshot.total),
+        open_fds,
         thread_count: sample_process_thread_count(),
         fd_snapshot,
     };
@@ -108,6 +128,27 @@ pub fn log_process_fd_snapshot() {
                 other_fds = snapshot.other,
                 "process fd snapshot"
             );
+            if let Some(states) = snapshot.socket_states.as_ref() {
+                let mut tcp_close_wait = 0u64;
+                let mut tcp_fin_wait2 = 0u64;
+                let mut tcp_time_wait = 0u64;
+                let mut tcp_established = 0u64;
+                for entry in states {
+                    if entry.protocol == "tcp" {
+                        match entry.state {
+                            "close_wait" => tcp_close_wait += entry.count,
+                            "fin_wait2" => tcp_fin_wait2 += entry.count,
+                            "time_wait" => tcp_time_wait += entry.count,
+                            "established" => tcp_established += entry.count,
+                            _ => {},
+                        }
+                    }
+                }
+                info!(
+                    tcp_established,
+                    tcp_close_wait, tcp_fin_wait2, tcp_time_wait, "process socket-state snapshot"
+                );
+            }
         } else {
             debug!("process fd snapshot unavailable");
         }
@@ -180,6 +221,7 @@ fn sample_proc_statm_virtual_bytes() -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn sample_process_fd_snapshot() -> Option<ProcessFdSnapshot> {
     let mut snapshot = ProcessFdSnapshot::default();
+    let mut socket_inodes: HashSet<u64> = HashSet::new();
     let entries = fs::read_dir("/proc/self/fd").ok()?;
     for entry in entries {
         let entry = entry.ok()?;
@@ -188,6 +230,9 @@ fn sample_process_fd_snapshot() -> Option<ProcessFdSnapshot> {
         match target.as_ref().and_then(|path| path.to_str()) {
             Some(value) if value.starts_with("socket:") => {
                 snapshot.sockets = snapshot.sockets.saturating_add(1);
+                if let Some(inode) = parse_inode_from_link(value, "socket:") {
+                    socket_inodes.insert(inode);
+                }
             },
             Some(value) if value.starts_with("pipe:") => {
                 snapshot.pipes = snapshot.pipes.saturating_add(1);
@@ -207,7 +252,108 @@ fn sample_process_fd_snapshot() -> Option<ProcessFdSnapshot> {
             },
         }
     }
+    snapshot.socket_states = Some(sample_socket_states(&socket_inodes));
     Some(snapshot)
+}
+
+/// Parses `socket:[12345]` (or `pipe:[…]`) into the inode number.
+#[cfg(target_os = "linux")]
+fn parse_inode_from_link(value: &str, prefix: &str) -> Option<u64> {
+    let rest = value.strip_prefix(prefix)?;
+    let inner = rest.strip_prefix('[')?.strip_suffix(']')?;
+    inner.parse::<u64>().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn sample_socket_states(owned_inodes: &HashSet<u64>) -> Vec<SocketStateCount> {
+    use std::collections::BTreeMap;
+
+    // Map (protocol, family, state) -> count, for our own sockets only.
+    let mut counts: BTreeMap<(&'static str, &'static str, &'static str), u64> = BTreeMap::new();
+    let sources = [
+        ("tcp", "ipv4", "/proc/self/net/tcp"),
+        ("tcp", "ipv6", "/proc/self/net/tcp6"),
+        ("udp", "ipv4", "/proc/self/net/udp"),
+        ("udp", "ipv6", "/proc/self/net/udp6"),
+    ];
+
+    for (protocol, family, path) in sources {
+        let Ok(content) = fs::read_to_string(path) else { continue };
+        for line in content.lines().skip(1) {
+            let Some((state_hex, inode)) = parse_proc_net_line(line) else { continue };
+            if !owned_inodes.contains(&inode) {
+                continue;
+            }
+            let state_name = match protocol {
+                "tcp" => tcp_state_name(state_hex),
+                "udp" => udp_state_name(state_hex),
+                _ => "unknown",
+            };
+            *counts.entry((protocol, family, state_name)).or_insert(0) += 1;
+        }
+    }
+
+    counts
+        .into_iter()
+        .map(|((protocol, family, state), count)| SocketStateCount {
+            protocol,
+            family,
+            state,
+            count,
+        })
+        .collect()
+}
+
+/// Extract `(state_hex, inode)` from a `/proc/net/{tcp,udp}*` data line.
+///
+/// Format: `sl  local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode …`
+/// — that's `st` at index 3 and `inode` at index 9.
+#[cfg(target_os = "linux")]
+fn parse_proc_net_line(line: &str) -> Option<(u8, u64)> {
+    let mut it = line.split_ascii_whitespace();
+    let _sl = it.next()?;
+    let _local = it.next()?;
+    let _remote = it.next()?;
+    let st = it.next()?;
+    let _tx_rx = it.next()?;
+    let _tr_tm = it.next()?;
+    let _retrnsmt = it.next()?;
+    let _uid = it.next()?;
+    let _timeout = it.next()?;
+    let inode = it.next()?;
+    let state_hex = u8::from_str_radix(st, 16).ok()?;
+    let inode = inode.parse::<u64>().ok()?;
+    Some((state_hex, inode))
+}
+
+#[cfg(target_os = "linux")]
+fn tcp_state_name(state: u8) -> &'static str {
+    // From include/net/tcp_states.h
+    match state {
+        0x01 => "established",
+        0x02 => "syn_sent",
+        0x03 => "syn_recv",
+        0x04 => "fin_wait1",
+        0x05 => "fin_wait2",
+        0x06 => "time_wait",
+        0x07 => "close",
+        0x08 => "close_wait",
+        0x09 => "last_ack",
+        0x0A => "listen",
+        0x0B => "closing",
+        0x0C => "new_syn_recv",
+        _ => "unknown",
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn udp_state_name(state: u8) -> &'static str {
+    // UDP only really uses TCP_ESTABLISHED (connected) and TCP_CLOSE (unbound/unconnected).
+    match state {
+        0x01 => "connected",
+        0x07 => "unconnected",
+        _ => "unknown",
+    }
 }
 
 #[cfg(not(target_os = "linux"))]

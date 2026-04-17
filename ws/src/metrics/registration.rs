@@ -215,6 +215,14 @@ impl Metrics {
             &["kind"],
         )
         .expect("process_fd_by_type metric");
+        let process_sockets_by_state = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_sockets_by_state",
+                "Current count of TCP/UDP sockets owned by the process, broken down by protocol, address family and kernel state.",
+            ),
+            &["protocol", "family", "state"],
+        )
+        .expect("process_sockets_by_state metric");
         let transport_connects_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_transport_connects_total",
@@ -685,6 +693,9 @@ impl Metrics {
             .register(Box::new(process_fd_by_type.clone()))
             .expect("register process_fd_by_type");
         registry
+            .register(Box::new(process_sockets_by_state.clone()))
+            .expect("register process_sockets_by_state");
+        registry
             .register(Box::new(transport_connects_total.clone()))
             .expect("register transport_connects_total");
         registry
@@ -893,6 +904,7 @@ impl Metrics {
             process_open_fds,
             process_threads,
             process_fd_by_type,
+            process_sockets_by_state,
             transport_connects_total,
             transport_connects_active,
             upstream_transports_total,
