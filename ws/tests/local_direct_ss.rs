@@ -259,7 +259,7 @@ impl HalfCloseAwareTcpServer {
 
 struct TcpSsStream {
     cipher: CipherKind,
-    key: Vec<u8>,
+    key: [u8; 32],
     nonce: [u8; 12],
     pending_salt: Option<Vec<u8>>,
 }
@@ -300,13 +300,14 @@ impl TcpSsStream {
     }
 
     fn read_chunk(&mut self, stream: &mut TcpStream) -> Result<Vec<u8>, TcpSsReadError> {
+        let key = &self.key[..self.cipher.key_len()];
         let encrypted_len = self.read_exact(stream, 2 + SHADOWSOCKS_TAG_LEN)?;
-        let len = decrypt(self.cipher, &self.key, &self.nonce, &encrypted_len)
+        let len = decrypt(self.cipher, key, &self.nonce, &encrypted_len)
             .map_err(TcpSsReadError::Crypto)?;
         increment_nonce(&mut self.nonce).expect("nonce overflow in test");
         let payload_len = u16::from_be_bytes([len[0], len[1]]) as usize;
         let encrypted_payload = self.read_exact(stream, payload_len + SHADOWSOCKS_TAG_LEN)?;
-        let payload = decrypt(self.cipher, &self.key, &self.nonce, &encrypted_payload)
+        let payload = decrypt(self.cipher, key, &self.nonce, &encrypted_payload)
             .map_err(TcpSsReadError::Crypto)?;
         increment_nonce(&mut self.nonce).expect("nonce overflow in test");
         Ok(payload)
@@ -317,10 +318,11 @@ impl TcpSsStream {
         stream: &mut TcpStream,
         payload: &[u8],
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = &self.key[..self.cipher.key_len()];
         let len = (payload.len() as u16).to_be_bytes();
-        let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
+        let encrypted_len = encrypt(self.cipher, key, &self.nonce, &len)?;
         increment_nonce(&mut self.nonce).expect("nonce overflow in test");
-        let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
+        let encrypted_payload = encrypt(self.cipher, key, &self.nonce, payload)?;
         increment_nonce(&mut self.nonce).expect("nonce overflow in test");
 
         if let Some(salt) = self.pending_salt.take() {

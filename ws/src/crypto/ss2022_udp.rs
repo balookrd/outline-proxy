@@ -66,7 +66,7 @@ pub(crate) fn encrypt_udp_packet_2022_aes(
     nonce.copy_from_slice(&separate_header[4..16]);
 
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
-    let mut encrypted_body = encrypt(cipher, &key, &nonce, plaintext)?;
+    let mut encrypted_body = encrypt(cipher, &key[..cipher.key_len()], &nonce, plaintext)?;
     let encrypted_header = encrypt_udp_separate_header(cipher, master_key, &separate_header)?;
 
     let mut packet = Vec::with_capacity(16 + encrypted_body.len());
@@ -112,7 +112,7 @@ fn decrypt_udp_packet_2022_aes(
     let mut nonce = [0u8; 12];
     nonce.copy_from_slice(&separate_header[4..16]);
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
-    let plaintext = decrypt(cipher, &key, &nonce, &packet[16..])?;
+    let plaintext = decrypt(cipher, &key[..cipher.key_len()], &nonce, &packet[16..])?;
 
     let mut session_bytes = [0u8; 8];
     session_bytes.copy_from_slice(&separate_header[..8]);
