@@ -105,7 +105,7 @@ impl UplinkManager {
         if !self.strict_global_active_uplink() {
             return None;
         }
-        *self.inner.global_active_uplink.read().await
+        self.inner.active_uplinks.read().await.global
     }
 
     /// Non-side-effecting health check used by the dispatch layer to decide
@@ -132,12 +132,13 @@ impl UplinkManager {
         transport: TransportKind,
     ) -> Option<usize> {
         if self.strict_global_active_uplink() {
-            return *self.inner.global_active_uplink.read().await;
+            return self.inner.active_uplinks.read().await.global;
         }
         if self.strict_per_uplink_active_uplink() {
+            let active = self.inner.active_uplinks.read().await;
             return match transport {
-                TransportKind::Tcp => *self.inner.tcp_active_uplink.read().await,
-                TransportKind::Udp => *self.inner.udp_active_uplink.read().await,
+                TransportKind::Tcp => active.tcp,
+                TransportKind::Udp => active.udp,
             };
         }
         None
@@ -534,14 +535,14 @@ impl UplinkManager {
         uplink_index: usize,
     ) {
         if self.strict_global_active_uplink() {
-            *self.inner.global_active_uplink.write().await = Some(uplink_index);
+            self.inner.active_uplinks.write().await.global = Some(uplink_index);
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 TransportKind::Tcp => {
-                    *self.inner.tcp_active_uplink.write().await = Some(uplink_index);
+                    self.inner.active_uplinks.write().await.tcp = Some(uplink_index);
                 },
                 TransportKind::Udp => {
-                    *self.inner.udp_active_uplink.write().await = Some(uplink_index);
+                    self.inner.active_uplinks.write().await.udp = Some(uplink_index);
                 },
             }
         }
