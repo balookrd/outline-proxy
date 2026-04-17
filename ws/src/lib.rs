@@ -1,18 +1,18 @@
 pub mod config;
-pub mod crypto;
+pub use shadowsocks_crypto as crypto;
 pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
 #[cfg(feature = "metrics")]
 pub mod metrics_http;
 pub mod proxy;
-pub mod routing;
-pub mod socks5;
-pub mod transport;
+pub use outline_routing as routing;
+pub use socks5_proto as socks5;
+pub use outline_transport as transport;
 #[cfg(feature = "tun")]
-pub mod tun;
+pub use outline_tun as tun;
 pub mod types;
-pub mod uplink;
+pub use outline_uplink as uplink;
 
 use std::time::Duration;
 
