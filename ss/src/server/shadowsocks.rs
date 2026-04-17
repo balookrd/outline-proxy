@@ -1,5 +1,23 @@
 use super::connect::{configure_tcp_stream, resolve_udp_target};
 use super::*;
+use futures_util::future::BoxFuture;
+
+use crate::nat::ResponseSender;
+
+struct DatagramResponseSender {
+    socket: Arc<UdpSocket>,
+    client_addr: SocketAddr,
+}
+
+impl ResponseSender for DatagramResponseSender {
+    fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
+        Box::pin(async move { self.socket.send_to(&data, self.client_addr).await.is_ok() })
+    }
+
+    fn protocol(&self) -> Protocol {
+        Protocol::Socket
+    }
+}
 
 pub(super) async fn serve_ss_tcp_listener(
     listener: TcpListener,
@@ -478,7 +496,10 @@ async fn handle_ss_udp_datagram(
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
-        .register_session(UdpResponseSender::datagram(outbound_socket, client_addr))
+        .register_session(UdpResponseSender::new(Arc::new(DatagramResponseSender {
+            socket: outbound_socket,
+            client_addr,
+        })))
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
