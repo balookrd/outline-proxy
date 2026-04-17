@@ -166,7 +166,6 @@ impl UplinkRegistry {
 
 impl UplinkRegistry {
     /// Test-only ctor that supplies a fresh throwaway DnsCache.
-    #[cfg(test)]
     pub fn new_for_test(groups: Vec<UplinkGroupConfig>) -> Result<Self> {
         Self::new(groups, Arc::new(outline_transport::DnsCache::default()))
     }
@@ -176,7 +175,6 @@ impl UplinkRegistry {
     /// that already hand-build an `UplinkManager` stand up a minimal
     /// [`UplinkRegistry`] for [`crate::tun::TunRouting`] without going
     /// through `UplinkGroupConfig`.
-    #[cfg(test)]
     pub fn from_single_manager(manager: UplinkManager) -> Self {
         let name = manager.group_name().to_string();
         let mut by_name = std::collections::HashMap::new();
@@ -222,7 +220,7 @@ mod tests {
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
         WsProbeConfig,
     };
-    use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
+    use crate::config::{CipherKind, UplinkTransport, WsTransportMode};
 
     fn make_uplink(name: &str) -> UplinkConfig {
         UplinkConfig {

@@ -3,8 +3,8 @@ use std::time::Duration;
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::metrics;
-use crate::types::UplinkTransport;
+use outline_metrics as metrics;
+use crate::config::UplinkTransport;
 
 use super::super::types::{TransportKind, UplinkManager};
 use super::super::utils::{
@@ -286,7 +286,7 @@ impl UplinkManager {
         if matches!(transport, TransportKind::Tcp) {
             let uplink = &self.inner.uplinks[index];
             if uplink.transport == UplinkTransport::Websocket
-                && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
             {
                 let now = tokio::time::Instant::now();
                 let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
@@ -315,7 +315,7 @@ impl UplinkManager {
         if matches!(transport, TransportKind::Udp) {
             let uplink = &self.inner.uplinks[index];
             if uplink.transport == UplinkTransport::Websocket
-                && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+                && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
             {
                 let now = tokio::time::Instant::now();
                 let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;

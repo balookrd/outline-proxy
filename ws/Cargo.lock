@@ -1329,6 +1329,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-uplink"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures-util",
+ "outline-metrics",
+ "outline-transport",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "shadowsocks-crypto",
+ "socks5-proto",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "outline-ws-rust"
 version = "1.1.0"
 dependencies = [
@@ -1345,6 +1366,7 @@ dependencies = [
  "outline-metrics",
  "outline-routing",
  "outline-transport",
+ "outline-uplink",
  "parking_lot",
  "rand 0.8.5",
  "rustls",

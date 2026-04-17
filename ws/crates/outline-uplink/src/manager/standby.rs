@@ -5,12 +5,12 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::time::{Instant, timeout};
 use tracing::{debug, warn};
 
-use crate::memory::maybe_shrink_vecdeque;
-use crate::metrics;
-use crate::transport::{
+use crate::utils::maybe_shrink_vecdeque;
+use outline_metrics as metrics;
+use outline_transport::{
     WsTransportStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
-use crate::types::{UplinkTransport, WsTransportMode};
+use crate::config::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::is_expected_standby_probe_failure;
 use super::super::types::{TransportKind, UplinkCandidate, UplinkManager};
@@ -21,13 +21,13 @@ const STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 impl UplinkManager {
     /// Returns the effective TCP WebSocket mode for `index`, falling back to
     /// H2 when H3 has been marked broken by repeated runtime errors.
-    pub(super) async fn effective_tcp_ws_mode(
+    pub(crate) async fn effective_tcp_ws_mode(
         &self,
         index: usize,
-    ) -> crate::types::WsTransportMode {
+    ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         if uplink.transport == UplinkTransport::Websocket
-            && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
         {
             let statuses = self.inner.statuses.read().await.clone();
             let status = &statuses[index];
@@ -36,20 +36,20 @@ impl UplinkManager {
                 .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
-                return crate::types::WsTransportMode::H2;
+                return crate::config::WsTransportMode::H2;
             }
         }
         uplink.tcp_ws_mode
     }
 
     /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS transport.
-    pub(super) async fn effective_udp_ws_mode(
+    pub(crate) async fn effective_udp_ws_mode(
         &self,
         index: usize,
-    ) -> crate::types::WsTransportMode {
+    ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         if uplink.transport == UplinkTransport::Websocket
-            && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+            && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
         {
             let statuses = self.inner.statuses.read().await.clone();
             let status = &statuses[index];
@@ -58,7 +58,7 @@ impl UplinkManager {
                 .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
-                return crate::types::WsTransportMode::H2;
+                return crate::config::WsTransportMode::H2;
             }
         }
         uplink.udp_ws_mode
@@ -291,21 +291,21 @@ impl UplinkManager {
         Ok(transport)
     }
 
-    pub(super) async fn refill_all_standby(&self) {
+    pub(crate) async fn refill_all_standby(&self) {
         for index in 0..self.inner.uplinks.len() {
             self.maintain_pool(index, TransportKind::Tcp).await;
             self.maintain_pool(index, TransportKind::Udp).await;
         }
     }
 
-    pub(super) fn spawn_refill(&self, index: usize, transport: TransportKind) {
+    pub(crate) fn spawn_refill(&self, index: usize, transport: TransportKind) {
         let manager = self.clone();
         tokio::spawn(async move {
             manager.refill_pool(index, transport).await;
         });
     }
 
-    pub(super) async fn maintain_pool(&self, index: usize, transport: TransportKind) {
+    pub(crate) async fn maintain_pool(&self, index: usize, transport: TransportKind) {
         self.validate_pool(index, transport).await;
         self.refill_pool(index, transport).await;
     }
@@ -313,7 +313,7 @@ impl UplinkManager {
     /// Sends WebSocket ping frames on idle TCP standby sockets so middleboxes
     /// keep the connection state warm, then replenishes any entries that were
     /// dropped as stale.
-    pub(super) async fn keepalive_tcp_pool(&self, index: usize) {
+    pub(crate) async fn keepalive_tcp_pool(&self, index: usize) {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
         if self.inner.load_balancing.warm_standby_tcp == 0 {
@@ -494,7 +494,7 @@ impl UplinkManager {
                     // defeats the purpose and accumulates FDs silently.  Bail
                     // out in that case.  When Http1 is *explicitly* configured,
                     // pooling a single Http1 connection is the intended behavior.
-                    if matches!(ws, crate::transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
+                    if matches!(ws, outline_transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
                         break;
                     }
 
@@ -592,7 +592,7 @@ impl UplinkManager {
             // accumulates FDs without sharing the underlying connection.
             // When Http1 is the explicitly configured mode, skip eviction and
             // let the standard timeout-peek decide liveness instead.
-            if matches!(ws, crate::transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
+            if matches!(ws, outline_transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
                 debug!(
                     uplink = %uplink.name,
                     transport = ?transport,
@@ -660,7 +660,7 @@ impl UplinkManager {
         maybe_shrink_vecdeque(&mut guard);
     }
 
-    pub(super) async fn clear_standby(&self, index: usize, transport: TransportKind) {
+    pub(crate) async fn clear_standby(&self, index: usize, transport: TransportKind) {
         let pool = &self.inner.standby_pools[index];
         match transport {
             TransportKind::Tcp => {

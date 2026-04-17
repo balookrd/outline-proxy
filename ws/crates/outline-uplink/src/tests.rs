@@ -6,15 +6,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use url::Url;
 
-use super::{
-    PenaltyState, PerTransportStatus, TransportKind, UplinkManager, UplinkStatus,
-    build_http_probe_request, effective_latency, score_latency, update_rtt_ewma,
-};
 use crate::config::{
-    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, WsProbeConfig,
+    CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
+    UplinkConfig, UplinkTransport, WsProbeConfig, WsTransportMode,
 };
-use crate::transport::connect_websocket_with_source;
-use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
+use crate::probe::build_http_probe_request;
+use crate::selection::{effective_latency, score_latency};
+use crate::types::{PenaltyState, PerTransportStatus, TransportKind, UplinkManager, UplinkStatus};
+use crate::utils::update_rtt_ewma;
+use outline_transport::connect_websocket_with_source;
 use tokio::time::Instant;
 
 fn lb() -> LoadBalancingConfig {

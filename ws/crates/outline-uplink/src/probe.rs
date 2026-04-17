@@ -9,23 +9,23 @@ use tokio::time::{Instant, timeout};
 use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
-use crate::transport::{
+use outline_transport::{
     DnsCache, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
     connect_websocket_with_source,
 };
-use crate::types::{TargetAddr, UplinkTransport};
+use crate::config::{TargetAddr, UplinkTransport};
 
 use super::types::ProbeOutcome;
 
-pub(super) async fn probe_uplink(
+pub(crate) async fn probe_uplink(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::types::WsTransportMode,
-    effective_udp_mode: crate::types::WsTransportMode,
+    effective_tcp_mode: crate::config::WsTransportMode,
+    effective_udp_mode: crate::config::WsTransportMode,
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency) = timeout(
         probe.timeout,
@@ -49,13 +49,13 @@ pub(super) async fn probe_uplink(
     })
 }
 
-pub(super) async fn run_tcp_probe(
+pub(crate) async fn run_tcp_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::types::WsTransportMode,
+    effective_tcp_mode: crate::config::WsTransportMode,
 ) -> Result<(bool, Option<Duration>)> {
     let started = Instant::now();
     if probe.ws.enabled {
@@ -82,7 +82,7 @@ pub(super) async fn run_tcp_probe(
                 run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
             },
         };
-        crate::metrics::record_probe(
+        outline_metrics::record_probe(
             group,
             &uplink.name,
             "tcp",
@@ -103,7 +103,7 @@ pub(super) async fn run_tcp_probe(
             effective_tcp_mode,
         )
         .await;
-        crate::metrics::record_probe(
+        outline_metrics::record_probe(
             group,
             &uplink.name,
             "tcp",
@@ -125,7 +125,7 @@ pub(super) async fn run_tcp_probe(
             effective_tcp_mode,
         )
         .await;
-        crate::metrics::record_probe(
+        outline_metrics::record_probe(
             group,
             &uplink.name,
             "tcp",
@@ -142,13 +142,13 @@ pub(super) async fn run_tcp_probe(
     Ok((true, None))
 }
 
-pub(super) async fn run_udp_probe(
+pub(crate) async fn run_udp_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_udp_mode: crate::types::WsTransportMode,
+    effective_udp_mode: crate::config::WsTransportMode,
 ) -> Result<(bool, bool, Option<Duration>)> {
     if !uplink.supports_udp() {
         return Ok((false, false, None));
@@ -179,7 +179,7 @@ pub(super) async fn run_udp_probe(
                 run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
             },
         };
-        crate::metrics::record_probe(
+        outline_metrics::record_probe(
             group,
             &uplink.name,
             "udp",
@@ -200,7 +200,7 @@ pub(super) async fn run_udp_probe(
             effective_udp_mode,
         )
         .await;
-        crate::metrics::record_probe(
+        outline_metrics::record_probe(
             group,
             &uplink.name,
             "udp",
@@ -218,13 +218,13 @@ pub(super) async fn run_udp_probe(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn run_ws_probe(
+pub(crate) async fn run_ws_probe(
     cache: &DnsCache,
     _group: &str,
     uplink_name: &str,
     transport: &'static str,
     url: &url::Url,
-    mode: crate::types::WsTransportMode,
+    mode: crate::config::WsTransportMode,
     fwmark: Option<u32>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
@@ -258,7 +258,7 @@ pub(super) async fn run_ws_probe(
     Ok(())
 }
 
-pub(super) async fn run_tcp_socket_probe(
+pub(crate) async fn run_tcp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
@@ -274,7 +274,7 @@ pub(super) async fn run_tcp_socket_probe(
     Ok(())
 }
 
-pub(super) async fn run_udp_socket_probe(
+pub(crate) async fn run_udp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
@@ -290,11 +290,11 @@ pub(super) async fn run_udp_socket_probe(
     Ok(())
 }
 
-pub(super) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
+pub(crate) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
     crate::error_text::is_expected_standby_probe_failure(error)
 }
 
-pub(super) fn build_http_probe_request(host: &str, port: u16, path: &str) -> String {
+pub(crate) fn build_http_probe_request(host: &str, port: u16, path: &str) -> String {
     format!(
         "HEAD {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         format_http_host_header(host, port)
@@ -333,13 +333,13 @@ async fn close_probe_udp_transport(
     }
 }
 
-pub(super) async fn run_http_probe(
+pub(crate) async fn run_http_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &HttpProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::types::WsTransportMode,
+    effective_tcp_mode: crate::config::WsTransportMode,
 ) -> Result<bool> {
     if probe.url.scheme() != "http" {
         bail!("only http:// probe URLs are currently supported");
@@ -453,7 +453,7 @@ pub(super) async fn run_http_probe(
             .send_chunk(&target_wire)
             .await
             .context("failed to send HTTP probe target")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "tcp",
@@ -470,7 +470,7 @@ pub(super) async fn run_http_probe(
             .send_chunk(request.as_bytes())
             .await
             .context("failed to send HTTP probe request")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "tcp",
@@ -483,7 +483,7 @@ pub(super) async fn run_http_probe(
             .read_chunk()
             .await
             .context("failed to read HTTP probe response")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "tcp",
@@ -514,13 +514,13 @@ pub(super) async fn run_http_probe(
     result
 }
 
-pub(super) async fn run_tcp_tunnel_probe(
+pub(crate) async fn run_tcp_tunnel_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &TcpProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::types::WsTransportMode,
+    effective_tcp_mode: crate::config::WsTransportMode,
 ) -> Result<bool> {
     let target = if let Ok(ip) = probe.host.parse::<IpAddr>() {
         match ip {
@@ -616,7 +616,7 @@ pub(super) async fn run_tcp_tunnel_probe(
             .send_chunk(&target_wire)
             .await
             .context("failed to send TCP tunnel probe target address")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "tcp",
@@ -627,7 +627,7 @@ pub(super) async fn run_tcp_tunnel_probe(
 
         match reader.read_chunk().await {
             Ok(chunk) => {
-                crate::metrics::add_probe_bytes(
+                outline_metrics::add_probe_bytes(
                     group,
                     &uplink.name,
                     "tcp",
@@ -664,13 +664,13 @@ pub(super) async fn run_tcp_tunnel_probe(
     result
 }
 
-pub(super) async fn run_dns_probe(
+pub(crate) async fn run_dns_probe(
     cache: &DnsCache,
     group: &str,
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_udp_mode: crate::types::WsTransportMode,
+    effective_udp_mode: crate::config::WsTransportMode,
 ) -> Result<bool> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
@@ -725,7 +725,7 @@ pub(super) async fn run_dns_probe(
             .send_packet(&payload)
             .await
             .context("failed to send DNS probe packet")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "udp",
@@ -737,7 +737,7 @@ pub(super) async fn run_dns_probe(
             .read_packet()
             .await
             .context("failed to read DNS probe response")?;
-        crate::metrics::add_probe_bytes(
+        outline_metrics::add_probe_bytes(
             group,
             &uplink.name,
             "udp",
@@ -772,7 +772,7 @@ pub(super) async fn run_dns_probe(
     result
 }
 
-pub(super) fn build_dns_query(name: &str) -> Vec<u8> {
+pub(crate) fn build_dns_query(name: &str) -> Vec<u8> {
     let txid = 0x5353u16.to_be_bytes();
     let mut out = Vec::with_capacity(64);
     out.extend_from_slice(&txid);
@@ -788,7 +788,7 @@ pub(super) fn build_dns_query(name: &str) -> Vec<u8> {
     out
 }
 
-pub(super) fn format_http_host_header(host: &str, port: u16) -> String {
+pub(crate) fn format_http_host_header(host: &str, port: u16) -> String {
     let bracketed = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {

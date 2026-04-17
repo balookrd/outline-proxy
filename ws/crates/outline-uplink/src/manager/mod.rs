@@ -170,8 +170,7 @@ impl UplinkManager {
 
     /// Test-only constructor that supplies a fresh throwaway [`DnsCache`] so
     /// existing tests do not need to build one at every call site.
-    #[cfg(test)]
-    pub(crate) fn new_for_test(
+    pub fn new_for_test(
         group_name: impl Into<String>,
         uplinks: Vec<UplinkConfig>,
         probe: ProbeConfig,
@@ -201,7 +200,7 @@ impl UplinkManager {
                 // Sweep dead entries from the H2/H3 shared-connection caches
                 // so stale connections (e.g. after DNS rotation or soft-close
                 // timeout) do not hold FDs open indefinitely.
-                crate::transport::gc_shared_connections().await;
+                outline_transport::gc_shared_connections().await;
                 manager.refill_all_standby().await;
             }
         });
@@ -234,7 +233,7 @@ impl UplinkManager {
     }
 
     #[cfg(test)]
-    pub(super) async fn run_tcp_standby_keepalive(&self, index: usize) {
+    pub(crate) async fn run_tcp_standby_keepalive(&self, index: usize) {
         self.keepalive_tcp_pool(index).await;
     }
 
