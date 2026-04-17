@@ -167,6 +167,7 @@ impl UdpWsTransport {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect(
         url: &Url,
         mode: WsTransportMode,
@@ -297,12 +298,11 @@ impl UdpWsTransport {
                 bytes,
             )?;
             let mut state = state.lock().await;
-            if let Some(last_server_packet_id) = state.last_server_packet_id {
-                if state.server_session_id == Some(session_id) && packet_id <= last_server_packet_id
+            if let Some(last_server_packet_id) = state.last_server_packet_id
+                && state.server_session_id == Some(session_id) && packet_id <= last_server_packet_id
                 {
                     bail!("duplicate or out-of-order ss2022 UDP packet");
                 }
-            }
             state.server_session_id = Some(session_id);
             state.last_server_packet_id = Some(packet_id);
             return Ok(payload);

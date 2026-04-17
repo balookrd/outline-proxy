@@ -51,11 +51,10 @@ async fn resolve_udp_packet_route(
         return UdpPacketRoute::Tunnel(default_group);
     };
     let current_version = table.version();
-    if let Some((route, entry_version)) = cache.get(target) {
-        if *entry_version == current_version {
+    if let Some((route, entry_version)) = cache.get(target)
+        && *entry_version == current_version {
             return route.clone();
         }
-    }
     // Tag the cached entry with the version captured *before* CIDR reads,
     // not the post-resolve version — otherwise a reload that races with
     // resolution would leave a stale decision tagged with the bumped

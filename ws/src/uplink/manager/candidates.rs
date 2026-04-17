@@ -425,7 +425,7 @@ impl UplinkManager {
                                 .then_with(|| b.index.cmp(&a.index)) // lower index wins
                         });
                     let is_best = best.is_none();
-                    let best_is_stable = best.map_or(true, |b| {
+                    let best_is_stable = best.is_none_or(|b| {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
                             TransportKind::Tcp => {

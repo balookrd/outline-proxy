@@ -209,6 +209,7 @@ pub(super) async fn run_udp_probe(
     Ok((true, true, None))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
     _group: &str,
     uplink_name: &str,

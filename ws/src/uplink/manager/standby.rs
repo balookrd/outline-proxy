@@ -214,12 +214,12 @@ impl UplinkManager {
             .with_context(|| format!("failed to connect to {}", udp_addr))?;
             self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
                 .await;
-            return Ok(UdpWsTransport::from_socket(
+            return UdpWsTransport::from_socket(
                 socket,
                 candidate.uplink.cipher,
                 &candidate.uplink.password,
                 source,
-            )?);
+            );
         }
 
         let pool = &self.inner.standby_pools[candidate.index];
@@ -251,13 +251,13 @@ impl UplinkManager {
                 "hit",
             );
             debug!(uplink = %candidate.uplink.name, "using warm-standby UDP websocket");
-            return Ok(UdpWsTransport::from_websocket(
+            return UdpWsTransport::from_websocket(
                 ws,
                 candidate.uplink.cipher,
                 &candidate.uplink.password,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
-            )?);
+            );
         }
 
         metrics::record_warm_standby_acquire(

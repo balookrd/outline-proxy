@@ -139,7 +139,7 @@ fn exit_fast_recovery(state: &mut TcpFlowState) {
 pub(in crate::tun_tcp) fn server_max_segment_payload(state: &TcpFlowState) -> usize {
     state
         .client_max_segment_size
-        .map(|mss| usize::from(mss))
+        .map(usize::from)
         .unwrap_or(MAX_SERVER_SEGMENT_PAYLOAD)
         .clamp(1, MAX_SERVER_SEGMENT_PAYLOAD)
 }
@@ -239,14 +239,13 @@ fn highest_sacked_end(state: &TcpFlowState) -> Option<u32> {
 }
 
 pub(in crate::tun_tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Option<usize> {
-    if let Some(highest_sacked_end) = highest_sacked_end(state) {
-        if let Some(index) = state.unacked_server_segments.iter().position(|segment| {
+    if let Some(highest_sacked_end) = highest_sacked_end(state)
+        && let Some(index) = state.unacked_server_segments.iter().position(|segment| {
             !server_segment_is_sacked(state, segment)
                 && seq_lt(segment.sequence_number, highest_sacked_end)
         }) {
             return Some(index);
         }
-    }
 
     state
         .unacked_server_segments

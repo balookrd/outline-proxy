@@ -51,6 +51,11 @@ const TCP_MAX_RTO: Duration = Duration::from_secs(60);
 const TCP_INITIAL_CWND_SEGMENTS: usize = 10;
 const TCP_MIN_SSTHRESH: usize = MAX_SERVER_SEGMENT_PAYLOAD * 2;
 const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Interval for the watchdog GC loop that sweeps the TCP flow table for
+/// entries whose per-flow maintenance task died without removing the flow.
+/// The per-flow maintenance task is the primary idle-cleanup path; this
+/// loop is a safety net against task panics / spurious exits.
+const TUN_TCP_FLOW_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct TcpFlowKey {

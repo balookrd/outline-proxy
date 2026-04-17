@@ -765,7 +765,7 @@ fn route_target_from_name(
     if name.eq_ignore_ascii_case(DROP_TARGET) {
         return Ok(RouteTarget::Drop);
     }
-    if group_names.iter().any(|g| *g == name) {
+    if group_names.contains(&name) {
         return Ok(RouteTarget::Group(name.to_string()));
     }
     bail!(

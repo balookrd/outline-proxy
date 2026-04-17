@@ -107,7 +107,7 @@ impl UplinkManager {
                 // strict selection move new sessions away from it.
                 if should_skip_probe_cycle_for_recent_activity(s, now, threshold) {
                     let udp_active =
-                        s.udp.last_active.map_or(false, |t| now.duration_since(t) < threshold);
+                        s.udp.last_active.is_some_and(|t| now.duration_since(t) < threshold);
                     debug!(
                         uplink = %uplink.name,
                         last_active_tcp_ms = s.tcp.last_active.map(|t| now.duration_since(t).as_millis()),
@@ -229,7 +229,7 @@ impl UplinkManager {
                             {
                                 let downgrade_until =
                                     now + self.inner.load_balancing.h3_downgrade_duration;
-                                if status.tcp.h3_downgrade_until.map_or(true, |t| t < now) {
+                                if status.tcp.h3_downgrade_until.is_none_or(|t| t < now) {
                                     warn!(
                                         uplink = %uplink.name,
                                         downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
@@ -281,7 +281,7 @@ impl UplinkManager {
                                 {
                                     let downgrade_until =
                                         now + self.inner.load_balancing.h3_downgrade_duration;
-                                    if status.udp.h3_downgrade_until.map_or(true, |t| t < now) {
+                                    if status.udp.h3_downgrade_until.is_none_or(|t| t < now) {
                                         warn!(
                                             uplink = %uplink.name,
                                             downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
@@ -371,7 +371,7 @@ impl UplinkManager {
                         {
                             let downgrade_until =
                                 now + self.inner.load_balancing.h3_downgrade_duration;
-                            if status.tcp.h3_downgrade_until.map_or(true, |t| t < now) {
+                            if status.tcp.h3_downgrade_until.is_none_or(|t| t < now) {
                                 warn!(
                                     uplink = %uplink.name,
                                     error = %format!("{error:#}"),
@@ -390,7 +390,7 @@ impl UplinkManager {
                         {
                             let downgrade_until =
                                 now + self.inner.load_balancing.h3_downgrade_duration;
-                            if status.udp.h3_downgrade_until.map_or(true, |t| t < now) {
+                            if status.udp.h3_downgrade_until.is_none_or(|t| t < now) {
                                 warn!(
                                     uplink = %uplink.name,
                                     error = %format!("{error:#}"),
@@ -499,7 +499,7 @@ impl UplinkManager {
                 *downgrade_field = None;
             } else {
                 let new_until = now + h3_downgrade_duration;
-                if downgrade_field.map_or(true, |t| t < new_until) {
+                if downgrade_field.is_none_or(|t| t < new_until) {
                     debug!(
                         uplink = %uplink.name,
                         kind = ?which,

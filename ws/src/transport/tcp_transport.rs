@@ -203,7 +203,7 @@ impl TcpShadowsocksWriter {
                 pending_salt: Some(salt),
                 ss2022: cipher
                     .is_ss2022()
-                    .then(|| Ss2022TcpWriterState { request_salt, header_sent: false }),
+                    .then_some(Ss2022TcpWriterState { request_salt, header_sent: false }),
                 _lifetime: lifetime,
             },
             ctrl_tx,
@@ -226,7 +226,7 @@ impl TcpShadowsocksWriter {
             pending_salt: Some(salt.clone()),
             ss2022: cipher
                 .is_ss2022()
-                .then(|| Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
+                .then_some(Ss2022TcpWriterState { request_salt: salt, header_sent: false }),
             _lifetime: lifetime,
         })
     }
@@ -244,8 +244,8 @@ impl TcpShadowsocksWriter {
             return Ok(());
         }
 
-        if let Some(state) = &mut self.ss2022 {
-            if !state.header_sent {
+        if let Some(state) = &mut self.ss2022
+            && !state.header_sent {
                 let target = TargetAddr::from_wire_bytes(payload)
                     .context("invalid ss2022 initial target header")?
                     .0;
@@ -271,7 +271,6 @@ impl TcpShadowsocksWriter {
                 self.write_frame(frame).await?;
                 return Ok(());
             }
-        }
 
         for chunk in payload.chunks(self.cipher.max_payload_len()) {
             self.send_payload_frame(chunk).await?;
