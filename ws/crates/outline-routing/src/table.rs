@@ -15,7 +15,7 @@ use tokio::sync::RwLock;
 use tracing::{info, warn};
 
 use crate::config::{RouteRule, RouteTarget, RoutingTableConfig};
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 
 use super::cidr::{CidrSet, read_prefixes_from_file};
 

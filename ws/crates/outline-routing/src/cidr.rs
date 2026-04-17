@@ -7,7 +7,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 
 #[derive(Debug, Clone, Default)]
 pub struct CidrSet {
