@@ -27,6 +27,7 @@ use crate::config::{AppConfig, Args, load_config};
 use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 #[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
+use crate::proxy::ProxyConfig;
 use crate::uplink::{StateStore, UplinkRegistry, log_registry_summary};
 
 fn warn_about_tcp_probe_target(config: &AppConfig) {
@@ -119,7 +120,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         .clone()
         .expect("dns_cache just initialised");
     let registry =
-        UplinkRegistry::new_with_state(config.groups.clone(), state_store, dns_cache).await?;
+        UplinkRegistry::new_with_state(config.groups.clone(), state_store, dns_cache.clone()).await?;
     registry.initialize_strict_active_selection().await;
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();
@@ -186,9 +187,15 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         spawn_metrics_server(metrics, registry.clone());
     }
 
-    // Freeze config into an Arc so each accepted connection pays only a
-    // pointer increment instead of a full deep clone.
-    let config = std::sync::Arc::new(config);
+    // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
+    // Each accepted connection clones only this Arc — not the full AppConfig —
+    // so there is no unnecessary coupling to uplink/tun/metrics fields.
+    let proxy_config = std::sync::Arc::new(ProxyConfig {
+        socks5_auth: config.socks5_auth.clone(),
+        dns_cache: dns_cache.clone(),
+        routing_table: config.routing_table.clone(),
+        direct_fwmark: config.direct_fwmark,
+    });
 
     let Some(listener) = listener else {
         std::future::pending::<()>().await;
@@ -252,7 +259,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         if let Err(error) = transport::configure_inbound_tcp_stream(&stream, peer) {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
-        let config = std::sync::Arc::clone(&config);
+        let config = std::sync::Arc::clone(&proxy_config);
         let registry = registry.clone();
         tokio::spawn(async move {
             if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {

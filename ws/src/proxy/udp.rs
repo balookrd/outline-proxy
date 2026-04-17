@@ -9,7 +9,8 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use crate::config::{AppConfig, RouteTarget};
+use crate::config::RouteTarget;
+use crate::proxy::ProxyConfig;
 use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
@@ -41,7 +42,7 @@ type UdpRouteCache = HashMap<TargetAddr, (UdpPacketRoute, u64)>;
 
 async fn resolve_udp_packet_route(
     cache: &mut UdpRouteCache,
-    config: &AppConfig,
+    config: &ProxyConfig,
     registry: &UplinkRegistry,
     target: &TargetAddr,
 ) -> UdpPacketRoute {
@@ -117,7 +118,7 @@ async fn classify_decision(
 /// resolve to `Direct` at packet time. Inspecting every rule's target up-front
 /// would couple this to routing internals and still require a fallback for
 /// dynamically reloaded rules; a single socket bind is cheap by comparison.
-fn routing_table_active(config: &AppConfig) -> bool {
+fn routing_table_active(config: &ProxyConfig) -> bool {
     config.routing_table.is_some()
 }
 
@@ -294,7 +295,7 @@ fn udp_metric_payload_len(target: &TargetAddr, payload_len: usize) -> Result<usi
 
 pub(super) async fn handle_udp_associate(
     mut client: TcpStream,
-    config: Arc<AppConfig>,
+    config: Arc<ProxyConfig>,
     registry: UplinkRegistry,
     _client_hint: TargetAddr,
 ) -> Result<()> {
@@ -331,12 +332,7 @@ pub(super) async fn handle_udp_associate(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
-        let dns_cache_uplink = Arc::clone(
-            config
-                .dns_cache
-                .as_ref()
-                .expect("dns_cache initialised in run_with_config"),
-        );
+        let dns_cache_uplink = Arc::clone(&config.dns_cache);
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
@@ -616,7 +612,7 @@ async fn send_tunneled_udp(
 
 pub(super) async fn handle_udp_in_tcp(
     mut client: TcpStream,
-    config: Arc<AppConfig>,
+    config: Arc<ProxyConfig>,
     registry: UplinkRegistry,
     client_hint: TargetAddr,
 ) -> Result<()> {
@@ -656,12 +652,7 @@ pub(super) async fn handle_udp_in_tcp(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
-        let dns_cache_uplink = Arc::clone(
-            config
-                .dns_cache
-                .as_ref()
-                .expect("dns_cache initialised in run_with_config"),
-        );
+        let dns_cache_uplink = Arc::clone(&config.dns_cache);
         let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
