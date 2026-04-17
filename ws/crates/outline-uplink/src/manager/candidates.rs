@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 
 use super::super::selection::{
     cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
@@ -229,7 +229,7 @@ impl UplinkManager {
             .collect()
     }
 
-    pub(super) async fn strict_transport_candidates(
+    pub(crate) async fn strict_transport_candidates(
         &self,
         transport: TransportKind,
         _target: Option<&TargetAddr>,
@@ -529,7 +529,7 @@ impl UplinkManager {
             .collect()
     }
 
-    pub(super) async fn set_active_uplink_index_for_transport(
+    pub(crate) async fn set_active_uplink_index_for_transport(
         &self,
         transport: TransportKind,
         uplink_index: usize,

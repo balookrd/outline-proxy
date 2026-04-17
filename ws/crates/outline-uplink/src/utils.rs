@@ -1,11 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{BuildHasher, Hash};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, LoadBalancingMode, RoutingScope};
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 
 use super::types::{PenaltyState, RoutingKey, TransportKind};
 
@@ -25,7 +26,29 @@ const MAX_DETAIL_CARDINALITY: usize = 64;
 
 static DETAIL_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
-pub(super) fn update_rtt_ewma(
+const SHRINK_MIN_CAPACITY: usize = 256;
+
+pub(crate) fn maybe_shrink_hash_map<K, V, S>(map: &mut HashMap<K, V, S>)
+where
+    K: Eq + Hash,
+    S: BuildHasher,
+{
+    if should_shrink(map.len(), map.capacity()) {
+        map.shrink_to_fit();
+    }
+}
+
+pub(crate) fn maybe_shrink_vecdeque<T>(deque: &mut VecDeque<T>) {
+    if should_shrink(deque.len(), deque.capacity()) {
+        deque.shrink_to_fit();
+    }
+}
+
+fn should_shrink(len: usize, capacity: usize) -> bool {
+    capacity >= SHRINK_MIN_CAPACITY && len.saturating_mul(4) <= capacity
+}
+
+pub(crate) fn update_rtt_ewma(
     current: &mut Option<Duration>,
     sample: Option<Duration>,
     alpha: f64,
@@ -41,7 +64,7 @@ pub(super) fn update_rtt_ewma(
     });
 }
 
-pub(super) fn current_penalty(
+pub(crate) fn current_penalty(
     state: &PenaltyState,
     now: Instant,
     config: &LoadBalancingConfig,
@@ -62,7 +85,7 @@ pub(super) fn current_penalty(
     }
 }
 
-pub(super) fn add_penalty(state: &mut PenaltyState, now: Instant, config: &LoadBalancingConfig) {
+pub(crate) fn add_penalty(state: &mut PenaltyState, now: Instant, config: &LoadBalancingConfig) {
     let current = current_penalty(state, now, config).unwrap_or_default().as_secs_f64();
     let next = (current + config.failure_penalty.as_secs_f64())
         .min(config.failure_penalty_max.as_secs_f64());
@@ -70,11 +93,11 @@ pub(super) fn add_penalty(state: &mut PenaltyState, now: Instant, config: &LoadB
     state.updated_at = Some(now);
 }
 
-pub(super) fn duration_to_millis_option(value: Option<Duration>) -> Option<u128> {
+pub(crate) fn duration_to_millis_option(value: Option<Duration>) -> Option<u128> {
     value.map(|v| v.as_millis())
 }
 
-pub(super) fn routing_key(
+pub(crate) fn routing_key(
     transport: TransportKind,
     target: Option<&TargetAddr>,
     scope: RoutingScope,
@@ -87,7 +110,7 @@ pub(super) fn routing_key(
     }
 }
 
-pub(super) fn strict_route_key(transport: TransportKind, scope: RoutingScope) -> RoutingKey {
+pub(crate) fn strict_route_key(transport: TransportKind, scope: RoutingScope) -> RoutingKey {
     match scope {
         RoutingScope::Global => RoutingKey::Global,
         RoutingScope::PerUplink => RoutingKey::TransportGlobal(transport),
@@ -95,21 +118,21 @@ pub(super) fn strict_route_key(transport: TransportKind, scope: RoutingScope) ->
     }
 }
 
-pub(super) fn transport_key_prefix(transport: TransportKind) -> &'static str {
+pub(crate) fn transport_key_prefix(transport: TransportKind) -> &'static str {
     match transport {
         TransportKind::Tcp => "Tcp",
         TransportKind::Udp => "Udp",
     }
 }
 
-pub(super) fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
+pub(crate) fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
     match mode {
         LoadBalancingMode::ActiveActive => "active_active",
         LoadBalancingMode::ActivePassive => "active_passive",
     }
 }
 
-pub(super) fn routing_scope_name(scope: RoutingScope) -> &'static str {
+pub(crate) fn routing_scope_name(scope: RoutingScope) -> &'static str {
     match scope {
         RoutingScope::PerFlow => "per_flow",
         RoutingScope::PerUplink => "per_uplink",
@@ -117,11 +140,11 @@ pub(super) fn routing_scope_name(scope: RoutingScope) -> &'static str {
     }
 }
 
-pub(super) fn rightless_bool(value: bool) -> u8 {
+pub(crate) fn rightless_bool(value: bool) -> u8 {
     if value { 1 } else { 0 }
 }
 
-pub(super) fn mark_probe_wakeup(
+pub(crate) fn mark_probe_wakeup(
     last_wakeup: &mut Option<Instant>,
     now: Instant,
     min_interval: Duration,
@@ -133,15 +156,15 @@ pub(super) fn mark_probe_wakeup(
     true
 }
 
-pub(super) fn classify_runtime_failure_cause(error_text: &str) -> &'static str {
+pub(crate) fn classify_runtime_failure_cause(error_text: &str) -> &'static str {
     crate::error_text::classify_runtime_failure_cause(error_text)
 }
 
-pub(super) fn classify_runtime_failure_signature(error_text: &str) -> &'static str {
+pub(crate) fn classify_runtime_failure_signature(error_text: &str) -> &'static str {
     crate::error_text::classify_runtime_failure_signature(error_text)
 }
 
-pub(super) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
+pub(crate) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {
     let normalized = normalize_detail_string(error_text);
     intern_detail(normalized)
 }

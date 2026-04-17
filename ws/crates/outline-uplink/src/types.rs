@@ -7,15 +7,15 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
-use crate::transport::WsTransportStream;
-use crate::types::TargetAddr;
+use outline_transport::WsTransportStream;
+use socks5_proto::TargetAddr;
 
 use super::state::StateStore;
 use super::utils::transport_key_prefix;
 
 #[derive(Clone)]
 pub struct UplinkManager {
-    pub(super) inner: Arc<UplinkManagerInner>,
+    pub(crate) inner: Arc<UplinkManagerInner>,
 }
 
 impl std::fmt::Debug for UplinkManager {
@@ -31,38 +31,38 @@ impl std::fmt::Debug for UplinkManager {
 /// together on selection events and read together in snapshots, so a single
 /// lock is cheaper than three.
 #[derive(Clone, Default)]
-pub(super) struct ActiveUplinks {
+pub(crate) struct ActiveUplinks {
     /// Global active index (used in `strict_global_active` mode).
-    pub(super) global: Option<usize>,
+    pub(crate) global: Option<usize>,
     /// Per-transport TCP active index (used in `strict_per_uplink` mode).
-    pub(super) tcp: Option<usize>,
+    pub(crate) tcp: Option<usize>,
     /// Per-transport UDP active index (used in `strict_per_uplink` mode).
-    pub(super) udp: Option<usize>,
+    pub(crate) udp: Option<usize>,
 }
 
-pub(super) struct UplinkManagerInner {
+pub(crate) struct UplinkManagerInner {
     /// Name of the group this manager represents. Surfaced as the `group`
     /// Prometheus label on every uplink-scoped metric emitted from within.
-    pub(super) group_name: String,
-    pub(super) uplinks: Vec<Arc<UplinkConfig>>,
-    pub(super) probe: ProbeConfig,
-    pub(super) load_balancing: LoadBalancingConfig,
-    pub(super) statuses: RwLock<Arc<Vec<UplinkStatus>>>,
-    pub(super) active_uplinks: RwLock<ActiveUplinks>,
-    pub(super) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
-    pub(super) standby_pools: Vec<StandbyPool>,
-    pub(super) probe_execution_limit: Arc<Semaphore>,
-    pub(super) probe_dial_limit: Arc<Semaphore>,
+    pub(crate) group_name: String,
+    pub(crate) uplinks: Vec<Arc<UplinkConfig>>,
+    pub(crate) probe: ProbeConfig,
+    pub(crate) load_balancing: LoadBalancingConfig,
+    pub(crate) statuses: RwLock<Arc<Vec<UplinkStatus>>>,
+    pub(crate) active_uplinks: RwLock<ActiveUplinks>,
+    pub(crate) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
+    pub(crate) standby_pools: Vec<StandbyPool>,
+    pub(crate) probe_execution_limit: Arc<Semaphore>,
+    pub(crate) probe_dial_limit: Arc<Semaphore>,
     /// Notified when a runtime failure sets a fresh cooldown, so the probe
     /// loop wakes up immediately instead of waiting for the next interval.
-    pub(super) probe_wakeup: Arc<Notify>,
+    pub(crate) probe_wakeup: Arc<Notify>,
     /// Optional persistent state store.  When `Some`, active-uplink changes
     /// are flushed to disk so they survive process restarts.
-    pub(super) state_store: Option<Arc<StateStore>>,
+    pub(crate) state_store: Option<Arc<StateStore>>,
     /// Shared DNS cache used by all transport resolve paths (probe, standby,
     /// reconnect). Owned at app scope by `AppConfig::dns_cache` and cloned
     /// into every manager at construction time.
-    pub(super) dns_cache: Arc<outline_transport::DnsCache>,
+    pub(crate) dns_cache: Arc<outline_transport::DnsCache>,
 }
 
 impl UplinkManagerInner {
@@ -70,7 +70,7 @@ impl UplinkManagerInner {
     /// Clones the current Vec, applies `f`, wraps in a new Arc.
     /// Callers never mutate through an Arc (which would be shared), only
     /// through the owned clone.
-    pub(super) async fn modify_statuses<F>(&self, f: F)
+    pub(crate) async fn modify_statuses<F>(&self, f: F)
     where
         F: FnOnce(&mut Vec<UplinkStatus>),
     {
@@ -88,37 +88,37 @@ impl UplinkManagerInner {
 /// `match transport { Tcp => self.tcp_x, Udp => self.udp_x }` repetition.
 /// Use [`UplinkStatus::of`] to select the right half by a [`TransportKind`] variable.
 #[derive(Clone, Debug, Default)]
-pub(super) struct PerTransportStatus {
-    pub(super) healthy: Option<bool>,
-    pub(super) latency: Option<Duration>,
-    pub(super) rtt_ewma: Option<Duration>,
-    pub(super) penalty: PenaltyState,
-    pub(super) cooldown_until: Option<Instant>,
-    pub(super) consecutive_failures: u32,
-    pub(super) consecutive_successes: u32,
+pub(crate) struct PerTransportStatus {
+    pub(crate) healthy: Option<bool>,
+    pub(crate) latency: Option<Duration>,
+    pub(crate) rtt_ewma: Option<Duration>,
+    pub(crate) penalty: PenaltyState,
+    pub(crate) cooldown_until: Option<Instant>,
+    pub(crate) consecutive_failures: u32,
+    pub(crate) consecutive_successes: u32,
     /// When set, connections must use H2 instead of H3 until this instant
     /// because H3 produced repeated APPLICATION_CLOSE or other transport
     /// errors. Cleared by a successful explicit H3 re-probe.
-    pub(super) h3_downgrade_until: Option<Instant>,
+    pub(crate) h3_downgrade_until: Option<Instant>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
-    pub(super) last_active: Option<Instant>,
+    pub(crate) last_active: Option<Instant>,
     /// Timestamp of the most recent early probe wakeup caused by a runtime
     /// failure. Rate-limits wakeups to one per `PROBE_WAKEUP_MIN_INTERVAL`.
-    pub(super) last_probe_wakeup: Option<Instant>,
+    pub(crate) last_probe_wakeup: Option<Instant>,
 }
 
 #[derive(Clone, Debug, Default)]
-pub(super) struct UplinkStatus {
-    pub(super) tcp: PerTransportStatus,
-    pub(super) udp: PerTransportStatus,
-    pub(super) last_error: Option<String>,
-    pub(super) last_checked: Option<Instant>,
+pub(crate) struct UplinkStatus {
+    pub(crate) tcp: PerTransportStatus,
+    pub(crate) udp: PerTransportStatus,
+    pub(crate) last_error: Option<String>,
+    pub(crate) last_checked: Option<Instant>,
 }
 
 impl UplinkStatus {
     /// Borrow the per-transport status for the given transport kind.
-    pub(super) fn of(&self, kind: TransportKind) -> &PerTransportStatus {
+    pub(crate) fn of(&self, kind: TransportKind) -> &PerTransportStatus {
         match kind {
             TransportKind::Tcp => &self.tcp,
             TransportKind::Udp => &self.udp,
@@ -128,15 +128,15 @@ impl UplinkStatus {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct PenaltyState {
-    pub(super) value_secs: f64,
-    pub(super) updated_at: Option<Instant>,
+pub(crate) struct PenaltyState {
+    pub(crate) value_secs: f64,
+    pub(crate) updated_at: Option<Instant>,
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct StickyRoute {
-    pub(super) uplink_index: usize,
-    pub(super) expires_at: Instant,
+pub(crate) struct StickyRoute {
+    pub(crate) uplink_index: usize,
+    pub(crate) expires_at: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -152,7 +152,7 @@ pub enum TransportKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) enum RoutingKey {
+pub(crate) enum RoutingKey {
     Global,
     TransportGlobal(TransportKind),
     Target {
@@ -184,15 +184,15 @@ impl fmt::Display for RoutingKey {
 pub use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 
 
-pub(super) struct StandbyPool {
-    pub(super) tcp: Mutex<VecDeque<WsTransportStream>>,
-    pub(super) udp: Mutex<VecDeque<WsTransportStream>>,
-    pub(super) tcp_refill: Mutex<()>,
-    pub(super) udp_refill: Mutex<()>,
+pub(crate) struct StandbyPool {
+    pub(crate) tcp: Mutex<VecDeque<WsTransportStream>>,
+    pub(crate) udp: Mutex<VecDeque<WsTransportStream>>,
+    pub(crate) tcp_refill: Mutex<()>,
+    pub(crate) udp_refill: Mutex<()>,
 }
 
 impl StandbyPool {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             tcp: Mutex::new(VecDeque::new()),
             udp: Mutex::new(VecDeque::new()),
@@ -203,21 +203,21 @@ impl StandbyPool {
 }
 
 #[derive(Debug)]
-pub(super) struct ProbeOutcome {
-    pub(super) tcp_ok: bool,
+pub(crate) struct ProbeOutcome {
+    pub(crate) tcp_ok: bool,
     /// false when the uplink has no `udp_ws_url` — means "UDP not applicable",
     /// not "UDP probe failed".  Health and standby tracking are skipped in
     /// this case so that Grafana shows empty (unknown) rather than red (0).
-    pub(super) udp_ok: bool,
-    pub(super) udp_applicable: bool,
-    pub(super) tcp_latency: Option<Duration>,
-    pub(super) udp_latency: Option<Duration>,
+    pub(crate) udp_ok: bool,
+    pub(crate) udp_applicable: bool,
+    pub(crate) tcp_latency: Option<Duration>,
+    pub(crate) udp_latency: Option<Duration>,
 }
 
 #[derive(Clone)]
-pub(super) struct CandidateState {
-    pub(super) index: usize,
-    pub(super) uplink: Arc<UplinkConfig>,
-    pub(super) healthy: bool,
-    pub(super) score: Option<Duration>,
+pub(crate) struct CandidateState {
+    pub(crate) index: usize,
+    pub(crate) uplink: Arc<UplinkConfig>,
+    pub(crate) healthy: bool,
+    pub(crate) score: Option<Duration>,
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
-use crate::memory::maybe_shrink_hash_map;
+use crate::utils::maybe_shrink_hash_map;
 
 use super::super::selection::score_latency;
 use super::super::types::{
@@ -24,7 +24,7 @@ use super::super::types::{
 const MAX_STICKY_ROUTES: usize = 100_000;
 
 impl UplinkManager {
-    pub(super) async fn preferred_sticky_index(
+    pub(crate) async fn preferred_sticky_index(
         &self,
         routing_key: &RoutingKey,
         transport: TransportKind,
@@ -90,7 +90,7 @@ impl UplinkManager {
         }
     }
 
-    pub(super) async fn store_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {
+    pub(crate) async fn store_sticky_route(&self, routing_key: &RoutingKey, uplink_index: usize) {
         let pinned = self.strict_pinned_route_key(routing_key);
         let mut sticky = self.inner.sticky_routes.write().await;
         // Enforce the per-flow cap: drop new non-pinned entries when full.
@@ -111,7 +111,7 @@ impl UplinkManager {
         );
     }
 
-    pub(super) async fn prune_sticky_routes(&self) {
+    pub(crate) async fn prune_sticky_routes(&self) {
         let now = Instant::now();
         let mut sticky = self.inner.sticky_routes.write().await;
         sticky.retain(|key, route| {

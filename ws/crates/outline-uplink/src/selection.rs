@@ -8,7 +8,7 @@ use crate::config::{LoadBalancingConfig, RoutingScope, UplinkConfig};
 use super::types::{TransportKind, UplinkStatus};
 use super::utils::current_penalty;
 
-pub(super) fn effective_health(
+pub(crate) fn effective_health(
     status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
@@ -16,7 +16,7 @@ pub(super) fn effective_health(
     status.of(transport).healthy == Some(true) && !cooldown_active(status, transport, now)
 }
 
-pub(super) fn supports_transport_for_scope(
+pub(crate) fn supports_transport_for_scope(
     uplink: &Arc<UplinkConfig>,
     transport: TransportKind,
     scope: RoutingScope,
@@ -33,7 +33,7 @@ pub(super) fn supports_transport_for_scope(
     }
 }
 
-pub(super) fn selection_health(
+pub(crate) fn selection_health(
     status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
@@ -45,7 +45,7 @@ pub(super) fn selection_health(
     }
 }
 
-pub(super) fn strict_gate_transport(
+pub(crate) fn strict_gate_transport(
     scope: RoutingScope,
     transport: TransportKind,
 ) -> TransportKind {
@@ -55,7 +55,7 @@ pub(super) fn strict_gate_transport(
     }
 }
 
-pub(super) fn cooldown_active(
+pub(crate) fn cooldown_active(
     status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
@@ -63,7 +63,7 @@ pub(super) fn cooldown_active(
     status.of(transport).cooldown_until.is_some_and(|until| until > now)
 }
 
-pub(super) fn cooldown_remaining(
+pub(crate) fn cooldown_remaining(
     status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
@@ -74,7 +74,7 @@ pub(super) fn cooldown_remaining(
         .map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
 }
 
-pub(super) fn effective_latency(
+pub(crate) fn effective_latency(
     status: &UplinkStatus,
     transport: TransportKind,
     now: Instant,
@@ -104,7 +104,7 @@ pub(super) fn effective_latency(
     }
 }
 
-pub(super) fn scoring_base_latency(
+pub(crate) fn scoring_base_latency(
     status: &UplinkStatus,
     transport: TransportKind,
 ) -> Option<Duration> {
@@ -112,13 +112,13 @@ pub(super) fn scoring_base_latency(
     ts.rtt_ewma.or(ts.latency)
 }
 
-pub(super) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
+pub(crate) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {
     let base = base?;
     let weight = weight.max(0.000_001);
     Some(Duration::from_secs_f64(base.as_secs_f64() / weight))
 }
 
-pub(super) fn score_latency(
+pub(crate) fn score_latency(
     status: &UplinkStatus,
     weight: f64,
     transport: TransportKind,
@@ -128,7 +128,7 @@ pub(super) fn score_latency(
     weighted_latency_score(effective_latency(status, transport, now, config), weight)
 }
 
-pub(super) fn base_score_latency(
+pub(crate) fn base_score_latency(
     status: &UplinkStatus,
     weight: f64,
     transport: TransportKind,
@@ -136,7 +136,7 @@ pub(super) fn base_score_latency(
     weighted_latency_score(scoring_base_latency(status, transport), weight)
 }
 
-pub(super) fn selection_score(
+pub(crate) fn selection_score(
     status: &UplinkStatus,
     weight: f64,
     transport: TransportKind,
@@ -151,7 +151,7 @@ pub(super) fn selection_score(
     }
 }
 
-pub(super) fn global_selection_score_latency(
+pub(crate) fn global_selection_score_latency(
     status: &UplinkStatus,
     weight: f64,
     _now: Instant,

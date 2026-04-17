@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/outline-metrics", "crates/outline-routing", "crates/outline-transport", "crates/shadowsocks-crypto", "crates/socks5-proto"]
+members = [".", "crates/outline-metrics", "crates/outline-routing", "crates/outline-transport", "crates/outline-uplink", "crates/shadowsocks-crypto", "crates/socks5-proto"]
 
 [package]
 name = "outline-ws-rust"
@@ -16,7 +16,7 @@ edition = "2024"
 default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["outline-metrics/tun"]   # TUN device support (transparent proxy)
 h3 = ["outline-transport/h3"]
-metrics = ["outline-metrics/prometheus", "dep:serde_json", "hyper/server"]
+metrics = ["outline-metrics/prometheus", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
@@ -40,6 +40,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 outline-metrics = { path = "crates/outline-metrics", default-features = false }
 outline-routing = { path = "crates/outline-routing" }
 outline-transport = { path = "crates/outline-transport" }
+outline-uplink = { path = "crates/outline-uplink", default-features = false }
 parking_lot = "0.12"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }

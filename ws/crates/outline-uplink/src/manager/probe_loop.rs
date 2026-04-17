@@ -7,7 +7,7 @@ use tokio::time::{Instant, sleep};
 use tracing::{debug, info, warn};
 
 use crate::config::ProbeConfig;
-use crate::types::{UplinkTransport, WsTransportMode};
+use crate::config::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::probe_uplink;
 use super::super::selection::cooldown_active;
@@ -30,13 +30,13 @@ fn should_skip_probe_cycle_for_recent_activity(
 
 #[allow(clippy::too_many_arguments)]
 async fn run_probe_attempt_with_timeout(
-    dns_cache: Arc<crate::transport::DnsCache>,
+    dns_cache: Arc<outline_transport::DnsCache>,
     group: String,
     uplink: Arc<crate::config::UplinkConfig>,
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::types::WsTransportMode,
-    effective_udp_mode: crate::types::WsTransportMode,
+    effective_tcp_mode: crate::config::WsTransportMode,
+    effective_udp_mode: crate::config::WsTransportMode,
 ) -> Result<super::super::types::ProbeOutcome> {
     let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
@@ -94,7 +94,7 @@ impl UplinkManager {
         });
     }
 
-    pub(super) async fn probe_all(&self) {
+    pub(crate) async fn probe_all(&self) {
         let mut tasks = tokio::task::JoinSet::new();
         let now = Instant::now();
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
@@ -213,7 +213,7 @@ impl UplinkManager {
                     // Emit warn! for H3 downgrades before acquiring the write lock.
                     if !result.tcp_ok
                         && uplink.transport == UplinkTransport::Websocket
-                        && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                        && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
                         && prev_tcp_h3.is_none_or(|t| t < now)
                     {
                         warn!(
@@ -262,7 +262,7 @@ impl UplinkManager {
                             // which is stable, and H3 is only retried after the
                             // downgrade timer expires.
                             if uplink.transport == UplinkTransport::Websocket
-                                && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                                && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
                             {
                                 status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
                             }
@@ -367,7 +367,7 @@ impl UplinkManager {
                     };
                     // Emit warn! before acquiring write lock.
                     if uplink.transport == UplinkTransport::Websocket
-                        && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                        && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
                         && prev_tcp_h3.is_none_or(|t| t < now)
                     {
                         warn!(
@@ -379,7 +379,7 @@ impl UplinkManager {
                     }
                     if uplink.supports_udp()
                         && uplink.transport == UplinkTransport::Websocket
-                        && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+                        && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
                         && prev_udp_h3.is_none_or(|t| t < now)
                     {
                         warn!(
@@ -415,7 +415,7 @@ impl UplinkManager {
                         // Probe connection itself failed (ws connect / timeout).
                         // Same H3 downgrade logic as the tcp_ok=false case above.
                         if uplink.transport == UplinkTransport::Websocket
-                            && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
+                            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
                         {
                             status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
                         }
@@ -424,7 +424,7 @@ impl UplinkManager {
                         // failover loop on a broken H3 server doesn't spin.
                         if uplink.supports_udp()
                             && uplink.transport == UplinkTransport::Websocket
-                            && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
+                            && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
                         {
                             status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
                         }
@@ -561,7 +561,7 @@ mod tests {
 
     use tokio::time::Instant;
 
-    use crate::uplink::types::UplinkStatus;
+    use crate::types::UplinkStatus;
 
     use super::should_skip_probe_cycle_for_recent_activity;
 
@@ -569,7 +569,7 @@ mod tests {
     fn recent_healthy_traffic_skips_probe_without_cooldown() {
         let now = Instant::now();
         let status = UplinkStatus {
-            tcp: crate::uplink::types::PerTransportStatus {
+            tcp: crate::types::PerTransportStatus {
                 healthy: Some(true),
                 last_active: Some(now - Duration::from_secs(1)),
                 ..Default::default()
@@ -588,7 +588,7 @@ mod tests {
     fn active_cooldown_prevents_probe_skip_even_with_recent_traffic() {
         let now = Instant::now();
         let status = UplinkStatus {
-            tcp: crate::uplink::types::PerTransportStatus {
+            tcp: crate::types::PerTransportStatus {
                 healthy: Some(true),
                 last_active: Some(now - Duration::from_secs(1)),
                 cooldown_until: Some(now + Duration::from_secs(10)),
