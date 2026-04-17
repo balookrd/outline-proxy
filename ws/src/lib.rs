@@ -20,14 +20,6 @@ pub mod transport;
 pub(crate) mod transport_h3;
 #[cfg(feature = "tun")]
 pub mod tun;
-#[cfg(feature = "tun")]
-pub(crate) mod tun_defrag;
-#[cfg(feature = "tun")]
-pub mod tun_tcp;
-#[cfg(feature = "tun")]
-pub mod tun_udp;
-#[cfg(feature = "tun")]
-pub(crate) mod tun_wire;
 pub mod types;
 pub mod uplink;
 

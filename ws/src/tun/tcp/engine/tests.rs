@@ -11,7 +11,7 @@ use crate::transport::{
     AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
 };
 use crate::tun::SharedTunWriter;
-use crate::tun_wire::IpVersion;
+use crate::tun::wire::IpVersion;
 use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
 use crate::uplink::UplinkManager;
 use futures_util::StreamExt;
@@ -1118,7 +1118,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
 
     let _ = std::fs::remove_file(path);
 }
-pub(in crate::tun_tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
+pub(in crate::tun::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager {
     UplinkManager::new(
         "test",
         vec![UplinkConfig {

@@ -1,9 +1,9 @@
 use super::{DefragmentedPacket, TunDefragmenter};
 use crate::tun::build_icmp_echo_reply;
-use crate::tun_tcp::parse_tcp_packet_for_tests as parse_tcp_packet;
-use crate::tun_udp::{build_ipv4_udp_packet, parse_udp_packet};
-use crate::tun_wire::test_utils::{assert_transport_checksum_valid, transport_offset};
-use crate::tun_wire::{
+use crate::tun::tcp::parse_tcp_packet_for_tests as parse_tcp_packet;
+use crate::tun::udp::{build_ipv4_udp_packet, parse_udp_packet};
+use crate::tun::wire::test_utils::{assert_transport_checksum_valid, transport_offset};
+use crate::tun::wire::{
     IPV6_HEADER_LEN, IPV6_NEXT_HEADER_DESTINATION_OPTIONS, IPV6_NEXT_HEADER_FRAGMENT,
     IPV6_NEXT_HEADER_ICMPV6, IPV6_NEXT_HEADER_UDP, checksum16, ipv6_payload_checksum,
     locate_ipv6_payload, locate_ipv6_upper_layer,

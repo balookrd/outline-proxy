@@ -9,14 +9,14 @@ use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 
 use super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN};
-use crate::tun_wire::{
+use crate::tun::wire::{
     checksum16, ipv4_payload_checksum, ipv6_payload_checksum, locate_ipv6_upper_layer,
 };
 
 const TCP_HEADER_LEN: usize = 20;
 #[cfg(test)]
-pub(super) use crate::tun_wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
-pub(super) use crate::tun_wire::{
+pub(super) use crate::tun::wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
+pub(super) use crate::tun::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_TCP, IpVersion,
 };
 

@@ -10,7 +10,6 @@ use crate::config::TunTcpConfig;
 use crate::metrics;
 use super::state_machine::TunTcpUpstreamWriter;
 use crate::tun::{SharedTunWriter, TunRouting};
-use crate::tun_wire::IpVersion;
 use crate::uplink::{TransportKind, UplinkManager};
 
 use super::state_machine::TcpFlowState;
@@ -22,7 +21,7 @@ mod flow_ops;
 mod packet;
 mod tasks;
 #[cfg(test)]
-pub(in crate::tun_tcp) mod tests;
+pub(in crate::tun::tcp) mod tests;
 
 #[derive(Clone)]
 pub struct TunTcpEngine {
@@ -165,16 +164,4 @@ pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Ar
     (state.group_name.clone(), state.uplink_name.clone())
 }
 
-pub(super) fn ip_to_target(ip: std::net::IpAddr, port: u16) -> crate::types::TargetAddr {
-    match ip {
-        std::net::IpAddr::V4(ip) => crate::types::TargetAddr::IpV4(ip, port),
-        std::net::IpAddr::V6(ip) => crate::types::TargetAddr::IpV6(ip, port),
-    }
-}
-
-pub(super) fn ip_family_from_version(version: IpVersion) -> &'static str {
-    match version {
-        IpVersion::V4 => "ipv4",
-        IpVersion::V6 => "ipv6",
-    }
-}
+pub(super) use crate::tun::wire::{ip_family_from_version, ip_to_target};

@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
 use crate::transport::UdpWsTransport;
-use crate::tun_wire::IpVersion;
+use crate::tun::wire::IpVersion;
 use crate::uplink::UplinkManager;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -38,7 +38,7 @@ pub(super) struct UdpFlowState {
 ///
 /// Hot path (per-packet) takes a short read-lock to clone the `Arc`, then
 /// works on the per-flow `Mutex` without blocking other flows. Mirrors the
-/// architecture in [`crate::tun_tcp`]. Rare map-level mutations (flow
+/// architecture in [`crate::tun::tcp`]. Rare map-level mutations (flow
 /// create / remove / idle eviction) take the write-lock.
 pub(super) type FlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<UdpFlowState>>>>>;
 

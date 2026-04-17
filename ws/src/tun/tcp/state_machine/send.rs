@@ -22,7 +22,7 @@ fn pending_server_bytes(state: &TcpFlowState) -> usize {
     state.pending_server_data.iter().map(Bytes::len).sum()
 }
 
-pub(in crate::tun_tcp) fn assess_server_backlog_pressure(
+pub(in crate::tun::tcp) fn assess_server_backlog_pressure(
     state: &mut TcpFlowState,
     config: &TunTcpConfig,
     now: Instant,
@@ -58,7 +58,7 @@ pub(in crate::tun_tcp) fn assess_server_backlog_pressure(
     }
 }
 
-pub(in crate::tun_tcp) fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
+pub(in crate::tun::tcp) fn retransmit_budget_exhausted(state: &TcpFlowState, config: &TunTcpConfig) -> bool {
     state
         .unacked_server_segments
         .iter()
@@ -118,7 +118,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
     Ok(packets)
 }
 
-pub(in crate::tun_tcp) fn flush_server_output(state: &mut TcpFlowState) -> Result<ServerFlush> {
+pub(in crate::tun::tcp) fn flush_server_output(state: &mut TcpFlowState) -> Result<ServerFlush> {
     if state.status == TcpFlowStatus::SynReceived {
         return Ok(ServerFlush::default());
     }
@@ -177,7 +177,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     Ok(Some(packet))
 }
 
-pub(in crate::tun_tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
+pub(in crate::tun::tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     if send_window_remaining(state) != 0
         || state.pending_server_data.is_empty()
         || !state.unacked_server_segments.is_empty()
@@ -214,7 +214,7 @@ pub(in crate::tun_tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState)
     Ok(Some(packet))
 }
 
-pub(in crate::tun_tcp) fn retransmit_oldest_unacked_packet(
+pub(in crate::tun::tcp) fn retransmit_oldest_unacked_packet(
     state: &mut TcpFlowState,
 ) -> Result<Option<Vec<u8>>> {
     let index = preferred_retransmit_index(state);
@@ -241,7 +241,7 @@ pub(in crate::tun_tcp) fn retransmit_oldest_unacked_packet(
     )?))
 }
 
-pub(in crate::tun_tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
+pub(in crate::tun::tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     let Some(index) = preferred_retransmit_index(state)
         .filter(|index| {
             state.unacked_server_segments[*index].last_sent.elapsed()
@@ -276,7 +276,7 @@ pub(in crate::tun_tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Re
     )?))
 }
 
-pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
+pub(in crate::tun::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     let inflight_segments = count_segments_in_pipe(state);
     let inflight_bytes = bytes_in_pipe(state);
     let pending_server_bytes = pending_server_bytes(state);
@@ -401,7 +401,7 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
     );
 }
 
-pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
+pub(in crate::tun::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     let group = state.manager.group_name();
     let uplink: &str = &state.uplink_name;
     if state.reported.active {

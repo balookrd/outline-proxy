@@ -5,7 +5,7 @@ use anyhow::{Result, anyhow, bail};
 
 use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
-use crate::tun_wire::{
+use crate::tun::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IpVersion, locate_ipv6_payload,
 };
 
@@ -494,7 +494,7 @@ impl Ipv4FragmentSet {
             offset += chunk.data.len();
         }
 
-        let checksum = crate::tun_wire::checksum16(&packet[..header.len()]);
+        let checksum = crate::tun::wire::checksum16(&packet[..header.len()]);
         packet[10..12].copy_from_slice(&checksum.to_be_bytes());
         Ok(packet)
     }

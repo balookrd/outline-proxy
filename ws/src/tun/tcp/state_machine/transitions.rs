@@ -3,14 +3,14 @@ use std::time::Instant;
 use super::super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL;
 use super::types::{TcpFlowState, TcpFlowStatus};
 
-pub(in crate::tun_tcp) fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
+pub(in crate::tun::tcp) fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
     if state.status != status {
         state.status = status;
         state.status_since = Instant::now();
     }
 }
 
-pub(in crate::tun_tcp) fn client_fin_seen(status: TcpFlowStatus) -> bool {
+pub(in crate::tun::tcp) fn client_fin_seen(status: TcpFlowStatus) -> bool {
     matches!(
         status,
         TcpFlowStatus::CloseWait
@@ -21,7 +21,7 @@ pub(in crate::tun_tcp) fn client_fin_seen(status: TcpFlowStatus) -> bool {
     )
 }
 
-pub(in crate::tun_tcp) fn server_fin_sent(status: TcpFlowStatus) -> bool {
+pub(in crate::tun::tcp) fn server_fin_sent(status: TcpFlowStatus) -> bool {
     matches!(
         status,
         TcpFlowStatus::FinWait1
@@ -33,14 +33,14 @@ pub(in crate::tun_tcp) fn server_fin_sent(status: TcpFlowStatus) -> bool {
     )
 }
 
-pub(in crate::tun_tcp) fn server_fin_awaiting_ack(status: TcpFlowStatus) -> bool {
+pub(in crate::tun::tcp) fn server_fin_awaiting_ack(status: TcpFlowStatus) -> bool {
     matches!(
         status,
         TcpFlowStatus::FinWait1 | TcpFlowStatus::Closing | TcpFlowStatus::LastAck
     )
 }
 
-pub(in crate::tun_tcp) fn transition_on_client_fin(state: &mut TcpFlowState) {
+pub(in crate::tun::tcp) fn transition_on_client_fin(state: &mut TcpFlowState) {
     match state.status {
         TcpFlowStatus::SynReceived | TcpFlowStatus::Established => {
             set_flow_status(state, TcpFlowStatus::CloseWait);
@@ -59,7 +59,7 @@ pub(in crate::tun_tcp) fn transition_on_client_fin(state: &mut TcpFlowState) {
     }
 }
 
-pub(in crate::tun_tcp) fn transition_on_server_fin_ack(state: &mut TcpFlowState) -> bool {
+pub(in crate::tun::tcp) fn transition_on_server_fin_ack(state: &mut TcpFlowState) -> bool {
     match state.status {
         TcpFlowStatus::FinWait1 => {
             set_flow_status(state, TcpFlowStatus::FinWait2);
@@ -82,12 +82,12 @@ pub(in crate::tun_tcp) fn transition_on_server_fin_ack(state: &mut TcpFlowState)
     }
 }
 
-pub(in crate::tun_tcp) fn reset_zero_window_persist(state: &mut TcpFlowState) {
+pub(in crate::tun::tcp) fn reset_zero_window_persist(state: &mut TcpFlowState) {
     state.zero_window_probe_backoff = TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL;
     state.next_zero_window_probe_at = None;
 }
 
-pub(in crate::tun_tcp) fn note_recent_client_timestamp(state: &mut TcpFlowState, timestamp_value: Option<u32>) {
+pub(in crate::tun::tcp) fn note_recent_client_timestamp(state: &mut TcpFlowState, timestamp_value: Option<u32>) {
     if state.timestamps_enabled
         && let Some(timestamp_value) = timestamp_value {
             state.recent_client_timestamp = Some(timestamp_value);
