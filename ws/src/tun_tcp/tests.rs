@@ -971,6 +971,87 @@ async fn reassembly_limits_trigger_for_segment_and_byte_pressure() {
 }
 
 #[tokio::test]
+async fn queue_future_segment_rejects_oversized_without_inserting() {
+    // Pre-check semantics: a segment that would push the reassembly queue
+    // past its byte cap must be rejected before mutation, not after. This
+    // closes the DoS vector where a single oversized out-of-order segment
+    // transiently spikes memory above the configured limit.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.pending_client_segments = VecDeque::from([super::BufferedClientSegment {
+        sequence_number: 150,
+        flags: TCP_FLAG_ACK,
+        payload: vec![1; 32].into(),
+    }]);
+    let existing_snapshot: Vec<_> = state.pending_client_segments.iter().cloned().collect();
+    let config = TunTcpConfig {
+        max_buffered_client_segments: 16,
+        max_buffered_client_bytes: 48,
+        ..test_tun_tcp_config()
+    };
+    // Oversized future segment (64 bytes) well within the receive window
+    // but with only 16 bytes of headroom left (48 cap - 32 already queued).
+    let packet = ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.2".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 40000,
+        destination_port: 443,
+        sequence_number: 200,
+        acknowledgement_number: 1000,
+        window_size: 4096,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value: None,
+        timestamp_echo_reply: None,
+        flags: TCP_FLAG_ACK,
+        payload: vec![9; 64],
+    };
+    let outcome = super::queue_future_segment_with_recv_window(&mut state, &config, &packet);
+    assert_eq!(outcome, super::QueueFutureSegmentOutcome::WouldExceedLimits);
+    // The queue must be unchanged — no partial insertion before the check.
+    assert_eq!(state.pending_client_segments.len(), existing_snapshot.len());
+    for (actual, expected) in state.pending_client_segments.iter().zip(existing_snapshot.iter()) {
+        assert_eq!(actual.sequence_number, expected.sequence_number);
+        assert_eq!(actual.flags, expected.flags);
+        assert_eq!(actual.payload, expected.payload);
+    }
+}
+
+#[tokio::test]
+async fn queue_future_segment_accepts_within_limits() {
+    let mut state = tcp_flow_state_for_tests().await;
+    let config = TunTcpConfig {
+        max_buffered_client_segments: 16,
+        max_buffered_client_bytes: 1024,
+        ..test_tun_tcp_config()
+    };
+    let packet = ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.2".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 40000,
+        destination_port: 443,
+        sequence_number: 200,
+        acknowledgement_number: 1000,
+        window_size: 4096,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value: None,
+        timestamp_echo_reply: None,
+        flags: TCP_FLAG_ACK,
+        payload: vec![9; 64],
+    };
+    let outcome = super::queue_future_segment_with_recv_window(&mut state, &config, &packet);
+    assert_eq!(outcome, super::QueueFutureSegmentOutcome::Queued);
+    assert_eq!(state.pending_client_segments.len(), 1);
+    assert_eq!(state.pending_client_segments[0].payload.len(), 64);
+}
+
+#[tokio::test]
 async fn server_backlog_limit_detects_pending_bytes() {
     let mut state = tcp_flow_state_for_tests().await;
     state.pending_server_data = VecDeque::from([vec![1; 128].into(), vec![2; 128].into()]);

@@ -9,14 +9,14 @@ use crate::uplink::TransportKind;
 
 use super::super::maintenance::sync_flow_metrics_and_wake;
 use super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, apply_client_segment, build_flow_ack_packet, build_flow_packet,
-    build_flow_syn_ack_packet, client_fin_seen, drain_ready_buffered_segments_from_state,
-    exceeds_client_reassembly_limits, flush_server_output, is_duplicate_syn,
-    normalize_client_segment, note_ack_progress, note_recent_client_timestamp, process_server_ack,
-    queue_future_segment_with_recv_window, reset_zero_window_persist, retransmit_budget_exhausted,
-    retransmit_oldest_unacked_packet, seq_gt, seq_lt, server_fin_awaiting_ack, set_flow_status,
-    transition_on_client_fin, transition_on_server_fin_ack, trim_packet_to_receive_window,
-    update_client_send_window,
+    QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus, apply_client_segment,
+    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, client_fin_seen,
+    drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
+    flush_server_output, is_duplicate_syn, normalize_client_segment, note_ack_progress,
+    note_recent_client_timestamp, process_server_ack, queue_future_segment_with_recv_window,
+    reset_zero_window_persist, retransmit_budget_exhausted, retransmit_oldest_unacked_packet,
+    seq_gt, seq_lt, server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
+    transition_on_server_fin_ack, trim_packet_to_receive_window, update_client_send_window,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
@@ -221,12 +221,14 @@ impl TunTcpEngine {
         }
 
         if seq_gt(packet.sequence_number, state.client_next_seq) {
-            queue_future_segment_with_recv_window(&mut state, &packet);
-            if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
-                let key = state.key.clone();
-                drop(state);
-                self.abort_flow_with_rst(&key, "client_reassembly_limit").await;
-                return Ok(());
+            match queue_future_segment_with_recv_window(&mut state, &self.inner.tcp, &packet) {
+                QueueFutureSegmentOutcome::WouldExceedLimits => {
+                    let key = state.key.clone();
+                    drop(state);
+                    self.abort_flow_with_rst(&key, "client_reassembly_limit").await;
+                    return Ok(());
+                },
+                QueueFutureSegmentOutcome::OutsideWindow | QueueFutureSegmentOutcome::Queued => {},
             }
             sync_flow_metrics_and_wake(&mut state);
             let ack = build_flow_ack_packet(

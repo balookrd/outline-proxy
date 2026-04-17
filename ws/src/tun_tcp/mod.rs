@@ -23,11 +23,12 @@ use self::wire::{ParsedTcpPacket, build_response_packet_custom};
 
 #[cfg(test)]
 use self::state_machine::{
-    BufferedClientSegment, ClientSegmentView, ServerSegment, TcpFlowState, TcpFlowStatus,
-    assess_server_backlog_pressure, build_flow_ack_packet, build_flow_syn_ack_packet,
-    drain_ready_buffered_segments, exceeds_client_reassembly_limits, is_duplicate_syn,
-    maybe_emit_zero_window_probe, normalize_client_segment, note_ack_progress,
-    note_congestion_event, process_server_ack, queue_future_segment, reset_zero_window_persist,
+    BufferedClientSegment, ClientSegmentView, QueueFutureSegmentOutcome, ServerSegment,
+    TcpFlowState, TcpFlowStatus, assess_server_backlog_pressure, build_flow_ack_packet,
+    build_flow_syn_ack_packet, drain_ready_buffered_segments, exceeds_client_reassembly_limits,
+    is_duplicate_syn, maybe_emit_zero_window_probe, normalize_client_segment, note_ack_progress,
+    note_congestion_event, process_server_ack, queue_future_segment,
+    queue_future_segment_with_recv_window, reset_zero_window_persist,
     retransmit_oldest_unacked_packet, update_client_send_window,
 };
 
