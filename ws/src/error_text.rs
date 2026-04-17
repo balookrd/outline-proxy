@@ -113,23 +113,6 @@ pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
 }
 
 
-#[cfg(feature = "tun")]
-pub(crate) fn classify_tun_udp_forward_error(error: &Error) -> &'static str {
-    let lower = lower_error(error);
-    if lower.contains("all udp uplinks failed") {
-        "all_uplinks_failed"
-    } else if lower.contains("failed to send udp websocket frame")
-        || lower.contains("websocket read failed")
-    {
-        "transport_error"
-    } else if lower.contains("failed to connect to") {
-        "connect_failed"
-    } else {
-        "other"
-    }
-}
-
-
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;
