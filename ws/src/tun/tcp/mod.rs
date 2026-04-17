@@ -1,7 +1,7 @@
 use std::net::IpAddr;
 use std::time::Duration;
 
-use crate::tun_wire::IpVersion;
+use crate::tun::wire::IpVersion;
 
 mod engine;
 mod maintenance;

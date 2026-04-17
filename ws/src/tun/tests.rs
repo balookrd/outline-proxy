@@ -3,7 +3,7 @@ use super::{
     PacketDisposition, build_icmp_echo_reply, build_icmp_echo_reply_packets, checksum16,
     classify_packet, icmpv6_checksum, is_tun_device_busy_error,
 };
-use crate::tun_defrag::{DefragmentedPacket, TunDefragmenter};
+use crate::tun::defrag::{DefragmentedPacket, TunDefragmenter};
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 #[test]
@@ -94,7 +94,7 @@ fn ipv6_icmp_echo_request_with_destination_options_gets_local_reply() {
 
     assert_eq!(classify_packet(&packet).unwrap(), PacketDisposition::IcmpEchoRequest);
     let reply = build_icmp_echo_reply(&packet).unwrap();
-    let (_, payload_offset, total_len) = crate::tun_wire::locate_ipv6_upper_layer(&reply).unwrap();
+    let (_, payload_offset, total_len) = crate::tun::wire::locate_ipv6_upper_layer(&reply).unwrap();
 
     assert_eq!(reply[8..24], destination.octets());
     assert_eq!(reply[24..40], source.octets());
@@ -125,7 +125,7 @@ fn large_ipv6_icmp_echo_replies_are_fragmented_to_minimum_mtu() {
         other => panic!("unexpected result: {other:?}"),
     };
     let (_, payload_offset, total_len) =
-        crate::tun_wire::locate_ipv6_upper_layer(&reassembled).unwrap();
+        crate::tun::wire::locate_ipv6_upper_layer(&reassembled).unwrap();
     assert_eq!(reassembled[8..24], destination.octets());
     assert_eq!(reassembled[24..40], source.octets());
     assert_eq!(reassembled[payload_offset], 129);
@@ -235,7 +235,7 @@ fn build_ipv6_udp_packet_with_extension_header() -> Vec<u8> {
     packet[48..50].copy_from_slice(&53u16.to_be_bytes());
     packet[50..52].copy_from_slice(&40000u16.to_be_bytes());
     packet[52..54].copy_from_slice(&(udp_len as u16).to_be_bytes());
-    let checksum = crate::tun_wire::ipv6_payload_checksum(source, destination, 17, &packet[48..]);
+    let checksum = crate::tun::wire::ipv6_payload_checksum(source, destination, 17, &packet[48..]);
     packet[54..56].copy_from_slice(&checksum.to_be_bytes());
     packet
 }

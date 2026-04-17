@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::tun_wire::{
+use crate::tun::wire::{
     checksum16, ipv4_payload_checksum, ipv6_payload_checksum, locate_ipv6_upper_layer,
 };
 

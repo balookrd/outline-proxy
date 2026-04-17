@@ -49,7 +49,7 @@ impl TcpOptions {
     }
 }
 
-pub(in crate::tun_tcp) fn build_flow_packet(
+pub(in crate::tun::tcp) fn build_flow_packet(
     state: &TcpFlowState,
     sequence_number: u32,
     acknowledgement_number: u32,
@@ -90,7 +90,7 @@ fn build_flow_packet_with_options(
     )
 }
 
-pub(in crate::tun_tcp) fn build_flow_ack_packet(
+pub(in crate::tun::tcp) fn build_flow_ack_packet(
     state: &TcpFlowState,
     sequence_number: u32,
     acknowledgement_number: u32,
@@ -107,7 +107,7 @@ pub(in crate::tun_tcp) fn build_flow_ack_packet(
     )
 }
 
-pub(in crate::tun_tcp) fn build_flow_syn_ack_packet(
+pub(in crate::tun::tcp) fn build_flow_syn_ack_packet(
     state: &TcpFlowState,
     server_isn: u32,
     acknowledgement_number: u32,
@@ -243,7 +243,7 @@ fn advertised_receive_window(state: &TcpFlowState) -> u16 {
     scaled.min(u16::MAX as usize) as u16
 }
 
-pub(in crate::tun_tcp) fn decode_client_window(packet: &ParsedTcpPacket, scale: u8) -> u32 {
+pub(in crate::tun::tcp) fn decode_client_window(packet: &ParsedTcpPacket, scale: u8) -> u32 {
     if (packet.flags & TCP_FLAG_SYN) != 0 {
         u32::from(packet.window_size)
     } else {
@@ -251,7 +251,7 @@ pub(in crate::tun_tcp) fn decode_client_window(packet: &ParsedTcpPacket, scale: 
     }
 }
 
-pub(in crate::tun_tcp) fn update_client_send_window(state: &mut TcpFlowState, packet: &ParsedTcpPacket) {
+pub(in crate::tun::tcp) fn update_client_send_window(state: &mut TcpFlowState, packet: &ParsedTcpPacket) {
     let decoded_window = decode_client_window(packet, state.client_window_scale);
     let should_update = seq_gt(packet.sequence_number, state.client_window_update_seq)
         || (packet.sequence_number == state.client_window_update_seq
@@ -266,7 +266,7 @@ pub(in crate::tun_tcp) fn update_client_send_window(state: &mut TcpFlowState, pa
     }
 }
 
-pub(in crate::tun_tcp) fn send_window_remaining(state: &TcpFlowState) -> u32 {
+pub(in crate::tun::tcp) fn send_window_remaining(state: &TcpFlowState) -> u32 {
     if seq_ge(state.server_seq, state.client_window_end) {
         0
     } else {
@@ -274,7 +274,7 @@ pub(in crate::tun_tcp) fn send_window_remaining(state: &TcpFlowState) -> u32 {
     }
 }
 
-pub(in crate::tun_tcp) fn buffered_client_bytes(state: &TcpFlowState) -> usize {
+pub(in crate::tun::tcp) fn buffered_client_bytes(state: &TcpFlowState) -> usize {
     state
         .pending_client_segments
         .iter()
@@ -283,7 +283,7 @@ pub(in crate::tun_tcp) fn buffered_client_bytes(state: &TcpFlowState) -> usize {
         + state.pending_client_data.iter().map(Bytes::len).sum::<usize>()
 }
 
-pub(in crate::tun_tcp) fn receive_window_end(state: &TcpFlowState) -> u32 {
+pub(in crate::tun::tcp) fn receive_window_end(state: &TcpFlowState) -> u32 {
     state.client_next_seq.wrapping_add(
         state
             .receive_window_capacity
@@ -291,7 +291,7 @@ pub(in crate::tun_tcp) fn receive_window_end(state: &TcpFlowState) -> u32 {
     )
 }
 
-pub(in crate::tun_tcp) fn packet_overlaps_receive_window(
+pub(in crate::tun::tcp) fn packet_overlaps_receive_window(
     state: &TcpFlowState,
     packet: &ParsedTcpPacket,
 ) -> bool {

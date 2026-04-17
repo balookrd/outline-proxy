@@ -7,7 +7,7 @@ use super::super::{
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{AckEffect, SequenceRange, ServerSegment, TcpFlowState};
 
-pub(in crate::tun_tcp) fn server_segment_len(segment: &ServerSegment) -> usize {
+pub(in crate::tun::tcp) fn server_segment_len(segment: &ServerSegment) -> usize {
     segment.payload.len()
         + usize::from((segment.flags & TCP_FLAG_SYN) != 0)
         + usize::from((segment.flags & TCP_FLAG_FIN) != 0)
@@ -86,14 +86,14 @@ fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bo
     false
 }
 
-pub(in crate::tun_tcp) fn server_segment_is_sacked(state: &TcpFlowState, segment: &ServerSegment) -> bool {
+pub(in crate::tun::tcp) fn server_segment_is_sacked(state: &TcpFlowState, segment: &ServerSegment) -> bool {
     let end = segment
         .sequence_number
         .wrapping_add(server_segment_len(segment) as u32);
     range_fully_covered(&state.sack_scoreboard, segment.sequence_number, end)
 }
 
-pub(in crate::tun_tcp) fn bytes_in_pipe(state: &TcpFlowState) -> usize {
+pub(in crate::tun::tcp) fn bytes_in_pipe(state: &TcpFlowState) -> usize {
     state
         .unacked_server_segments
         .iter()
@@ -102,7 +102,7 @@ pub(in crate::tun_tcp) fn bytes_in_pipe(state: &TcpFlowState) -> usize {
         .sum()
 }
 
-pub(in crate::tun_tcp) fn count_segments_in_pipe(state: &TcpFlowState) -> usize {
+pub(in crate::tun::tcp) fn count_segments_in_pipe(state: &TcpFlowState) -> usize {
     state
         .unacked_server_segments
         .iter()
@@ -110,7 +110,7 @@ pub(in crate::tun_tcp) fn count_segments_in_pipe(state: &TcpFlowState) -> usize 
         .count()
 }
 
-pub(in crate::tun_tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Option<Instant> {
+pub(in crate::tun::tcp) fn next_retransmission_deadline(state: &TcpFlowState) -> Option<Instant> {
     let rto = state.retransmission_timeout;
     state
         .unacked_server_segments
@@ -136,7 +136,7 @@ fn exit_fast_recovery(state: &mut TcpFlowState) {
     state.congestion_window = state.slow_start_threshold.max(server_max_segment_payload(state));
 }
 
-pub(in crate::tun_tcp) fn server_max_segment_payload(state: &TcpFlowState) -> usize {
+pub(in crate::tun::tcp) fn server_max_segment_payload(state: &TcpFlowState) -> usize {
     state
         .client_max_segment_size
         .map(usize::from)
@@ -144,7 +144,7 @@ pub(in crate::tun_tcp) fn server_max_segment_payload(state: &TcpFlowState) -> us
         .clamp(1, MAX_SERVER_SEGMENT_PAYLOAD)
 }
 
-pub(in crate::tun_tcp) fn process_server_ack(
+pub(in crate::tun::tcp) fn process_server_ack(
     state: &mut TcpFlowState,
     acknowledgement_number: u32,
     sack_blocks: &[(u32, u32)],
@@ -238,7 +238,7 @@ fn highest_sacked_end(state: &TcpFlowState) -> Option<u32> {
         .max_by_key(|end| end.wrapping_sub(state.last_client_ack))
 }
 
-pub(in crate::tun_tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Option<usize> {
+pub(in crate::tun::tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Option<usize> {
     if let Some(highest_sacked_end) = highest_sacked_end(state)
         && let Some(index) = state.unacked_server_segments.iter().position(|segment| {
             !server_segment_is_sacked(state, segment)
@@ -253,11 +253,11 @@ pub(in crate::tun_tcp) fn preferred_retransmit_index(state: &TcpFlowState) -> Op
         .position(|segment| !server_segment_is_sacked(state, segment))
 }
 
-pub(in crate::tun_tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {
+pub(in crate::tun::tcp) fn congestion_window_remaining(state: &TcpFlowState) -> usize {
     state.congestion_window.saturating_sub(bytes_in_pipe(state))
 }
 
-pub(in crate::tun_tcp) fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
+pub(in crate::tun::tcp) fn current_retransmission_timeout(state: &TcpFlowState) -> Duration {
     state.retransmission_timeout
 }
 
@@ -285,7 +285,7 @@ fn update_rtt_estimator(state: &mut TcpFlowState, sample: Duration) {
     state.retransmission_timeout = rto;
 }
 
-pub(in crate::tun_tcp) fn note_ack_progress(
+pub(in crate::tun::tcp) fn note_ack_progress(
     state: &mut TcpFlowState,
     bytes_acked: usize,
     rtt_sample: Option<Duration>,
@@ -309,7 +309,7 @@ pub(in crate::tun_tcp) fn note_ack_progress(
     }
 }
 
-pub(in crate::tun_tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
+pub(in crate::tun::tcp) fn note_congestion_event(state: &mut TcpFlowState, timeout: bool) {
     let inflight = bytes_in_pipe(state);
     state.slow_start_threshold = (inflight / 2).max(TCP_MIN_SSTHRESH);
     state.fast_recovery_end = None;

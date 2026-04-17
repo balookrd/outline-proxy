@@ -2,14 +2,14 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::tun_wire::{
+use crate::tun::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_UDP, checksum16, ipv4_payload_checksum,
     ipv6_payload_checksum, locate_ipv6_upper_layer,
 };
 use crate::types::TargetAddr;
 
 const UDP_HEADER_LEN: usize = 8;
-pub(super) use crate::tun_wire::IpVersion;
+pub(super) use crate::tun::wire::IpVersion;
 
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedUdpPacket {

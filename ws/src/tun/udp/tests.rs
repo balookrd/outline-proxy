@@ -1,6 +1,7 @@
 use super::wire::{build_ipv4_udp_packet, build_ipv6_udp_packet};
-use super::{IpVersion, parse_udp_packet};
-use crate::tun_wire::test_utils::{
+use super::parse_udp_packet;
+use crate::tun::wire::IpVersion;
+use crate::tun::wire::test_utils::{
     IP_PROTOCOL_UDP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
     corrupt_ip_length_field, corrupt_udp_length_field, random_payload, seeded_rng,
 };
@@ -54,11 +55,11 @@ fn ipv6_udp_roundtrip_with_destination_options() {
     let payload = b"world";
     let udp_len = 8 + payload.len();
     let extension_len = 8usize;
-    let total_len = crate::tun_wire::IPV6_HEADER_LEN + extension_len + udp_len;
+    let total_len = crate::tun::wire::IPV6_HEADER_LEN + extension_len + udp_len;
     let mut packet = vec![0u8; total_len];
     packet[0] = 0x60;
     packet[4..6].copy_from_slice(&((extension_len + udp_len) as u16).to_be_bytes());
-    packet[6] = crate::tun_wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
+    packet[6] = crate::tun::wire::IPV6_NEXT_HEADER_DESTINATION_OPTIONS;
     packet[7] = 64;
     packet[8..24].copy_from_slice(&source_ip.octets());
     packet[24..40].copy_from_slice(&destination_ip.octets());
@@ -67,7 +68,7 @@ fn ipv6_udp_roundtrip_with_destination_options() {
     packet[50..52].copy_from_slice(&41000u16.to_be_bytes());
     packet[52..54].copy_from_slice(&(udp_len as u16).to_be_bytes());
     packet[56..].copy_from_slice(payload);
-    let checksum = crate::tun_wire::ipv6_payload_checksum(
+    let checksum = crate::tun::wire::ipv6_payload_checksum(
         source_ip,
         destination_ip,
         IP_PROTOCOL_UDP,

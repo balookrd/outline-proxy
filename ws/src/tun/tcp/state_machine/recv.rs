@@ -13,13 +13,13 @@ use super::types::{BufferedClientSegment, ClientSegmentView, TcpFlowState};
 /// needed by the reassembly and delivery paths, avoiding the
 /// `sack_blocks: Vec<(u32,u32)>` heap allocation that a full
 /// `ParsedTcpPacket` clone would incur.
-pub(in crate::tun_tcp) struct TrimmedSegment {
-    pub(in crate::tun_tcp) sequence_number: u32,
-    pub(in crate::tun_tcp) flags: u8,
-    pub(in crate::tun_tcp) payload: Bytes,
+pub(in crate::tun::tcp) struct TrimmedSegment {
+    pub(in crate::tun::tcp) sequence_number: u32,
+    pub(in crate::tun::tcp) flags: u8,
+    pub(in crate::tun::tcp) payload: Bytes,
 }
 
-pub(in crate::tun_tcp) fn trim_packet_to_receive_window(
+pub(in crate::tun::tcp) fn trim_packet_to_receive_window(
     state: &TcpFlowState,
     packet: &ParsedTcpPacket,
 ) -> Option<TrimmedSegment> {
@@ -50,14 +50,14 @@ pub(in crate::tun_tcp) fn trim_packet_to_receive_window(
 }
 
 #[cfg(test)]
-pub(in crate::tun_tcp) fn normalize_client_segment(
+pub(in crate::tun::tcp) fn normalize_client_segment(
     packet: &ParsedTcpPacket,
     expected_seq: u32,
 ) -> ClientSegmentView {
     normalize_client_segment_parts(packet.sequence_number, packet.flags, &packet.payload, expected_seq)
 }
 
-pub(in crate::tun_tcp) fn normalize_trimmed_segment(
+pub(in crate::tun::tcp) fn normalize_trimmed_segment(
     packet: &TrimmedSegment,
     expected_seq: u32,
 ) -> ClientSegmentView {
@@ -115,7 +115,7 @@ fn insert_client_segment(
     pending_segments.insert(insert_index, segment);
 }
 
-pub(in crate::tun_tcp) fn queue_future_segment(
+pub(in crate::tun::tcp) fn queue_future_segment(
     pending_segments: &mut VecDeque<BufferedClientSegment>,
     packet: &TrimmedSegment,
     expected_seq: u32,
@@ -196,7 +196,7 @@ pub(in crate::tun_tcp) fn queue_future_segment(
 
 /// Outcome of a pre-checked reassembly-queue insertion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::tun_tcp) enum QueueFutureSegmentOutcome {
+pub(in crate::tun::tcp) enum QueueFutureSegmentOutcome {
     /// Packet was discarded because it lies entirely outside the receive
     /// window (not a limit violation — normal handling).
     OutsideWindow,
@@ -207,7 +207,7 @@ pub(in crate::tun_tcp) enum QueueFutureSegmentOutcome {
     WouldExceedLimits,
 }
 
-pub(in crate::tun_tcp) fn queue_future_segment_with_recv_window(
+pub(in crate::tun::tcp) fn queue_future_segment_with_recv_window(
     state: &mut TcpFlowState,
     config: &TunTcpConfig,
     packet: &ParsedTcpPacket,
@@ -242,7 +242,7 @@ pub(in crate::tun_tcp) fn queue_future_segment_with_recv_window(
     QueueFutureSegmentOutcome::Queued
 }
 
-pub(in crate::tun_tcp) fn exceeds_client_reassembly_limits(
+pub(in crate::tun::tcp) fn exceeds_client_reassembly_limits(
     state: &TcpFlowState,
     config: &TunTcpConfig,
 ) -> bool {
@@ -250,7 +250,7 @@ pub(in crate::tun_tcp) fn exceeds_client_reassembly_limits(
         || buffered_client_bytes(state) > config.max_buffered_client_bytes
 }
 
-pub(in crate::tun_tcp) fn drain_ready_buffered_segments(
+pub(in crate::tun::tcp) fn drain_ready_buffered_segments(
     expected_seq: &mut u32,
     pending_segments: &mut VecDeque<BufferedClientSegment>,
     pending_payload: &mut Vec<u8>,
@@ -284,7 +284,7 @@ pub(in crate::tun_tcp) fn drain_ready_buffered_segments(
     }
 }
 
-pub(in crate::tun_tcp) fn drain_ready_buffered_segments_from_state(
+pub(in crate::tun::tcp) fn drain_ready_buffered_segments_from_state(
     state: &mut TcpFlowState,
     pending_payload: &mut Vec<u8>,
 ) -> bool {
@@ -295,7 +295,7 @@ pub(in crate::tun_tcp) fn drain_ready_buffered_segments_from_state(
     )
 }
 
-pub(in crate::tun_tcp) fn apply_client_segment(
+pub(in crate::tun::tcp) fn apply_client_segment(
     expected_seq: &mut u32,
     segment: ClientSegmentView,
     pending_payload: &mut Vec<u8>,
@@ -313,7 +313,7 @@ pub(in crate::tun_tcp) fn apply_client_segment(
     false
 }
 
-pub(in crate::tun_tcp) fn is_duplicate_syn(packet: &ParsedTcpPacket, expected_seq: u32) -> bool {
+pub(in crate::tun::tcp) fn is_duplicate_syn(packet: &ParsedTcpPacket, expected_seq: u32) -> bool {
     (packet.flags & TCP_FLAG_SYN) != 0
         && (packet.flags & TCP_FLAG_ACK) == 0
         && packet.payload.is_empty()

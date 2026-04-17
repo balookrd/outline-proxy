@@ -1,9 +1,11 @@
 #[cfg(test)]
 pub(crate) mod test_utils;
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, bail};
+
+use crate::types::TargetAddr;
 
 pub(crate) const IPV4_HEADER_LEN: usize = 20;
 pub(crate) const IPV6_HEADER_LEN: usize = 40;
@@ -22,6 +24,23 @@ pub(crate) const IPV6_NEXT_HEADER_NONE: u8 = 59;
 pub(crate) enum IpVersion {
     V4,
     V6,
+}
+
+/// Prometheus label value for the IP family of a TUN packet.
+pub(crate) fn ip_family_from_version(version: IpVersion) -> &'static str {
+    match version {
+        IpVersion::V4 => "ipv4",
+        IpVersion::V6 => "ipv6",
+    }
+}
+
+/// Builds a [`TargetAddr`] from an `(ip, port)` pair — the TUN path always
+/// resolves to a literal IP (no domain), so this is a direct mapping.
+pub(crate) fn ip_to_target(ip: IpAddr, port: u16) -> TargetAddr {
+    match ip {
+        IpAddr::V4(ip) => TargetAddr::IpV4(ip, port),
+        IpAddr::V6(ip) => TargetAddr::IpV6(ip, port),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

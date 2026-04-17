@@ -12,8 +12,8 @@ use super::{
 };
 use crate::config::TunTcpConfig;
 use crate::transport::{AnyWsStream, TcpShadowsocksWriter};
-use crate::tun_tcp::state_machine::SequenceRange;
-use crate::tun_wire::test_utils::{
+use crate::tun::tcp::state_machine::SequenceRange;
+use crate::tun::wire::test_utils::{
     IP_PROTOCOL_TCP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
     flip_packet_byte, random_payload, seeded_rng, transport_offset,
 };
@@ -1311,7 +1311,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             )
             .await,
         },
-        upstream_writer: Some(Arc::new(Mutex::new(crate::tun_tcp::TunTcpUpstreamWriter::Tunneled({
+        upstream_writer: Some(Arc::new(Mutex::new(crate::tun::tcp::TunTcpUpstreamWriter::Tunneled({
             let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
                 sink,
                 cipher,

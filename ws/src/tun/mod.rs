@@ -13,10 +13,10 @@ use tracing::{debug, info, warn};
 
 use crate::config::TunConfig;
 use crate::metrics;
-use crate::tun_defrag::{DefragmentedPacket, TunDefragmenter};
-use crate::tun_tcp::TunTcpEngine;
-use crate::tun_udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
-use crate::tun_wire::{
+use crate::tun::defrag::{DefragmentedPacket, TunDefragmenter};
+use crate::tun::tcp::TunTcpEngine;
+use crate::tun::udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
+use crate::tun::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_ICMPV6,
     IPV6_NEXT_HEADER_NONE, IPV6_NEXT_HEADER_TCP, IPV6_NEXT_HEADER_UDP, checksum16,
     ipv6_payload_checksum, locate_ipv6_payload, locate_ipv6_upper_layer,
@@ -30,6 +30,11 @@ const IPV6_MIN_PATH_MTU: usize = 1280;
 const EBUSY_OS_ERROR: i32 = 16;
 const TUN_OPEN_BUSY_RETRIES: usize = 20;
 const TUN_OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(250);
+
+pub mod defrag;
+pub mod tcp;
+pub mod udp;
+pub(crate) mod wire;
 
 #[cfg(test)]
 mod tests;
