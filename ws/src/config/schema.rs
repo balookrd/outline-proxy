@@ -27,11 +27,23 @@ pub(crate) struct ConfigFile {
     pub(super) load_balancing: Option<LoadBalancingSection>,
     pub(super) outline: Option<OutlineSection>,
     pub(super) metrics: Option<MetricsSection>,
+    #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
     pub(super) h2: Option<H2Section>,
     pub(super) udp_recv_buf_bytes: Option<usize>,
     pub(super) udp_send_buf_bytes: Option<usize>,
-    pub(super) bypass: Option<BypassSection>,
+    /// SO_MARK for direct-route sockets. Linux only.
+    pub(super) direct_fwmark: Option<u32>,
+    /// Explicit uplink groups with per-group LB + probe config.
+    pub(super) uplink_group: Option<Vec<UplinkGroupSection>>,
+    /// Policy routes mapping CIDR prefixes to groups or `direct`/`drop`.
+    pub(super) route: Option<Vec<RouteSection>>,
+    /// Override the path where active-uplink state is persisted.
+    /// Defaults to the config file path with extension replaced by
+    /// `.state.toml` (e.g. `config.toml` → `config.state.toml`).
+    /// Set to a writable location when the config directory is read-only
+    /// (e.g. `/var/lib/outline-ws/state.toml`).
+    pub(super) state_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,18 +83,7 @@ pub(super) struct MetricsSection {
     pub(super) listen: Option<SocketAddr>,
 }
 
-#[derive(Debug, Deserialize)]
-pub(super) struct BypassSection {
-    /// Inline CIDR prefixes (combined with `file` if both are set).
-    pub(super) prefixes: Option<Vec<String>>,
-    /// Path to a file with one CIDR per line (`#` comments and blank lines ignored).
-    pub(super) file: Option<PathBuf>,
-    /// How often to poll `file` for mtime changes, in seconds (default: 60).
-    pub(super) file_poll_secs: Option<u64>,
-    /// If true, bypass IPs NOT in the prefix list (tunnel only the listed prefixes).
-    pub(super) invert: Option<bool>,
-}
-
+#[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
 pub(super) struct TunSection {
     pub(super) path: Option<PathBuf>,
@@ -103,6 +104,7 @@ pub(super) struct H2Section {
     pub(super) initial_connection_window_size: Option<u32>,
 }
 
+#[cfg(feature = "tun")]
 #[derive(Debug, Deserialize)]
 pub(super) struct TunTcpSection {
     pub(super) connect_timeout_secs: Option<u64>,
@@ -132,6 +134,57 @@ pub(super) struct UplinkSection {
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
+    /// declared; optional in legacy config (all uplinks land in `default`).
+    pub(super) group: Option<String>,
+}
+
+/// New: explicit uplink group with its own LB config and probe override.
+///
+/// Top-level `[probe]` acts as a template; unspecified fields in
+/// `[uplink_group.probe]` are inherited from it.
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct UplinkGroupSection {
+    pub(super) name: Option<String>,
+    pub(super) mode: Option<LoadBalancingMode>,
+    pub(super) routing_scope: Option<RoutingScope>,
+    pub(super) sticky_ttl_secs: Option<u64>,
+    pub(super) hysteresis_ms: Option<u64>,
+    pub(super) failure_cooldown_secs: Option<u64>,
+    pub(super) tcp_chunk0_failover_timeout_secs: Option<u64>,
+    pub(super) warm_standby_tcp: Option<usize>,
+    pub(super) warm_standby_udp: Option<usize>,
+    pub(super) rtt_ewma_alpha: Option<f64>,
+    pub(super) failure_penalty_ms: Option<u64>,
+    pub(super) failure_penalty_max_ms: Option<u64>,
+    pub(super) failure_penalty_halflife_secs: Option<u64>,
+    pub(super) h3_downgrade_secs: Option<u64>,
+    pub(super) udp_ws_keepalive_secs: Option<u64>,
+    pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
+    pub(super) tcp_active_keepalive_secs: Option<u64>,
+    pub(super) auto_failback: Option<bool>,
+    /// Per-group override of top-level `[probe]`; unspecified fields inherit.
+    pub(super) probe: Option<ProbeSection>,
+}
+
+/// New: policy routing rule.
+///
+/// Exactly one of `default = true` or non-empty `prefixes`/`file` must be set.
+/// `via` picks the target: either a group name or the reserved `"direct"`.
+/// At most one of `fallback_via` / `fallback_direct` / `fallback_drop` is allowed.
+#[derive(Debug, Deserialize, Clone)]
+pub(super) struct RouteSection {
+    pub(super) prefixes: Option<Vec<String>>,
+    pub(super) file: Option<PathBuf>,
+    pub(super) file_poll_secs: Option<u64>,
+    pub(super) default: Option<bool>,
+    pub(super) via: Option<String>,
+    pub(super) fallback_via: Option<String>,
+    pub(super) fallback_direct: Option<bool>,
+    pub(super) fallback_drop: Option<bool>,
+    /// If true, the rule matches addresses NOT in the prefix list.
+    /// Useful for "tunnel only listed prefixes, everything else goes direct".
+    pub(super) invert: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

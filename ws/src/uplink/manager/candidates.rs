@@ -108,6 +108,25 @@ impl UplinkManager {
         *self.inner.global_active_uplink.read().await
     }
 
+    /// Non-side-effecting health check used by the dispatch layer to decide
+    /// whether to route a connection here or to fall back to another target.
+    ///
+    /// Returns true when at least one transport-capable uplink in this group
+    /// is currently healthy (probe-confirmed or, when probes are disabled,
+    /// not in cooldown). Unlike [`tcp_candidates`] / [`udp_candidates`], this
+    /// method does not touch sticky routes or active-uplink state.
+    pub async fn has_any_healthy(&self, transport: TransportKind) -> bool {
+        let statuses = self.inner.statuses.read().await;
+        let now = Instant::now();
+        let scope = self.inner.load_balancing.routing_scope;
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
+            .any(|(index, _)| selection_health(&statuses[index], transport, now, scope))
+    }
+
     pub async fn active_uplink_index_for_transport(
         &self,
         transport: TransportKind,
@@ -314,8 +333,12 @@ impl UplinkManager {
                 // to cooldown-based gating so that failures can still cause a switch.
                 let probe_healthy = if self.inner.probe.enabled() {
                     match gate_transport {
-                        TransportKind::Tcp => statuses[active_index].tcp_healthy != Some(false),
-                        TransportKind::Udp => statuses[active_index].udp_healthy != Some(false),
+                        TransportKind::Tcp => {
+                            statuses[active_index].tcp.healthy != Some(false)
+                        },
+                        TransportKind::Udp => {
+                            statuses[active_index].udp.healthy != Some(false)
+                        },
                     }
                 } else {
                     true
@@ -387,10 +410,10 @@ impl UplinkManager {
                             higher_priority
                                 && match gate_transport {
                                     TransportKind::Tcp => {
-                                        statuses[b.index].tcp_healthy == Some(true)
+                                        statuses[b.index].tcp.healthy == Some(true)
                                     },
                                     TransportKind::Udp => {
-                                        statuses[b.index].udp_healthy == Some(true)
+                                        statuses[b.index].udp.healthy == Some(true)
                                     },
                                 }
                         })
@@ -405,8 +428,12 @@ impl UplinkManager {
                     let best_is_stable = best.map_or(true, |b| {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
-                            TransportKind::Tcp => statuses[b.index].tcp_consecutive_successes,
-                            TransportKind::Udp => statuses[b.index].udp_consecutive_successes,
+                            TransportKind::Tcp => {
+                                statuses[b.index].tcp.consecutive_successes
+                            },
+                            TransportKind::Udp => {
+                                statuses[b.index].udp.consecutive_successes
+                            },
                         };
                         consecutive >= min
                     });
@@ -517,6 +544,32 @@ impl UplinkManager {
                     *self.inner.udp_active_uplink.write().await = Some(uplink_index);
                 },
             }
+        }
+
+        if let Some(store) = self.inner.state_store.clone() {
+            let uplink_name = self.inner.uplinks[uplink_index].name.clone();
+            let group_name = self.inner.group_name.clone();
+            let is_global = self.strict_global_active_uplink();
+            tokio::spawn(async move {
+                if is_global {
+                    store
+                        .update_active(&group_name, Some(Some(uplink_name)), None, None)
+                        .await;
+                } else {
+                    match transport {
+                        TransportKind::Tcp => {
+                            store
+                                .update_active(&group_name, None, Some(Some(uplink_name)), None)
+                                .await;
+                        },
+                        TransportKind::Udp => {
+                            store
+                                .update_active(&group_name, None, None, Some(Some(uplink_name)))
+                                .await;
+                        },
+                    }
+                }
+            });
         }
     }
 }

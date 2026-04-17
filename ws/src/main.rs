@@ -3,6 +3,10 @@ use clap::Parser;
 
 use outline_ws_rust::config::Args;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() -> Result<()> {
     outline_ws_rust::init_rustls_crypto_provider()?;
 

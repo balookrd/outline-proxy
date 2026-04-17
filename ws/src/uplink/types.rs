@@ -11,6 +11,7 @@ use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use crate::transport::AnyWsStream;
 use crate::types::TargetAddr;
 
+use super::state::StateStore;
 use super::utils::transport_key_prefix;
 
 #[derive(Clone)]
@@ -18,7 +19,19 @@ pub struct UplinkManager {
     pub(super) inner: Arc<UplinkManagerInner>,
 }
 
+impl std::fmt::Debug for UplinkManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UplinkManager")
+            .field("group", &self.inner.group_name)
+            .field("uplinks", &self.inner.uplinks.len())
+            .finish()
+    }
+}
+
 pub(super) struct UplinkManagerInner {
+    /// Name of the group this manager represents. Surfaced as the `group`
+    /// Prometheus label on every uplink-scoped metric emitted from within.
+    pub(super) group_name: String,
     pub(super) uplinks: Vec<Arc<UplinkConfig>>,
     pub(super) probe: ProbeConfig,
     pub(super) load_balancing: LoadBalancingConfig,
@@ -33,45 +46,55 @@ pub(super) struct UplinkManagerInner {
     /// Notified when a runtime failure sets a fresh cooldown, so the probe
     /// loop wakes up immediately instead of waiting for the next interval.
     pub(super) probe_wakeup: Arc<Notify>,
+    /// Optional persistent state store.  When `Some`, active-uplink changes
+    /// are flushed to disk so they survive process restarts.
+    pub(super) state_store: Option<Arc<StateStore>>,
 }
 
-#[derive(Clone, Debug)]
+/// All per-transport runtime state for a single uplink.
+///
+/// [`UplinkStatus`] holds one instance for TCP and one for UDP, eliminating
+/// the previous flat `tcp_*/udp_*` field pairs and the accompanying
+/// `match transport { Tcp => self.tcp_x, Udp => self.udp_x }` repetition.
+/// Use [`UplinkStatus::of`] to select the right half by a [`TransportKind`] variable.
+#[derive(Clone, Debug, Default)]
+pub(super) struct PerTransportStatus {
+    pub(super) healthy: Option<bool>,
+    pub(super) latency: Option<Duration>,
+    pub(super) rtt_ewma: Option<Duration>,
+    pub(super) penalty: PenaltyState,
+    pub(super) cooldown_until: Option<Instant>,
+    pub(super) consecutive_failures: u32,
+    pub(super) consecutive_successes: u32,
+    /// When set, connections must use H2 instead of H3 until this instant
+    /// because H3 produced repeated APPLICATION_CLOSE or other transport
+    /// errors. Cleared by a successful explicit H3 re-probe.
+    pub(super) h3_downgrade_until: Option<Instant>,
+    /// Timestamp of the most recent real data transfer on this transport.
+    /// Used to skip probe cycles when the uplink is actively carrying traffic.
+    pub(super) last_active: Option<Instant>,
+    /// Timestamp of the most recent early probe wakeup caused by a runtime
+    /// failure. Rate-limits wakeups to one per `PROBE_WAKEUP_MIN_INTERVAL`.
+    pub(super) last_probe_wakeup: Option<Instant>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(super) struct UplinkStatus {
-    pub(super) tcp_healthy: Option<bool>,
-    pub(super) udp_healthy: Option<bool>,
-    pub(super) tcp_latency: Option<Duration>,
-    pub(super) udp_latency: Option<Duration>,
-    pub(super) tcp_rtt_ewma: Option<Duration>,
-    pub(super) udp_rtt_ewma: Option<Duration>,
-    pub(super) tcp_penalty: PenaltyState,
-    pub(super) udp_penalty: PenaltyState,
+    pub(super) tcp: PerTransportStatus,
+    pub(super) udp: PerTransportStatus,
     pub(super) last_error: Option<String>,
     pub(super) last_checked: Option<Instant>,
-    pub(super) cooldown_until_tcp: Option<Instant>,
-    pub(super) cooldown_until_udp: Option<Instant>,
-    pub(super) tcp_consecutive_failures: u32,
-    pub(super) udp_consecutive_failures: u32,
-    pub(super) tcp_consecutive_successes: u32,
-    pub(super) udp_consecutive_successes: u32,
-    /// When set, H3 connections for TCP encountered repeated APPLICATION_CLOSE
-    /// errors at runtime (e.g. H3_INTERNAL_ERROR from server). Until this
-    /// instant, the uplink falls back to H2 for TCP to avoid the storm.
-    pub(super) h3_tcp_downgrade_until: Option<Instant>,
-    /// Same as `h3_tcp_downgrade_until` but for the UDP-over-WS transport.
-    /// Without this, UDP failover loops indefinitely when the only uplink's
-    /// H3 server is broken: each new UDP transport dialed at H3 fails on the
-    /// first packet with APPLICATION_CLOSE and re-triggers failover.
-    pub(super) h3_udp_downgrade_until: Option<Instant>,
-    /// Timestamp of the most recent real TCP data transfer through this uplink.
-    /// Used to suppress probe cycles when the uplink is actively carrying traffic.
-    pub(super) last_active_tcp: Option<Instant>,
-    /// Timestamp of the most recent real UDP data transfer through this uplink.
-    pub(super) last_active_udp: Option<Instant>,
-    /// Timestamp of the most recent early probe wakeup caused by a runtime
-    /// failure. Used to keep runtime-failure storms from waking the probe loop
-    /// on every fresh cooldown window under sustained load.
-    pub(super) last_probe_wakeup_tcp: Option<Instant>,
-    pub(super) last_probe_wakeup_udp: Option<Instant>,
+}
+
+impl UplinkStatus {
+    /// Borrow the per-transport status for the given transport kind.
+    pub(super) fn of(&self, kind: TransportKind) -> &PerTransportStatus {
+        match kind {
+            TransportKind::Tcp => &self.tcp,
+            TransportKind::Udp => &self.udp,
+        }
+    }
+
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -126,6 +149,9 @@ impl fmt::Display for RoutingKey {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UplinkManagerSnapshot {
+    /// Group this snapshot was generated for. Surfaced as the `group`
+    /// Prometheus label on snapshot-rendered metrics.
+    pub group: String,
     pub generated_at_unix_ms: u128,
     pub load_balancing_mode: String,
     pub routing_scope: String,
@@ -142,6 +168,9 @@ pub struct UplinkManagerSnapshot {
 pub struct UplinkSnapshot {
     pub index: usize,
     pub name: String,
+    /// Name of the uplink group this entry belongs to. Emitted as the
+    /// `group` Prometheus label alongside `uplink`.
+    pub group: String,
     pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,
@@ -177,34 +206,6 @@ pub struct StickyRouteSnapshot {
     pub expires_in_ms: u128,
 }
 
-impl Default for UplinkStatus {
-    fn default() -> Self {
-        Self {
-            tcp_healthy: None,
-            udp_healthy: None,
-            tcp_latency: None,
-            udp_latency: None,
-            tcp_rtt_ewma: None,
-            udp_rtt_ewma: None,
-            tcp_penalty: PenaltyState::default(),
-            udp_penalty: PenaltyState::default(),
-            last_error: None,
-            last_checked: None,
-            cooldown_until_tcp: None,
-            cooldown_until_udp: None,
-            tcp_consecutive_failures: 0,
-            udp_consecutive_failures: 0,
-            tcp_consecutive_successes: 0,
-            udp_consecutive_successes: 0,
-            h3_tcp_downgrade_until: None,
-            h3_udp_downgrade_until: None,
-            last_active_tcp: None,
-            last_active_udp: None,
-            last_probe_wakeup_tcp: None,
-            last_probe_wakeup_udp: None,
-        }
-    }
-}
 
 pub(super) struct StandbyPool {
     pub(super) tcp: Mutex<VecDeque<AnyWsStream>>,

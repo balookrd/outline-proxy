@@ -33,20 +33,32 @@ mod ws_stream;
 
 use dns::resolve_server_addr;
 use h2_shared::connect_websocket_h2;
-use socket::connect_tcp_socket;
 use ws_stream::H1WsStream;
 
 pub use h2_io::init_h2_window_sizes;
+pub(crate) use socket::{bind_udp_socket, connect_tcp_socket};
 pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::AnyWsStream;
+pub(crate) use ws_stream::SharedConnectionHealth;
 
 pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
-pub(crate) use socket::{bind_addr_for, bind_udp_socket};
+pub(crate) use socket::bind_addr_for;
 #[cfg(feature = "h3")]
 pub(crate) use url_util::{format_authority, websocket_path};
+
+/// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
+/// whose underlying connection is no longer open.  Should be called
+/// periodically (e.g. every 15 s from the warm-standby maintenance loop) to
+/// prevent dead entries from accumulating when a cache key is never looked up
+/// again (DNS rotation, server IP change, etc.).
+pub async fn gc_shared_connections() {
+    h2_shared::gc_shared_h2_connections().await;
+    #[cfg(feature = "h3")]
+    crate::transport_h3::gc_shared_h3_connections().await;
+}
 
 pub async fn connect_websocket(
     url: &Url,

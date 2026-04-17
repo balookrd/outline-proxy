@@ -13,14 +13,7 @@ pub(super) fn effective_health(
     transport: TransportKind,
     now: Instant,
 ) -> bool {
-    match transport {
-        TransportKind::Tcp => {
-            status.tcp_healthy == Some(true) && !cooldown_active(status, transport, now)
-        },
-        TransportKind::Udp => {
-            status.udp_healthy == Some(true) && !cooldown_active(status, transport, now)
-        },
-    }
+    status.of(transport).healthy == Some(true) && !cooldown_active(status, transport, now)
 }
 
 pub(super) fn supports_transport_for_scope(
@@ -67,10 +60,7 @@ pub(super) fn cooldown_active(
     transport: TransportKind,
     now: Instant,
 ) -> bool {
-    match transport {
-        TransportKind::Tcp => status.cooldown_until_tcp.is_some_and(|until| until > now),
-        TransportKind::Udp => status.cooldown_until_udp.is_some_and(|until| until > now),
-    }
+    status.of(transport).cooldown_until.is_some_and(|until| until > now)
 }
 
 pub(super) fn cooldown_remaining(
@@ -78,11 +68,10 @@ pub(super) fn cooldown_remaining(
     transport: TransportKind,
     now: Instant,
 ) -> Duration {
-    let until = match transport {
-        TransportKind::Tcp => status.cooldown_until_tcp,
-        TransportKind::Udp => status.cooldown_until_udp,
-    };
-    until.map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
+    status
+        .of(transport)
+        .cooldown_until
+        .map_or(Duration::ZERO, |t| t.saturating_duration_since(now))
 }
 
 pub(super) fn effective_latency(
@@ -91,27 +80,19 @@ pub(super) fn effective_latency(
     now: Instant,
     config: &LoadBalancingConfig,
 ) -> Option<Duration> {
+    let ts = status.of(transport);
     let base = scoring_base_latency(status, transport);
-    let mut penalty = current_penalty(
-        match transport {
-            TransportKind::Tcp => &status.tcp_penalty,
-            TransportKind::Udp => &status.udp_penalty,
-        },
-        now,
-        config,
-    );
-    // While an H3 TCP downgrade is active, add failure_penalty_max on top of
-    // the existing penalty.  This keeps the uplink's score high enough that
-    // active-active flows (per-flow scope) prefer the backup uplink and do not
+    let mut penalty = current_penalty(&ts.penalty, now, config);
+    // While an H3 downgrade is active for this transport, add failure_penalty_max
+    // on top of the existing penalty.  This keeps the uplink's score high enough
+    // that active-active flows (per-flow scope) prefer the backup uplink and do not
     // switch back to the primary while it is operating in H2 fallback mode.
     //
     // Without this, the primary's score recovers as good H2 latency feeds into
     // the EWMA and the failure penalty decays, causing flows to shift back to
-    // primary.  Once h3_tcp_downgrade_until expires, those flows then try H3,
+    // primary.  Once h3_downgrade_until expires, those flows then try H3,
     // encounter the same failure, and the whole cycle repeats.
-    if matches!(transport, TransportKind::Tcp)
-        && status.h3_tcp_downgrade_until.is_some_and(|t| t > now)
-    {
+    if ts.h3_downgrade_until.is_some_and(|t| t > now) {
         let extra = config.failure_penalty_max;
         penalty = Some(penalty.unwrap_or_default().saturating_add(extra));
     }
@@ -127,10 +108,8 @@ pub(super) fn scoring_base_latency(
     status: &UplinkStatus,
     transport: TransportKind,
 ) -> Option<Duration> {
-    match transport {
-        TransportKind::Tcp => status.tcp_rtt_ewma.or(status.tcp_latency),
-        TransportKind::Udp => status.udp_rtt_ewma.or(status.udp_latency),
-    }
+    let ts = status.of(transport);
+    ts.rtt_ewma.or(ts.latency)
 }
 
 pub(super) fn weighted_latency_score(base: Option<Duration>, weight: f64) -> Option<Duration> {

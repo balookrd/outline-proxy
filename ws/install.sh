@@ -16,7 +16,7 @@ TMP_DIR="${TMP_DIR:-/tmp/${BINARY_NAME}-install}"
 CHANNEL="${CHANNEL:-stable}"   # stable | nightly
 VERSION="${VERSION:-}"         # stable: 1.0.0 or v1.0.0 ; nightly: nightly
 FORCE="${FORCE:-}"             # непусто — пропустить проверку текущей версии
-NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR:-/etc/outline-ws-rust}/nightly-commit}"
+NIGHTLY_COMMIT_FILE="${NIGHTLY_COMMIT_FILE:-${CONFIG_DIR}/nightly-commit}"
 GITHUB_API="${GITHUB_API:-https://api.github.com}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 
@@ -255,7 +255,9 @@ install_binary() {
   mkdir -p "$(dirname "$INSTALL_PATH")"
 
   if [[ -f "$INSTALL_PATH" ]]; then
-    cp -f "$INSTALL_PATH" "${INSTALL_PATH}.bak"
+    backup_path="${INSTALL_BIN_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+    log "Делаю backup старого бинаря: ${backup_path}"
+    cp -a "$INSTALL_BIN_PATH" "$backup_path"
   fi
 
   install -m 0755 "$extracted" "$INSTALL_PATH"

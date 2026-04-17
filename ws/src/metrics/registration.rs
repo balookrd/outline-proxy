@@ -48,17 +48,17 @@ impl Metrics {
         let bytes_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_bytes_total",
-                "Application payload bytes transferred by protocol, direction and uplink.",
+                "Application payload bytes transferred by protocol, direction, group and uplink.",
             ),
-            &["protocol", "direction", "uplink"],
+            &["protocol", "direction", "group", "uplink"],
         )
         .expect("bytes_total metric");
         let udp_datagrams_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_udp_datagrams_total",
-                "UDP datagrams forwarded by direction and uplink.",
+                "UDP datagrams forwarded by direction, group and uplink.",
             ),
-            &["direction", "uplink"],
+            &["direction", "group", "uplink"],
         )
         .expect("udp_datagrams_total metric");
         let udp_oversized_dropped_total = IntCounterVec::new(
@@ -74,7 +74,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_selected_total",
                 "Times an uplink was selected for a transport.",
             ),
-            &["transport", "uplink"],
+            &["transport", "group", "uplink"],
         )
         .expect("uplink_selected_total metric");
         let uplink_runtime_failures_total = IntCounterVec::new(
@@ -82,7 +82,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_runtime_failures_total",
                 "Runtime transport failures by uplink.",
             ),
-            &["transport", "uplink"],
+            &["transport", "group", "uplink"],
         )
         .expect("uplink_runtime_failures_total metric");
         let uplink_runtime_failures_suppressed_total = IntCounterVec::new(
@@ -90,7 +90,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_runtime_failures_suppressed_total",
                 "Runtime failures observed while the uplink was already in cooldown.",
             ),
-            &["transport", "uplink"],
+            &["transport", "group", "uplink"],
         )
         .expect("uplink_runtime_failures_suppressed_total metric");
         let uplink_runtime_failure_causes_total = IntCounterVec::new(
@@ -98,7 +98,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_runtime_failure_causes_total",
                 "Runtime transport failures by uplink and classified cause.",
             ),
-            &["transport", "uplink", "cause"],
+            &["transport", "group", "uplink", "cause"],
         )
         .expect("uplink_runtime_failure_causes_total metric");
         let uplink_runtime_failure_signatures_total = IntCounterVec::new(
@@ -106,7 +106,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_runtime_failure_signatures_total",
                 "Runtime transport failures by uplink and normalized failure signature.",
             ),
-            &["transport", "uplink", "signature"],
+            &["transport", "group", "uplink", "signature"],
         )
         .expect("uplink_runtime_failure_signatures_total metric");
         let uplink_runtime_failure_other_details_total = IntCounterVec::new(
@@ -114,7 +114,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_runtime_failure_other_details_total",
                 "Runtime transport failures that remained in the 'other' bucket, grouped by a normalized raw detail signature.",
             ),
-            &["transport", "uplink", "detail"],
+            &["transport", "group", "uplink", "detail"],
         )
         .expect("uplink_runtime_failure_other_details_total metric");
         let uplink_failovers_total = IntCounterVec::new(
@@ -122,7 +122,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_failovers_total",
                 "Runtime failovers from one uplink to another.",
             ),
-            &["transport", "from_uplink", "to_uplink"],
+            &["transport", "group", "from_uplink", "to_uplink"],
         )
         .expect("uplink_failovers_total metric");
         let probe_runs_total = IntCounterVec::new(
@@ -130,7 +130,7 @@ impl Metrics {
                 "outline_ws_rust_probe_runs_total",
                 "Probe runs by uplink, transport, probe type and result.",
             ),
-            &["uplink", "transport", "probe", "result"],
+            &["group", "uplink", "transport", "probe", "result"],
         )
         .expect("probe_runs_total metric");
         let probe_duration_seconds = HistogramVec::new(
@@ -139,7 +139,7 @@ impl Metrics {
                 "Probe duration by uplink, transport and probe type.",
             )
             .buckets(vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0]),
-            &["uplink", "transport", "probe"],
+            &["group", "uplink", "transport", "probe"],
         )
         .expect("probe_duration_seconds metric");
         let probe_bytes_total = IntCounterVec::new(
@@ -147,7 +147,7 @@ impl Metrics {
                 "outline_ws_rust_probe_bytes_total",
                 "Application payload bytes exchanged by probes, by uplink, transport, probe type, and direction.",
             ),
-            &["uplink", "transport", "probe", "direction"],
+            &["group", "uplink", "transport", "probe", "direction"],
         )
         .expect("probe_bytes_total metric");
         let probe_wakeups_total = IntCounterVec::new(
@@ -155,7 +155,7 @@ impl Metrics {
                 "outline_ws_rust_probe_wakeups_total",
                 "Early probe wakeup events by uplink, transport, reason, and result.",
             ),
-            &["uplink", "transport", "reason", "result"],
+            &["group", "uplink", "transport", "reason", "result"],
         )
         .expect("probe_wakeups_total metric");
         let warm_standby_acquire_total = IntCounterVec::new(
@@ -163,7 +163,7 @@ impl Metrics {
                 "outline_ws_rust_warm_standby_acquire_total",
                 "Warm-standby acquire attempts by transport, uplink and outcome.",
             ),
-            &["transport", "uplink", "outcome"],
+            &["transport", "group", "uplink", "outcome"],
         )
         .expect("warm_standby_acquire_total metric");
         let warm_standby_refill_total = IntCounterVec::new(
@@ -171,7 +171,7 @@ impl Metrics {
                 "outline_ws_rust_warm_standby_refill_total",
                 "Warm-standby refill attempts by transport, uplink and result.",
             ),
-            &["transport", "uplink", "result"],
+            &["transport", "group", "uplink", "result"],
         )
         .expect("warm_standby_refill_total metric");
         let process_resident_memory_bytes = Gauge::with_opts(Opts::new(
@@ -215,6 +215,14 @@ impl Metrics {
             &["kind"],
         )
         .expect("process_fd_by_type metric");
+        let process_sockets_by_state = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_process_sockets_by_state",
+                "Current count of TCP/UDP sockets owned by the process, broken down by protocol, address family and kernel state.",
+            ),
+            &["protocol", "family", "state"],
+        )
+        .expect("process_sockets_by_state metric");
         let transport_connects_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_transport_connects_total",
@@ -247,6 +255,7 @@ impl Metrics {
             &["source", "protocol"],
         )
         .expect("upstream_transports_active metric");
+        #[cfg(feature = "tun")]
         let tun_packets_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_packets_total",
@@ -255,28 +264,32 @@ impl Metrics {
             &["direction", "ip_family", "outcome"],
         )
         .expect("tun_packets_total metric");
+        #[cfg(feature = "tun")]
         let tun_flows_total = IntCounterVec::new(
             Opts::new("outline_ws_rust_tun_flows_total", "Lifecycle events for TUN UDP flows."),
-            &["event", "uplink"],
+            &["event", "group", "uplink"],
         )
         .expect("tun_flows_total metric");
+        #[cfg(feature = "tun")]
         let tun_flow_duration_seconds = HistogramVec::new(
             HistogramOpts::new(
                 "outline_ws_rust_tun_flow_duration_seconds",
                 "Lifetime of TUN UDP flows by close reason.",
             )
             .buckets(vec![1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 3600.0]),
-            &["reason", "uplink"],
+            &["reason", "group", "uplink"],
         )
         .expect("tun_flow_duration_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_flows_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_flows_active",
                 "Currently active TUN UDP flows by uplink.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_flows_active metric");
+        #[cfg(feature = "tun")]
         let tun_icmp_local_replies_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_icmp_local_replies_total",
@@ -285,6 +298,7 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_icmp_local_replies_total metric");
+        #[cfg(feature = "tun")]
         let tun_udp_forward_errors_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_udp_forward_errors_total",
@@ -293,6 +307,7 @@ impl Metrics {
             &["reason"],
         )
         .expect("tun_udp_forward_errors_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_fragments_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_fragments_total",
@@ -301,6 +316,7 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_ip_fragments_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_reassemblies_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_reassemblies_total",
@@ -309,6 +325,7 @@ impl Metrics {
             &["ip_family", "result"],
         )
         .expect("tun_ip_reassemblies_total metric");
+        #[cfg(feature = "tun")]
         let tun_ip_fragment_sets_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_ip_fragment_sets_active",
@@ -317,24 +334,28 @@ impl Metrics {
             &["ip_family"],
         )
         .expect("tun_ip_fragment_sets_active metric");
+        #[cfg(feature = "tun")]
         let tun_max_flows = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_max_flows",
             "Configured maximum number of TUN UDP flows.",
         ))
         .expect("tun_max_flows metric");
+        #[cfg(feature = "tun")]
         let tun_idle_timeout_seconds = Gauge::with_opts(Opts::new(
             "outline_ws_rust_tun_idle_timeout_seconds",
             "Configured idle timeout for TUN UDP flows.",
         ))
         .expect("tun_idle_timeout_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_events_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_events_total",
                 "TCP state machine events observed on the TUN path.",
             ),
-            &["uplink", "event"],
+            &["group", "uplink", "event"],
         )
         .expect("tun_tcp_events_total metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_async_connects_total = IntCounterVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_async_connects_total",
@@ -343,126 +364,141 @@ impl Metrics {
             &["result"],
         )
         .expect("tun_tcp_async_connects_total metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_async_connects_active = IntGauge::with_opts(Opts::new(
             "outline_ws_rust_tun_tcp_async_connects_active",
             "Currently active async upstream connect attempts for TUN TCP flows.",
         ))
         .expect("tun_tcp_async_connects_active metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_flows_active = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_flows_active",
                 "Currently active TUN TCP flows by uplink.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_flows_active metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_inflight_segments = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_inflight_segments",
                 "Current number of unacknowledged server-to-client TCP segments on the TUN path.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_inflight_segments metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_inflight_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_inflight_bytes",
                 "Current number of unacknowledged server-to-client TCP bytes on the TUN path.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_inflight_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_pending_server_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_pending_server_bytes",
                 "Current number of queued server-to-client TCP bytes waiting for client window on the TUN path.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_pending_server_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_buffered_client_segments = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_buffered_client_segments",
                 "Current number of buffered out-of-order client TCP segments on the TUN path.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_buffered_client_segments metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_zero_window_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_zero_window_flows",
                 "Current number of TUN TCP flows stalled on a zero-sized client receive window.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_zero_window_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_backlog_pressure_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_backlog_pressure_flows",
                 "Current number of TUN TCP flows above the configured server backlog limit.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_backlog_pressure_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_backlog_pressure_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_backlog_pressure_seconds",
                 "Current accumulated backlog-pressure duration for active TUN TCP flows.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_backlog_pressure_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_ack_progress_stall_flows = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_ack_progress_stall_flows",
                 "Current number of TUN TCP flows with pending server data but no recent ACK progress.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_ack_progress_stall_flows metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_ack_progress_stall_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_ack_progress_stall_seconds",
                 "Current accumulated ACK-progress stall duration for active TUN TCP flows with pending server data.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_ack_progress_stall_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_congestion_window_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_congestion_window_bytes",
                 "Aggregated congestion window for active TUN TCP flows.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_congestion_window_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_slow_start_threshold_bytes = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_slow_start_threshold_bytes",
                 "Aggregated slow-start threshold for active TUN TCP flows.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_slow_start_threshold_bytes metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_retransmission_timeout_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_retransmission_timeout_seconds",
                 "Aggregated retransmission timeout for active TUN TCP flows.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_retransmission_timeout_seconds metric");
+        #[cfg(feature = "tun")]
         let tun_tcp_smoothed_rtt_seconds = GaugeVec::new(
             Opts::new(
                 "outline_ws_rust_tun_tcp_smoothed_rtt_seconds",
                 "Aggregated smoothed RTT for active TUN TCP flows.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("tun_tcp_smoothed_rtt_seconds metric");
         let uplink_health = GaugeVec::new(
             Opts::new("outline_ws_rust_uplink_health", "Current uplink health by transport."),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_health metric");
         let uplink_latency_seconds = GaugeVec::new(
@@ -470,7 +506,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_latency_seconds",
                 "Last observed uplink probe latency.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_latency_seconds metric");
         let uplink_rtt_ewma_seconds = GaugeVec::new(
@@ -478,7 +514,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_rtt_ewma_seconds",
                 "EWMA RTT latency used as the probe baseline.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_rtt_ewma_seconds metric");
         let uplink_penalty_seconds = GaugeVec::new(
@@ -486,7 +522,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_penalty_seconds",
                 "Current failure penalty applied to an uplink.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_penalty_seconds metric");
         let uplink_effective_latency_seconds = GaugeVec::new(
@@ -494,7 +530,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_effective_latency_seconds",
                 "Latency used for uplink ranking, including penalty.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_effective_latency_seconds metric");
         let uplink_score_seconds = GaugeVec::new(
@@ -502,12 +538,12 @@ impl Metrics {
                 "outline_ws_rust_uplink_score_seconds",
                 "Final weighted uplink selection score.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_score_seconds metric");
         let uplink_weight = GaugeVec::new(
             Opts::new("outline_ws_rust_uplink_weight", "Configured static weight for each uplink."),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("uplink_weight metric");
         let uplink_cooldown_seconds = GaugeVec::new(
@@ -515,7 +551,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_cooldown_seconds",
                 "Remaining cooldown time for an uplink.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_cooldown_seconds metric");
         let uplink_standby_ready = IntGaugeVec::new(
@@ -523,7 +559,7 @@ impl Metrics {
                 "outline_ws_rust_uplink_standby_ready",
                 "Currently available warm-standby websocket connections.",
             ),
-            &["transport", "uplink"],
+            &["group", "transport", "uplink"],
         )
         .expect("uplink_standby_ready metric");
         let selection_mode_info = IntGaugeVec::new(
@@ -531,12 +567,12 @@ impl Metrics {
                 "outline_ws_rust_selection_mode_info",
                 "Configured load-balancing selection mode.",
             ),
-            &["mode"],
+            &["group", "mode"],
         )
         .expect("selection_mode_info metric");
         let routing_scope_info = IntGaugeVec::new(
             Opts::new("outline_ws_rust_routing_scope_info", "Configured routing scope."),
-            &["scope"],
+            &["group", "scope"],
         )
         .expect("routing_scope_info metric");
         let global_active_uplink_info = IntGaugeVec::new(
@@ -544,7 +580,7 @@ impl Metrics {
                 "outline_ws_rust_global_active_uplink_info",
                 "Currently selected active uplink for global routing scope.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("global_active_uplink_info metric");
         let per_uplink_active_uplink_info = IntGaugeVec::new(
@@ -552,20 +588,23 @@ impl Metrics {
                 "outline_ws_rust_per_uplink_active_uplink_info",
                 "Currently selected active uplink per transport protocol for per_uplink routing scope.",
             ),
-            &["proto", "uplink"],
+            &["group", "proto", "uplink"],
         )
         .expect("per_uplink_active_uplink_info metric");
-        let sticky_routes_total = IntGauge::with_opts(Opts::new(
-            "outline_ws_rust_sticky_routes_total",
-            "Current number of sticky routes.",
-        ))
+        let sticky_routes_total = IntGaugeVec::new(
+            Opts::new(
+                "outline_ws_rust_sticky_routes_total",
+                "Current number of sticky routes per uplink group.",
+            ),
+            &["group"],
+        )
         .expect("sticky_routes_total metric");
         let sticky_routes_by_uplink = IntGaugeVec::new(
             Opts::new(
                 "outline_ws_rust_sticky_routes_by_uplink",
                 "Current number of sticky routes pinned to each uplink.",
             ),
-            &["uplink"],
+            &["group", "uplink"],
         )
         .expect("sticky_routes_by_uplink metric");
 
@@ -654,6 +693,9 @@ impl Metrics {
             .register(Box::new(process_fd_by_type.clone()))
             .expect("register process_fd_by_type");
         registry
+            .register(Box::new(process_sockets_by_state.clone()))
+            .expect("register process_sockets_by_state");
+        registry
             .register(Box::new(transport_connects_total.clone()))
             .expect("register transport_connects_total");
         registry
@@ -665,87 +707,115 @@ impl Metrics {
         registry
             .register(Box::new(upstream_transports_active.clone()))
             .expect("register upstream_transports_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_packets_total.clone()))
             .expect("register tun_packets_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flows_total.clone()))
             .expect("register tun_flows_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flow_duration_seconds.clone()))
             .expect("register tun_flow_duration_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_flows_active.clone()))
             .expect("register tun_flows_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_icmp_local_replies_total.clone()))
             .expect("register tun_icmp_local_replies_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_udp_forward_errors_total.clone()))
             .expect("register tun_udp_forward_errors_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_fragments_total.clone()))
             .expect("register tun_ip_fragments_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_reassemblies_total.clone()))
             .expect("register tun_ip_reassemblies_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_ip_fragment_sets_active.clone()))
             .expect("register tun_ip_fragment_sets_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_max_flows.clone()))
             .expect("register tun_max_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_idle_timeout_seconds.clone()))
             .expect("register tun_idle_timeout_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_events_total.clone()))
             .expect("register tun_tcp_events_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_async_connects_total.clone()))
             .expect("register tun_tcp_async_connects_total");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_async_connects_active.clone()))
             .expect("register tun_tcp_async_connects_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_flows_active.clone()))
             .expect("register tun_tcp_flows_active");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_inflight_segments.clone()))
             .expect("register tun_tcp_inflight_segments");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_inflight_bytes.clone()))
             .expect("register tun_tcp_inflight_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_pending_server_bytes.clone()))
             .expect("register tun_tcp_pending_server_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_buffered_client_segments.clone()))
             .expect("register tun_tcp_buffered_client_segments");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_zero_window_flows.clone()))
             .expect("register tun_tcp_zero_window_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_backlog_pressure_flows.clone()))
             .expect("register tun_tcp_backlog_pressure_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_backlog_pressure_seconds.clone()))
             .expect("register tun_tcp_backlog_pressure_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_ack_progress_stall_flows.clone()))
             .expect("register tun_tcp_ack_progress_stall_flows");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_ack_progress_stall_seconds.clone()))
             .expect("register tun_tcp_ack_progress_stall_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_congestion_window_bytes.clone()))
             .expect("register tun_tcp_congestion_window_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_slow_start_threshold_bytes.clone()))
             .expect("register tun_tcp_slow_start_threshold_bytes");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_retransmission_timeout_seconds.clone()))
             .expect("register tun_tcp_retransmission_timeout_seconds");
+        #[cfg(feature = "tun")]
         registry
             .register(Box::new(tun_tcp_smoothed_rtt_seconds.clone()))
             .expect("register tun_tcp_smoothed_rtt_seconds");
@@ -834,37 +904,66 @@ impl Metrics {
             process_open_fds,
             process_threads,
             process_fd_by_type,
+            process_sockets_by_state,
             transport_connects_total,
             transport_connects_active,
             upstream_transports_total,
             upstream_transports_active,
+            #[cfg(feature = "tun")]
             tun_packets_total,
+            #[cfg(feature = "tun")]
             tun_flows_total,
+            #[cfg(feature = "tun")]
             tun_flow_duration_seconds,
+            #[cfg(feature = "tun")]
             tun_flows_active,
+            #[cfg(feature = "tun")]
             tun_icmp_local_replies_total,
+            #[cfg(feature = "tun")]
             tun_udp_forward_errors_total,
+            #[cfg(feature = "tun")]
             tun_ip_fragments_total,
+            #[cfg(feature = "tun")]
             tun_ip_reassemblies_total,
+            #[cfg(feature = "tun")]
             tun_ip_fragment_sets_active,
+            #[cfg(feature = "tun")]
             tun_max_flows,
+            #[cfg(feature = "tun")]
             tun_idle_timeout_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_events_total,
+            #[cfg(feature = "tun")]
             tun_tcp_async_connects_total,
+            #[cfg(feature = "tun")]
             tun_tcp_async_connects_active,
+            #[cfg(feature = "tun")]
             tun_tcp_flows_active,
+            #[cfg(feature = "tun")]
             tun_tcp_inflight_segments,
+            #[cfg(feature = "tun")]
             tun_tcp_inflight_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_pending_server_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_buffered_client_segments,
+            #[cfg(feature = "tun")]
             tun_tcp_zero_window_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_backlog_pressure_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_backlog_pressure_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_ack_progress_stall_flows,
+            #[cfg(feature = "tun")]
             tun_tcp_ack_progress_stall_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_congestion_window_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_slow_start_threshold_bytes,
+            #[cfg(feature = "tun")]
             tun_tcp_retransmission_timeout_seconds,
+            #[cfg(feature = "tun")]
             tun_tcp_smoothed_rtt_seconds,
             uplink_health,
             uplink_latency_seconds,

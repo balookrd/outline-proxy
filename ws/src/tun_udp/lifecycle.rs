@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -10,7 +11,7 @@ use crate::memory::maybe_shrink_hash_map;
 use crate::metrics;
 use crate::transport::UdpWsTransport;
 use crate::types::TargetAddr;
-use crate::uplink::{TransportKind, UplinkCandidate};
+use crate::uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::wire::build_response_packet;
 use super::{
@@ -32,11 +33,11 @@ impl TunUdpEngine {
     pub(super) async fn create_flow(
         &self,
         key: UdpFlowKey,
+        manager: &UplinkManager,
     ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
-        let (candidate, transport) = self.select_candidate_and_connect(&remote_target).await?;
-        self.inner
-            .uplinks
+        let (candidate, transport) = select_candidate_and_connect(manager, &remote_target).await?;
+        manager
             .confirm_selected_uplink(TransportKind::Udp, Some(&remote_target), candidate.index)
             .await;
         let transport = Arc::new(transport);
@@ -50,14 +51,17 @@ impl TunUdpEngine {
             transport: Arc::clone(&transport),
             uplink_index: candidate.index,
             uplink_name: candidate.uplink.name.clone(),
+            manager: manager.clone(),
             created_at: now,
             last_seen: now,
         };
 
         let mut evicted_flow = None;
         {
-            let mut guard = self.inner.flows.lock().await;
-            if let Some(existing) = guard.get_mut(&key) {
+            let mut guard = self.inner.flows.write().await;
+            if let Some(existing) = guard.get(&key).map(Arc::clone) {
+                drop(guard);
+                let mut existing = existing.lock().await;
                 existing.last_seen = now;
                 return Ok((
                     existing.id,
@@ -67,71 +71,49 @@ impl TunUdpEngine {
                 ));
             }
             if guard.len() >= self.inner.max_flows {
-                if let Some(evicted_key) = oldest_flow_key(&guard) {
+                if let Some(evicted_key) = oldest_flow_key(&guard).await {
                     if let Some(evicted) = guard.remove(&evicted_key) {
-                        warn!(
-                            evicted_flow_id = evicted.id,
-                            evicted_uplink = %evicted.uplink_name,
-                            max_flows = self.inner.max_flows,
-                            "evicted oldest TUN UDP flow due to flow table limit"
-                        );
+                        {
+                            let snapshot = evicted.lock().await;
+                            warn!(
+                                evicted_flow_id = snapshot.id,
+                                evicted_uplink = %snapshot.uplink_name,
+                                max_flows = self.inner.max_flows,
+                                "evicted oldest TUN UDP flow due to flow table limit"
+                            );
+                        }
                         evicted_flow = Some(evicted);
                     }
                 } else {
                     bail!("TUN flow table limit reached and no flow could be evicted");
                 }
             }
-            guard.insert(key.clone(), state);
+            guard.insert(key.clone(), Arc::new(Mutex::new(state)));
         }
 
         if let Some(flow) = evicted_flow {
             close_udp_flow(flow, "evicted").await;
         }
 
-        metrics::record_uplink_selected("udp", &candidate.uplink.name);
-        metrics::record_tun_flow_created(&candidate.uplink.name);
+        metrics::record_uplink_selected("udp", manager.group_name(), &candidate.uplink.name);
+        metrics::record_tun_flow_created(manager.group_name(), &candidate.uplink.name);
         debug!(
             flow_id,
+            group = %manager.group_name(),
             uplink = %candidate.uplink.name,
             local = %format!("{}:{}", key.local_ip, key.local_port),
             remote = %format!("{}:{}", key.remote_ip, key.remote_port),
             "created TUN UDP flow"
         );
-        self.spawn_flow_reader(key, flow_id, Arc::clone(&transport), candidate.index);
+        self.spawn_flow_reader(
+            key,
+            flow_id,
+            Arc::clone(&transport),
+            candidate.index,
+            manager.clone(),
+        );
 
         Ok((flow_id, transport, candidate.index, candidate.uplink.name.clone()))
-    }
-
-    async fn select_candidate_and_connect(
-        &self,
-        remote_target: &TargetAddr,
-    ) -> Result<(UplinkCandidate, UdpWsTransport)> {
-        let mut last_error = None;
-        let strict_transport = self.inner.uplinks.strict_active_uplink_for(TransportKind::Udp);
-        let candidates = self.inner.uplinks.udp_candidates(Some(remote_target)).await;
-        let iter = if strict_transport {
-            candidates.into_iter().take(1).collect::<Vec<_>>()
-        } else {
-            candidates
-        };
-        for candidate in iter {
-            match self
-                .inner
-                .uplinks
-                .acquire_udp_standby_or_connect(&candidate, "tun_udp")
-                .await
-            {
-                Ok(transport) => return Ok((candidate, transport)),
-                Err(error) => {
-                    self.report_udp_runtime_failure(candidate.index, &error).await;
-                    last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
-                },
-            }
-        }
-        Err(anyhow!(
-            "all UDP uplinks failed for TUN flow: {}",
-            last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
-        ))
     }
 
     fn spawn_flow_reader(
@@ -140,15 +122,14 @@ impl TunUdpEngine {
         flow_id: u64,
         transport: Arc<UdpWsTransport>,
         uplink_index: usize,
+        manager: UplinkManager,
     ) {
         let engine = self.clone();
         tokio::spawn(async move {
             let result = async {
                 loop {
-                    if engine.inner.uplinks.strict_active_uplink_for(TransportKind::Udp)
-                        && engine
-                            .inner
-                            .uplinks
+                    if manager.strict_active_uplink_for(TransportKind::Udp)
+                        && manager
                             .active_uplink_index_for_transport(TransportKind::Udp)
                             .await
                             .is_some_and(|active| active != uplink_index)
@@ -166,23 +147,40 @@ impl TunUdpEngine {
                         &payload[consumed..],
                     )?;
                     let uplink_name = {
-                        let guard = engine.inner.flows.lock().await;
-                        guard
-                            .get(&key)
-                            .filter(|flow| flow.id == flow_id)
-                            .map(|flow| flow.uplink_name.clone())
-                            .unwrap_or_else(|| "unknown".to_string())
+                        let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
+                        match handle {
+                            Some(h) => {
+                                let flow = h.lock().await;
+                                if flow.id == flow_id {
+                                    flow.uplink_name.clone()
+                                } else {
+                                    "unknown".to_string()
+                                }
+                            },
+                            None => "unknown".to_string(),
+                        }
                     };
-                    metrics::add_udp_datagram("upstream_to_client", &uplink_name);
-                    metrics::add_bytes("udp", "upstream_to_client", &uplink_name, payload.len());
+                    metrics::add_udp_datagram(
+                        "upstream_to_client",
+                        manager.group_name(),
+                        &uplink_name,
+                    );
+                    metrics::add_bytes(
+                        "udp",
+                        "upstream_to_client",
+                        manager.group_name(),
+                        &uplink_name,
+                        payload.len(),
+                    );
                     engine.inner.writer.write_packet(&packet).await?;
                     metrics::record_tun_packet(
                         "upstream_to_tun",
                         ip_family_from_version(key.version),
                         "accepted",
                     );
-                    let mut guard = engine.inner.flows.lock().await;
-                    if let Some(flow) = guard.get_mut(&key) {
+                    let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
+                    if let Some(handle) = handle {
+                        let mut flow = handle.lock().await;
                         if flow.id == flow_id {
                             flow.last_seen = Instant::now();
                         }
@@ -195,15 +193,15 @@ impl TunUdpEngine {
             let close_reason = if result.is_ok() { "closed" } else { "read_error" };
 
             if let Err(ref error) = result {
-                let is_current = engine
-                    .inner
-                    .flows
-                    .lock()
-                    .await
-                    .get(&key)
-                    .map_or(false, |f| f.id == flow_id);
+                let is_current = {
+                    let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
+                    match handle {
+                        Some(h) => h.lock().await.id == flow_id,
+                        None => false,
+                    }
+                };
                 if is_current {
-                    engine.report_udp_runtime_failure(uplink_index, error).await;
+                    report_udp_runtime_failure(&manager, uplink_index, error).await;
                     metrics::record_tun_packet(
                         "upstream_to_tun",
                         ip_family_from_version(key.version),
@@ -226,10 +224,27 @@ impl TunUdpEngine {
         flow_id: u64,
         reason: &'static str,
     ) {
+        // Two-stage: first check (read-lock + per-flow lock) without
+        // mutating the map, then take the write-lock only if removal is
+        // actually warranted. Avoids acquiring the map write-lock on every
+        // call from reader tasks that lost the race.
+        let should_remove = {
+            let handle = self.inner.flows.read().await.get(key).map(Arc::clone);
+            match handle {
+                Some(h) => h.lock().await.id == flow_id,
+                None => return,
+            }
+        };
+        if !should_remove {
+            return;
+        }
         let removed = {
-            let mut guard = self.inner.flows.lock().await;
-            if guard.get(key).map(|flow| flow.id) == Some(flow_id) {
-                guard.remove(key)
+            let mut guard = self.inner.flows.write().await;
+            // Re-check under write-lock: another racer may have replaced this
+            // flow between our read-lock drop and write-lock acquire.
+            if let Some(handle) = guard.get(key).map(Arc::clone) {
+                let same = handle.lock().await.id == flow_id;
+                if same { guard.remove(key) } else { None }
             } else {
                 None
             }
@@ -242,16 +257,28 @@ impl TunUdpEngine {
 
     async fn cleanup_idle_flows(&self) {
         let now = Instant::now();
-        let expired = {
-            let mut guard = self.inner.flows.lock().await;
-            let expired_keys: Vec<UdpFlowKey> = guard
-                .iter()
-                .filter_map(|(key, flow)| {
-                    (now.saturating_duration_since(flow.last_seen) >= self.inner.idle_timeout)
-                        .then(|| key.clone())
-                })
-                .collect();
+        let idle_timeout = self.inner.idle_timeout;
 
+        // Collect keys whose last_seen has expired without holding the map
+        // write-lock across per-flow locks: read-lock + snapshot Arc clones,
+        // then inspect each flow's Mutex individually.
+        let expired_keys: Vec<UdpFlowKey> = {
+            let handles: Vec<(UdpFlowKey, Arc<Mutex<UdpFlowState>>)> = {
+                let guard = self.inner.flows.read().await;
+                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+            };
+            let mut expired = Vec::new();
+            for (key, handle) in handles {
+                let flow = handle.lock().await;
+                if now.saturating_duration_since(flow.last_seen) >= idle_timeout {
+                    expired.push(key);
+                }
+            }
+            expired
+        };
+
+        let expired_flows = {
+            let mut guard = self.inner.flows.write().await;
             let mut removed = Vec::with_capacity(expired_keys.len());
             for key in expired_keys {
                 if let Some(flow) = guard.remove(&key) {
@@ -262,16 +289,40 @@ impl TunUdpEngine {
             removed
         };
 
-        for flow in expired {
+        for flow in expired_flows {
             close_udp_flow(flow, "idle_timeout").await;
         }
-    }
 
-    async fn report_udp_runtime_failure(&self, uplink_index: usize, error: &anyhow::Error) {
-        self.inner
-            .uplinks
-            .report_runtime_failure(uplink_index, TransportKind::Udp, error)
-            .await;
+        // Clean up idle direct-routed flows — same pattern.
+        let direct_expired_keys: Vec<super::UdpFlowKey> = {
+            let handles: Vec<(UdpFlowKey, Arc<Mutex<super::types::DirectUdpFlowState>>)> = {
+                let guard = self.inner.direct_flows.read().await;
+                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+            };
+            let mut expired = Vec::new();
+            for (key, handle) in handles {
+                let flow = handle.lock().await;
+                if now.saturating_duration_since(flow.last_seen) >= idle_timeout {
+                    expired.push(key);
+                }
+            }
+            expired
+        };
+        {
+            let mut direct = self.inner.direct_flows.write().await;
+            for key in direct_expired_keys {
+                if let Some(flow_handle) = direct.remove(&key) {
+                    let flow = flow_handle.lock().await;
+                    flow._reader.abort();
+                    metrics::record_tun_flow_closed(
+                        metrics::DIRECT_GROUP_LABEL,
+                        metrics::DIRECT_UPLINK_LABEL,
+                        "idle_timeout",
+                        now.saturating_duration_since(flow.created_at),
+                    );
+                }
+            }
+        }
     }
 
     pub(super) async fn recreate_flow_after_send_error(
@@ -280,32 +331,93 @@ impl TunUdpEngine {
         flow_id: u64,
         uplink_index: usize,
         uplink_name: &str,
+        manager: &UplinkManager,
         error: &anyhow::Error,
     ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
-        self.report_udp_runtime_failure(uplink_index, error).await;
+        report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
-        let replacement = self.create_flow(key.clone()).await?;
-        metrics::record_failover("udp", uplink_name, &replacement.3);
+        let replacement = self.create_flow(key.clone(), manager).await?;
+        metrics::record_failover("udp", manager.group_name(), uplink_name, &replacement.3);
         Ok(replacement)
     }
 }
 
-fn oldest_flow_key(flows: &HashMap<UdpFlowKey, UdpFlowState>) -> Option<UdpFlowKey> {
-    flows
-        .iter()
-        .min_by_key(|(_, flow)| flow.last_seen)
-        .map(|(key, _)| key.clone())
+async fn report_udp_runtime_failure(
+    manager: &UplinkManager,
+    uplink_index: usize,
+    error: &anyhow::Error,
+) {
+    manager
+        .report_runtime_failure(uplink_index, TransportKind::Udp, error)
+        .await;
 }
 
-pub(crate) async fn close_udp_flow(flow: UdpFlowState, reason: &'static str) {
+async fn select_candidate_and_connect(
+    manager: &UplinkManager,
+    remote_target: &TargetAddr,
+) -> Result<(UplinkCandidate, UdpWsTransport)> {
+    let mut last_error = None;
+    let strict_transport = manager.strict_active_uplink_for(TransportKind::Udp);
+    let candidates = manager.udp_candidates(Some(remote_target)).await;
+    let iter = if strict_transport {
+        candidates.into_iter().take(1).collect::<Vec<_>>()
+    } else {
+        candidates
+    };
+    for candidate in iter {
+        match manager.acquire_udp_standby_or_connect(&candidate, "tun_udp").await {
+            Ok(transport) => return Ok((candidate, transport)),
+            Err(error) => {
+                report_udp_runtime_failure(manager, candidate.index, &error).await;
+                last_error = Some(format!("{}: {error:#}", candidate.uplink.name));
+            },
+        }
+    }
+    Err(anyhow!(
+        "all UDP uplinks failed for TUN flow: {}",
+        last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
+    ))
+}
+
+async fn oldest_flow_key(
+    flows: &HashMap<UdpFlowKey, Arc<Mutex<UdpFlowState>>>,
+) -> Option<UdpFlowKey> {
+    let mut oldest: Option<(UdpFlowKey, Instant)> = None;
+    for (key, handle) in flows {
+        let last_seen = handle.lock().await.last_seen;
+        match &oldest {
+            Some((_, t)) if last_seen >= *t => continue,
+            _ => oldest = Some((key.clone(), last_seen)),
+        }
+    }
+    oldest.map(|(k, _)| k)
+}
+
+pub(crate) async fn close_udp_flow(
+    flow: Arc<Mutex<UdpFlowState>>,
+    reason: &'static str,
+) {
+    // Lock briefly to snapshot the fields we need, then release so the
+    // async `transport.close()` does not hold the per-flow Mutex.
+    let (id, transport, group, uplink, created_at) = {
+        let guard = flow.lock().await;
+        (
+            guard.id,
+            Arc::clone(&guard.transport),
+            guard.manager.group_name().to_string(),
+            guard.uplink_name.clone(),
+            guard.created_at,
+        )
+    };
     metrics::record_tun_flow_closed(
-        &flow.uplink_name,
+        &group,
+        &uplink,
         reason,
-        Instant::now().saturating_duration_since(flow.created_at),
+        Instant::now().saturating_duration_since(created_at),
     );
-    if let Err(error) = flow.transport.close().await {
+    if let Err(error) = transport.close().await {
         debug!(
-            flow_id = flow.id,
+            flow_id = id,
             reason,
             error = %format!("{error:#}"),
             "failed to close TUN UDP transport"
