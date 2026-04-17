@@ -28,9 +28,9 @@ fn roundtrip_chacha20_stream() {
     let ciphertext = encryptor.encrypt_chunk(b"hello over websocket").unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    decryptor.push(&ciphertext);
+    decryptor.feed_ciphertext(&ciphertext);
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
 
     assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
     assert_eq!(plaintext, b"hello over websocket");
@@ -44,10 +44,10 @@ fn decryptor_handles_fragmented_frames() {
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     for chunk in ciphertext.chunks(3) {
-        decryptor.push(chunk);
+        decryptor.feed_ciphertext(chunk);
     }
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
 
     assert_eq!(decryptor.user().map(UserKey::id), Some("alice"));
     assert_eq!(plaintext, b"fragmented");
@@ -60,9 +60,9 @@ fn roundtrip_aes128_stream() {
     let ciphertext = encryptor.encrypt_chunk(b"aes128").unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
-    decryptor.push(&ciphertext);
+    decryptor.feed_ciphertext(&ciphertext);
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
 
     assert_eq!(decryptor.user().map(UserKey::id), Some("alice"));
     assert_eq!(plaintext, b"aes128");
@@ -76,9 +76,9 @@ fn legacy_stream_encryptor_splits_large_responses() {
     let ciphertext = encryptor.encrypt_chunk(&plaintext).unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
-    decryptor.push(&ciphertext);
+    decryptor.feed_ciphertext(&ciphertext);
     let mut decrypted = Vec::new();
-    decryptor.pull_plaintext(&mut decrypted).unwrap();
+    decryptor.drain_plaintext(&mut decrypted).unwrap();
 
     assert_eq!(decrypted, plaintext);
 }
@@ -136,9 +136,9 @@ fn decryptor_matches_user_with_different_cipher() {
     let ciphertext = encryptor.encrypt_chunk(b"mixed cipher").unwrap();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
-    decryptor.push(&ciphertext);
+    decryptor.feed_ciphertext(&ciphertext);
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
 
     assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
     assert_eq!(plaintext, b"mixed cipher");
@@ -194,9 +194,9 @@ fn roundtrip_ss2022_tcp_stream() {
     request.extend_from_slice(&var_ct);
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    decryptor.push(&request);
+    decryptor.feed_ciphertext(&request);
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
     assert_eq!(plaintext, target_bytes);
 
     let context = decryptor.response_context();
@@ -255,9 +255,9 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     request.extend_from_slice(&var_ct);
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    decryptor.push(&request);
+    decryptor.feed_ciphertext(&request);
     let mut plaintext = Vec::new();
-    decryptor.pull_plaintext(&mut plaintext).unwrap();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
     assert_eq!(plaintext, target_bytes);
 
     let context = decryptor.response_context();
@@ -307,4 +307,42 @@ fn rejects_bad_ss2022_psk_length() {
         UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022, "/tcp", "/udp")
             .unwrap_err();
     assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
+}
+
+proptest::proptest! {
+    // Feeding arbitrary bytes to the AEAD decryptor must never panic —
+    // it must always either buffer silently or return Err.
+    #[test]
+    fn aead_decryptor_never_panics_on_random_bytes(input: Vec<u8>) {
+        let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
+        let mut decryptor = AeadStreamDecryptor::new(users);
+        decryptor.feed_ciphertext(&input);
+        let mut output = Vec::new();
+        let _ = decryptor.drain_plaintext(&mut output);
+    }
+
+    // Fragmented feeding: split the input at an arbitrary boundary and feed
+    // each half separately. Still must never panic.
+    #[test]
+    fn aead_decryptor_never_panics_on_fragmented_feed(
+        input: Vec<u8>,
+        split_at: usize,
+    ) {
+        let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
+        let mut decryptor = AeadStreamDecryptor::new(users);
+        let split = split_at.checked_rem(input.len().saturating_add(1)).unwrap_or(0);
+        let (head, tail) = input.split_at(split);
+        decryptor.feed_ciphertext(head);
+        let mut output = Vec::new();
+        let _ = decryptor.drain_plaintext(&mut output);
+        decryptor.feed_ciphertext(tail);
+        let _ = decryptor.drain_plaintext(&mut output);
+    }
+
+    // decrypt_udp_packet on arbitrary bytes must never panic.
+    #[test]
+    fn decrypt_udp_packet_never_panics(input: Vec<u8>) {
+        let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
+        let _ = decrypt_udp_packet(users.as_ref(), &input);
+    }
 }

@@ -65,8 +65,15 @@ impl AeadStreamDecryptor {
         }
     }
 
-    pub fn push(&mut self, data: &[u8]) {
+    pub fn feed_ciphertext(&mut self, data: &[u8]) {
         self.buffer.extend_from_slice(data);
+    }
+
+    /// Direct access to the internal ciphertext buffer so callers can fill it
+    /// zero-copy via `AsyncReadExt::read_buf`. Caller is responsible for
+    /// reserving capacity before each read.
+    pub fn ciphertext_buffer_mut(&mut self) -> &mut BytesMut {
+        &mut self.buffer
     }
 
     pub fn user(&self) -> Option<&UserKey> {
@@ -86,7 +93,7 @@ impl AeadStreamDecryptor {
         &self.buffer
     }
 
-    pub fn pull_plaintext(&mut self, output: &mut Vec<u8>) -> Result<(), CryptoError> {
+    pub fn drain_plaintext(&mut self, output: &mut Vec<u8>) -> Result<(), CryptoError> {
         self.ensure_session_key()?;
 
         loop {
@@ -96,7 +103,7 @@ impl AeadStreamDecryptor {
 
             match &mut active.mode {
                 ActiveStreamMode::Legacy { pending_chunk_len } => {
-                    if !pull_legacy_payload(
+                    if !drain_legacy_payload(
                         &mut self.buffer,
                         &active.key,
                         &mut active.nonce_counter,
@@ -133,7 +140,7 @@ impl AeadStreamDecryptor {
                         continue;
                     }
 
-                    if !pull_ss2022_payload(
+                    if !drain_ss2022_payload(
                         &mut self.buffer,
                         &active.key,
                         &mut active.nonce_counter,
@@ -314,7 +321,7 @@ impl AeadStreamEncryptor {
     }
 }
 
-fn pull_legacy_payload(
+fn drain_legacy_payload(
     buffer: &mut BytesMut,
     key: &LessSafeKey,
     nonce_counter: &mut u64,
@@ -355,7 +362,7 @@ fn pull_legacy_payload(
     Ok(true)
 }
 
-fn pull_ss2022_payload(
+fn drain_ss2022_payload(
     buffer: &mut BytesMut,
     key: &LessSafeKey,
     nonce_counter: &mut u64,

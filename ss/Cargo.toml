@@ -20,6 +20,7 @@ hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", 
 libc = "0.2"
 md-5 = "0.10"
 mimalloc = { version = "0.1", default-features = false }
+parking_lot = "0.12"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -37,6 +38,7 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 
 [dev-dependencies]
 http-body-util = "0.1"
+proptest = "1.5"
 rcgen = "0.14"
 tokio-tungstenite = "0.28"
 

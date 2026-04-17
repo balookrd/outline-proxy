@@ -1,15 +1,17 @@
 use std::{
+    borrow::Cow,
     collections::HashMap,
     fmt::Write,
     hash::Hash,
     sync::{
-        Arc, Mutex, RwLock,
+        Arc,
         atomic::{AtomicI64, AtomicU64, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use crate::config::Config;
+use parking_lot::{Mutex, RwLock};
 use tokio::time::{Duration, MissedTickBehavior};
 
 const TCP_CONNECT_BUCKETS: &[f64] =
@@ -357,10 +359,7 @@ impl Metrics {
     }
 
     fn cached_process_memory_snapshot(&self) -> Option<ProcessMemorySnapshot> {
-        self.process_memory_snapshot
-            .read()
-            .expect("process memory snapshot poisoned")
-            .clone()
+        self.process_memory_snapshot.read().clone()
     }
 
     async fn refresh_process_memory_snapshot(self: &Arc<Self>) {
@@ -373,10 +372,7 @@ impl Metrics {
         #[cfg(not(target_os = "linux"))]
         let snapshot = process_memory_snapshot();
 
-        *self
-            .process_memory_snapshot
-            .write()
-            .expect("process memory snapshot poisoned") = snapshot;
+        *self.process_memory_snapshot.write() = snapshot;
     }
 
     pub fn render_prometheus(&self) -> String {
@@ -875,10 +871,10 @@ struct WsLabels {
 }
 
 impl PrometheusLabels for WsLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("transport", self.transport.as_str().to_owned()),
-            ("protocol", self.protocol.as_str().to_owned()),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
         ]
     }
 }
@@ -891,11 +887,11 @@ struct WsDisconnectLabels {
 }
 
 impl PrometheusLabels for WsDisconnectLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("transport", self.transport.as_str().to_owned()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("reason", self.reason.as_str().to_owned()),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("reason", Cow::Borrowed(self.reason.as_str())),
         ]
     }
 }
@@ -908,11 +904,11 @@ struct WsDirectionLabels {
 }
 
 impl PrometheusLabels for WsDirectionLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("transport", self.transport.as_str().to_owned()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("direction", self.direction.to_owned()),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("direction", Cow::Borrowed(self.direction)),
         ]
     }
 }
@@ -925,11 +921,11 @@ struct ProtocolTransportReasonLabels {
 }
 
 impl PrometheusLabels for ProtocolTransportReasonLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("transport", self.transport.as_str().to_owned()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("reason", self.reason.to_owned()),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("reason", Cow::Borrowed(self.reason)),
         ]
     }
 }
@@ -947,8 +943,8 @@ impl UserProtocolLabels {
 }
 
 impl PrometheusLabels for UserProtocolLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
-        vec![("user", self.user.to_string()), ("protocol", self.protocol.as_str().to_owned())]
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
+        vec![("user", Cow::Owned(self.user.to_string())), ("protocol", Cow::Borrowed(self.protocol.as_str()))]
     }
 }
 
@@ -964,8 +960,8 @@ impl UserLabels {
 }
 
 impl PrometheusLabels for UserLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
-        vec![("user", self.user.to_string())]
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
+        vec![("user", Cow::Owned(self.user.to_string()))]
     }
 }
 
@@ -983,11 +979,11 @@ impl UserProtocolTransportLabels {
 }
 
 impl PrometheusLabels for UserProtocolTransportLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("user", self.user.to_string()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("transport", self.transport.as_str().to_owned()),
+            ("user", Cow::Owned(self.user.to_string())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
         ]
     }
 }
@@ -1006,11 +1002,11 @@ impl UserProtocolResultLabels {
 }
 
 impl PrometheusLabels for UserProtocolResultLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("user", self.user.to_string()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("result", self.result.to_owned()),
+            ("user", Cow::Owned(self.user.to_string())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("result", Cow::Borrowed(self.result)),
         ]
     }
 }
@@ -1029,11 +1025,11 @@ impl UserProtocolDirectionLabels {
 }
 
 impl PrometheusLabels for UserProtocolDirectionLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("user", self.user.to_string()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("direction", self.direction.to_owned()),
+            ("user", Cow::Owned(self.user.to_string())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("direction", Cow::Borrowed(self.direction)),
         ]
     }
 }
@@ -1058,18 +1054,20 @@ impl UserProtocolTransportDirectionLabels {
 }
 
 impl PrometheusLabels for UserProtocolTransportDirectionLabels {
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    fn labels(&self) -> Vec<(&'static str, LabelValue)> {
         vec![
-            ("user", self.user.to_string()),
-            ("protocol", self.protocol.as_str().to_owned()),
-            ("transport", self.transport.as_str().to_owned()),
-            ("direction", self.direction.to_owned()),
+            ("user", Cow::Owned(self.user.to_string())),
+            ("protocol", Cow::Borrowed(self.protocol.as_str())),
+            ("transport", Cow::Borrowed(self.transport.as_str())),
+            ("direction", Cow::Borrowed(self.direction)),
         ]
     }
 }
 
+type LabelValue = Cow<'static, str>;
+
 trait PrometheusLabels {
-    fn labels(&self) -> Vec<(&'static str, String)>;
+    fn labels(&self) -> Vec<(&'static str, LabelValue)>;
 }
 
 struct CounterVec<L> {
@@ -1088,14 +1086,14 @@ where
 {
     fn inc(&self, labels: L, value: u64) {
         {
-            let values = self.values.read().expect("counter vec poisoned");
+            let values = self.values.read();
             if let Some(cell) = values.get(&labels) {
                 cell.fetch_add(value, Ordering::Relaxed);
                 return;
             }
         }
         let cell = {
-            let mut values = self.values.write().expect("counter vec poisoned");
+            let mut values = self.values.write();
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicU64::new(0)))
@@ -1108,7 +1106,6 @@ where
         let mut snapshot = self
             .values
             .read()
-            .expect("counter vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
             .collect::<Vec<_>>();
@@ -1133,14 +1130,14 @@ where
 {
     fn set(&self, labels: L, value: i64) {
         {
-            let values = self.values.read().expect("gauge vec poisoned");
+            let values = self.values.read();
             if let Some(cell) = values.get(&labels) {
                 cell.store(value, Ordering::Relaxed);
                 return;
             }
         }
         let cell = {
-            let mut values = self.values.write().expect("gauge vec poisoned");
+            let mut values = self.values.write();
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicI64::new(0)))
@@ -1151,14 +1148,14 @@ where
 
     fn inc(&self, labels: L, value: i64) {
         {
-            let values = self.values.read().expect("gauge vec poisoned");
+            let values = self.values.read();
             if let Some(cell) = values.get(&labels) {
                 cell.fetch_add(value, Ordering::Relaxed);
                 return;
             }
         }
         let cell = {
-            let mut values = self.values.write().expect("gauge vec poisoned");
+            let mut values = self.values.write();
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(AtomicI64::new(0)))
@@ -1171,7 +1168,6 @@ where
         let mut snapshot = self
             .values
             .read()
-            .expect("gauge vec poisoned")
             .iter()
             .map(|(labels, value)| (labels.clone(), value.load(Ordering::Relaxed)))
             .collect::<Vec<_>>();
@@ -1198,37 +1194,29 @@ where
 
     fn observe(&self, labels: L, value: f64) {
         {
-            let values = self.values.read().expect("histogram vec poisoned");
+            let values = self.values.read();
             if let Some(state) = values.get(&labels) {
-                state
-                    .lock()
-                    .expect("histogram state poisoned")
-                    .observe(self.buckets, value);
+                state.lock().observe(self.buckets, value);
                 return;
             }
         }
         let state = {
-            let mut values = self.values.write().expect("histogram vec poisoned");
+            let mut values = self.values.write();
             values
                 .entry(labels)
                 .or_insert_with(|| Arc::new(Mutex::new(HistogramState::new(self.buckets))))
                 .clone()
         };
-        state
-            .lock()
-            .expect("histogram state poisoned")
-            .observe(self.buckets, value);
+        state.lock().observe(self.buckets, value);
     }
 
     fn snapshot(&self) -> Vec<(L, HistogramSnapshot)> {
         let mut snapshot = self
             .values
             .read()
-            .expect("histogram vec poisoned")
             .iter()
             .map(|(labels, state)| {
-                let snapshot =
-                    state.lock().expect("histogram state poisoned").snapshot(self.buckets);
+                let snapshot = state.lock().snapshot(self.buckets);
                 (labels.clone(), snapshot)
             })
             .collect::<Vec<_>>();
@@ -1325,7 +1313,7 @@ where
         for (idx, upper_bound) in snapshot.buckets.iter().enumerate() {
             cumulative += snapshot.bucket_counts[idx];
             let mut bucket_labels = base_labels.clone();
-            bucket_labels.push(("le", upper_bound.to_string()));
+            bucket_labels.push(("le", Cow::Owned(upper_bound.to_string())));
             write_metric_line(
                 out,
                 &format!("{name}_bucket"),
@@ -1334,7 +1322,7 @@ where
             );
         }
         let mut inf_labels = base_labels.clone();
-        inf_labels.push(("le", "+Inf".to_owned()));
+        inf_labels.push(("le", Cow::Borrowed("+Inf")));
         write_metric_line(out, &format!("{name}_bucket"), &inf_labels, snapshot.count.to_string());
         write_metric_line(
             out,
@@ -1357,7 +1345,7 @@ fn write_type(out: &mut String, name: &str, metric_type: &str) {
 fn write_metric_line(
     out: &mut String,
     name: &str,
-    labels: &[(&'static str, String)],
+    labels: &[(&'static str, LabelValue)],
     value: String,
 ) {
     if labels.is_empty() {

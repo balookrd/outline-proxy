@@ -1,68 +1,94 @@
 use super::*;
 
-pub(super) async fn resolve_target(
-    target: &TargetAddr,
-    prefer_ipv4_upstream: bool,
-) -> Result<SocketAddr> {
-    resolve_target_addrs(target, prefer_ipv4_upstream)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("dns lookup returned no records for {}", target.display_host_port()))
-}
-
 pub(super) async fn resolve_udp_target(
-    udp_dns_cache: &UdpDnsCache,
+    dns_cache: &DnsCache,
     target: &TargetAddr,
     prefer_ipv4_upstream: bool,
 ) -> Result<SocketAddr> {
     match target {
         TargetAddr::Domain(host, port) => {
-            if let Some(resolved) = udp_dns_cache.lookup(host, *port, prefer_ipv4_upstream) {
+            if let Some(resolved) = dns_cache.lookup_one(host, *port, prefer_ipv4_upstream) {
                 return Ok(resolved);
             }
-            let resolved = resolve_target(target, prefer_ipv4_upstream).await?;
-            udp_dns_cache.store(host, *port, prefer_ipv4_upstream, resolved);
-            Ok(resolved)
+            let addrs = resolve_and_cache(dns_cache, host, *port, prefer_ipv4_upstream).await?;
+            addrs.first().copied().ok_or_else(|| {
+                anyhow!("dns lookup returned no records for {}", target.display_host_port())
+            })
         },
-        TargetAddr::Socket(_) => resolve_target(target, prefer_ipv4_upstream).await,
+        TargetAddr::Socket(addr) => {
+            if prefer_ipv4_upstream && addr.is_ipv6() {
+                return Err(anyhow!(
+                    "ipv6 upstream disabled by prefer_ipv4_upstream for {}",
+                    addr
+                ));
+            }
+            Ok(*addr)
+        },
     }
 }
 
-pub(super) async fn resolve_target_addrs(
+async fn resolve_target_addrs(
+    dns_cache: &DnsCache,
     target: &TargetAddr,
     prefer_ipv4_upstream: bool,
-) -> Result<Vec<SocketAddr>> {
+) -> Result<Arc<[SocketAddr]>> {
     match target {
         TargetAddr::Socket(addr) => {
             if prefer_ipv4_upstream && addr.is_ipv6() {
                 return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {}", addr));
             }
-            Ok(vec![*addr])
+            Ok(Arc::from(vec![*addr].into_boxed_slice()))
         },
         TargetAddr::Domain(host, port) => {
-            let mut addrs = lookup_host((host.as_str(), *port))
-                .await
-                .with_context(|| format!("dns lookup failed for {host}:{port}"))?
-                .collect::<Vec<_>>();
-            if prefer_ipv4_upstream {
-                addrs.retain(SocketAddr::is_ipv4);
+            if let Some(addrs) = dns_cache.lookup_all(host, *port, prefer_ipv4_upstream) {
+                return Ok(addrs);
             }
-            if addrs.is_empty() {
-                return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
-            }
-            Ok(addrs)
+            resolve_and_cache(dns_cache, host, *port, prefer_ipv4_upstream).await
         },
     }
 }
 
+async fn resolve_and_cache(
+    dns_cache: &DnsCache,
+    host: &str,
+    port: u16,
+    prefer_ipv4_upstream: bool,
+) -> Result<Arc<[SocketAddr]>> {
+    let mut addrs = match lookup_host((host, port)).await {
+        Ok(resolved) => resolved.collect::<Vec<_>>(),
+        Err(error) => {
+            if let Some(stale) = dns_cache.lookup_all_stale(host, port, prefer_ipv4_upstream) {
+                warn!(
+                    host,
+                    port,
+                    error = %error,
+                    "dns lookup failed, serving stale cached addresses",
+                );
+                return Ok(stale);
+            }
+            return Err(error)
+                .with_context(|| format!("dns lookup failed for {host}:{port}"));
+        },
+    };
+    if prefer_ipv4_upstream {
+        addrs.retain(SocketAddr::is_ipv4);
+    }
+    if addrs.is_empty() {
+        return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
+    }
+    let addrs: Arc<[SocketAddr]> = Arc::from(addrs.into_boxed_slice());
+    dns_cache.store(host, port, prefer_ipv4_upstream, Arc::clone(&addrs));
+    Ok(addrs)
+}
+
 pub(super) async fn connect_tcp_target(
+    dns_cache: &DnsCache,
     target: &TargetAddr,
     fwmark: Option<u32>,
     prefer_ipv4_upstream: bool,
 ) -> Result<TcpStream> {
     let resolved = order_tcp_connect_addrs(
-        resolve_target_addrs(target, prefer_ipv4_upstream).await?,
+        resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?.to_vec(),
         prefer_ipv4_upstream,
     );
     connect_tcp_addrs(&resolved, fwmark)

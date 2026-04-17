@@ -51,7 +51,7 @@ const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 /// resolved upstream address) triple.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct NatKey {
-    pub user_id: String,
+    pub user_id: Arc<str>,
     pub fwmark: Option<u32>,
     pub target: SocketAddr,
     pub udp_client_session_id: Option<[u8; 8]>,
@@ -592,7 +592,7 @@ mod tests {
             "/udp",
         )?;
         let key = NatKey {
-            user_id: user.id().to_owned(),
+            user_id: user.id_arc(),
             fwmark: None,
             target: SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
             udp_client_session_id: None,

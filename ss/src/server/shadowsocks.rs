@@ -5,6 +5,7 @@ pub(super) async fn serve_ss_tcp_listener(
     listener: TcpListener,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
@@ -29,10 +30,12 @@ pub(super) async fn serve_ss_tcp_listener(
         };
         let users = users.clone();
         let metrics = metrics.clone();
+        let dns_cache = Arc::clone(&dns_cache);
         tokio::spawn(async move {
             let _permit = permit;
             if let Err(error) =
-                handle_ss_tcp_connection(stream, users, metrics, prefer_ipv4_upstream).await
+                handle_ss_tcp_connection(stream, users, metrics, dns_cache, prefer_ipv4_upstream)
+                    .await
             {
                 if is_benign_ws_disconnect(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
@@ -52,6 +55,7 @@ async fn handle_ss_tcp_connection(
     socket: TcpStream,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().ok();
@@ -63,11 +67,12 @@ async fn handle_ss_tcp_connection(
     let mut upstream_to_client = None;
     let mut authenticated_user = None;
     let mut upstream_guard = None;
-    let mut read_buffer = vec![0_u8; MAX_CHUNK_SIZE];
     let client_sent_eof;
 
     loop {
-        let read_fut = client_reader.read(&mut read_buffer);
+        let buffered_before = decryptor.buffered_data().len();
+        decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
+        let read_fut = client_reader.read_buf(decryptor.ciphertext_buffer_mut());
         let read = if upstream_writer.is_none() {
             match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await {
                 Ok(result) => result.context("failed to read from shadowsocks client")?,
@@ -105,12 +110,10 @@ async fn handle_ss_tcp_connection(
         debug!(
             peer_addr = ?peer_addr,
             encrypted_bytes = read,
-            buffered_before = decryptor.buffered_data().len(),
+            buffered_before,
             "socket tcp received encrypted bytes"
         );
-
-        decryptor.push(&read_buffer[..read]);
-        match decryptor.pull_plaintext(&mut plaintext_buffer) {
+        match decryptor.drain_plaintext(&mut plaintext_buffer) {
             Ok(()) => {
                 debug!(
                     peer_addr = ?peer_addr,
@@ -162,8 +165,14 @@ async fn handle_ss_tcp_connection(
                 initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
                 "socket tcp starting upstream connect"
             );
-            let stream =
-                match connect_tcp_target(&target, user.fwmark(), prefer_ipv4_upstream).await {
+            let stream = match connect_tcp_target(
+                dns_cache.as_ref(),
+                &target,
+                user.fwmark(),
+                prefer_ipv4_upstream,
+            )
+            .await
+            {
                     Ok(stream) => {
                         metrics.record_tcp_connect(
                             user.id_arc(),
@@ -283,11 +292,13 @@ async fn relay_upstream_to_socket_client(
     peer_addr: Option<SocketAddr>,
     target: String,
 ) -> Result<()> {
-    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
     loop {
+        buffer.clear();
+        buffer.reserve(MAX_CHUNK_SIZE);
         let read = upstream_reader
-            .read(&mut buffer)
+            .read_buf(&mut buffer)
             .await
             .context("failed to read from upstream")?;
         if read == 0 {
@@ -318,7 +329,7 @@ async fn relay_upstream_to_socket_client(
             "target_to_client",
             read,
         );
-        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
+        let ciphertext = encryptor.encrypt_chunk(&buffer)?;
         debug!(
             user = %user_id,
             plaintext_bytes = read,
@@ -340,7 +351,7 @@ pub(super) async fn serve_ss_udp_socket(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
@@ -375,7 +386,7 @@ pub(super) async fn serve_ss_udp_socket(
                 let metrics = metrics.clone();
                 let nat_table = Arc::clone(&nat_table);
                 let socket = Arc::clone(&socket);
-                let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                let dns_cache = Arc::clone(&dns_cache);
                 in_flight.push(async move {
                     if let Err(error) = handle_ss_udp_datagram(
                         nat_table,
@@ -384,7 +395,7 @@ pub(super) async fn serve_ss_udp_socket(
                         client_addr,
                         socket,
                         metrics,
-                        udp_dns_cache,
+                        dns_cache,
                         prefer_ipv4_upstream,
                     )
                     .await
@@ -404,7 +415,7 @@ async fn handle_ss_udp_datagram(
     client_addr: SocketAddr,
     outbound_socket: Arc<UdpSocket>,
     metrics: Arc<Metrics>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let started_at = std::time::Instant::now();
@@ -437,7 +448,7 @@ async fn handle_ss_udp_datagram(
     );
 
     let resolved =
-        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
+        resolve_udp_target(dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
     debug!(
         user = packet.user.id(),
         client_addr = %client_addr,
@@ -456,7 +467,7 @@ async fn handle_ss_udp_datagram(
     );
 
     let nat_key = NatKey {
-        user_id: packet.user.id().to_owned(),
+        user_id: Arc::clone(&user_id),
         fwmark: packet.user.fwmark(),
         target: resolved,
         udp_client_session_id: packet.session.client_session_id(),

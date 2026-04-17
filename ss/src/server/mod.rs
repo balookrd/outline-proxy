@@ -2,7 +2,7 @@
 //!
 //! Responsibilities are split across several internal modules:
 //! - [`constants`] — tuning constants shared by the bootstrap/transport/shadowsocks paths.
-//! - [`state`] — shared application state ([`AppState`], [`TransportRoute`], [`UdpDnsCache`]).
+//! - [`state`] — shared application state ([`AppState`], [`TransportRoute`], [`DnsCache`]).
 //! - [`setup`] — helpers that turn a parsed [`Config`] into user/route structures.
 //! - [`bootstrap`] — listener setup for the websocket, HTTP/3 and metrics endpoints.
 //! - [`connect`] — upstream TCP/UDP connect and address resolution.
@@ -20,7 +20,7 @@ use std::{
     },
 };
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 
 use anyhow::{Context, Result, anyhow};
 use axum::{
@@ -72,6 +72,7 @@ use crate::{
 mod bootstrap;
 mod connect;
 mod constants;
+mod dns_cache;
 mod setup;
 mod shadowsocks;
 mod state;
@@ -90,11 +91,12 @@ use self::{
     },
     connect::connect_tcp_target,
     constants::*,
+    dns_cache::DnsCache,
     setup::{
         build_transport_route_map, build_users, describe_user_routes, protocol_from_http_version,
     },
     shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
-    state::{AppState, TransportRoute, UdpDnsCache, empty_transport_route},
+    state::{AppState, TransportRoute, empty_transport_route},
     transport::{is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade},
 };
 
@@ -107,14 +109,14 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
-    let udp_dns_cache = UdpDnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
+    let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let app = build_app(
         users.clone(),
         tcp_routes.clone(),
         udp_routes.clone(),
         metrics.clone(),
         Arc::clone(&nat_table),
-        Arc::clone(&udp_dns_cache),
+        Arc::clone(&dns_cache),
         config.prefer_ipv4_upstream,
         config.http_root_auth,
         config.http_root_realm.clone(),
@@ -174,6 +176,25 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
 
+    // Periodic sweep of DNS cache entries whose stale-fallback grace expired.
+    {
+        let dns_cache_cleanup = Arc::clone(&dns_cache);
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(DNS_CACHE_SWEEP_INTERVAL_SECS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                let purged =
+                    dns_cache_cleanup.sweep_expired(Duration::from_secs(DNS_CACHE_STALE_GRACE_SECS));
+                if purged > 0 {
+                    debug!(purged, "swept expired dns cache entries");
+                }
+            }
+        });
+    }
+
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let user_routes = describe_user_routes(users.as_ref());
@@ -207,7 +228,7 @@ pub async fn run(config: Config) -> Result<()> {
         let udp_routes = udp_routes.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
-        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+        let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         let http_root_auth = config.http_root_auth;
         let http_root_realm = config.http_root_realm.clone();
@@ -219,7 +240,7 @@ pub async fn run(config: Config) -> Result<()> {
                 udp_routes,
                 metrics,
                 nat_table,
-                udp_dns_cache,
+                dns_cache,
                 prefer_ipv4_upstream,
                 http_root_auth,
                 http_root_realm,
@@ -234,16 +255,17 @@ pub async fn run(config: Config) -> Result<()> {
     if let Some(listener) = ss_tcp_listener {
         let users = users.clone();
         let metrics = metrics.clone();
+        let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         tasks.spawn(async move {
-            serve_ss_tcp_listener(listener, users, metrics, prefer_ipv4_upstream).await
+            serve_ss_tcp_listener(listener, users, metrics, dns_cache, prefer_ipv4_upstream).await
         });
     }
     if let Some(socket) = ss_udp_socket {
         let users = users.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
-        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+        let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         tasks.spawn(async move {
             serve_ss_udp_socket(
@@ -251,7 +273,7 @@ pub async fn run(config: Config) -> Result<()> {
                 users,
                 metrics,
                 nat_table,
-                udp_dns_cache,
+                dns_cache,
                 prefer_ipv4_upstream,
             )
             .await

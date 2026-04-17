@@ -17,7 +17,7 @@ pub(super) fn build_app(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     http_root_auth: bool,
     http_root_realm: String,
@@ -28,7 +28,7 @@ pub(super) fn build_app(
         udp_routes: udp_routes.clone(),
         metrics,
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         prefer_ipv4_upstream,
         http_root_auth,
         http_root_realm: Arc::from(http_root_realm),
@@ -192,7 +192,7 @@ pub(super) async fn serve_h3_server(
     udp_routes: Arc<BTreeMap<String, TransportRoute>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     http_root_auth: bool,
     http_root_realm: String,
@@ -210,7 +210,7 @@ pub(super) async fn serve_h3_server(
         let tcp_paths = tcp_paths.clone();
         let udp_paths = udp_paths.clone();
         let nat_table = Arc::clone(&nat_table);
-        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+        let dns_cache = Arc::clone(&dns_cache);
         let http_root_realm = Arc::clone(&http_root_realm);
         let ws_config = ws_config.clone();
 
@@ -224,7 +224,7 @@ pub(super) async fn serve_h3_server(
                 tcp_paths,
                 udp_paths,
                 nat_table,
-                udp_dns_cache,
+                dns_cache,
                 prefer_ipv4_upstream,
                 http_root_auth,
                 http_root_realm,
@@ -250,7 +250,7 @@ async fn handle_h3_connection(
     tcp_paths: BTreeSet<String>,
     udp_paths: BTreeSet<String>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     http_root_auth: bool,
     http_root_realm: Arc<str>,
@@ -285,7 +285,7 @@ async fn handle_h3_connection(
                 let tcp_paths = tcp_paths.clone();
                 let udp_paths = udp_paths.clone();
                 let nat_table = Arc::clone(&nat_table);
-                let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                let dns_cache = Arc::clone(&dns_cache);
                 let http_root_realm = Arc::clone(&http_root_realm);
                 let ws_config = ws_config.clone();
 
@@ -300,7 +300,7 @@ async fn handle_h3_connection(
                         tcp_paths,
                         udp_paths,
                         nat_table,
-                        udp_dns_cache,
+                        dns_cache,
                         prefer_ipv4_upstream,
                         http_root_auth,
                         http_root_realm,
@@ -337,7 +337,7 @@ async fn handle_h3_request(
     tcp_paths: BTreeSet<String>,
     udp_paths: BTreeSet<String>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     http_root_auth: bool,
     http_root_realm: Arc<str>,
@@ -407,8 +407,9 @@ async fn handle_h3_request(
             socket,
             route.users,
             metrics.clone(),
-            ws_req.path.clone(),
+            Arc::from(ws_req.path.as_str()),
             route.candidate_users,
+            dns_cache,
             prefer_ipv4_upstream,
         )
         .await
@@ -439,10 +440,10 @@ async fn handle_h3_request(
             socket,
             route.users,
             metrics.clone(),
-            ws_req.path.clone(),
+            Arc::from(ws_req.path.as_str()),
             route.candidate_users,
             nat_table,
-            udp_dns_cache,
+            dns_cache,
             prefer_ipv4_upstream,
         )
         .await
