@@ -15,15 +15,19 @@ use crate::socks5::{SocksRequest, negotiate};
 use crate::types::TargetAddr;
 use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
-/// Resolved dispatch plan for a single connection.
-pub(super) enum Dispatch {
+/// Outcome of resolving a connection's destination against the routing
+/// table: either route *outside* any uplink, drop the traffic by policy, or
+/// forward through a named uplink group. Produced by [`resolve_dispatch`]
+/// and consumed by the per-protocol handlers (`tcp::handle_tcp_connect` /
+/// `udp::handle_udp_associate`).
+pub(super) enum DispatchTarget {
     /// Route outside any uplink (via = "direct" route).
     /// `fwmark` is applied to the outbound socket (Linux SO_MARK) so direct
     /// traffic does not loop back through TUN.
     Direct { fwmark: Option<u32> },
     /// Policy-blocked (SOCKS5 REP=0x02 for TCP; silent drop for UDP).
     Drop,
-    /// Dispatch via this group's uplink manager.
+    /// Forward through this group's uplink manager.
     Group {
         name: String,
         manager: UplinkManager,
@@ -61,7 +65,7 @@ pub async fn handle_client(
     }
 }
 
-/// Resolve a TCP target (destination known up-front) to a [`Dispatch`].
+/// Resolve a TCP target (destination known up-front) to a [`DispatchTarget`].
 /// Falls through the route's fallback one level when the primary group has
 /// no healthy uplinks.
 ///
@@ -73,13 +77,13 @@ pub(super) async fn resolve_dispatch(
     registry: &UplinkRegistry,
     target: &TargetAddr,
     transport: TransportKind,
-) -> Dispatch {
+) -> DispatchTarget {
     if let Some(table) = config.routing_table.as_ref() {
         let decision = table.resolve(target).await;
         return resolve_decision(registry, decision, transport, config.direct_fwmark).await;
     }
 
-    Dispatch::Group {
+    DispatchTarget::Group {
         name: registry.default_group_name().to_string(),
         manager: registry.default_group().clone(),
     }
@@ -90,9 +94,9 @@ async fn resolve_decision(
     decision: RouteDecision,
     transport: TransportKind,
     direct_fwmark: Option<u32>,
-) -> Dispatch {
+) -> DispatchTarget {
     let primary = resolve_single_target(registry, &decision.primary, direct_fwmark);
-    if matches!(primary, Dispatch::Group { ref manager, .. } if !manager.has_any_healthy(transport).await)
+    if matches!(primary, DispatchTarget::Group { ref manager, .. } if !manager.has_any_healthy(transport).await)
         && let Some(fb) = decision.fallback
     {
         debug!(primary = ?decision.primary, fallback = ?fb, "primary target unhealthy, using fallback");
@@ -105,16 +109,16 @@ fn resolve_single_target(
     registry: &UplinkRegistry,
     target: &RouteTarget,
     direct_fwmark: Option<u32>,
-) -> Dispatch {
+) -> DispatchTarget {
     match target {
-        RouteTarget::Direct => Dispatch::Direct { fwmark: direct_fwmark },
-        RouteTarget::Drop => Dispatch::Drop,
+        RouteTarget::Direct => DispatchTarget::Direct { fwmark: direct_fwmark },
+        RouteTarget::Drop => DispatchTarget::Drop,
         RouteTarget::Group(name) => {
             let manager = registry
                 .group_by_name(name)
                 .cloned()
                 .unwrap_or_else(|| registry.default_group().clone());
-            Dispatch::Group { name: name.clone(), manager }
+            DispatchTarget::Group { name: name.clone(), manager }
         },
     }
 }

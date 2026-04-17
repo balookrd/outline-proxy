@@ -21,7 +21,7 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 // When the h3 feature is disabled, provide a zero-size never-constructable
-// stub so that AnyWsStream::H3 remains a valid enum variant. The variant is
+// stub so that WsTransportStream::H3 remains a valid enum variant. The variant is
 // unreachable at runtime because nothing in the non-h3 code path can create it.
 #[cfg(not(feature = "h3"))]
 pin_project! {
@@ -67,15 +67,21 @@ impl Sink<Message> for H3WsStream {
 }
 
 pin_project! {
-    #[project = AnyWsStreamProj]
-    pub enum AnyWsStream {
+    /// A WebSocket stream parameterised over the underlying HTTP transport
+    /// (HTTP/1, HTTP/2, or HTTP/3). Each variant wraps the transport-specific
+    /// WebSocket implementation and exposes a unified `Stream` + `Sink<Message>`
+    /// interface, so higher-level protocol code (the SOCKS proxy, the TCP/UDP
+    /// Shadowsocks transports, the uplink standby pool) does not have to care
+    /// which transport a given session is using.
+    #[project = WsTransportStreamProj]
+    pub enum WsTransportStream {
         Http1 { #[pin] inner: H1WsStream },
         H2 { #[pin] inner: H2WsStream },
         H3 { #[pin] inner: H3WsStream },
     }
 }
 
-impl AnyWsStream {
+impl WsTransportStream {
     /// Returns `true` when the underlying shared connection (H2 / H3) is still
     /// usable.  HTTP/1 streams always return `true` because they do not share a
     /// multiplexed connection.  Used by the standby pool to detect and discard
@@ -84,17 +90,17 @@ impl AnyWsStream {
     /// because H2 keepalive may still succeed on the dying connection.
     pub fn is_connection_alive(&self) -> bool {
         match self {
-            AnyWsStream::Http1 { .. } => true,
-            AnyWsStream::H2 { inner } => inner.is_connection_alive(),
+            WsTransportStream::Http1 { .. } => true,
+            WsTransportStream::H2 { inner } => inner.is_connection_alive(),
             #[cfg(feature = "h3")]
-            AnyWsStream::H3 { inner } => inner.is_connection_alive(),
+            WsTransportStream::H3 { inner } => inner.is_connection_alive(),
             #[cfg(not(feature = "h3"))]
-            AnyWsStream::H3 { .. } => true,
+            WsTransportStream::H3 { .. } => true,
         }
     }
 }
 
-impl Stream for AnyWsStream {
+impl Stream for WsTransportStream {
     type Item = Result<Message, WsError>;
 
     fn poll_next(
@@ -102,10 +108,10 @@ impl Stream for AnyWsStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_next(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::Http1 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::H2 { inner } => inner.poll_next(cx),
             #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => match inner.poll_next(cx) {
+            WsTransportStreamProj::H3 { inner } => match inner.poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(message))) => {
                     std::task::Poll::Ready(Some(Ok(sockudo_to_tungstenite_message(message))))
                 },
@@ -117,12 +123,12 @@ impl Stream for AnyWsStream {
             },
             // Stub variant — Infallible inner field makes this branch unreachable.
             #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::H3 { inner } => inner.poll_next(cx),
         }
     }
 }
 
-impl Sink<Message> for AnyWsStream {
+impl Sink<Message> for WsTransportStream {
     type Error = WsError;
 
     fn poll_ready(
@@ -130,25 +136,25 @@ impl Sink<Message> for AnyWsStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_ready(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::Http1 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::H2 { inner } => inner.poll_ready(cx),
             #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::H3 { inner } => inner.poll_ready(cx),
         }
     }
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.start_send(item),
-            AnyWsStreamProj::H2 { inner } => inner.start_send(item),
+            WsTransportStreamProj::Http1 { inner } => inner.start_send(item),
+            WsTransportStreamProj::H2 { inner } => inner.start_send(item),
             #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner
+            WsTransportStreamProj::H3 { inner } => inner
                 .start_send(tungstenite_to_sockudo_message(item)?)
                 .map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.start_send(item),
+            WsTransportStreamProj::H3 { inner } => inner.start_send(item),
         }
     }
 
@@ -157,12 +163,12 @@ impl Sink<Message> for AnyWsStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_flush(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::Http1 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::H2 { inner } => inner.poll_flush(cx),
             #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::H3 { inner } => inner.poll_flush(cx),
         }
     }
 
@@ -171,12 +177,12 @@ impl Sink<Message> for AnyWsStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            AnyWsStreamProj::Http1 { inner } => inner.poll_close(cx),
-            AnyWsStreamProj::H2 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::Http1 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::H2 { inner } => inner.poll_close(cx),
             #[cfg(feature = "h3")]
-            AnyWsStreamProj::H3 { inner } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            AnyWsStreamProj::H3 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::H3 { inner } => inner.poll_close(cx),
         }
     }
 }
