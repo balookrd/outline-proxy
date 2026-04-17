@@ -43,6 +43,11 @@ pub struct Socks5UdpTcpPacket {
 pub const SOCKS5_UDP_FRAGMENT_END: u8 = 0x80;
 pub const SOCKS5_UDP_FRAGMENT_MASK: u8 = 0x7f;
 pub const SOCKS5_UDP_REASSEMBLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// Upper bound on the cumulative payload a single SOCKS5 UDP fragment
+/// sequence may accumulate before the final (END-flagged) fragment arrives.
+/// Protects the proxy from a client that holds memory hostage by sending up
+/// to 127 × 64 KiB fragments without ever terminating the sequence.
+pub const SOCKS5_UDP_REASSEMBLY_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReassembledUdpPacket {
@@ -60,6 +65,7 @@ struct UdpFragmentState {
     target: TargetAddr,
     fragments: Vec<Vec<u8>>,
     highest_fragment: u8,
+    total_bytes: usize,
     deadline: Instant,
 }
 
@@ -355,6 +361,7 @@ impl UdpFragmentReassembler {
             target: packet.target.clone(),
             fragments: Vec::new(),
             highest_fragment: 0,
+            total_bytes: 0,
             deadline: now + SOCKS5_UDP_REASSEMBLY_TIMEOUT,
         });
 
@@ -365,7 +372,18 @@ impl UdpFragmentReassembler {
             bail!("out-of-order or duplicate UDP fragment: {fragment_number}");
         }
 
+        let projected_total = state.total_bytes.saturating_add(packet.payload.len());
+        if projected_total > SOCKS5_UDP_REASSEMBLY_MAX_BYTES {
+            self.state = None;
+            bail!(
+                "UDP fragment sequence exceeded reassembly byte cap ({} > {})",
+                projected_total,
+                SOCKS5_UDP_REASSEMBLY_MAX_BYTES,
+            );
+        }
+
         state.highest_fragment = fragment_number;
+        state.total_bytes = projected_total;
         state.deadline = now + SOCKS5_UDP_REASSEMBLY_TIMEOUT;
         state.fragments.push(packet.payload.to_vec());
 
@@ -374,8 +392,7 @@ impl UdpFragmentReassembler {
         }
 
         let state = self.state.take().expect("state exists when final fragment arrives");
-        let total_len: usize = state.fragments.iter().map(Vec::len).sum();
-        let mut payload = Vec::with_capacity(total_len);
+        let mut payload = Vec::with_capacity(state.total_bytes);
         for fragment in state.fragments {
             payload.extend_from_slice(&fragment);
         }
@@ -483,6 +500,44 @@ mod tests {
 
         assert_eq!(reassembled.target, target);
         assert_eq!(reassembled.payload, b"hello");
+    }
+
+    #[test]
+    fn udp_fragment_reassembly_rejects_oversized_sequence() {
+        let mut reassembler = UdpFragmentReassembler::default();
+        let target = TargetAddr::IpV4(Ipv4Addr::new(8, 8, 8, 8), 53);
+        let target_wire = target.to_wire_bytes().unwrap();
+
+        // Each non-terminal fragment carries ~64 KiB of payload; pushing more
+        // than SOCKS5_UDP_REASSEMBLY_MAX_BYTES worth must be rejected and
+        // must clear the partial state so the next sequence starts fresh.
+        let chunk = vec![0u8; 64 * 1024];
+        let fragments_to_exceed_cap = SOCKS5_UDP_REASSEMBLY_MAX_BYTES / chunk.len() + 2;
+
+        let mut rejected = false;
+        for i in 1..=fragments_to_exceed_cap {
+            let mut packet = vec![0, 0, i as u8];
+            packet.extend_from_slice(&target_wire);
+            packet.extend_from_slice(&chunk);
+            let parsed = parse_udp_request(&packet).unwrap();
+            match reassembler.push_fragment(parsed) {
+                Ok(_) => {}
+                Err(_) => {
+                    rejected = true;
+                    break;
+                }
+            }
+        }
+        assert!(rejected, "expected reassembler to bail once byte cap was crossed");
+
+        // State must be cleared after the bail; a fresh fragment 0 should
+        // still be processed as a standalone packet.
+        let mut packet = vec![0, 0, 0];
+        packet.extend_from_slice(&target_wire);
+        packet.extend_from_slice(b"ok");
+        let parsed = parse_udp_request(&packet).unwrap();
+        let reassembled = reassembler.push_fragment(parsed).unwrap().unwrap();
+        assert_eq!(reassembled.payload, b"ok");
     }
 
     #[test]

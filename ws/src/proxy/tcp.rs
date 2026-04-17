@@ -432,6 +432,10 @@ pub(super) async fn handle_tcp_connect(
         let mut active_uplink_name = selected_uplink_name.clone();
         let mut client_half_closed = false;
         let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
+        // Single scratch buffer reused across every phase-1 failover attempt.
+        // Hoisted out of the loop so a chunk-0 failover does not re-allocate
+        // 64 KiB per retry.
+        let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
 
         let first_upstream_chunk: Vec<u8> = 'phase1: loop {
             let can_failover = strict_transport
@@ -443,7 +447,6 @@ pub(super) async fn handle_tcp_connect(
                 UPSTREAM_RESPONSE_TIMEOUT
             };
             let mut deadline = tokio::time::Instant::now() + attempt_timeout;
-            let mut rbuf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
 
             let attempt: Result<Vec<u8>> = loop {
                 if client_half_closed {
