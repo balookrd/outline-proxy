@@ -205,24 +205,24 @@ impl UplinkManager {
     #[doc(hidden)]
     pub async fn test_set_tcp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
         let mut statuses = self.inner.statuses.write().await;
-        statuses[index].tcp_healthy = Some(healthy);
-        statuses[index].tcp_latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].tcp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        statuses[index].tcp.healthy = Some(healthy);
+        statuses[index].tcp.latency = Some(Duration::from_millis(rtt_ms));
+        statuses[index].tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
     }
 
     /// Test helper: directly set UDP health / latency for uplink `index`.
     #[doc(hidden)]
     pub async fn test_set_udp_health(&self, index: usize, healthy: bool, rtt_ms: u64) {
         let mut statuses = self.inner.statuses.write().await;
-        statuses[index].udp_healthy = Some(healthy);
-        statuses[index].udp_latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].udp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+        statuses[index].udp.healthy = Some(healthy);
+        statuses[index].udp.latency = Some(Duration::from_millis(rtt_ms));
+        statuses[index].udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
     }
 
     /// Test helper: read tcp_healthy for uplink `index`.
     #[doc(hidden)]
     pub async fn test_tcp_healthy(&self, index: usize) -> Option<bool> {
-        self.inner.statuses.read().await[index].tcp_healthy
+        self.inner.statuses.read().await[index].tcp.healthy
     }
 
     pub fn uplinks(&self) -> &[Arc<UplinkConfig>] {
@@ -254,8 +254,8 @@ impl UplinkManager {
             let status = &statuses[index];
             let standby_tcp_ready = self.inner.standby_pools[index].tcp.lock().await.len();
             let standby_udp_ready = self.inner.standby_pools[index].udp.lock().await.len();
-            let tcp_penalty = current_penalty(&status.tcp_penalty, now, &self.inner.load_balancing);
-            let udp_penalty = current_penalty(&status.udp_penalty, now, &self.inner.load_balancing);
+            let tcp_penalty = current_penalty(&status.tcp.penalty, now, &self.inner.load_balancing);
+            let udp_penalty = current_penalty(&status.udp.penalty, now, &self.inner.load_balancing);
             let tcp_effective_latency =
                 effective_latency(status, TransportKind::Tcp, now, &self.inner.load_balancing);
             let udp_effective_latency =
@@ -281,12 +281,12 @@ impl UplinkManager {
                 name: uplink.name.clone(),
                 group: self.inner.group_name.clone(),
                 weight: uplink.weight,
-                tcp_healthy: status.tcp_healthy,
-                udp_healthy: status.udp_healthy,
-                tcp_latency_ms: status.tcp_latency.map(|v| v.as_millis()),
-                udp_latency_ms: status.udp_latency.map(|v| v.as_millis()),
-                tcp_rtt_ewma_ms: status.tcp_rtt_ewma.map(|v| v.as_millis()),
-                udp_rtt_ewma_ms: status.udp_rtt_ewma.map(|v| v.as_millis()),
+                tcp_healthy: status.tcp.healthy,
+                udp_healthy: status.udp.healthy,
+                tcp_latency_ms: status.tcp.latency.map(|v| v.as_millis()),
+                udp_latency_ms: status.udp.latency.map(|v| v.as_millis()),
+                tcp_rtt_ewma_ms: status.tcp.rtt_ewma.map(|v| v.as_millis()),
+                udp_rtt_ewma_ms: status.udp.rtt_ewma.map(|v| v.as_millis()),
                 tcp_penalty_ms: duration_to_millis_option(tcp_penalty),
                 udp_penalty_ms: duration_to_millis_option(udp_penalty),
                 tcp_effective_latency_ms: duration_to_millis_option(tcp_effective_latency),
@@ -294,11 +294,13 @@ impl UplinkManager {
                 tcp_score_ms: duration_to_millis_option(tcp_score),
                 udp_score_ms: duration_to_millis_option(udp_score),
                 cooldown_tcp_ms: status
-                    .cooldown_until_tcp
+                    .tcp
+                    .cooldown_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 cooldown_udp_ms: status
-                    .cooldown_until_udp
+                    .udp
+                    .cooldown_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 last_checked_ago_ms: status
@@ -307,21 +309,25 @@ impl UplinkManager {
                 last_error: status.last_error.clone(),
                 standby_tcp_ready,
                 standby_udp_ready,
-                tcp_consecutive_failures: status.tcp_consecutive_failures,
-                udp_consecutive_failures: status.udp_consecutive_failures,
+                tcp_consecutive_failures: status.tcp.consecutive_failures,
+                udp_consecutive_failures: status.udp.consecutive_failures,
                 h3_tcp_downgrade_until_ms: status
-                    .h3_tcp_downgrade_until
+                    .tcp
+                    .h3_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 h3_udp_downgrade_until_ms: status
-                    .h3_udp_downgrade_until
+                    .udp
+                    .h3_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 last_active_tcp_ago_ms: status
-                    .last_active_tcp
+                    .tcp
+                    .last_active
                     .map(|t| now.duration_since(t).as_millis()),
                 last_active_udp_ago_ms: status
-                    .last_active_udp
+                    .udp
+                    .last_active
                     .map(|t| now.duration_since(t).as_millis()),
             });
         }
