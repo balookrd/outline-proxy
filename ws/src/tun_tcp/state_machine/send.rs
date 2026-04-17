@@ -305,98 +305,98 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
 
     let group = state.manager.group_name();
     let uplink = state.uplink_name.as_str();
-    if !state.reported_active {
+    if !state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, 1);
-        state.reported_active = true;
+        state.reported.active = true;
     }
     apply_usize_gauge_delta(
         group,
         uplink,
         inflight_segments,
-        &mut state.reported_inflight_segments,
+        &mut state.reported.inflight_segments,
         metrics::add_tun_tcp_inflight_segments,
     );
     apply_usize_gauge_delta(
         group,
         uplink,
         inflight_bytes,
-        &mut state.reported_inflight_bytes,
+        &mut state.reported.inflight_bytes,
         metrics::add_tun_tcp_inflight_bytes,
     );
     apply_usize_gauge_delta(
         group,
         uplink,
         pending_server_bytes,
-        &mut state.reported_pending_server_bytes,
+        &mut state.reported.pending_server_bytes,
         metrics::add_tun_tcp_pending_server_bytes,
     );
     apply_usize_gauge_delta(
         group,
         uplink,
         buffered_client_segments,
-        &mut state.reported_buffered_client_segments,
+        &mut state.reported.buffered_client_segments,
         metrics::add_tun_tcp_buffered_client_segments,
     );
-    if zero_window != state.reported_zero_window {
+    if zero_window != state.reported.zero_window {
         metrics::add_tun_tcp_zero_window_flows(group, uplink, if zero_window { 1 } else { -1 });
-        state.reported_zero_window = zero_window;
+        state.reported.zero_window = zero_window;
     }
-    if backlog_pressure != state.reported_backlog_pressure {
+    if backlog_pressure != state.reported.backlog_pressure {
         metrics::add_tun_tcp_backlog_pressure_flows(
             group,
             uplink,
             if backlog_pressure { 1 } else { -1 },
         );
-        state.reported_backlog_pressure = backlog_pressure;
+        state.reported.backlog_pressure = backlog_pressure;
     }
     apply_u64_seconds_gauge_delta(
         group,
         uplink,
         backlog_pressure_us,
-        &mut state.reported_backlog_pressure_us,
+        &mut state.reported.backlog_pressure_us,
         metrics::add_tun_tcp_backlog_pressure_seconds,
     );
-    if ack_progress_stall != state.reported_ack_progress_stall {
+    if ack_progress_stall != state.reported.ack_progress_stall {
         metrics::add_tun_tcp_ack_progress_stall_flows(
             group,
             uplink,
             if ack_progress_stall { 1 } else { -1 },
         );
-        state.reported_ack_progress_stall = ack_progress_stall;
+        state.reported.ack_progress_stall = ack_progress_stall;
     }
     apply_u64_seconds_gauge_delta(
         group,
         uplink,
         ack_progress_stall_us,
-        &mut state.reported_ack_progress_stall_us,
+        &mut state.reported.ack_progress_stall_us,
         metrics::add_tun_tcp_ack_progress_stall_seconds,
     );
     apply_usize_gauge_delta(
         group,
         uplink,
         congestion_window,
-        &mut state.reported_congestion_window,
+        &mut state.reported.congestion_window,
         metrics::add_tun_tcp_congestion_window_bytes,
     );
     apply_usize_gauge_delta(
         group,
         uplink,
         slow_start_threshold,
-        &mut state.reported_slow_start_threshold,
+        &mut state.reported.slow_start_threshold,
         metrics::add_tun_tcp_slow_start_threshold_bytes,
     );
     apply_u64_seconds_gauge_delta(
         group,
         uplink,
         retransmission_timeout_us,
-        &mut state.reported_retransmission_timeout_us,
+        &mut state.reported.retransmission_timeout_us,
         metrics::add_tun_tcp_retransmission_timeout_seconds,
     );
     apply_u64_seconds_gauge_delta(
         group,
         uplink,
         smoothed_rtt_us,
-        &mut state.reported_smoothed_rtt_us,
+        &mut state.reported.smoothed_rtt_us,
         metrics::add_tun_tcp_smoothed_rtt_seconds,
     );
 }
@@ -404,101 +404,101 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
 pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     let group = state.manager.group_name();
     let uplink = state.uplink_name.as_str();
-    if state.reported_active {
+    if state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, -1);
-        state.reported_active = false;
+        state.reported.active = false;
     }
-    if state.reported_inflight_segments != 0 {
+    if state.reported.inflight_segments != 0 {
         metrics::add_tun_tcp_inflight_segments(
             group,
             uplink,
-            -(state.reported_inflight_segments as i64),
+            -(state.reported.inflight_segments as i64),
         );
-        state.reported_inflight_segments = 0;
+        state.reported.inflight_segments = 0;
     }
-    if state.reported_inflight_bytes != 0 {
+    if state.reported.inflight_bytes != 0 {
         metrics::add_tun_tcp_inflight_bytes(
             group,
             uplink,
-            -(state.reported_inflight_bytes as i64),
+            -(state.reported.inflight_bytes as i64),
         );
-        state.reported_inflight_bytes = 0;
+        state.reported.inflight_bytes = 0;
     }
-    if state.reported_pending_server_bytes != 0 {
+    if state.reported.pending_server_bytes != 0 {
         metrics::add_tun_tcp_pending_server_bytes(
             group,
             uplink,
-            -(state.reported_pending_server_bytes as i64),
+            -(state.reported.pending_server_bytes as i64),
         );
-        state.reported_pending_server_bytes = 0;
+        state.reported.pending_server_bytes = 0;
     }
-    if state.reported_buffered_client_segments != 0 {
+    if state.reported.buffered_client_segments != 0 {
         metrics::add_tun_tcp_buffered_client_segments(
             group,
             uplink,
-            -(state.reported_buffered_client_segments as i64),
+            -(state.reported.buffered_client_segments as i64),
         );
-        state.reported_buffered_client_segments = 0;
+        state.reported.buffered_client_segments = 0;
     }
-    if state.reported_zero_window {
+    if state.reported.zero_window {
         metrics::add_tun_tcp_zero_window_flows(group, uplink, -1);
-        state.reported_zero_window = false;
+        state.reported.zero_window = false;
     }
-    if state.reported_backlog_pressure {
+    if state.reported.backlog_pressure {
         metrics::add_tun_tcp_backlog_pressure_flows(group, uplink, -1);
-        state.reported_backlog_pressure = false;
+        state.reported.backlog_pressure = false;
     }
-    if state.reported_backlog_pressure_us != 0 {
+    if state.reported.backlog_pressure_us != 0 {
         metrics::add_tun_tcp_backlog_pressure_seconds(
             group,
             uplink,
-            -(state.reported_backlog_pressure_us as f64) / 1_000_000.0,
+            -(state.reported.backlog_pressure_us as f64) / 1_000_000.0,
         );
-        state.reported_backlog_pressure_us = 0;
+        state.reported.backlog_pressure_us = 0;
     }
-    if state.reported_ack_progress_stall {
+    if state.reported.ack_progress_stall {
         metrics::add_tun_tcp_ack_progress_stall_flows(group, uplink, -1);
-        state.reported_ack_progress_stall = false;
+        state.reported.ack_progress_stall = false;
     }
-    if state.reported_ack_progress_stall_us != 0 {
+    if state.reported.ack_progress_stall_us != 0 {
         metrics::add_tun_tcp_ack_progress_stall_seconds(
             group,
             uplink,
-            -(state.reported_ack_progress_stall_us as f64) / 1_000_000.0,
+            -(state.reported.ack_progress_stall_us as f64) / 1_000_000.0,
         );
-        state.reported_ack_progress_stall_us = 0;
+        state.reported.ack_progress_stall_us = 0;
     }
-    if state.reported_congestion_window != 0 {
+    if state.reported.congestion_window != 0 {
         metrics::add_tun_tcp_congestion_window_bytes(
             group,
             uplink,
-            -(state.reported_congestion_window as i64),
+            -(state.reported.congestion_window as i64),
         );
-        state.reported_congestion_window = 0;
+        state.reported.congestion_window = 0;
     }
-    if state.reported_slow_start_threshold != 0 {
+    if state.reported.slow_start_threshold != 0 {
         metrics::add_tun_tcp_slow_start_threshold_bytes(
             group,
             uplink,
-            -(state.reported_slow_start_threshold as i64),
+            -(state.reported.slow_start_threshold as i64),
         );
-        state.reported_slow_start_threshold = 0;
+        state.reported.slow_start_threshold = 0;
     }
-    if state.reported_retransmission_timeout_us != 0 {
+    if state.reported.retransmission_timeout_us != 0 {
         metrics::add_tun_tcp_retransmission_timeout_seconds(
             group,
             uplink,
-            -((state.reported_retransmission_timeout_us as f64) / 1_000_000.0),
+            -((state.reported.retransmission_timeout_us as f64) / 1_000_000.0),
         );
-        state.reported_retransmission_timeout_us = 0;
+        state.reported.retransmission_timeout_us = 0;
     }
-    if state.reported_smoothed_rtt_us != 0 {
+    if state.reported.smoothed_rtt_us != 0 {
         metrics::add_tun_tcp_smoothed_rtt_seconds(
             group,
             uplink,
-            -((state.reported_smoothed_rtt_us as f64) / 1_000_000.0),
+            -((state.reported.smoothed_rtt_us as f64) / 1_000_000.0),
         );
-        state.reported_smoothed_rtt_us = 0;
+        state.reported.smoothed_rtt_us = 0;
     }
 }
 
