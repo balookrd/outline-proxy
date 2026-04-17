@@ -34,7 +34,7 @@ impl TunUdpEngine {
         &self,
         key: UdpFlowKey,
         manager: &UplinkManager,
-    ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
+    ) -> Result<(u64, Arc<UdpWsTransport>, usize, Arc<str>)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
         let (candidate, transport) = select_candidate_and_connect(manager, &remote_target).await?;
         manager
@@ -50,7 +50,8 @@ impl TunUdpEngine {
             id: flow_id,
             transport: Arc::clone(&transport),
             uplink_index: candidate.index,
-            uplink_name: candidate.uplink.name.clone(),
+            uplink_name: Arc::from(candidate.uplink.name.as_str()),
+            group_name: Arc::from(manager.group_name()),
             manager: manager.clone(),
             created_at: now,
             last_seen: now,
@@ -113,7 +114,7 @@ impl TunUdpEngine {
             manager.clone(),
         );
 
-        Ok((flow_id, transport, candidate.index, candidate.uplink.name.clone()))
+        Ok((flow_id, transport, candidate.index, Arc::from(candidate.uplink.name.as_str())))
     }
 
     fn spawn_flow_reader(
@@ -146,7 +147,7 @@ impl TunUdpEngine {
                         key.local_port,
                         &payload[consumed..],
                     )?;
-                    let uplink_name = {
+                    let uplink_name: Arc<str> = {
                         let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
                         match handle {
                             Some(h) => {
@@ -154,10 +155,10 @@ impl TunUdpEngine {
                                 if flow.id == flow_id {
                                     flow.uplink_name.clone()
                                 } else {
-                                    "unknown".to_string()
+                                    Arc::from("unknown")
                                 }
                             },
-                            None => "unknown".to_string(),
+                            None => Arc::from("unknown"),
                         }
                     };
                     metrics::add_udp_datagram(
@@ -333,7 +334,7 @@ impl TunUdpEngine {
         uplink_name: &str,
         manager: &UplinkManager,
         error: &anyhow::Error,
-    ) -> Result<(u64, Arc<UdpWsTransport>, usize, String)> {
+    ) -> Result<(u64, Arc<UdpWsTransport>, usize, Arc<str>)> {
         report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
         let replacement = self.create_flow(key.clone(), manager).await?;
@@ -404,7 +405,7 @@ pub(crate) async fn close_udp_flow(
         (
             guard.id,
             Arc::clone(&guard.transport),
-            guard.manager.group_name().to_string(),
+            guard.group_name.clone(),
             guard.uplink_name.clone(),
             guard.created_at,
         )

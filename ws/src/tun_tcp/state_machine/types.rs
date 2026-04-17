@@ -55,7 +55,8 @@ pub(in crate::tun_tcp) struct TcpFlowState {
     pub(in crate::tun_tcp) id: u64,
     pub(in crate::tun_tcp) key: TcpFlowKey,
     pub(in crate::tun_tcp) uplink_index: usize,
-    pub(in crate::tun_tcp) uplink_name: String,
+    pub(in crate::tun_tcp) uplink_name: Arc<str>,
+    pub(in crate::tun_tcp) group_name: Arc<str>,
     /// The group's manager this flow is bound to. All per-flow operations
     /// (strict-active checks, connect, runtime failover) go through this
     /// manager, not the engine's default group.

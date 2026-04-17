@@ -77,7 +77,8 @@ impl TunTcpEngine {
             id: flow_id,
             key: key.clone(),
             uplink_index: usize::MAX,
-            uplink_name: "connecting".to_string(),
+            uplink_name: Arc::from("connecting"),
+            group_name: Arc::from(manager.group_name()),
             manager: manager.clone(),
             route: route.clone(),
             upstream_writer: None,
@@ -176,7 +177,7 @@ impl TunTcpEngine {
 
         let (group_name, uplink_name) = {
             let state = flow.lock().await;
-            (state.manager.group_name().to_string(), state.uplink_name.clone())
+            (state.group_name.clone(), state.uplink_name.clone())
         };
         {
             let mut guard = self.inner.flows.write().await;
@@ -211,7 +212,7 @@ impl TunTcpEngine {
             clear_flow_metrics(&mut state);
             (
                 state.id,
-                state.manager.group_name().to_string(),
+                state.group_name.clone(),
                 state.uplink_name.clone(),
                 state.created_at.elapsed(),
                 state.upstream_writer.clone(),
@@ -244,7 +245,7 @@ impl TunTcpEngine {
                 clear_flow_metrics(&mut state);
                 (
                     state.id,
-                    state.manager.group_name().to_string(),
+                    state.group_name.clone(),
                     state.uplink_name.clone(),
                     state.created_at.elapsed(),
                     state.upstream_writer.clone(),

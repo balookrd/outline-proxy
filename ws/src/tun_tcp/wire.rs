@@ -6,6 +6,7 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
+use bytes::Bytes;
 
 use super::{TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN};
 use crate::tun_wire::{
@@ -37,7 +38,7 @@ pub(crate) struct ParsedTcpPacket {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(super) timestamp_echo_reply: Option<u32>,
     pub(crate) flags: u8,
-    pub(crate) payload: Vec<u8>,
+    pub(crate) payload: Bytes,
 }
 
 #[derive(Debug, Default)]
@@ -151,7 +152,7 @@ fn parse_tcp_segment(
         timestamp_value: options.timestamp_value,
         timestamp_echo_reply: options.timestamp_echo_reply,
         flags: segment[13],
-        payload: segment[header_len..].to_vec(),
+        payload: Bytes::copy_from_slice(&segment[header_len..]),
     })
 }
 

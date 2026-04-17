@@ -304,7 +304,7 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         .unwrap_or(0);
 
     let group = state.manager.group_name();
-    let uplink = state.uplink_name.as_str();
+    let uplink: &str = &state.uplink_name;
     if !state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, 1);
         state.reported.active = true;
@@ -403,7 +403,7 @@ pub(in crate::tun_tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
 
 pub(in crate::tun_tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
     let group = state.manager.group_name();
-    let uplink = state.uplink_name.as_str();
+    let uplink: &str = &state.uplink_name;
     if state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, -1);
         state.reported.active = false;

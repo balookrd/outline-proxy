@@ -24,7 +24,8 @@ pub(super) struct UdpFlowState {
     pub(super) id: u64,
     pub(super) transport: Arc<UdpWsTransport>,
     pub(super) uplink_index: usize,
-    pub(super) uplink_name: String,
+    pub(super) uplink_name: Arc<str>,
+    pub(super) group_name: Arc<str>,
     /// The group's manager this flow was bound to at creation. All per-flow
     /// operations (failover, strict-active checks, reconciliation) run
     /// against this manager, not the engine's default group.

@@ -3,6 +3,8 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use bytes::Bytes;
+
 use super::{
     BufferedClientSegment, ClientSegmentView, IPV4_HEADER_LEN, IPV6_HEADER_LEN, ParsedTcpPacket,
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN, build_reset_response,
@@ -105,7 +107,7 @@ fn parsed_tcp_packet_keeps_payload() {
     );
     let parsed: ParsedTcpPacket = super::parse_tcp_packet(&packet).unwrap();
     assert_eq!(parsed.flags, TCP_FLAG_ACK);
-    assert_eq!(parsed.payload, b"abc");
+    assert_eq!(parsed.payload, b"abc"[..]);
     assert_eq!(parsed.sequence_number, 1);
     assert_eq!(parsed.acknowledgement_number, 5);
 }
@@ -128,7 +130,7 @@ fn normalize_client_segment_trims_retransmitted_prefix() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: b"abcdef".to_vec(),
+        payload: Bytes::from_static(b"abcdef"),
     };
 
     let segment = normalize_client_segment(&packet, 103);
@@ -154,7 +156,7 @@ fn normalize_client_segment_keeps_new_fin_after_duplicate_payload() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
-        payload: b"abc".to_vec(),
+        payload: Bytes::from_static(b"abc"),
     };
 
     let segment: ClientSegmentView = normalize_client_segment(&packet, 103);
@@ -180,7 +182,7 @@ fn normalize_client_segment_drops_fully_duplicate_fin() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK | TCP_FLAG_FIN,
-        payload: b"abc".to_vec(),
+        payload: Bytes::from_static(b"abc"),
     };
 
     let segment: ClientSegmentView = normalize_client_segment(&packet, 104);
@@ -206,7 +208,7 @@ fn duplicate_syn_is_detected() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_SYN,
-        payload: Vec::new(),
+        payload: Bytes::new(),
     };
     assert!(super::is_duplicate_syn(&packet, 42));
 }
@@ -229,7 +231,7 @@ fn queue_future_segment_deduplicates_identical_packet() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: b"later".to_vec(),
+        payload: Bytes::from_static(b"later"),
     };
     let mut pending = VecDeque::new();
 
@@ -259,11 +261,11 @@ fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: b"ghi".to_vec(),
+        payload: Bytes::from_static(b"ghi"),
     };
     let second = ParsedTcpPacket {
         sequence_number: 103,
-        payload: b"def".to_vec(),
+        payload: Bytes::from_static(b"def"),
         ..first.clone()
     };
     queue_future_segment(&mut pending, &first, expected_seq);
@@ -433,7 +435,7 @@ fn parse_tcp_packet_accepts_ipv6_destination_options_before_tcp() {
     assert_eq!(parsed.source_port, 40004);
     assert_eq!(parsed.destination_port, 443);
     assert_eq!(parsed.max_segment_size, Some(1460));
-    assert_eq!(parsed.payload, b"hello");
+    assert_eq!(parsed.payload, b"hello"[..]);
 }
 
 #[test]
@@ -583,7 +585,7 @@ fn randomized_out_of_order_reassembly_smoke() {
                 timestamp_value: None,
                 timestamp_echo_reply: None,
                 flags: TCP_FLAG_ACK,
-                payload,
+                payload: Bytes::from(payload),
             };
             queue_future_segment(&mut pending, &packet, sequence_start);
         }
@@ -769,7 +771,7 @@ async fn update_client_send_window_uses_rfc_precedence_rules() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: Vec::new(),
+        payload: Bytes::new(),
     };
     super::update_client_send_window(&mut state, &stale);
     assert_eq!(state.client_window, 4096);
@@ -910,7 +912,7 @@ async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
     let packet = super::retransmit_oldest_unacked_packet(&mut state).unwrap().unwrap();
     let parsed = super::parse_tcp_packet(&packet).unwrap();
     assert_eq!(parsed.sequence_number, 1000);
-    assert_eq!(parsed.payload, b"AAAA");
+    assert_eq!(parsed.payload, b"AAAA"[..]);
 }
 
 #[tokio::test]
@@ -1006,7 +1008,7 @@ async fn queue_future_segment_rejects_oversized_without_inserting() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: vec![9; 64],
+        payload: Bytes::from(vec![9u8; 64]),
     };
     let outcome = super::queue_future_segment_with_recv_window(&mut state, &config, &packet);
     assert_eq!(outcome, super::QueueFutureSegmentOutcome::WouldExceedLimits);
@@ -1043,7 +1045,7 @@ async fn queue_future_segment_accepts_within_limits() {
         timestamp_value: None,
         timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
-        payload: vec![9; 64],
+        payload: Bytes::from(vec![9u8; 64]),
     };
     let outcome = super::queue_future_segment_with_recv_window(&mut state, &config, &packet);
     assert_eq!(outcome, super::QueueFutureSegmentOutcome::Queued);
@@ -1337,7 +1339,8 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             remote_port: 443,
         },
         uplink_index: 0,
-        uplink_name: "test".to_string(),
+        uplink_name: Arc::from("test"),
+        group_name: Arc::from("test"),
         manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
             .await,
         route: crate::tun::TunRoute::Group {

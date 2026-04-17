@@ -264,7 +264,7 @@ impl TunTcpEngine {
                         return;
                     }
                     clear_flow_metrics(&mut state);
-                    state.uplink_name = "direct".to_string();
+                    state.uplink_name = Arc::from("direct");
                     state.upstream_writer = Some(Arc::clone(&upstream_writer));
                     let pending = state.pending_client_data.drain(..).collect::<Vec<_>>();
                     let should_close = client_fin_seen(state.status);
@@ -346,7 +346,7 @@ impl TunTcpEngine {
                 }
                 clear_flow_metrics(&mut state);
                 state.uplink_index = candidate.index;
-                state.uplink_name = candidate.uplink.name.clone();
+                state.uplink_name = Arc::from(candidate.uplink.name.as_str());
                 state.upstream_writer = Some(Arc::clone(&upstream_writer));
                 let pending_payloads = state.pending_client_data.drain(..).collect::<Vec<_>>();
                 let should_close_client_half = client_fin_seen(state.status);

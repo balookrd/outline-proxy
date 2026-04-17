@@ -154,15 +154,15 @@ pub(super) async fn close_upstream_writer(
     let _ = upstream_writer.close().await;
 }
 
-pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> String {
+pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> Arc<str> {
     flow.lock().await.uplink_name.clone()
 }
 
 /// Fetches `(group_name, uplink_name)` for a flow — used where both are
 /// needed for the `group`/`uplink` Prometheus labels.
-pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (String, String) {
+pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Arc<str>, Arc<str>) {
     let state = flow.lock().await;
-    (state.manager.group_name().to_string(), state.uplink_name.clone())
+    (state.group_name.clone(), state.uplink_name.clone())
 }
 
 pub(super) fn ip_to_target(ip: std::net::IpAddr, port: u16) -> crate::types::TargetAddr {
