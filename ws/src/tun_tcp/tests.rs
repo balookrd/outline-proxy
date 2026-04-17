@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 use super::{
     BufferedClientSegment, ClientSegmentView, IPV4_HEADER_LEN, IPV6_HEADER_LEN, ParsedTcpPacket,
-    TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN, build_reset_response,
+    TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_RST, TCP_FLAG_SYN, TrimmedSegment, build_reset_response,
     drain_ready_buffered_segments, normalize_client_segment, queue_future_segment,
 };
 use crate::config::TunTcpConfig;
@@ -215,28 +215,15 @@ fn duplicate_syn_is_detected() {
 
 #[test]
 fn queue_future_segment_deduplicates_identical_packet() {
-    let packet = ParsedTcpPacket {
-        version: super::IpVersion::V4,
-        source_ip: "10.0.0.1".parse().unwrap(),
-        destination_ip: "8.8.8.8".parse().unwrap(),
-        source_port: 12345,
-        destination_port: 80,
+    let seg = TrimmedSegment {
         sequence_number: 200,
-        acknowledgement_number: 0,
-        window_size: 4096,
-        max_segment_size: None,
-        window_scale: None,
-        sack_permitted: false,
-        sack_blocks: Vec::new(),
-        timestamp_value: None,
-        timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
         payload: Bytes::from_static(b"later"),
     };
     let mut pending = VecDeque::new();
 
-    queue_future_segment(&mut pending, &packet, 100);
-    queue_future_segment(&mut pending, &packet, 100);
+    queue_future_segment(&mut pending, &seg, 100);
+    queue_future_segment(&mut pending, &seg, 100);
 
     assert_eq!(pending.len(), 1);
 }
@@ -245,28 +232,15 @@ fn queue_future_segment_deduplicates_identical_packet() {
 fn drain_ready_buffered_segments_reassembles_contiguous_tail() {
     let mut expected_seq = 103;
     let mut pending = VecDeque::new();
-    let first = ParsedTcpPacket {
-        version: super::IpVersion::V4,
-        source_ip: "10.0.0.1".parse().unwrap(),
-        destination_ip: "8.8.8.8".parse().unwrap(),
-        source_port: 12345,
-        destination_port: 80,
+    let first = TrimmedSegment {
         sequence_number: 106,
-        acknowledgement_number: 0,
-        window_size: 4096,
-        max_segment_size: None,
-        window_scale: None,
-        sack_permitted: false,
-        sack_blocks: Vec::new(),
-        timestamp_value: None,
-        timestamp_echo_reply: None,
         flags: TCP_FLAG_ACK,
         payload: Bytes::from_static(b"ghi"),
     };
-    let second = ParsedTcpPacket {
+    let second = TrimmedSegment {
         sequence_number: 103,
+        flags: TCP_FLAG_ACK,
         payload: Bytes::from_static(b"def"),
-        ..first.clone()
     };
     queue_future_segment(&mut pending, &first, expected_seq);
     queue_future_segment(&mut pending, &second, expected_seq);
@@ -569,25 +543,12 @@ fn randomized_out_of_order_reassembly_smoke() {
 
         let mut pending = VecDeque::new();
         for (sequence_number, payload) in segments {
-            let packet = ParsedTcpPacket {
-                version: super::IpVersion::V4,
-                source_ip: "10.0.0.1".parse().unwrap(),
-                destination_ip: "8.8.8.8".parse().unwrap(),
-                source_port: 12345,
-                destination_port: 80,
+            let seg = TrimmedSegment {
                 sequence_number,
-                acknowledgement_number: 0,
-                window_size: 4096,
-                max_segment_size: None,
-                window_scale: None,
-                sack_permitted: false,
-                sack_blocks: Vec::new(),
-                timestamp_value: None,
-                timestamp_echo_reply: None,
                 flags: TCP_FLAG_ACK,
                 payload: Bytes::from(payload),
             };
-            queue_future_segment(&mut pending, &packet, sequence_start);
+            queue_future_segment(&mut pending, &seg, sequence_start);
         }
 
         let mut expected_seq = sequence_start;

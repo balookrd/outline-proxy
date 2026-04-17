@@ -17,11 +17,14 @@ pub(super) use packets::{
 };
 #[allow(unused_imports)]
 pub(super) use recv::{
-    QueueFutureSegmentOutcome, apply_client_segment, drain_ready_buffered_segments,
-    drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits, is_duplicate_syn,
-    normalize_client_segment, queue_future_segment, queue_future_segment_with_recv_window,
-    trim_packet_to_receive_window,
+    QueueFutureSegmentOutcome, TrimmedSegment, apply_client_segment,
+    drain_ready_buffered_segments, drain_ready_buffered_segments_from_state,
+    exceeds_client_reassembly_limits, is_duplicate_syn, normalize_trimmed_segment,
+    queue_future_segment, queue_future_segment_with_recv_window, trim_packet_to_receive_window,
 };
+#[allow(unused_imports)]
+#[cfg(test)]
+pub(super) use recv::normalize_client_segment;
 #[allow(unused_imports)]
 pub(super) use send::{
     assess_server_backlog_pressure, clear_flow_metrics, flush_server_output,
