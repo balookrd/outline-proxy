@@ -1,38 +1,40 @@
-// HTTP/3 WebSocket transport — only compiled when the `h3` feature is enabled.
-// All H3-specific types, statics, and functions live here so that transport.rs
-// is free of scattered #[cfg(feature = "h3")] annotations.
+// Connection infrastructure for the HTTP/3 WebSocket transport.
+//
+// Owns the QUIC/TLS configs, shared endpoints, per-key connect locks,
+// shared-connection cache, and all connect / gc logic.  The stream adapter
+// types (`H3WsStream`, `H3ConnectionGuard`) and the message-conversion helpers
+// live in the parent module (`mod.rs`) because they are the public API
+// consumed by `ws_stream.rs`.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use futures_util::{Sink, Stream};
 use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
-use http::{Method, Request, Uri};
+use http::{Method, Request};
 use once_cell::sync::OnceCell;
-use pin_project_lite::pin_project;
+use rustls::{ClientConfig, RootCertStore};
 use sockudo_ws::{
-    Config as SockudoConfig, Http3 as SockudoHttp3, Message as SockudoMessage,
-    Stream as SockudoTransportStream, WebSocketStream as SockudoWebSocketStream,
-    error::CloseReason as SockudoCloseReason,
+    Config as SockudoConfig, Http3 as SockudoHttp3, Stream as SockudoTransportStream,
+    WebSocketStream as SockudoWebSocketStream,
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
-use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tracing::{debug, error};
 use url::Url;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::transport::{
     AbortOnDrop, AnyWsStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
-    format_authority, resolve_host_with_preference, websocket_path,
+    resolve_host_with_preference, websocket_path,
 };
 
-type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
+use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri};
+
 type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
 
@@ -54,78 +56,7 @@ const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(7);
 // 10 seconds matches the bound used for fresh H2 and H1 handshakes.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-// ── H3WsStream ────────────────────────────────────────────────────────────────
-
-pin_project! {
-    pub(crate) struct H3WsStream {
-        #[pin]
-        inner: RawH3WsStream,
-        // Keep the shared connection alive for as long as this websocket stream
-        // is active so the underlying HTTP/3 state does not get torn down.
-        pub(crate) _shared_connection: Arc<SharedH3Connection>,
-    }
-}
-
-impl H3WsStream {
-    pub(crate) fn is_connection_alive(&self) -> bool {
-        self._shared_connection.is_open()
-    }
-}
-
-impl Stream for H3WsStream {
-    type Item = Result<SockudoMessage, sockudo_ws::Error>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.project().inner.poll_next(cx)
-    }
-}
-
-impl Sink<SockudoMessage> for H3WsStream {
-    type Error = sockudo_ws::Error;
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_ready(cx)
-    }
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: SockudoMessage) -> Result<(), Self::Error> {
-        self.project().inner.start_send(item)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_flush(cx)
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_close(cx)
-    }
-}
-
-// ── H3ConnectionGuard ─────────────────────────────────────────────────────────
-
-/// Sends QUIC `CONNECTION_CLOSE` when dropped so the server is notified
-/// immediately rather than waiting for its idle timeout to fire.
-pub(crate) struct H3ConnectionGuard(pub(crate) quinn::Connection);
-
-impl Drop for H3ConnectionGuard {
-    fn drop(&mut self) {
-        // H3_NO_ERROR = 0x100 per RFC 9114 §8.1. Using 0 is not a valid H3
-        // application error code and causes some servers to respond with
-        // H3_INTERNAL_ERROR, triggering a reconnect storm under load.
-        self.0.close(0x100u32.into(), b"websocket stream closed");
-    }
-}
+// ── Connection key ────────────────────────────────────────────────────────────
 
 // The cache key is intentionally based on the *hostname* and port rather than
 // the resolved IP address.  Using the IP address would create a new cache entry
@@ -136,14 +67,14 @@ impl Drop for H3ConnectionGuard {
 // DNS answer changes, the old connection is kept until it fails naturally, at
 // which point a fresh connection is made to the (now re-resolved) new address.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct H3ConnectionKey {
+pub(super) struct H3ConnectionKey {
     server_name: String,
     server_port: u16,
     fwmark: Option<u32>,
 }
 
 impl H3ConnectionKey {
-    fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
+    pub(super) fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
         Self {
             server_name: server_name.to_string(),
             server_port,
@@ -152,8 +83,10 @@ impl H3ConnectionKey {
     }
 }
 
-struct SharedH3Connection {
-    id: u64,
+// ── Shared connection ─────────────────────────────────────────────────────────
+
+pub(super) struct SharedH3Connection {
+    pub(super) id: u64,
     #[allow(dead_code)]
     endpoint: quinn::Endpoint,
     connection: quinn::Connection,
@@ -172,11 +105,11 @@ struct SharedH3Connection {
 }
 
 impl SharedH3Connection {
-    fn is_open(&self) -> bool {
+    pub(super) fn is_open(&self) -> bool {
         !self.closed.load(Ordering::Relaxed) && self.connection.close_reason().is_none()
     }
 
-    async fn open_websocket(
+    pub(super) async fn open_websocket(
         self: &Arc<Self>,
         server_name: &str,
         server_port: u16,
@@ -244,10 +177,6 @@ impl crate::transport::SharedConnectionHealth for SharedH3Connection {
 
 // ── TLS / QUIC client configs (initialised once) ─────────────────────────────
 
-use rustls::{ClientConfig, RootCertStore};
-use std::sync::OnceLock;
-use webpki_roots::TLS_SERVER_ROOTS;
-
 static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();
 
@@ -289,33 +218,13 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
         .clone()
 }
 
+// ── Shared endpoints ──────────────────────────────────────────────────────────
+
 // One UDP socket per address family, shared across all H3 connections that do
 // not require a per-socket fwmark. Sharing the endpoint eliminates the "N
 // warm-standby connections = N UDP sockets" resource explosion.
 static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
-static H3_SHARED_CONNECTIONS: OnceCell<Mutex<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>>> =
-    OnceCell::new();
-static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
-// Per-server-key mutex that serialises concurrent QUIC connection establishment.
-// Without this, when the shared QUIC connection drops and N sessions try to
-// reconnect simultaneously, each starts its own QUIC handshake (thundering herd).
-// With the lock: the first waiter establishes the connection and caches it; the
-// rest re-check the cache after acquiring the lock and reuse the result.
-// The HashMap entries are never removed; they remain as empty Mutex<()> objects
-// (a few bytes each) — acceptable because the set of unique server keys is small.
-static H3_CONNECT_LOCKS: OnceCell<std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>> =
-    OnceCell::new();
-
-fn h3_connect_locks(
-) -> &'static std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
-    H3_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
-}
-
-fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = h3_connect_locks().lock().expect("H3_CONNECT_LOCKS poisoned");
-    locks.entry(key.clone()).or_default().clone()
-}
 
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
     let cell = if bind_addr.is_ipv4() {
@@ -336,8 +245,40 @@ fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<qui
     Ok(endpoint.clone())
 }
 
-fn h3_shared_connections() -> &'static Mutex<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>> {
-    H3_SHARED_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+// ── Shared-connection cache ───────────────────────────────────────────────────
+
+// Global shared-connection cache. `RwLock<HashMap<K, Arc<V>>>` mirrors the
+// flow-table pattern in `tun_tcp` / `tun_udp` (and `h2_shared`): hot-path
+// lookups take a brief read-lock, clone the `Arc`, and release before any
+// `.await` on the value. Only cache mutations (insert / evict / gc) take
+// the write-lock. Avoids serialising every QUIC open behind one Mutex.
+static H3_SHARED_CONNECTIONS: OnceCell<RwLock<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>>> =
+    OnceCell::new();
+static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
+
+// Per-server-key mutex that serialises concurrent QUIC connection establishment.
+// Without this, when the shared QUIC connection drops and N sessions try to
+// reconnect simultaneously, each starts its own QUIC handshake (thundering herd).
+// With the lock: the first waiter establishes the connection and caches it; the
+// rest re-check the cache after acquiring the lock and reuse the result.
+// The HashMap entries are never removed; they remain as empty Mutex<()> objects
+// (a few bytes each) — acceptable because the set of unique server keys is small.
+static H3_CONNECT_LOCKS: OnceCell<
+    std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
+> = OnceCell::new();
+
+fn h3_connect_locks(
+) -> &'static std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
+    H3_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
+    let mut locks = h3_connect_locks().lock().expect("H3_CONNECT_LOCKS poisoned");
+    locks.entry(key.clone()).or_default().clone()
+}
+
+fn h3_shared_connections() -> &'static RwLock<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>> {
+    H3_SHARED_CONNECTIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
@@ -580,18 +521,25 @@ async fn connect_h3_connection(
     })
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn should_reuse_h3_connection(source: &'static str) -> bool {
-    !source.starts_with("probe_")
-}
+// ── Cache helpers ─────────────────────────────────────────────────────────────
 
 async fn cached_shared_h3_connection(key: &H3ConnectionKey) -> Option<Arc<SharedH3Connection>> {
-    let mut shared = h3_shared_connections().lock().await;
-    match shared.get(key).cloned() {
+    // Hot path: read-lock, clone the `Arc`, release the lock. Concurrent
+    // lookups on *other* keys are no longer serialised behind a single Mutex.
+    let candidate = {
+        let shared = h3_shared_connections().read().await;
+        shared.get(key).cloned()
+    };
+    match candidate {
         Some(connection) if connection.is_open() => Some(connection),
-        Some(_) => {
-            shared.remove(key);
+        Some(stale) => {
+            // Slow path: take the write-lock only to evict the stale entry,
+            // and re-check under it — another waiter may have already replaced
+            // the entry with a fresh connection between our read/write locks.
+            let mut shared = h3_shared_connections().write().await;
+            if shared.get(key).is_some_and(|c| c.id == stale.id) {
+                shared.remove(key);
+            }
             None
         },
         None => None,
@@ -599,7 +547,7 @@ async fn cached_shared_h3_connection(key: &H3ConnectionKey) -> Option<Arc<Shared
 }
 
 async fn cache_shared_h3_connection(key: H3ConnectionKey, connection: Arc<SharedH3Connection>) {
-    let mut shared = h3_shared_connections().lock().await;
+    let mut shared = h3_shared_connections().write().await;
     match shared.get(&key) {
         Some(existing) if existing.is_open() => {},
         _ => {
@@ -609,7 +557,16 @@ async fn cache_shared_h3_connection(key: H3ConnectionKey, connection: Arc<Shared
 }
 
 async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u64) {
-    let mut shared = h3_shared_connections().lock().await;
+    // Cheap pre-check under the read-lock — the common case (entry gone or
+    // replaced) avoids taking the write-lock at all.
+    let needs_evict = {
+        let shared = h3_shared_connections().read().await;
+        shared.get(key).is_some_and(|connection| connection.id == id)
+    };
+    if !needs_evict {
+        return;
+    }
+    let mut shared = h3_shared_connections().write().await;
     if shared.get(key).is_some_and(|connection| connection.id == id) {
         shared.remove(key);
     }
@@ -620,8 +577,32 @@ async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h3_connections() {
-    let mut shared = h3_shared_connections().lock().await;
-    shared.retain(|_, conn| conn.is_open());
+    // Fast path: scan under a read-lock. If nothing is stale we avoid the
+    // write-lock entirely, so a healthy GC tick does not interfere with
+    // concurrent CONNECT lookups.
+    let stale_keys: Vec<H3ConnectionKey> = {
+        let shared = h3_shared_connections().read().await;
+        shared
+            .iter()
+            .filter(|(_, conn)| !conn.is_open())
+            .map(|(k, _)| k.clone())
+            .collect()
+    };
+    if stale_keys.is_empty() {
+        return;
+    }
+    let mut shared = h3_shared_connections().write().await;
+    for key in stale_keys {
+        if shared.get(&key).is_some_and(|conn| !conn.is_open()) {
+            shared.remove(&key);
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+pub(super) fn should_reuse_h3_connection(source: &'static str) -> bool {
+    !source.starts_with("probe_")
 }
 
 fn is_expected_h3_close(err: &str) -> bool {
@@ -642,56 +623,7 @@ fn is_expected_h3_close(err: &str) -> bool {
         || err.contains("Timeout")
 }
 
-fn websocket_h3_target_uri(host: &str, port: u16, path: &str) -> Result<Uri> {
-    Uri::builder()
-        .scheme("https")
-        .authority(format_authority(host, Some(port)))
-        .path_and_query(path)
-        .build()
-        .context("failed to build HTTP/3 websocket target URI")
-}
-
-// ── Message conversion (sockudo ↔ tungstenite) ────────────────────────────────
-
-pub(crate) fn sockudo_to_tungstenite_message(message: SockudoMessage) -> Message {
-    match message {
-        SockudoMessage::Text(bytes) => {
-            Message::Text(String::from_utf8_lossy(&bytes).into_owned().into())
-        },
-        SockudoMessage::Binary(bytes) => Message::Binary(bytes),
-        SockudoMessage::Ping(bytes) => Message::Ping(bytes),
-        SockudoMessage::Pong(bytes) => Message::Pong(bytes),
-        SockudoMessage::Close(reason) => Message::Close(reason.map(sockudo_close_to_tungstenite)),
-    }
-}
-
-pub(crate) fn tungstenite_to_sockudo_message(message: Message) -> Result<SockudoMessage, WsError> {
-    match message {
-        Message::Text(text) => Ok(SockudoMessage::Text(Bytes::copy_from_slice(text.as_bytes()))),
-        Message::Binary(bytes) => Ok(SockudoMessage::Binary(bytes)),
-        Message::Ping(bytes) => Ok(SockudoMessage::Ping(bytes)),
-        Message::Pong(bytes) => Ok(SockudoMessage::Pong(bytes)),
-        Message::Close(frame) => Ok(SockudoMessage::Close(frame.map(tungstenite_close_to_sockudo))),
-        Message::Frame(_) => Err(WsError::Io(std::io::Error::other(
-            "raw websocket frames are not supported by the h3 transport adapter",
-        ))),
-    }
-}
-
-pub(crate) fn sockudo_to_ws_error(error: sockudo_ws::Error) -> WsError {
-    WsError::Io(std::io::Error::other(error.to_string()))
-}
-
-fn sockudo_close_to_tungstenite(reason: SockudoCloseReason) -> CloseFrame {
-    CloseFrame {
-        code: CloseCode::from(reason.code),
-        reason: Utf8Bytes::from(reason.reason),
-    }
-}
-
-fn tungstenite_close_to_sockudo(frame: CloseFrame) -> SockudoCloseReason {
-    SockudoCloseReason::new(u16::from(frame.code), frame.reason.to_string())
-}
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
