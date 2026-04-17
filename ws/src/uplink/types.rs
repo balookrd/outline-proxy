@@ -3,7 +3,6 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::Serialize;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::Instant;
 
@@ -174,64 +173,11 @@ impl fmt::Display for RoutingKey {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct UplinkManagerSnapshot {
-    /// Group this snapshot was generated for. Surfaced as the `group`
-    /// Prometheus label on snapshot-rendered metrics.
-    pub group: String,
-    pub generated_at_unix_ms: u128,
-    pub load_balancing_mode: String,
-    pub routing_scope: String,
-    pub global_active_uplink: Option<String>,
-    /// Active uplink for TCP in per_uplink routing scope.
-    pub tcp_active_uplink: Option<String>,
-    /// Active uplink for UDP in per_uplink routing scope.
-    pub udp_active_uplink: Option<String>,
-    pub uplinks: Vec<UplinkSnapshot>,
-    pub sticky_routes: Vec<StickyRouteSnapshot>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct UplinkSnapshot {
-    pub index: usize,
-    pub name: String,
-    /// Name of the uplink group this entry belongs to. Emitted as the
-    /// `group` Prometheus label alongside `uplink`.
-    pub group: String,
-    pub weight: f64,
-    pub tcp_healthy: Option<bool>,
-    pub udp_healthy: Option<bool>,
-    pub tcp_latency_ms: Option<u128>,
-    pub udp_latency_ms: Option<u128>,
-    pub tcp_rtt_ewma_ms: Option<u128>,
-    pub udp_rtt_ewma_ms: Option<u128>,
-    pub tcp_penalty_ms: Option<u128>,
-    pub udp_penalty_ms: Option<u128>,
-    pub tcp_effective_latency_ms: Option<u128>,
-    pub udp_effective_latency_ms: Option<u128>,
-    pub tcp_score_ms: Option<u128>,
-    pub udp_score_ms: Option<u128>,
-    pub cooldown_tcp_ms: Option<u128>,
-    pub cooldown_udp_ms: Option<u128>,
-    pub last_checked_ago_ms: Option<u128>,
-    pub last_error: Option<String>,
-    pub standby_tcp_ready: usize,
-    pub standby_udp_ready: usize,
-    pub tcp_consecutive_failures: u32,
-    pub udp_consecutive_failures: u32,
-    pub h3_tcp_downgrade_until_ms: Option<u128>,
-    pub h3_udp_downgrade_until_ms: Option<u128>,
-    pub last_active_tcp_ago_ms: Option<u128>,
-    pub last_active_udp_ago_ms: Option<u128>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct StickyRouteSnapshot {
-    pub key: String,
-    pub uplink_index: usize,
-    pub uplink_name: String,
-    pub expires_in_ms: u128,
-}
+// Snapshot data types live in the `outline-metrics` crate (they cross the
+// producer/consumer boundary between the uplink manager here and the
+// prometheus renderer); re-exported so existing `crate::uplink::*Snapshot`
+// imports keep working.
+pub use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 
 
 pub(super) struct StandbyPool {

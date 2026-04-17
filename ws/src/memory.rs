@@ -10,61 +10,11 @@ use tracing::info;
 
 const SHRINK_MIN_CAPACITY: usize = 256;
 
-#[derive(Debug, Clone)]
-pub struct ProcessMemorySnapshot {
-    pub rss_bytes: Option<u64>,
-    pub virtual_bytes: Option<u64>,
-    pub heap_bytes: Option<u64>,
-    pub heap_allocated_bytes: Option<u64>,
-    pub heap_free_bytes: Option<u64>,
-    pub heap_mode: &'static str,
-    pub open_fds: Option<u64>,
-    pub thread_count: Option<u64>,
-    pub fd_snapshot: Option<ProcessFdSnapshot>,
-}
-
-impl Default for ProcessMemorySnapshot {
-    fn default() -> Self {
-        Self {
-            rss_bytes: None,
-            virtual_bytes: None,
-            heap_bytes: None,
-            heap_allocated_bytes: None,
-            heap_free_bytes: None,
-            heap_mode: "unavailable",
-            open_fds: None,
-            thread_count: None,
-            fd_snapshot: None,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct ProcessFdSnapshot {
-    pub total: u64,
-    pub sockets: u64,
-    pub pipes: u64,
-    pub anon_inodes: u64,
-    pub regular_files: u64,
-    pub other: u64,
-    /// Per-(protocol, family, state) counts of TCP/UDP sockets currently
-    /// owned by this process, derived from `/proc/self/net/{tcp,tcp6,udp,udp6}`
-    /// intersected with the inodes listed in `/proc/self/fd`. `None` means
-    /// the snapshot is unavailable on this platform; an empty `Vec` means it
-    /// was attempted and yielded no rows. `protocol` is `tcp`/`udp`,
-    /// `family` is `ipv4`/`ipv6`, and `state` is one of the lowercase TCP
-    /// state names (`established`, `close_wait`, …) or `connected`/`unconnected`
-    /// for UDP.
-    pub socket_states: Option<Vec<SocketStateCount>>,
-}
-
-#[derive(Debug, Clone)]
-pub struct SocketStateCount {
-    pub protocol: &'static str,
-    pub family: &'static str,
-    pub state: &'static str,
-    pub count: u64,
-}
+// Snapshot data types live in the `outline-metrics` crate (they cross the
+// producer/consumer boundary between the sampler here and the prometheus
+// renderer); re-exported so existing `crate::memory::Process*` imports keep
+// working.
+pub use outline_metrics::{ProcessFdSnapshot, ProcessMemorySnapshot, SocketStateCount};
 
 pub fn maybe_shrink_hash_map<K, V, S>(map: &mut HashMap<K, V, S>)
 where

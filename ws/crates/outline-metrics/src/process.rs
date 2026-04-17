@@ -1,23 +1,9 @@
 use super::METRICS;
-use crate::memory::{ProcessFdSnapshot, sample_process_memory};
-use std::time::Duration;
-use tokio::time::sleep;
+use crate::snapshot_types::ProcessFdSnapshot;
 
 pub fn init() {
     let _ = METRICS.build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]);
     let _ = METRICS.start_time_seconds.get();
-    let initial_sample = sample_process_memory();
-    update_process_memory(
-        initial_sample.rss_bytes,
-        initial_sample.virtual_bytes,
-        initial_sample.heap_bytes,
-        initial_sample.heap_allocated_bytes,
-        initial_sample.heap_free_bytes,
-        initial_sample.heap_mode,
-        initial_sample.open_fds,
-        initial_sample.thread_count,
-        initial_sample.fd_snapshot,
-    );
     METRICS.bytes_total.reset();
     METRICS.udp_datagrams_total.reset();
     METRICS.udp_oversized_dropped_total.reset();
@@ -133,31 +119,6 @@ pub fn init() {
                 .inc_by(0);
         }
     }
-}
-
-pub fn spawn_process_metrics_sampler() {
-    tokio::spawn(async move {
-        let mut sample_count: u64 = 0;
-        loop {
-            let sample = sample_process_memory();
-            update_process_memory(
-                sample.rss_bytes,
-                sample.virtual_bytes,
-                sample.heap_bytes,
-                sample.heap_allocated_bytes,
-                sample.heap_free_bytes,
-                sample.heap_mode,
-                sample.open_fds,
-                sample.thread_count,
-                sample.fd_snapshot,
-            );
-            sample_count = sample_count.saturating_add(1);
-            if sample_count.is_multiple_of(4) {
-                crate::memory::log_process_fd_snapshot();
-            }
-            sleep(Duration::from_secs(15)).await;
-        }
-    });
 }
 
 #[allow(clippy::too_many_arguments)]

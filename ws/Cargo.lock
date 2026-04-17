@@ -1273,6 +1273,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-metrics"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "prometheus",
+ "serde",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "outline-routing"
 version = "0.1.0"
 dependencies = [
@@ -1306,9 +1317,9 @@ dependencies = [
  "md5",
  "mimalloc",
  "once_cell",
+ "outline-metrics",
  "outline-routing",
  "pin-project-lite",
- "prometheus",
  "quinn",
  "rand 0.8.5",
  "rustls",

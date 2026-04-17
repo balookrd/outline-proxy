@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/outline-routing", "crates/shadowsocks-crypto", "crates/socks5-proto"]
+members = [".", "crates/outline-metrics", "crates/outline-routing", "crates/shadowsocks-crypto", "crates/socks5-proto"]
 
 [package]
 name = "outline-ws-rust"
@@ -14,9 +14,9 @@ edition = "2024"
 #          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 [features]
 default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
-tun = []   # TUN device support (transparent proxy)
+tun = ["outline-metrics/tun"]   # TUN device support (transparent proxy)
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
-metrics = ["dep:prometheus", "dep:serde_json", "hyper/server"]
+metrics = ["outline-metrics/prometheus", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
@@ -48,7 +48,6 @@ md5 = "0.7"
 mimalloc = { version = "0.1", default-features = false, optional = true }
 pin-project-lite = "0.2"
 once_cell = { version = "1.21", optional = true }
-prometheus = { version = "0.13", optional = true }
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
@@ -56,6 +55,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 serde_yml = "0.0.12"
 sha1 = "0.10"
+outline-metrics = { path = "crates/outline-metrics", default-features = false }
 outline-routing = { path = "crates/outline-routing" }
 shadowsocks-crypto = { path = "crates/shadowsocks-crypto" }
 socks5-proto = { path = "crates/socks5-proto" }

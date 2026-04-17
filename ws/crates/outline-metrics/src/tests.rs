@@ -1,6 +1,6 @@
 use super::*;
-use crate::memory::ProcessFdSnapshot;
-use crate::uplink::{UplinkManagerSnapshot, UplinkSnapshot};
+use crate::snapshot_types::ProcessFdSnapshot;
+use crate::snapshot_types::{UplinkManagerSnapshot, UplinkSnapshot};
 use std::sync::{LazyLock, Mutex};
 
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
@@ -90,13 +90,13 @@ fn render_prometheus_exports_process_memory_metrics() {
             regular_files: 6,
             other: 1,
             socket_states: Some(vec![
-                crate::memory::SocketStateCount {
+                crate::snapshot_types::SocketStateCount {
                     protocol: "tcp",
                     family: "ipv4",
                     state: "established",
                     count: 12,
                 },
-                crate::memory::SocketStateCount {
+                crate::snapshot_types::SocketStateCount {
                     protocol: "tcp",
                     family: "ipv4",
                     state: "close_wait",
