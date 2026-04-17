@@ -7,7 +7,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce as XChaNonce};
 use rand::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::types::CipherKind;
+use crate::cipher_kind::CipherKind;
 
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;

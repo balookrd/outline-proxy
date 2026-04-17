@@ -1,0 +1,8 @@
+[package]
+name = "socks5-proto"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+tokio = { version = "1.44", features = ["io-util", "net"] }

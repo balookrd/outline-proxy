@@ -10,6 +10,10 @@ use url::Url;
 use crate::routing::RoutingTable;
 use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
 
+// Auth configs live in the `socks5-proto` workspace crate; re-exported so
+// existing `crate::config::Socks5AuthConfig` imports keep working.
+pub use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen: Option<SocketAddr>,
@@ -127,17 +131,6 @@ impl UplinkConfig {
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
         }
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Socks5AuthUserConfig {
-    pub username: String,
-    pub password: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Socks5AuthConfig {
-    pub users: Vec<Socks5AuthUserConfig>,
 }
 
 #[derive(Debug, Clone)]
