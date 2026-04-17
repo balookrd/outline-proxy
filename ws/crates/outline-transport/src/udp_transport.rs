@@ -14,7 +14,7 @@ use shadowsocks_crypto::{
     encrypt_udp_packet_2022,
 };
 use shadowsocks_crypto::CipherKind;
-use crate::config_types::WsTransportMode;
+use crate::config::WsTransportMode;
 
 use super::{AbortOnDrop, DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 

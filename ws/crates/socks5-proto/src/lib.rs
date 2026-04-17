@@ -2,11 +2,11 @@
 //! authentication negotiation, and the shared [`TargetAddr`] / auth-config
 //! types. Extracted into a standalone crate for isolated testing and reuse.
 
-mod auth;
+mod config;
 mod error;
 mod target;
 
-pub use auth::{Socks5AuthConfig, Socks5AuthUserConfig};
+pub use config::{Socks5AuthConfig, Socks5AuthUserConfig};
 pub use error::{Result, Socks5Error};
 pub use target::{
     SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6, TargetAddr, socket_addr_to_target,
@@ -482,7 +482,7 @@ mod tests {
 
     use tokio::net::TcpListener;
 
-    use crate::auth::{Socks5AuthConfig, Socks5AuthUserConfig};
+    use crate::config::{Socks5AuthConfig, Socks5AuthUserConfig};
 
     use super::*;
 
