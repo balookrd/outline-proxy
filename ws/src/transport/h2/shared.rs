@@ -1,10 +1,12 @@
-// Shared HTTP/2 connection infrastructure — connection cache, per-key connect
-// locks, and all connect / gc logic.  The IO layer, TLS config, window-size
-// statics, H2WsStream, and websocket_target_uri live in the parent module
-// (`mod.rs`) so they are co-located with the other h2 building-blocks.
+// Shared HTTP/2 connection infrastructure: window-size statics, TLS config,
+// H2Io async-IO adapter, connect_tls_h2, connection cache, per-key connect
+// locks, and all connect / gc logic.
+//
+// Stream adapter types (H2WsStream) and URL helpers (websocket_target_uri,
+// format_authority, websocket_path) live in the parent module (`mod.rs`).
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -17,20 +19,141 @@ use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use pin_project_lite::pin_project;
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, RootCertStore};
+use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
+use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::{debug, error};
 use url::Url;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::transport::{
     AbortOnDrop, AnyWsStream, SharedConnectionHealth, TransportConnectGuard,
     connect_tcp_socket, resolve_host_with_preference,
 };
 
-use super::{H2Io, H2WsStream, connect_tls_h2, h2_connection_window_size, h2_stream_window_size,
-            websocket_target_uri};
+use super::{H2WsStream, websocket_h2_target_uri};
+
+// ── Window sizes ──────────────────────────────────────────────────────────────
+
+// HTTP/2 flow-control window sizes.  Defaults match the sizing used by
+// sockudo-ws so the long-lived CONNECT stream carrying UDP datagrams does not
+// stall on the small RFC default window under sustained downstream traffic.
+// On memory-constrained routers these can be reduced via [h2] in config.toml.
+static H2_INITIAL_STREAM_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+static H2_INITIAL_CONNECTION_WINDOW_SIZE: OnceLock<u32> = OnceLock::new();
+
+/// Initialise H2 window sizes from config.  Must be called before the first
+/// outbound H2 connection is opened.  Safe to call multiple times with the same
+/// values; panics if called with different values after initialization.
+pub fn init_h2_window_sizes(stream: u32, connection: u32) {
+    H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| stream);
+    H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| connection);
+}
+
+fn h2_stream_window_size() -> u32 {
+    *H2_INITIAL_STREAM_WINDOW_SIZE.get_or_init(|| 1024 * 1024)
+}
+
+fn h2_connection_window_size() -> u32 {
+    *H2_INITIAL_CONNECTION_WINDOW_SIZE.get_or_init(|| 2 * 1024 * 1024)
+}
+
+// ── TLS config ────────────────────────────────────────────────────────────────
+
+static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
+
+fn h2_client_tls_config() -> Arc<ClientConfig> {
+    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| {
+        let mut roots = RootCertStore::empty();
+        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+        let mut config = ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        config.alpn_protocols = vec![b"h2".to_vec()];
+        Arc::new(config)
+    }))
+}
+
+async fn connect_tls_h2(
+    addr: SocketAddr,
+    host: &str,
+    fwmark: Option<u32>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tcp = connect_tcp_socket(addr, fwmark).await?;
+    let connector = TlsConnector::from(h2_client_tls_config());
+    let server_name = if let Ok(ip) = host.parse::<IpAddr>() {
+        ServerName::IpAddress(ip.into())
+    } else {
+        ServerName::try_from(host.to_string())
+            .map_err(|_| anyhow!("invalid TLS server name: {host}"))?
+    };
+    connector
+        .connect(server_name, tcp)
+        .await
+        .context("TLS handshake for h2 websocket failed")
+}
+
+// ── H2Io ──────────────────────────────────────────────────────────────────────
+
+pin_project! {
+    #[project = H2IoProj]
+    enum H2Io {
+        Plain { #[pin] inner: TcpStream },
+        Tls { #[pin] inner: tokio_rustls::client::TlsStream<TcpStream> },
+    }
+}
+
+impl tokio::io::AsyncRead for H2Io {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            H2IoProj::Plain { inner } => inner.poll_read(cx, buf),
+            H2IoProj::Tls { inner } => inner.poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for H2Io {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.project() {
+            H2IoProj::Plain { inner } => inner.poll_write(cx, buf),
+            H2IoProj::Tls { inner } => inner.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            H2IoProj::Plain { inner } => inner.poll_flush(cx),
+            H2IoProj::Tls { inner } => inner.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            H2IoProj::Plain { inner } => inner.poll_shutdown(cx),
+            H2IoProj::Tls { inner } => inner.poll_shutdown(cx),
+        }
+    }
+}
 
 type H2SendRequestHandle = http2::SendRequest<Empty<Bytes>>;
 
@@ -228,12 +351,12 @@ pub(crate) async fn connect_websocket_h2(
         "wss" => true,
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
     };
-    let target_uri = websocket_target_uri(url)?;
+    let target_uri = websocket_h2_target_uri(url)?;
 
     if should_reuse_h2_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_h2_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        connect_h2_reused(host, port, secure, &target_uri, fwmark, ipv6_first, source).await
+        connect_h2_tcp_reused(host, port, secure, &target_uri, fwmark, ipv6_first, source).await
     } else {
         // Probes never share connections; resolve DNS upfront for the fresh dial.
         let server_addr = resolve_host_with_preference(
@@ -246,11 +369,11 @@ pub(crate) async fn connect_websocket_h2(
         .into_iter()
         .next()
         .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
-        connect_h2_fresh(server_addr, host, secure, &target_uri, fwmark, source).await
+        connect_h2_tcp_new(server_addr, host, secure, &target_uri, fwmark, source).await
     }
 }
 
-async fn connect_h2_reused(
+async fn connect_h2_tcp_reused(
     server_name: &str,
     server_port: u16,
     secure: bool,
@@ -334,7 +457,7 @@ async fn connect_h2_reused(
     Ok(ws)
 }
 
-async fn connect_h2_fresh(
+async fn connect_h2_tcp_new(
     server_addr: SocketAddr,
     server_name: &str,
     secure: bool,
