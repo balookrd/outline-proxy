@@ -219,6 +219,12 @@ async fn handle_uplink_first(
             // bound, a server that holds the connection half-open
             // indefinitely (VPN, signalling, etc.) would keep this
             // session and its socket FDs alive forever.
+            // Keep an abort handle *before* moving the JoinHandle into
+            // timeout(): if the deadline fires the JoinHandle is dropped
+            // (Tokio does not abort on drop), so without an explicit abort
+            // the downlink task would keep running indefinitely, holding
+            // Arc<UpstreamTransportGuard> and inflating the active counter.
+            let downlink_abort = downlink_task.abort_handle();
             match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, downlink_task).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
@@ -228,6 +234,7 @@ async fn handle_uplink_first(
                         timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
                         "downstream timed out after client EOF — forcibly closing session"
                     );
+                    downlink_abort.abort();
                     Ok(())
                 }
             }
