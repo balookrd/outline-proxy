@@ -60,6 +60,7 @@ impl TunTcpEngine {
                 tcp,
             }),
         };
+        engine.spawn_cleanup_loop();
         engine
     }
 

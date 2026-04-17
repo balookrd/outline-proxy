@@ -160,12 +160,10 @@ impl TunRouting {
                     && !manager
                         .has_any_healthy(crate::uplink::TransportKind::Tcp)
                         .await
-                {
-                    if let Some(fb) = fallback {
+                    && let Some(fb) = fallback {
                         // Recurse once — fallback doesn't chain further.
                         return Box::pin(self.materialize_target(fb, None)).await;
                     }
-                }
                 TunRoute::Group { name, manager: manager.clone() }
             },
         }
@@ -239,6 +237,7 @@ pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tun_read_loop(
     mut reader: File,
     writer: SharedTunWriter,

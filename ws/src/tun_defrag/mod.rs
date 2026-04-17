@@ -585,7 +585,7 @@ fn inspect_ipv4(packet: &[u8]) -> Result<PacketInspection<'_>> {
     }
 
     let payload = &packet[header_len..total_len];
-    if more_fragments && (payload.len() % 8 != 0) {
+    if more_fragments && !payload.len().is_multiple_of(8) {
         bail!("IPv4 non-terminal fragment payload length is not 8-byte aligned");
     }
     Ok(PacketInspection::Ipv4Fragment(Ipv4Fragment {
@@ -618,7 +618,7 @@ fn inspect_ipv6(packet: &[u8]) -> Result<PacketInspection<'_>> {
         .ok_or_else(|| anyhow!("IPv6 fragment offset overflow"))?;
     let more_fragments = (fragment_offset_and_flags & 0x1) != 0;
     let payload = &packet[info.payload_offset + 8..info.total_len];
-    if more_fragments && (payload.len() % 8 != 0) {
+    if more_fragments && !payload.len().is_multiple_of(8) {
         bail!("IPv6 non-terminal fragment payload length is not 8-byte aligned");
     }
 

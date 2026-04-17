@@ -88,9 +88,8 @@ pub(in crate::tun_tcp) fn reset_zero_window_persist(state: &mut TcpFlowState) {
 }
 
 pub(in crate::tun_tcp) fn note_recent_client_timestamp(state: &mut TcpFlowState, timestamp_value: Option<u32>) {
-    if state.timestamps_enabled {
-        if let Some(timestamp_value) = timestamp_value {
+    if state.timestamps_enabled
+        && let Some(timestamp_value) = timestamp_value {
             state.recent_client_timestamp = Some(timestamp_value);
         }
-    }
 }

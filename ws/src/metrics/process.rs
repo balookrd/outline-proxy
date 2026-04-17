@@ -152,7 +152,7 @@ pub fn spawn_process_metrics_sampler() {
                 sample.fd_snapshot,
             );
             sample_count = sample_count.saturating_add(1);
-            if sample_count % 4 == 0 {
+            if sample_count.is_multiple_of(4) {
                 crate::memory::log_process_fd_snapshot();
             }
             sleep(Duration::from_secs(15)).await;
@@ -160,6 +160,7 @@ pub fn spawn_process_metrics_sampler() {
     });
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn update_process_memory(
     rss_bytes: Option<u64>,
     virtual_bytes: Option<u64>,

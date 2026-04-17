@@ -1,3 +1,8 @@
+// Low-level TCP/IP packet builders: the parameters here are the wire-format
+// header fields themselves, so `too_many_arguments` is noise — refactoring
+// into a struct just renames the same fields.
+#![allow(clippy::too_many_arguments)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{Result, anyhow, bail};
@@ -198,7 +203,7 @@ fn parse_tcp_options(options: &[u8]) -> Result<ParsedTcpOptions> {
                     4 if body.is_empty() => {
                         parsed.sack_permitted = true;
                     },
-                    5 if body.len() >= 8 && body.len() % 8 == 0 => {
+                    5 if body.len() >= 8 && body.len().is_multiple_of(8) => {
                         for block in body.chunks_exact(8) {
                             let left = u32::from_be_bytes([block[0], block[1], block[2], block[3]]);
                             let right =
@@ -341,7 +346,7 @@ fn build_ipv4_tcp_packet(
     options: &[u8],
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    if options.len() % 4 != 0 {
+    if !options.len().is_multiple_of(4) {
         bail!("TCP options must be 32-bit aligned");
     }
     let tcp_header_len = TCP_HEADER_LEN + options.len();
@@ -386,7 +391,7 @@ fn build_ipv6_tcp_packet(
     options: &[u8],
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    if options.len() % 4 != 0 {
+    if !options.len().is_multiple_of(4) {
         bail!("TCP options must be 32-bit aligned");
     }
     let tcp_header_len = TCP_HEADER_LEN + options.len();

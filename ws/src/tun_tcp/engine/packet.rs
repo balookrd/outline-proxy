@@ -51,8 +51,8 @@ impl TunTcpEngine {
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
 
-        if state.status == TcpFlowStatus::SynReceived {
-            if is_duplicate_syn(&packet, state.client_next_seq) {
+        if state.status == TcpFlowStatus::SynReceived
+            && is_duplicate_syn(&packet, state.client_next_seq) {
                 metrics::record_tun_tcp_event(
                     state.manager.group_name(),
                     &state.uplink_name,
@@ -69,7 +69,6 @@ impl TunTcpEngine {
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
                 return Ok(());
             }
-        }
 
         match validate_existing_packet(&state, &packet) {
             PacketValidation::Accept => {},
@@ -347,6 +346,16 @@ impl TunTcpEngine {
                 state
                     .pending_client_data
                     .push_back(std::mem::take(&mut pending_payload).into());
+                // Guard against unbounded growth of pending_client_data when
+                // the upstream connect is slow/stuck and a client keeps
+                // pumping bytes. `buffered_client_bytes` sums both
+                // pending_client_data and pending_client_segments, so this
+                // uses the same cap as the out-of-order reassembly path.
+                if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
+                    drop(state);
+                    self.abort_flow_with_rst(&key, "client_pending_data_limit").await;
+                    return Ok(());
+                }
                 sync_flow_metrics_and_wake(&mut state);
             }
             should_send_ack = true;

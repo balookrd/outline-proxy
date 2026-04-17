@@ -26,7 +26,9 @@ pub enum CipherKind {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum WsTransportMode {
+    #[default]
     Http1,
     H2,
     H3,
@@ -34,7 +36,9 @@ pub enum WsTransportMode {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum UplinkTransport {
+    #[default]
     Websocket,
     Shadowsocks,
 }
@@ -146,17 +150,7 @@ impl CipherKind {
     }
 }
 
-impl Default for WsTransportMode {
-    fn default() -> Self {
-        Self::Http1
-    }
-}
 
-impl Default for UplinkTransport {
-    fn default() -> Self {
-        Self::Websocket
-    }
-}
 
 impl ServerAddr {
     pub fn host(&self) -> &str {

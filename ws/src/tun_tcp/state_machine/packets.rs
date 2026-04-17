@@ -179,7 +179,7 @@ fn current_timestamp_value(state: &TcpFlowState) -> u32 {
 }
 
 fn pad_options(options: &mut Vec<u8>) {
-    while options.len() % 4 != 0 {
+    while !options.len().is_multiple_of(4) {
         options.push(1);
     }
 }

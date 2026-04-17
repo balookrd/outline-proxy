@@ -6,7 +6,7 @@ use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::sync::{Mutex, watch};
-use tokio::time::{sleep_until, timeout};
+use tokio::time::{sleep, sleep_until, timeout};
 use tracing::{debug, info, warn};
 
 use crate::metrics;
@@ -26,6 +26,67 @@ use super::connect::select_tcp_candidate_and_connect;
 use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, key_uplink_name};
 
 impl TunTcpEngine {
+    /// Watchdog GC loop: periodically scans the flow table for flows whose
+    /// `last_seen` is older than `idle_timeout`, and aborts them. The
+    /// per-flow `spawn_flow_maintenance` task is the primary idle-cleanup
+    /// path — this loop is a safety net against maintenance tasks that
+    /// panic or exit without removing the flow from the table.
+    pub(super) fn spawn_cleanup_loop(&self) {
+        let engine = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(super::super::TUN_TCP_FLOW_CLEANUP_INTERVAL).await;
+                engine.cleanup_idle_flows().await;
+            }
+        });
+    }
+
+    async fn cleanup_idle_flows(&self) {
+        let now = Instant::now();
+        let idle_timeout = self.inner.idle_timeout;
+
+        // Snapshot keys + Arc<Mutex> handles under a short read-lock, then
+        // inspect each flow's Mutex individually — avoids holding the map
+        // lock across per-flow locks. Mirrors the tun_udp cleanup loop.
+        let expired: Vec<TcpFlowKey> = {
+            let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = {
+                let guard = self.inner.flows.read().await;
+                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
+            };
+            let mut expired = Vec::new();
+            for (key, handle) in handles {
+                let state = handle.lock().await;
+                if matches!(state.status, TcpFlowStatus::Closed) {
+                    expired.push(key);
+                    continue;
+                }
+                // TimeWait uses its own timeout handled by per-flow
+                // maintenance; only hit TimeWait here if it wildly overran.
+                if state.status == TcpFlowStatus::TimeWait {
+                    if now.saturating_duration_since(state.status_since)
+                        >= super::super::TCP_TIME_WAIT_TIMEOUT + idle_timeout
+                    {
+                        expired.push(key);
+                    }
+                    continue;
+                }
+                if now.saturating_duration_since(state.last_seen) >= idle_timeout {
+                    expired.push(key);
+                }
+            }
+            expired
+        };
+
+        if expired.is_empty() {
+            return;
+        }
+        let count = expired.len();
+        for key in expired {
+            self.abort_flow_with_rst(&key, "idle_gc").await;
+        }
+        debug!(count, "TUN TCP GC: reaped idle flows");
+    }
+
     pub(super) fn spawn_flow_maintenance(
         &self,
         key: TcpFlowKey,

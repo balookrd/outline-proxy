@@ -314,7 +314,7 @@ impl UplinkManager {
                 let status = &mut statuses[index];
                 let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
                 let prev = status.tcp.h3_downgrade_until;
-                if prev.map_or(true, |t| t < now) {
+                if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
                         error = %format!("{error:#}"),
@@ -342,7 +342,7 @@ impl UplinkManager {
                 let status = &mut statuses[index];
                 let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
                 let prev = status.udp.h3_downgrade_until;
-                if prev.map_or(true, |t| t < now) {
+                if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
                         error = %format!("{error:#}"),
@@ -393,7 +393,7 @@ impl UplinkManager {
                 TransportKind::Tcp => statuses[index].tcp.last_active,
                 TransportKind::Udp => statuses[index].udp.last_active,
             };
-            if last.map_or(false, |t| now.duration_since(t) < Duration::from_secs(5)) {
+            if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
                 return;
             }
         }
@@ -405,7 +405,7 @@ impl UplinkManager {
             TransportKind::Tcp => &mut status.tcp.last_active,
             TransportKind::Udp => &mut status.udp.last_active,
         };
-        if last.map_or(false, |t| now.duration_since(t) < Duration::from_secs(5)) {
+        if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
             return;
         }
         *last = Some(now);
