@@ -56,8 +56,7 @@ pub(super) struct UplinkManagerInner {
 /// [`UplinkStatus`] holds one instance for TCP and one for UDP, eliminating
 /// the previous flat `tcp_*/udp_*` field pairs and the accompanying
 /// `match transport { Tcp => self.tcp_x, Udp => self.udp_x }` repetition.
-/// Use [`UplinkStatus::of`] / [`UplinkStatus::of_mut`] to select the right
-/// half by a [`TransportKind`] variable.
+/// Use [`UplinkStatus::of`] to select the right half by a [`TransportKind`] variable.
 #[derive(Clone, Debug, Default)]
 pub(super) struct PerTransportStatus {
     pub(super) healthy: Option<bool>,
@@ -96,13 +95,6 @@ impl UplinkStatus {
         }
     }
 
-    /// Mutably borrow the per-transport status for the given transport kind.
-    pub(super) fn of_mut(&mut self, kind: TransportKind) -> &mut PerTransportStatus {
-        match kind {
-            TransportKind::Tcp => &mut self.tcp,
-            TransportKind::Udp => &mut self.udp,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
