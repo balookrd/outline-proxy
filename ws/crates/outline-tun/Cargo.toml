@@ -1,0 +1,30 @@
+[package]
+name = "outline-tun"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["metrics"]
+metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
+
+[dependencies]
+anyhow = "1.0"
+bytes = "1.10"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+libc = "0.2"
+outline-metrics = { path = "../outline-metrics", default-features = false }
+outline-routing = { path = "../outline-routing" }
+outline-transport = { path = "../outline-transport" }
+outline-uplink = { path = "../outline-uplink", default-features = false }
+parking_lot = "0.12"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+shadowsocks-crypto = { path = "../shadowsocks-crypto" }
+socks5-proto = { path = "../socks5-proto" }
+tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+url = { version = "2.5", features = ["serde"] }

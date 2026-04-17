@@ -1329,6 +1329,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-tun"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures-util",
+ "libc",
+ "outline-metrics",
+ "outline-routing",
+ "outline-transport",
+ "outline-uplink",
+ "parking_lot",
+ "rand 0.8.5",
+ "serde",
+ "shadowsocks-crypto",
+ "socks5-proto",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+]
+
+[[package]]
 name = "outline-uplink"
 version = "0.1.0"
 dependencies = [
@@ -1366,6 +1389,7 @@ dependencies = [
  "outline-metrics",
  "outline-routing",
  "outline-transport",
+ "outline-tun",
  "outline-uplink",
  "parking_lot",
  "rand 0.8.5",
