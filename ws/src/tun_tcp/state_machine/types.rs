@@ -98,23 +98,34 @@ pub(in crate::tun_tcp) struct TcpFlowState {
     pub(in crate::tun_tcp) server_fin_pending: bool,
     pub(in crate::tun_tcp) zero_window_probe_backoff: Duration,
     pub(in crate::tun_tcp) next_zero_window_probe_at: Option<Instant>,
-    pub(in crate::tun_tcp) reported_inflight_segments: usize,
-    pub(in crate::tun_tcp) reported_inflight_bytes: usize,
-    pub(in crate::tun_tcp) reported_pending_server_bytes: usize,
-    pub(in crate::tun_tcp) reported_buffered_client_segments: usize,
-    pub(in crate::tun_tcp) reported_zero_window: bool,
-    pub(in crate::tun_tcp) reported_backlog_pressure: bool,
-    pub(in crate::tun_tcp) reported_backlog_pressure_us: u64,
-    pub(in crate::tun_tcp) reported_ack_progress_stall: bool,
-    pub(in crate::tun_tcp) reported_ack_progress_stall_us: u64,
-    pub(in crate::tun_tcp) reported_active: bool,
-    pub(in crate::tun_tcp) reported_congestion_window: usize,
-    pub(in crate::tun_tcp) reported_slow_start_threshold: usize,
-    pub(in crate::tun_tcp) reported_retransmission_timeout_us: u64,
-    pub(in crate::tun_tcp) reported_smoothed_rtt_us: u64,
+    /// Last-emitted values for Prometheus gauges. Private to the metric
+    /// sync code (`sync_flow_metrics` / `clear_flow_metrics`); used to
+    /// compute +/- deltas so the gauge accumulates correctly.
+    pub(in crate::tun_tcp) reported: ReportedFlowMetrics,
     pub(in crate::tun_tcp) created_at: Instant,
     pub(in crate::tun_tcp) status_since: Instant,
     pub(in crate::tun_tcp) last_seen: Instant,
+}
+
+/// Cache of last values emitted to Prometheus gauges for this flow. Kept
+/// out of the main TCP state so readers of `TcpFlowState` see only
+/// protocol-relevant fields, not metric bookkeeping.
+#[derive(Debug, Default)]
+pub(in crate::tun_tcp) struct ReportedFlowMetrics {
+    pub(in crate::tun_tcp) inflight_segments: usize,
+    pub(in crate::tun_tcp) inflight_bytes: usize,
+    pub(in crate::tun_tcp) pending_server_bytes: usize,
+    pub(in crate::tun_tcp) buffered_client_segments: usize,
+    pub(in crate::tun_tcp) zero_window: bool,
+    pub(in crate::tun_tcp) backlog_pressure: bool,
+    pub(in crate::tun_tcp) backlog_pressure_us: u64,
+    pub(in crate::tun_tcp) ack_progress_stall: bool,
+    pub(in crate::tun_tcp) ack_progress_stall_us: u64,
+    pub(in crate::tun_tcp) active: bool,
+    pub(in crate::tun_tcp) congestion_window: usize,
+    pub(in crate::tun_tcp) slow_start_threshold: usize,
+    pub(in crate::tun_tcp) retransmission_timeout_us: u64,
+    pub(in crate::tun_tcp) smoothed_rtt_us: u64,
 }
 
 #[derive(Debug)]
