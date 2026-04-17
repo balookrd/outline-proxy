@@ -192,9 +192,24 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         unreachable!("pending future never resolves");
     };
 
+    // Exponential backoff state for EMFILE / ENFILE.  Reset on every
+    // successful accept so that a temporary FD spike doesn't permanently
+    // slow down new connections.
+    let mut fd_backoff = Duration::ZERO;
+    /// First sleep after hitting the FD limit.
+    const FD_BACKOFF_INITIAL: Duration = Duration::from_millis(50);
+    /// Hard ceiling — prevents a sustained FD exhaustion from sleeping
+    /// longer than a few seconds between retries.
+    const FD_BACKOFF_MAX: Duration = Duration::from_secs(5);
+
     loop {
         let (stream, peer) = match listener.accept().await {
-            Ok(v) => v,
+            Ok(v) => {
+                // Successful accept: any previous FD backoff is no longer
+                // relevant — connections are flowing again.
+                fd_backoff = Duration::ZERO;
+                v
+            },
             Err(e) => {
                 // ECONNABORTED: the client withdrew the connection before
                 // accept() returned.  This is harmless; just try again.
@@ -202,13 +217,25 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
                     continue;
                 }
                 // EMFILE / ENFILE: process or system FD limit reached.
-                // Sleep briefly so that pending cleanup tasks (H2 driver
-                // tasks, writer tasks) have a chance to run and free FDs,
-                // then retry rather than propagating and killing the process.
+                // Back off with exponential delay (50 ms → 100 → 200 → …
+                // capped at 5 s) so that pending cleanup tasks (H2 driver
+                // tasks, writer tasks) have a chance to run and free FDs.
+                // A fixed 10 ms sleep would spin uselessly under sustained
+                // exhaustion; the growing delay avoids a self-inflicted
+                // busy-loop while still recovering quickly when FDs free up.
                 let raw = e.raw_os_error();
                 if raw == Some(libc::EMFILE) || raw == Some(libc::ENFILE) {
-                    warn!(error = %e, "accept failed (FD limit hit), backing off");
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    fd_backoff = if fd_backoff.is_zero() {
+                        FD_BACKOFF_INITIAL
+                    } else {
+                        (fd_backoff * 2).min(FD_BACKOFF_MAX)
+                    };
+                    warn!(
+                        error = %e,
+                        backoff_ms = fd_backoff.as_millis(),
+                        "accept failed (FD limit hit), backing off"
+                    );
+                    tokio::time::sleep(fd_backoff).await;
                     continue;
                 }
                 return Err(e).context("accept failed");

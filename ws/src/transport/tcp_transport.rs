@@ -251,10 +251,10 @@ impl TcpShadowsocksWriter {
                     .0;
                 let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
                 let encrypted_fixed = encrypt(self.cipher, &self.key, &self.nonce, &fixed_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 let encrypted_variable =
                     encrypt(self.cipher, &self.key, &self.nonce, &variable_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
 
                 let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
                 let mut frame = Vec::with_capacity(
@@ -282,10 +282,10 @@ impl TcpShadowsocksWriter {
     async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
         let len = (payload.len() as u16).to_be_bytes();
         let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         let pending_salt_len = self.pending_salt.as_ref().map_or(0, Vec::len);
         let mut frame =
@@ -440,13 +440,13 @@ impl TcpShadowsocksReader {
                 let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
                 let encrypted_header = self.read_exact_from_ws(header_len).await?;
                 let header = decrypt(self.cipher, &key, &self.nonce, &encrypted_header)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 let payload_len =
                     parse_ss2022_response_header(self.cipher, &request_salt, &header)?;
                 let encrypted_payload =
                     self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
                 let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
-                increment_nonce(&mut self.nonce);
+                increment_nonce(&mut self.nonce)?;
                 if let Some(state) = &mut self.ss2022 {
                     state.response_header_read = true;
                 }
@@ -462,7 +462,7 @@ impl TcpShadowsocksReader {
 
         let encrypted_len = self.read_exact_from_ws(2 + SHADOWSOCKS_TAG_LEN).await?;
         let len = decrypt(self.cipher, &key, &self.nonce, &encrypted_len)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
 
         if len.len() != 2 {
             bail!("invalid decrypted length block");
@@ -474,7 +474,7 @@ impl TcpShadowsocksReader {
 
         let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
         let payload = decrypt(self.cipher, &key, &self.nonce, &encrypted_payload)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce)?;
         Ok(payload)
     }
 

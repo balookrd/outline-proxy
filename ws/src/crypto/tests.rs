@@ -19,13 +19,24 @@ fn bytes_to_key_matches_known_vector() {
 #[test]
 fn nonce_is_incremented_little_endian() {
     let mut nonce = [0u8; 12];
-    increment_nonce(&mut nonce);
+    increment_nonce(&mut nonce).unwrap();
     assert_eq!(nonce[0], 1);
 
     nonce[0] = 0xff;
-    increment_nonce(&mut nonce);
+    increment_nonce(&mut nonce).unwrap();
     assert_eq!(nonce[0], 0);
     assert_eq!(nonce[1], 1);
+}
+
+#[test]
+fn nonce_overflow_returns_error() {
+    // A fully saturated nonce wraps to [0; 12], which would reuse the same
+    // (key, nonce) pair — increment_nonce must detect and reject this.
+    let mut nonce = [0xffu8; 12];
+    assert!(
+        increment_nonce(&mut nonce).is_err(),
+        "expected Err on nonce overflow, but got Ok"
+    );
 }
 
 #[test]
