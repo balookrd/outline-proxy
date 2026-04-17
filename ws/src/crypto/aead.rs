@@ -93,6 +93,43 @@ pub fn decrypt(
     Ok(buffer)
 }
 
+/// Encrypt `payload` in-place into `out`, appending ciphertext + tag.
+/// `out` may already contain data (e.g. a frame being built); encryption
+/// appends after whatever is there.  This avoids the two intermediate
+/// allocations that `encrypt` + `Vec::extend_from_slice` would require.
+pub fn encrypt_into(
+    cipher: CipherKind,
+    key: &[u8],
+    nonce: &[u8; 12],
+    payload: &[u8],
+    out: &mut Vec<u8>,
+) -> Result<()> {
+    let start = out.len();
+    out.extend_from_slice(payload);
+    let tag = match cipher {
+        CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
+            let cipher = ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?;
+            cipher
+                .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("chacha20 encryption failed"))?
+        },
+        CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => {
+            let cipher = Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?;
+            cipher
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?
+        },
+        CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => {
+            let cipher = Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?;
+            cipher
+                .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
+                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?
+        },
+    };
+    out.extend_from_slice(&tag);
+    Ok(())
+}
+
 /// Increments the AEAD nonce by 1 (little-endian, as required by Shadowsocks).
 ///
 /// Returns `Err` if all 96 bits carry over and the nonce wraps back to all-zeros.
