@@ -11,10 +11,10 @@ use tracing::debug;
 
 use crate::config::{RouteTarget, Socks5AuthConfig};
 use crate::metrics;
-use crate::routing::{RouteDecision, RoutingTable};
-use crate::socks5::{SocksRequest, negotiate};
+use outline_routing::{RouteDecision, RoutingTable};
+use socks5_proto::{SocksRequest, negotiate};
 use crate::types::TargetAddr;
-use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
+use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Runtime configuration slice for the proxy layer.
 ///

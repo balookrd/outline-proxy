@@ -11,17 +11,17 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
-use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
+use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
+use socks5_proto::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
 
 use super::DispatchTarget;
-use crate::transport::{
+use outline_transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
 };
 use crate::types::{TargetAddr, UplinkTransport, socket_addr_to_target};
-use crate::uplink::{TransportKind, UplinkManager};
+use outline_uplink::{TransportKind, UplinkManager};
 
 const UPSTREAM_RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
@@ -343,7 +343,7 @@ pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
     dispatch: DispatchTarget,
     target: TargetAddr,
-    dns_cache: std::sync::Arc<crate::transport::DnsCache>,
+    dns_cache: std::sync::Arc<outline_transport::DnsCache>,
 ) -> Result<()> {
     let uplinks = match dispatch {
         DispatchTarget::Direct { fwmark } => {
@@ -903,12 +903,12 @@ async fn handle_tcp_direct(
     mut client: TcpStream,
     target: TargetAddr,
     fwmark: Option<u32>,
-    cache: &crate::transport::DnsCache,
+    cache: &outline_transport::DnsCache,
 ) -> Result<()> {
     let addr = match &target {
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
-        TargetAddr::Domain(host, port) => crate::transport::resolve_host_with_preference(
+        TargetAddr::Domain(host, port) => outline_transport::resolve_host_with_preference(
             cache,
             host,
             *port,
@@ -921,7 +921,7 @@ async fn handle_tcp_direct(
         .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
-    let upstream = crate::transport::connect_tcp_socket(addr, fwmark)
+    let upstream = outline_transport::connect_tcp_socket(addr, fwmark)
         .await
         .with_context(|| format!("direct TCP connect to {target} failed"))?;
 
@@ -1105,7 +1105,7 @@ async fn handle_tcp_direct(
 
 async fn connect_tcp_uplink(
     uplinks: &UplinkManager,
-    candidate: &crate::uplink::UplinkCandidate,
+    candidate: &outline_uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
     let cache = uplinks.dns_cache();
@@ -1157,7 +1157,7 @@ async fn connect_tcp_uplink(
 
 async fn connect_tcp_uplink_fresh(
     uplinks: &UplinkManager,
-    candidate: &crate::uplink::UplinkCandidate,
+    candidate: &outline_uplink::UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
@@ -1170,7 +1170,7 @@ async fn connect_tcp_uplink_fresh(
 }
 
 async fn do_tcp_ss_setup(
-    ws_stream: crate::transport::WsTransportStream,
+    ws_stream: outline_transport::WsTransportStream,
     uplink: &crate::config::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,

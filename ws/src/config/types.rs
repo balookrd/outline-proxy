@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use outline_transport::DnsCache;
 
-use crate::routing::RoutingTable;
+use outline_routing::RoutingTable;
 
 // Auth configs live in the `socks5-proto` workspace crate; re-exported so
 // existing `crate::config::Socks5AuthConfig` imports keep working.

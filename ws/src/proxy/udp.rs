@@ -11,15 +11,15 @@ use tracing::{debug, info, warn};
 
 use crate::config::RouteTarget;
 use crate::proxy::ProxyConfig;
-use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
+use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
-use crate::socks5::{
+use socks5_proto::{
     SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
     read_udp_tcp_packet, send_reply,
 };
-use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
+use outline_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::types::{TargetAddr, socket_addr_to_target};
-use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
+use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 /// Per-packet routing decision for UDP.
 ///
@@ -34,7 +34,7 @@ enum UdpPacketRoute {
 
 /// Per-association cache of route decisions keyed by destination target.
 ///
-/// The routing table's [`version`](crate::routing::RoutingTable::version) is
+/// The routing table's [`version`](outline_routing::RoutingTable::version) is
 /// captured alongside each entry; when the watcher reloads a rule's CIDR
 /// file it bumps the version and the next lookup for an affected target
 /// falls through to a fresh resolve.
@@ -311,7 +311,7 @@ pub(super) async fn handle_udp_associate(
         // Optional socket for direct UDP packets with fwmark to prevent
         // loopback through TUN when all traffic is captured.
         let direct_socket = if routing_table_active(&config) {
-            let std_sock = crate::transport::bind_udp_socket(
+            let std_sock = outline_transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
             )
@@ -521,7 +521,7 @@ async fn send_udp_direct(
     direct_socket: &Option<Arc<UdpSocket>>,
     target: &TargetAddr,
     payload: &[u8],
-    cache: &crate::transport::DnsCache,
+    cache: &outline_transport::DnsCache,
 ) -> Result<()> {
     let Some(sock) = direct_socket else {
         warn!(target = %target, "UDP direct route requested but direct socket not allocated; dropping");
@@ -532,7 +532,7 @@ async fn send_udp_direct(
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
         TargetAddr::IpV6(ip, port) => SocketAddr::new(std::net::IpAddr::V6(*ip), *port),
         TargetAddr::Domain(host, port) => {
-            let resolved = crate::transport::resolve_host_with_preference(
+            let resolved = outline_transport::resolve_host_with_preference(
                 cache,
                 host,
                 *port,
@@ -620,7 +620,7 @@ pub(super) async fn handle_udp_in_tcp(
     let result = async {
         let bind_ip = client.local_addr()?.ip();
         let direct_socket = if routing_table_active(&config) {
-            let std_sock = crate::transport::bind_udp_socket(
+            let std_sock = outline_transport::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
             )
@@ -1075,7 +1075,7 @@ mod tests {
             WsProbeConfig,
         };
         use crate::types::{UplinkTransport, WsTransportMode};
-        use crate::uplink::{UplinkManager, UplinkRegistry};
+        use outline_uplink::{UplinkManager, UplinkRegistry};
 
         let uplink = UplinkConfig {
             name: "default-uplink".to_string(),

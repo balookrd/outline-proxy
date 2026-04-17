@@ -1,18 +1,11 @@
 pub mod config;
-pub use shadowsocks_crypto as crypto;
 pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
 #[cfg(feature = "metrics")]
 pub mod metrics_http;
 pub mod proxy;
-pub use outline_routing as routing;
-pub use socks5_proto as socks5;
-pub use outline_transport as transport;
-#[cfg(feature = "tun")]
-pub use outline_tun as tun;
 pub mod types;
-pub use outline_uplink as uplink;
 
 use std::time::Duration;
 
@@ -26,7 +19,7 @@ use crate::metrics::{init as init_metrics, spawn_process_metrics_sampler};
 #[cfg(feature = "metrics")]
 use crate::metrics_http::spawn_metrics_server;
 use crate::proxy::ProxyConfig;
-use crate::uplink::{StateStore, UplinkRegistry, log_registry_summary};
+use outline_uplink::{StateStore, UplinkRegistry, log_registry_summary};
 
 fn warn_about_tcp_probe_target(config: &AppConfig) {
     for group in &config.groups {
@@ -60,11 +53,11 @@ pub async fn run(args: Args) -> Result<()> {
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;
-    transport::init_h2_window_sizes(
+    outline_transport::init_h2_window_sizes(
         config.h2.initial_stream_window_size,
         config.h2.initial_connection_window_size,
     );
-    transport::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
+    outline_transport::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
     run_with_config(config).await
 }
 
@@ -128,11 +121,11 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     // spawn per-rule file watchers for hot-reload.
     if let Some(routing_cfg) = config.routing.clone() {
         let table = std::sync::Arc::new(
-            crate::routing::RoutingTable::compile(&routing_cfg)
+            outline_routing::RoutingTable::compile(&routing_cfg)
                 .await
                 .context("failed to compile routing table")?,
         );
-        crate::routing::spawn_route_watchers(std::sync::Arc::clone(&table));
+        outline_routing::spawn_route_watchers(std::sync::Arc::clone(&table));
         config.routing_table = Some(table);
     }
 
@@ -140,7 +133,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     // default group when no [[route]] is configured.
     #[cfg(feature = "tun")]
     {
-        let tun_routing = crate::tun::TunRouting::new(
+        let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
             config.routing_table.clone(),
             config.direct_fwmark,
@@ -151,7 +144,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
                 .dns_cache
                 .clone()
                 .expect("dns_cache initialised above");
-            crate::tun::spawn_tun_loop(tun, tun_routing, tun_dns_cache)
+            outline_tun::spawn_tun_loop(tun, tun_routing, tun_dns_cache)
                 .await
                 .context("failed to start TUN loop")?;
         }
@@ -254,7 +247,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         // silently close long-lived idle flows like SSH.  Failures are
         // non-fatal: log and keep the connection, since the effect is only
         // degradation to the pre-fix behaviour.
-        if let Err(error) = transport::configure_inbound_tcp_stream(&stream, peer) {
+        if let Err(error) = outline_transport::configure_inbound_tcp_stream(&stream, peer) {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
         let config = std::sync::Arc::clone(&proxy_config);
