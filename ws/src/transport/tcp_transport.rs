@@ -15,10 +15,10 @@ use crate::crypto::{
 };
 use crate::types::{CipherKind, TargetAddr};
 
-use super::{AbortOnDrop, AnyWsStream, UpstreamTransportGuard};
+use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard};
 
-type WsSink = SplitSink<AnyWsStream, Message>;
-type WsStream = SplitStream<AnyWsStream>;
+type WsSink = SplitSink<WsTransportStream, Message>;
+type WsStream = SplitStream<WsTransportStream>;
 
 enum TcpWriteTransport {
     Websocket {

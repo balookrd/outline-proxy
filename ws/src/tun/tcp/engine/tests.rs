@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
 use crate::transport::{
-    AnyWsStream, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    WsTransportStream, TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
 };
 use crate::tun::SharedTunWriter;
 use crate::tun::wire::IpVersion;
@@ -1304,7 +1304,7 @@ async fn handle_test_tcp_upstream(
     mut send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws = accept_async(MaybeTlsStream::Plain(stream)).await?;
-    let ws = AnyWsStream::Http1 { inner: ws };
+    let ws = WsTransportStream::Http1 { inner: ws };
     let (sink, stream) = ws.split();
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key("Secret0").unwrap();

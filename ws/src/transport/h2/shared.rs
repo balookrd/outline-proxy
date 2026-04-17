@@ -33,7 +33,7 @@ use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::transport::{
-    AbortOnDrop, AnyWsStream, SharedConnectionHealth, TransportConnectGuard,
+    AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
     connect_tcp_socket, resolve_host_with_preference,
 };
 
@@ -227,7 +227,7 @@ impl SharedH2Connection {
         !self.closed.load(Ordering::Relaxed)
     }
 
-    async fn open_websocket(self: &Arc<Self>, target_uri: &str) -> Result<AnyWsStream> {
+    async fn open_websocket(self: &Arc<Self>, target_uri: &str) -> Result<WsTransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
         }
@@ -290,7 +290,7 @@ impl SharedH2Connection {
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
-        Ok(AnyWsStream::H2 {
+        Ok(WsTransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
         })
     }
@@ -341,7 +341,7 @@ pub(crate) async fn connect_websocket_h2(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
         .port_or_known_default()
@@ -381,7 +381,7 @@ async fn connect_h2_tcp_reused(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     let key = H2ConnectionKey::new(server_name, server_port, secure, fwmark);
 
     // Fast path: reuse an already-established shared connection without locking.
@@ -464,7 +464,7 @@ async fn connect_h2_tcp_new(
     target_uri: &str,
     fwmark: Option<u32>,
     source: &'static str,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h2");
     let shared =
         Arc::new(connect_h2_connection(server_addr, server_name, secure, fwmark, None).await?);

@@ -141,7 +141,7 @@ async fn connect_tcp_uplink(
 }
 
 async fn do_tcp_ss_setup(
-    ws_stream: crate::transport::AnyWsStream,
+    ws_stream: crate::transport::WsTransportStream,
     uplink: &crate::config::UplinkConfig,
     target: &TargetAddr,
 ) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {

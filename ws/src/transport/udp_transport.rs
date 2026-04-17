@@ -15,9 +15,9 @@ use crate::crypto::{
 };
 use crate::types::{CipherKind, WsTransportMode};
 
-use super::{AbortOnDrop, AnyWsStream, UpstreamTransportGuard, connect_websocket_with_source};
+use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard, connect_websocket_with_source};
 
-type WsStream = SplitStream<AnyWsStream>;
+type WsStream = SplitStream<WsTransportStream>;
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
@@ -57,7 +57,7 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
 
 impl UdpWsTransport {
     pub(crate) fn from_websocket(
-        ws_stream: AnyWsStream,
+        ws_stream: WsTransportStream,
         cipher: CipherKind,
         password: &str,
         source: &'static str,

@@ -15,7 +15,7 @@ use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
 
-use super::Dispatch;
+use super::DispatchTarget;
 use crate::transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
@@ -341,19 +341,19 @@ async fn drive_with_idle(
 
 pub(super) async fn handle_tcp_connect(
     mut client: TcpStream,
-    dispatch: Dispatch,
+    dispatch: DispatchTarget,
     target: TargetAddr,
 ) -> Result<()> {
     let uplinks = match dispatch {
-        Dispatch::Direct { fwmark } => {
+        DispatchTarget::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
             return handle_tcp_direct(client, target, fwmark).await;
         },
-        Dispatch::Drop => {
+        DispatchTarget::Drop => {
             info!(target = %target, "TCP route: policy drop");
             return handle_tcp_drop(client, &target).await;
         },
-        Dispatch::Group { name, manager } => {
+        DispatchTarget::Group { name, manager } => {
             debug!(target = %target, group = %name, "TCP route: dispatching via group");
             manager
         },
@@ -1166,7 +1166,7 @@ async fn connect_tcp_uplink_fresh(
 }
 
 async fn do_tcp_ss_setup(
-    ws_stream: crate::transport::AnyWsStream,
+    ws_stream: crate::transport::WsTransportStream,
     uplink: &crate::config::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,

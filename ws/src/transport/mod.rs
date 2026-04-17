@@ -38,7 +38,7 @@ pub(crate) use socket::{bind_udp_socket, connect_tcp_socket};
 pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-pub use ws_stream::AnyWsStream;
+pub use ws_stream::WsTransportStream;
 pub(crate) use ws_stream::SharedConnectionHealth;
 
 pub(crate) use dns::resolve_host_with_preference;
@@ -61,7 +61,7 @@ pub async fn connect_websocket(
     mode: WsTransportMode,
     fwmark: Option<u32>,
     ipv6_first: bool,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     connect_websocket_with_source(url, mode, fwmark, ipv6_first, "direct").await
 }
 
@@ -71,12 +71,12 @@ pub async fn connect_websocket_with_source(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     match mode {
         WsTransportMode::Http1 => {
             let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
-            Ok(AnyWsStream::Http1 { inner: ws_stream })
+            Ok(WsTransportStream::Http1 { inner: ws_stream })
         },
         WsTransportMode::H2 => match connect_websocket_h2(url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
@@ -92,7 +92,7 @@ pub async fn connect_websocket_with_source(
                 );
                 let ws_stream = connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(AnyWsStream::Http1 { inner: ws_stream })
+                Ok(WsTransportStream::Http1 { inner: ws_stream })
             },
         },
         #[cfg(feature = "h3")]
@@ -123,7 +123,7 @@ pub async fn connect_websocket_with_source(
                         let ws_stream =
                             connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(AnyWsStream::Http1 { inner: ws_stream })
+                        Ok(WsTransportStream::Http1 { inner: ws_stream })
                     },
                 }
             },
@@ -141,7 +141,7 @@ pub async fn connect_websocket_with_source(
                     let ws_stream =
                         connect_websocket_http1(url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(AnyWsStream::Http1 { inner: ws_stream })
+                    Ok(WsTransportStream::Http1 { inner: ws_stream })
                 },
             }
         },

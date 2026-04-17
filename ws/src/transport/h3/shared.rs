@@ -29,7 +29,7 @@ use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::transport::{
-    AbortOnDrop, AnyWsStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
+    AbortOnDrop, WsTransportStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
     resolve_host_with_preference,
 };
 
@@ -288,7 +288,7 @@ pub(crate) async fn connect_websocket_h3(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<AnyWsStream> {
+) -> Result<WsTransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
     }
@@ -303,7 +303,7 @@ pub(crate) async fn connect_websocket_h3(
         // DNS resolution is deferred to the slow path inside connect_h3_quic_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
         let ws = connect_h3_quic_reused(host, port, &path, fwmark, ipv6_first, source).await?;
-        return Ok(AnyWsStream::H3 { inner: ws });
+        return Ok(WsTransportStream::H3 { inner: ws });
     }
 
     // Probes never share connections; resolve DNS upfront and try each address.
@@ -317,7 +317,7 @@ pub(crate) async fn connect_websocket_h3(
     let mut last_error = None;
     for server_addr in server_addrs {
         match connect_h3_quic_new(server_addr, host, port, &path, fwmark, None, source).await {
-            Ok(ws) => return Ok(AnyWsStream::H3 { inner: ws }),
+            Ok(ws) => return Ok(WsTransportStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
     }

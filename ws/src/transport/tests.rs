@@ -216,8 +216,8 @@ async fn h2_reuses_shared_connection_for_non_probe_sources() {
         .await
         .unwrap();
 
-    assert!(matches!(ws_one, AnyWsStream::H2 { .. }));
-    assert!(matches!(ws_two, AnyWsStream::H2 { .. }));
+    assert!(matches!(ws_one, WsTransportStream::H2 { .. }));
+    assert!(matches!(ws_two, WsTransportStream::H2 { .. }));
     server.wait_for_counts(1, 2).await;
 }
 
@@ -234,7 +234,7 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
         .await
         .unwrap();
 
-    assert!(matches!(ws_one, AnyWsStream::H2 { .. }));
-    assert!(matches!(ws_two, AnyWsStream::H2 { .. }));
+    assert!(matches!(ws_one, WsTransportStream::H2 { .. }));
+    assert!(matches!(ws_two, WsTransportStream::H2 { .. }));
     server.wait_for_counts(2, 2).await;
 }

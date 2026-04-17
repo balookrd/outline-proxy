@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
-use crate::transport::AnyWsStream;
+use crate::transport::WsTransportStream;
 use crate::types::TargetAddr;
 
 use super::state::StateStore;
@@ -235,8 +235,8 @@ pub struct StickyRouteSnapshot {
 
 
 pub(super) struct StandbyPool {
-    pub(super) tcp: Mutex<VecDeque<AnyWsStream>>,
-    pub(super) udp: Mutex<VecDeque<AnyWsStream>>,
+    pub(super) tcp: Mutex<VecDeque<WsTransportStream>>,
+    pub(super) udp: Mutex<VecDeque<WsTransportStream>>,
     pub(super) tcp_refill: Mutex<()>,
     pub(super) udp_refill: Mutex<()>,
 }

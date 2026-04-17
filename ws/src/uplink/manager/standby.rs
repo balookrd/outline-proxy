@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use crate::memory::maybe_shrink_vecdeque;
 use crate::metrics;
 use crate::transport::{
-    AnyWsStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+    WsTransportStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
 use crate::types::{UplinkTransport, WsTransportMode};
 
@@ -77,7 +77,7 @@ impl UplinkManager {
     /// validation cycles.  If the peek reports closure, the entry is
     /// dropped and we return `None`; the caller transparently falls back
     /// to `connect_tcp_ws_fresh`, and the pool refill task fills the slot.
-    pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<AnyWsStream> {
+    pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<WsTransportStream> {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
         if candidate.uplink.transport != UplinkTransport::Websocket {
@@ -136,7 +136,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-    ) -> Result<AnyWsStream> {
+    ) -> Result<WsTransportStream> {
         if candidate.uplink.transport != UplinkTransport::Websocket {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
@@ -181,7 +181,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-    ) -> Result<AnyWsStream> {
+    ) -> Result<WsTransportStream> {
         if let Some(ws) = self.try_take_tcp_standby(candidate).await {
             return Ok(ws);
         }
@@ -491,7 +491,7 @@ impl UplinkManager {
                     // defeats the purpose and accumulates FDs silently.  Bail
                     // out in that case.  When Http1 is *explicitly* configured,
                     // pooling a single Http1 connection is the intended behavior.
-                    if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
+                    if matches!(ws, crate::transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
                         break;
                     }
 
@@ -589,7 +589,7 @@ impl UplinkManager {
             // accumulates FDs without sharing the underlying connection.
             // When Http1 is the explicitly configured mode, skip eviction and
             // let the standard timeout-peek decide liveness instead.
-            if matches!(ws, crate::transport::AnyWsStream::Http1 { .. }) && !mode_is_http1 {
+            if matches!(ws, crate::transport::WsTransportStream::Http1 { .. }) && !mode_is_http1 {
                 debug!(
                     uplink = %uplink.name,
                     transport = ?transport,
