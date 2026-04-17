@@ -3,8 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
-use tokio::io::AsyncReadExt;
-use tokio::net::tcp::OwnedWriteHalf;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
@@ -15,7 +14,7 @@ use crate::crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use crate::metrics;
 use crate::socks5::{
     SOCKS_STATUS_SUCCESS, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
-    read_udp_tcp_packet, send_reply, write_udp_tcp_packet,
+    read_udp_tcp_packet, send_reply,
 };
 use crate::transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 use crate::types::{TargetAddr, socket_addr_to_target};
@@ -629,8 +628,19 @@ pub(super) async fn handle_udp_in_tcp(
 
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &client_hint).await?;
 
-        let (mut client_read, client_write) = client.into_split();
-        let client_write = Arc::new(Mutex::new(client_write));
+        let (mut client_read, mut client_write) = client.into_split();
+
+        let (write_tx, mut write_rx) = mpsc::channel::<Vec<u8>>(64);
+
+        let tcp_writer = async move {
+            while let Some(frame) = write_rx.recv().await {
+                client_write
+                    .write_all(&frame)
+                    .await
+                    .context("UDP-in-TCP client write failed")?;
+            }
+            Ok::<(), anyhow::Error>(())
+        };
 
         let groups = AssocGroupMap::new();
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
@@ -692,11 +702,11 @@ pub(super) async fn handle_udp_in_tcp(
             Ok::<(), anyhow::Error>(())
         };
 
-        let client_write_writer = Arc::clone(&client_write);
+        let write_tx_writer = write_tx.clone();
         let writer = async move {
             while let Some(response) = responses_rx.recv().await {
                 write_udp_tcp_response(
-                    &client_write_writer,
+                    &write_tx_writer,
                     &response.target,
                     &response.payload,
                     "upstream UDP-in-TCP response",
@@ -718,7 +728,7 @@ pub(super) async fn handle_udp_in_tcp(
             Ok::<(), anyhow::Error>(())
         };
 
-        let client_write_direct = Arc::clone(&client_write);
+        let write_tx_direct = write_tx.clone();
         let direct_downlink = async move {
             let Some(sock) = direct_socket else {
                 std::future::pending::<()>().await;
@@ -731,7 +741,7 @@ pub(super) async fn handle_udp_in_tcp(
                 let target = socket_addr_to_target(src_addr);
                 let metric_payload_len = udp_metric_payload_len(&target, len)?;
                 write_udp_tcp_response(
-                    &client_write_direct,
+                    &write_tx_direct,
                     &target,
                     &buf[..len],
                     "direct UDP-in-TCP response",
@@ -758,6 +768,7 @@ pub(super) async fn handle_udp_in_tcp(
             result = uplink => result,
             result = writer => result,
             result = direct_downlink => result,
+            result = tcp_writer => result,
         };
         groups.shutdown("session_end").await;
         session_result
@@ -948,13 +959,14 @@ async fn close_udp_transport(transport: Arc<UdpWsTransport>, reason: &'static st
 }
 
 async fn write_udp_tcp_response(
-    client_write: &Arc<Mutex<OwnedWriteHalf>>,
+    write_tx: &mpsc::Sender<Vec<u8>>,
     target: &TargetAddr,
     payload: &[u8],
     context: &'static str,
 ) -> Result<()> {
-    let target_wire = target.to_wire_bytes()?;
-    if 3 + target_wire.len() > usize::from(u8::MAX) || payload.len() > usize::from(u16::MAX) {
+    let addr_wire = target.to_wire_bytes()?;
+    let header_len = 3 + addr_wire.len();
+    if header_len > usize::from(u8::MAX) || payload.len() > usize::from(u16::MAX) {
         warn!(
             target = %target,
             payload_len = payload.len(),
@@ -965,10 +977,19 @@ async fn write_udp_tcp_response(
         return Ok(());
     }
 
-    let mut client_write = client_write.lock().await;
-    write_udp_tcp_packet(&mut *client_write, target, payload)
+    let data_len = payload.len() as u16;
+    let header_len = header_len as u8;
+
+    let mut frame = Vec::with_capacity(2 + 1 + addr_wire.len() + payload.len());
+    frame.extend_from_slice(&data_len.to_be_bytes());
+    frame.push(header_len);
+    frame.extend_from_slice(&addr_wire);
+    frame.extend_from_slice(payload);
+
+    write_tx
+        .send(frame)
         .await
-        .with_context(|| format!("failed to write {context}"))
+        .with_context(|| format!("failed to write {context}: TCP writer task exited"))
 }
 
 #[cfg(test)]
