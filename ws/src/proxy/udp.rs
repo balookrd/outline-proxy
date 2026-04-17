@@ -296,7 +296,7 @@ fn udp_metric_payload_len(target: &TargetAddr, payload_len: usize) -> Result<usi
 
 pub(super) async fn handle_udp_associate(
     mut client: TcpStream,
-    config: AppConfig,
+    config: Arc<AppConfig>,
     registry: UplinkRegistry,
     _client_hint: TargetAddr,
 ) -> Result<()> {
@@ -333,7 +333,7 @@ pub(super) async fn handle_udp_associate(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
-        let config_uplink = config.clone();
+        let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
             let mut buf = vec![0u8; 65_535];
@@ -610,7 +610,7 @@ async fn send_tunneled_udp(
 
 pub(super) async fn handle_udp_in_tcp(
     mut client: TcpStream,
-    config: AppConfig,
+    config: Arc<AppConfig>,
     registry: UplinkRegistry,
     client_hint: TargetAddr,
 ) -> Result<()> {
@@ -639,7 +639,7 @@ pub(super) async fn handle_udp_in_tcp(
         let groups_uplink = Arc::clone(&groups);
         let registry_uplink = registry.clone();
         let direct_socket_uplink = direct_socket.clone();
-        let config_uplink = config.clone();
+        let config_uplink = Arc::clone(&config);
         let responses_tx_uplink = responses_tx.clone();
         let uplink = async move {
             let mut route_cache: UdpRouteCache = HashMap::new();

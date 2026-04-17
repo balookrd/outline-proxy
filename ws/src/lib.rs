@@ -187,6 +187,10 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         spawn_metrics_server(metrics, registry.clone());
     }
 
+    // Freeze config into an Arc so each accepted connection pays only a
+    // pointer increment instead of a full deep clone.
+    let config = std::sync::Arc::new(config);
+
     let Some(listener) = listener else {
         std::future::pending::<()>().await;
         unreachable!("pending future never resolves");
@@ -249,7 +253,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         if let Err(error) = transport::configure_inbound_tcp_stream(&stream, peer) {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
-        let config = config.clone();
+        let config = std::sync::Arc::clone(&config);
         let registry = registry.clone();
         tokio::spawn(async move {
             if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {
