@@ -8,6 +8,47 @@ use super::super::{
 use super::seq::{packet_sequence_len, seq_ge, seq_gt, seq_lt};
 use super::types::TcpFlowState;
 
+/// Stack-allocated buffer for TCP option bytes.
+///
+/// TCP options are at most 40 bytes (60-byte header – 20-byte fixed part).
+/// Using a fixed-size array eliminates the `Vec::new()` heap allocation that
+/// was previously incurred for every ACK or SYN-ACK built by the state machine.
+struct TcpOptions {
+    data: [u8; 40],
+    len: usize,
+}
+
+impl TcpOptions {
+    fn new() -> Self {
+        Self { data: [0u8; 40], len: 0 }
+    }
+
+    #[inline]
+    fn push(&mut self, b: u8) {
+        debug_assert!(self.len < 40, "TCP options overflow: max 40 bytes");
+        self.data[self.len] = b;
+        self.len += 1;
+    }
+
+    #[inline]
+    fn extend_from_slice(&mut self, s: &[u8]) {
+        let end = self.len + s.len();
+        debug_assert!(end <= 40, "TCP options overflow: max 40 bytes");
+        self.data[self.len..end].copy_from_slice(s);
+        self.len = end;
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        &self.data[..self.len]
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
 pub(in crate::tun_tcp) fn build_flow_packet(
     state: &TcpFlowState,
     sequence_number: u32,
@@ -21,7 +62,7 @@ pub(in crate::tun_tcp) fn build_flow_packet(
         sequence_number,
         acknowledgement_number,
         flags,
-        &options,
+        options.as_slice(),
         payload,
     )
 }
@@ -61,7 +102,7 @@ pub(in crate::tun_tcp) fn build_flow_ack_packet(
         sequence_number,
         acknowledgement_number,
         flags,
-        &options,
+        options.as_slice(),
         &[],
     )
 }
@@ -71,6 +112,7 @@ pub(in crate::tun_tcp) fn build_flow_syn_ack_packet(
     server_isn: u32,
     acknowledgement_number: u32,
 ) -> Result<Vec<u8>> {
+    let options = syn_ack_options(state);
     build_response_packet_custom(
         state.key.version,
         state.key.remote_ip,
@@ -81,13 +123,13 @@ pub(in crate::tun_tcp) fn build_flow_syn_ack_packet(
         acknowledgement_number,
         TCP_FLAG_SYN | TCP_FLAG_ACK,
         advertised_receive_window(state),
-        &syn_ack_options(state),
+        options.as_slice(),
         &[],
     )
 }
 
-fn syn_ack_options(state: &TcpFlowState) -> Vec<u8> {
-    let mut options = Vec::new();
+fn syn_ack_options(state: &TcpFlowState) -> TcpOptions {
+    let mut options = TcpOptions::new();
     options.push(2);
     options.push(4);
     options.extend_from_slice(
@@ -102,7 +144,7 @@ fn syn_ack_options(state: &TcpFlowState) -> Vec<u8> {
     options
 }
 
-fn ack_options(state: &TcpFlowState) -> Vec<u8> {
+fn ack_options(state: &TcpFlowState) -> TcpOptions {
     let mut options = default_packet_options(state);
     if !state.client_sack_permitted {
         pad_options(&mut options);
@@ -155,14 +197,14 @@ fn ack_options(state: &TcpFlowState) -> Vec<u8> {
     options
 }
 
-fn default_packet_options(state: &TcpFlowState) -> Vec<u8> {
-    let mut options = Vec::new();
+fn default_packet_options(state: &TcpFlowState) -> TcpOptions {
+    let mut options = TcpOptions::new();
     append_timestamp_option(state, &mut options);
     pad_options(&mut options);
     options
 }
 
-fn append_timestamp_option(state: &TcpFlowState, options: &mut Vec<u8>) {
+fn append_timestamp_option(state: &TcpFlowState, options: &mut TcpOptions) {
     if !state.timestamps_enabled {
         return;
     }
@@ -178,7 +220,7 @@ fn current_timestamp_value(state: &TcpFlowState) -> u32 {
         .wrapping_add(state.created_at.elapsed().as_millis() as u32)
 }
 
-fn pad_options(options: &mut Vec<u8>) {
+fn pad_options(options: &mut TcpOptions) {
     while !options.len().is_multiple_of(4) {
         options.push(1);
     }

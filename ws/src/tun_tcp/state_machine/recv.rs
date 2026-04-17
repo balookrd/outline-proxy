@@ -9,12 +9,27 @@ use super::packets::{buffered_client_bytes, receive_window_end};
 use super::seq::{seq_ge, seq_gt, seq_lt};
 use super::types::{BufferedClientSegment, ClientSegmentView, TcpFlowState};
 
+/// A packet trimmed to fit the receive window — only the fields
+/// needed by the reassembly and delivery paths, avoiding the
+/// `sack_blocks: Vec<(u32,u32)>` heap allocation that a full
+/// `ParsedTcpPacket` clone would incur.
+pub(in crate::tun_tcp) struct TrimmedSegment {
+    pub(in crate::tun_tcp) sequence_number: u32,
+    pub(in crate::tun_tcp) flags: u8,
+    pub(in crate::tun_tcp) payload: Bytes,
+}
+
 pub(in crate::tun_tcp) fn trim_packet_to_receive_window(
     state: &TcpFlowState,
     packet: &ParsedTcpPacket,
-) -> Option<ParsedTcpPacket> {
+) -> Option<TrimmedSegment> {
     if packet.payload.is_empty() && (packet.flags & TCP_FLAG_FIN) == 0 {
-        return Some(packet.clone());
+        // Bytes::clone is an Arc ref-count increment — no heap allocation.
+        return Some(TrimmedSegment {
+            sequence_number: packet.sequence_number,
+            flags: packet.flags,
+            payload: packet.payload.clone(),
+        });
     }
 
     let recv_window_end = receive_window_end(state);
@@ -22,27 +37,31 @@ pub(in crate::tun_tcp) fn trim_packet_to_receive_window(
         return None;
     }
 
-    let mut trimmed = packet.clone();
-    if !trimmed.payload.is_empty() {
-        let allowed_len = recv_window_end.wrapping_sub(trimmed.sequence_number) as usize;
-        if trimmed.payload.len() > allowed_len {
-            trimmed.payload = trimmed.payload.slice(..allowed_len);
-            trimmed.flags &= !TCP_FLAG_FIN;
+    let mut payload = packet.payload.clone();
+    let mut flags = packet.flags;
+    if !payload.is_empty() {
+        let allowed_len = recv_window_end.wrapping_sub(packet.sequence_number) as usize;
+        if payload.len() > allowed_len {
+            payload = payload.slice(..allowed_len);
+            flags &= !TCP_FLAG_FIN;
         }
     }
-    Some(trimmed)
+    Some(TrimmedSegment { sequence_number: packet.sequence_number, flags, payload })
 }
 
+#[cfg(test)]
 pub(in crate::tun_tcp) fn normalize_client_segment(
     packet: &ParsedTcpPacket,
     expected_seq: u32,
 ) -> ClientSegmentView {
-    normalize_client_segment_parts(
-        packet.sequence_number,
-        packet.flags,
-        &packet.payload,  // already &Bytes
-        expected_seq,
-    )
+    normalize_client_segment_parts(packet.sequence_number, packet.flags, &packet.payload, expected_seq)
+}
+
+pub(in crate::tun_tcp) fn normalize_trimmed_segment(
+    packet: &TrimmedSegment,
+    expected_seq: u32,
+) -> ClientSegmentView {
+    normalize_client_segment_parts(packet.sequence_number, packet.flags, &packet.payload, expected_seq)
 }
 
 fn normalize_client_segment_parts(
@@ -98,7 +117,7 @@ fn insert_client_segment(
 
 pub(in crate::tun_tcp) fn queue_future_segment(
     pending_segments: &mut VecDeque<BufferedClientSegment>,
-    packet: &ParsedTcpPacket,
+    packet: &TrimmedSegment,
     expected_seq: u32,
 ) {
     if packet.payload.is_empty() && (packet.flags & TCP_FLAG_FIN) == 0 {

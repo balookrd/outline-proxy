@@ -12,7 +12,7 @@ use super::super::state_machine::{
     QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus, apply_client_segment,
     build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, client_fin_seen,
     drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
-    flush_server_output, is_duplicate_syn, normalize_client_segment, note_ack_progress,
+    flush_server_output, is_duplicate_syn, normalize_trimmed_segment, note_ack_progress,
     note_recent_client_timestamp, process_server_ack, queue_future_segment_with_recv_window,
     reset_zero_window_persist, retransmit_budget_exhausted, retransmit_oldest_unacked_packet,
     seq_gt, seq_lt, server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
@@ -258,7 +258,7 @@ impl TunTcpEngine {
             return Ok(());
         };
 
-        let segment = normalize_client_segment(&packet, state.client_next_seq);
+        let segment = normalize_trimmed_segment(&packet, state.client_next_seq);
         let mut pending_payload = Vec::new();
         let mut should_close_client_half = false;
         let mut should_send_ack = false;
