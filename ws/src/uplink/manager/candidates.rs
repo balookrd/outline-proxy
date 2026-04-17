@@ -333,8 +333,12 @@ impl UplinkManager {
                 // to cooldown-based gating so that failures can still cause a switch.
                 let probe_healthy = if self.inner.probe.enabled() {
                     match gate_transport {
-                        TransportKind::Tcp => statuses[active_index].tcp_healthy != Some(false),
-                        TransportKind::Udp => statuses[active_index].udp_healthy != Some(false),
+                        TransportKind::Tcp => {
+                            statuses[active_index].tcp.healthy != Some(false)
+                        },
+                        TransportKind::Udp => {
+                            statuses[active_index].udp.healthy != Some(false)
+                        },
                     }
                 } else {
                     true
@@ -406,10 +410,10 @@ impl UplinkManager {
                             higher_priority
                                 && match gate_transport {
                                     TransportKind::Tcp => {
-                                        statuses[b.index].tcp_healthy == Some(true)
+                                        statuses[b.index].tcp.healthy == Some(true)
                                     },
                                     TransportKind::Udp => {
-                                        statuses[b.index].udp_healthy == Some(true)
+                                        statuses[b.index].udp.healthy == Some(true)
                                     },
                                 }
                         })
@@ -424,8 +428,12 @@ impl UplinkManager {
                     let best_is_stable = best.map_or(true, |b| {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
-                            TransportKind::Tcp => statuses[b.index].tcp_consecutive_successes,
-                            TransportKind::Udp => statuses[b.index].udp_consecutive_successes,
+                            TransportKind::Tcp => {
+                                statuses[b.index].tcp.consecutive_successes
+                            },
+                            TransportKind::Udp => {
+                                statuses[b.index].udp.consecutive_successes
+                            },
                         };
                         consecutive >= min
                     });

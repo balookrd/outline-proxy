@@ -7,8 +7,8 @@ use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
 use url::Url;
 
 use super::{
-    PenaltyState, TransportKind, UplinkManager, UplinkStatus, build_http_probe_request,
-    effective_latency, score_latency, update_rtt_ewma,
+    PenaltyState, PerTransportStatus, TransportKind, UplinkManager, UplinkStatus,
+    build_http_probe_request, effective_latency, score_latency, update_rtt_ewma,
 };
 use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, WsProbeConfig,
@@ -50,9 +50,11 @@ fn rtt_ewma_smooths_new_samples() {
 fn weighted_score_prefers_higher_weight_for_same_latency() {
     let now = Instant::now();
     let status = UplinkStatus {
-        tcp_latency: Some(Duration::from_millis(100)),
-        tcp_rtt_ewma: Some(Duration::from_millis(100)),
-        tcp_penalty: PenaltyState::default(),
+        tcp: PerTransportStatus {
+            latency: Some(Duration::from_millis(100)),
+            rtt_ewma: Some(Duration::from_millis(100)),
+            ..PerTransportStatus::default()
+        },
         ..UplinkStatus::default()
     };
     let light = score_latency(&status, 1.0, TransportKind::Tcp, now, &lb()).unwrap();
@@ -134,16 +136,16 @@ async fn start_keepalive_observer() -> (
 
 async fn set_tcp_status(manager: &UplinkManager, index: usize, healthy: bool, rtt_ms: u64) {
     let mut statuses = manager.inner.statuses.write().await;
-    statuses[index].tcp_healthy = Some(healthy);
-    statuses[index].tcp_latency = Some(Duration::from_millis(rtt_ms));
-    statuses[index].tcp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    statuses[index].tcp.healthy = Some(healthy);
+    statuses[index].tcp.latency = Some(Duration::from_millis(rtt_ms));
+    statuses[index].tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
 }
 
 async fn set_udp_status(manager: &UplinkManager, index: usize, healthy: bool, rtt_ms: u64) {
     let mut statuses = manager.inner.statuses.write().await;
-    statuses[index].udp_healthy = Some(healthy);
-    statuses[index].udp_latency = Some(Duration::from_millis(rtt_ms));
-    statuses[index].udp_rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    statuses[index].udp.healthy = Some(healthy);
+    statuses[index].udp.latency = Some(Duration::from_millis(rtt_ms));
+    statuses[index].udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
 }
 
 #[tokio::test]
@@ -376,7 +378,7 @@ async fn per_uplink_scope_ignores_penalty_in_selection_score() {
     set_tcp_status(&manager, 1, true, 30).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty = PenaltyState {
+        statuses[0].tcp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
@@ -574,7 +576,7 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
     // Simulate: cooldown set but tcp_healthy still Some(true).
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].cooldown_until_tcp = Some(Instant::now() + Duration::from_secs(10));
+        statuses[0].tcp.cooldown_until = Some(Instant::now() + Duration::from_secs(10));
         // tcp_healthy is still Some(true) — probe has not fired yet
     }
 
@@ -612,11 +614,11 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     set_udp_status(&manager, 1, true, 50).await;
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].tcp_penalty = PenaltyState {
+        statuses[0].tcp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
-        statuses[0].udp_penalty = PenaltyState {
+        statuses[0].udp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
@@ -864,7 +866,7 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
 
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].cooldown_until_udp = None;
+        statuses[0].udp.cooldown_until = None;
     }
 
     let second_error = anyhow!("second failure");
@@ -929,8 +931,8 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
     // primary (20ms base) would beat backup (80ms base) + hysteresis and switch back.
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].cooldown_until_tcp = None;
-        statuses[0].tcp_healthy = Some(true); // probe confirmed it is up again
+        statuses[0].tcp.cooldown_until = None;
+        statuses[0].tcp.healthy = Some(true); // probe confirmed it is up again
         // penalty remains high (500 ms, just added)
     }
 
@@ -988,8 +990,8 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
     // Primary now looks like: healthy, EWMA=15ms (best), but tcp_penalty≈500ms.
     {
         let mut statuses = manager.inner.statuses.write().await;
-        statuses[0].cooldown_until_tcp = None;
-        statuses[0].tcp_healthy = Some(true);
+        statuses[0].tcp.cooldown_until = None;
+        statuses[0].tcp.healthy = Some(true);
     }
 
     // Backup1 (current active) enters cooldown due to runtime failure.

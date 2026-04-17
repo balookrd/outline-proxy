@@ -19,7 +19,7 @@ use probe::build_http_probe_request;
 #[cfg(test)]
 use selection::{effective_latency, score_latency};
 #[cfg(test)]
-use types::{PenaltyState, UplinkStatus};
+use types::{PenaltyState, PerTransportStatus, UplinkStatus};
 #[cfg(test)]
 use utils::update_rtt_ewma;
 

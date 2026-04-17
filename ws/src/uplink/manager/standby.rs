@@ -32,7 +32,8 @@ impl UplinkManager {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
             if status
-                .h3_tcp_downgrade_until
+                .tcp
+                .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::types::WsTransportMode::H2;
@@ -53,7 +54,8 @@ impl UplinkManager {
             let statuses = self.inner.statuses.read().await;
             let status = &statuses[index];
             if status
-                .h3_udp_downgrade_until
+                .udp
+                .h3_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::types::WsTransportMode::H2;

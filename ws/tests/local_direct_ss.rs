@@ -303,12 +303,12 @@ impl TcpSsStream {
         let encrypted_len = self.read_exact(stream, 2 + SHADOWSOCKS_TAG_LEN)?;
         let len = decrypt(self.cipher, &self.key, &self.nonce, &encrypted_len)
             .map_err(TcpSsReadError::Crypto)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce).expect("nonce overflow in test");
         let payload_len = u16::from_be_bytes([len[0], len[1]]) as usize;
         let encrypted_payload = self.read_exact(stream, payload_len + SHADOWSOCKS_TAG_LEN)?;
         let payload = decrypt(self.cipher, &self.key, &self.nonce, &encrypted_payload)
             .map_err(TcpSsReadError::Crypto)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce).expect("nonce overflow in test");
         Ok(payload)
     }
 
@@ -319,9 +319,9 @@ impl TcpSsStream {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let len = (payload.len() as u16).to_be_bytes();
         let encrypted_len = encrypt(self.cipher, &self.key, &self.nonce, &len)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce).expect("nonce overflow in test");
         let encrypted_payload = encrypt(self.cipher, &self.key, &self.nonce, payload)?;
-        increment_nonce(&mut self.nonce);
+        increment_nonce(&mut self.nonce).expect("nonce overflow in test");
 
         if let Some(salt) = self.pending_salt.take() {
             stream.write_all(&salt)?;
