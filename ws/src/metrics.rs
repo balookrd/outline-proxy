@@ -72,6 +72,7 @@ struct Metrics {
     process_open_fds: Gauge,
     process_threads: Gauge,
     process_fd_by_type: GaugeVec,
+    process_sockets_by_state: IntGaugeVec,
     transport_connects_total: IntCounterVec,
     transport_connects_active: IntGaugeVec,
     upstream_transports_total: IntCounterVec,
