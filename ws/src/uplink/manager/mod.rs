@@ -168,6 +168,24 @@ impl UplinkManager {
         &self.inner.dns_cache
     }
 
+    /// Test-only constructor that supplies a fresh throwaway [`DnsCache`] so
+    /// existing tests do not need to build one at every call site.
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        group_name: impl Into<String>,
+        uplinks: Vec<UplinkConfig>,
+        probe: ProbeConfig,
+        load_balancing: LoadBalancingConfig,
+    ) -> Result<Self> {
+        Self::new(
+            group_name,
+            uplinks,
+            probe,
+            load_balancing,
+            Arc::new(outline_transport::DnsCache::default()),
+        )
+    }
+
     pub fn spawn_warm_standby_loop(&self) {
         if self.inner.load_balancing.warm_standby_tcp == 0
             && self.inner.load_balancing.warm_standby_udp == 0
