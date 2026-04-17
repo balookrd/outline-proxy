@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use std::net::SocketAddr;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::net::lookup_host;
 use tracing::warn;
 
@@ -29,13 +29,13 @@ pub async fn resolve_host_with_preference(
     ipv6_first: bool,
 ) -> Result<Vec<SocketAddr>> {
     let cache = DNS_CACHE.get_or_init(DnsCache::new);
-    let mut server_addrs = if let Some(addrs) = cache.get(host, port) {
+    let addrs: Arc<[SocketAddr]> = if let Some(addrs) = cache.get(host, port) {
         addrs
     } else {
         match lookup_host((host, port)).await {
             Ok(resolved) => {
-                let addrs = resolved.collect::<Vec<_>>();
-                cache.insert(host, port, addrs.clone());
+                let addrs: Arc<[SocketAddr]> = resolved.collect::<Vec<_>>().into();
+                cache.insert(host, port, Arc::clone(&addrs));
                 addrs
             },
             Err(err) => {
@@ -53,7 +53,8 @@ pub async fn resolve_host_with_preference(
             },
         }
     };
-    server_addrs.sort_by_key(|addr| {
+    let mut sorted: Vec<SocketAddr> = addrs.iter().copied().collect();
+    sorted.sort_by_key(|addr| {
         if ipv6_first {
             if addr.is_ipv6() { 0 } else { 1 }
         } else if addr.is_ipv4() {
@@ -62,5 +63,5 @@ pub async fn resolve_host_with_preference(
             1
         }
     });
-    Ok(server_addrs)
+    Ok(sorted)
 }
