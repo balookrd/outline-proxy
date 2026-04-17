@@ -1,7 +1,5 @@
 use futures_util::{Sink, Stream};
-use hyper_util::rt::TokioIo;
 use pin_project_lite::pin_project;
-use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -11,6 +9,8 @@ use crate::transport_h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
 
+use super::h2::H2WsStream;
+
 /// Trait for checking whether the shared multiplexed connection (H2 or H3)
 /// underlying a websocket stream is still usable. Implemented by
 /// `SharedH2Connection` and `SharedH3Connection`.
@@ -19,67 +19,6 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
 }
 
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
-type RawH2WsStream = WebSocketStream<TokioIo<hyper::upgrade::Upgraded>>;
-
-pin_project! {
-    pub(super) struct H2WsStream {
-        #[pin]
-        inner: RawH2WsStream,
-        _shared_connection: Arc<dyn SharedConnectionHealth>,
-    }
-}
-
-impl H2WsStream {
-    pub(super) fn new_shared(
-        inner: RawH2WsStream,
-        shared_connection: Arc<dyn SharedConnectionHealth>,
-    ) -> Self {
-        Self {
-            inner,
-            _shared_connection: shared_connection,
-        }
-    }
-}
-
-impl Stream for H2WsStream {
-    type Item = Result<Message, WsError>;
-
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.project().inner.poll_next(cx)
-    }
-}
-
-impl Sink<Message> for H2WsStream {
-    type Error = WsError;
-
-    fn poll_ready(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_ready(cx)
-    }
-
-    fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
-        self.project().inner.start_send(item)
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_flush(cx)
-    }
-
-    fn poll_close(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), Self::Error>> {
-        self.project().inner.poll_close(cx)
-    }
-}
 
 // When the h3 feature is disabled, provide a zero-size never-constructable
 // stub so that AnyWsStream::H3 remains a valid enum variant. The variant is
@@ -146,7 +85,7 @@ impl AnyWsStream {
     pub fn is_connection_alive(&self) -> bool {
         match self {
             AnyWsStream::Http1 { .. } => true,
-            AnyWsStream::H2 { inner } => inner._shared_connection.is_open(),
+            AnyWsStream::H2 { inner } => inner.is_connection_alive(),
             #[cfg(feature = "h3")]
             AnyWsStream::H3 { inner } => inner.is_connection_alive(),
             #[cfg(not(feature = "h3"))]
