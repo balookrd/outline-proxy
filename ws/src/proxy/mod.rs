@@ -5,15 +5,39 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use outline_transport::DnsCache;
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::config::{AppConfig, RouteTarget};
+use crate::config::{RouteTarget, Socks5AuthConfig};
 use crate::metrics;
-use crate::routing::RouteDecision;
+use crate::routing::{RouteDecision, RoutingTable};
 use crate::socks5::{SocksRequest, negotiate};
 use crate::types::TargetAddr;
 use crate::uplink::{TransportKind, UplinkManager, UplinkRegistry};
+
+/// Runtime configuration slice for the proxy layer.
+///
+/// Built from [`AppConfig`](crate::config::AppConfig) in `run_with_config`
+/// after the two-phase init (dns_cache and routing_table are fully resolved)
+/// and frozen into an `Arc` that every accepted connection clones cheaply.
+///
+/// Proxy code depends only on this struct — not on the full `AppConfig` —
+/// so the proxy module can be extracted into its own crate later without
+/// dragging in the entire configuration domain.
+#[derive(Debug)]
+pub struct ProxyConfig {
+    pub socks5_auth: Option<Socks5AuthConfig>,
+    /// DNS cache shared with transport resolve paths; always populated before
+    /// the listener accepts connections.
+    pub dns_cache: Arc<DnsCache>,
+    /// Compiled routing table; `None` when no `[[route]]` is declared
+    /// (all traffic goes to the default group).
+    pub routing_table: Option<Arc<RoutingTable>>,
+    /// SO_MARK applied to outbound sockets for `via = "direct"` routes
+    /// (Linux only). Prevents direct traffic from looping back through TUN.
+    pub direct_fwmark: Option<u32>,
+}
 
 /// Outcome of resolving a connection's destination against the routing
 /// table: either route *outside* any uplink, drop the traffic by policy, or
@@ -37,7 +61,7 @@ pub(super) enum DispatchTarget {
 pub async fn handle_client(
     mut client: TcpStream,
     peer: SocketAddr,
-    config: Arc<AppConfig>,
+    config: Arc<ProxyConfig>,
     registry: UplinkRegistry,
 ) -> Result<()> {
     let request = negotiate(&mut client, config.socks5_auth.as_ref()).await?;
@@ -48,14 +72,10 @@ pub async fn handle_client(
         SocksRequest::UdpInTcp(_) => "udp_in_tcp",
     });
 
-    let dns_cache = config
-        .dns_cache
-        .clone()
-        .expect("dns_cache initialised in run_with_config");
     match request {
         SocksRequest::Connect(target) => {
             let dispatch = resolve_dispatch(&config, &registry, &target, TransportKind::Tcp).await;
-            tcp::handle_tcp_connect(client, dispatch, target, dns_cache).await
+            tcp::handle_tcp_connect(client, dispatch, target, Arc::clone(&config.dns_cache)).await
         },
         SocksRequest::UdpAssociate(client_hint) => {
             // UDP associate has no target yet — pick the default group. The
@@ -77,7 +97,7 @@ pub async fn handle_client(
 /// declared group. UDP per-packet routing is handled separately inside the
 /// UDP associate loop and does not go through this function.
 pub(super) async fn resolve_dispatch(
-    config: &AppConfig,
+    config: &ProxyConfig,
     registry: &UplinkRegistry,
     target: &TargetAddr,
     transport: TransportKind,
