@@ -40,6 +40,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 outline-metrics = { path = "crates/outline-metrics", default-features = false }
 outline-routing = { path = "crates/outline-routing" }
 outline-transport = { path = "crates/outline-transport" }
+parking_lot = "0.12"
 rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }

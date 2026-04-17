@@ -41,7 +41,7 @@ mod tests;
 
 /// A cheaply-cloneable handle for writing IP packets to a TUN device.
 ///
-/// Internally uses a `std::sync::Mutex<std::fs::File>` (not tokio's async
+/// Internally uses a `parking_lot::Mutex<std::fs::File>` (not tokio's async
 /// mutex) for two reasons:
 ///
 /// 1. **No internal write buffer**: `std::fs::File::write_all` issues a single
@@ -51,12 +51,12 @@ mod tests;
 ///    `write_all`, doubling the async I/O per packet.
 ///
 /// 2. **Short critical section**: a `write(2)` to a TUN device is a kernel
-///    memcpy into a ring buffer — typically ≤ 10 µs.  Holding a `std::sync::Mutex`
+///    memcpy into a ring buffer — typically ≤ 10 µs.  Holding a sync mutex
 ///    for that duration is safe and avoids the overhead of a tokio async-mutex
 ///    queue (which is significant when hundreds of concurrent flows compete).
 #[derive(Clone)]
 pub(crate) struct SharedTunWriter {
-    inner: Arc<std::sync::Mutex<std::fs::File>>,
+    inner: Arc<parking_lot::Mutex<std::fs::File>>,
 }
 
 /// Per-flow dispatch context for the TUN path.
@@ -195,7 +195,7 @@ pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()
     // The writer keeps the raw std::fs::File — see SharedTunWriter for rationale.
     let reader = File::from_std(device.try_clone().context("failed to clone TUN file descriptor")?);
     let writer = SharedTunWriter {
-        inner: Arc::new(std::sync::Mutex::new(device)),
+        inner: Arc::new(parking_lot::Mutex::new(device)),
     };
 
     let idle_timeout = config.idle_timeout;
@@ -463,12 +463,12 @@ fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {
 impl SharedTunWriter {
     #[cfg(test)]
     pub(crate) fn new(file: std::fs::File) -> Self {
-        Self { inner: Arc::new(std::sync::Mutex::new(file)) }
+        Self { inner: Arc::new(parking_lot::Mutex::new(file)) }
     }
 
     /// Write one IP packet to the TUN device.
     ///
-    /// Uses a synchronous `write_all(2)` call through a `std::sync::Mutex`.
+    /// Uses a synchronous `write_all(2)` call through a `parking_lot::Mutex`.
     /// The critical section is bounded by a single kernel memcpy (≤ 10 µs for
     /// typical MTU-sized packets), so holding a sync mutex is safe here and
     /// avoids the overhead of an async-mutex queue under concurrent callers.
@@ -478,7 +478,6 @@ impl SharedTunWriter {
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         self.inner
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
             .write_all(packet)
             .context("failed to write packet to TUN")
     }
@@ -490,7 +489,7 @@ impl SharedTunWriter {
     /// The mutex is acquired once and held for the entire batch to avoid the
     /// overhead of repeated lock/unlock cycles.
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
-        let mut writer = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let mut writer = self.inner.lock();
         for packet in packets {
             writer.write_all(packet).context("failed to write packet to TUN")?;
         }

@@ -1,12 +1,13 @@
 use super::*;
 use crate::snapshot_types::ProcessFdSnapshot;
 use crate::snapshot_types::{UplinkManagerSnapshot, UplinkSnapshot};
-use std::sync::{LazyLock, Mutex};
+use parking_lot::{Mutex, MutexGuard};
+use std::sync::LazyLock;
 
 static METRICS_TEST_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-fn test_guard() -> std::sync::MutexGuard<'static, ()> {
-    METRICS_TEST_GUARD.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+fn test_guard() -> MutexGuard<'static, ()> {
+    METRICS_TEST_GUARD.lock()
 }
 
 fn empty_snapshot() -> UplinkManagerSnapshot {

@@ -264,16 +264,16 @@ static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 // The HashMap entries are never removed; they remain as empty Mutex<()> objects
 // (a few bytes each) — acceptable because the set of unique server keys is small.
 static H3_CONNECT_LOCKS: OnceCell<
-    std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
+    parking_lot::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
 > = OnceCell::new();
 
 fn h3_connect_locks(
-) -> &'static std::sync::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
-    H3_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+) -> &'static parking_lot::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
+    H3_CONNECT_LOCKS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
 fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = h3_connect_locks().lock().expect("H3_CONNECT_LOCKS poisoned");
+    let mut locks = h3_connect_locks().lock();
     locks.entry(key.clone()).or_default().clone()
 }
 

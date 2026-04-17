@@ -1277,6 +1277,7 @@ name = "outline-metrics"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "parking_lot",
  "prometheus",
  "serde",
  "tokio",
@@ -1308,6 +1309,7 @@ dependencies = [
  "hyper-util",
  "once_cell",
  "outline-metrics",
+ "parking_lot",
  "pin-project-lite",
  "quinn",
  "rand 0.8.5",
@@ -1342,6 +1344,7 @@ dependencies = [
  "outline-metrics",
  "outline-routing",
  "outline-transport",
+ "parking_lot",
  "rand 0.8.5",
  "rustls",
  "serde",

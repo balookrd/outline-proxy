@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::RwLock;
 use std::time::{Duration, Instant};
+
+use parking_lot::RwLock;
 
 const TTL: Duration = Duration::from_secs(60);
 
@@ -20,7 +21,7 @@ impl DnsCache {
     }
 
     pub(crate) fn get(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
-        let map = self.inner.read().unwrap();
+        let map = self.inner.read();
         let entry = map.get(&(host.to_string(), port))?;
         if Instant::now() < entry.expires_at {
             Some(entry.addrs.clone())
@@ -30,12 +31,12 @@ impl DnsCache {
     }
 
     pub(crate) fn get_stale(&self, host: &str, port: u16) -> Option<Vec<SocketAddr>> {
-        let map = self.inner.read().unwrap();
+        let map = self.inner.read();
         map.get(&(host.to_string(), port)).map(|entry| entry.addrs.clone())
     }
 
     pub(crate) fn insert(&self, host: &str, port: u16, addrs: Vec<SocketAddr>) {
-        let mut map = self.inner.write().unwrap();
+        let mut map = self.inner.write();
         map.insert((host.to_string(), port), Entry { addrs, expires_at: Instant::now() + TTL });
     }
 }

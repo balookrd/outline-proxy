@@ -317,7 +317,7 @@ static H2_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 // Prevents a thundering herd when the shared H2 connection drops and N sessions
 // all try to reconnect simultaneously — identical pattern to H3_CONNECT_LOCKS.
 static H2_CONNECT_LOCKS: OnceLock<
-    std::sync::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
+    parking_lot::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
 > = OnceLock::new();
 
 fn h2_shared_connections() -> &'static RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
@@ -325,12 +325,12 @@ fn h2_shared_connections() -> &'static RwLock<HashMap<H2ConnectionKey, Arc<Share
 }
 
 fn h2_connect_locks(
-) -> &'static std::sync::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
-    H2_CONNECT_LOCKS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+) -> &'static parking_lot::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
+    H2_CONNECT_LOCKS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
 }
 
 fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = h2_connect_locks().lock().expect("H2_CONNECT_LOCKS poisoned");
+    let mut locks = h2_connect_locks().lock();
     locks.entry(key.clone()).or_default().clone()
 }
 
