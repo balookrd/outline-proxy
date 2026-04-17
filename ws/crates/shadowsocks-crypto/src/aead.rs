@@ -1,12 +1,16 @@
 use aes_gcm::aead::AeadInPlace;
 use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit, Nonce as AesNonce};
-use anyhow::{Context, Result, anyhow, bail};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce as ChaNonce};
 
 use crate::cipher_kind::CipherKind;
+use crate::error::{CryptoError, Result};
 
 pub const SHADOWSOCKS_TAG_LEN: usize = 16;
 pub const SHADOWSOCKS_MAX_PAYLOAD: usize = 0xffff;
+
+const CIPHER_CHACHA: &str = "chacha20-poly1305";
+const CIPHER_AES_128: &str = "aes-128-gcm";
+const CIPHER_AES_256: &str = "aes-256-gcm";
 
 /// A pre-initialised AEAD cipher instance.
 ///
@@ -26,15 +30,17 @@ pub enum AeadCipher {
 impl AeadCipher {
     pub fn new(cipher: CipherKind, key: &[u8]) -> Result<Self> {
         match cipher {
-            CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => Ok(
-                Self::Chacha(ChaCha20Poly1305::new_from_slice(key).context("invalid chacha20 key")?),
-            ),
-            CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => Ok(Self::Aes128(
-                Aes128Gcm::new_from_slice(key).context("invalid aes-128-gcm key")?,
-            )),
-            CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => Ok(Self::Aes256(
-                Aes256Gcm::new_from_slice(key).context("invalid aes-256-gcm key")?,
-            )),
+            CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
+                ChaCha20Poly1305::new_from_slice(key)
+                    .map(Self::Chacha)
+                    .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_CHACHA })
+            },
+            CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => Aes128Gcm::new_from_slice(key)
+                .map(Self::Aes128)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128 }),
+            CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => Aes256Gcm::new_from_slice(key)
+                .map(Self::Aes256)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256 }),
         }
     }
 
@@ -43,13 +49,13 @@ impl AeadCipher {
         let tag = match self {
             Self::Chacha(c) => c
                 .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("chacha20 encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer)
-                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
         };
         buffer.extend_from_slice(&tag);
         Ok(buffer)
@@ -62,13 +68,13 @@ impl AeadCipher {
         let tag = match self {
             Self::Chacha(c) => c
                 .encrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("chacha20 encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("aes-128-gcm encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
                 .encrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut out[start..])
-                .map_err(|_| anyhow!("aes-256-gcm encryption failed"))?,
+                .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_AES_256 })?,
         };
         out.extend_from_slice(&tag);
         Ok(())
@@ -76,7 +82,7 @@ impl AeadCipher {
 
     pub fn decrypt(&self, nonce: &[u8; 12], payload: &[u8]) -> Result<Vec<u8>> {
         if payload.len() < SHADOWSOCKS_TAG_LEN {
-            bail!("ciphertext is shorter than tag");
+            return Err(CryptoError::ShortCiphertext);
         }
         let split_at = payload.len() - SHADOWSOCKS_TAG_LEN;
         let mut buffer = payload[..split_at].to_vec();
@@ -84,13 +90,13 @@ impl AeadCipher {
         match self {
             Self::Chacha(c) => c
                 .decrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer, tag.into())
-                .map_err(|_| anyhow!("chacha20 decryption failed"))?,
+                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
                 .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
-                .map_err(|_| anyhow!("aes-128-gcm decryption failed"))?,
+                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
                 .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
-                .map_err(|_| anyhow!("aes-256-gcm decryption failed"))?,
+                .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
         };
         Ok(buffer)
     }
@@ -145,8 +151,5 @@ pub fn increment_nonce(nonce: &mut [u8; 12]) -> Result<()> {
             return Ok(());
         }
     }
-    bail!(
-        "AEAD nonce overflow: nonce wrapped to zero — \
-         close this connection to prevent (key, nonce) reuse"
-    )
+    Err(CryptoError::NonceOverflow)
 }

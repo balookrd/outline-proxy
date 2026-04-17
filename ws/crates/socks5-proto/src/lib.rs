@@ -3,9 +3,11 @@
 //! types. Extracted into a standalone crate for isolated testing and reuse.
 
 mod auth;
+mod error;
 mod target;
 
 pub use auth::{Socks5AuthConfig, Socks5AuthUserConfig};
+pub use error::{Result, Socks5Error};
 pub use target::{
     SOCKS_ATYP_DOMAIN, SOCKS_ATYP_IPV4, SOCKS_ATYP_IPV6, TargetAddr, socket_addr_to_target,
 };
@@ -13,7 +15,6 @@ pub use target::{
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -86,17 +87,17 @@ pub async fn negotiate(
     stream
         .read_exact(&mut header)
         .await
-        .context("failed to read method negotiation header")?;
+        .map_err(Socks5Error::io("reading method negotiation header"))?;
 
     if header[0] != SOCKS_VERSION {
-        bail!("unsupported SOCKS version: {}", header[0]);
+        return Err(Socks5Error::UnsupportedVersion(header[0]));
     }
 
     let mut methods = vec![0u8; header[1] as usize];
     stream
         .read_exact(&mut methods)
         .await
-        .context("failed to read authentication methods")?;
+        .map_err(Socks5Error::io("reading authentication methods"))?;
 
     match auth {
         Some(auth) => {
@@ -105,12 +106,12 @@ pub async fn negotiate(
                     .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
                     .await
                     .ok();
-                bail!("client does not support username/password auth");
+                return Err(Socks5Error::UnsupportedAuthMethod);
             }
             stream
                 .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_USERNAME_PASSWORD])
                 .await
-                .context("failed to write method selection")?;
+                .map_err(Socks5Error::io("writing method selection"))?;
             authenticate_username_password(stream, auth).await?;
         },
         None => {
@@ -119,12 +120,12 @@ pub async fn negotiate(
                     .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_ACCEPTABLE])
                     .await
                     .ok();
-                bail!("client does not support no-auth method");
+                return Err(Socks5Error::UnsupportedAuthMethod);
             }
             stream
                 .write_all(&[SOCKS_VERSION, SOCKS_AUTH_METHOD_NO_AUTH])
                 .await
-                .context("failed to write method selection")?;
+                .map_err(Socks5Error::io("writing method selection"))?;
         },
     }
 
@@ -132,13 +133,13 @@ pub async fn negotiate(
     stream
         .read_exact(&mut request)
         .await
-        .context("failed to read request header")?;
+        .map_err(Socks5Error::io("reading request header"))?;
 
     if request[0] != SOCKS_VERSION {
-        bail!("invalid request version: {}", request[0]);
+        return Err(Socks5Error::InvalidRequestVersion(request[0]));
     }
     if request[2] != 0x00 {
-        bail!("reserved byte is not zero");
+        return Err(Socks5Error::ReservedByteNonZero);
     }
 
     let target = read_target_addr(stream, request[3]).await?;
@@ -154,7 +155,7 @@ pub async fn negotiate(
             )
             .await
             .ok();
-            bail!("unsupported SOCKS command: {command}");
+            Err(Socks5Error::UnsupportedCommand(command))
         },
     }
 }
@@ -167,37 +168,43 @@ async fn authenticate_username_password(
     stream
         .read_exact(&mut version)
         .await
-        .context("failed to read username/password auth version")?;
+        .map_err(Socks5Error::io("reading username/password auth version"))?;
     if version[0] != 0x01 {
         stream.write_all(&[0x01, 0x01]).await.ok();
-        bail!("unsupported username/password auth version: {}", version[0]);
+        return Err(Socks5Error::UnsupportedAuthVersion(version[0]));
     }
 
     let username = read_auth_field(stream, "username").await?;
     let password = read_auth_field(stream, "password").await?;
     if !matches_socks5_user(&auth.users, &username, &password) {
         stream.write_all(&[0x01, 0x01]).await.ok();
-        bail!("invalid SOCKS5 username/password");
+        return Err(Socks5Error::InvalidCredentials);
     }
 
     stream
         .write_all(&[0x01, 0x00])
         .await
-        .context("failed to write username/password auth response")?;
+        .map_err(Socks5Error::io("writing username/password auth response"))?;
     Ok(())
 }
 
-async fn read_auth_field(stream: &mut TcpStream, field_name: &str) -> Result<Vec<u8>> {
+async fn read_auth_field(stream: &mut TcpStream, field_name: &'static str) -> Result<Vec<u8>> {
     let mut len = [0u8; 1];
     stream
         .read_exact(&mut len)
         .await
-        .with_context(|| format!("failed to read {field_name} length"))?;
+        .map_err(Socks5Error::io(match field_name {
+            "username" => "reading username length",
+            _ => "reading password length",
+        }))?;
     let mut value = vec![0u8; len[0] as usize];
     stream
         .read_exact(&mut value)
         .await
-        .with_context(|| format!("failed to read {field_name}"))?;
+        .map_err(Socks5Error::io(match field_name {
+            "username" => "reading username",
+            _ => "reading password",
+        }))?;
     Ok(value)
 }
 
@@ -226,16 +233,19 @@ fn matches_socks5_user(users: &[Socks5AuthUserConfig], username: &[u8], password
 pub async fn send_reply(stream: &mut TcpStream, status: u8, bound_addr: &TargetAddr) -> Result<()> {
     let mut reply = vec![SOCKS_VERSION, status, 0x00];
     reply.extend_from_slice(&bound_addr.to_wire_bytes()?);
-    stream.write_all(&reply).await?;
+    stream
+        .write_all(&reply)
+        .await
+        .map_err(Socks5Error::io("writing SOCKS reply"))?;
     Ok(())
 }
 
 pub fn parse_udp_request(packet: &[u8]) -> Result<Socks5UdpPacket<'_>> {
     if packet.len() < 4 {
-        bail!("UDP packet is too short");
+        return Err(Socks5Error::UdpPacketTooShort);
     }
     if packet[0] != 0 || packet[1] != 0 {
-        bail!("invalid UDP reserved bytes");
+        return Err(Socks5Error::InvalidUdpReservedBytes);
     }
     let fragment = packet[2];
     let (target, consumed) = TargetAddr::from_wire_bytes(&packet[3..])?;
@@ -262,41 +272,41 @@ where
     let read = reader
         .read(&mut data_len[..1])
         .await
-        .context("failed to read UDP-in-TCP data length")?;
+        .map_err(Socks5Error::io("reading UDP-in-TCP data length"))?;
     if read == 0 {
         return Ok(None);
     }
     reader
         .read_exact(&mut data_len[1..])
         .await
-        .context("failed to read UDP-in-TCP data length tail")?;
+        .map_err(Socks5Error::io("reading UDP-in-TCP data length tail"))?;
     let data_len = u16::from_be_bytes(data_len) as usize;
 
     let mut header_len = [0u8; 1];
     reader
         .read_exact(&mut header_len)
         .await
-        .context("failed to read UDP-in-TCP header length")?;
+        .map_err(Socks5Error::io("reading UDP-in-TCP header length"))?;
     let header_len = header_len[0] as usize;
     let addr_len = header_len
         .checked_sub(3)
-        .ok_or_else(|| anyhow::anyhow!("invalid UDP-in-TCP header length: {header_len}"))?;
+        .ok_or(Socks5Error::InvalidUdpInTcpHeaderLen(header_len as u16))?;
 
     let mut addr_buf = vec![0u8; addr_len];
     reader
         .read_exact(&mut addr_buf)
         .await
-        .context("failed to read UDP-in-TCP target address")?;
+        .map_err(Socks5Error::io("reading UDP-in-TCP target address"))?;
     let (target, consumed) = TargetAddr::from_wire_bytes(&addr_buf)?;
     if consumed != addr_len {
-        bail!("UDP-in-TCP header length mismatch");
+        return Err(Socks5Error::UdpInTcpHeaderMismatch);
     }
 
     let mut payload = vec![0u8; data_len];
     reader
         .read_exact(&mut payload)
         .await
-        .context("failed to read UDP-in-TCP payload")?;
+        .map_err(Socks5Error::io("reading UDP-in-TCP payload"))?;
 
     Ok(Some(Socks5UdpTcpPacket { target, payload }))
 }
@@ -313,28 +323,28 @@ where
     let header_len = 3 + addr.len();
     let header_len: u8 = header_len
         .try_into()
-        .context("UDP-in-TCP header is too large for protocol framing")?;
+        .map_err(|_| Socks5Error::UdpInTcpFrameTooLarge { field: "header" })?;
     let data_len: u16 = payload
         .len()
         .try_into()
-        .context("UDP-in-TCP payload exceeds u16 framing limit")?;
+        .map_err(|_| Socks5Error::UdpInTcpFrameTooLarge { field: "payload" })?;
 
     writer
         .write_all(&data_len.to_be_bytes())
         .await
-        .context("failed to write UDP-in-TCP data length")?;
+        .map_err(Socks5Error::io("writing UDP-in-TCP data length"))?;
     writer
         .write_all(&[header_len])
         .await
-        .context("failed to write UDP-in-TCP header length")?;
+        .map_err(Socks5Error::io("writing UDP-in-TCP header length"))?;
     writer
         .write_all(&addr)
         .await
-        .context("failed to write UDP-in-TCP target address")?;
+        .map_err(Socks5Error::io("writing UDP-in-TCP target address"))?;
     writer
         .write_all(payload)
         .await
-        .context("failed to write UDP-in-TCP payload")?;
+        .map_err(Socks5Error::io("writing UDP-in-TCP payload"))?;
     Ok(())
 }
 
@@ -353,7 +363,7 @@ impl UdpFragmentReassembler {
 
         let fragment_number = packet.fragment & SOCKS5_UDP_FRAGMENT_MASK;
         if fragment_number == 0 {
-            bail!("invalid fragmented UDP packet with fragment number 0");
+            return Err(Socks5Error::InvalidUdpFragmentZero);
         }
         let is_last = packet.fragment & SOCKS5_UDP_FRAGMENT_END != 0;
         let now = Instant::now();
@@ -375,20 +385,19 @@ impl UdpFragmentReassembler {
         });
 
         if packet.target != state.target {
-            bail!("fragment target changed within UDP fragment sequence");
+            return Err(Socks5Error::FragmentTargetChanged);
         }
         if fragment_number <= state.highest_fragment {
-            bail!("out-of-order or duplicate UDP fragment: {fragment_number}");
+            return Err(Socks5Error::OutOfOrderUdpFragment(fragment_number));
         }
 
         let projected_total = state.total_bytes.saturating_add(packet.payload.len());
         if projected_total > SOCKS5_UDP_REASSEMBLY_MAX_BYTES {
             self.state = None;
-            bail!(
-                "UDP fragment sequence exceeded reassembly byte cap ({} > {})",
-                projected_total,
-                SOCKS5_UDP_REASSEMBLY_MAX_BYTES,
-            );
+            return Err(Socks5Error::ReassemblyCapExceeded {
+                projected: projected_total,
+                limit: SOCKS5_UDP_REASSEMBLY_MAX_BYTES,
+            });
         }
 
         state.highest_fragment = fragment_number;
@@ -414,23 +423,35 @@ async fn read_target_addr(stream: &mut TcpStream, atyp: u8) -> Result<TargetAddr
     match atyp {
         SOCKS_ATYP_IPV4 => {
             let mut raw = [0u8; 4];
-            stream.read_exact(&mut raw).await?;
+            stream
+                .read_exact(&mut raw)
+                .await
+                .map_err(Socks5Error::io("reading IPv4 target address"))?;
             let port = read_port(stream).await?;
             Ok(TargetAddr::IpV4(Ipv4Addr::from(raw), port))
         },
         SOCKS_ATYP_IPV6 => {
             let mut raw = [0u8; 16];
-            stream.read_exact(&mut raw).await?;
+            stream
+                .read_exact(&mut raw)
+                .await
+                .map_err(Socks5Error::io("reading IPv6 target address"))?;
             let port = read_port(stream).await?;
             Ok(TargetAddr::IpV6(Ipv6Addr::from(raw), port))
         },
         SOCKS_ATYP_DOMAIN => {
             let mut len = [0u8; 1];
-            stream.read_exact(&mut len).await?;
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(Socks5Error::io("reading domain length"))?;
             let mut raw = vec![0u8; len[0] as usize];
-            stream.read_exact(&mut raw).await?;
+            stream
+                .read_exact(&mut raw)
+                .await
+                .map_err(Socks5Error::io("reading domain bytes"))?;
             let port = read_port(stream).await?;
-            let host = String::from_utf8(raw).context("domain is not valid UTF-8")?;
+            let host = String::from_utf8(raw).map_err(|_| Socks5Error::DomainNotUtf8)?;
             Ok(TargetAddr::Domain(host, port))
         },
         _ => {
@@ -441,14 +462,17 @@ async fn read_target_addr(stream: &mut TcpStream, atyp: u8) -> Result<TargetAddr
             )
             .await
             .ok();
-            bail!("unsupported address type: {atyp}");
+            Err(Socks5Error::UnsupportedAddressType(atyp))
         },
     }
 }
 
 async fn read_port(stream: &mut TcpStream) -> Result<u16> {
     let mut port = [0u8; 2];
-    stream.read_exact(&mut port).await?;
+    stream
+        .read_exact(&mut port)
+        .await
+        .map_err(Socks5Error::io("reading target port"))?;
     Ok(u16::from_be_bytes(port))
 }
 
@@ -855,7 +879,7 @@ mod tests {
         assert_eq!(auth_reply, [0x01, 0x01]);
 
         let err = server.await.unwrap().unwrap_err();
-        assert!(format!("{err:#}").contains("invalid SOCKS5 username/password"));
+        assert!(matches!(err, Socks5Error::InvalidCredentials));
     }
 
     async fn socks_pair() -> (TcpStream, TcpStream) {

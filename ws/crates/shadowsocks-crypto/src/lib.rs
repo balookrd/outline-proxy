@@ -4,9 +4,12 @@
 
 mod aead;
 mod cipher_kind;
+mod error;
 mod keys;
 mod ss2022_udp;
 mod udp;
+
+pub use error::{CryptoError, Result};
 
 #[cfg(test)]
 mod tests;

@@ -1875,7 +1875,6 @@ version = "0.1.0"
 dependencies = [
  "aes",
  "aes-gcm",
- "anyhow",
  "base64",
  "blake3",
  "chacha20poly1305",
@@ -1884,6 +1883,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "sha1",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1965,7 +1965,7 @@ dependencies = [
 name = "socks5-proto"
 version = "0.1.0"
 dependencies = [
- "anyhow",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

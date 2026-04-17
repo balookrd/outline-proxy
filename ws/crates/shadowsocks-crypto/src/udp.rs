@@ -1,7 +1,7 @@
-use anyhow::{Result, bail};
 use rand::RngCore;
 
 use crate::cipher_kind::CipherKind;
+use crate::error::{CryptoError, Result};
 
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;
@@ -37,7 +37,7 @@ pub fn decrypt_udp_packet(cipher: CipherKind, master_key: &[u8], packet: &[u8]) 
     }
     let salt_len = cipher.salt_len();
     if packet.len() < salt_len + SHADOWSOCKS_TAG_LEN {
-        bail!("UDP packet is too short");
+        return Err(CryptoError::UdpPacketTooShort);
     }
     let (salt, ciphertext) = packet.split_at(salt_len);
     let key = derive_subkey(cipher, master_key, salt)?;

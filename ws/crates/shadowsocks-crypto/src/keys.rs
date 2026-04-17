@@ -1,9 +1,9 @@
-use anyhow::{Context, Result, bail};
 use base64::Engine;
 use hkdf::Hkdf;
 use sha1::Sha1;
 
 use crate::cipher_kind::CipherKind;
+use crate::error::{CryptoError, Result};
 
 pub const SHADOWSOCKS_INFO: &[u8] = b"ss-subkey";
 pub const SHADOWSOCKS_2022_INFO: &str = "shadowsocks 2022 session subkey";
@@ -11,15 +11,12 @@ pub const SHADOWSOCKS_2022_INFO: &str = "shadowsocks 2022 session subkey";
 impl CipherKind {
     pub fn derive_master_key(self, password: &str) -> Result<Vec<u8>> {
         if self.is_ss2022() {
-            let key = base64::engine::general_purpose::STANDARD
-                .decode(password)
-                .context("failed to decode ss2022 PSK as base64")?;
+            let key = base64::engine::general_purpose::STANDARD.decode(password)?;
             if key.len() != self.key_len() {
-                bail!(
-                    "invalid ss2022 PSK length for {self}: expected {} bytes, got {}",
-                    self.key_len(),
-                    key.len()
-                );
+                return Err(CryptoError::Ss2022PskLengthMismatch {
+                    got: key.len(),
+                    expected: self.key_len(),
+                });
             }
             Ok(key)
         } else {
@@ -45,7 +42,7 @@ pub fn derive_subkey(cipher: CipherKind, master_key: &[u8], salt: &[u8]) -> Resu
     } else {
         let hk = Hkdf::<Sha1>::new(Some(salt), master_key);
         hk.expand(SHADOWSOCKS_INFO, &mut subkey[..key_len])
-            .map_err(|_| anyhow::anyhow!("HKDF expansion failed"))?;
+            .map_err(|_| CryptoError::HkdfExpandFailed)?;
     }
     Ok(subkey)
 }

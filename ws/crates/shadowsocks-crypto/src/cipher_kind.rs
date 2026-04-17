@@ -1,7 +1,8 @@
 use std::fmt;
 
-use anyhow::{Result, bail};
 use serde::Deserialize;
+
+use crate::error::{CryptoError, Result};
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub enum CipherKind {
@@ -53,7 +54,7 @@ impl CipherKind {
 }
 
 impl std::str::FromStr for CipherKind {
-    type Err = anyhow::Error;
+    type Err = CryptoError;
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
@@ -63,7 +64,7 @@ impl std::str::FromStr for CipherKind {
             "2022-blake3-aes-128-gcm" => Ok(Self::Aes128Gcm2022),
             "2022-blake3-aes-256-gcm" => Ok(Self::Aes256Gcm2022),
             "2022-blake3-chacha20-poly1305" => Ok(Self::Chacha20Poly13052022),
-            _ => bail!("unsupported cipher: {s}"),
+            _ => Err(CryptoError::UnsupportedCipher(s.to_string())),
         }
     }
 }
