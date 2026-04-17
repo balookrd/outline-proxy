@@ -1,3 +1,4 @@
+#[cfg(feature = "tun")]
 pub(crate) mod atomic_counter;
 pub mod config;
 pub mod crypto;
