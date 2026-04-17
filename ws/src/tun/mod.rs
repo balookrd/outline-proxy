@@ -446,12 +446,15 @@ impl SharedTunWriter {
 
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
         let mut writer = self.inner.lock().await;
+        // tokio::fs::File buffers writes internally; flush() is required to
+        // push the buffered bytes to the kernel as a single write() syscall.
+        // For TUN devices each write() delivers exactly one IP packet, so
+        // flush must be called immediately after each write_all.
         writer
             .write_all(packet)
             .await
             .context("failed to write packet to TUN")?;
-        writer.flush().await.context("failed to flush TUN packet")?;
-        Ok(())
+        writer.flush().await.context("failed to flush TUN packet")
     }
 
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
@@ -461,8 +464,11 @@ impl SharedTunWriter {
                 .write_all(packet)
                 .await
                 .context("failed to write packet to TUN")?;
+            // Each packet must be flushed individually — TUN interprets each
+            // write() as one IP packet, so we must not coalesce multiple
+            // write_all calls into one flush.
+            writer.flush().await.context("failed to flush TUN packet")?;
         }
-        writer.flush().await.context("failed to flush TUN packet")?;
         Ok(())
     }
 }
