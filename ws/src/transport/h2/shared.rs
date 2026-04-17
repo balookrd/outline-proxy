@@ -1,3 +1,8 @@
+// Shared HTTP/2 connection infrastructure — connection cache, per-key connect
+// locks, and all connect / gc logic.  The IO layer, TLS config, window-size
+// statics, H2WsStream, and websocket_target_uri live in the parent module
+// (`mod.rs`) so they are co-located with the other h2 building-blocks.
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,20 +17,20 @@ use http_body_util::Empty;
 use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::{debug, error};
 use url::Url;
 
-use super::AnyWsStream;
-use super::dns::resolve_host_with_preference;
-use super::guards::{AbortOnDrop, TransportConnectGuard};
-use super::h2_io::{H2Io, connect_tls_h2, h2_connection_window_size, h2_stream_window_size};
-use super::socket::connect_tcp_socket;
-use super::url_util::websocket_target_uri;
-use super::ws_stream::H2WsStream;
+use crate::transport::{
+    AbortOnDrop, AnyWsStream, SharedConnectionHealth, TransportConnectGuard,
+    connect_tcp_socket, resolve_host_with_preference,
+};
+
+use super::{H2Io, H2WsStream, connect_tls_h2, h2_connection_window_size, h2_stream_window_size,
+            websocket_target_uri};
 
 type H2SendRequestHandle = http2::SendRequest<Empty<Bytes>>;
 
@@ -48,6 +53,8 @@ const OPEN_WEBSOCKET_TIMEOUT: Duration = Duration::from_secs(10);
 // macOS ~75s).  10 seconds is plenty for a healthy fresh connect and
 // matches the bound used for HTTP/1 websocket handshakes.
 const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+// ── Connection key ────────────────────────────────────────────────────────────
 
 // The cache key is intentionally based on the *hostname* and port rather than
 // the resolved IP address.  Using the IP address would create a new cache entry
@@ -75,6 +82,8 @@ impl H2ConnectionKey {
         }
     }
 }
+
+// ── Shared connection ─────────────────────────────────────────────────────────
 
 struct SharedH2Connection {
     id: u64,
@@ -157,20 +166,28 @@ impl SharedH2Connection {
             })?
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
-        let shared_connection: Arc<dyn super::ws_stream::SharedConnectionHealth> = self.clone();
+        let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
         Ok(AnyWsStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
         })
     }
 }
 
-impl super::ws_stream::SharedConnectionHealth for SharedH2Connection {
+impl SharedConnectionHealth for SharedH2Connection {
     fn is_open(&self) -> bool {
         self.is_open()
     }
 }
 
-static H2_SHARED_CONNECTIONS: OnceLock<Mutex<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>>> =
+// ── Shared-connection cache ───────────────────────────────────────────────────
+
+// Global shared-connection cache. `RwLock<HashMap<K, Arc<V>>>` mirrors the
+// flow-table pattern in `tun_tcp` / `tun_udp`: hot-path lookups take a brief
+// read-lock, clone the `Arc`, and release before any `.await` on the value
+// itself. Only cache mutations (insert / evict / gc) take the write-lock.
+// Avoids adding a DashMap dependency while removing the serialisation that a
+// single `Mutex` imposed on every H2 CONNECT attempt.
+static H2_SHARED_CONNECTIONS: OnceLock<RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>>> =
     OnceLock::new();
 static H2_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 // Per-server-key mutex that serialises concurrent H2 connection establishment.
@@ -180,8 +197,8 @@ static H2_CONNECT_LOCKS: OnceLock<
     std::sync::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
 > = OnceLock::new();
 
-fn h2_shared_connections() -> &'static Mutex<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
-    H2_SHARED_CONNECTIONS.get_or_init(|| Mutex::new(HashMap::new()))
+fn h2_shared_connections() -> &'static RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
+    H2_SHARED_CONNECTIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
 fn h2_connect_locks(
@@ -194,7 +211,9 @@ fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
     locks.entry(key.clone()).or_default().clone()
 }
 
-pub(super) async fn connect_websocket_h2(
+// ── Connect ───────────────────────────────────────────────────────────────────
+
+pub(crate) async fn connect_websocket_h2(
     url: &Url,
     fwmark: Option<u32>,
     ipv6_first: bool,
@@ -397,16 +416,29 @@ async fn connect_h2_connection(
     })
 }
 
+// ── Cache helpers ─────────────────────────────────────────────────────────────
+
 fn should_reuse_h2_connection(source: &'static str) -> bool {
     !source.starts_with("probe_")
 }
 
 async fn cached_shared_h2_connection(key: &H2ConnectionKey) -> Option<Arc<SharedH2Connection>> {
-    let mut shared = h2_shared_connections().lock().await;
-    match shared.get(key).cloned() {
+    // Hot path: read-lock, clone the `Arc`, release the lock. Concurrent
+    // lookups on *other* keys are no longer serialised behind a single Mutex.
+    let candidate = {
+        let shared = h2_shared_connections().read().await;
+        shared.get(key).cloned()
+    };
+    match candidate {
         Some(connection) if connection.is_open() => Some(connection),
-        Some(_) => {
-            shared.remove(key);
+        Some(stale) => {
+            // Slow path: take the write-lock only to evict the stale entry,
+            // and re-check under it — another waiter may have already replaced
+            // the entry with a fresh connection between our read/write locks.
+            let mut shared = h2_shared_connections().write().await;
+            if shared.get(key).is_some_and(|c| c.id == stale.id) {
+                shared.remove(key);
+            }
             None
         },
         None => None,
@@ -414,7 +446,7 @@ async fn cached_shared_h2_connection(key: &H2ConnectionKey) -> Option<Arc<Shared
 }
 
 async fn cache_shared_h2_connection(key: H2ConnectionKey, connection: Arc<SharedH2Connection>) {
-    let mut shared = h2_shared_connections().lock().await;
+    let mut shared = h2_shared_connections().write().await;
     match shared.get(&key) {
         Some(existing) if existing.is_open() => {},
         _ => {
@@ -424,7 +456,16 @@ async fn cache_shared_h2_connection(key: H2ConnectionKey, connection: Arc<Shared
 }
 
 async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u64) {
-    let mut shared = h2_shared_connections().lock().await;
+    // Cheap pre-check under the read-lock — the common case (entry gone or
+    // replaced) avoids taking the write-lock at all.
+    let needs_evict = {
+        let shared = h2_shared_connections().read().await;
+        shared.get(key).is_some_and(|connection| connection.id == id)
+    };
+    if !needs_evict {
+        return;
+    }
+    let mut shared = h2_shared_connections().write().await;
     if shared.get(key).is_some_and(|connection| connection.id == id) {
         shared.remove(key);
     }
@@ -434,9 +475,27 @@ async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u
 /// Called periodically from the warm-standby maintenance loop so dead entries
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
-pub(super) async fn gc_shared_h2_connections() {
-    let mut shared = h2_shared_connections().lock().await;
-    shared.retain(|_, conn| conn.is_open());
+pub(crate) async fn gc_shared_h2_connections() {
+    // Fast path: scan under a read-lock. If nothing is stale we avoid the
+    // write-lock entirely, so a healthy GC tick does not interfere with
+    // concurrent CONNECT lookups.
+    let stale_keys: Vec<H2ConnectionKey> = {
+        let shared = h2_shared_connections().read().await;
+        shared
+            .iter()
+            .filter(|(_, conn)| !conn.is_open())
+            .map(|(k, _)| k.clone())
+            .collect()
+    };
+    if stale_keys.is_empty() {
+        return;
+    }
+    let mut shared = h2_shared_connections().write().await;
+    for key in stale_keys {
+        if shared.get(&key).is_some_and(|conn| !conn.is_open()) {
+            shared.remove(&key);
+        }
+    }
 }
 
 fn is_expected_h2_close(error: &str) -> bool {
@@ -444,6 +503,8 @@ fn is_expected_h2_close(error: &str) -> bool {
         || error.contains("operation was canceled")
         || error.contains("operation was cancelled")
 }
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

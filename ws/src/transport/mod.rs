@@ -23,8 +23,7 @@ use crate::types::{ServerAddr, WsTransportMode};
 
 mod dns;
 mod guards;
-mod h2_io;
-mod h2_shared;
+mod h2;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
@@ -32,10 +31,10 @@ mod url_util;
 mod ws_stream;
 
 use dns::resolve_server_addr;
-use h2_shared::connect_websocket_h2;
+use h2::connect_websocket_h2;
 use ws_stream::H1WsStream;
 
-pub use h2_io::init_h2_window_sizes;
+pub use h2::init_h2_window_sizes;
 pub(crate) use socket::{bind_udp_socket, connect_tcp_socket};
 pub use socket::{configure_inbound_tcp_stream, init_udp_socket_bufs};
 pub use tcp_transport::{TcpShadowsocksReader, TcpShadowsocksWriter};
@@ -55,7 +54,7 @@ pub(crate) use url_util::{format_authority, websocket_path};
 /// prevent dead entries from accumulating when a cache key is never looked up
 /// again (DNS rotation, server IP change, etc.).
 pub async fn gc_shared_connections() {
-    h2_shared::gc_shared_h2_connections().await;
+    h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
     crate::transport_h3::gc_shared_h3_connections().await;
 }
