@@ -27,7 +27,6 @@ mod h2;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
-mod url_util;
 mod ws_stream;
 
 use dns::resolve_server_addr;
@@ -45,8 +44,6 @@ pub(crate) use ws_stream::SharedConnectionHealth;
 pub(crate) use dns::resolve_host_with_preference;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard, UpstreamTransportGuard};
 pub(crate) use socket::bind_addr_for;
-#[cfg(feature = "h3")]
-pub(crate) use url_util::{format_authority, websocket_path};
 
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
 /// whose underlying connection is no longer open.  Should be called

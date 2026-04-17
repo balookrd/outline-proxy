@@ -26,7 +26,6 @@ use sockudo_ws::{
 use tokio_tungstenite::tungstenite::protocol::frame::{CloseFrame, Utf8Bytes, coding::CloseCode};
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 
-use crate::transport::format_authority;
 use shared::SharedH3Connection;
 
 type RawH3WsStream = SockudoWebSocketStream<SockudoTransportStream<SockudoHttp3>>;
@@ -102,6 +101,33 @@ impl Drop for H3ConnectionGuard {
         // H3_INTERNAL_ERROR, triggering a reconnect storm under load.
         self.0.close(0x100u32.into(), b"websocket stream closed");
     }
+}
+
+// ── URL utilities (h3-local) ──────────────────────────────────────────────────
+
+fn format_authority(host: &str, port: Option<u16>) -> String {
+    let host = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]")
+    } else {
+        host.to_string()
+    };
+    match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    }
+}
+
+pub(super) fn websocket_path(url: &url::Url) -> String {
+    let mut path = if url.path().is_empty() {
+        "/".to_string()
+    } else {
+        url.path().to_string()
+    };
+    if let Some(query) = url.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    path
 }
 
 // ── URI helper ────────────────────────────────────────────────────────────────

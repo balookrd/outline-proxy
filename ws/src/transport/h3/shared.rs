@@ -30,10 +30,10 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::transport::{
     AbortOnDrop, AnyWsStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
-    resolve_host_with_preference, websocket_path,
+    resolve_host_with_preference,
 };
 
-use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri};
+use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
 
 type H3RequestStreamHandle = H3RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>;
 type H3SendRequestHandle = H3SendRequest<h3_quinn::OpenStreams, Bytes>;
