@@ -12,7 +12,8 @@ mod udp;
 mod tests;
 
 pub use aead::{
-    SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, encrypt, encrypt_into, increment_nonce,
+    AeadCipher, SHADOWSOCKS_MAX_PAYLOAD, SHADOWSOCKS_TAG_LEN, decrypt, encrypt, encrypt_into,
+    increment_nonce,
 };
 pub use cipher_kind::CipherKind;
 pub use keys::{SHADOWSOCKS_2022_INFO, SHADOWSOCKS_INFO, derive_subkey, evp_bytes_to_key};
