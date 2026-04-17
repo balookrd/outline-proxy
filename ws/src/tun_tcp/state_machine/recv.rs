@@ -175,14 +175,52 @@ pub(in crate::tun_tcp) fn queue_future_segment(
     }
 }
 
+/// Outcome of a pre-checked reassembly-queue insertion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::tun_tcp) enum QueueFutureSegmentOutcome {
+    /// Packet was discarded because it lies entirely outside the receive
+    /// window (not a limit violation — normal handling).
+    OutsideWindow,
+    /// Packet was accepted and queued for reassembly.
+    Queued,
+    /// Packet would push the flow past its reassembly limits; nothing was
+    /// inserted and the caller should abort the flow.
+    WouldExceedLimits,
+}
+
 pub(in crate::tun_tcp) fn queue_future_segment_with_recv_window(
     state: &mut TcpFlowState,
+    config: &TunTcpConfig,
     packet: &ParsedTcpPacket,
-) {
+) -> QueueFutureSegmentOutcome {
     let Some(trimmed) = trim_packet_to_receive_window(state, packet) else {
-        return;
+        return QueueFutureSegmentOutcome::OutsideWindow;
     };
+
+    // Pre-check: reject BEFORE mutating the reassembly queue. `queue_future_segment`
+    // may split the packet into multiple sub-segments (up to 1 payload chunk
+    // plus an optional FIN marker), so the upper bound on what gets added is
+    // `trimmed.payload.len()` bytes and 2 segments. Checking the pessimistic
+    // bound up front means an attacker cannot push the flow past the cap even
+    // transiently by sending a single oversized segment.
+    let has_fin = (trimmed.flags & TCP_FLAG_FIN) != 0;
+    let additional_segments = if trimmed.payload.is_empty() && !has_fin {
+        0
+    } else if has_fin {
+        2
+    } else {
+        1
+    };
+    let additional_bytes = trimmed.payload.len();
+    if state.pending_client_segments.len() + additional_segments
+        > config.max_buffered_client_segments
+        || buffered_client_bytes(state) + additional_bytes > config.max_buffered_client_bytes
+    {
+        return QueueFutureSegmentOutcome::WouldExceedLimits;
+    }
+
     queue_future_segment(&mut state.pending_client_segments, &trimmed, state.client_next_seq);
+    QueueFutureSegmentOutcome::Queued
 }
 
 pub(in crate::tun_tcp) fn exceeds_client_reassembly_limits(
