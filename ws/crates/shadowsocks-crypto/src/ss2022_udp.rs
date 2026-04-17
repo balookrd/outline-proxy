@@ -1,13 +1,13 @@
 use aes::cipher::generic_array::GenericArray;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit as BlockKeyInit};
 use aes::{Aes128, Aes256};
-use anyhow::{Context, Result, anyhow, bail};
 use chacha20poly1305::aead::AeadInPlace;
 use chacha20poly1305::{XChaCha20Poly1305, XNonce as XChaNonce};
 use rand::RngCore;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cipher_kind::CipherKind;
+use crate::error::{CryptoError, Result};
 
 use super::aead::{SHADOWSOCKS_TAG_LEN, decrypt, encrypt};
 use super::keys::derive_subkey;
@@ -17,18 +17,39 @@ const SS2022_UDP_CLIENT_PACKET: u8 = 0;
 /// Maximum allowed clock skew for SS2022 timestamp validation (seconds).
 const SS2022_TIMESTAMP_WINDOW_SECS: u64 = 30;
 
+const CIPHER_XCHACHA: &str = "xchacha20-poly1305";
+const CIPHER_AES_128_SS2022: &str = "aes-128 ss2022";
+const CIPHER_AES_256_SS2022: &str = "aes-256 ss2022";
+
+const ERR_REQUIRES_2022: &str = "ss2022 UDP framing requires a 2022 cipher";
+const ERR_REQUIRES_2022_CHACHA: &str = "ss2022 chacha UDP framing requires a 2022 chacha cipher";
+const ERR_SEPARATE_HEADER_AES_ONLY: &str =
+    "UDP separate header is only defined for ss2022 AES methods";
+const ERR_SS2022_PAYLOAD_SHORT: &str = "ss2022 UDP payload is too short";
+const ERR_SS2022_INVALID_SERVER_TYPE: &str = "invalid ss2022 UDP server packet type";
+const ERR_SS2022_CLIENT_SESSION_MISMATCH: &str = "ss2022 UDP client session id mismatch";
+const ERR_SS2022_PADDING: &str = "ss2022 UDP padding exceeds payload length";
+const ERR_SS2022_CHACHA_PAYLOAD_SHORT: &str = "ss2022 chacha UDP payload is too short";
+const ERR_SS2022_CHACHA_INVALID_SERVER_TYPE: &str =
+    "invalid ss2022 chacha UDP server packet type";
+const ERR_SS2022_CHACHA_CLIENT_SESSION_MISMATCH: &str =
+    "ss2022 chacha UDP client session id mismatch";
+const ERR_SS2022_CHACHA_PADDING: &str = "ss2022 chacha UDP padding exceeds payload length";
+
+fn unix_now_secs() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .map_err(|_| CryptoError::ClockBeforeEpoch)
+}
+
 /// Validates that an SS2022 timestamp is within the acceptable clock-skew window.
 /// Timestamps outside ±30 s of the current time are rejected to prevent replay attacks.
 pub fn validate_ss2022_timestamp(timestamp_secs: u64) -> Result<()> {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before unix epoch")?
-        .as_secs();
+    let now = unix_now_secs()?;
     let diff = now.abs_diff(timestamp_secs);
     if diff > SS2022_TIMESTAMP_WINDOW_SECS {
-        bail!(
-            "ss2022 timestamp out of acceptable window: diff={diff}s (limit={SS2022_TIMESTAMP_WINDOW_SECS}s)"
-        );
+        return Err(CryptoError::Ss2022TimestampSkew { skew_secs: diff as i64 });
     }
     Ok(())
 }
@@ -41,7 +62,7 @@ pub fn encrypt_udp_packet_2022(
     payload: &[u8],
 ) -> Result<Vec<u8>> {
     if !cipher.is_ss2022() {
-        bail!("ss2022 UDP framing requires a 2022 cipher");
+        return Err(CryptoError::Protocol(ERR_REQUIRES_2022));
     }
 
     let plaintext = build_ss2022_udp_client_plaintext(cipher, session_id, packet_id, payload)?;
@@ -82,7 +103,7 @@ pub fn decrypt_udp_packet_2022(
     packet: &[u8],
 ) -> Result<(u64, u64, Vec<u8>)> {
     if !cipher.is_ss2022() {
-        bail!("ss2022 UDP framing requires a 2022 cipher");
+        return Err(CryptoError::Protocol(ERR_REQUIRES_2022));
     }
     if cipher.is_ss2022_chacha() {
         return decrypt_udp_packet_2022_chacha(
@@ -102,7 +123,7 @@ fn decrypt_udp_packet_2022_aes(
     packet: &[u8],
 ) -> Result<(u64, u64, Vec<u8>)> {
     if packet.len() < 16 + SHADOWSOCKS_TAG_LEN {
-        bail!("UDP packet is too short");
+        return Err(CryptoError::UdpPacketTooShort);
     }
 
     let mut encrypted_header = [0u8; 16];
@@ -134,16 +155,16 @@ pub fn encrypt_udp_separate_header(
     let mut block = *header;
     match cipher {
         CipherKind::Aes128Gcm2022 => {
-            let cipher =
-                Aes128::new_from_slice(master_key).context("invalid aes-128 ss2022 key")?;
+            let cipher = Aes128::new_from_slice(master_key)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
             cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
         },
         CipherKind::Aes256Gcm2022 => {
-            let cipher =
-                Aes256::new_from_slice(master_key).context("invalid aes-256 ss2022 key")?;
+            let cipher = Aes256::new_from_slice(master_key)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
             cipher.encrypt_block(GenericArray::from_mut_slice(&mut block));
         },
-        _ => bail!("UDP separate header is only defined for ss2022 AES methods"),
+        _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
     }
     Ok(block)
 }
@@ -156,16 +177,16 @@ pub fn decrypt_udp_separate_header(
     let mut block = *header;
     match cipher {
         CipherKind::Aes128Gcm2022 => {
-            let cipher =
-                Aes128::new_from_slice(master_key).context("invalid aes-128 ss2022 key")?;
+            let cipher = Aes128::new_from_slice(master_key)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128_SS2022 })?;
             cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
         },
         CipherKind::Aes256Gcm2022 => {
-            let cipher =
-                Aes256::new_from_slice(master_key).context("invalid aes-256 ss2022 key")?;
+            let cipher = Aes256::new_from_slice(master_key)
+                .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256_SS2022 })?;
             cipher.decrypt_block(GenericArray::from_mut_slice(&mut block));
         },
-        _ => bail!("UDP separate header is only defined for ss2022 AES methods"),
+        _ => return Err(CryptoError::Protocol(ERR_SEPARATE_HEADER_AES_ONLY)),
     }
     Ok(block)
 }
@@ -176,16 +197,16 @@ pub(crate) fn encrypt_udp_packet_2022_chacha(
     plaintext: &[u8],
 ) -> Result<Vec<u8>> {
     if !cipher.is_ss2022_chacha() {
-        bail!("ss2022 chacha UDP framing requires a 2022 chacha cipher");
+        return Err(CryptoError::Protocol(ERR_REQUIRES_2022_CHACHA));
     }
     let mut nonce = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut nonce);
     let mut buffer = plaintext.to_vec();
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(master_key).context("invalid ss2022 chacha key")?;
+    let cipher = XChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
     let tag = cipher
         .encrypt_in_place_detached(XChaNonce::from_slice(&nonce), b"", &mut buffer)
-        .map_err(|_| anyhow!("xchacha20 encryption failed"))?;
+        .map_err(|_| CryptoError::EncryptFailed { cipher: CIPHER_XCHACHA })?;
     buffer.extend_from_slice(&tag);
 
     let mut packet = Vec::with_capacity(nonce.len() + buffer.len());
@@ -201,16 +222,16 @@ fn decrypt_udp_packet_2022_chacha(
     packet: &[u8],
 ) -> Result<(u64, u64, Vec<u8>)> {
     if !cipher.is_ss2022_chacha() {
-        bail!("ss2022 chacha UDP framing requires a 2022 chacha cipher");
+        return Err(CryptoError::Protocol(ERR_REQUIRES_2022_CHACHA));
     }
     if packet.len() < 24 + SHADOWSOCKS_TAG_LEN {
-        bail!("UDP packet is too short");
+        return Err(CryptoError::UdpPacketTooShort);
     }
 
     let mut buffer = packet[24..packet.len() - SHADOWSOCKS_TAG_LEN].to_vec();
     let tag = &packet[packet.len() - SHADOWSOCKS_TAG_LEN..];
-    let cipher =
-        XChaCha20Poly1305::new_from_slice(master_key).context("invalid ss2022 chacha key")?;
+    let cipher = XChaCha20Poly1305::new_from_slice(master_key)
+        .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_XCHACHA })?;
     cipher
         .decrypt_in_place_detached(
             XChaNonce::from_slice(&packet[..24]),
@@ -218,7 +239,7 @@ fn decrypt_udp_packet_2022_chacha(
             &mut buffer,
             tag.into(),
         )
-        .map_err(|_| anyhow!("xchacha20 decryption failed"))?;
+        .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_XCHACHA })?;
 
     parse_ss2022_udp_server_chacha_plaintext(expected_client_session_id, &buffer)
 }
@@ -229,10 +250,7 @@ fn build_ss2022_udp_client_plaintext(
     packet_id: u64,
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before unix epoch")?
-        .as_secs();
+    let timestamp = unix_now_secs()?;
     let mut plaintext = Vec::with_capacity(payload.len() + 32);
     if cipher.is_ss2022_chacha() {
         plaintext.extend_from_slice(&session_id.to_be_bytes());
@@ -251,10 +269,10 @@ fn parse_ss2022_udp_server_plaintext(
 ) -> Result<Vec<u8>> {
     let min_len = 1 + 8 + 8 + 2;
     if plaintext.len() < min_len {
-        bail!("ss2022 UDP payload is too short");
+        return Err(CryptoError::Protocol(ERR_SS2022_PAYLOAD_SHORT));
     }
     if plaintext[0] != SS2022_UDP_SERVER_PACKET {
-        bail!("invalid ss2022 UDP server packet type: {}", plaintext[0]);
+        return Err(CryptoError::Protocol(ERR_SS2022_INVALID_SERVER_TYPE));
     }
     let mut timestamp_bytes = [0u8; 8];
     timestamp_bytes.copy_from_slice(&plaintext[1..9]);
@@ -267,7 +285,7 @@ fn parse_ss2022_udp_server_plaintext(
     let client_session_id = u64::from_be_bytes(session_bytes);
 
     if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
-        bail!("ss2022 UDP client session id mismatch");
+        return Err(CryptoError::Protocol(ERR_SS2022_CLIENT_SESSION_MISMATCH));
     }
     let padding_len_offset = client_session_end;
     let padding_len =
@@ -275,7 +293,7 @@ fn parse_ss2022_udp_server_plaintext(
             as usize;
     let payload_offset = padding_len_offset + 2 + padding_len;
     if plaintext.len() < payload_offset {
-        bail!("ss2022 UDP padding exceeds payload length");
+        return Err(CryptoError::Protocol(ERR_SS2022_PADDING));
     }
     Ok(plaintext[payload_offset..].to_vec())
 }
@@ -286,7 +304,7 @@ fn parse_ss2022_udp_server_chacha_plaintext(
 ) -> Result<(u64, u64, Vec<u8>)> {
     let min_len = 8 + 8 + 1 + 8 + 8 + 2;
     if plaintext.len() < min_len {
-        bail!("ss2022 chacha UDP payload is too short");
+        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_PAYLOAD_SHORT));
     }
     let mut session_bytes = [0u8; 8];
     session_bytes.copy_from_slice(&plaintext[..8]);
@@ -297,7 +315,7 @@ fn parse_ss2022_udp_server_chacha_plaintext(
     let server_packet_id = u64::from_be_bytes(packet_id_bytes);
 
     if plaintext[16] != SS2022_UDP_SERVER_PACKET {
-        bail!("invalid ss2022 chacha UDP server packet type: {}", plaintext[16]);
+        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_INVALID_SERVER_TYPE));
     }
     let mut timestamp_bytes = [0u8; 8];
     timestamp_bytes.copy_from_slice(&plaintext[17..25]);
@@ -310,7 +328,7 @@ fn parse_ss2022_udp_server_chacha_plaintext(
     let client_session_id = u64::from_be_bytes(client_session_bytes);
 
     if expected_client_session_id != 0 && client_session_id != expected_client_session_id {
-        bail!("ss2022 chacha UDP client session id mismatch");
+        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_CLIENT_SESSION_MISMATCH));
     }
     let padding_len_offset = client_session_end;
     let padding_len =
@@ -318,7 +336,7 @@ fn parse_ss2022_udp_server_chacha_plaintext(
             as usize;
     let payload_offset = padding_len_offset + 2 + padding_len;
     if plaintext.len() < payload_offset {
-        bail!("ss2022 chacha UDP padding exceeds payload length");
+        return Err(CryptoError::Protocol(ERR_SS2022_CHACHA_PADDING));
     }
     Ok((server_session_id, server_packet_id, plaintext[payload_offset..].to_vec()))
 }

@@ -267,7 +267,7 @@ struct TcpSsStream {
 enum TcpSsReadError {
     CleanEof,
     Io(std::io::Error),
-    Crypto(anyhow::Error),
+    Crypto(outline_ws_rust::crypto::CryptoError),
 }
 
 impl TcpSsStream {

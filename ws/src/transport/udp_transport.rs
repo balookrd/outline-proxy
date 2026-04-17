@@ -307,6 +307,6 @@ impl UdpWsTransport {
             state.last_server_packet_id = Some(packet_id);
             return Ok(payload);
         }
-        decrypt_udp_packet(self.cipher, &self.master_key, bytes)
+        Ok(decrypt_udp_packet(self.cipher, &self.master_key, bytes)?)
     }
 }

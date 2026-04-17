@@ -1,7 +1,7 @@
 use std::fmt;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use anyhow::{Context, Result, anyhow, bail};
+use crate::error::{Result, Socks5Error};
 
 pub const SOCKS_ATYP_IPV4: u8 = 0x01;
 pub const SOCKS_ATYP_DOMAIN: u8 = 0x03;
@@ -29,8 +29,7 @@ impl TargetAddr {
                 out.extend_from_slice(&port.to_be_bytes());
             },
             Self::Domain(host, port) => {
-                let len: u8 =
-                    host.len().try_into().context("domain name is too long for SOCKS5")?;
+                let len: u8 = host.len().try_into().map_err(|_| Socks5Error::DomainTooLong)?;
                 out.push(SOCKS_ATYP_DOMAIN);
                 out.push(len);
                 out.extend_from_slice(host.as_bytes());
@@ -41,11 +40,11 @@ impl TargetAddr {
     }
 
     pub fn from_wire_bytes(bytes: &[u8]) -> Result<(Self, usize)> {
-        let atyp = *bytes.first().ok_or_else(|| anyhow!("empty address buffer"))?;
+        let atyp = *bytes.first().ok_or(Socks5Error::EmptyAddressBuffer)?;
         match atyp {
             SOCKS_ATYP_IPV4 => {
                 if bytes.len() < 7 {
-                    bail!("short IPv4 address");
+                    return Err(Socks5Error::ShortAddress { kind: "IPv4" });
                 }
                 let host = Ipv4Addr::new(bytes[1], bytes[2], bytes[3], bytes[4]);
                 let port = u16::from_be_bytes([bytes[5], bytes[6]]);
@@ -53,7 +52,7 @@ impl TargetAddr {
             },
             SOCKS_ATYP_IPV6 => {
                 if bytes.len() < 19 {
-                    bail!("short IPv6 address");
+                    return Err(Socks5Error::ShortAddress { kind: "IPv6" });
                 }
                 let mut raw = [0u8; 16];
                 raw.copy_from_slice(&bytes[1..17]);
@@ -61,16 +60,17 @@ impl TargetAddr {
                 Ok((Self::IpV6(Ipv6Addr::from(raw), port), 19))
             },
             SOCKS_ATYP_DOMAIN => {
-                let len = *bytes.get(1).ok_or_else(|| anyhow!("short domain address"))? as usize;
+                let len = *bytes.get(1).ok_or(Socks5Error::ShortAddress { kind: "domain" })?
+                    as usize;
                 if bytes.len() < 2 + len + 2 {
-                    bail!("short domain address");
+                    return Err(Socks5Error::ShortAddress { kind: "domain" });
                 }
                 let host = String::from_utf8(bytes[2..2 + len].to_vec())
-                    .context("domain is not valid UTF-8")?;
+                    .map_err(|_| Socks5Error::DomainNotUtf8)?;
                 let port = u16::from_be_bytes([bytes[2 + len], bytes[2 + len + 1]]);
                 Ok((Self::Domain(host, port), 2 + len + 2))
             },
-            _ => bail!("unsupported address type: {atyp}"),
+            _ => Err(Socks5Error::UnsupportedAddressType(atyp)),
         }
     }
 }
