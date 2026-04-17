@@ -1,4 +1,5 @@
 use std::fs::OpenOptions;
+use std::io::Write as _;
 use std::net::Ipv6Addr;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -6,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use rand::random;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -33,9 +34,24 @@ const TUN_OPEN_BUSY_RETRY_DELAY: Duration = Duration::from_millis(250);
 #[cfg(test)]
 mod tests;
 
+/// A cheaply-cloneable handle for writing IP packets to a TUN device.
+///
+/// Internally uses a `std::sync::Mutex<std::fs::File>` (not tokio's async
+/// mutex) for two reasons:
+///
+/// 1. **No internal write buffer**: `std::fs::File::write_all` issues a single
+///    `write(2)` syscall directly, which is what TUN requires — each `write(2)`
+///    delivers exactly one IP packet to the kernel.  `tokio::fs::File` has an
+///    internal write buffer and needs an explicit `flush()` after each
+///    `write_all`, doubling the async I/O per packet.
+///
+/// 2. **Short critical section**: a `write(2)` to a TUN device is a kernel
+///    memcpy into a ring buffer — typically ≤ 10 µs.  Holding a `std::sync::Mutex`
+///    for that duration is safe and avoids the overhead of a tokio async-mutex
+///    queue (which is significant when hundreds of concurrent flows compete).
 #[derive(Clone)]
 pub(crate) struct SharedTunWriter {
-    inner: Arc<Mutex<File>>,
+    inner: Arc<std::sync::Mutex<std::fs::File>>,
 }
 
 /// Per-flow dispatch context for the TUN path.
@@ -172,9 +188,11 @@ pub async fn spawn_tun_loop(config: TunConfig, routing: TunRouting) -> Result<()
     let device = open_tun_device_with_retry(&config)
         .await
         .with_context(|| format!("failed to open TUN device {}", config.path.display()))?;
+    // The reader uses tokio::fs::File for non-blocking async reads.
+    // The writer keeps the raw std::fs::File — see SharedTunWriter for rationale.
     let reader = File::from_std(device.try_clone().context("failed to clone TUN file descriptor")?);
     let writer = SharedTunWriter {
-        inner: Arc::new(Mutex::new(File::from_std(device))),
+        inner: Arc::new(std::sync::Mutex::new(device)),
     };
 
     let idle_timeout = config.idle_timeout;
@@ -440,34 +458,37 @@ fn spawn_tun_defragmenter_cleanup(defragmenter: Weak<Mutex<TunDefragmenter>>) {
 
 impl SharedTunWriter {
     #[cfg(test)]
-    pub(crate) fn new(file: File) -> Self {
-        Self { inner: Arc::new(Mutex::new(file)) }
+    pub(crate) fn new(file: std::fs::File) -> Self {
+        Self { inner: Arc::new(std::sync::Mutex::new(file)) }
     }
 
+    /// Write one IP packet to the TUN device.
+    ///
+    /// Uses a synchronous `write_all(2)` call through a `std::sync::Mutex`.
+    /// The critical section is bounded by a single kernel memcpy (≤ 10 µs for
+    /// typical MTU-sized packets), so holding a sync mutex is safe here and
+    /// avoids the overhead of an async-mutex queue under concurrent callers.
+    ///
+    /// The function signature is `async` for compatibility with the many call
+    /// sites that use `.await`, but it never actually suspends.
     pub(crate) async fn write_packet(&self, packet: &[u8]) -> Result<()> {
-        let mut writer = self.inner.lock().await;
-        // tokio::fs::File buffers writes internally; flush() is required to
-        // push the buffered bytes to the kernel as a single write() syscall.
-        // For TUN devices each write() delivers exactly one IP packet, so
-        // flush must be called immediately after each write_all.
-        writer
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .write_all(packet)
-            .await
-            .context("failed to write packet to TUN")?;
-        writer.flush().await.context("failed to flush TUN packet")
+            .context("failed to write packet to TUN")
     }
 
+    /// Write a batch of IP packets to the TUN device, one `write(2)` per packet.
+    ///
+    /// Each call to `write_all` issues a separate `write(2)` syscall, which is
+    /// required by TUN: the kernel delivers one IP packet per `write(2)`.
+    /// The mutex is acquired once and held for the entire batch to avoid the
+    /// overhead of repeated lock/unlock cycles.
     pub(crate) async fn write_packets(&self, packets: &[Vec<u8>]) -> Result<()> {
-        let mut writer = self.inner.lock().await;
+        let mut writer = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         for packet in packets {
-            writer
-                .write_all(packet)
-                .await
-                .context("failed to write packet to TUN")?;
-            // Each packet must be flushed individually — TUN interprets each
-            // write() as one IP packet, so we must not coalesce multiple
-            // write_all calls into one flush.
-            writer.flush().await.context("failed to flush TUN packet")?;
+            writer.write_all(packet).context("failed to write packet to TUN")?;
         }
         Ok(())
     }

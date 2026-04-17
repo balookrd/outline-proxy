@@ -15,7 +15,6 @@ use crate::tun_wire::IpVersion;
 use crate::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
 use crate::uplink::UplinkManager;
 use futures_util::StreamExt;
-use tokio::fs::File;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{MaybeTlsStream, accept_async};
@@ -1080,9 +1079,9 @@ async fn new_flow_is_removed_when_synack_write_fails() {
         .write(true)
         .open(&path)
         .unwrap();
-    let writer = SharedTunWriter::new(File::from_std(
+    let writer = SharedTunWriter::new(
         std::fs::OpenOptions::new().read(true).open(&path).unwrap(),
-    ));
+    );
     let engine = super::TunTcpEngine::new(
         writer,
         crate::tun::TunRouting::from_single_manager(
@@ -1187,7 +1186,7 @@ impl TunCapture {
             .write(true)
             .open(&path)
             .unwrap();
-        let writer = SharedTunWriter::new(File::from_std(file));
+        let writer = SharedTunWriter::new(file);
         (writer, Self { path, offset: 0 })
     }
 
