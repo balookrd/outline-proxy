@@ -26,7 +26,7 @@ pub fn init_udp_socket_bufs(recv: Option<usize>, send: Option<usize>) {
     }
 }
 
-pub(crate) async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
+pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
     // For connections without fwmark use tokio's async connector so we never
     // block a Tokio worker thread waiting for the TCP handshake to complete.
     if fwmark.is_none() {
@@ -90,7 +90,7 @@ async fn connect_tcp_socket_with_fwmark(
     bail!("fwmark is only supported on Linux")
 }
 
-pub(crate) fn bind_udp_socket(
+pub fn bind_udp_socket(
     bind_addr: SocketAddr,
     fwmark: Option<u32>,
 ) -> Result<std::net::UdpSocket> {

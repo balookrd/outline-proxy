@@ -10,10 +10,11 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
 
-use crate::crypto::{
+use shadowsocks_crypto::{
     AeadCipher, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce, validate_ss2022_timestamp,
 };
-use crate::types::{CipherKind, TargetAddr};
+use shadowsocks_crypto::CipherKind;
+use socks5_proto::TargetAddr;
 
 use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard};
 
@@ -137,7 +138,7 @@ impl TcpShadowsocksWriter {
     /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
     /// `ctrl_tx` must be passed to the paired `TcpShadowsocksReader` so that
     /// Pong responses are sent through the priority channel in the writer task.
-    pub(crate) async fn connect(
+    pub async fn connect(
         sink: WsSink,
         cipher: CipherKind,
         master_key: &[u8],
@@ -215,7 +216,7 @@ impl TcpShadowsocksWriter {
         ))
     }
 
-    pub(crate) fn connect_socket(
+    pub fn connect_socket(
         writer: OwnedWriteHalf,
         cipher: CipherKind,
         master_key: &[u8],
@@ -377,7 +378,7 @@ impl TcpShadowsocksWriter {
 }
 
 impl TcpShadowsocksReader {
-    pub(crate) fn new(
+    pub fn new(
         stream: WsStream,
         cipher: CipherKind,
         master_key: &[u8],
@@ -399,7 +400,7 @@ impl TcpShadowsocksReader {
         }
     }
 
-    pub(crate) fn new_socket(
+    pub fn new_socket(
         reader: OwnedReadHalf,
         cipher: CipherKind,
         master_key: &[u8],
@@ -420,7 +421,7 @@ impl TcpShadowsocksReader {
         }
     }
 
-    pub(crate) fn with_request_salt(mut self, request_salt: Option<[u8; 32]>) -> Self {
+    pub fn with_request_salt(mut self, request_salt: Option<[u8; 32]>) -> Self {
         self.ss2022 = request_salt.map(|request_salt| Ss2022TcpReaderState {
             request_salt,
             response_header_read: false,

@@ -5,7 +5,7 @@ use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 #[cfg(feature = "h3")]
-use crate::transport_h3::{
+use crate::h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
 

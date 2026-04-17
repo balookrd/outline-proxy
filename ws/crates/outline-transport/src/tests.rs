@@ -1,5 +1,6 @@
 use super::*;
-use crate::types::{CipherKind, WsTransportMode};
+use shadowsocks_crypto::CipherKind;
+use crate::config_types::WsTransportMode;
 #[cfg(feature = "metrics")]
 use bytes::Bytes;
 #[cfg(feature = "metrics")]

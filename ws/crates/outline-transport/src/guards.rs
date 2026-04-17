@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
-use crate::metrics::{
+use outline_metrics::{
     add_transport_connects_active, add_upstream_transports_active, record_transport_connect,
     record_upstream_transport,
 };
@@ -27,7 +27,7 @@ pub(crate) struct TransportConnectGuard {
 }
 
 impl TransportConnectGuard {
-    pub(crate) fn new(source: &'static str, mode: &'static str) -> Self {
+    pub fn new(source: &'static str, mode: &'static str) -> Self {
         add_transport_connects_active(source, mode, 1);
         record_transport_connect(source, mode, "started");
         Self { source, mode, finished: false }
@@ -50,13 +50,13 @@ impl Drop for TransportConnectGuard {
     }
 }
 
-pub(crate) struct UpstreamTransportGuard {
+pub struct UpstreamTransportGuard {
     source: &'static str,
     protocol: &'static str,
 }
 
 impl UpstreamTransportGuard {
-    pub(crate) fn new(source: &'static str, protocol: &'static str) -> Arc<Self> {
+    pub fn new(source: &'static str, protocol: &'static str) -> Arc<Self> {
         add_upstream_transports_active(source, protocol, 1);
         record_upstream_transport(source, protocol, "opened");
         Arc::new(Self { source, protocol })

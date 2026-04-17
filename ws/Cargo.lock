@@ -1294,52 +1294,69 @@ dependencies = [
 ]
 
 [[package]]
-name = "outline-ws-rust"
-version = "1.1.0"
+name = "outline-transport"
+version = "0.1.0"
 dependencies = [
- "aes",
- "aes-gcm",
  "anyhow",
- "base64",
- "blake3",
  "bytes",
- "chacha20poly1305",
- "clap",
  "futures-util",
  "h3",
  "h3-quinn",
- "hkdf",
  "http",
  "http-body-util",
  "hyper",
  "hyper-util",
- "libc",
- "md5",
- "mimalloc",
  "once_cell",
  "outline-metrics",
- "outline-routing",
  "pin-project-lite",
  "quinn",
  "rand 0.8.5",
  "rustls",
  "serde",
- "serde_json",
- "serde_yml",
- "sha1",
  "shadowsocks-crypto",
  "socket2 0.5.10",
  "socks5-proto",
  "sockudo-ws",
- "tempfile",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite",
+ "tracing",
+ "url",
+ "webpki-roots 0.26.11",
+]
+
+[[package]]
+name = "outline-ws-rust"
+version = "1.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "futures-util",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "mimalloc",
+ "outline-metrics",
+ "outline-routing",
+ "outline-transport",
+ "rand 0.8.5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "shadowsocks-crypto",
+ "socket2 0.5.10",
+ "socks5-proto",
+ "tempfile",
+ "tokio",
  "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
  "url",
- "webpki-roots 0.26.11",
 ]
 
 [[package]]

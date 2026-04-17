@@ -5,7 +5,7 @@ use tokio::net::lookup_host;
 use tracing::warn;
 
 use crate::dns_cache::DnsCache;
-use crate::types::ServerAddr;
+use crate::config_types::ServerAddr;
 
 static DNS_CACHE: OnceLock<DnsCache> = OnceLock::new();
 
@@ -22,7 +22,7 @@ pub(super) async fn resolve_server_addr(addr: &ServerAddr, ipv6_first: bool) -> 
     .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
 }
 
-pub(crate) async fn resolve_host_with_preference(
+pub async fn resolve_host_with_preference(
     host: &str,
     port: u16,
     context: &str,
