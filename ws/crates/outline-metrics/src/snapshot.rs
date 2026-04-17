@@ -2,7 +2,7 @@ use super::{METRICS, Metrics};
 use anyhow::{Context, Result};
 use prometheus::{Encoder, TextEncoder};
 
-use crate::uplink::UplinkManagerSnapshot;
+use crate::snapshot_types::UplinkManagerSnapshot;
 
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {

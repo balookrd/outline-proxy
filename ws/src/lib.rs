@@ -5,10 +5,6 @@ pub mod crypto;
 pub(crate) mod dns_cache;
 pub(crate) mod error_text;
 pub mod memory;
-#[cfg(feature = "metrics")]
-pub mod metrics;
-#[cfg(not(feature = "metrics"))]
-#[path = "metrics_stub.rs"]
 pub mod metrics;
 #[cfg(feature = "metrics")]
 pub mod metrics_http;

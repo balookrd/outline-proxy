@@ -3,8 +3,8 @@
 
 use std::time::Duration;
 
-use crate::memory::ProcessFdSnapshot;
-use crate::uplink::UplinkManagerSnapshot;
+use crate::snapshot_types::ProcessFdSnapshot;
+use crate::snapshot_types::UplinkManagerSnapshot;
 
 pub const DIRECT_UPLINK_LABEL: &str = "direct";
 pub const DIRECT_GROUP_LABEL: &str = "direct";
@@ -12,7 +12,6 @@ pub const DIRECT_GROUP_LABEL: &str = "direct";
 // ── Process ──────────────────────────────────────────────────────────────────
 
 pub fn init() {}
-pub fn spawn_process_metrics_sampler() {}
 #[allow(clippy::too_many_arguments)]
 pub fn update_process_memory(
     _rss_bytes: Option<u64>,
