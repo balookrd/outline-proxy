@@ -21,7 +21,7 @@ impl UplinkManager {
         transport: TransportKind,
     ) -> (Option<u128>, Option<u128>) {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await;
+        let statuses = self.inner.statuses.read().await.clone();
         let Some(status) = statuses.get(index) else {
             return (None, None);
         };
@@ -48,7 +48,7 @@ impl UplinkManager {
 
     pub async fn tcp_cooldown_debug_summary(&self) -> Vec<String> {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await;
+        let statuses = self.inner.statuses.read().await.clone();
         self.inner
             .uplinks
             .iter()
@@ -88,61 +88,58 @@ impl UplinkManager {
         let failure_signature = classify_runtime_failure_signature(&error_text);
         let failure_other_detail = (failure_signature == "other")
             .then(|| normalize_other_runtime_failure_detail(&error_text));
-        let (uplink_name, cooldown_until, penalty_ms, already_in_cooldown, should_wake_probe) = {
-            let now = Instant::now();
-            let mut statuses = self.inner.statuses.write().await;
+        let now = Instant::now();
+        let uplink_name = self.inner.uplinks[index].name.clone();
+        let group_name = self.inner.group_name.clone();
+        // Read pre-mutation state to determine already_in_cooldown.
+        let already_in_cooldown = {
+            let statuses = self.inner.statuses.read().await.clone();
+            match transport {
+                TransportKind::Tcp => statuses[index].tcp.cooldown_until.is_some_and(|d| d > now),
+                TransportKind::Udp => statuses[index].udp.cooldown_until.is_some_and(|d| d > now),
+            }
+        };
+        let probe_enabled = self.inner.probe.enabled();
+        let failure_cooldown = self.inner.load_balancing.failure_cooldown;
+        let load_balancing = self.inner.load_balancing.clone();
+        // Emit metrics (does not require the lock).
+        match transport {
+            TransportKind::Tcp => {
+                if !already_in_cooldown {
+                    metrics::record_runtime_failure("tcp", &group_name, &uplink_name);
+                    metrics::record_runtime_failure_cause("tcp", &group_name, &uplink_name, failure_cause);
+                    metrics::record_runtime_failure_signature("tcp", &group_name, &uplink_name, failure_signature);
+                    if let Some(detail) = &failure_other_detail {
+                        metrics::record_runtime_failure_other_detail("tcp", &group_name, &uplink_name, detail);
+                    }
+                } else {
+                    metrics::record_runtime_failure_suppressed("tcp", &group_name, &uplink_name);
+                }
+            },
+            TransportKind::Udp => {
+                if !already_in_cooldown {
+                    metrics::record_runtime_failure("udp", &group_name, &uplink_name);
+                    metrics::record_runtime_failure_cause("udp", &group_name, &uplink_name, failure_cause);
+                    metrics::record_runtime_failure_signature("udp", &group_name, &uplink_name, failure_signature);
+                    if let Some(detail) = &failure_other_detail {
+                        metrics::record_runtime_failure_other_detail("udp", &group_name, &uplink_name, detail);
+                    }
+                } else {
+                    metrics::record_runtime_failure_suppressed("udp", &group_name, &uplink_name);
+                }
+            },
+        }
+        // Apply mutation via clone-modify-replace.
+        self.inner.modify_statuses(|statuses| {
             let status = &mut statuses[index];
             status.last_error = Some(error_text.clone());
-            let uplink_name = self.inner.uplinks[index].name.clone();
-            let group_name = self.inner.group_name.as_str();
             match transport {
                 TransportKind::Tcp => {
-                    let already_in_cooldown =
-                        status.tcp.cooldown_until.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
-                        // When probe is enabled it is the authoritative source of health.
-                        // Do not add a penalty on every transient runtime failure: under
-                        // load, H3 streams drop frequently even on a healthy server, so
-                        // accumulating penalty here would inflate the uplink's effective
-                        // score and cause it to lose EWMA-based elections even while the
-                        // probe continues to report it as healthy.  Penalty is instead
-                        // added by the probe path once it confirms a real failure
-                        // (consecutive_failures >= min_failures).
-                        // When probe is disabled there is no other confirmation signal,
-                        // so we still penalise immediately to influence cooldown-based
-                        // candidate selection.
-                        if !self.inner.probe.enabled() {
-                            add_penalty(&mut status.tcp.penalty, now, &self.inner.load_balancing);
+                        if !probe_enabled {
+                            add_penalty(&mut status.tcp.penalty, now, &load_balancing);
                         }
-                        status.tcp.cooldown_until =
-                            Some(now + self.inner.load_balancing.failure_cooldown);
-                        metrics::record_runtime_failure("tcp", group_name, &uplink_name);
-                        metrics::record_runtime_failure_cause(
-                            "tcp",
-                            group_name,
-                            &uplink_name,
-                            failure_cause,
-                        );
-                        metrics::record_runtime_failure_signature(
-                            "tcp",
-                            group_name,
-                            &uplink_name,
-                            failure_signature,
-                        );
-                        if let Some(detail) = &failure_other_detail {
-                            metrics::record_runtime_failure_other_detail(
-                                "tcp",
-                                group_name,
-                                &uplink_name,
-                                detail,
-                            );
-                        }
-                    } else {
-                        metrics::record_runtime_failure_suppressed(
-                            "tcp",
-                            group_name,
-                            &uplink_name,
-                        );
+                        status.tcp.cooldown_until = Some(now + failure_cooldown);
                     }
                     // When probe is enabled it is the authoritative source of
                     // tcp_healthy.  A single runtime connection failure is not
@@ -152,84 +149,66 @@ impl UplinkManager {
                     // what we want to avoid.  When probe is disabled there is no other
                     // health signal, so fall back to marking the uplink unhealthy
                     // immediately so that cooldown-based gating can still trigger a switch.
-                    if !self.inner.probe.enabled() {
+                    if !probe_enabled {
                         status.tcp.healthy = Some(false);
                     }
-                    let should_wake_probe = self.inner.probe.enabled()
-                        && !already_in_cooldown
-                        && mark_probe_wakeup(
+                    if probe_enabled && !already_in_cooldown {
+                        mark_probe_wakeup(
                             &mut status.tcp.last_probe_wakeup,
                             now,
                             PROBE_WAKEUP_MIN_INTERVAL,
                         );
-                    (
-                        uplink_name,
-                        status.tcp.cooldown_until,
-                        current_penalty(&status.tcp.penalty, now, &self.inner.load_balancing)
-                            .map(|value| value.as_millis()),
-                        already_in_cooldown,
-                        should_wake_probe,
-                    )
+                    }
                 },
                 TransportKind::Udp => {
-                    let already_in_cooldown =
-                        status.udp.cooldown_until.is_some_and(|deadline| deadline > now);
                     if !already_in_cooldown {
                         // Same rationale as TCP above: when probe is enabled, defer
                         // penalty to the probe confirmation path to avoid inflating
                         // the score of a healthy-but-loaded uplink.
-                        if !self.inner.probe.enabled() {
-                            add_penalty(&mut status.udp.penalty, now, &self.inner.load_balancing);
+                        if !probe_enabled {
+                            add_penalty(&mut status.udp.penalty, now, &load_balancing);
                         }
-                        status.udp.cooldown_until =
-                            Some(now + self.inner.load_balancing.failure_cooldown);
-                        metrics::record_runtime_failure("udp", group_name, &uplink_name);
-                        metrics::record_runtime_failure_cause(
-                            "udp",
-                            group_name,
-                            &uplink_name,
-                            failure_cause,
-                        );
-                        metrics::record_runtime_failure_signature(
-                            "udp",
-                            group_name,
-                            &uplink_name,
-                            failure_signature,
-                        );
-                        if let Some(detail) = &failure_other_detail {
-                            metrics::record_runtime_failure_other_detail(
-                                "udp",
-                                group_name,
-                                &uplink_name,
-                                detail,
-                            );
-                        }
-                    } else {
-                        metrics::record_runtime_failure_suppressed(
-                            "udp",
-                            group_name,
-                            &uplink_name,
-                        );
+                        status.udp.cooldown_until = Some(now + failure_cooldown);
                     }
-                    if !self.inner.probe.enabled() {
+                    if !probe_enabled {
                         status.udp.healthy = Some(false);
                     }
-                    let should_wake_probe = self.inner.probe.enabled()
-                        && !already_in_cooldown
-                        && mark_probe_wakeup(
+                    if probe_enabled && !already_in_cooldown {
+                        mark_probe_wakeup(
                             &mut status.udp.last_probe_wakeup,
                             now,
                             PROBE_WAKEUP_MIN_INTERVAL,
                         );
-                    (
-                        uplink_name,
-                        status.udp.cooldown_until,
-                        current_penalty(&status.udp.penalty, now, &self.inner.load_balancing)
-                            .map(|value| value.as_millis()),
-                        already_in_cooldown,
-                        should_wake_probe,
-                    )
+                    }
                 },
+            }
+        }).await;
+        // Read back post-mutation state for logging / wakeup decision.
+        let (cooldown_until, penalty_ms, should_wake_probe) = {
+            let statuses = self.inner.statuses.read().await.clone();
+            let status = &statuses[index];
+            let load_balancing = &self.inner.load_balancing;
+            match transport {
+                TransportKind::Tcp => (
+                    status.tcp.cooldown_until,
+                    current_penalty(&status.tcp.penalty, now, load_balancing)
+                        .map(|v| v.as_millis()),
+                    probe_enabled
+                        && !already_in_cooldown
+                        && status.tcp.last_probe_wakeup.is_some_and(|t| {
+                            now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL
+                        }),
+                ),
+                TransportKind::Udp => (
+                    status.udp.cooldown_until,
+                    current_penalty(&status.udp.penalty, now, load_balancing)
+                        .map(|v| v.as_millis()),
+                    probe_enabled
+                        && !already_in_cooldown
+                        && status.udp.last_probe_wakeup.is_some_and(|t| {
+                            now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL
+                        }),
+                ),
             }
         };
 
@@ -310,19 +289,20 @@ impl UplinkManager {
                 && uplink.tcp_ws_mode == crate::types::WsTransportMode::H3
             {
                 let now = tokio::time::Instant::now();
-                let mut statuses = self.inner.statuses.write().await;
-                let status = &mut statuses[index];
-                let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
-                let prev = status.tcp.h3_downgrade_until;
+                let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
+                let prev = self.inner.statuses.read().await.clone()[index].tcp.h3_downgrade_until;
                 if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
                         error = %format!("{error:#}"),
-                        downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                        downgrade_secs = h3_downgrade_duration.as_secs(),
                         "H3 TCP runtime error detected, downgrading TCP transport to H2"
                     );
                 }
-                status.tcp.h3_downgrade_until = Some(downgrade_until);
+                let downgrade_until = now + h3_downgrade_duration;
+                self.inner.modify_statuses(|statuses| {
+                    statuses[index].tcp.h3_downgrade_until = Some(downgrade_until);
+                }).await;
             }
         }
         // Same downgrade logic for UDP transport.  Without this, a broken H3
@@ -338,19 +318,20 @@ impl UplinkManager {
                 && uplink.udp_ws_mode == crate::types::WsTransportMode::H3
             {
                 let now = tokio::time::Instant::now();
-                let mut statuses = self.inner.statuses.write().await;
-                let status = &mut statuses[index];
-                let downgrade_until = now + self.inner.load_balancing.h3_downgrade_duration;
-                let prev = status.udp.h3_downgrade_until;
+                let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
+                let prev = self.inner.statuses.read().await.clone()[index].udp.h3_downgrade_until;
                 if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
                         error = %format!("{error:#}"),
-                        downgrade_secs = self.inner.load_balancing.h3_downgrade_duration.as_secs(),
+                        downgrade_secs = h3_downgrade_duration.as_secs(),
                         "H3 UDP runtime error detected, downgrading UDP transport to H2"
                     );
                 }
-                status.udp.h3_downgrade_until = Some(downgrade_until);
+                let downgrade_until = now + h3_downgrade_duration;
+                self.inner.modify_statuses(|statuses| {
+                    statuses[index].udp.h3_downgrade_until = Some(downgrade_until);
+                }).await;
             }
         }
         self.clear_standby(index, transport).await;
@@ -362,7 +343,7 @@ impl UplinkManager {
         transport: TransportKind,
     ) -> Option<u128> {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await;
+        let statuses = self.inner.statuses.read().await.clone();
         let status = statuses.get(index)?;
         match transport {
             TransportKind::Tcp => status
@@ -388,7 +369,7 @@ impl UplinkManager {
         let now = Instant::now();
         // Fast path: skip the write lock when we recently reported for this transport.
         {
-            let statuses = self.inner.statuses.read().await;
+            let statuses = self.inner.statuses.read().await.clone();
             let last = match transport {
                 TransportKind::Tcp => statuses[index].tcp.last_active,
                 TransportKind::Udp => statuses[index].udp.last_active,
@@ -398,55 +379,62 @@ impl UplinkManager {
             }
         }
         let uplink_name = self.inner.uplinks[index].name.clone();
-        let mut statuses = self.inner.statuses.write().await;
-        let status = &mut statuses[index];
-        // Double-check after acquiring write lock.
-        let last = match transport {
-            TransportKind::Tcp => &mut status.tcp.last_active,
-            TransportKind::Udp => &mut status.udp.last_active,
-        };
-        if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
+        // Double-check after acquiring the write (inside modify_statuses) to avoid
+        // a race where two callers both pass the fast-path read.
+        let probe_enabled = self.inner.probe.enabled();
+        let mut did_update = false;
+        self.inner.modify_statuses(|statuses| {
+            let status = &mut statuses[index];
+            let last = match transport {
+                TransportKind::Tcp => &mut status.tcp.last_active,
+                TransportKind::Udp => &mut status.udp.last_active,
+            };
+            if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
+                return;
+            }
+            *last = Some(now);
+            did_update = true;
+            // When probe is enabled it is the authoritative source of tcp_healthy /
+            // udp_healthy.  Overriding it here would let an in-flight session on a
+            // probe-marked-unhealthy uplink keep resetting the health flag to
+            // Some(true), preventing the failover from taking effect in
+            // active-passive / global scope.  When probe is disabled there is no
+            // other health signal, so we update the health state from traffic.
+            match transport {
+                TransportKind::Tcp => {
+                    if !probe_enabled {
+                        status.tcp.healthy = Some(true);
+                        status.tcp.consecutive_failures = 0;
+                        // When probe is disabled active traffic is the only health
+                        // signal, so clear the cooldown immediately.
+                        status.tcp.cooldown_until = None;
+                    }
+                    // When probe is enabled it is the authoritative source of health.
+                    // Do not clear the cooldown from in-flight traffic: a session
+                    // that was established *before* a runtime failure and is still
+                    // exchanging data does not prove the uplink is healthy for *new*
+                    // sessions.  The probe wakeup fired at failure time will clear
+                    // the cooldown within seconds once it confirms connectivity.
+                    // Clearing it here would let new sessions route to a recently-
+                    // failed uplink before the probe has had a chance to confirm.
+                },
+                TransportKind::Udp => {
+                    if !probe_enabled {
+                        status.udp.healthy = Some(true);
+                        status.udp.consecutive_failures = 0;
+                        status.udp.cooldown_until = None;
+                    }
+                },
+            }
+        }).await;
+        if !did_update {
             return;
         }
-        *last = Some(now);
         debug!(
             uplink = %uplink_name,
             transport = ?transport,
             "real traffic activity recorded"
         );
-        // When probe is enabled it is the authoritative source of tcp_healthy /
-        // udp_healthy.  Overriding it here would let an in-flight session on a
-        // probe-marked-unhealthy uplink keep resetting the health flag to
-        // Some(true), preventing the failover from taking effect in
-        // active-passive / global scope.  When probe is disabled there is no
-        // other health signal, so we update the health state from traffic.
-        let probe_enabled = self.inner.probe.enabled();
-        match transport {
-            TransportKind::Tcp => {
-                if !probe_enabled {
-                    status.tcp.healthy = Some(true);
-                    status.tcp.consecutive_failures = 0;
-                    // When probe is disabled active traffic is the only health
-                    // signal, so clear the cooldown immediately.
-                    status.tcp.cooldown_until = None;
-                }
-                // When probe is enabled it is the authoritative source of health.
-                // Do not clear the cooldown from in-flight traffic: a session
-                // that was established *before* a runtime failure and is still
-                // exchanging data does not prove the uplink is healthy for *new*
-                // sessions.  The probe wakeup fired at failure time will clear
-                // the cooldown within seconds once it confirms connectivity.
-                // Clearing it here would let new sessions route to a recently-
-                // failed uplink before the probe has had a chance to confirm.
-            },
-            TransportKind::Udp => {
-                if !probe_enabled {
-                    status.udp.healthy = Some(true);
-                    status.udp.consecutive_failures = 0;
-                    status.udp.cooldown_until = None;
-                }
-            },
-        }
     }
 
     /// Called when the upstream WebSocket closes unexpectedly mid-session
@@ -467,28 +455,29 @@ impl UplinkManager {
     pub async fn report_upstream_close(&self, index: usize, transport: TransportKind) {
         let now = Instant::now();
         let threshold = self.inner.load_balancing.failure_cooldown;
-        let mut statuses = self.inner.statuses.write().await;
-        let status = &mut statuses[index];
-        match transport {
-            TransportKind::Tcp => {
-                let recently_active = status
-                    .tcp
-                    .last_active
-                    .is_some_and(|t| now.duration_since(t) < threshold);
-                if !recently_active {
-                    status.tcp.last_active = None;
-                }
-            },
-            TransportKind::Udp => {
-                let recently_active = status
-                    .udp
-                    .last_active
-                    .is_some_and(|t| now.duration_since(t) < threshold);
-                if !recently_active {
-                    status.udp.last_active = None;
-                }
-            },
-        }
+        self.inner.modify_statuses(|statuses| {
+            let status = &mut statuses[index];
+            match transport {
+                TransportKind::Tcp => {
+                    let recently_active = status
+                        .tcp
+                        .last_active
+                        .is_some_and(|t| now.duration_since(t) < threshold);
+                    if !recently_active {
+                        status.tcp.last_active = None;
+                    }
+                },
+                TransportKind::Udp => {
+                    let recently_active = status
+                        .udp
+                        .last_active
+                        .is_some_and(|t| now.duration_since(t) < threshold);
+                    if !recently_active {
+                        status.udp.last_active = None;
+                    }
+                },
+            }
+        }).await;
     }
 
     /// Feed a connection-establishment latency sample into the RTT EWMA for
@@ -501,16 +490,17 @@ impl UplinkManager {
         transport: TransportKind,
         latency: Duration,
     ) {
-        let mut statuses = self.inner.statuses.write().await;
-        let status = &mut statuses[index];
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
-        match transport {
-            TransportKind::Tcp => {
-                update_rtt_ewma(&mut status.tcp.rtt_ewma, Some(latency), alpha);
-            },
-            TransportKind::Udp => {
-                update_rtt_ewma(&mut status.udp.rtt_ewma, Some(latency), alpha);
-            },
-        }
+        self.inner.modify_statuses(|statuses| {
+            let status = &mut statuses[index];
+            match transport {
+                TransportKind::Tcp => {
+                    update_rtt_ewma(&mut status.tcp.rtt_ewma, Some(latency), alpha);
+                },
+                TransportKind::Udp => {
+                    update_rtt_ewma(&mut status.udp.rtt_ewma, Some(latency), alpha);
+                },
+            }
+        }).await;
     }
 }
