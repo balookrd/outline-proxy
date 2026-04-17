@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::net::lookup_host;
 use tracing::warn;
 
-use crate::config_types::ServerAddr;
+use crate::config::ServerAddr;
 use crate::dns_cache::DnsCache;
 
 pub(super) async fn resolve_server_addr(

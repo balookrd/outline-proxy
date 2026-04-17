@@ -19,7 +19,7 @@ const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(feature = "h3")]
 use crate::h3::connect_websocket_h3;
 
-pub mod config_types;
+pub mod config;
 mod dns;
 mod dns_cache;
 mod guards;
@@ -31,7 +31,7 @@ mod tcp_transport;
 mod udp_transport;
 mod ws_stream;
 
-pub use config_types::{ServerAddr, WsTransportMode};
+pub use config::{ServerAddr, WsTransportMode};
 pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 use dns::resolve_server_addr;
