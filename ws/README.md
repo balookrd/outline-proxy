@@ -164,7 +164,6 @@ tun2udp + tun2tcp"]
 
 The project is intentionally practical, but there are still boundaries:
 
-- Shadowsocks 2022 is not implemented.
 - `tun2tcp` is production-oriented but still not a kernel-equivalent TCP stack.
 - Non-echo ICMP traffic on TUN is not supported.
 - `probe.http` supports `http://` only, not `https://`. `probe.tcp` should target a speak-first TCP service such as SSH or SMTP, not a typical HTTP/HTTPS port.
@@ -606,6 +605,8 @@ via = "main"
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
 - `direct_fwmark` (optional, top-level): `SO_MARK` value applied to TCP and UDP sockets opened for `direct`-routed connections. Use when bypass traffic must be tagged for OS-level policy routing to avoid loops (e.g. the bypass route must itself not be intercepted by the TUN interface).
+- SOCKS5 → upstream TCP sessions are subject to a 5-minute bidirectional idle timeout. If no bytes flow in either direction for 300 seconds, the tunnel is closed and FDs are reclaimed. Any data activity in either direction resets the timer. This prevents FD accumulation from abandoned connections, particularly under TUN interceptors that open many TCP sessions and release them without FIN.
+- Half-open TCP sessions (client sent EOF, proxy is waiting for upstream FIN) are closed after 30 seconds. This prevents sockets from staying half-open indefinitely when the upstream does not acknowledge the client's disconnect.
 
 ### Useful CLI and env overrides
 
@@ -758,6 +759,8 @@ Selection pipeline:
 4. Final score is `effective_latency / weight`.
 5. Sticky routing and hysteresis reduce avoidable switches.
 6. Warm-standby pools reduce connection setup latency.
+
+**Sticky-route cap:** the sticky-route table is bounded at 100,000 per-flow entries. Under traffic from large NAT pools or many distinct clients in `per_flow` routing scope, the table would otherwise grow unboundedly. New per-flow entries beyond the cap are silently dropped — the flow falls back to a fresh latency-ordered selection instead of a sticky one. Global and per-transport pinned entries (used in `global` and `per_uplink` scopes) are always stored regardless of this limit.
 
 Routing scope behavior:
 
