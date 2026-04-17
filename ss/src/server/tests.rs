@@ -35,7 +35,7 @@ use tokio_tungstenite::{
 use super::bootstrap::serve_listener;
 use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
 use super::{
-    UdpDnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
+    DnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
     serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
 };
 use crate::config::{CipherKind, Config, UserEntry};
@@ -64,7 +64,8 @@ async fn tcp_ipv6_loopback_smoke() -> Result<()> {
     });
 
     let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
-    let mut client = connect_tcp_target(&target, None, false).await?;
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let mut client = connect_tcp_target(dns_cache.as_ref(), &target, None, false).await?;
     client.write_all(b"ping").await?;
 
     let mut reply = [0_u8; 4];
@@ -100,15 +101,16 @@ fn tcp_connect_order_interleaves_ipv4_and_ipv6() {
 }
 
 #[test]
-fn udp_dns_cache_returns_fresh_entries_and_expires() {
-    let cache = UdpDnsCache::new(std::time::Duration::from_millis(5));
+fn dns_cache_returns_fresh_entries_and_expires() {
+    let cache = DnsCache::new(std::time::Duration::from_millis(5));
     let resolved = SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53));
+    let entry: Arc<[SocketAddr]> = Arc::from(vec![resolved].into_boxed_slice());
 
-    cache.store("dns.google", 53, false, resolved);
-    assert_eq!(cache.lookup("dns.google", 53, false), Some(resolved));
+    cache.store("dns.google", 53, false, entry);
+    assert_eq!(cache.lookup_one("dns.google", 53, false), Some(resolved));
 
     std::thread::sleep(std::time::Duration::from_millis(10));
-    assert_eq!(cache.lookup("dns.google", 53, false), None);
+    assert_eq!(cache.lookup_one("dns.google", 53, false), None);
 }
 
 #[tokio::test]
@@ -175,14 +177,14 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
     let config = sample_config(addr);
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         false,
         "Authorization required".into(),
@@ -224,14 +226,14 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
     config.http_root_auth = true;
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         true,
         config.http_root_realm.clone(),
@@ -255,14 +257,14 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
     config.http_root_auth = true;
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         true,
         config.http_root_realm.clone(),
@@ -312,14 +314,14 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let users = build_users(&config)?;
     let user = users[0].clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         false,
         "Authorization required".into(),
@@ -378,14 +380,14 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let config = sample_config(addr);
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         false,
         "Authorization required".into(),
@@ -472,14 +474,14 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
     );
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         false,
         "Authorization required".into(),
@@ -526,14 +528,14 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
     config.http_root_realm = "My VPN \"Portal\"".into();
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         true,
         config.http_root_realm.clone(),
@@ -620,14 +622,14 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
     config.http_root_auth = true;
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let app = build_app(
         users.clone(),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
         Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
-        udp_dns_cache,
+        dns_cache,
         false,
         true,
         config.http_root_realm.clone(),
@@ -699,8 +701,10 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
     let users = build_users(&config)?;
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
-    let server =
-        tokio::spawn(async move { serve_ss_tcp_listener(listener, users, metrics, false).await });
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let server = tokio::spawn(async move {
+        serve_ss_tcp_listener(listener, users, metrics, dns_cache, false).await
+    });
 
     let mut client = TcpStream::connect(listen_addr).await?;
     let mut request = TargetAddr::Socket(upstream_addr).encode()?;
@@ -717,8 +721,8 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
 
     let mut decryptor = AeadStreamDecryptor::new(Arc::from(vec![user].into_boxed_slice()));
     let mut plaintext = Vec::new();
-    decryptor.push(&encrypted_reply[..read]);
-    decryptor.pull_plaintext(&mut plaintext)?;
+    decryptor.feed_ciphertext(&encrypted_reply[..read]);
+    decryptor.drain_plaintext(&mut plaintext)?;
     assert_eq!(plaintext, b"pong");
     assert_eq!(upstream_task.await??, b"ping");
 
@@ -742,7 +746,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -751,7 +755,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
             udp_routes,
             metrics,
             nat_table,
-            udp_dns_cache,
+            dns_cache,
             false,
             false,
             config.http_root_realm.clone(),
@@ -812,7 +816,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -821,7 +825,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
             udp_routes,
             metrics,
             nat_table,
-            udp_dns_cache,
+            dns_cache,
             false,
             true,
             config.http_root_realm.clone(),
@@ -882,7 +886,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
         serve_h3_server(
             server,
@@ -891,7 +895,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
             udp_routes,
             metrics,
             nat_table,
-            udp_dns_cache,
+            dns_cache,
             false,
             true,
             config.http_root_realm.clone(),
@@ -949,9 +953,9 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, users, metrics, nat_table, udp_dns_cache, false).await
+        serve_ss_udp_socket(listener, users, metrics, nat_table, dns_cache, false).await
     });
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -1007,9 +1011,9 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
-    let udp_dns_cache = UdpDnsCache::new(std::time::Duration::from_secs(30));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, users, metrics, nat_table, udp_dns_cache, false).await
+        serve_ss_udp_socket(listener, users, metrics, nat_table, dns_cache, false).await
     });
 
     let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;

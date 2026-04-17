@@ -24,10 +24,10 @@ pub(super) async fn tcp_websocket_upgrade(
         Err(_) => return not_found_response(),
     };
     let protocol = protocol_from_http_version(version);
-    let path = uri.path().to_owned();
+    let path: Arc<str> = Arc::from(uri.path());
     let route = state
         .tcp_routes
-        .get(&path)
+        .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
@@ -38,8 +38,9 @@ pub(super) async fn tcp_websocket_upgrade(
             route.users,
             state.metrics.clone(),
             protocol,
-            path.clone(),
+            Arc::clone(&path),
             route.candidate_users,
+            state.dns_cache,
             state.prefer_ipv4_upstream,
         )
         .await
@@ -117,10 +118,10 @@ pub(super) async fn udp_websocket_upgrade(
     };
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
-    let path = uri.path().to_owned();
+    let path: Arc<str> = Arc::from(uri.path());
     let route = state
         .udp_routes
-        .get(&path)
+        .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
@@ -132,10 +133,10 @@ pub(super) async fn udp_websocket_upgrade(
             route.users,
             state.metrics.clone(),
             protocol,
-            path.clone(),
+            Arc::clone(&path),
             route.candidate_users,
             nat_table,
-            state.udp_dns_cache.clone(),
+            state.dns_cache.clone(),
             state.prefer_ipv4_upstream,
         )
         .await
@@ -311,10 +312,12 @@ async fn relay_upstream_to_client_generic<Msg>(
 where
     Msg: Send + 'static,
 {
-    let mut buffer = vec![0_u8; MAX_CHUNK_SIZE];
+    let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     loop {
+        buffer.clear();
+        buffer.reserve(MAX_CHUNK_SIZE);
         let read = upstream_reader
-            .read(&mut buffer)
+            .read_buf(&mut buffer)
             .await
             .context("failed to read from upstream")?;
         if read == 0 {
@@ -322,7 +325,7 @@ where
         }
 
         metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
-        let ciphertext = encryptor.encrypt_chunk(&buffer[..read])?;
+        let ciphertext = encryptor.encrypt_chunk(&buffer)?;
         outbound_tx
             .send(make_binary(ciphertext.into()))
             .await
@@ -344,6 +347,7 @@ async fn handle_tcp_binary_frame<Msg>(
     protocol: Protocol,
     path: &str,
     candidate_users: &[String],
+    dns_cache: &DnsCache,
     prefer_ipv4_upstream: bool,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
@@ -352,8 +356,8 @@ where
     Msg: Send + 'static,
 {
     metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "in", data.len());
-    decryptor.push(&data);
-    match decryptor.pull_plaintext(plaintext_buffer) {
+    decryptor.feed_ciphertext(&data);
+    match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},
         Err(CryptoError::UnknownUser) => {
             debug!(
@@ -386,7 +390,7 @@ where
         let user_id = user.id_arc();
         let target_display = target.display_host_port();
         let connect_started = std::time::Instant::now();
-        let stream = match connect_tcp_target(&target, user.fwmark(), prefer_ipv4_upstream).await {
+        let stream = match connect_tcp_target(dns_cache, &target, user.fwmark(), prefer_ipv4_upstream).await {
             Ok(stream) => {
                 metrics.record_tcp_connect(
                     Arc::clone(&user_id),
@@ -468,11 +472,11 @@ async fn handle_udp_datagram_common<Msg>(
     outbound_tx: mpsc::Sender<Msg>,
     metrics: Arc<Metrics>,
     protocol: Protocol,
-    path: String,
+    path: Arc<str>,
     candidate_users: Arc<[String]>,
     udp_session_recorded: Arc<AtomicBool>,
     cached_user_index: Arc<AtomicUsize>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     make_response_sender: fn(mpsc::Sender<Msg>, Protocol) -> UdpResponseSender,
 ) -> Result<()>
@@ -523,7 +527,7 @@ where
     );
 
     let resolved =
-        resolve_udp_target(udp_dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
+        resolve_udp_target(dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
     info!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -534,7 +538,7 @@ where
     );
 
     let nat_key = NatKey {
-        user_id: packet.user.id().to_owned(),
+        user_id: Arc::clone(&user_id),
         fwmark: packet.user.fwmark(),
         target: resolved,
         udp_client_session_id: packet.session.client_session_id(),
@@ -596,8 +600,9 @@ async fn handle_tcp_connection(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     protocol: Protocol,
-    path: String,
+    path: Arc<str>,
     candidate_users: Arc<[String]>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
@@ -665,6 +670,7 @@ async fn handle_tcp_connection(
                     protocol,
                     &path,
                     candidate_users.as_ref(),
+                    dns_cache.as_ref(),
                     prefer_ipv4_upstream,
                     ws_binary_message,
                     ws_close_message,
@@ -720,10 +726,10 @@ async fn handle_udp_connection(
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     protocol: Protocol,
-    path: String,
+    path: Arc<str>,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_sender, mut ws_receiver) = socket.split();
@@ -797,7 +803,7 @@ async fn handle_udp_connection(
                         let udp_session_recorded = udp_session_recorded.clone();
                         let cached_user_index = Arc::clone(&cached_user_index);
                         let nat_table = Arc::clone(&nat_table);
-                        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                        let dns_cache = Arc::clone(&dns_cache);
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
                                 nat_table,
@@ -810,7 +816,7 @@ async fn handle_udp_connection(
                                 candidate_users,
                                 udp_session_recorded,
                                 cached_user_index,
-                                udp_dns_cache,
+                                dns_cache,
                                 prefer_ipv4_upstream,
                                 make_ws_udp_response_sender,
                             )
@@ -859,8 +865,9 @@ pub(super) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
-    path: String,
+    path: Arc<str>,
     candidate_users: Arc<[String]>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
@@ -935,6 +942,7 @@ pub(super) async fn handle_tcp_h3_connection(
                     Protocol::Http3,
                     &path,
                     candidate_users.as_ref(),
+                    dns_cache.as_ref(),
                     prefer_ipv4_upstream,
                     h3_binary_message,
                     h3_close_message,
@@ -978,10 +986,10 @@ pub(super) async fn handle_udp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
-    path: String,
+    path: Arc<str>,
     candidate_users: Arc<[String]>,
     nat_table: Arc<NatTable>,
-    udp_dns_cache: Arc<UdpDnsCache>,
+    dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
     let (mut ws_reader, mut ws_writer) = socket.split();
@@ -1072,7 +1080,7 @@ pub(super) async fn handle_udp_h3_connection(
                         let udp_session_recorded = udp_session_recorded.clone();
                         let cached_user_index = Arc::clone(&cached_user_index);
                         let nat_table = Arc::clone(&nat_table);
-                        let udp_dns_cache = Arc::clone(&udp_dns_cache);
+                        let dns_cache = Arc::clone(&dns_cache);
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
                                 nat_table,
@@ -1085,7 +1093,7 @@ pub(super) async fn handle_udp_h3_connection(
                                 candidate_users,
                                 udp_session_recorded,
                                 cached_user_index,
-                                udp_dns_cache,
+                                dns_cache,
                                 prefer_ipv4_upstream,
                                 make_h3_udp_response_sender,
                             )
