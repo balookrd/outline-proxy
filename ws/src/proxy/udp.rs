@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, mpsc};
@@ -132,6 +133,7 @@ fn routing_table_active(config: &ProxyConfig) -> bool {
 struct GroupUdpContext {
     manager: UplinkManager,
     active: Arc<Mutex<ActiveUdpTransport>>,
+    group_name: Arc<str>,
 }
 
 /// A response datagram emitted by some group's downlink task, waiting to be
@@ -139,9 +141,9 @@ struct GroupUdpContext {
 /// share a single writer half without fighting for a mutex.
 struct UdpResponse {
     target: TargetAddr,
-    payload: Vec<u8>,
-    group_name: String,
-    uplink_name: String,
+    payload: Bytes,
+    group_name: Arc<str>,
+    uplink_name: Arc<str>,
 }
 
 /// Per-association map of group-name → per-group UDP context, plus the
@@ -195,7 +197,11 @@ async fn resolve_group_context(
         .clone();
     let initial = select_udp_transport(&manager, None).await?;
     let active = Arc::new(Mutex::new(initial));
-    let ctx = GroupUdpContext { manager: manager.clone(), active: Arc::clone(&active) };
+    let ctx = GroupUdpContext {
+        manager: manager.clone(),
+        active: Arc::clone(&active),
+        group_name: Arc::from(group_name),
+    };
 
     let mut map = registry_groups.map.lock().await;
     if let Some(existing) = map.get(group_name) {
@@ -247,8 +253,8 @@ async fn run_group_downlink(
                 if responses
                     .send(UdpResponse {
                         target,
-                        payload: payload[consumed..].to_vec(),
-                        group_name: ctx.manager.group_name().to_string(),
+                        payload: payload.slice(consumed..),
+                        group_name: Arc::clone(&ctx.group_name),
                         uplink_name: replacement.uplink_name,
                     })
                     .await
@@ -263,8 +269,8 @@ async fn run_group_downlink(
         if responses
             .send(UdpResponse {
                 target,
-                payload: payload[consumed..].to_vec(),
-                group_name: ctx.manager.group_name().to_string(),
+                payload: payload.slice(consumed..),
+                group_name: Arc::clone(&ctx.group_name),
                 uplink_name: name,
             })
             .await
@@ -278,7 +284,7 @@ async fn run_group_downlink(
 #[derive(Clone)]
 pub(super) struct ActiveUdpTransport {
     pub(super) index: usize,
-    pub(super) uplink_name: String,
+    pub(super) uplink_name: Arc<str>,
     pub(super) uplink_weight: f64,
     pub(super) transport: Arc<UdpWsTransport>,
 }
@@ -800,7 +806,7 @@ pub(super) async fn select_udp_transport(
                     .await;
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
-                    uplink_name: candidate.uplink.name.clone(),
+                    uplink_name: Arc::from(candidate.uplink.name.as_str()),
                     uplink_weight: candidate.uplink.weight,
                     transport: Arc::new(transport),
                 });
@@ -1025,7 +1031,7 @@ mod tests {
         );
         let active_transport = Arc::new(Mutex::new(ActiveUdpTransport {
             index: 1,
-            uplink_name: "old".to_string(),
+            uplink_name: Arc::from("old"),
             uplink_weight: 1.0,
             transport: Arc::clone(&old_transport),
         }));
@@ -1038,7 +1044,7 @@ mod tests {
             1,
             ActiveUdpTransport {
                 index: 2,
-                uplink_name: "new".to_string(),
+                uplink_name: Arc::from("new"),
                 uplink_weight: 1.0,
                 transport: Arc::clone(&new_transport),
             },
