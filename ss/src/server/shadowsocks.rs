@@ -92,11 +92,7 @@ pub(super) async fn serve_ss_tcp_listener(
                 if is_expected_ws_close(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
                 } else {
-                    warn!(
-                        %peer,
-                        error = %format!("{error:#}"),
-                        "shadowsocks tcp connection terminated with error"
-                    );
+                    warn!(%peer, ?error, "shadowsocks tcp connection terminated with error");
                 }
             }
         });
