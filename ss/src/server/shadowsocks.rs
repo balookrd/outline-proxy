@@ -182,7 +182,7 @@ async fn handle_ss_tcp_connection(
                     attempts = ?diagnose_stream_handshake(users.as_ref(), decryptor.buffered_data()),
                     "socket tcp authentication failed for all configured users"
                 );
-                return Err(anyhow!("no configured key matched the incoming socket tcp stream"));
+                return Ok(());
             },
             Err(error) => return Err(anyhow!(error)),
         }
@@ -486,7 +486,7 @@ async fn handle_ss_udp_datagram(
                 attempts = ?diagnose_udp_packet(users.as_ref(), &data),
                 "socket udp authentication failed for all configured users"
             );
-            return Err(anyhow!("no configured key matched the incoming socket udp datagram"));
+            return Ok(());
         },
         Err(error) => return Err(anyhow!(error)),
     };
