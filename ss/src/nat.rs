@@ -336,6 +336,7 @@ fn random_session_id() -> Result<[u8; 8]> {
     Ok(session_id)
 }
 
+/// Returns the current Unix timestamp in whole seconds, saturating at zero on clock skew.
 fn unix_secs_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

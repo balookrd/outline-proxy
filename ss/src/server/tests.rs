@@ -33,7 +33,7 @@ use tokio_tungstenite::{
 };
 
 use super::bootstrap::serve_listener;
-use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
+use super::connect::{connect_tcp_addrs, sort_addrs_for_happy_eyeballs};
 use super::shutdown::ShutdownSignal;
 use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, build_app, build_transport_route_map,
@@ -105,7 +105,7 @@ async fn tcp_ipv6_loopback_smoke() -> Result<()> {
 
 #[test]
 fn tcp_connect_order_interleaves_ipv4_and_ipv6() {
-    let ordered = order_tcp_connect_addrs(
+    let ordered = sort_addrs_for_happy_eyeballs(
         vec![
             SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
             SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),

@@ -82,7 +82,7 @@ pub(super) async fn tcp_websocket_upgrade(
                 if is_normal_h3_shutdown(&error) {
                     debug!(?error, "tcp websocket connection closed normally");
                     DisconnectReason::Normal
-                } else if is_benign_ws_disconnect(&error) {
+                } else if is_expected_ws_close(&error) {
                     debug!(?error, "tcp websocket connection closed abruptly");
                     DisconnectReason::ClientDisconnect
                 } else {
@@ -185,7 +185,7 @@ pub(super) async fn udp_websocket_upgrade(
                 if is_normal_h3_shutdown(&error) {
                     debug!(?error, "udp websocket connection closed normally");
                     DisconnectReason::Normal
-                } else if is_benign_ws_disconnect(&error) {
+                } else if is_expected_ws_close(&error) {
                     debug!(?error, "udp websocket connection closed abruptly");
                     DisconnectReason::ClientDisconnect
                 } else {
@@ -1197,7 +1197,7 @@ pub(super) async fn handle_udp_h3_connection(
     loop_result
 }
 
-pub(super) fn is_benign_ws_disconnect(error: &anyhow::Error) -> bool {
+pub(super) fn is_expected_ws_close(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         let message = cause.to_string();
         message.contains("Connection reset without closing handshake")

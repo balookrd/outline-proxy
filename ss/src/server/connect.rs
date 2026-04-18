@@ -104,7 +104,7 @@ pub(super) async fn connect_tcp_target(
     fwmark: Option<u32>,
     prefer_ipv4_upstream: bool,
 ) -> Result<TcpStream> {
-    let resolved = order_tcp_connect_addrs(
+    let resolved = sort_addrs_for_happy_eyeballs(
         resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?.to_vec(),
         prefer_ipv4_upstream,
     );
@@ -113,7 +113,7 @@ pub(super) async fn connect_tcp_target(
         .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
 }
 
-pub(super) fn order_tcp_connect_addrs(
+pub(super) fn sort_addrs_for_happy_eyeballs(
     addrs: Vec<SocketAddr>,
     prefer_ipv4_upstream: bool,
 ) -> Vec<SocketAddr> {
