@@ -3,7 +3,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{Mutex, Notify, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
@@ -63,6 +63,9 @@ pub(crate) struct UplinkManagerInner {
     /// reconnect). Owned at app scope by `AppConfig::dns_cache` and cloned
     /// into every manager at construction time.
     pub(crate) dns_cache: Arc<outline_transport::DnsCache>,
+    /// Signals background loops (probe, warm-standby, keepalive) to stop.
+    /// Call `shutdown_tx.send(true)` or use `UplinkManager::shutdown()`.
+    pub(crate) shutdown_tx: watch::Sender<bool>,
 }
 
 impl UplinkManagerInner {

@@ -80,12 +80,15 @@ impl UplinkManager {
         }
 
         let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
         tokio::spawn(async move {
             manager.probe_all().await;
             loop {
                 // Wake up either when the scheduled interval elapses or when a
                 // runtime failure triggers an early wakeup (probe_wakeup).
                 tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
                     _ = sleep(manager.inner.probe.interval) => {}
                     _ = manager.inner.probe_wakeup.notified() => {}
                 }
@@ -93,6 +96,7 @@ impl UplinkManager {
             }
         });
     }
+
 
     pub(crate) async fn probe_all(&self) {
         let mut tasks = tokio::task::JoinSet::new();

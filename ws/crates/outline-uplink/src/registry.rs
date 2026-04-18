@@ -153,6 +153,15 @@ impl UplinkRegistry {
         }
     }
 
+    /// Cancel all background loops (probe, warm-standby, keepalive) for every
+    /// group. Call this before dropping a registry on config reload so old
+    /// tasks do not outlive the registry they were spawned from.
+    pub fn shutdown(&self) {
+        for group in &self.groups {
+            group.manager.shutdown();
+        }
+    }
+
     /// Snapshot each group for Prometheus rendering. The returned vector
     /// preserves declaration order, matching the `groups` view.
     pub async fn snapshots(&self) -> Vec<UplinkManagerSnapshot> {
