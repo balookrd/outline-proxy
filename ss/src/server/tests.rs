@@ -36,16 +36,42 @@ use super::bootstrap::serve_listener;
 use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
 use super::shutdown::ShutdownSignal;
 use super::{
-    DnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
-    serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
+    AuthPolicy, DnsCache, RouteRegistry, Services, build_app, build_transport_route_map,
+    build_users, connect_tcp_target, serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket,
+    serve_tcp_listener,
 };
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{
-    AeadStreamDecryptor, AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet,
+    AeadStreamDecryptor, AeadStreamEncryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet,
 };
 use crate::metrics::{Metrics, Transport};
 use crate::nat::NatTable;
 use crate::protocol::TargetAddr;
+
+fn build_test_state(
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    nat_table: Arc<NatTable>,
+    dns_cache: Arc<DnsCache>,
+    http_root_auth: bool,
+    http_root_realm: impl Into<Arc<str>>,
+) -> (Arc<RouteRegistry>, Arc<Services>, Arc<AuthPolicy>) {
+    let tcp = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
+    let udp = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+    let routes = Arc::new(RouteRegistry { tcp, udp });
+    let services = Arc::new(Services {
+        metrics,
+        nat_table,
+        dns_cache,
+        prefer_ipv4_upstream: false,
+    });
+    let auth = Arc::new(AuthPolicy {
+        users,
+        http_root_auth,
+        http_root_realm: http_root_realm.into(),
+    });
+    (routes, services, auth)
+}
 
 #[tokio::test]
 async fn tcp_ipv6_loopback_smoke() -> Result<()> {
@@ -179,17 +205,15 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
         false,
-        false,
-        "Authorization required".into(),
+        "Authorization required",
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
@@ -228,17 +252,15 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
-        false,
         true,
         config.http_root_realm.clone(),
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let (mut socket, _) = connect_async(format!("ws://{addr}/tcp")).await?;
@@ -259,17 +281,15 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
-        false,
         true,
         config.http_root_realm.clone(),
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
@@ -316,17 +336,15 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let user = users[0].clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
         false,
-        false,
-        "Authorization required".into(),
+        "Authorization required",
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
@@ -382,17 +400,15 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
         false,
-        false,
-        "Authorization required".into(),
+        "Authorization required",
     );
+    let app = build_app(routes, services, auth);
 
     let (cert_path, key_path, cert_der) = write_test_h2_tls_cert()?;
     let mut tls_config = config.clone();
@@ -478,17 +494,15 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
         false,
-        false,
-        "Authorization required".into(),
+        "Authorization required",
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let bob = users
@@ -532,17 +546,15 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
-        false,
         true,
         config.http_root_realm.clone(),
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
@@ -626,17 +638,15 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
     let users = build_users(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let app = build_app(
+    let (routes, services, auth) = build_test_state(
         users.clone(),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp)),
-        Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp)),
         Metrics::new(&config),
         nat_table,
         dns_cache,
-        false,
         true,
         config.http_root_realm.clone(),
     );
+    let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
@@ -753,26 +763,19 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let users = build_users(&config)?;
-    let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        users,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
     let server = tokio::spawn(async move {
-        serve_h3_server(
-            server,
-            users,
-            tcp_routes,
-            udp_routes,
-            metrics,
-            nat_table,
-            dns_cache,
-            false,
-            false,
-            config.http_root_realm.clone(),
-            ShutdownSignal::never(),
-        )
-        .await
+        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -824,26 +827,19 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
     config.h3_key_path = Some("key.pem".into());
     config.http_root_auth = true;
     let users = build_users(&config)?;
-    let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        users,
+        metrics,
+        nat_table,
+        dns_cache,
+        true,
+        config.http_root_realm.clone(),
+    );
     let server = tokio::spawn(async move {
-        serve_h3_server(
-            server,
-            users,
-            tcp_routes,
-            udp_routes,
-            metrics,
-            nat_table,
-            dns_cache,
-            false,
-            true,
-            config.http_root_realm.clone(),
-            ShutdownSignal::never(),
-        )
-        .await
+        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -895,26 +891,19 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
     config.h3_key_path = Some("key.pem".into());
     config.http_root_auth = true;
     let users = build_users(&config)?;
-    let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        users,
+        metrics,
+        nat_table,
+        dns_cache,
+        true,
+        config.http_root_realm.clone(),
+    );
     let server = tokio::spawn(async move {
-        serve_h3_server(
-            server,
-            users,
-            tcp_routes,
-            udp_routes,
-            metrics,
-            nat_table,
-            dns_cache,
-            false,
-            true,
-            config.http_root_realm.clone(),
-            ShutdownSignal::never(),
-        )
-        .await
+        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;

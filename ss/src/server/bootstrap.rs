@@ -13,41 +13,25 @@ use h3::server::Connection as H3Connection;
 use sockudo_ws::{Role as H3Role, build_extended_connect_error, build_extended_connect_response};
 
 pub(super) fn build_app(
-    users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    metrics: Arc<Metrics>,
-    nat_table: Arc<NatTable>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    http_root_auth: bool,
-    http_root_realm: String,
+    routes: Arc<RouteRegistry>,
+    services: Arc<Services>,
+    auth: Arc<AuthPolicy>,
 ) -> Router {
-    let state = AppState {
-        users,
-        tcp_routes: tcp_routes.clone(),
-        udp_routes: udp_routes.clone(),
-        metrics,
-        nat_table,
-        dns_cache,
-        prefer_ipv4_upstream,
-        http_root_auth,
-        http_root_realm: Arc::from(http_root_realm),
-    };
     let mut router = Router::new();
 
-    if http_root_auth {
+    if auth.http_root_auth {
         router = router.route("/", any(root_http_auth_handler));
     }
 
-    for path in tcp_routes.keys() {
+    for path in routes.tcp.keys() {
         router = router.route(path, any(tcp_websocket_upgrade));
     }
 
-    for path in udp_routes.keys() {
+    for path in routes.udp.keys() {
         router = router.route(path, any(udp_websocket_upgrade));
     }
 
+    let state = AppState { routes, services, auth };
     router.fallback(any(not_found_handler)).with_state(state)
 }
 
@@ -189,20 +173,15 @@ pub(super) async fn serve_tcp_listener(
 
 pub(super) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
-    users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    metrics: Arc<Metrics>,
-    nat_table: Arc<NatTable>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    http_root_auth: bool,
-    http_root_realm: String,
+    routes: Arc<RouteRegistry>,
+    services: Arc<Services>,
+    auth: Arc<AuthPolicy>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
-    let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
-    let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
-    let http_root_realm: Arc<str> = Arc::from(http_root_realm);
+    let tcp_paths: Arc<BTreeSet<String>> =
+        Arc::new(routes.tcp.keys().cloned().collect::<BTreeSet<_>>());
+    let udp_paths: Arc<BTreeSet<String>> =
+        Arc::new(routes.udp.keys().cloned().collect::<BTreeSet<_>>());
     let (endpoint, ws_config) = server.into_parts();
 
     loop {
@@ -221,32 +200,16 @@ pub(super) async fn serve_h3_server(
                 None => break,
             },
         };
-        let users = users.clone();
-        let tcp_routes = tcp_routes.clone();
-        let udp_routes = udp_routes.clone();
-        let metrics = metrics.clone();
-        let tcp_paths = tcp_paths.clone();
-        let udp_paths = udp_paths.clone();
-        let nat_table = Arc::clone(&nat_table);
-        let dns_cache = Arc::clone(&dns_cache);
-        let http_root_realm = Arc::clone(&http_root_realm);
+        let routes = Arc::clone(&routes);
+        let services = Arc::clone(&services);
+        let auth = Arc::clone(&auth);
+        let tcp_paths = Arc::clone(&tcp_paths);
+        let udp_paths = Arc::clone(&udp_paths);
         let ws_config = ws_config.clone();
 
         tokio::spawn(async move {
             if let Err(error) = handle_h3_connection(
-                incoming,
-                users,
-                tcp_routes,
-                udp_routes,
-                metrics,
-                tcp_paths,
-                udp_paths,
-                nat_table,
-                dns_cache,
-                prefer_ipv4_upstream,
-                http_root_auth,
-                http_root_realm,
-                ws_config,
+                incoming, routes, services, auth, tcp_paths, udp_paths, ws_config,
             )
             .await
                 && !is_normal_h3_shutdown(&error)
@@ -261,17 +224,11 @@ pub(super) async fn serve_h3_server(
 
 async fn handle_h3_connection(
     incoming: quinn::Incoming,
-    users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    metrics: Arc<Metrics>,
-    tcp_paths: BTreeSet<String>,
-    udp_paths: BTreeSet<String>,
-    nat_table: Arc<NatTable>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    http_root_auth: bool,
-    http_root_realm: Arc<str>,
+    routes: Arc<RouteRegistry>,
+    services: Arc<Services>,
+    auth: Arc<AuthPolicy>,
+    tcp_paths: Arc<BTreeSet<String>>,
+    udp_paths: Arc<BTreeSet<String>>,
     ws_config: H3WebSocketConfig,
 ) -> Result<()> {
     let connection = incoming
@@ -296,33 +253,16 @@ async fn handle_h3_connection(
                     },
                 };
 
-                let users = users.clone();
-                let tcp_routes = tcp_routes.clone();
-                let udp_routes = udp_routes.clone();
-                let metrics = metrics.clone();
-                let tcp_paths = tcp_paths.clone();
-                let udp_paths = udp_paths.clone();
-                let nat_table = Arc::clone(&nat_table);
-                let dns_cache = Arc::clone(&dns_cache);
-                let http_root_realm = Arc::clone(&http_root_realm);
+                let routes = Arc::clone(&routes);
+                let services = Arc::clone(&services);
+                let auth = Arc::clone(&auth);
+                let tcp_paths = Arc::clone(&tcp_paths);
+                let udp_paths = Arc::clone(&udp_paths);
                 let ws_config = ws_config.clone();
 
                 tokio::spawn(async move {
                     if let Err(error) = handle_h3_request(
-                        request,
-                        stream,
-                        users,
-                        tcp_routes,
-                        udp_routes,
-                        metrics,
-                        tcp_paths,
-                        udp_paths,
-                        nat_table,
-                        dns_cache,
-                        prefer_ipv4_upstream,
-                        http_root_auth,
-                        http_root_realm,
-                        ws_config,
+                        request, stream, routes, services, auth, tcp_paths, udp_paths, ws_config,
                     )
                     .await
                         && !is_normal_h3_shutdown(&error)
@@ -348,29 +288,23 @@ async fn handle_h3_connection(
 async fn handle_h3_request(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
-    users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    metrics: Arc<Metrics>,
-    tcp_paths: BTreeSet<String>,
-    udp_paths: BTreeSet<String>,
-    nat_table: Arc<NatTable>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    http_root_auth: bool,
-    http_root_realm: Arc<str>,
+    routes: Arc<RouteRegistry>,
+    services: Arc<Services>,
+    auth: Arc<AuthPolicy>,
+    tcp_paths: Arc<BTreeSet<String>>,
+    udp_paths: Arc<BTreeSet<String>>,
     ws_config: H3WebSocketConfig,
 ) -> Result<()> {
     let path = request.uri().path().to_owned();
 
     if request.method() != Method::CONNECT {
         let response = h3_http_response(
-            users.as_ref(),
+            auth.users.as_ref(),
             request.method(),
             &path,
             request.headers(),
-            http_root_auth,
-            http_root_realm.as_ref(),
+            auth.http_root_auth,
+            auth.http_root_realm.as_ref(),
         );
         stream
             .send_response(response)
@@ -415,20 +349,21 @@ async fn handle_h3_request(
     let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ws_config);
 
     if tcp_paths.contains(ws_req.path.as_str()) {
-        let route = tcp_routes
+        let route = routes
+            .tcp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-        let session = metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
+        let session = services.metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
         let outcome = match handle_tcp_h3_connection(
             socket,
             Arc::clone(&route.users),
-            metrics.clone(),
+            services.metrics.clone(),
             Arc::from(ws_req.path.as_str()),
             Arc::clone(&route.candidate_users),
-            dns_cache,
-            prefer_ipv4_upstream,
+            Arc::clone(&services.dns_cache),
+            services.prefer_ipv4_upstream,
         )
         .await
         {
@@ -448,21 +383,22 @@ async fn handle_h3_request(
         };
         session.finish(outcome);
     } else if udp_paths.contains(ws_req.path.as_str()) {
-        let route = udp_routes
+        let route = routes
+            .udp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-        let session = metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
+        let session = services.metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
         let outcome = match handle_udp_h3_connection(
             socket,
             Arc::clone(&route.users),
-            metrics.clone(),
+            services.metrics.clone(),
             Arc::from(ws_req.path.as_str()),
             Arc::clone(&route.candidate_users),
-            nat_table,
-            dns_cache,
-            prefer_ipv4_upstream,
+            Arc::clone(&services.nat_table),
+            Arc::clone(&services.dns_cache),
+            services.prefer_ipv4_upstream,
         )
         .await
         {

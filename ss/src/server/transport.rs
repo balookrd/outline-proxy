@@ -29,22 +29,23 @@ pub(super) async fn tcp_websocket_upgrade(
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
     let route = state
-        .tcp_routes
+        .routes
+        .tcp
         .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-    let session = state.metrics.open_websocket_session(Transport::Tcp, protocol);
+    let session = state.services.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_tcp_connection(
             socket,
             Arc::clone(&route.users),
-            state.metrics.clone(),
+            state.services.metrics.clone(),
             protocol,
             Arc::clone(&path),
             Arc::clone(&route.candidate_users),
-            state.dns_cache,
-            state.prefer_ipv4_upstream,
+            Arc::clone(&state.services.dns_cache),
+            state.services.prefer_ipv4_upstream,
         )
         .await
         {
@@ -71,7 +72,7 @@ pub(super) async fn root_http_auth_handler(
     method: Method,
     headers: HeaderMap,
 ) -> Response {
-    if !state.http_root_auth || !matches!(method, Method::GET | Method::HEAD) {
+    if !state.auth.http_root_auth || !matches!(method, Method::GET | Method::HEAD) {
         return not_found_response();
     }
 
@@ -81,7 +82,7 @@ pub(super) async fn root_http_auth_handler(
     }
 
     match parse_root_http_auth_password(&headers) {
-        Some(password) if password_matches_any_user(state.users.as_ref(), &password) => {
+        Some(password) if password_matches_any_user(state.auth.users.as_ref(), &password) => {
             root_http_auth_success_response()
         },
         Some(_) => {
@@ -89,10 +90,16 @@ pub(super) async fn root_http_auth_handler(
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
                 root_http_auth_forbidden_response()
             } else {
-                root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref())
+                root_http_auth_challenge_response(
+                    failed_attempts,
+                    state.auth.http_root_realm.as_ref(),
+                )
             }
         },
-        None => root_http_auth_challenge_response(failed_attempts, state.http_root_realm.as_ref()),
+        None => root_http_auth_challenge_response(
+            failed_attempts,
+            state.auth.http_root_realm.as_ref(),
+        ),
     }
 }
 
@@ -123,24 +130,25 @@ pub(super) async fn udp_websocket_upgrade(
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
     let route = state
-        .udp_routes
+        .routes
+        .udp
         .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-    let session = state.metrics.open_websocket_session(Transport::Udp, protocol);
-    let nat_table = state.nat_table.clone();
+    let session = state.services.metrics.open_websocket_session(Transport::Udp, protocol);
+    let nat_table = Arc::clone(&state.services.nat_table);
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_udp_connection(
             socket,
             Arc::clone(&route.users),
-            state.metrics.clone(),
+            state.services.metrics.clone(),
             protocol,
             Arc::clone(&path),
             Arc::clone(&route.candidate_users),
             nat_table,
-            state.dns_cache.clone(),
-            state.prefer_ipv4_upstream,
+            Arc::clone(&state.services.dns_cache),
+            state.services.prefer_ipv4_upstream,
         )
         .await
         {
