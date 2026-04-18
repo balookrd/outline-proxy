@@ -14,8 +14,8 @@ use sockudo_ws::{Role as H3Role, build_extended_connect_error, build_extended_co
 
 pub(super) fn build_app(
     users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
-    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
@@ -190,8 +190,8 @@ pub(super) async fn serve_tcp_listener(
 pub(super) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
     users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
-    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
@@ -262,8 +262,8 @@ pub(super) async fn serve_h3_server(
 async fn handle_h3_connection(
     incoming: quinn::Incoming,
     users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
-    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     metrics: Arc<Metrics>,
     tcp_paths: BTreeSet<String>,
     udp_paths: BTreeSet<String>,
@@ -349,8 +349,8 @@ async fn handle_h3_request(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     users: Arc<[UserKey]>,
-    tcp_routes: Arc<BTreeMap<String, TransportRoute>>,
-    udp_routes: Arc<BTreeMap<String, TransportRoute>>,
+    tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     metrics: Arc<Metrics>,
     tcp_paths: BTreeSet<String>,
     udp_paths: BTreeSet<String>,
@@ -423,10 +423,10 @@ async fn handle_h3_request(
         let session = metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
         let outcome = match handle_tcp_h3_connection(
             socket,
-            route.users,
+            Arc::clone(&route.users),
             metrics.clone(),
             Arc::from(ws_req.path.as_str()),
-            route.candidate_users,
+            Arc::clone(&route.candidate_users),
             dns_cache,
             prefer_ipv4_upstream,
         )
@@ -456,10 +456,10 @@ async fn handle_h3_request(
         let session = metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
         let outcome = match handle_udp_h3_connection(
             socket,
-            route.users,
+            Arc::clone(&route.users),
             metrics.clone(),
             Arc::from(ws_req.path.as_str()),
-            route.candidate_users,
+            Arc::clone(&route.candidate_users),
             nat_table,
             dns_cache,
             prefer_ipv4_upstream,
