@@ -41,7 +41,7 @@ use crate::{
     protocol::TargetAddr,
 };
 
-const UDP_NAT_RECV_BUF_SIZE: usize = 65_535;
+// RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP)
 const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 
 // ── NAT key ──────────────────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ async fn nat_reader_task(
     last_active: Arc<AtomicU64>,
     next_packet_id: Arc<AtomicU64>,
 ) {
-    let mut buf = vec![0u8; UDP_NAT_RECV_BUF_SIZE];
+    let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
         let (n, source) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
