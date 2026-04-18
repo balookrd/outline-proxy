@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::{Mutex, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
 use crate::config::RouteTarget;
@@ -150,23 +150,21 @@ struct UdpResponse {
 /// [`UplinkRegistry`].
 struct AssocGroupMap {
     map: Mutex<HashMap<String, GroupUdpContext>>,
-    tasks: Mutex<Vec<JoinHandle<()>>>,
+    tasks: Mutex<JoinSet<()>>,
 }
 
 impl AssocGroupMap {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             map: Mutex::new(HashMap::new()),
-            tasks: Mutex::new(Vec::new()),
+            tasks: Mutex::new(JoinSet::new()),
         })
     }
 
     /// Close every group's active transport; abort spawned downlink tasks.
     /// Called once on association shutdown.
     async fn shutdown(&self, reason: &'static str) {
-        for task in self.tasks.lock().await.drain(..) {
-            task.abort();
-        }
+        self.tasks.lock().await.abort_all();
         let map = std::mem::take(&mut *self.map.lock().await);
         for (_, ctx) in map {
             close_active_udp_transport(&ctx.active, reason).await;
@@ -215,7 +213,7 @@ async fn resolve_group_context(
     let task_ctx = ctx.clone();
     let task_responses = responses.clone();
     let group_label = group_name.to_string();
-    let task = tokio::spawn(async move {
+    registry_groups.tasks.lock().await.spawn(async move {
         if let Err(error) = run_group_downlink(task_ctx, task_responses).await {
             debug!(
                 group = %group_label,
@@ -224,7 +222,6 @@ async fn resolve_group_context(
             );
         }
     });
-    registry_groups.tasks.lock().await.push(task);
     Ok(ctx)
 }
 
