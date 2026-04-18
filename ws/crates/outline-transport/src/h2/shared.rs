@@ -191,16 +191,16 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 struct H2ConnectionKey {
     server_name: Arc<str>,
     server_port: u16,
-    secure: bool,
+    use_tls: bool,
     fwmark: Option<u32>,
 }
 
 impl H2ConnectionKey {
-    fn new(server_name: &str, server_port: u16, secure: bool, fwmark: Option<u32>) -> Self {
+    fn new(server_name: &str, server_port: u16, use_tls: bool, fwmark: Option<u32>) -> Self {
         Self {
             server_name: Arc::from(server_name),
             server_port,
-            secure,
+            use_tls,
             fwmark,
         }
     }
@@ -347,7 +347,7 @@ pub(crate) async fn connect_websocket_h2(
     let port = url
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
-    let secure = match url.scheme() {
+    let use_tls = match url.scheme() {
         "ws" => false,
         "wss" => true,
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
@@ -357,7 +357,7 @@ pub(crate) async fn connect_websocket_h2(
     if should_reuse_h2_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_h2_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        connect_h2_tcp_reused(cache, host, port, secure, &target_uri, fwmark, ipv6_first, source).await
+        connect_h2_tcp_reused(cache, host, port, use_tls, &target_uri, fwmark, ipv6_first, source).await
     } else {
         // Probes never share connections; resolve DNS upfront for the fresh dial.
         let server_addr = resolve_host_with_preference(
@@ -371,7 +371,7 @@ pub(crate) async fn connect_websocket_h2(
         .first()
         .copied()
         .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
-        connect_h2_tcp_new(server_addr, host, secure, &target_uri, fwmark, source).await
+        connect_h2_tcp_new(server_addr, host, use_tls, &target_uri, fwmark, source).await
     }
 }
 
@@ -379,13 +379,13 @@ async fn connect_h2_tcp_reused(
     cache: &DnsCache,
     server_name: &str,
     server_port: u16,
-    secure: bool,
+    use_tls: bool,
     target_uri: &str,
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<WsTransportStream> {
-    let key = H2ConnectionKey::new(server_name, server_port, secure, fwmark);
+    let key = H2ConnectionKey::new(server_name, server_port, use_tls, fwmark);
 
     // Fast path: reuse an already-established shared connection without locking.
     // DNS is NOT resolved here — the key is hostname-based so cache lookups are
@@ -400,7 +400,7 @@ async fn connect_h2_tcp_reused(
                 debug!(
                     server_name,
                     server_port,
-                    secure,
+                    use_tls,
                     error = %format!("{error:#}"),
                     "cached shared h2 connection failed to open websocket stream; reconnecting"
                 );
@@ -427,7 +427,7 @@ async fn connect_h2_tcp_reused(
                 debug!(
                     server_name,
                     server_port,
-                    secure,
+                    use_tls,
                     error = %format!("{error:#}"),
                     "shared h2 connection (post-lock recheck) failed to open websocket stream; reconnecting"
                 );
@@ -453,7 +453,7 @@ async fn connect_h2_tcp_reused(
 
     let mut transport_guard = TransportConnectGuard::new(source, "h2");
     let shared = Arc::new(
-        connect_h2_connection(server_addr, server_name, secure, fwmark, Some(key.clone())).await?,
+        connect_h2_connection(server_addr, server_name, use_tls, fwmark, Some(key.clone())).await?,
     );
     let ws = shared.open_websocket(target_uri).await?;
     transport_guard.finish("success");
@@ -464,14 +464,14 @@ async fn connect_h2_tcp_reused(
 async fn connect_h2_tcp_new(
     server_addr: SocketAddr,
     server_name: &str,
-    secure: bool,
+    use_tls: bool,
     target_uri: &str,
     fwmark: Option<u32>,
     source: &'static str,
 ) -> Result<WsTransportStream> {
     let mut connect_guard = TransportConnectGuard::new(source, "h2");
     let shared =
-        Arc::new(connect_h2_connection(server_addr, server_name, secure, fwmark, None).await?);
+        Arc::new(connect_h2_connection(server_addr, server_name, use_tls, fwmark, None).await?);
     let ws = shared.open_websocket(target_uri).await?;
     connect_guard.finish("success");
     Ok(ws)
@@ -480,12 +480,12 @@ async fn connect_h2_tcp_new(
 async fn connect_h2_connection(
     server_addr: SocketAddr,
     server_name: &str,
-    secure: bool,
+    use_tls: bool,
     fwmark: Option<u32>,
     cache_key: Option<H2ConnectionKey>,
 ) -> Result<SharedH2Connection> {
     let (send_request, conn) = timeout(FRESH_CONNECT_TIMEOUT, async {
-        let io = if secure {
+        let io = if use_tls {
             H2Io::Tls {
                 inner: connect_tls_h2(server_addr, server_name, fwmark).await?,
             }

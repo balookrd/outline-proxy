@@ -415,8 +415,8 @@ pub async fn handle_tcp_connect(
         // data tasks finish and drop their clones.
         drop(activity_tx);
 
-        let uplink_name = Arc::clone(&active_name);
-        let uplinks_for_uplink = uplinks.clone();
+        let name_for_uplink_task = Arc::clone(&active_name);
+        let manager_for_uplink_task = uplinks.clone();
         let keepalive_interval = uplinks.load_balancing().tcp_active_keepalive_interval;
         let uplink = async move {
             let mut buf = vec![0u8; SHADOWSOCKS_MAX_PAYLOAD];
@@ -455,7 +455,7 @@ pub async fn handle_tcp_connect(
                     // moment the TUN hits its own idle timeout.  The downlink
                     // will finish naturally once the server echoes our close.
                     debug!(
-                        uplink = %uplink_name,
+                        uplink = %name_for_uplink_task,
                         transport_supports_tcp_half_close = writer.supports_half_close(),
                         "client closed SOCKS TCP session; initiating upstream half-close and awaiting downlink"
                     );
@@ -465,31 +465,31 @@ pub async fn handle_tcp_connect(
                 metrics::add_bytes(
                     "tcp",
                     "client_to_upstream",
-                    uplinks_for_uplink.group_name(),
-                    &*uplink_name,
+                    manager_for_uplink_task.group_name(),
+                    &*name_for_uplink_task,
                     read,
                 );
                 writer.send_chunk(&buf[..read]).await?;
                 let _ = activity_for_uplink.send(());
                 chunks_sent += 1;
                 if chunks_sent == 1 {
-                    debug!(uplink = %uplink_name, "first chunk sent to upstream");
+                    debug!(uplink = %name_for_uplink_task, "first chunk sent to upstream");
                 }
-                uplinks_for_uplink
+                manager_for_uplink_task
                     .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
             }
             Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
         };
 
-        let downlink_name = Arc::clone(&active_name);
-        let uplinks_for_downlink = uplinks.clone();
+        let name_for_downlink_task = Arc::clone(&active_name);
+        let manager_for_downlink_task = uplinks.clone();
         let downlink = async move {
             metrics::add_bytes(
                 "tcp",
                 "upstream_to_client",
-                uplinks_for_downlink.group_name(),
-                &*downlink_name,
+                manager_for_downlink_task.group_name(),
+                &*name_for_downlink_task,
                 first_upstream_chunk.len(),
             );
             client_write
@@ -497,7 +497,7 @@ pub async fn handle_tcp_connect(
                 .await
                 .context("client write failed")?;
             let _ = activity_for_downlink.send(());
-            uplinks_for_downlink
+            manager_for_downlink_task
                 .report_active_traffic(active_index, TransportKind::Tcp)
                 .await;
 
@@ -508,7 +508,7 @@ pub async fn handle_tcp_connect(
                     Err(_err) if reader.closed_cleanly() => {
                         if chunks_forwarded == 0 {
                             debug!(
-                                uplink = %downlink_name,
+                                uplink = %name_for_downlink_task,
                                 "upstream closed before sending any data"
                             );
                         }
@@ -525,8 +525,8 @@ pub async fn handle_tcp_connect(
                 metrics::add_bytes(
                     "tcp",
                     "upstream_to_client",
-                    uplinks_for_downlink.group_name(),
-                    &*downlink_name,
+                    manager_for_downlink_task.group_name(),
+                    &*name_for_downlink_task,
                     chunk.len(),
                 );
                 client_write
@@ -534,7 +534,7 @@ pub async fn handle_tcp_connect(
                     .await
                     .context("client write failed")?;
                 let _ = activity_for_downlink.send(());
-                uplinks_for_downlink
+                manager_for_downlink_task
                     .report_active_traffic(active_index, TransportKind::Tcp)
                     .await;
             }
