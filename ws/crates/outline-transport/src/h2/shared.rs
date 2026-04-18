@@ -189,7 +189,7 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // point a fresh connection is made to the (now re-resolved) new address.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H2ConnectionKey {
-    server_name: String,
+    server_name: Arc<str>,
     server_port: u16,
     secure: bool,
     fwmark: Option<u32>,
@@ -198,7 +198,7 @@ struct H2ConnectionKey {
 impl H2ConnectionKey {
     fn new(server_name: &str, server_port: u16, secure: bool, fwmark: Option<u32>) -> Self {
         Self {
-            server_name: server_name.to_string(),
+            server_name: Arc::from(server_name),
             server_port,
             secure,
             fwmark,
