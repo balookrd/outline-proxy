@@ -120,7 +120,7 @@ pub async fn handle_tcp_connect(
         send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
 
         let (mut client_read, mut client_write) = client.into_split();
-        let mut replay_buf: Vec<Vec<u8>> = Vec::new();
+        let mut replay_buf: Vec<Vec<u8>> = Vec::with_capacity(8);
         let mut replay_overflow = false;
         let mut client_half_closed = false;
         let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
@@ -391,6 +391,10 @@ pub async fn handle_tcp_connect(
         // Strict active-uplink reselection only affects new sessions and
         // chunk-0 failover; established TCP tunnels are not migrated
         // transparently and should only end on a real transport error.
+
+        // Phase-1 replay buffer is no longer needed; release memory before the
+        // long-lived phase-2 tasks take over.
+        drop(replay_buf);
 
         // Extract from active what the session tasks need; drop the candidate
         // and source fields which are no longer relevant after phase 1.
