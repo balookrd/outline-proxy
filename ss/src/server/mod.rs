@@ -1,6 +1,7 @@
 //! Server entry point.
 //!
 //! Responsibilities are split across several internal modules:
+//! - [`auth`] — HTTP Basic Auth password parsing for the root auth flow.
 //! - [`constants`] — tuning constants shared by the bootstrap/transport/shadowsocks paths.
 //! - [`state`] — shared application state ([`AppState`], [`TransportRoute`], [`DnsCache`]).
 //! - [`setup`] — helpers that turn a parsed [`Config`] into user/route structures.
