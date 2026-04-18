@@ -9,10 +9,10 @@ use ring::{
 use super::{
     error::CryptoError,
     primitives::{
-        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_HEADER_LEN,
-        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, current_unix_secs, derive_subkey,
-        next_stream_nonce, nonce_zero, parse_ss2022_request_header,
-        validate_ss2022_request_fixed_header,
+        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_CIPHERTEXT_LEN,
+        SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm,
+        current_unix_secs, derive_subkey, next_stream_nonce, nonce_zero,
+        parse_ss2022_request_header, validate_ss2022_request_fixed_header,
     },
     user_key::UserKey,
 };
@@ -164,16 +164,20 @@ impl AeadStreamDecryptor {
         let mut any_candidate = false;
         for user in self.users.iter() {
             if user.cipher().is_2022() {
-                let fixed_len = SS2022_REQUEST_FIXED_HEADER_LEN + TAG_LEN;
                 let salt_len = user.cipher().salt_len();
-                if self.buffer.len() < salt_len + fixed_len {
+                if self.buffer.len() < salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN {
                     continue;
                 }
                 any_candidate = true;
 
-                let salt = &self.buffer[..salt_len];
-                let mut encrypted_fixed = self.buffer[salt_len..salt_len + fixed_len].to_vec();
-                let session_key = derive_subkey(user.cipher(), user.master_key(), salt)?;
+                // Stack buffer — avoids a heap allocation for every candidate
+                // that fails AEAD verification.
+                let mut encrypted_fixed = [0u8; SS2022_REQUEST_FIXED_CIPHERTEXT_LEN];
+                encrypted_fixed.copy_from_slice(
+                    &self.buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN],
+                );
+                let session_key =
+                    derive_subkey(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
                 let algorithm = cipher_algorithm(user.cipher());
                 let key =
                     UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
@@ -183,8 +187,9 @@ impl AeadStreamDecryptor {
                 {
                     if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN {
                         let header_len = validate_ss2022_request_fixed_header(header)?;
+                        // One allocation per successful handshake — unavoidable.
                         let request_salt = self.buffer[..salt_len].to_vec();
-                        self.buffer.advance(salt_len + fixed_len);
+                        self.buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
                         self.active = Some(ActiveStream {
                             user: user.clone(),
                             key: less_safe,
@@ -206,15 +211,16 @@ impl AeadStreamDecryptor {
                 }
                 any_candidate = true;
 
-                let salt = &self.buffer[..salt_len];
-                let encrypted_len = &self.buffer[salt_len..salt_len + 2 + TAG_LEN];
-                let session_key = derive_subkey(user.cipher(), user.master_key(), salt)?;
+                // Stack buffer — avoids a heap allocation for every candidate
+                // that fails AEAD verification.
+                let mut candidate = [0u8; 2 + TAG_LEN];
+                candidate.copy_from_slice(&self.buffer[salt_len..salt_len + 2 + TAG_LEN]);
+                let session_key =
+                    derive_subkey(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
                 let algorithm = cipher_algorithm(user.cipher());
                 let key =
                     UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
                 let less_safe = LessSafeKey::new(key);
-
-                let mut candidate = encrypted_len.to_vec();
                 if let Ok(plaintext_len) =
                     less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate)
                 {

@@ -21,6 +21,8 @@ pub(super) const SS2022_TCP_RESPONSE_TYPE: u8 = 1;
 pub(super) const SS2022_UDP_CLIENT_TYPE: u8 = 0;
 pub(super) const SS2022_UDP_SERVER_TYPE: u8 = 1;
 pub(super) const SS2022_REQUEST_FIXED_HEADER_LEN: usize = 11;
+pub(super) const SS2022_REQUEST_FIXED_CIPHERTEXT_LEN: usize =
+    SS2022_REQUEST_FIXED_HEADER_LEN + TAG_LEN;
 pub(super) const SS2022_UDP_SEPARATE_HEADER_LEN: usize = 16;
 pub(super) const SS2022_MAX_PADDING_LEN: usize = 900;
 pub(super) const SS2022_MAX_TIME_DIFF_SECS: u64 = 30;
