@@ -38,28 +38,41 @@ pub(super) struct UdpResponse {
     pub(super) uplink_name: Arc<str>,
 }
 
+/// Interior of [`AssocGroupMap`], held under a single mutex so that inserting
+/// a context and spawning its downlink task are always an atomic operation.
+/// The invariant "every entry in `map` has exactly one task in `tasks`" is
+/// maintained under a single lock acquisition, eliminating the window that
+/// existed when the two fields were guarded by separate mutexes.
+struct AssocGroupMapInner {
+    map: HashMap<String, GroupUdpContext>,
+    tasks: JoinSet<()>,
+}
+
 /// Per-association map of group-name → per-group UDP context, plus the
 /// downlink tasks spawned for each active group. Owned exclusively by one
 /// UDP associate session; not shared with other associations or the global
 /// [`UplinkRegistry`].
 pub(super) struct AssocGroupMap {
-    map: Mutex<HashMap<String, GroupUdpContext>>,
-    tasks: Mutex<JoinSet<()>>,
+    inner: Mutex<AssocGroupMapInner>,
 }
 
 impl AssocGroupMap {
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
-            map: Mutex::new(HashMap::new()),
-            tasks: Mutex::new(JoinSet::new()),
+            inner: Mutex::new(AssocGroupMapInner {
+                map: HashMap::new(),
+                tasks: JoinSet::new(),
+            }),
         })
     }
 
     /// Close every group's active transport; abort spawned downlink tasks.
     /// Called once on association shutdown.
     pub(super) async fn shutdown(&self, reason: &'static str) {
-        self.tasks.lock().await.abort_all();
-        let map = std::mem::take(&mut *self.map.lock().await);
+        let mut inner = self.inner.lock().await;
+        inner.tasks.abort_all();
+        let map = std::mem::take(&mut inner.map);
+        drop(inner);
         for (_, ctx) in map {
             close_active_udp_transport(&ctx.active, reason).await;
         }
@@ -71,18 +84,25 @@ impl AssocGroupMap {
 /// First caller spawns a dedicated downlink task that reads from the group's
 /// transport and pushes responses into `responses`. All subsequent callers
 /// reuse the cached context.
+///
+/// The map insert and task spawn happen under a single lock acquisition so the
+/// invariant "every map entry has exactly one downlink task" is never violated,
+/// even under concurrent callers for the same group.
 pub(super) async fn resolve_group_context(
     registry_groups: &Arc<AssocGroupMap>,
     registry: &UplinkRegistry,
     group_name: &str,
     responses: &mpsc::Sender<UdpResponse>,
 ) -> Result<GroupUdpContext> {
+    // Fast path: context already exists.
     {
-        let map = registry_groups.map.lock().await;
-        if let Some(ctx) = map.get(group_name) {
+        let inner = registry_groups.inner.lock().await;
+        if let Some(ctx) = inner.map.get(group_name) {
             return Ok(ctx.clone());
         }
     }
+
+    // Slow path: build a new transport outside the lock (async I/O).
     let manager = registry
         .group_by_name(group_name)
         .ok_or_else(|| anyhow!("uplink group \"{group_name}\" is not configured"))?
@@ -95,32 +115,36 @@ pub(super) async fn resolve_group_context(
         group_name: Arc::from(group_name),
     };
 
-    let mut map = registry_groups.map.lock().await;
-    if let Some(existing) = map.get(group_name) {
-        // Lost the race to another concurrent caller for the same group.
-        // Clone what we need, release the lock first, then close the
-        // duplicate transport — closing is async and must not hold the lock.
-        let existing = existing.clone();
-        drop(map);
-        close_active_udp_transport(&active, "duplicate_group_context").await;
-        return Ok(existing);
-    }
-    map.insert(group_name.to_string(), ctx.clone());
-    drop(map);
-
-    let task_ctx = ctx.clone();
-    let task_responses = responses.clone();
-    let group_label = group_name.to_string();
-    registry_groups.tasks.lock().await.spawn(async move {
-        if let Err(error) = run_group_downlink(task_ctx, task_responses).await {
-            debug!(
-                group = %group_label,
-                error = %format!("{error:#}"),
-                "UDP group downlink task exited"
-            );
+    // Re-acquire the lock. Insert the context and spawn the downlink task
+    // atomically so no caller ever sees a map entry without a running task.
+    let (result, duplicate_transport) = {
+        let mut inner = registry_groups.inner.lock().await;
+        if let Some(existing) = inner.map.get(group_name) {
+            // Lost the race — another caller inserted while we were building.
+            // Return their context; close our duplicate transport after unlock.
+            (existing.clone(), Some(active))
+        } else {
+            inner.map.insert(group_name.to_string(), ctx.clone());
+            let task_ctx = ctx.clone();
+            let task_responses = responses.clone();
+            let group_label = group_name.to_string();
+            inner.tasks.spawn(async move {
+                if let Err(error) = run_group_downlink(task_ctx, task_responses).await {
+                    debug!(
+                        group = %group_label,
+                        error = %format!("{error:#}"),
+                        "UDP group downlink task exited"
+                    );
+                }
+            });
+            (ctx, None)
         }
-    });
-    Ok(ctx)
+    };
+
+    if let Some(transport) = duplicate_transport {
+        close_active_udp_transport(&transport, "duplicate_group_context").await;
+    }
+    Ok(result)
 }
 
 /// Per-group downlink: reads upstream datagrams from one group's active
