@@ -4,7 +4,7 @@ use super::shutdown::ShutdownSignal;
 use super::transport::{
     ROOT_HTTP_AUTH_COOKIE_NAME, ROOT_HTTP_AUTH_COOKIE_TTL_SECS, ROOT_HTTP_AUTH_MAX_FAILURES,
     escape_http_auth_realm, handle_tcp_h3_connection, handle_udp_h3_connection,
-    is_benign_ws_disconnect, is_normal_h3_shutdown, metrics_handler, not_found_handler,
+    is_expected_ws_close, is_normal_h3_shutdown, metrics_handler, not_found_handler,
     parse_failed_root_auth_attempts, password_matches_any_user, root_http_auth_handler,
 };
 use std::{collections::BTreeSet, fs, path::Path, sync::{Arc, OnceLock}};
@@ -411,7 +411,7 @@ async fn handle_h3_request(
                 if is_normal_h3_shutdown(&error) {
                     debug!(?error, "tcp websocket connection closed normally");
                     DisconnectReason::Normal
-                } else if is_benign_ws_disconnect(&error) {
+                } else if is_expected_ws_close(&error) {
                     debug!(?error, "tcp websocket connection closed abruptly");
                     DisconnectReason::ClientDisconnect
                 } else {
@@ -446,7 +446,7 @@ async fn handle_h3_request(
                 if is_normal_h3_shutdown(&error) {
                     debug!(?error, "udp websocket connection closed normally");
                     DisconnectReason::Normal
-                } else if is_benign_ws_disconnect(&error) {
+                } else if is_expected_ws_close(&error) {
                     debug!(?error, "udp websocket connection closed abruptly");
                     DisconnectReason::ClientDisconnect
                 } else {

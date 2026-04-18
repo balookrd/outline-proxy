@@ -28,7 +28,7 @@ use super::constants::{
 };
 use super::dns_cache::DnsCache;
 use super::shutdown::ShutdownSignal;
-use super::transport::is_benign_ws_disconnect;
+use super::transport::is_expected_ws_close;
 
 struct DatagramResponseSender {
     socket: Arc<UdpSocket>,
@@ -89,7 +89,7 @@ pub(super) async fn serve_ss_tcp_listener(
                 handle_ss_tcp_connection(stream, users, metrics, dns_cache, prefer_ipv4_upstream)
                     .await
             {
-                if is_benign_ws_disconnect(&error) {
+                if is_expected_ws_close(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
                 } else {
                     warn!(
