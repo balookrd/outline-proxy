@@ -11,6 +11,7 @@ h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"
 anyhow = "1.0"
 bytes = "1.10"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+hashbrown = "0.14"
 h3 = { version = "0.0.8", optional = true }
 h3-quinn = { version = "0.0.10", optional = true }
 http = "1.3"

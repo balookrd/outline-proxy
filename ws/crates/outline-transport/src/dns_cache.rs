@@ -1,8 +1,10 @@
-use std::collections::HashMap;
+use std::hash::{BuildHasher, Hash, Hasher};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use hashbrown::HashMap;
+use hashbrown::hash_map::RawEntryMut;
 use parking_lot::RwLock;
 
 /// Default TTL used by [`DnsCache::default`] — matches typical DNS record
@@ -11,7 +13,7 @@ pub const DEFAULT_DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug)]
 struct Entry {
-    /// Already sorted according to the `ipv6_first` bit in the outer key —
+    /// Already sorted according to the `ipv6_first` bit in the key —
     /// callers receive a ready-to-use ordered slice without re-sorting on
     /// each hit.
     addrs: Arc<[SocketAddr]>,
@@ -21,22 +23,28 @@ struct Entry {
 /// In-memory cache of resolved `(port, ipv6_first, host) → Arc<[SocketAddr]>`
 /// mappings.
 ///
-/// The `ipv6_first` preference is baked into the key and the stored slice is
-/// pre-sorted accordingly, so a cache hit is one hash + one `Arc::clone`
-/// with no allocation and no sort work on the hot path.
-///
-/// Constructed explicitly and passed by reference to the transport resolve
-/// functions; the main binary owns a single `Arc<DnsCache>` and threads it
-/// through the uplink / tun / proxy paths. This makes the cache injectable
-/// for tests instead of a process-global `OnceLock` that leaks state
-/// between test cases.
+/// Flat `HashMap<(u16, bool, Box<str>), Entry>` keyed by a single compound
+/// hash.  `get` / `get_stale` use the raw-entry API to probe with `&str`
+/// directly — one hash computation, one table probe, no heap allocation.
+/// `insert` takes a write lock once and updates in-place on a hit.
 #[derive(Debug)]
 pub struct DnsCache {
-    // Outer key: (port, ipv6_first). Inner key: host (String).
-    // `HashMap::get(&str)` works against `HashMap<String, _>` via
-    // `Borrow<str>` — no allocation per lookup.
-    inner: RwLock<HashMap<(u16, bool), HashMap<String, Entry>>>,
+    inner: RwLock<HashMap<(u16, bool, Box<str>), Entry>>,
     ttl: Duration,
+}
+
+#[inline]
+fn make_hash(bh: &impl BuildHasher, port: u16, ipv6_first: bool, host: &str) -> u64 {
+    let mut h = bh.build_hasher();
+    port.hash(&mut h);
+    ipv6_first.hash(&mut h);
+    host.hash(&mut h);
+    h.finish()
+}
+
+#[inline]
+fn key_eq(k: &(u16, bool, Box<str>), port: u16, ipv6_first: bool, host: &str) -> bool {
+    k.0 == port && k.1 == ipv6_first && k.2.as_ref() == host
 }
 
 impl DnsCache {
@@ -46,7 +54,10 @@ impl DnsCache {
 
     pub fn get(&self, host: &str, port: u16, ipv6_first: bool) -> Option<Arc<[SocketAddr]>> {
         let map = self.inner.read();
-        let entry = map.get(&(port, ipv6_first))?.get(host)?;
+        let hash = make_hash(map.hasher(), port, ipv6_first, host);
+        let (_, entry) = map
+            .raw_entry()
+            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))?;
         (Instant::now() < entry.expires_at).then(|| Arc::clone(&entry.addrs))
     }
 
@@ -57,16 +68,29 @@ impl DnsCache {
         ipv6_first: bool,
     ) -> Option<Arc<[SocketAddr]>> {
         let map = self.inner.read();
-        map.get(&(port, ipv6_first))?
-            .get(host)
-            .map(|entry| Arc::clone(&entry.addrs))
+        let hash = make_hash(map.hasher(), port, ipv6_first, host);
+        map.raw_entry()
+            .from_hash(hash, |k| key_eq(k, port, ipv6_first, host))
+            .map(|(_, entry)| Arc::clone(&entry.addrs))
     }
 
     pub fn insert(&self, host: &str, port: u16, ipv6_first: bool, addrs: Arc<[SocketAddr]>) {
         let mut map = self.inner.write();
-        map.entry((port, ipv6_first))
-            .or_default()
-            .insert(host.to_owned(), Entry { addrs, expires_at: Instant::now() + self.ttl });
+        // Clone the BuildHasher before the mutable borrow so we can reuse it
+        // inside `insert_with_hasher` without a second borrow of `map`.
+        let bh = map.hasher().clone();
+        let hash = make_hash(&bh, port, ipv6_first, host);
+        let new_entry = Entry { addrs, expires_at: Instant::now() + self.ttl };
+        match map.raw_entry_mut().from_hash(hash, |k| key_eq(k, port, ipv6_first, host)) {
+            RawEntryMut::Occupied(mut o) => {
+                *o.get_mut() = new_entry;
+            }
+            RawEntryMut::Vacant(v) => {
+                v.insert_with_hasher(hash, (port, ipv6_first, host.into()), new_entry, |k| {
+                    make_hash(&bh, k.0, k.1, &k.2)
+                });
+            }
+        }
     }
 }
 
