@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use tracing::debug;
 
 use outline_transport::{
+    TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
 };
@@ -22,8 +23,8 @@ pub(super) enum TcpUplinkSource {
 }
 
 pub(super) struct ConnectedTcpUplink {
-    pub(super) writer: TcpShadowsocksWriter,
-    pub(super) reader: TcpShadowsocksReader,
+    pub(super) writer: TcpWriter,
+    pub(super) reader: TcpReader,
     pub(super) source: TcpUplinkSource,
 }
 
@@ -38,8 +39,8 @@ pub(super) struct ActiveTcpUplink {
     pub(super) name: Arc<str>,
     /// Retained for standby-socket fresh-dial retries during phase 1.
     pub(super) candidate: UplinkCandidate,
-    pub(super) writer: TcpShadowsocksWriter,
-    pub(super) reader: TcpShadowsocksReader,
+    pub(super) writer: TcpWriter,
+    pub(super) reader: TcpReader,
     pub(super) source: TcpUplinkSource,
 }
 
@@ -152,7 +153,7 @@ async fn do_tcp_ss_setup(
     uplink: &crate::config::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,
-) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+) -> Result<(TcpWriter, TcpReader)> {
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
@@ -176,7 +177,7 @@ async fn do_tcp_ss_setup(
         ss2022 = uplink.cipher.is_ss2022(),
         "sent initial Shadowsocks target header to uplink"
     );
-    Ok((writer, reader))
+    Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
 }
 
 async fn do_tcp_ss_setup_socket(
@@ -184,7 +185,7 @@ async fn do_tcp_ss_setup_socket(
     uplink: &crate::config::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,
-) -> Result<(TcpShadowsocksWriter, TcpShadowsocksReader)> {
+) -> Result<(TcpWriter, TcpReader)> {
     let (reader_half, writer_half) = stream.into_split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
@@ -210,5 +211,5 @@ async fn do_tcp_ss_setup_socket(
         ss2022 = uplink.cipher.is_ss2022(),
         "sent initial Shadowsocks target header to uplink"
     );
-    Ok((writer, reader))
+    Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader)))
 }

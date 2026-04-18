@@ -10,7 +10,8 @@ use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use outline_transport::{
-    DnsCache, TcpShadowsocksReader, TcpShadowsocksWriter, UdpWsTransport, UpstreamTransportGuard,
+    DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    UdpWsTransport, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
     connect_websocket_with_source,
 };
@@ -304,7 +305,7 @@ pub(crate) fn build_http_probe_request(host: &str, port: u16, path: &str) -> Str
 async fn close_probe_tcp_writer(
     uplink_name: &str,
     probe: &'static str,
-    writer: &mut TcpShadowsocksWriter,
+    writer: &mut TcpWriter,
 ) {
     if let Err(error) = writer.close().await {
         debug!(
@@ -375,11 +376,11 @@ pub(crate) async fn run_http_probe(
     let target_wire = target.to_wire_bytes()?;
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
-    let (mut writer, mut reader) = {
+    let (mut writer, mut reader): (TcpWriter, TcpReader) = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
-                let ws_stream = connect_websocket_with_source(cache, 
+                let ws_stream = connect_websocket_with_source(cache,
                     uplink
                         .tcp_ws_url
                         .as_ref()
@@ -410,10 +411,10 @@ pub(crate) async fn run_http_probe(
                     ctrl_tx,
                 )
                 .with_request_salt(request_salt);
-                (writer, reader)
+                (TcpWriter::Ws(writer), TcpReader::Ws(reader))
             },
             UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(cache, 
+                let stream = connect_shadowsocks_tcp_with_source(cache,
                     uplink
                         .tcp_addr
                         .as_ref()
@@ -444,7 +445,7 @@ pub(crate) async fn run_http_probe(
                     lifetime,
                 )
                 .with_request_salt(request_salt);
-                (writer, reader)
+                (TcpWriter::Socket(writer), TcpReader::Socket(reader))
             },
         }
     };
@@ -534,11 +535,11 @@ pub(crate) async fn run_tcp_tunnel_probe(
     let target_wire = target.to_wire_bytes()?;
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
-    let (mut writer, mut reader) = {
+    let (mut writer, mut reader): (TcpWriter, TcpReader) = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
             UplinkTransport::Websocket => {
-                let ws_stream = connect_websocket_with_source(cache, 
+                let ws_stream = connect_websocket_with_source(cache,
                     uplink
                         .tcp_ws_url
                         .as_ref()
@@ -572,10 +573,10 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     ctrl_tx,
                 )
                 .with_request_salt(request_salt);
-                (writer, reader)
+                (TcpWriter::Ws(writer), TcpReader::Ws(reader))
             },
             UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(cache, 
+                let stream = connect_shadowsocks_tcp_with_source(cache,
                     uplink
                         .tcp_addr
                         .as_ref()
@@ -606,7 +607,7 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     lifetime,
                 )
                 .with_request_salt(request_salt);
-                (writer, reader)
+                (TcpWriter::Socket(writer), TcpReader::Socket(reader))
             },
         }
     };
@@ -642,7 +643,7 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     "TCP tunnel probe received data from target"
                 );
             },
-            Err(ref e) if reader.closed_cleanly => {
+            Err(ref e) if reader.closed_cleanly() => {
                 debug!(
                     uplink = %uplink.name,
                     target = %format!("{}:{}", probe.host, probe.port),

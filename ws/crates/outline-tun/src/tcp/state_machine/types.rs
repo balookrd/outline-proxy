@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
-use outline_transport::TcpShadowsocksWriter;
+use outline_transport::{WsTcpWriter, SocketTcpWriter};
 use crate::TunRoute;
 use outline_uplink::UplinkManager;
 
@@ -17,22 +17,30 @@ use super::super::TcpFlowKey;
 
 /// Abstraction over the upstream TCP write half — tunneled (Shadowsocks
 /// framing) or direct (plain bytes).
+///
+/// `TunneledWs` and `TunneledSocket` are kept as separate variants so that
+/// each arm of `send_chunk` / `close` dispatches directly into a
+/// monomorphized, branch-free implementation rather than going through a
+/// second runtime check inside the writer.
 pub enum TunTcpUpstreamWriter {
-    Tunneled(TcpShadowsocksWriter),
+    TunneledWs(WsTcpWriter),
+    TunneledSocket(SocketTcpWriter),
     Direct(OwnedWriteHalf),
 }
 
 impl TunTcpUpstreamWriter {
     pub(in crate::tcp) async fn send_chunk(&mut self, data: &[u8]) -> Result<()> {
         match self {
-            Self::Tunneled(w) => w.send_chunk(data).await,
+            Self::TunneledWs(w) => w.send_chunk(data).await,
+            Self::TunneledSocket(w) => w.send_chunk(data).await,
             Self::Direct(w) => w.write_all(data).await.context("direct TCP write failed"),
         }
     }
 
     pub(in crate::tcp) async fn close(&mut self) -> Result<()> {
         match self {
-            Self::Tunneled(w) => w.close().await,
+            Self::TunneledWs(w) => w.close().await,
+            Self::TunneledSocket(w) => w.close().await,
             Self::Direct(w) => w.shutdown().await.context("direct TCP shutdown failed"),
         }
     }

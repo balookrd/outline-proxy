@@ -21,26 +21,175 @@ use super::{AbortOnDrop, WsTransportStream, UpstreamTransportGuard};
 type WsSink = SplitSink<WsTransportStream, Message>;
 type WsStream = SplitStream<WsTransportStream>;
 
-enum TcpWriteTransport {
-    Websocket {
-        data_tx: Option<mpsc::Sender<Message>>,
-        /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
-        _writer_task: Option<AbortOnDrop>,
-    },
-    Socket {
-        writer: OwnedWriteHalf,
-    },
+// ---------------------------------------------------------------------------
+// Transport traits
+// ---------------------------------------------------------------------------
+
+#[allow(async_fn_in_trait)]
+pub trait WriteTransport: Send + 'static {
+    async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()>;
+    async fn close(&mut self) -> Result<()>;
+    fn supports_half_close(&self) -> bool;
 }
 
-enum TcpReadTransport {
-    Websocket {
-        stream: WsStream,
-        ctrl_tx: mpsc::Sender<Message>,
-    },
-    Socket {
-        reader: OwnedReadHalf,
-    },
+#[allow(async_fn_in_trait)]
+pub trait ReadTransport: Send + 'static {
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>>;
 }
+
+// ---------------------------------------------------------------------------
+// Concrete write transports
+// ---------------------------------------------------------------------------
+
+#[doc(hidden)]
+pub struct WsWriteTransport {
+    data_tx: Option<mpsc::Sender<Message>>,
+    /// Kept alive for its `AbortOnDrop` — aborts the writer task on drop.
+    _writer_task: Option<AbortOnDrop>,
+}
+
+impl WriteTransport for WsWriteTransport {
+    async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()> {
+        self.data_tx
+            .as_ref()
+            .ok_or_else(|| anyhow!("writer already closed"))?
+            .send(Message::Binary(frame.into()))
+            .await
+            .context("failed to send encrypted frame")
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        // Drop the sender — the writer task sees None from data_rx,
+        // sends a WebSocket Close frame, and exits on its own.
+        //
+        // We intentionally do NOT take and await the writer task here.
+        // The previous implementation called `writer_task.take()` +
+        // `task.finish().await`, which moved the real JoinHandle out of
+        // its AbortOnDrop wrapper.  If this future was then cancelled
+        // (e.g. by a probe timeout), the handle was *detached* instead
+        // of aborted — leaking the writer task, its SplitSink, the
+        // underlying H2 connection, and the TCP socket.
+        //
+        // Leaving the AbortOnDrop in place guarantees that when this
+        // TcpShadowsocksWriter is dropped, the writer task is aborted
+        // regardless of how the caller exits (normal return, error, or
+        // cancellation).
+        drop(self.data_tx.take());
+        Ok(())
+    }
+
+    fn supports_half_close(&self) -> bool {
+        false
+    }
+}
+
+#[doc(hidden)]
+pub struct SocketWriteTransport {
+    writer: OwnedWriteHalf,
+}
+
+impl WriteTransport for SocketWriteTransport {
+    async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()> {
+        self.writer
+            .write_all(&frame)
+            .await
+            .context("failed to write encrypted frame to socket")
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        self.writer.shutdown().await.context("socket shutdown failed")
+    }
+
+    fn supports_half_close(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Concrete read transports
+// ---------------------------------------------------------------------------
+
+#[doc(hidden)]
+pub struct WsReadTransport {
+    stream: WsStream,
+    ctrl_tx: mpsc::Sender<Message>,
+    buffer: Vec<u8>,
+}
+
+impl ReadTransport for WsReadTransport {
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
+        while self.buffer.len() < len {
+            let next = match self.stream.next().await {
+                None => {
+                    *closed_cleanly = true;
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        need = len,
+                        have = self.buffer.len(),
+                        "reader: websocket stream returned None (EOF without Close frame)"
+                    );
+                    bail!("websocket closed");
+                },
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => {
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        need = len,
+                        have = self.buffer.len(),
+                        error = %format!("{e}"),
+                        "reader: websocket stream yielded error"
+                    );
+                    return Err(anyhow!("websocket read failed: {e}"));
+                },
+            };
+
+            match next {
+                Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
+                Message::Close(frame) => {
+                    *closed_cleanly = true;
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        frame = ?frame,
+                        "reader: websocket received Close frame from upstream"
+                    );
+                    bail!("websocket closed");
+                },
+                Message::Ping(payload) => {
+                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
+                },
+                Message::Pong(_) => {},
+                Message::Text(_) => bail!("unexpected text websocket frame"),
+                Message::Frame(_) => {},
+            }
+        }
+
+        let tail = self.buffer.split_off(len);
+        Ok(std::mem::replace(&mut self.buffer, tail))
+    }
+}
+
+#[doc(hidden)]
+pub struct SocketReadTransport {
+    reader: OwnedReadHalf,
+}
+
+impl ReadTransport for SocketReadTransport {
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        if let Err(err) = self.reader.read_exact(&mut buf).await {
+            if err.kind() == std::io::ErrorKind::UnexpectedEof {
+                *closed_cleanly = true;
+                bail!("socket closed");
+            }
+            return Err(err).context("socket read failed");
+        }
+        Ok(buf)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SS2022 state helpers
+// ---------------------------------------------------------------------------
 
 struct Ss2022TcpWriterState {
     request_salt: [u8; 32],
@@ -52,8 +201,12 @@ struct Ss2022TcpReaderState {
     response_header_read: bool,
 }
 
-pub struct TcpShadowsocksWriter {
-    transport: TcpWriteTransport,
+// ---------------------------------------------------------------------------
+// Generic writer / reader
+// ---------------------------------------------------------------------------
+
+pub struct TcpShadowsocksWriter<T: WriteTransport> {
+    transport: T,
     cipher: CipherKind,
     /// Session cipher instance with the key schedule pre-computed; reused for
     /// every frame to avoid per-chunk AES key expansion.
@@ -64,8 +217,8 @@ pub struct TcpShadowsocksWriter {
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
-pub struct TcpShadowsocksReader {
-    transport: TcpReadTransport,
+pub struct TcpShadowsocksReader<T: ReadTransport> {
+    transport: T,
     cipher: CipherKind,
     /// Master key stored on the stack.  Active portion: `&master_key[..cipher.key_len()]`.
     master_key: [u8; 32],
@@ -73,7 +226,6 @@ pub struct TcpShadowsocksReader {
     /// salt and deriving the subkey).  `None` until the first chunk arrives.
     cipher_state: Option<AeadCipher>,
     nonce: [u8; 12],
-    buffer: Vec<u8>,
     ss2022: Option<Ss2022TcpReaderState>,
     _lifetime: Arc<UpstreamTransportGuard>,
     /// `true` when the last read ended with a clean WebSocket close (Close
@@ -82,6 +234,97 @@ pub struct TcpShadowsocksReader {
     /// use this to decide whether to report a runtime uplink failure.
     pub closed_cleanly: bool,
 }
+
+// ---------------------------------------------------------------------------
+// Concrete type aliases
+// ---------------------------------------------------------------------------
+
+pub type WsTcpWriter = TcpShadowsocksWriter<WsWriteTransport>;
+pub type SocketTcpWriter = TcpShadowsocksWriter<SocketWriteTransport>;
+pub type WsTcpReader = TcpShadowsocksReader<WsReadTransport>;
+pub type SocketTcpReader = TcpShadowsocksReader<SocketReadTransport>;
+
+// ---------------------------------------------------------------------------
+// Enum wrappers for mixed-transport storage
+// ---------------------------------------------------------------------------
+
+/// Owns either a WebSocket or a plain-socket Shadowsocks writer.
+/// Use the concrete aliases (`WsTcpWriter` / `SocketTcpWriter`) when the
+/// transport kind is statically known at the call site.
+pub enum TcpWriter {
+    Ws(WsTcpWriter),
+    Socket(SocketTcpWriter),
+}
+
+impl TcpWriter {
+    pub fn request_salt(&self) -> Option<[u8; 32]> {
+        match self {
+            Self::Ws(w) => w.request_salt(),
+            Self::Socket(w) => w.request_salt(),
+        }
+    }
+
+    pub fn supports_half_close(&self) -> bool {
+        match self {
+            Self::Ws(w) => w.supports_half_close(),
+            Self::Socket(w) => w.supports_half_close(),
+        }
+    }
+
+    pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
+        match self {
+            Self::Ws(w) => w.send_chunk(payload).await,
+            Self::Socket(w) => w.send_chunk(payload).await,
+        }
+    }
+
+    pub async fn send_keepalive(&mut self) -> Result<()> {
+        match self {
+            Self::Ws(w) => w.send_keepalive().await,
+            Self::Socket(w) => w.send_keepalive().await,
+        }
+    }
+
+    pub async fn close(&mut self) -> Result<()> {
+        match self {
+            Self::Ws(w) => w.close().await,
+            Self::Socket(w) => w.close().await,
+        }
+    }
+}
+
+/// Owns either a WebSocket or a plain-socket Shadowsocks reader.
+pub enum TcpReader {
+    Ws(WsTcpReader),
+    Socket(SocketTcpReader),
+}
+
+impl TcpReader {
+    pub fn with_request_salt(self, salt: Option<[u8; 32]>) -> Self {
+        match self {
+            Self::Ws(r) => Self::Ws(r.with_request_salt(salt)),
+            Self::Socket(r) => Self::Socket(r.with_request_salt(salt)),
+        }
+    }
+
+    pub fn closed_cleanly(&self) -> bool {
+        match self {
+            Self::Ws(r) => r.closed_cleanly,
+            Self::Socket(r) => r.closed_cleanly,
+        }
+    }
+
+    pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+        match self {
+            Self::Ws(r) => r.read_chunk().await,
+            Self::Socket(r) => r.read_chunk().await,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 fn unix_timestamp_secs() -> Result<u64> {
     Ok(SystemTime::now()
@@ -134,7 +377,11 @@ fn parse_ss2022_response_header(
     Ok(u16::from_be_bytes([plaintext[request_salt_end], plaintext[request_salt_end + 1]]) as usize)
 }
 
-impl TcpShadowsocksWriter {
+// ---------------------------------------------------------------------------
+// TcpShadowsocksWriter — WS constructor
+// ---------------------------------------------------------------------------
+
+impl TcpShadowsocksWriter<WsWriteTransport> {
     /// Connects the TCP shadowsocks writer.  Returns `(writer, ctrl_tx)` where
     /// `ctrl_tx` must be passed to the paired `TcpShadowsocksReader` so that
     /// Pong responses are sent through the priority channel in the writer task.
@@ -199,7 +446,7 @@ impl TcpShadowsocksWriter {
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok((
             Self {
-                transport: TcpWriteTransport::Websocket {
+                transport: WsWriteTransport {
                     data_tx: Some(data_tx),
                     _writer_task: Some(AbortOnDrop::new(writer_task)),
                 },
@@ -215,7 +462,13 @@ impl TcpShadowsocksWriter {
             ctrl_tx,
         ))
     }
+}
 
+// ---------------------------------------------------------------------------
+// TcpShadowsocksWriter — socket constructor
+// ---------------------------------------------------------------------------
+
+impl TcpShadowsocksWriter<SocketWriteTransport> {
     pub fn connect_socket(
         writer: OwnedWriteHalf,
         cipher: CipherKind,
@@ -227,7 +480,7 @@ impl TcpShadowsocksWriter {
         let key = derive_subkey(cipher, master_key, &salt[..cipher.salt_len()])?;
         let cipher_state = AeadCipher::new(cipher, &key[..cipher.key_len()])?;
         Ok(Self {
-            transport: TcpWriteTransport::Socket { writer },
+            transport: SocketWriteTransport { writer },
             cipher,
             cipher_state,
             nonce: [0u8; 12],
@@ -238,13 +491,19 @@ impl TcpShadowsocksWriter {
             _lifetime: lifetime,
         })
     }
+}
 
+// ---------------------------------------------------------------------------
+// TcpShadowsocksWriter — generic methods
+// ---------------------------------------------------------------------------
+
+impl<T: WriteTransport> TcpShadowsocksWriter<T> {
     pub fn request_salt(&self) -> Option<[u8; 32]> {
         self.ss2022.as_ref().map(|state| state.request_salt)
     }
 
     pub fn supports_half_close(&self) -> bool {
-        matches!(self.transport, TcpWriteTransport::Socket { .. })
+        self.transport.supports_half_close()
     }
 
     pub async fn send_chunk(&mut self, payload: &[u8]) -> Result<()> {
@@ -335,49 +594,19 @@ impl TcpShadowsocksWriter {
     }
 
     pub async fn close(&mut self) -> Result<()> {
-        match &mut self.transport {
-            TcpWriteTransport::Websocket { data_tx, .. } => {
-                // Drop the sender — the writer task sees None from data_rx,
-                // sends a WebSocket Close frame, and exits on its own.
-                //
-                // We intentionally do NOT take and await the writer task here.
-                // The previous implementation called `writer_task.take()` +
-                // `task.finish().await`, which moved the real JoinHandle out of
-                // its AbortOnDrop wrapper.  If this future was then cancelled
-                // (e.g. by a probe timeout), the handle was *detached* instead
-                // of aborted — leaking the writer task, its SplitSink, the
-                // underlying H2 connection, and the TCP socket.
-                //
-                // Leaving the AbortOnDrop in place guarantees that when this
-                // TcpShadowsocksWriter is dropped, the writer task is aborted
-                // regardless of how the caller exits (normal return, error, or
-                // cancellation).
-                drop(data_tx.take());
-            },
-            TcpWriteTransport::Socket { writer } => {
-                writer.shutdown().await.context("socket shutdown failed")?;
-            },
-        }
-        Ok(())
+        self.transport.close().await
     }
 
     async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()> {
-        match &mut self.transport {
-            TcpWriteTransport::Websocket { data_tx, .. } => data_tx
-                .as_ref()
-                .ok_or_else(|| anyhow!("writer already closed"))?
-                .send(Message::Binary(frame.into()))
-                .await
-                .context("failed to send encrypted frame"),
-            TcpWriteTransport::Socket { writer } => writer
-                .write_all(&frame)
-                .await
-                .context("failed to write encrypted frame to socket"),
-        }
+        self.transport.write_frame(frame).await
     }
 }
 
-impl TcpShadowsocksReader {
+// ---------------------------------------------------------------------------
+// TcpShadowsocksReader — WS constructor
+// ---------------------------------------------------------------------------
+
+impl TcpShadowsocksReader<WsReadTransport> {
     pub fn new(
         stream: WsStream,
         cipher: CipherKind,
@@ -388,18 +617,23 @@ impl TcpShadowsocksReader {
         let mut mk = [0u8; 32];
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
-            transport: TcpReadTransport::Websocket { stream, ctrl_tx },
+            transport: WsReadTransport { stream, ctrl_tx, buffer: Vec::new() },
             cipher,
             master_key: mk,
             cipher_state: None,
             nonce: [0u8; 12],
-            buffer: Vec::new(),
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
         }
     }
+}
 
+// ---------------------------------------------------------------------------
+// TcpShadowsocksReader — socket constructor
+// ---------------------------------------------------------------------------
+
+impl TcpShadowsocksReader<SocketReadTransport> {
     pub fn new_socket(
         reader: OwnedReadHalf,
         cipher: CipherKind,
@@ -409,18 +643,23 @@ impl TcpShadowsocksReader {
         let mut mk = [0u8; 32];
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
-            transport: TcpReadTransport::Socket { reader },
+            transport: SocketReadTransport { reader },
             cipher,
             master_key: mk,
             cipher_state: None,
             nonce: [0u8; 12],
-            buffer: Vec::new(),
             ss2022: None,
             _lifetime: lifetime,
             closed_cleanly: false,
         }
     }
+}
 
+// ---------------------------------------------------------------------------
+// TcpShadowsocksReader — generic methods
+// ---------------------------------------------------------------------------
+
+impl<T: ReadTransport> TcpShadowsocksReader<T> {
     pub fn with_request_salt(mut self, request_salt: Option<[u8; 32]>) -> Self {
         self.ss2022 = request_salt.map(|request_salt| Ss2022TcpReaderState {
             request_salt,
@@ -431,7 +670,7 @@ impl TcpShadowsocksReader {
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
         if self.cipher_state.is_none() {
-            let salt = self.read_exact_from_ws(self.cipher.salt_len()).await?;
+            let salt = self.transport.read_exact(self.cipher.salt_len(), &mut self.closed_cleanly).await?;
             let key =
                 derive_subkey(self.cipher, &self.master_key[..self.cipher.key_len()], &salt)?;
             self.cipher_state =
@@ -447,12 +686,12 @@ impl TcpShadowsocksReader {
                 .map(|state| (state.request_salt, self.cipher.salt_len()))
                 .ok_or_else(|| anyhow!("missing ss2022 request salt"))?;
             let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
-            let encrypted_header = self.read_exact_from_ws(header_len).await?;
+            let encrypted_header = self.transport.read_exact(header_len, &mut self.closed_cleanly).await?;
             let header = self.decrypt_with_session(&encrypted_header)?;
             let payload_len =
                 parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header)?;
             let encrypted_payload =
-                self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
+                self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
             let payload = self.decrypt_with_session(&encrypted_payload)?;
             if let Some(state) = &mut self.ss2022 {
                 state.response_header_read = true;
@@ -466,7 +705,7 @@ impl TcpShadowsocksReader {
             // that would be misinterpreted as EOF.
         }
 
-        let encrypted_len = self.read_exact_from_ws(2 + SHADOWSOCKS_TAG_LEN).await?;
+        let encrypted_len = self.transport.read_exact(2 + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
         let len = self.decrypt_with_session(&encrypted_len)?;
 
         if len.len() != 2 {
@@ -477,13 +716,13 @@ impl TcpShadowsocksReader {
             bail!("payload length exceeds limit: {payload_len}");
         }
 
-        let encrypted_payload = self.read_exact_from_ws(payload_len + SHADOWSOCKS_TAG_LEN).await?;
+        let encrypted_payload = self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
         self.decrypt_with_session(&encrypted_payload)
     }
 
     /// Decrypt `ciphertext` with the session cipher and advance the nonce.
     /// Kept as a tight helper so the session-cipher borrow does not straddle
-    /// the surrounding `read_exact_from_ws` `&mut self` calls.
+    /// the surrounding `read_exact` `&mut self` calls.
     fn decrypt_with_session(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
         let plaintext = self
             .cipher_state
@@ -492,70 +731,5 @@ impl TcpShadowsocksReader {
             .decrypt(&self.nonce, ciphertext)?;
         increment_nonce(&mut self.nonce)?;
         Ok(plaintext)
-    }
-
-    async fn read_exact_from_ws(&mut self, len: usize) -> Result<Vec<u8>> {
-        match &mut self.transport {
-            TcpReadTransport::Socket { reader } => {
-                let mut buf = vec![0u8; len];
-                if let Err(err) = reader.read_exact(&mut buf).await {
-                    if err.kind() == std::io::ErrorKind::UnexpectedEof {
-                        self.closed_cleanly = true;
-                        bail!("socket closed");
-                    }
-                    return Err(err).context("socket read failed");
-                }
-                Ok(buf)
-            },
-            TcpReadTransport::Websocket { stream, ctrl_tx } => {
-                while self.buffer.len() < len {
-                    let next = match stream.next().await {
-                        None => {
-                            self.closed_cleanly = true;
-                            debug!(
-                                target: "outline_ws_rust::session_death",
-                                need = len,
-                                have = self.buffer.len(),
-                                "reader: websocket stream returned None (EOF without Close frame)"
-                            );
-                            bail!("websocket closed");
-                        },
-                        Some(Ok(msg)) => msg,
-                        Some(Err(e)) => {
-                            debug!(
-                                target: "outline_ws_rust::session_death",
-                                need = len,
-                                have = self.buffer.len(),
-                                error = %format!("{e}"),
-                                "reader: websocket stream yielded error"
-                            );
-                            return Err(anyhow!("websocket read failed: {e}"));
-                        },
-                    };
-
-                    match next {
-                        Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
-                        Message::Close(frame) => {
-                            self.closed_cleanly = true;
-                            debug!(
-                                target: "outline_ws_rust::session_death",
-                                frame = ?frame,
-                                "reader: websocket received Close frame from upstream"
-                            );
-                            bail!("websocket closed");
-                        },
-                        Message::Ping(payload) => {
-                            let _ = ctrl_tx.try_send(Message::Pong(payload));
-                        },
-                        Message::Pong(_) => {},
-                        Message::Text(_) => bail!("unexpected text websocket frame"),
-                        Message::Frame(_) => {},
-                    }
-                }
-
-                let tail = self.buffer.split_off(len);
-                Ok(std::mem::replace(&mut self.buffer, tail))
-            },
-        }
     }
 }

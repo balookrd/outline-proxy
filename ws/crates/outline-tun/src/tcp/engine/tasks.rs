@@ -10,7 +10,7 @@ use tokio::time::{sleep, sleep_until, timeout};
 use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
-use outline_transport::TcpShadowsocksReader;
+use outline_transport::{TcpReader, TcpWriter};
 use socks5_proto::TargetAddr;
 use outline_uplink::TransportKind;
 
@@ -335,7 +335,10 @@ impl TunTcpEngine {
             };
 
             let upstream_writer = Arc::new(Mutex::new(
-                super::super::state_machine::TunTcpUpstreamWriter::Tunneled(upstream_writer),
+                match upstream_writer {
+                    TcpWriter::Ws(w) => super::super::state_machine::TunTcpUpstreamWriter::TunneledWs(w),
+                    TcpWriter::Socket(w) => super::super::state_machine::TunTcpUpstreamWriter::TunneledSocket(w),
+                },
             ));
             let (pending_payloads, should_close_client_half) = {
                 let mut state = flow.lock().await;
@@ -412,7 +415,7 @@ impl TunTcpEngine {
         &self,
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
-        mut upstream_reader: TcpShadowsocksReader,
+        mut upstream_reader: TcpReader,
         mut close_rx: watch::Receiver<bool>,
     ) {
         let engine = self.clone();
@@ -602,7 +605,7 @@ impl TunTcpEngine {
                         // can switch to a backup uplink or fall back to H2/H1.
                         // Clean WebSocket closes (FIN, Close frame) do not
                         // indicate an uplink problem and are not reported.
-                        if !upstream_reader.closed_cleanly {
+                        if !upstream_reader.closed_cleanly() {
                             let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
                                 (state.uplink_index, state.manager.clone())
