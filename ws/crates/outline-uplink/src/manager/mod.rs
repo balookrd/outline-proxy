@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use tokio::sync::{Notify, RwLock, Semaphore};
+use tokio::sync::{Notify, RwLock, Semaphore, watch};
 use tokio::time::{Instant, sleep};
 use tracing::info;
 
@@ -126,6 +126,7 @@ impl UplinkManager {
         let probe_max_concurrent = probe.max_concurrent;
         let probe_max_dials = probe.max_dials;
         let uplinks: Vec<Arc<UplinkConfig>> = uplinks.into_iter().map(Arc::new).collect();
+        let (shutdown_tx, _) = watch::channel(false);
 
         // Resolve persisted names to indices.  Unknown names are ignored so
         // that removing an uplink from config doesn't block startup.
@@ -152,6 +153,7 @@ impl UplinkManager {
                 probe_wakeup: Arc::new(Notify::new()),
                 state_store,
                 dns_cache,
+                shutdown_tx,
             }),
         })
     }
@@ -160,6 +162,16 @@ impl UplinkManager {
     /// Prometheus label at metric emission sites.
     pub fn group_name(&self) -> &str {
         &self.inner.group_name
+    }
+
+    /// Signal all background loops spawned by this manager to stop.
+    /// Called by the owner (registry or application) on config reload or shutdown.
+    pub fn shutdown(&self) {
+        let _ = self.inner.shutdown_tx.send(true);
+    }
+
+    pub(crate) fn shutdown_rx(&self) -> watch::Receiver<bool> {
+        self.inner.shutdown_tx.subscribe()
     }
 
     /// Shared DNS cache used by every transport resolve path belonging to
@@ -193,10 +205,15 @@ impl UplinkManager {
         }
 
         let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
         tokio::spawn(async move {
             manager.refill_all_standby().await;
             loop {
-                sleep(WARM_STANDBY_MAINTENANCE_INTERVAL).await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(WARM_STANDBY_MAINTENANCE_INTERVAL) => {}
+                }
                 // Sweep dead entries from the H2/H3 shared-connection caches
                 // so stale connections (e.g. after DNS rotation or soft-close
                 // timeout) do not hold FDs open indefinitely.
@@ -218,9 +235,14 @@ impl UplinkManager {
         };
 
         let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
         tokio::spawn(async move {
             loop {
-                sleep(interval).await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(interval) => {}
+                }
                 for index in 0..manager.inner.uplinks.len() {
                     manager.keepalive_tcp_pool(index).await;
                 }
