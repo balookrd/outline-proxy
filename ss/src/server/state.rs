@@ -6,17 +6,32 @@ use crate::{crypto::UserKey, metrics::Metrics, nat::NatTable};
 
 use super::dns_cache::DnsCache;
 
-#[derive(Clone)]
-pub(super) struct AppState {
-    pub(super) users: Arc<[UserKey]>,
-    pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
-    pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+/// Per-path TCP/UDP route tables.
+pub(super) struct RouteRegistry {
+    pub(super) tcp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+}
+
+/// Process-wide services shared by every transport handler.
+pub(super) struct Services {
     pub(super) metrics: Arc<Metrics>,
     pub(super) nat_table: Arc<NatTable>,
     pub(super) dns_cache: Arc<DnsCache>,
     pub(super) prefer_ipv4_upstream: bool,
+}
+
+/// Credentials and HTTP front-door auth policy.
+pub(super) struct AuthPolicy {
+    pub(super) users: Arc<[UserKey]>,
     pub(super) http_root_auth: bool,
     pub(super) http_root_realm: Arc<str>,
+}
+
+#[derive(Clone)]
+pub(super) struct AppState {
+    pub(super) routes: Arc<RouteRegistry>,
+    pub(super) services: Arc<Services>,
+    pub(super) auth: Arc<AuthPolicy>,
 }
 
 #[derive(Clone)]
@@ -31,4 +46,3 @@ pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
         candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
     })
 }
-

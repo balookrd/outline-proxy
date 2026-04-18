@@ -10,7 +10,7 @@
 //! - [`shadowsocks`] — the plain (non-websocket) shadowsocks listeners.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashSet, VecDeque},
+    collections::{BTreeSet, HashSet, VecDeque},
     fs,
     net::SocketAddr,
     path::Path,
@@ -98,7 +98,7 @@ use self::{
     },
     shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
-    state::{AppState, TransportRoute, empty_transport_route},
+    state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route},
     transport::{is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade},
 };
 
@@ -112,17 +112,22 @@ pub async fn run(config: Config) -> Result<()> {
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
     let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
-    let app = build_app(
-        users.clone(),
-        tcp_routes.clone(),
-        udp_routes.clone(),
-        metrics.clone(),
-        Arc::clone(&nat_table),
-        Arc::clone(&dns_cache),
-        config.prefer_ipv4_upstream,
-        config.http_root_auth,
-        config.http_root_realm.clone(),
-    );
+    let routes = Arc::new(RouteRegistry {
+        tcp: Arc::clone(&tcp_routes),
+        udp: Arc::clone(&udp_routes),
+    });
+    let services = Arc::new(Services {
+        metrics: metrics.clone(),
+        nat_table: Arc::clone(&nat_table),
+        dns_cache: Arc::clone(&dns_cache),
+        prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+    });
+    let auth = Arc::new(AuthPolicy {
+        users: users.clone(),
+        http_root_auth: config.http_root_auth,
+        http_root_realm: Arc::from(config.http_root_realm.clone()),
+    });
+    let app = build_app(Arc::clone(&routes), Arc::clone(&services), Arc::clone(&auth));
     let listener = if let Some(listen) = config.listen {
         Some(
             TcpListener::bind(listen)
@@ -255,31 +260,12 @@ pub async fn run(config: Config) -> Result<()> {
         tasks.spawn(async move { serve_tcp_listener(listener, app, config, shutdown).await });
     }
     if let Some(h3_server) = h3_server {
-        let users = users.clone();
-        let tcp_routes = tcp_routes.clone();
-        let udp_routes = udp_routes.clone();
-        let metrics = metrics.clone();
-        let nat_table = Arc::clone(&nat_table);
-        let dns_cache = Arc::clone(&dns_cache);
-        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
-        let http_root_auth = config.http_root_auth;
-        let http_root_realm = config.http_root_realm.clone();
+        let routes = Arc::clone(&routes);
+        let services = Arc::clone(&services);
+        let auth = Arc::clone(&auth);
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
-            serve_h3_server(
-                h3_server,
-                users,
-                tcp_routes,
-                udp_routes,
-                metrics,
-                nat_table,
-                dns_cache,
-                prefer_ipv4_upstream,
-                http_root_auth,
-                http_root_realm,
-                shutdown,
-            )
-            .await
+            serve_h3_server(h3_server, routes, services, auth, shutdown).await
         });
     }
     if let Some(metrics_listener) = metrics_listener {
