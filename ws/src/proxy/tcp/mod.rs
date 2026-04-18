@@ -1,4 +1,5 @@
 mod connect;
+mod direct;
 mod failover;
 mod session;
 
