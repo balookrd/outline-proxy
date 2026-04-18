@@ -143,6 +143,18 @@ impl Config {
         Ok(users)
     }
 
+    fn validate_cert_pair(
+        cert: &Option<PathBuf>,
+        key: &Option<PathBuf>,
+        prefix: &str,
+    ) -> Result<bool> {
+        match (cert, key) {
+            (Some(_), Some(_)) => Ok(true),
+            (None, None) => Ok(false),
+            _ => bail!("{prefix}_cert_path and {prefix}_key_path must be configured together"),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
             bail!("public_scheme must be either \"ws\" or \"wss\"");
@@ -150,22 +162,14 @@ impl Config {
         if !self.data_plane_listener_enabled() {
             bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
         }
-        match (&self.tls_cert_path, &self.tls_key_path) {
-            (Some(_), Some(_)) | (None, None) => {},
-            _ => bail!("tls_cert_path and tls_key_path must be configured together"),
+        Self::validate_cert_pair(&self.tls_cert_path, &self.tls_key_path, "tls")?;
+        let h3_certs_present =
+            Self::validate_cert_pair(&self.h3_cert_path, &self.h3_key_path, "h3")?;
+        if h3_certs_present && self.h3_listen.is_none() {
+            bail!("h3_listen must be configured explicitly when HTTP/3 is enabled");
         }
-        match (&self.h3_cert_path, &self.h3_key_path) {
-            (Some(_), Some(_)) => {
-                if self.h3_listen.is_none() {
-                    bail!("h3_listen must be configured explicitly when HTTP/3 is enabled");
-                }
-            },
-            (None, None) => {
-                if self.h3_listen.is_some() {
-                    bail!("h3_listen requires both h3_cert_path and h3_key_path");
-                }
-            },
-            _ => bail!("h3_cert_path and h3_key_path must be configured together"),
+        if !h3_certs_present && self.h3_listen.is_some() {
+            bail!("h3_listen requires both h3_cert_path and h3_key_path");
         }
         if !self.metrics_path.starts_with('/') {
             bail!("metrics_path must start with '/'");
