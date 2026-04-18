@@ -10,65 +10,25 @@
 //! - [`shadowsocks`] — the plain (non-websocket) shadowsocks listeners.
 
 use std::{
-    collections::{BTreeSet, HashSet, VecDeque},
-    fs,
-    net::SocketAddr,
-    path::Path,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
-    },
+    collections::BTreeSet,
+    sync::Arc,
 };
 
-use bytes::{Bytes, BytesMut};
-
-use anyhow::{Context, Result, anyhow};
-use axum::{
-    Router,
-    extract::{
-        OriginalUri, State,
-        ws::{Message, WebSocket, WebSocketUpgrade},
-    },
-    http::{Method, StatusCode, Version},
-    response::IntoResponse,
-    routing::any,
-    serve::ListenerExt,
-};
-use futures_util::{FutureExt, SinkExt, StreamExt, stream::FuturesUnordered};
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo, TokioTimer},
-    server::conn::auto::Builder as HyperBuilder,
-    service::TowerToHyperService,
-};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use sockudo_ws::{
-    Config as H3WebSocketConfig, ExtendedConnectRequest as H3ExtendedConnectRequest,
-    Http3 as H3Transport, Message as H3Message, Stream as H3Stream,
-    WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
-};
+use anyhow::{Context, Result};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpSocket, TcpStream, UdpSocket, lookup_host},
-    sync::{Semaphore, mpsc},
+    net::{TcpListener, UdpSocket},
     task::JoinSet,
-    time::{Duration, timeout},
+    time::Duration,
 };
-use tokio_rustls::TlsAcceptor;
 use tracing::{debug, info, warn};
 
 use crate::{
     config::Config,
-    crypto::{
-        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
-        decrypt_udp_packet, decrypt_udp_packet_with_hint, diagnose_stream_handshake,
-        diagnose_udp_packet,
-    },
-    fwmark::apply_fwmark_if_needed,
-    metrics::{DisconnectReason, Metrics, Protocol, TcpUpstreamGuard, Transport},
-    nat::{NatKey, NatTable, UdpResponseSender},
-    protocol::{TargetAddr, parse_target_addr},
+    metrics::{Metrics, Transport},
+    nat::NatTable,
 };
 
+mod auth;
 mod bootstrap;
 mod connect;
 mod constants;
@@ -82,24 +42,17 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
-// Re-export submodule contents at the `server` level so existing `use super::*;`
-// imports in the sibling modules (bootstrap/connect/shadowsocks/transport) keep
-// resolving against a single flat namespace.
 use self::{
     bootstrap::{
         build_app, build_h3_server, build_metrics_app, ensure_rustls_provider_installed,
         serve_h3_server, serve_metrics_listener, serve_tcp_listener,
     },
-    connect::connect_tcp_target,
-    constants::*,
+    constants::{DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS, UDP_DNS_CACHE_TTL_SECS},
     dns_cache::DnsCache,
-    setup::{
-        build_transport_route_map, build_users, describe_user_routes, protocol_from_http_version,
-    },
+    setup::{build_transport_route_map, build_users, describe_user_routes},
     shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
-    state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route},
-    transport::{is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade},
+    state::{AuthPolicy, RouteRegistry, Services},
 };
 
 pub async fn run(config: Config) -> Result<()> {

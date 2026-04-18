@@ -1,9 +1,34 @@
-use super::connect::{configure_tcp_stream, resolve_udp_target};
-use super::shutdown::ShutdownSignal;
-use super::*;
-use futures_util::future::BoxFuture;
+use std::{net::SocketAddr, sync::Arc};
 
-use crate::nat::ResponseSender;
+use anyhow::{Context, Result, anyhow};
+use bytes::{Bytes, BytesMut};
+use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, UdpSocket},
+    sync::Semaphore,
+    time::{Duration, timeout},
+};
+use tracing::{debug, info, warn};
+
+use crate::{
+    crypto::{
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
+        decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet,
+    },
+    metrics::{Metrics, Protocol, Transport},
+    nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
+    protocol::parse_target_addr,
+};
+
+use super::connect::{configure_tcp_stream, connect_tcp_target, resolve_udp_target};
+use super::constants::{
+    MAX_UDP_PAYLOAD_SIZE, SS_MAX_CONCURRENT_TCP_CONNECTIONS, SS_TCP_HANDSHAKE_TIMEOUT_SECS,
+    UDP_MAX_CONCURRENT_RELAY_TASKS,
+};
+use super::dns_cache::DnsCache;
+use super::shutdown::ShutdownSignal;
+use super::transport::is_benign_ws_disconnect;
 
 struct DatagramResponseSender {
     socket: Arc<UdpSocket>,

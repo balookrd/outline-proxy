@@ -1,16 +1,55 @@
+use super::auth::parse_root_http_auth_password;
 use super::connect::configure_tcp_stream;
 use super::shutdown::ShutdownSignal;
 use super::transport::{
     ROOT_HTTP_AUTH_COOKIE_NAME, ROOT_HTTP_AUTH_COOKIE_TTL_SECS, ROOT_HTTP_AUTH_MAX_FAILURES,
     escape_http_auth_realm, handle_tcp_h3_connection, handle_udp_h3_connection,
     is_benign_ws_disconnect, is_normal_h3_shutdown, metrics_handler, not_found_handler,
-    parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
-    root_http_auth_handler,
+    parse_failed_root_auth_attempts, password_matches_any_user, root_http_auth_handler,
 };
-use super::*;
-use axum::http::{self, header};
+use std::{collections::BTreeSet, fs, path::Path, sync::{Arc, OnceLock}};
+
+use anyhow::{Context, Result, anyhow};
+use axum::{
+    Router,
+    http::{self, Method, StatusCode, header},
+    routing::any,
+    serve::ListenerExt,
+};
+use bytes::Bytes;
 use h3::server::Connection as H3Connection;
-use sockudo_ws::{Role as H3Role, build_extended_connect_error, build_extended_connect_response};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo, TokioTimer},
+    server::conn::auto::Builder as HyperBuilder,
+    service::TowerToHyperService,
+};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use sockudo_ws::{
+    Config as H3WebSocketConfig, ExtendedConnectRequest as H3ExtendedConnectRequest,
+    Http3 as H3Transport, Role as H3Role, Stream as H3Stream,
+    WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
+    build_extended_connect_error, build_extended_connect_response,
+};
+use tokio::{net::TcpListener, time::Duration};
+use tokio_rustls::TlsAcceptor;
+use tracing::{debug, warn};
+
+use crate::{
+    config::Config,
+    crypto::UserKey,
+    metrics::{DisconnectReason, Metrics, Protocol, Transport},
+};
+
+use super::constants::{
+    H2_CONNECTION_WINDOW_BYTES, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
+    H2_MAX_SEND_BUF_SIZE, H2_STREAM_WINDOW_BYTES,
+    H3_CONNECTION_WINDOW_BYTES, H3_MAX_BACKPRESSURE_BYTES, H3_MAX_CONCURRENT_BIDI_STREAMS,
+    H3_MAX_CONCURRENT_UNI_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS,
+    H3_QUIC_PING_INTERVAL_SECS, H3_STREAM_WINDOW_BYTES, H3_UDP_SOCKET_BUFFER_BYTES,
+    H3_WRITE_BUFFER_BYTES,
+};
+use super::state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route};
+use super::transport::{tcp_websocket_upgrade, udp_websocket_upgrade};
 
 pub(super) fn build_app(
     routes: Arc<RouteRegistry>,
