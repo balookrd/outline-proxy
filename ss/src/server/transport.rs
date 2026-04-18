@@ -1,15 +1,43 @@
+use super::auth::parse_root_http_auth_password;
 use super::connect::{connect_tcp_target, resolve_udp_target};
-use super::*;
+use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
+
+use anyhow::{Context, Result, anyhow};
 use axum::{
     body::Body,
-    extract::ws::rejection::WebSocketUpgradeRejection,
-    http::{HeaderMap, header},
-    response::Response,
+    extract::{
+        OriginalUri, State,
+        ws::{Message, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
+    },
+    http::{HeaderMap, Method, StatusCode, Version, header},
+    response::{IntoResponse, Response},
 };
-use base64::{Engine as _, engine::general_purpose::STANDARD};
-use futures_util::future::BoxFuture;
+use bytes::{Bytes, BytesMut};
+use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use sockudo_ws::{
+    Http3 as H3Transport, Message as H3Message, Stream as H3Stream,
+    WebSocketStream as H3WebSocketStream,
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::mpsc,
+};
+use tracing::{debug, info, warn};
 
-use crate::nat::ResponseSender;
+use crate::{
+    crypto::{
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
+        decrypt_udp_packet_with_hint, diagnose_stream_handshake, diagnose_udp_packet,
+    },
+    metrics::{DisconnectReason, Metrics, Protocol, TcpUpstreamGuard, Transport},
+    nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
+    protocol::parse_target_addr,
+};
+
+use super::constants::{MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS};
+use super::dns_cache::DnsCache;
+use super::setup::protocol_from_http_version;
+use super::state::{AppState, empty_transport_route};
 
 pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
 pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
@@ -185,15 +213,6 @@ fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
         let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
         (cookie_name == name).then_some(cookie_value)
     })
-}
-
-pub(super) fn parse_root_http_auth_password(headers: &HeaderMap) -> Option<String> {
-    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
-    let encoded = value.strip_prefix("Basic ")?;
-    let decoded = STANDARD.decode(encoded).ok()?;
-    let decoded = std::str::from_utf8(&decoded).ok()?;
-    let (_, password) = decoded.split_once(':')?;
-    Some(password.to_owned())
 }
 
 pub(super) fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {

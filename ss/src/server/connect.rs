@@ -1,4 +1,21 @@
-use super::*;
+use std::{
+    collections::{HashSet, VecDeque},
+    net::SocketAddr,
+    sync::Arc,
+};
+
+use anyhow::{Context, Result, anyhow};
+use futures_util::{StreamExt, stream::FuturesUnordered};
+use tokio::{
+    net::{TcpSocket, TcpStream, lookup_host},
+    time::{Duration, timeout},
+};
+use tracing::warn;
+
+use crate::{fwmark::apply_fwmark_if_needed, protocol::TargetAddr};
+
+use super::constants::{TCP_CONNECT_TIMEOUT_SECS, TCP_HAPPY_EYEBALLS_DELAY_MS};
+use super::dns_cache::DnsCache;
 
 pub(super) async fn resolve_udp_target(
     dns_cache: &DnsCache,
