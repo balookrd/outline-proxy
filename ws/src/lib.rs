@@ -7,11 +7,13 @@ pub mod metrics_http;
 pub mod proxy;
 pub mod types;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use rustls::crypto::ring;
 use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tracing::{debug, info, warn};
 
 use crate::config::{AppConfig, Args, load_config};
@@ -193,6 +195,12 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         unreachable!("pending future never resolves");
     };
 
+    // Cap concurrent in-flight connections to bound task memory under DDoS.
+    // Accepting continues at full speed; only the spawn blocks when the limit
+    // is reached, which naturally applies backpressure to the accept loop.
+    const MAX_CONCURRENT_CONNECTIONS: usize = 4096;
+    let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+
     // Exponential backoff state for EMFILE / ENFILE.  Reset on every
     // successful accept so that a temporary FD spike doesn't permanently
     // slow down new connections.
@@ -250,9 +258,15 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
         if let Err(error) = outline_transport::configure_inbound_tcp_stream(&stream, peer) {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
-        let config = std::sync::Arc::clone(&proxy_config);
+        let config = Arc::clone(&proxy_config);
         let registry = registry.clone();
+        let permit = conn_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore closed");
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {
                 if crate::error_text::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
