@@ -86,16 +86,28 @@ impl StateStore {
     ) {
         let mut state = self.state.lock().await;
         let g = state.groups.entry(group.to_string()).or_default();
-        if let Some(v) = global {
+        let mut changed = false;
+        if let Some(v) = global
+            && g.global_active != v
+        {
             g.global_active = v;
+            changed = true;
         }
-        if let Some(v) = tcp {
+        if let Some(v) = tcp
+            && g.tcp_active != v
+        {
             g.tcp_active = v;
+            changed = true;
         }
-        if let Some(v) = udp {
+        if let Some(v) = udp
+            && g.udp_active != v
+        {
             g.udp_active = v;
+            changed = true;
         }
-        self.dirty.notify_one();
+        if changed {
+            self.dirty.notify_one();
+        }
     }
 
     /// Spawn a background task that flushes the state to disk whenever it is
