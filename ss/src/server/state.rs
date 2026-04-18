@@ -22,13 +22,13 @@ pub(super) struct AppState {
 #[derive(Clone)]
 pub(super) struct TransportRoute {
     pub(super) users: Arc<[UserKey]>,
-    pub(super) candidate_users: Arc<[String]>,
+    pub(super) candidate_users: Arc<[Arc<str>]>,
 }
 
 pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
     Arc::new(TransportRoute {
         users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
-        candidate_users: Arc::from(Vec::<String>::new().into_boxed_slice()),
+        candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
     })
 }
 

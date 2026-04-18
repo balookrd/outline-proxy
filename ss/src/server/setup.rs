@@ -38,7 +38,7 @@ pub(super) fn build_transport_route_map(
         .map(|(path, path_users)| {
             let candidate_users = path_users
                 .iter()
-                .map(|user| format!("{}:{}", user.id(), user.cipher().as_str()))
+                .map(|user| user.candidate_label())
                 .collect::<Vec<_>>();
             (
                 path,
