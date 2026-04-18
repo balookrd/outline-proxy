@@ -23,7 +23,7 @@ pub(super) fn protocol_from_http_version(version: Version) -> Protocol {
 pub(super) fn build_transport_route_map(
     users: &[UserKey],
     transport: Transport,
-) -> BTreeMap<String, TransportRoute> {
+) -> BTreeMap<String, Arc<TransportRoute>> {
     let mut grouped = BTreeMap::<String, Vec<UserKey>>::new();
     for user in users {
         let path = match transport {
@@ -42,10 +42,10 @@ pub(super) fn build_transport_route_map(
                 .collect::<Vec<_>>();
             (
                 path,
-                TransportRoute {
+                Arc::new(TransportRoute {
                     users: Arc::from(path_users.into_boxed_slice()),
                     candidate_users: Arc::from(candidate_users.into_boxed_slice()),
-                },
+                }),
             )
         })
         .collect()

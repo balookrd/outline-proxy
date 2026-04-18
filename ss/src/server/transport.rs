@@ -38,11 +38,11 @@ pub(super) async fn tcp_websocket_upgrade(
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_tcp_connection(
             socket,
-            route.users,
+            Arc::clone(&route.users),
             state.metrics.clone(),
             protocol,
             Arc::clone(&path),
-            route.candidate_users,
+            Arc::clone(&route.candidate_users),
             state.dns_cache,
             state.prefer_ipv4_upstream,
         )
@@ -133,11 +133,11 @@ pub(super) async fn udp_websocket_upgrade(
     ws.on_upgrade(move |socket| async move {
         let outcome = match handle_udp_connection(
             socket,
-            route.users,
+            Arc::clone(&route.users),
             state.metrics.clone(),
             protocol,
             Arc::clone(&path),
-            route.candidate_users,
+            Arc::clone(&route.candidate_users),
             nat_table,
             state.dns_cache.clone(),
             state.prefer_ipv4_upstream,
