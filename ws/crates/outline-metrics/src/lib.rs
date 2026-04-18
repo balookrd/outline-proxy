@@ -32,7 +32,9 @@ mod transport;
 mod tun;
 
 #[cfg(feature = "prometheus")]
-use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Registry};
+use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
+#[cfg(all(feature = "prometheus", feature = "tun"))]
+use prometheus::IntGauge;
 #[cfg(feature = "prometheus")]
 use std::sync::LazyLock;
 

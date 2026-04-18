@@ -1,8 +1,9 @@
 use super::Metrics;
 use prometheus::{
-    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts,
-    Registry,
+    Gauge, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
 };
+#[cfg(feature = "tun")]
+use prometheus::IntGauge;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 impl Metrics {
