@@ -75,6 +75,7 @@ mod constants;
 mod dns_cache;
 mod setup;
 mod shadowsocks;
+mod shutdown;
 mod state;
 mod transport;
 
@@ -96,6 +97,7 @@ use self::{
         build_transport_route_map, build_users, describe_user_routes, protocol_from_http_version,
     },
     shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
+    shutdown::{shutdown_channel, wait_for_shutdown_signal},
     state::{AppState, TransportRoute, empty_transport_route},
     transport::{is_benign_ws_disconnect, tcp_websocket_upgrade, udp_websocket_upgrade},
 };
@@ -161,17 +163,40 @@ pub async fn run(config: Config) -> Result<()> {
         None
     };
 
+    let (shutdown_sender, shutdown_signal) = shutdown_channel();
+
+    // OS signal handler: flip the shutdown flag on SIGTERM/SIGINT.
+    {
+        let shutdown_sender = Arc::new(shutdown_sender);
+        let handler_sender = Arc::clone(&shutdown_sender);
+        tokio::spawn(async move {
+            wait_for_shutdown_signal().await;
+            handler_sender.send();
+        });
+        // Drop the strong reference we hold locally so the handler task owns
+        // the only remaining `ShutdownSender`.  Dropping it after the handler
+        // fires eagerly releases resources, but the handler is the only place
+        // that actually needs to `send()`.
+        drop(shutdown_sender);
+    }
+
     // Periodic NAT entry eviction.
     {
         let nat_table_cleanup = Arc::clone(&nat_table);
         let metrics_cleanup = Arc::clone(&metrics);
+        let mut shutdown = shutdown_signal.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             interval.tick().await;
             loop {
-                interval.tick().await;
-                nat_table_cleanup.evict_idle(&metrics_cleanup).await;
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        nat_table_cleanup.evict_idle(&metrics_cleanup).await;
+                    }
+                }
             }
         });
     }
@@ -179,17 +204,23 @@ pub async fn run(config: Config) -> Result<()> {
     // Periodic sweep of DNS cache entries whose stale-fallback grace expired.
     {
         let dns_cache_cleanup = Arc::clone(&dns_cache);
+        let mut shutdown = shutdown_signal.clone();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(DNS_CACHE_SWEEP_INTERVAL_SECS));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             interval.tick().await;
             loop {
-                interval.tick().await;
-                let purged =
-                    dns_cache_cleanup.sweep_expired(Duration::from_secs(DNS_CACHE_STALE_GRACE_SECS));
-                if purged > 0 {
-                    debug!(purged, "swept expired dns cache entries");
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        let purged = dns_cache_cleanup
+                            .sweep_expired(Duration::from_secs(DNS_CACHE_STALE_GRACE_SECS));
+                        if purged > 0 {
+                            debug!(purged, "swept expired dns cache entries");
+                        }
+                    }
                 }
             }
         });
@@ -220,7 +251,8 @@ pub async fn run(config: Config) -> Result<()> {
     let mut tasks = JoinSet::new();
     if let Some(listener) = listener {
         let config = Arc::clone(&config);
-        tasks.spawn(async move { serve_tcp_listener(listener, app, config).await });
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move { serve_tcp_listener(listener, app, config, shutdown).await });
     }
     if let Some(h3_server) = h3_server {
         let users = users.clone();
@@ -232,6 +264,7 @@ pub async fn run(config: Config) -> Result<()> {
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         let http_root_auth = config.http_root_auth;
         let http_root_realm = config.http_root_realm.clone();
+        let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_h3_server(
                 h3_server,
@@ -244,21 +277,34 @@ pub async fn run(config: Config) -> Result<()> {
                 prefer_ipv4_upstream,
                 http_root_auth,
                 http_root_realm,
+                shutdown,
             )
             .await
         });
     }
     if let Some(metrics_listener) = metrics_listener {
         let metrics_app = build_metrics_app(metrics.clone(), config.metrics_path.clone());
-        tasks.spawn(async move { serve_metrics_listener(metrics_listener, metrics_app).await });
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move {
+            serve_metrics_listener(metrics_listener, metrics_app, shutdown).await
+        });
     }
     if let Some(listener) = ss_tcp_listener {
         let users = users.clone();
         let metrics = metrics.clone();
         let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
-            serve_ss_tcp_listener(listener, users, metrics, dns_cache, prefer_ipv4_upstream).await
+            serve_ss_tcp_listener(
+                listener,
+                users,
+                metrics,
+                dns_cache,
+                prefer_ipv4_upstream,
+                shutdown,
+            )
+            .await
         });
     }
     if let Some(socket) = ss_udp_socket {
@@ -267,6 +313,7 @@ pub async fn run(config: Config) -> Result<()> {
         let nat_table = Arc::clone(&nat_table);
         let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_ss_udp_socket(
                 socket,
@@ -275,10 +322,16 @@ pub async fn run(config: Config) -> Result<()> {
                 nat_table,
                 dns_cache,
                 prefer_ipv4_upstream,
+                shutdown,
             )
             .await
         });
     }
+
+    // `shutdown_signal` lives past the spawn block so receivers inherited above
+    // can observe cancellation; drop our copy so the watch channel can close
+    // cleanly once the OS-signal task fires.
+    drop(shutdown_signal);
 
     while let Some(result) = tasks.join_next().await {
         match result {
@@ -287,5 +340,6 @@ pub async fn run(config: Config) -> Result<()> {
             Err(join_error) => warn!(?join_error, "server task panicked"),
         }
     }
+    info!("all server tasks stopped; shutdown complete");
     Ok(())
 }

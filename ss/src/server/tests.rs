@@ -34,6 +34,7 @@ use tokio_tungstenite::{
 
 use super::bootstrap::serve_listener;
 use super::connect::{connect_tcp_addrs, order_tcp_connect_addrs};
+use super::shutdown::ShutdownSignal;
 use super::{
     DnsCache, build_app, build_transport_route_map, build_users, connect_tcp_target,
     serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
@@ -189,7 +190,7 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
         false,
         "Authorization required".into(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -238,7 +239,7 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
         true,
         config.http_root_realm.clone(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let (mut socket, _) = connect_async(format!("ws://{addr}/tcp")).await?;
     socket.close(None).await?;
@@ -269,7 +270,7 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
         true,
         config.http_root_realm.clone(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -326,7 +327,7 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
         false,
         "Authorization required".into(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -398,7 +399,9 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     tls_config.tls_cert_path = Some(cert_path.clone());
     tls_config.tls_key_path = Some(key_path.clone());
     let server =
-        tokio::spawn(async move { serve_tcp_listener(listener, app, Arc::new(tls_config)).await });
+        tokio::spawn(async move {
+            serve_tcp_listener(listener, app, Arc::new(tls_config), ShutdownSignal::never()).await
+        });
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert_der)?;
@@ -486,7 +489,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
         false,
         "Authorization required".into(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let bob = users
         .iter()
@@ -540,7 +543,7 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
         true,
         config.http_root_realm.clone(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
 
@@ -634,7 +637,7 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
         true,
         config.http_root_realm.clone(),
     );
-    let server = tokio::spawn(async move { serve_listener(listener, app).await });
+    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
 
@@ -703,7 +706,15 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
     let metrics = Metrics::new(&config);
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
-        serve_ss_tcp_listener(listener, users, metrics, dns_cache, false).await
+        serve_ss_tcp_listener(
+            listener,
+            users,
+            metrics,
+            dns_cache,
+            false,
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut client = TcpStream::connect(listen_addr).await?;
@@ -759,6 +770,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
             false,
             false,
             config.http_root_realm.clone(),
+            ShutdownSignal::never(),
         )
         .await
     });
@@ -829,6 +841,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
             false,
             true,
             config.http_root_realm.clone(),
+            ShutdownSignal::never(),
         )
         .await
     });
@@ -899,6 +912,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
             false,
             true,
             config.http_root_realm.clone(),
+            ShutdownSignal::never(),
         )
         .await
     });
@@ -955,7 +969,16 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, users, metrics, nat_table, dns_cache, false).await
+        serve_ss_udp_socket(
+            listener,
+            users,
+            metrics,
+            nat_table,
+            dns_cache,
+            false,
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -1013,7 +1036,16 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, users, metrics, nat_table, dns_cache, false).await
+        serve_ss_udp_socket(
+            listener,
+            users,
+            metrics,
+            nat_table,
+            dns_cache,
+            false,
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;

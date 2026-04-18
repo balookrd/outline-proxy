@@ -1,4 +1,5 @@
 use super::connect::{configure_tcp_stream, resolve_udp_target};
+use super::shutdown::ShutdownSignal;
 use super::*;
 use futures_util::future::BoxFuture;
 
@@ -25,14 +26,22 @@ pub(super) async fn serve_ss_tcp_listener(
     metrics: Arc<Metrics>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
     loop {
-        let (stream, peer) = match listener.accept().await {
-            Ok(v) => v,
-            Err(error) => {
-                warn!(?error, "failed to accept shadowsocks tcp connection");
-                continue;
+        let (stream, peer) = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("shadowsocks tcp listener stopping on shutdown signal");
+                return Ok(());
+            }
+            res = listener.accept() => match res {
+                Ok(v) => v,
+                Err(error) => {
+                    warn!(?error, "failed to accept shadowsocks tcp connection");
+                    continue;
+                },
             },
         };
         if let Err(error) = configure_tcp_stream(&stream) {
@@ -371,11 +380,17 @@ pub(super) async fn serve_ss_udp_socket(
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let mut buffer = vec![0_u8; 65_535];
     loop {
         tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("shadowsocks udp listener stopping on shutdown signal");
+                return Ok(());
+            }
             Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
             recv = socket.recv_from(&mut buffer) => {
                 let (read, client_addr) = match recv {
