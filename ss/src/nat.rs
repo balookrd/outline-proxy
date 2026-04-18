@@ -122,7 +122,7 @@ impl NatEntry {
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.
     pub(crate) fn touch(&self) {
-        self.last_active_secs.store(unix_secs_now(), Ordering::Relaxed);
+        self.last_active_secs.store(current_unix_secs(), Ordering::Relaxed);
     }
 
     pub(crate) fn socket(&self) -> &UdpSocket {
@@ -190,7 +190,7 @@ impl NatTable {
         let socket = Arc::new(socket);
 
         let session_tx: Arc<Mutex<Option<UdpResponseSender>>> = Arc::new(Mutex::new(None));
-        let last_active_secs = Arc::new(AtomicU64::new(unix_secs_now()));
+        let last_active_secs = Arc::new(AtomicU64::new(current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
         let server_session_id = match udp_session {
             UdpSession::Legacy => None,
@@ -241,7 +241,7 @@ impl NatTable {
     }
 
     pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
-        let threshold = unix_secs_now().saturating_sub(self.idle_timeout.as_secs());
+        let threshold = current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
         let before = entries.len();
         entries.retain(|_, cell| {
@@ -279,7 +279,7 @@ async fn nat_reader_task(
             },
         };
 
-        last_active.store(unix_secs_now(), Ordering::Relaxed);
+        last_active.store(current_unix_secs(), Ordering::Relaxed);
 
         let packet_id = next_packet_id.fetch_add(1, Ordering::Relaxed);
         let ciphertext = match encrypt_udp_packet_for_response(
@@ -337,7 +337,7 @@ fn random_session_id() -> Result<[u8; 8]> {
 }
 
 /// Returns the current Unix timestamp in whole seconds, saturating at zero on clock skew.
-fn unix_secs_now() -> u64 {
+fn current_unix_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
