@@ -165,30 +165,14 @@ impl NatTable {
             )
         };
 
-        let create_key = key.clone();
+        // On error the cell stays uninitialised. evict_idle already removes
+        // cells whose get() is None, so no second lock is needed to clean up.
         let create_user = user.clone();
-        let create_metrics = Arc::clone(&metrics);
-        let create_udp_session = udp_session.clone();
-
-        match cell
-            .get_or_try_init(|| async move {
-                Self::create_entry(&create_key, create_user, create_udp_session, create_metrics)
-                    .await
-            })
-            .await
-        {
-            Ok(entry) => Ok(Arc::clone(entry)),
-            Err(error) => {
-                let mut entries = self.entries.lock().await;
-                if entries
-                    .get(&key)
-                    .is_some_and(|current| Arc::ptr_eq(current, &cell) && current.get().is_none())
-                {
-                    entries.remove(&key);
-                }
-                Err(error)
-            },
-        }
+        cell.get_or_try_init(|| async move {
+            Self::create_entry(&key, create_user, udp_session, metrics).await
+        })
+        .await
+        .map(Arc::clone)
     }
 
     async fn create_entry(
