@@ -235,7 +235,7 @@ pub async fn handle_tcp_connect(
                     }
                     break 'phase1 chunk;
                 }
-                Err(ref e) if active.reader.closed_cleanly => {
+                Err(ref e) if active.reader.closed_cleanly() => {
                     debug!(
                         uplink = %active.name,
                         error = %format!("{e:#}"),
@@ -505,7 +505,7 @@ pub async fn handle_tcp_connect(
             loop {
                 let chunk = match reader.read_chunk().await {
                     Ok(chunk) => chunk,
-                    Err(_err) if reader.closed_cleanly => {
+                    Err(_err) if reader.closed_cleanly() => {
                         if chunks_forwarded == 0 {
                             debug!(
                                 uplink = %downlink_name,

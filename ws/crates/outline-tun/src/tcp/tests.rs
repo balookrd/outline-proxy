@@ -1311,7 +1311,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             )
             .await,
         },
-        upstream_writer: Some(Arc::new(Mutex::new(crate::tcp::TunTcpUpstreamWriter::Tunneled({
+        upstream_writer: Some(Arc::new(Mutex::new(crate::tcp::TunTcpUpstreamWriter::TunneledWs({
             let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
                 sink,
                 cipher,
