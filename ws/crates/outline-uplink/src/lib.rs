@@ -17,7 +17,7 @@ pub use config::{
 #[cfg(test)]
 mod tests;
 
-pub use manager::log_uplink_summary;
+pub use manager::{deduplicate_attempted_uplink_names, log_uplink_summary};
 pub use registry::{UplinkGroup, UplinkRegistry, log_registry_summary};
 pub use state::StateStore;
 pub use types::{

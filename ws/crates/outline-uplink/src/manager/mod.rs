@@ -426,6 +426,28 @@ impl UplinkManager {
     }
 }
 
+/// Collect the unique names of uplinks attempted during TCP chunk-0 phase-1
+/// failover, in attempt order.  Accepts an iterator of names from previous
+/// failures plus the currently-active uplink name, and returns a deduplicated
+/// list.  Used by the dispatch layer to annotate failover log lines and to
+/// suppress spurious per-uplink failure attribution when every candidate
+/// was tried before the first server byte arrived.
+pub fn deduplicate_attempted_uplink_names<'a>(
+    previous_attempts: impl IntoIterator<Item = &'a str>,
+    current_name: &'a str,
+) -> Vec<&'a str> {
+    let mut seen: Vec<&'a str> = Vec::new();
+    for name in previous_attempts {
+        if !seen.contains(&name) {
+            seen.push(name);
+        }
+    }
+    if !seen.contains(&current_name) {
+        seen.push(current_name);
+    }
+    seen
+}
+
 pub fn log_uplink_summary(manager: &UplinkManager) {
     log_uplink_summary_named(manager, "default");
 }

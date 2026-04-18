@@ -1041,3 +1041,25 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
     let _ = shutdown_tx.send(());
     observer_task.await.unwrap();
 }
+
+#[test]
+fn deduplicate_attempted_uplink_names_preserves_order_without_duplicates() {
+    use crate::manager::deduplicate_attempted_uplink_names;
+
+    let result = deduplicate_attempted_uplink_names(
+        ["nuxt", "aeza", "nuxt"].iter().copied(),
+        "aeza",
+    );
+    assert_eq!(result, vec!["nuxt", "aeza"]);
+}
+
+#[test]
+fn deduplicate_attempted_uplink_names_includes_current_when_not_seen() {
+    use crate::manager::deduplicate_attempted_uplink_names;
+
+    let result = deduplicate_attempted_uplink_names(
+        ["nuxt"].iter().copied(),
+        "aeza",
+    );
+    assert_eq!(result, vec!["nuxt", "aeza"]);
+}
