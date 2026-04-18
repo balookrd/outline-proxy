@@ -13,7 +13,6 @@ use tracing::{debug, info, warn};
 
 use outline_metrics as metrics;
 use crate::defrag::{DefragmentedPacket, TunDefragmenter};
-use crate::tcp::TunTcpEngine;
 use crate::udp::{TunUdpEngine, classify_tun_udp_forward_error, parse_udp_packet};
 use crate::wire::{
     IPV4_HEADER_LEN, IPV6_HEADER_LEN, IPV6_NEXT_HEADER_FRAGMENT, IPV6_NEXT_HEADER_ICMPV6,
@@ -38,6 +37,7 @@ pub(crate) mod wire;
 mod tests;
 
 pub use config::{TunConfig, TunTcpConfig};
+pub use tcp::TunTcpEngine;
 
 const IPV6_MIN_PATH_MTU: usize = 1280;
 const EBUSY_OS_ERROR: i32 = 16;
