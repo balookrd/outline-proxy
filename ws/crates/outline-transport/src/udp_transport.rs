@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -269,7 +270,7 @@ impl UdpWsTransport {
         }
     }
 
-    pub async fn read_packet(&self) -> Result<Vec<u8>> {
+    pub async fn read_packet(&self) -> Result<Bytes> {
         match &self.transport {
             UdpTransport::Socket { socket } => {
                 let mut close_rx = self.close_signal.subscribe();
@@ -288,14 +289,14 @@ impl UdpWsTransport {
                         len.context("failed to read UDP shadowsocks packet")?
                     }
                 };
-                self.decrypt_udp_bytes(&buf[..len]).await
+                self.decrypt_udp_bytes(&buf[..len]).await.map(Bytes::from)
             },
             UdpTransport::Websocket { downlink_rx, .. } => {
                 let bytes = {
                     let mut rx = downlink_rx.lock().await;
                     rx.recv().await.ok_or_else(|| anyhow!("websocket closed"))??
                 };
-                self.decrypt_udp_bytes(&bytes).await
+                self.decrypt_udp_bytes(&bytes).await.map(Bytes::from)
             },
         }
     }
