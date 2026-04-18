@@ -327,6 +327,32 @@ impl AeadStreamEncryptor {
     }
 }
 
+fn drain_length_header(
+    buffer: &mut BytesMut,
+    key: &LessSafeKey,
+    nonce_counter: &mut u64,
+    max_chunk_size: usize,
+) -> Result<Option<usize>, CryptoError> {
+    if buffer.len() < 2 + TAG_LEN {
+        return Ok(None);
+    }
+
+    let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
+    let nonce = next_stream_nonce(nonce_counter);
+    let decrypted_len = key
+        .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
+        .map_err(|_| CryptoError::InvalidLengthHeader)?;
+    if decrypted_len.len() != 2 {
+        return Err(CryptoError::InvalidLengthHeader);
+    }
+
+    let chunk_len = u16::from_be_bytes([decrypted_len[0], decrypted_len[1]]) as usize;
+    if chunk_len > max_chunk_size {
+        return Err(CryptoError::InvalidChunkSize(chunk_len));
+    }
+    Ok(Some(chunk_len))
+}
+
 fn drain_legacy_payload(
     buffer: &mut BytesMut,
     key: &LessSafeKey,
@@ -335,24 +361,11 @@ fn drain_legacy_payload(
     output: &mut Vec<u8>,
 ) -> Result<bool, CryptoError> {
     if pending_chunk_len.is_none() {
-        if buffer.len() < 2 + TAG_LEN {
+        *pending_chunk_len =
+            drain_length_header(buffer, key, nonce_counter, LEGACY_MAX_CHUNK_SIZE)?;
+        if pending_chunk_len.is_none() {
             return Ok(false);
         }
-
-        let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
-        let nonce = next_stream_nonce(nonce_counter);
-        let decrypted_len = key
-            .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
-            .map_err(|_| CryptoError::InvalidLengthHeader)?;
-        if decrypted_len.len() != 2 {
-            return Err(CryptoError::InvalidLengthHeader);
-        }
-
-        let chunk_len = u16::from_be_bytes([decrypted_len[0], decrypted_len[1]]) as usize;
-        if chunk_len > LEGACY_MAX_CHUNK_SIZE {
-            return Err(CryptoError::InvalidChunkSize(chunk_len));
-        }
-        *pending_chunk_len = Some(chunk_len);
     }
 
     let chunk_len = pending_chunk_len.expect("set above");
@@ -376,24 +389,10 @@ fn drain_ss2022_payload(
     output: &mut Vec<u8>,
 ) -> Result<bool, CryptoError> {
     if pending_chunk_len.is_none() {
-        if buffer.len() < 2 + TAG_LEN {
+        *pending_chunk_len = drain_length_header(buffer, key, nonce_counter, MAX_CHUNK_SIZE)?;
+        if pending_chunk_len.is_none() {
             return Ok(false);
         }
-
-        let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
-        let nonce = next_stream_nonce(nonce_counter);
-        let decrypted_len = key
-            .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
-            .map_err(|_| CryptoError::InvalidLengthHeader)?;
-        if decrypted_len.len() != 2 {
-            return Err(CryptoError::InvalidLengthHeader);
-        }
-
-        let chunk_len = u16::from_be_bytes([decrypted_len[0], decrypted_len[1]]) as usize;
-        if chunk_len > MAX_CHUNK_SIZE {
-            return Err(CryptoError::InvalidChunkSize(chunk_len));
-        }
-        *pending_chunk_len = Some(chunk_len);
     }
 
     let chunk_len = pending_chunk_len.expect("set above");
