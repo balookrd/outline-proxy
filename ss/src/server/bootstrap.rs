@@ -1,4 +1,5 @@
 use super::connect::configure_tcp_stream;
+use super::shutdown::ShutdownSignal;
 use super::transport::{
     ROOT_HTTP_AUTH_COOKIE_NAME, ROOT_HTTP_AUTH_COOKIE_TTL_SECS, ROOT_HTTP_AUTH_MAX_FAILURES,
     escape_http_auth_realm, handle_tcp_h3_connection, handle_udp_h3_connection,
@@ -176,12 +177,13 @@ pub(super) async fn serve_tcp_listener(
     listener: TcpListener,
     app: Router,
     config: Arc<Config>,
+    shutdown: ShutdownSignal,
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
         let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(listener, app, acceptor).await
+        serve_tls_listener(listener, app, acceptor, shutdown).await
     } else {
-        serve_listener(listener, app).await
+        serve_listener(listener, app, shutdown).await
     }
 }
 
@@ -196,13 +198,29 @@ pub(super) async fn serve_h3_server(
     prefer_ipv4_upstream: bool,
     http_root_auth: bool,
     http_root_realm: String,
+    mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let tcp_paths = tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let http_root_realm: Arc<str> = Arc::from(http_root_realm);
     let (endpoint, ws_config) = server.into_parts();
 
-    while let Some(incoming) = endpoint.accept().await {
+    loop {
+        let incoming = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("HTTP/3 endpoint stopping on shutdown signal");
+                // Stop accepting new connections and politely close existing
+                // ones. `close` is synchronous; the runtime eventually
+                // reclaims the QUIC state.
+                endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
+                break;
+            }
+            incoming = endpoint.accept() => match incoming {
+                Some(incoming) => incoming,
+                None => break,
+            },
+        };
         let users = users.clone();
         let tcp_routes = tcp_routes.clone();
         let udp_routes = udp_routes.clone();
@@ -630,17 +648,29 @@ fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
         .ok_or_else(|| anyhow!("no private key found in {}", path.display()))
 }
 
-pub(super) async fn serve_listener(listener: TcpListener, app: Router) -> Result<()> {
+pub(super) async fn serve_listener(
+    listener: TcpListener,
+    app: Router,
+    mut shutdown: ShutdownSignal,
+) -> Result<()> {
     let listener = listener.tap_io(|stream| {
         if let Err(error) = configure_tcp_stream(stream) {
             warn!(?error, "failed to configure accepted http connection");
         }
     });
-    axum::serve(listener, app).await.context("server exited unexpectedly")
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await
+        .context("server exited unexpectedly")
 }
 
-pub(super) async fn serve_metrics_listener(listener: TcpListener, app: Router) -> Result<()> {
+pub(super) async fn serve_metrics_listener(
+    listener: TcpListener,
+    app: Router,
+    mut shutdown: ShutdownSignal,
+) -> Result<()> {
     axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
         .await
         .context("metrics server exited unexpectedly")
 }
@@ -649,13 +679,21 @@ async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
     acceptor: TlsAcceptor,
+    mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     loop {
-        let (stream, peer_addr) = match listener.accept().await {
-            Ok(v) => v,
-            Err(error) => {
-                warn!(?error, "failed to accept TLS tcp connection");
-                continue;
+        let (stream, peer_addr) = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("TLS listener stopping on shutdown signal");
+                return Ok(());
+            }
+            res = listener.accept() => match res {
+                Ok(v) => v,
+                Err(error) => {
+                    warn!(?error, "failed to accept TLS tcp connection");
+                    continue;
+                },
             },
         };
         if let Err(error) = configure_tcp_stream(&stream) {
