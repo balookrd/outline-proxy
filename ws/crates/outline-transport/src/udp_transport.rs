@@ -1,5 +1,4 @@
 use anyhow::{Context, Result, anyhow, bail};
-use futures_util::stream::SplitStream;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,8 +17,6 @@ use crate::config::WsTransportMode;
 
 use super::{AbortOnDrop, DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 
-type WsStream = SplitStream<WsTransportStream>;
-
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
 
@@ -33,9 +30,9 @@ struct Ss2022UdpState {
 enum UdpTransport {
     Websocket {
         data_tx: mpsc::Sender<Message>,
-        ctrl_tx: mpsc::Sender<Message>,
-        stream: Mutex<WsStream>,
+        downlink_rx: Mutex<mpsc::Receiver<Result<Vec<u8>>>>,
         _writer_task: AbortOnDrop,
+        _reader_task: AbortOnDrop,
         _keepalive_task: Option<AbortOnDrop>,
     },
     Socket {
@@ -120,12 +117,58 @@ impl UdpWsTransport {
                 }
             }))
         });
+        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Vec<u8>>>(64);
+        let reader_ctrl_tx = ctrl_tx.clone();
+        let mut close_rx = close_signal.subscribe();
+        let reader_task = tokio::spawn(async move {
+            let mut stream = stream;
+            loop {
+                let msg = tokio::select! {
+                    _ = close_rx.changed() => {
+                        if *close_rx.borrow() {
+                            let _ = downlink_tx.send(Err(anyhow!("udp transport closed"))).await;
+                            return;
+                        }
+                        continue;
+                    }
+                    msg = stream.next() => msg,
+                };
+                match msg {
+                    None => return,
+                    Some(Err(e)) => {
+                        let _ = downlink_tx
+                            .send(Err(anyhow::Error::from(e).context("websocket read failed")))
+                            .await;
+                        return;
+                    }
+                    Some(Ok(Message::Binary(bytes))) => {
+                        if downlink_tx.send(Ok(bytes.into())).await.is_err() {
+                            return;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) => {
+                        let _ = downlink_tx.send(Err(anyhow!("websocket closed"))).await;
+                        return;
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        let _ = reader_ctrl_tx.try_send(Message::Pong(payload));
+                    }
+                    Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
+                    Some(Ok(Message::Text(_))) => {
+                        let _ = downlink_tx
+                            .send(Err(anyhow!("unexpected text websocket frame")))
+                            .await;
+                        return;
+                    }
+                }
+            }
+        });
         Ok(Self {
             transport: UdpTransport::Websocket {
                 data_tx,
-                ctrl_tx,
-                stream: Mutex::new(stream),
+                downlink_rx: Mutex::new(downlink_rx),
                 _writer_task: AbortOnDrop(writer_task),
+                _reader_task: AbortOnDrop(reader_task),
                 _keepalive_task: keepalive_task,
             },
             cipher,
@@ -247,37 +290,12 @@ impl UdpWsTransport {
                 };
                 self.decrypt_udp_bytes(&buf[..len]).await
             },
-            UdpTransport::Websocket { stream, ctrl_tx, .. } => {
-                let mut close_rx = self.close_signal.subscribe();
-                let mut stream = stream.lock().await;
-                loop {
-                    if *close_rx.borrow() {
-                        bail!("udp transport closed");
-                    }
-                    let message = tokio::select! {
-                        _ = close_rx.changed() => {
-                            if *close_rx.borrow() {
-                                bail!("udp transport closed");
-                            }
-                            continue;
-                        }
-                        message = stream.next() => {
-                            message
-                                .ok_or_else(|| anyhow!("websocket closed"))?
-                                .context("websocket read failed")?
-                        }
-                    };
-                    match message {
-                        Message::Binary(bytes) => return self.decrypt_udp_bytes(&bytes).await,
-                        Message::Close(_) => bail!("websocket closed"),
-                        Message::Ping(payload) => {
-                            let _ = ctrl_tx.try_send(Message::Pong(payload));
-                        },
-                        Message::Pong(_) => {},
-                        Message::Text(_) => bail!("unexpected text websocket frame"),
-                        Message::Frame(_) => {},
-                    }
-                }
+            UdpTransport::Websocket { downlink_rx, .. } => {
+                let bytes = {
+                    let mut rx = downlink_rx.lock().await;
+                    rx.recv().await.ok_or_else(|| anyhow!("websocket closed"))??
+                };
+                self.decrypt_udp_bytes(&bytes).await
             },
         }
     }
