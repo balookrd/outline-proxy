@@ -7,17 +7,20 @@
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
-use tokio::{io::AsyncReadExt, net::tcp::OwnedReadHalf};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
+};
 
 use crate::{
-    crypto::{AeadStreamEncryptor, MAX_CHUNK_SIZE},
+    crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
     metrics::{Metrics, Protocol},
 };
 
 /// Destination for encrypted upstream bytes, parameterised by transport.
-pub(super) trait UpstreamSink: Send {
+pub(in crate::server) trait UpstreamSink: Send {
     /// Forward a ciphertext chunk to the client.
     async fn send_ciphertext(&mut self, ciphertext: Bytes) -> Result<()>;
 
@@ -34,7 +37,7 @@ pub(super) trait UpstreamSink: Send {
     fn on_chunk_encrypted(&mut self, _plaintext: usize, _ciphertext: usize) {}
 }
 
-pub(super) async fn relay_upstream_to_client<S: UpstreamSink>(
+pub(in crate::server) async fn relay_upstream_to_client<S: UpstreamSink>(
     mut upstream_reader: OwnedReadHalf,
     mut sink: S,
     encryptor: &mut AeadStreamEncryptor,
@@ -69,5 +72,65 @@ pub(super) async fn relay_upstream_to_client<S: UpstreamSink>(
     }
 
     sink.close().await;
+    Ok(())
+}
+
+/// Relay decrypted client bytes to the upstream after the shadowsocks handshake.
+///
+/// Writes `initial_payload` first (already-decrypted bytes left over from the
+/// handshake), then loops: read ciphertext from the client, decrypt, write
+/// plaintext to upstream.  Shuts down the upstream writer on clean client EOF.
+pub(in crate::server) async fn relay_client_to_upstream(
+    mut client_reader: OwnedReadHalf,
+    mut decryptor: AeadStreamDecryptor,
+    initial_payload: Vec<u8>,
+    mut upstream_writer: OwnedWriteHalf,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    user_id: Arc<str>,
+) -> Result<()> {
+    if !initial_payload.is_empty() {
+        metrics.record_tcp_payload_bytes(
+            Arc::clone(&user_id),
+            protocol,
+            "client_to_target",
+            initial_payload.len(),
+        );
+        upstream_writer
+            .write_all(&initial_payload)
+            .await
+            .context("failed to write initial payload to upstream")?;
+    }
+
+    let mut plaintext = Vec::with_capacity(MAX_CHUNK_SIZE);
+    loop {
+        decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
+        let read = client_reader
+            .read_buf(decryptor.ciphertext_buffer_mut())
+            .await
+            .context("failed to read from client")?;
+        if read == 0 {
+            break;
+        }
+        match decryptor.drain_plaintext(&mut plaintext) {
+            Ok(()) => {},
+            Err(CryptoError::UnknownUser) => break,
+            Err(error) => return Err(anyhow!(error)),
+        }
+        if !plaintext.is_empty() {
+            metrics.record_tcp_payload_bytes(
+                Arc::clone(&user_id),
+                protocol,
+                "client_to_target",
+                plaintext.len(),
+            );
+            upstream_writer
+                .write_all(&plaintext)
+                .await
+                .context("failed to write decrypted data to upstream")?;
+            plaintext.clear();
+        }
+    }
+    upstream_writer.shutdown().await.ok();
     Ok(())
 }
