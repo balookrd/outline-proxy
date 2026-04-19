@@ -5,7 +5,7 @@ use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream, UdpSocket},
+    net::{TcpListener, TcpStream, UdpSocket, tcp::OwnedReadHalf},
     sync::Semaphore,
     time::{Duration, timeout},
 };
@@ -18,7 +18,7 @@ use crate::{
     },
     metrics::{Metrics, Protocol, Transport},
     nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
-    protocol::parse_target_addr,
+    protocol::{TargetAddr, parse_target_addr},
 };
 
 use super::connect::{configure_tcp_stream, connect_tcp_target, resolve_udp_target};
@@ -99,60 +99,54 @@ pub(super) async fn serve_ss_tcp_listener(
     }
 }
 
-async fn handle_ss_tcp_connection(
-    socket: TcpStream,
+struct SsHandshakeOutcome {
+    user: UserKey,
+    target: TargetAddr,
+    initial_payload: Vec<u8>,
+    decryptor: AeadStreamDecryptor,
+}
+
+async fn ss_tcp_handshake(
+    client_reader: &mut OwnedReadHalf,
     users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-) -> Result<()> {
-    let peer_addr = socket.peer_addr().ok();
-    let (mut client_reader, client_writer) = socket.into_split();
-    let mut client_writer = Some(client_writer);
+    peer_addr: Option<SocketAddr>,
+) -> Result<Option<SsHandshakeOutcome>> {
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut upstream_writer = None;
-    let mut upstream_to_client = None;
-    let mut authenticated_user = None;
-    let mut upstream_guard = None;
-    let client_sent_eof;
 
     loop {
         let buffered_before = decryptor.buffered_data().len();
         decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
         let read_fut = client_reader.read_buf(decryptor.ciphertext_buffer_mut());
-        let read = if upstream_writer.is_none() {
-            match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await {
-                Ok(result) => result.context("failed to read from shadowsocks client")?,
-                Err(_) => {
-                    let encrypted_buffered = decryptor.buffered_data();
-                    let handshake_attempts = (!encrypted_buffered.is_empty())
-                        .then(|| diagnose_stream_handshake(users.as_ref(), encrypted_buffered));
-                    let authenticated_user = decryptor.user().map(|user| user.id().to_string());
-                    warn!(
-                        peer_addr = ?peer_addr,
-                        encrypted_buffered_bytes = encrypted_buffered.len(),
-                        plaintext_buffer_len = plaintext_buffer.len(),
-                        authenticated_user = authenticated_user.as_deref(),
-                        handshake_attempts = ?handshake_attempts,
-                        "socket tcp handshake timed out while waiting for a complete client request"
-                    );
-                    return Err(anyhow!(
-                        "shadowsocks tcp handshake timed out (encrypted_buffered_bytes={}, plaintext_buffer_len={}, authenticated_user={:?}, handshake_attempts={:?})",
-                        encrypted_buffered.len(),
-                        plaintext_buffer.len(),
-                        authenticated_user,
-                        handshake_attempts
-                    ));
-                },
-            }
-        } else {
-            read_fut.await.context("failed to read from shadowsocks client")?
+
+        let read = match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await {
+            Ok(result) => result.context("failed to read from shadowsocks client")?,
+            Err(_) => {
+                let encrypted_buffered = decryptor.buffered_data();
+                let handshake_attempts = (!encrypted_buffered.is_empty())
+                    .then(|| diagnose_stream_handshake(users.as_ref(), encrypted_buffered));
+                let authenticated_user = decryptor.user().map(|u| u.id().to_string());
+                warn!(
+                    peer_addr = ?peer_addr,
+                    encrypted_buffered_bytes = encrypted_buffered.len(),
+                    plaintext_buffer_len = plaintext_buffer.len(),
+                    authenticated_user = authenticated_user.as_deref(),
+                    handshake_attempts = ?handshake_attempts,
+                    "socket tcp handshake timed out while waiting for a complete client request"
+                );
+                return Err(anyhow!(
+                    "shadowsocks tcp handshake timed out (encrypted_buffered_bytes={}, plaintext_buffer_len={}, authenticated_user={:?}, handshake_attempts={:?})",
+                    encrypted_buffered.len(),
+                    plaintext_buffer.len(),
+                    authenticated_user,
+                    handshake_attempts
+                ));
+            },
         };
+
         if read == 0 {
             debug!(peer_addr = ?peer_addr, "socket tcp client closed connection");
-            client_sent_eof = true;
-            break;
+            return Ok(None);
         }
 
         debug!(
@@ -167,7 +161,7 @@ async fn handle_ss_tcp_connection(
                     peer_addr = ?peer_addr,
                     plaintext_buffer_len = plaintext_buffer.len(),
                     buffered_after = decryptor.buffered_data().len(),
-                    authenticated_user = decryptor.user().map(|user| user.id()),
+                    authenticated_user = decryptor.user().map(|u| u.id()),
                     "socket tcp decrypted client bytes"
                 );
             },
@@ -178,160 +172,159 @@ async fn handle_ss_tcp_connection(
                     attempts = ?diagnose_stream_handshake(users.as_ref(), decryptor.buffered_data()),
                     "socket tcp authentication failed for all configured users"
                 );
-                return Ok(());
+                return Ok(None);
             },
             Err(error) => return Err(anyhow!(error)),
         }
 
-        if upstream_writer.is_none() {
-            let Some((target, consumed)) = parse_target_addr(&plaintext_buffer)? else {
-                continue;
-            };
-            let Some(user) = decryptor.user().cloned() else {
-                continue;
-            };
-            debug!(
-                peer_addr = ?peer_addr,
-                user = user.id(),
-                cipher = user.cipher().as_str(),
-                "socket tcp shadowsocks user authenticated"
+        let Some((target, consumed)) = parse_target_addr(&plaintext_buffer)? else {
+            continue;
+        };
+        let Some(user) = decryptor.user().cloned() else {
+            continue;
+        };
+
+        debug!(
+            peer_addr = ?peer_addr,
+            user = user.id(),
+            cipher = user.cipher().as_str(),
+            "socket tcp shadowsocks user authenticated"
+        );
+        debug!(
+            peer_addr = ?peer_addr,
+            user = user.id(),
+            target = %target.display_host_port(),
+            initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
+            "socket tcp parsed target address"
+        );
+
+        plaintext_buffer.drain(..consumed);
+        return Ok(Some(SsHandshakeOutcome {
+            user,
+            target,
+            initial_payload: plaintext_buffer,
+            decryptor,
+        }));
+    }
+}
+
+async fn handle_ss_tcp_connection(
+    socket: TcpStream,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    dns_cache: Arc<DnsCache>,
+    prefer_ipv4_upstream: bool,
+) -> Result<()> {
+    let peer_addr = socket.peer_addr().ok();
+    let (mut client_reader, client_writer) = socket.into_split();
+
+    let Some(handshake) = ss_tcp_handshake(&mut client_reader, users, peer_addr).await? else {
+        return Ok(());
+    };
+
+    let target_display = handshake.target.display_host_port();
+    let connect_started = std::time::Instant::now();
+    info!(
+        peer_addr = ?peer_addr,
+        user = handshake.user.id(),
+        fwmark = ?handshake.user.fwmark(),
+        target = %target_display,
+        initial_payload_bytes = handshake.initial_payload.len(),
+        "socket tcp starting upstream connect"
+    );
+    let upstream_stream = match connect_tcp_target(
+        dns_cache.as_ref(),
+        &handshake.target,
+        handshake.user.fwmark(),
+        prefer_ipv4_upstream,
+    )
+    .await
+    {
+        Ok(stream) => {
+            metrics.record_tcp_connect(
+                handshake.user.id_arc(),
+                Protocol::Socket,
+                "success",
+                connect_started.elapsed().as_secs_f64(),
             );
-            let target_display = target.display_host_port();
-            debug!(
-                peer_addr = ?peer_addr,
-                user = user.id(),
-                target = %target_display,
-                initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
-                "socket tcp parsed target address"
+            stream
+        },
+        Err(error) => {
+            metrics.record_tcp_connect(
+                handshake.user.id_arc(),
+                Protocol::Socket,
+                "error",
+                connect_started.elapsed().as_secs_f64(),
             );
-            let connect_started = std::time::Instant::now();
-            info!(
+            warn!(
                 peer_addr = ?peer_addr,
-                user = user.id(),
-                fwmark = ?user.fwmark(),
-                target = %target_display,
-                initial_payload_bytes = plaintext_buffer.len().saturating_sub(consumed),
-                "socket tcp starting upstream connect"
-            );
-            let stream = match connect_tcp_target(
-                dns_cache.as_ref(),
-                &target,
-                user.fwmark(),
-                prefer_ipv4_upstream,
-            )
-            .await
-            {
-                    Ok(stream) => {
-                        metrics.record_tcp_connect(
-                            user.id_arc(),
-                            Protocol::Socket,
-                            "success",
-                            connect_started.elapsed().as_secs_f64(),
-                        );
-                        stream
-                    },
-                    Err(error) => {
-                        metrics.record_tcp_connect(
-                            user.id_arc(),
-                            Protocol::Socket,
-                            "error",
-                            connect_started.elapsed().as_secs_f64(),
-                        );
-                        warn!(
-                            peer_addr = ?peer_addr,
-                            user = user.id(),
-                            fwmark = ?user.fwmark(),
-                            target = %target_display,
-                            connect_duration_ms = connect_started.elapsed().as_millis(),
-                            error = %format!("{error:#}"),
-                            "socket tcp upstream connect failed"
-                        );
-                        return Err(error)
-                            .with_context(|| format!("failed to connect to {target_display}"));
-                    },
-                };
-            info!(
-                peer_addr = ?peer_addr,
-                user = user.id(),
-                fwmark = ?user.fwmark(),
+                user = handshake.user.id(),
+                fwmark = ?handshake.user.fwmark(),
                 target = %target_display,
                 connect_duration_ms = connect_started.elapsed().as_millis(),
-                "socket tcp upstream connected"
+                error = %format!("{error:#}"),
+                "socket tcp upstream connect failed"
             );
+            return Err(error).with_context(|| format!("failed to connect to {target_display}"));
+        },
+    };
+    info!(
+        peer_addr = ?peer_addr,
+        user = handshake.user.id(),
+        fwmark = ?handshake.user.fwmark(),
+        target = %target_display,
+        connect_duration_ms = connect_started.elapsed().as_millis(),
+        "socket tcp upstream connected"
+    );
 
-            let (upstream_reader, writer) = stream.into_split();
-            let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())?;
-            let client_writer = client_writer
-                .take()
-                .ok_or_else(|| anyhow!("socket tcp client writer missing"))?;
-            let relay_metrics = metrics.clone();
-            let user_id = user.id_arc();
-            let relay_target_display = target_display.clone();
-            let sink = SocketSink {
-                writer: client_writer,
-                user_id: Arc::clone(&user_id),
-                peer_addr,
-                target: relay_target_display,
-            };
-            upstream_to_client = Some(tokio::spawn(async move {
-                super::relay::relay_upstream_to_client(
-                    upstream_reader,
-                    sink,
-                    &mut encryptor,
-                    relay_metrics,
-                    Protocol::Socket,
-                    user_id,
-                )
+    let (upstream_reader, upstream_writer) = upstream_stream.into_split();
+    let mut encryptor = AeadStreamEncryptor::new(&handshake.user, handshake.decryptor.response_context())?;
+
+    let user_id = handshake.user.id_arc();
+    let sink = SocketSink {
+        writer: client_writer,
+        user_id: Arc::clone(&user_id),
+        peer_addr,
+        target: target_display,
+    };
+    let relay_metrics = metrics.clone();
+    let relay_user_id = Arc::clone(&user_id);
+    let upstream_to_client = tokio::spawn(async move {
+        super::relay::relay_upstream_to_client(
+            upstream_reader,
+            sink,
+            &mut encryptor,
+            relay_metrics,
+            Protocol::Socket,
+            relay_user_id,
+        )
+        .await
+    });
+    metrics.record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
+    let upstream_guard = metrics.open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
+
+    let relay_result = super::relay::relay_client_to_upstream(
+        client_reader,
+        handshake.decryptor,
+        handshake.initial_payload,
+        upstream_writer,
+        metrics,
+        Protocol::Socket,
+        user_id,
+    )
+    .await;
+
+    match relay_result {
+        Ok(()) => {
+            upstream_to_client
                 .await
-            }));
-            metrics.record_tcp_authenticated_session(user.id_arc(), Protocol::Socket);
-            upstream_guard =
-                Some(metrics.open_tcp_upstream_connection(user.id_arc(), Protocol::Socket));
-            authenticated_user = Some(user);
-            upstream_writer = Some(writer);
-            plaintext_buffer.drain(..consumed);
-        }
-
-        if let Some(writer) = &mut upstream_writer
-            && !plaintext_buffer.is_empty()
-        {
-            if let Some(user) = &authenticated_user {
-                metrics.record_tcp_payload_bytes(
-                    user.id_arc(),
-                    Protocol::Socket,
-                    "client_to_target",
-                    plaintext_buffer.len(),
-                );
-                debug!(
-                    peer_addr = ?peer_addr,
-                    user = user.id(),
-                    plaintext_bytes = plaintext_buffer.len(),
-                    "socket tcp relaying plaintext to upstream"
-                );
-            }
-            writer
-                .write_all(&plaintext_buffer)
-                .await
-                .context("failed to write decrypted data upstream")?;
-            plaintext_buffer.clear();
-        }
-    }
-
-    if let Some(mut writer) = upstream_writer {
-        writer.shutdown().await.ok();
-    }
-
-    if let Some(task) = upstream_to_client {
-        if client_sent_eof {
-            task.await
                 .context("socket tcp upstream relay task join failed after client eof")??;
-        } else {
-            task.abort();
-        }
-    }
-
-    if let Some(guard) = upstream_guard {
-        guard.finish();
+            upstream_guard.finish();
+        },
+        Err(e) => {
+            upstream_to_client.abort();
+            return Err(e);
+        },
     }
     Ok(())
 }
