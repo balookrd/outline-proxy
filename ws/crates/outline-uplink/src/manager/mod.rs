@@ -214,10 +214,6 @@ impl UplinkManager {
                     _ = shutdown.changed() => break,
                     _ = sleep(WARM_STANDBY_MAINTENANCE_INTERVAL) => {}
                 }
-                // Sweep dead entries from the H2/H3 shared-connection caches
-                // so stale connections (e.g. after DNS rotation or soft-close
-                // timeout) do not hold FDs open indefinitely.
-                outline_transport::gc_shared_connections().await;
                 manager.refill_all_standby().await;
             }
         });

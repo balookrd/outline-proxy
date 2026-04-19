@@ -153,6 +153,24 @@ impl UplinkRegistry {
         }
     }
 
+    /// Spawn a single process-wide sweeper for the H2/H3 shared-connection
+    /// caches. Independent of warm-standby so that groups with
+    /// `warm_standby_tcp = warm_standby_udp = 0` still get stale entries
+    /// evicted (otherwise soft-closed/DNS-rotated connections hold FDs open).
+    pub fn spawn_shared_connection_gc_loop(&self) {
+        let mut shutdown = self.groups[0].manager.shutdown_rx();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => {}
+                }
+                outline_transport::gc_shared_connections().await;
+            }
+        });
+    }
+
     /// Cancel all background loops (probe, warm-standby, keepalive) for every
     /// group. Call this before dropping a registry on config reload so old
     /// tasks do not outlive the registry they were spawned from.
