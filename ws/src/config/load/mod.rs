@@ -4,7 +4,8 @@ use anyhow::{Context, Result, bail};
 use tokio::fs;
 
 use super::args::Args;
-use super::schema::{ConfigFile, resolve_outline_section};
+use super::compat::normalize_outline_section;
+use super::schema::ConfigFile;
 use super::types::{AppConfig, MetricsConfig};
 
 mod auth;
@@ -41,7 +42,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     };
 
     let socks5 = file.as_ref().and_then(|f| f.socks5.as_ref());
-    let outline = file.as_ref().and_then(resolve_outline_section);
+    let outline = file.as_ref().and_then(normalize_outline_section);
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     #[cfg(feature = "tun")]
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
@@ -55,7 +56,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let config_dir = path.parent().unwrap_or_else(|| Path::new("."));
 
     let groups = groups::load_groups(outline.as_ref(), file.as_ref(), args)?;
-    let routing = routing::load_routing_table(file.as_ref(), &groups, config_dir)?;
+    let routing = routing::load_routing_config(file.as_ref(), &groups, config_dir)?;
 
     let metrics = args
         .metrics_listen

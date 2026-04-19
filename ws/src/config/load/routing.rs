@@ -10,13 +10,16 @@ use super::super::schema::{ConfigFile, RouteSection};
 
 /// Parse the `[[route]]` list into a `RoutingTableConfig`.
 ///
+/// The returned value is a *config* snapshot, not a runtime routing table;
+/// the compiled table lives in `outline-routing` and is built later from this.
+///
 /// Returns `Ok(None)` when no `[[route]]` is declared (no routing table declared).
 /// Otherwise validates:
 /// - exactly one rule has `default = true` (and it has no prefixes/file);
 /// - non-default rules have `prefixes` and/or `file`;
 /// - `via` references a declared group or the reserved `direct`/`drop`;
 /// - at most one of `fallback_via`/`fallback_direct`/`fallback_drop` is set.
-pub(super) fn load_routing_table(
+pub(super) fn load_routing_config(
     file: Option<&ConfigFile>,
     groups: &[UplinkGroupConfig],
     config_dir: &Path,

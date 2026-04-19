@@ -453,7 +453,7 @@ pub async fn handle_tcp_connect(
                     "tcp",
                     "client_to_upstream",
                     manager_for_uplink_task.group_name(),
-                    &*name_for_uplink_task,
+                    &name_for_uplink_task,
                     read,
                 );
                 writer.send_chunk(&buf[..read]).await?;
@@ -476,7 +476,7 @@ pub async fn handle_tcp_connect(
                 "tcp",
                 "upstream_to_client",
                 manager_for_downlink_task.group_name(),
-                &*name_for_downlink_task,
+                &name_for_downlink_task,
                 first_upstream_chunk.len(),
             );
             client_write
@@ -513,7 +513,7 @@ pub async fn handle_tcp_connect(
                     "tcp",
                     "upstream_to_client",
                     manager_for_downlink_task.group_name(),
-                    &*name_for_downlink_task,
+                    &name_for_downlink_task,
                     chunk.len(),
                 );
                 client_write
