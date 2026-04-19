@@ -93,8 +93,6 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         socks5_auth,
         groups,
         routing,
-        routing_table: None,
-        dns_cache: None,
         metrics,
         #[cfg(feature = "tun")]
         tun,

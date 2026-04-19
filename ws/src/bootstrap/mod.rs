@@ -13,15 +13,15 @@ use outline_uplink::{UplinkRegistry, log_registry_summary};
 mod listener;
 mod state_store;
 
-pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
+pub async fn run_with_config(config: AppConfig) -> Result<()> {
     let state_store = state_store::init(config.state_path.clone()).await;
 
-    // Shared DNS cache used by every transport resolve path. Owned by
-    // AppConfig so the runtime paths receive the same Arc<DnsCache>.
-    config.dns_cache = Some(Arc::new(
-        outline_transport::DnsCache::new(outline_transport::DEFAULT_DNS_CACHE_TTL),
+    // Shared DNS cache used by every transport resolve path. Built here
+    // (not stored in AppConfig) so the runtime paths receive the same
+    // Arc<DnsCache> without a two-phase init on the declarative config.
+    let dns_cache = Arc::new(outline_transport::DnsCache::new(
+        outline_transport::DEFAULT_DNS_CACHE_TTL,
     ));
-    let dns_cache = config.dns_cache.clone().expect("dns_cache just initialised");
 
     let registry =
         UplinkRegistry::new_with_state(config.groups.clone(), state_store, dns_cache.clone())
@@ -34,15 +34,17 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
 
     // Compile the policy routing table (if user declared [[route]]) and
     // spawn per-rule file watchers for hot-reload.
-    if let Some(routing_cfg) = config.routing.clone() {
+    let routing_table = if let Some(routing_cfg) = config.routing.clone() {
         let table = Arc::new(
             outline_routing::RoutingTable::compile(&routing_cfg)
                 .await
                 .context("failed to compile routing table")?,
         );
         outline_routing::spawn_route_watchers(Arc::clone(&table));
-        config.routing_table = Some(table);
-    }
+        Some(table)
+    } else {
+        None
+    };
 
     // TUN dispatches through the policy routing table, falling back to the
     // default group when no [[route]] is configured.
@@ -50,12 +52,11 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     {
         let tun_routing = outline_tun::TunRouting::new(
             registry.clone(),
-            config.routing_table.clone(),
+            routing_table.clone(),
             config.direct_fwmark,
         );
         if let Some(tun) = config.tun.clone() {
-            let tun_dns_cache = config.dns_cache.clone().expect("dns_cache initialised above");
-            outline_tun::spawn_tun_loop(tun, tun_routing, tun_dns_cache)
+            outline_tun::spawn_tun_loop(tun, tun_routing, dns_cache.clone())
                 .await
                 .context("failed to start TUN loop")?;
         }
@@ -95,7 +96,7 @@ pub async fn run_with_config(mut config: AppConfig) -> Result<()> {
     let proxy_config = Arc::new(ProxyConfig {
         socks5_auth: config.socks5_auth.clone(),
         dns_cache: dns_cache.clone(),
-        routing_table: config.routing_table.clone(),
+        routing_table: routing_table.clone(),
         direct_fwmark: config.direct_fwmark,
     });
 
