@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
+metrics = ["outline-metrics/prometheus", "hyper/server"]
 
 [dependencies]
 anyhow = "1.0"
