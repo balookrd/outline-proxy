@@ -249,7 +249,7 @@ The binary is controlled by Cargo feature flags. Mix and match as needed:
 | Feature | Default | Effect |
 |---|---|---|
 | `h3` | ✓ | H3/QUIC transport (pulls in quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Prometheus metrics endpoint (pulls in prometheus + serde_json) |
+| `metrics` | ✓ | Prometheus metrics endpoint; also enables transport-layer metrics (pulls in prometheus + serde_json) |
 | `tun` | ✓ | TUN device support (tun2udp + tun2tcp engines); remove to exclude all TUN code |
 | `mimalloc` | ✓ | Replace the system allocator with mimalloc; reduces RSS fragmentation under connection churn |
 | `env-filter` | ✓ | Dynamic `RUST_LOG` parsing; disable to hardcode log level at `WARN` and save ~300 KB on MIPS |

@@ -16,7 +16,7 @@ edition = "2024"
 default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
 h3 = ["outline-transport/h3"]
-metrics = ["outline-metrics/prometheus", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
+metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]

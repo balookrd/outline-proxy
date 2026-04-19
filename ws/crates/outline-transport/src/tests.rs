@@ -210,10 +210,10 @@ async fn h2_reuses_shared_connection_for_non_probe_sources() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&url, WsTransportMode::H2, None, false, "test_h2")
+    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "test_h2")
         .await
         .unwrap();
-    let ws_two = connect_websocket_with_source(&url, WsTransportMode::H2, None, false, "test_h2")
+    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "test_h2")
         .await
         .unwrap();
 
@@ -228,10 +228,10 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&url, WsTransportMode::H2, None, false, "probe_ws")
+    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "probe_ws")
         .await
         .unwrap();
-    let ws_two = connect_websocket_with_source(&url, WsTransportMode::H2, None, false, "probe_ws")
+    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "probe_ws")
         .await
         .unwrap();
 

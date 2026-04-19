@@ -244,7 +244,7 @@ rustup target add aarch64-unknown-linux-musl
 | Фича | По умолч. | Эффект |
 |---|---|---|
 | `h3` | ✓ | Транспорт H3/QUIC (тянет quinn + sockudo-ws/http3) |
-| `metrics` | ✓ | Prometheus-метрики (тянет prometheus + serde_json) |
+| `metrics` | ✓ | Prometheus-метрики; включает также метрики транспортного уровня (тянет prometheus + serde_json) |
 | `tun` | ✓ | Поддержка TUN-устройств (движки tun2udp + tun2tcp); отключить, чтобы полностью убрать TUN-код |
 | `mimalloc` | ✓ | Заменяет системный аллокатор на mimalloc; снижает RSS-фрагментацию при большом потоке соединений |
 | `env-filter` | ✓ | Динамический парсинг `RUST_LOG`; отключить, чтобы жёстко задать уровень `WARN` и сэкономить ~300 КБ на MIPS |
