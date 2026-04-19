@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -267,15 +267,20 @@ async fn handle_ss_tcp_connection(
             let relay_metrics = metrics.clone();
             let user_id = user.id_arc();
             let relay_target_display = target_display.clone();
+            let sink = SocketSink {
+                writer: client_writer,
+                user_id: Arc::clone(&user_id),
+                peer_addr,
+                target: relay_target_display,
+            };
             upstream_to_client = Some(tokio::spawn(async move {
-                relay_upstream_to_socket_client(
+                super::relay::relay_upstream_to_client(
                     upstream_reader,
-                    client_writer,
+                    sink,
                     &mut encryptor,
                     relay_metrics,
+                    Protocol::Socket,
                     user_id,
-                    peer_addr,
-                    relay_target_display,
                 )
                 .await
             }));
@@ -331,67 +336,52 @@ async fn handle_ss_tcp_connection(
     Ok(())
 }
 
-async fn relay_upstream_to_socket_client(
-    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
-    mut client_writer: tokio::net::tcp::OwnedWriteHalf,
-    encryptor: &mut AeadStreamEncryptor,
-    metrics: Arc<Metrics>,
+struct SocketSink {
+    writer: tokio::net::tcp::OwnedWriteHalf,
     user_id: Arc<str>,
     peer_addr: Option<SocketAddr>,
     target: String,
-) -> Result<()> {
-    let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
-    let mut saw_payload = false;
-    loop {
-        buffer.clear();
-        buffer.reserve(MAX_CHUNK_SIZE);
-        let read = upstream_reader
-            .read_buf(&mut buffer)
-            .await
-            .context("failed to read from upstream")?;
-        if read == 0 {
-            if !saw_payload {
-                info!(
-                    peer_addr = ?peer_addr,
-                    user = %user_id,
-                    target = %target,
-                    "socket tcp upstream closed before sending payload"
-                );
-            }
-            break;
-        }
-        if !saw_payload {
-            saw_payload = true;
-            info!(
-                peer_addr = ?peer_addr,
-                user = %user_id,
-                target = %target,
-                first_payload_bytes = read,
-                "socket tcp received first upstream payload"
-            );
-        }
+}
 
-        metrics.record_tcp_payload_bytes(
-            Arc::clone(&user_id),
-            Protocol::Socket,
-            "target_to_client",
-            read,
-        );
-        let ciphertext = encryptor.encrypt_chunk(&buffer)?;
-        debug!(
-            user = %user_id,
-            plaintext_bytes = read,
-            encrypted_bytes = ciphertext.len(),
-            "socket tcp relaying upstream bytes to client"
-        );
-        client_writer
+impl super::relay::UpstreamSink for SocketSink {
+    async fn send_ciphertext(&mut self, ciphertext: Bytes) -> Result<()> {
+        self.writer
             .write_all(&ciphertext)
             .await
-            .context("failed to write encrypted socket payload")?;
+            .context("failed to write encrypted socket payload")
     }
 
-    client_writer.shutdown().await.ok();
-    Ok(())
+    async fn close(&mut self) {
+        let _ = self.writer.shutdown().await;
+    }
+
+    fn on_first_payload(&mut self, bytes: usize) {
+        info!(
+            peer_addr = ?self.peer_addr,
+            user = %self.user_id,
+            target = %self.target,
+            first_payload_bytes = bytes,
+            "socket tcp received first upstream payload"
+        );
+    }
+
+    fn on_eof_before_payload(&mut self) {
+        info!(
+            peer_addr = ?self.peer_addr,
+            user = %self.user_id,
+            target = %self.target,
+            "socket tcp upstream closed before sending payload"
+        );
+    }
+
+    fn on_chunk_encrypted(&mut self, plaintext: usize, ciphertext: usize) {
+        debug!(
+            user = %self.user_id,
+            plaintext_bytes = plaintext,
+            encrypted_bytes = ciphertext,
+            "socket tcp relaying upstream bytes to client"
+        );
+    }
 }
 
 pub(super) async fn serve_ss_udp_socket(

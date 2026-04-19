@@ -34,6 +34,7 @@ mod bootstrap;
 mod connect;
 mod constants;
 mod dns_cache;
+mod relay;
 mod setup;
 mod shadowsocks;
 mod shutdown;
