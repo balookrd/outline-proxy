@@ -17,5 +17,5 @@ pub use udp::{
 };
 
 #[cfg(test)]
-pub use udp::{UdpPacket, encrypt_udp_packet};
+pub use udp::encrypt_udp_packet;
 pub use user_key::UserKey;
