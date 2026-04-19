@@ -26,17 +26,6 @@ pub enum UdpSession {
     Chacha2022 { client_session_id: [u8; 8] },
 }
 
-impl UdpSession {
-    pub fn client_session_id(&self) -> Option<[u8; 8]> {
-        match self {
-            Self::Legacy => None,
-            Self::Aes2022 { client_session_id } | Self::Chacha2022 { client_session_id } => {
-                Some(*client_session_id)
-            },
-        }
-    }
-}
-
 pub struct UdpPacket {
     pub user: UserKey,
     pub payload: Vec<u8>,
