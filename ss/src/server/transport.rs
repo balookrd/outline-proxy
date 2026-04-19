@@ -1,4 +1,8 @@
-use super::auth::parse_root_http_auth_password;
+use super::auth::{
+    ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response, build_root_http_auth_challenge_response,
+    build_root_http_auth_forbidden_response, build_root_http_auth_success_response,
+    parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
+};
 use super::connect::{connect_tcp_target, resolve_udp_target};
 use std::sync::{Arc, atomic::{AtomicBool, AtomicUsize, Ordering}};
 
@@ -9,17 +13,21 @@ use axum::{
         OriginalUri, State,
         ws::{Message, WebSocket, WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
-    http::{HeaderMap, Method, StatusCode, Version, header},
+    http::{HeaderMap, Method, StatusCode, Version},
     response::{IntoResponse, Response},
 };
-use bytes::{Bytes, BytesMut};
-use futures_util::{FutureExt, SinkExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
+use bytes::Bytes;
+use futures_util::{
+    FutureExt, SinkExt, StreamExt,
+    future::BoxFuture,
+    stream::{FuturesUnordered, SplitSink, SplitStream},
+};
 use sockudo_ws::{
-    Http3 as H3Transport, Message as H3Message, Stream as H3Stream,
-    WebSocketStream as H3WebSocketStream,
+    Http3 as H3Transport, Message as H3Message, SplitReader as H3SplitReader,
+    SplitWriter as H3SplitWriter, Stream as H3Stream, WebSocketStream as H3WebSocketStream,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     sync::mpsc,
 };
 use tracing::{debug, info, warn};
@@ -39,10 +47,6 @@ use super::dns_cache::DnsCache;
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route};
 
-pub(super) const ROOT_HTTP_AUTH_COOKIE_NAME: &str = "outline_ss_root_auth";
-pub(super) const ROOT_HTTP_AUTH_MAX_FAILURES: u8 = 3;
-pub(super) const ROOT_HTTP_AUTH_COOKIE_TTL_SECS: u32 = 300;
-
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
     State(state): State<AppState>,
@@ -52,7 +56,7 @@ pub(super) async fn tcp_websocket_upgrade(
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return not_found_response(),
+        Err(_) => return build_not_found_response(Body::empty()),
     };
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
@@ -101,38 +105,40 @@ pub(super) async fn root_http_auth_handler(
     headers: HeaderMap,
 ) -> Response {
     if !state.auth.http_root_auth || !matches!(method, Method::GET | Method::HEAD) {
-        return not_found_response();
+        return build_not_found_response(Body::empty());
     }
 
     let failed_attempts = parse_failed_root_auth_attempts(&headers);
     if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
-        return root_http_auth_forbidden_response();
+        return build_root_http_auth_forbidden_response(Body::empty());
     }
 
     match parse_root_http_auth_password(&headers) {
         Some(password) if password_matches_any_user(state.auth.users.as_ref(), &password) => {
-            root_http_auth_success_response()
+            build_root_http_auth_success_response(Body::empty())
         },
         Some(_) => {
             let failed_attempts = failed_attempts.saturating_add(1);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
-                root_http_auth_forbidden_response()
+                build_root_http_auth_forbidden_response(Body::empty())
             } else {
-                root_http_auth_challenge_response(
+                build_root_http_auth_challenge_response(
                     failed_attempts,
                     state.auth.http_root_realm.as_ref(),
+                    Body::empty(),
                 )
             }
         },
-        None => root_http_auth_challenge_response(
+        None => build_root_http_auth_challenge_response(
             failed_attempts,
             state.auth.http_root_realm.as_ref(),
+            Body::empty(),
         ),
     }
 }
 
 pub(super) async fn not_found_handler() -> Response {
-    not_found_response()
+    build_not_found_response(Body::empty())
 }
 
 pub(super) async fn metrics_handler(State(metrics): State<Arc<Metrics>>) -> impl IntoResponse {
@@ -152,7 +158,7 @@ pub(super) async fn udp_websocket_upgrade(
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
-        Err(_) => return not_found_response(),
+        Err(_) => return build_not_found_response(Body::empty()),
     };
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
@@ -198,84 +204,6 @@ pub(super) async fn udp_websocket_upgrade(
     })
 }
 
-pub(super) fn parse_failed_root_auth_attempts(headers: &HeaderMap) -> u8 {
-    headers
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| parse_cookie(value, ROOT_HTTP_AUTH_COOKIE_NAME))
-        .and_then(|value| value.parse::<u8>().ok())
-        .map(|attempts| attempts.min(ROOT_HTTP_AUTH_MAX_FAILURES))
-        .unwrap_or(0)
-}
-
-fn parse_cookie<'a>(cookie_header: &'a str, name: &str) -> Option<&'a str> {
-    cookie_header.split(';').find_map(|entry| {
-        let (cookie_name, cookie_value) = entry.trim().split_once('=')?;
-        (cookie_name == name).then_some(cookie_value)
-    })
-}
-
-pub(super) fn password_matches_any_user(users: &[UserKey], password: &str) -> bool {
-    users
-        .iter()
-        .any(|user| matches!(user.matches_password(password), Ok(true)))
-}
-
-fn not_found_response() -> Response {
-    Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(Body::empty())
-        .expect("failed to build not found response")
-}
-
-fn root_http_auth_success_response() -> Response {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!("{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
-        )
-        .body(Body::empty())
-        .expect("failed to build root auth success response")
-}
-
-fn root_http_auth_challenge_response(failed_attempts: u8, realm: &str) -> Response {
-    Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(
-            header::WWW_AUTHENTICATE,
-            format!("Basic realm=\"{}\"", escape_http_auth_realm(realm)),
-        )
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
-            ),
-        )
-        .body(Body::empty())
-        .expect("failed to build root auth challenge response")
-}
-
-pub(super) fn escape_http_auth_realm(realm: &str) -> String {
-    realm.replace('\\', "\\\\").replace('"', "\\\"")
-}
-
-fn root_http_auth_forbidden_response() -> Response {
-    Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
-            ),
-        )
-        .body(Body::empty())
-        .expect("failed to build root auth forbidden response")
-}
-
 struct TcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
@@ -294,28 +222,294 @@ impl TcpRelayState {
     }
 }
 
-fn ws_binary_message(data: Bytes) -> Message {
-    Message::Binary(data)
+enum WsFrame {
+    Binary(Bytes),
+    Close,
+    Ping(Bytes),
+    Pong,
+    Text,
 }
 
-fn ws_pong_message(payload: Bytes) -> Message {
-    Message::Pong(payload)
+trait WsSocket: Send + Sized + 'static {
+    type Msg: Send + 'static;
+    type Reader: Send + 'static;
+    type Writer: Send + 'static;
+
+    fn split_io(self) -> (Self::Reader, Self::Writer);
+    fn recv(
+        reader: &mut Self::Reader,
+    ) -> impl Future<Output = Result<Option<Self::Msg>>> + Send + '_;
+    fn send(
+        writer: &mut Self::Writer,
+        msg: Self::Msg,
+    ) -> impl Future<Output = Result<()>> + Send + '_;
+    fn finish(writer: &mut Self::Writer) -> impl Future<Output = ()> + Send + '_;
+
+    fn classify(msg: Self::Msg) -> WsFrame;
+    fn binary_msg(data: Bytes) -> Self::Msg;
+    fn close_msg() -> Self::Msg;
+    fn pong_msg(payload: Bytes) -> Self::Msg;
+    fn binary_len(msg: &Self::Msg) -> Option<usize>;
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<Self::Msg>,
+        protocol: Protocol,
+    ) -> UdpResponseSender;
 }
 
-fn ws_close_message() -> Message {
-    Message::Close(None)
+struct AxumWs(WebSocket);
+
+impl WsSocket for AxumWs {
+    type Msg = Message;
+    type Reader = SplitStream<WebSocket>;
+    type Writer = SplitSink<WebSocket, Message>;
+
+    fn split_io(self) -> (Self::Reader, Self::Writer) {
+        let (sink, stream) = self.0.split();
+        (stream, sink)
+    }
+
+    async fn recv(reader: &mut Self::Reader) -> Result<Option<Message>> {
+        match reader.next().await {
+            Some(Ok(m)) => Ok(Some(m)),
+            Some(Err(e)) => Err(anyhow::Error::from(e).context("websocket receive failure")),
+            None => Ok(None),
+        }
+    }
+
+    async fn send(writer: &mut Self::Writer, msg: Message) -> Result<()> {
+        writer
+            .send(msg)
+            .await
+            .context("failed to write websocket frame")
+    }
+
+    async fn finish(_writer: &mut Self::Writer) {}
+
+    fn classify(msg: Message) -> WsFrame {
+        match msg {
+            Message::Binary(b) => WsFrame::Binary(b),
+            Message::Close(_) => WsFrame::Close,
+            Message::Ping(p) => WsFrame::Ping(p),
+            Message::Pong(_) => WsFrame::Pong,
+            Message::Text(_) => WsFrame::Text,
+        }
+    }
+
+    fn binary_msg(data: Bytes) -> Message {
+        Message::Binary(data)
+    }
+    fn close_msg() -> Message {
+        Message::Close(None)
+    }
+    fn pong_msg(p: Bytes) -> Message {
+        Message::Pong(p)
+    }
+    fn binary_len(m: &Message) -> Option<usize> {
+        if let Message::Binary(b) = m {
+            Some(b.len())
+        } else {
+            None
+        }
+    }
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<Message>,
+        protocol: Protocol,
+    ) -> UdpResponseSender {
+        UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol }))
+    }
 }
 
-fn h3_binary_message(data: Bytes) -> H3Message {
-    H3Message::Binary(data)
+struct H3Ws(H3WebSocketStream<H3Stream<H3Transport>>);
+
+impl WsSocket for H3Ws {
+    type Msg = H3Message;
+    type Reader = H3SplitReader<H3Stream<H3Transport>>;
+    type Writer = H3SplitWriter<H3Stream<H3Transport>>;
+
+    fn split_io(self) -> (Self::Reader, Self::Writer) {
+        self.0.split()
+    }
+
+    async fn recv(reader: &mut Self::Reader) -> Result<Option<H3Message>> {
+        match reader.next().await {
+            Some(Ok(m)) => Ok(Some(m)),
+            Some(Err(e)) => Err(anyhow::Error::from(e).context("websocket receive failure")),
+            None => Ok(None),
+        }
+    }
+
+    async fn send(writer: &mut Self::Writer, msg: H3Message) -> Result<()> {
+        writer
+            .send(msg)
+            .await
+            .context("failed to write websocket frame")
+    }
+
+    async fn finish(writer: &mut Self::Writer) {
+        let _ = writer.close(1000, "").await;
+    }
+
+    fn classify(msg: H3Message) -> WsFrame {
+        match msg {
+            H3Message::Binary(b) => WsFrame::Binary(b),
+            H3Message::Close(_) => WsFrame::Close,
+            H3Message::Ping(p) => WsFrame::Ping(p),
+            H3Message::Pong(_) => WsFrame::Pong,
+            H3Message::Text(_) => WsFrame::Text,
+        }
+    }
+
+    fn binary_msg(data: Bytes) -> H3Message {
+        H3Message::Binary(data)
+    }
+    fn close_msg() -> H3Message {
+        H3Message::Close(None)
+    }
+    fn pong_msg(p: Bytes) -> H3Message {
+        H3Message::Pong(p)
+    }
+    fn binary_len(m: &H3Message) -> Option<usize> {
+        if let H3Message::Binary(b) = m {
+            Some(b.len())
+        } else {
+            None
+        }
+    }
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<H3Message>,
+        _protocol: Protocol,
+    ) -> UdpResponseSender {
+        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx }))
+    }
 }
 
-fn h3_pong_message(payload: Bytes) -> H3Message {
-    H3Message::Pong(payload)
-}
+async fn run_tcp_relay<T: WsSocket>(
+    socket: T,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: Arc<str>,
+    candidate_users: Arc<[Arc<str>]>,
+    dns_cache: Arc<DnsCache>,
+    prefer_ipv4_upstream: bool,
+) -> Result<()> {
+    let (mut reader, mut writer) = socket.split_io();
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<T::Msg>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<T::Msg>(8);
+    let writer_metrics = metrics.clone();
+    let writer_task = tokio::spawn(async move {
+        let result = async {
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = outbound_ctrl_rx.recv() => match msg {
+                            Some(m) => T::send(&mut writer, m).await?,
+                            None => ctrl_open = false,
+                        },
+                        msg = outbound_data_rx.recv() => match msg {
+                            Some(m) => {
+                                if let Some(len) = T::binary_len(&m) {
+                                    writer_metrics.record_websocket_binary_frame(
+                                        Transport::Tcp, protocol, "out", len,
+                                    );
+                                }
+                                T::send(&mut writer, m).await?;
+                            }
+                            None => break,
+                        },
+                    }
+                } else {
+                    let Some(m) = outbound_data_rx.recv().await else {
+                        break;
+                    };
+                    if let Some(len) = T::binary_len(&m) {
+                        writer_metrics.record_websocket_binary_frame(
+                            Transport::Tcp,
+                            protocol,
+                            "out",
+                            len,
+                        );
+                    }
+                    T::send(&mut writer, m).await?;
+                }
+            }
+            Ok::<(), anyhow::Error>(())
+        }
+        .await;
+        T::finish(&mut writer).await;
+        result
+    });
 
-fn h3_close_message() -> H3Message {
-    H3Message::Close(None)
+    let mut decryptor = AeadStreamDecryptor::new(users.clone());
+    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
+    let mut state = TcpRelayState::new();
+    let mut client_closed = false;
+
+    while let Some(msg) = T::recv(&mut reader).await? {
+        match T::classify(msg) {
+            WsFrame::Binary(data) => {
+                handle_tcp_binary_frame(
+                    &mut state,
+                    &mut decryptor,
+                    &mut plaintext_buffer,
+                    data,
+                    &outbound_data_tx,
+                    users.as_ref(),
+                    &metrics,
+                    protocol,
+                    &path,
+                    candidate_users.as_ref(),
+                    dns_cache.as_ref(),
+                    prefer_ipv4_upstream,
+                    T::binary_msg,
+                    T::close_msg,
+                )
+                .await?;
+            },
+            WsFrame::Close => {
+                debug!("client closed tcp websocket");
+                client_closed = true;
+                break;
+            },
+            WsFrame::Ping(payload) => {
+                outbound_ctrl_tx
+                    .send(T::pong_msg(payload))
+                    .await
+                    .map_err(|_| anyhow!("failed to queue websocket pong"))?;
+            },
+            WsFrame::Pong => {},
+            WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
+        }
+    }
+
+    if let Some(mut upstream) = state.upstream_writer.take() {
+        upstream.shutdown().await.ok();
+    }
+
+    if client_closed {
+        if let Some(task) = state.upstream_to_client.take() {
+            task.abort();
+        }
+        if let Some(guard) = state.upstream_guard.take() {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        let _ = writer_task.await;
+    } else {
+        if let Some(task) = state.upstream_to_client.take() {
+            task.await.context("tcp upstream relay task join failed")??;
+        }
+        if let Some(guard) = state.upstream_guard.take() {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        writer_task.await.context("websocket writer task join failed")??;
+    }
+    Ok(())
 }
 
 struct WebSocketResponseSender {
@@ -347,52 +541,23 @@ impl ResponseSender for Http3ResponseSender {
     }
 }
 
-fn make_ws_udp_response_sender(tx: mpsc::Sender<Message>, protocol: Protocol) -> UdpResponseSender {
-    UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol }))
-}
-
-fn make_h3_udp_response_sender(
-    tx: mpsc::Sender<H3Message>,
-    _protocol: Protocol,
-) -> UdpResponseSender {
-    UdpResponseSender::new(Arc::new(Http3ResponseSender { tx }))
-}
-
-async fn relay_upstream_to_client_generic<Msg>(
-    mut upstream_reader: tokio::net::tcp::OwnedReadHalf,
-    outbound_tx: mpsc::Sender<Msg>,
-    encryptor: &mut AeadStreamEncryptor,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    user_id: Arc<str>,
+struct ChannelSink<Msg: Send + 'static> {
+    tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
-) -> Result<()>
-where
-    Msg: Send + 'static,
-{
-    let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
-    loop {
-        buffer.clear();
-        buffer.reserve(MAX_CHUNK_SIZE);
-        let read = upstream_reader
-            .read_buf(&mut buffer)
-            .await
-            .context("failed to read from upstream")?;
-        if read == 0 {
-            break;
-        }
+}
 
-        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
-        let ciphertext = encryptor.encrypt_chunk(&buffer)?;
-        outbound_tx
-            .send(make_binary(ciphertext.into()))
+impl<Msg: Send + 'static> super::relay::UpstreamSink for ChannelSink<Msg> {
+    async fn send_ciphertext(&mut self, ciphertext: Bytes) -> Result<()> {
+        self.tx
+            .send((self.make_binary)(ciphertext))
             .await
-            .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))?;
+            .map_err(|error| anyhow!("failed to queue encrypted websocket frame: {error}"))
     }
 
-    outbound_tx.send(make_close()).await.ok();
-    Ok(())
+    async fn close(&mut self) {
+        let _ = self.tx.send((self.make_close)()).await;
+    }
 }
 
 async fn handle_tcp_binary_frame<Msg>(
@@ -484,15 +649,13 @@ where
         let relay_metrics = Arc::clone(metrics);
         let relay_user_id = Arc::clone(&user_id);
         state.upstream_to_client = Some(tokio::spawn(async move {
-            relay_upstream_to_client_generic(
+            super::relay::relay_upstream_to_client(
                 upstream_reader,
-                tx,
+                ChannelSink { tx, make_binary, make_close },
                 &mut encryptor,
                 relay_metrics,
                 protocol,
                 relay_user_id,
-                make_binary,
-                make_close,
             )
             .await
         }));
@@ -666,124 +829,21 @@ async fn handle_tcp_connection(
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
-    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<Message>(8);
-    let writer_metrics = metrics.clone();
-    let writer_task = tokio::spawn(async move {
-        let mut ctrl_open = true;
-        loop {
-            if ctrl_open {
-                tokio::select! {
-                    biased;
-                    msg = outbound_ctrl_rx.recv() => match msg {
-                        Some(m) => ws_sender.send(m).await.context("failed to write websocket frame")?,
-                        None => ctrl_open = false,
-                    },
-                    msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => {
-                            if let Message::Binary(data) = &m {
-                                writer_metrics.record_websocket_binary_frame(
-                                    Transport::Tcp,
-                                    protocol,
-                                    "out",
-                                    data.len(),
-                                );
-                            }
-                            ws_sender.send(m).await.context("failed to write websocket frame")?;
-                        }
-                        None => break,
-                    },
-                }
-            } else {
-                let Some(m) = outbound_data_rx.recv().await else {
-                    break;
-                };
-                if let Message::Binary(data) = &m {
-                    writer_metrics.record_websocket_binary_frame(
-                        Transport::Tcp,
-                        protocol,
-                        "out",
-                        data.len(),
-                    );
-                }
-                ws_sender.send(m).await.context("failed to write websocket frame")?;
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    });
-    let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut state = TcpRelayState::new();
-    let mut client_closed = false;
-
-    while let Some(message) = ws_receiver.next().await {
-        match message.context("websocket receive failure")? {
-            Message::Binary(data) => {
-                handle_tcp_binary_frame(
-                    &mut state,
-                    &mut decryptor,
-                    &mut plaintext_buffer,
-                    data,
-                    &outbound_data_tx,
-                    users.as_ref(),
-                    &metrics,
-                    protocol,
-                    &path,
-                    candidate_users.as_ref(),
-                    dns_cache.as_ref(),
-                    prefer_ipv4_upstream,
-                    ws_binary_message,
-                    ws_close_message,
-                )
-                .await?;
-            },
-            Message::Close(_) => {
-                debug!("client closed tcp websocket");
-                client_closed = true;
-                break;
-            },
-            Message::Ping(payload) => {
-                outbound_ctrl_tx
-                    .send(ws_pong_message(payload))
-                    .await
-                    .context("failed to queue websocket pong")?;
-            },
-            Message::Pong(_) => {},
-            Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
-        }
-    }
-
-    if let Some(mut writer) = state.upstream_writer.take() {
-        writer.shutdown().await.ok();
-    }
-
-    if client_closed {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.abort();
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
-        let _ = writer_task.await;
-    } else {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.await.context("tcp upstream relay task join failed")??;
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
-        writer_task.await.context("websocket writer task join failed")??;
-    }
-    Ok(())
+    run_tcp_relay::<AxumWs>(
+        AxumWs(socket),
+        users,
+        metrics,
+        protocol,
+        path,
+        candidate_users,
+        dns_cache,
+        prefer_ipv4_upstream,
+    )
+    .await
 }
 
-async fn handle_udp_connection(
-    socket: WebSocket,
+async fn run_udp_relay<T: WsSocket>(
+    socket: T,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     protocol: Protocol,
@@ -793,63 +853,73 @@ async fn handle_udp_connection(
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
-    let (mut ws_sender, mut ws_receiver) = socket.split();
-    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<Message>(64);
-    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<Message>(8);
+    let (mut reader, mut writer) = socket.split_io();
+    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<T::Msg>(64);
+    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<T::Msg>(8);
     let udp_session_recorded = Arc::new(AtomicBool::new(false));
     let cached_user_index = Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY));
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let writer_metrics = metrics.clone();
     let writer_task = tokio::spawn(async move {
-        let mut ctrl_open = true;
-        loop {
-            if ctrl_open {
-                tokio::select! {
-                    biased;
-                    msg = outbound_ctrl_rx.recv() => match msg {
-                        Some(m) => ws_sender.send(m).await.context("failed to write websocket frame")?,
-                        None => ctrl_open = false,
-                    },
-                    msg = outbound_data_rx.recv() => match msg {
-                        Some(m) => {
-                            if let Message::Binary(data) = &m {
-                                writer_metrics.record_websocket_binary_frame(
-                                    Transport::Udp,
-                                    protocol,
-                                    "out",
-                                    data.len(),
-                                );
+        let result = async {
+            let mut ctrl_open = true;
+            loop {
+                if ctrl_open {
+                    tokio::select! {
+                        biased;
+                        msg = outbound_ctrl_rx.recv() => match msg {
+                            Some(m) => T::send(&mut writer, m).await?,
+                            None => ctrl_open = false,
+                        },
+                        msg = outbound_data_rx.recv() => match msg {
+                            Some(m) => {
+                                if let Some(len) = T::binary_len(&m) {
+                                    writer_metrics.record_websocket_binary_frame(
+                                        Transport::Udp, protocol, "out", len,
+                                    );
+                                }
+                                T::send(&mut writer, m).await?;
                             }
-                            ws_sender.send(m).await.context("failed to write websocket frame")?;
-                        }
-                        None => break,
-                    },
+                            None => break,
+                        },
+                    }
+                } else {
+                    let Some(m) = outbound_data_rx.recv().await else {
+                        break;
+                    };
+                    if let Some(len) = T::binary_len(&m) {
+                        writer_metrics.record_websocket_binary_frame(
+                            Transport::Udp,
+                            protocol,
+                            "out",
+                            len,
+                        );
+                    }
+                    T::send(&mut writer, m).await?;
                 }
-            } else {
-                let Some(m) = outbound_data_rx.recv().await else {
-                    break;
-                };
-                if let Message::Binary(data) = &m {
-                    writer_metrics.record_websocket_binary_frame(
-                        Transport::Udp,
-                        protocol,
-                        "out",
-                        data.len(),
-                    );
-                }
-                ws_sender.send(m).await.context("failed to write websocket frame")?;
             }
+            Ok::<(), anyhow::Error>(())
         }
-        Ok::<(), anyhow::Error>(())
+        .await;
+        T::finish(&mut writer).await;
+        result
     });
+
     let mut loop_result = Ok(());
     loop {
         tokio::select! {
             Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
-            message = ws_receiver.next() => {
-                let Some(message) = message else { break };
-                match message.context("websocket receive failure") {
-                    Ok(Message::Binary(data)) => {
+            msg = T::recv(&mut reader) => {
+                let frame = match msg {
+                    Ok(Some(m)) => m,
+                    Ok(None) => break,
+                    Err(error) => {
+                        loop_result = Err(error);
+                        break;
+                    }
+                };
+                match T::classify(frame) {
+                    WsFrame::Binary(data) => {
                         metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
                             metrics.record_udp_relay_drop(Transport::Udp, protocol, "concurrency_limit");
@@ -879,7 +949,7 @@ async fn handle_udp_connection(
                                 cached_user_index,
                                 dns_cache,
                                 prefer_ipv4_upstream,
-                                make_ws_udp_response_sender,
+                                T::make_udp_response_sender,
                             )
                             .await
                             {
@@ -887,27 +957,23 @@ async fn handle_udp_connection(
                             }
                         }.boxed());
                     }
-                    Ok(Message::Close(_)) => {
+                    WsFrame::Close => {
                         debug!("client closed udp websocket");
                         break;
                     }
-                    Ok(Message::Ping(payload)) => {
-                        if let Err(error) = outbound_ctrl_tx
-                            .send(ws_pong_message(payload))
+                    WsFrame::Ping(payload) => {
+                        if outbound_ctrl_tx
+                            .send(T::pong_msg(payload))
                             .await
-                            .context("failed to queue websocket pong")
+                            .is_err()
                         {
-                            loop_result = Err(error);
+                            loop_result = Err(anyhow!("failed to queue websocket pong"));
                             break;
                         }
                     }
-                    Ok(Message::Pong(_)) => {}
-                    Ok(Message::Text(_)) => {
+                    WsFrame::Pong => {}
+                    WsFrame::Text => {
                         loop_result = Err(anyhow!("text websocket frames are not supported"));
-                        break;
-                    }
-                    Err(error) => {
-                        loop_result = Err(error);
                         break;
                     }
                 }
@@ -922,6 +988,31 @@ async fn handle_udp_connection(
     loop_result
 }
 
+async fn handle_udp_connection(
+    socket: WebSocket,
+    users: Arc<[UserKey]>,
+    metrics: Arc<Metrics>,
+    protocol: Protocol,
+    path: Arc<str>,
+    candidate_users: Arc<[Arc<str>]>,
+    nat_table: Arc<NatTable>,
+    dns_cache: Arc<DnsCache>,
+    prefer_ipv4_upstream: bool,
+) -> Result<()> {
+    run_udp_relay::<AxumWs>(
+        AxumWs(socket),
+        users,
+        metrics,
+        protocol,
+        path,
+        candidate_users,
+        nat_table,
+        dns_cache,
+        prefer_ipv4_upstream,
+    )
+    .await
+}
+
 pub(super) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     users: Arc<[UserKey]>,
@@ -931,128 +1022,17 @@ pub(super) async fn handle_tcp_h3_connection(
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
-    let (mut ws_reader, mut ws_writer) = socket.split();
-    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
-    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
-    let writer_metrics = metrics.clone();
-    let writer_task = tokio::spawn(async move {
-        let result = async {
-            let mut ctrl_open = true;
-            loop {
-                if ctrl_open {
-                    tokio::select! {
-                        biased;
-                        msg = outbound_ctrl_rx.recv() => match msg {
-                            Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
-                            None => ctrl_open = false,
-                        },
-                        msg = outbound_data_rx.recv() => match msg {
-                            Some(m) => {
-                                if let H3Message::Binary(data) = &m {
-                                    writer_metrics.record_websocket_binary_frame(
-                                        Transport::Tcp,
-                                        Protocol::Http3,
-                                        "out",
-                                        data.len(),
-                                    );
-                                }
-                                ws_writer.send(m).await.context("failed to write websocket frame")?;
-                            }
-                            None => break,
-                        },
-                    }
-                } else {
-                    let Some(m) = outbound_data_rx.recv().await else {
-                        break;
-                    };
-                    if let H3Message::Binary(data) = &m {
-                        writer_metrics.record_websocket_binary_frame(
-                            Transport::Tcp,
-                            Protocol::Http3,
-                            "out",
-                            data.len(),
-                        );
-                    }
-                    ws_writer
-                        .send(m)
-                        .await
-                        .context("failed to write websocket frame")?;
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-        let _ = ws_writer.close(1000, "").await;
-        result
-    });
-    let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut state = TcpRelayState::new();
-    let mut client_closed = false;
-
-    while let Some(message) = ws_reader.next().await {
-        match message.context("websocket receive failure")? {
-            H3Message::Binary(data) => {
-                handle_tcp_binary_frame(
-                    &mut state,
-                    &mut decryptor,
-                    &mut plaintext_buffer,
-                    data,
-                    &outbound_data_tx,
-                    users.as_ref(),
-                    &metrics,
-                    Protocol::Http3,
-                    &path,
-                    candidate_users.as_ref(),
-                    dns_cache.as_ref(),
-                    prefer_ipv4_upstream,
-                    h3_binary_message,
-                    h3_close_message,
-                )
-                .await?;
-            },
-            H3Message::Close(_) => {
-                debug!("client closed tcp websocket");
-                client_closed = true;
-                break;
-            },
-            H3Message::Ping(payload) => {
-                outbound_ctrl_tx
-                    .send(h3_pong_message(payload))
-                    .await
-                    .context("failed to queue websocket pong")?;
-            },
-            H3Message::Pong(_) => {},
-            H3Message::Text(_) => return Err(anyhow!("text websocket frames are not supported")),
-        }
-    }
-
-    if let Some(mut writer) = state.upstream_writer.take() {
-        writer.shutdown().await.ok();
-    }
-
-    if client_closed {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.abort();
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
-        let _ = writer_task.await;
-    } else {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.await.context("tcp upstream relay task join failed")??;
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
-        writer_task.await.context("websocket writer task join failed")??;
-    }
-    Ok(())
+    run_tcp_relay::<H3Ws>(
+        H3Ws(socket),
+        users,
+        metrics,
+        Protocol::Http3,
+        path,
+        candidate_users,
+        dns_cache,
+        prefer_ipv4_upstream,
+    )
+    .await
 }
 
 pub(super) async fn handle_udp_h3_connection(
@@ -1065,150 +1045,18 @@ pub(super) async fn handle_udp_h3_connection(
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
 ) -> Result<()> {
-    let (mut ws_reader, mut ws_writer) = socket.split();
-    let (outbound_data_tx, mut outbound_data_rx) = mpsc::channel::<H3Message>(64);
-    let (outbound_ctrl_tx, mut outbound_ctrl_rx) = mpsc::channel::<H3Message>(8);
-    let udp_session_recorded = Arc::new(AtomicBool::new(false));
-    let cached_user_index = Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY));
-    let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    let writer_metrics = metrics.clone();
-    let writer_task = tokio::spawn(async move {
-        let result = async {
-            let mut ctrl_open = true;
-            loop {
-                if ctrl_open {
-                    tokio::select! {
-                        biased;
-                        msg = outbound_ctrl_rx.recv() => match msg {
-                            Some(m) => ws_writer.send(m).await.context("failed to write websocket frame")?,
-                            None => ctrl_open = false,
-                        },
-                        msg = outbound_data_rx.recv() => match msg {
-                            Some(m) => {
-                                if let H3Message::Binary(data) = &m {
-                                    writer_metrics.record_websocket_binary_frame(
-                                        Transport::Udp,
-                                        Protocol::Http3,
-                                        "out",
-                                        data.len(),
-                                    );
-                                }
-                                ws_writer.send(m).await.context("failed to write websocket frame")?;
-                            }
-                            None => break,
-                        },
-                    }
-                } else {
-                    let Some(m) = outbound_data_rx.recv().await else {
-                        break;
-                    };
-                    if let H3Message::Binary(data) = &m {
-                        writer_metrics.record_websocket_binary_frame(
-                            Transport::Udp,
-                            Protocol::Http3,
-                            "out",
-                            data.len(),
-                        );
-                    }
-                    ws_writer
-                        .send(m)
-                        .await
-                        .context("failed to write websocket frame")?;
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        }
-        .await;
-        let _ = ws_writer.close(1000, "").await;
-        result
-    });
-    let mut loop_result = Ok(());
-    loop {
-        tokio::select! {
-            Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
-            message = ws_reader.next() => {
-                let Some(message) = message else { break };
-                match message.context("websocket receive failure") {
-                    Ok(H3Message::Binary(data)) => {
-                        metrics.record_websocket_binary_frame(
-                            Transport::Udp,
-                            Protocol::Http3,
-                            "in",
-                            data.len(),
-                        );
-                        if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                            metrics.record_udp_relay_drop(
-                                Transport::Udp,
-                                Protocol::Http3,
-                                "concurrency_limit",
-                            );
-                            warn!("udp concurrent relay limit reached, dropping datagram");
-                            continue;
-                        }
-                        let tx = outbound_data_tx.clone();
-                        let users = users.clone();
-                        let metrics = metrics.clone();
-                        let path = path.clone();
-                        let candidate_users = candidate_users.clone();
-                        let udp_session_recorded = udp_session_recorded.clone();
-                        let cached_user_index = Arc::clone(&cached_user_index);
-                        let nat_table = Arc::clone(&nat_table);
-                        let dns_cache = Arc::clone(&dns_cache);
-                        in_flight.push(async move {
-                            if let Err(error) = handle_udp_datagram_common(
-                                nat_table,
-                                users,
-                                data,
-                                tx,
-                                metrics,
-                                Protocol::Http3,
-                                path,
-                                candidate_users,
-                                udp_session_recorded,
-                                cached_user_index,
-                                dns_cache,
-                                prefer_ipv4_upstream,
-                                make_h3_udp_response_sender,
-                            )
-                            .await
-                            {
-                                warn!(?error, "udp datagram relay failed");
-                            }
-                        }.boxed());
-                    }
-                    Ok(H3Message::Close(_)) => {
-                        debug!("client closed udp websocket");
-                        break;
-                    }
-                    Ok(H3Message::Ping(payload)) => {
-                        if let Err(error) = outbound_ctrl_tx
-                            .send(h3_pong_message(payload))
-                            .await
-                            .context("failed to queue websocket pong")
-                        {
-                            loop_result = Err(error);
-                            break;
-                        }
-                    }
-                    Ok(H3Message::Pong(_)) => {}
-                    Ok(H3Message::Text(_)) => {
-                        loop_result = Err(anyhow!("text websocket frames are not supported"));
-                        break;
-                    }
-                    Err(error) => {
-                        loop_result = Err(error);
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    while in_flight.next().await.is_some() {}
-    drop(outbound_ctrl_tx);
-    drop(outbound_data_tx);
-    writer_task.await.context("websocket writer task join failed")??;
-    loop_result
+    run_udp_relay::<H3Ws>(
+        H3Ws(socket),
+        users,
+        metrics,
+        Protocol::Http3,
+        path,
+        candidate_users,
+        nat_table,
+        dns_cache,
+        prefer_ipv4_upstream,
+    )
+    .await
 }
 
 pub(super) fn is_expected_ws_close(error: &anyhow::Error) -> bool {

@@ -1,18 +1,20 @@
-use super::auth::parse_root_http_auth_password;
+use super::auth::{
+    ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response, build_root_http_auth_challenge_response,
+    build_root_http_auth_forbidden_response, build_root_http_auth_success_response,
+    parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
+};
 use super::connect::configure_tcp_stream;
 use super::shutdown::ShutdownSignal;
 use super::transport::{
-    ROOT_HTTP_AUTH_COOKIE_NAME, ROOT_HTTP_AUTH_COOKIE_TTL_SECS, ROOT_HTTP_AUTH_MAX_FAILURES,
-    escape_http_auth_realm, handle_tcp_h3_connection, handle_udp_h3_connection,
-    is_expected_ws_close, is_normal_h3_shutdown, metrics_handler, not_found_handler,
-    parse_failed_root_auth_attempts, password_matches_any_user, root_http_auth_handler,
+    handle_tcp_h3_connection, handle_udp_h3_connection, is_expected_ws_close,
+    is_normal_h3_shutdown, metrics_handler, not_found_handler, root_http_auth_handler,
 };
 use std::{collections::BTreeSet, fs, path::Path, sync::{Arc, OnceLock}};
 
 use anyhow::{Context, Result, anyhow};
 use axum::{
     Router,
-    http::{self, Method, StatusCode, header},
+    http::{self, Method, StatusCode},
     routing::any,
     serve::ListenerExt,
 };
@@ -470,79 +472,28 @@ fn h3_http_response(
     http_root_realm: &str,
 ) -> http::Response<()> {
     if path != "/" || !http_root_auth || !(method == Method::GET || method == Method::HEAD) {
-        return h3_not_found_response();
+        return build_not_found_response(());
     }
 
     let failed_attempts = parse_failed_root_auth_attempts(headers);
     if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
-        return h3_root_http_auth_forbidden_response();
+        return build_root_http_auth_forbidden_response(());
     }
 
     match parse_root_http_auth_password(headers) {
         Some(password) if password_matches_any_user(users, &password) => {
-            h3_root_http_auth_success_response()
+            build_root_http_auth_success_response(())
         },
         Some(_) => {
             let failed_attempts = failed_attempts.saturating_add(1);
             if failed_attempts >= ROOT_HTTP_AUTH_MAX_FAILURES {
-                h3_root_http_auth_forbidden_response()
+                build_root_http_auth_forbidden_response(())
             } else {
-                h3_root_http_auth_challenge_response(failed_attempts, http_root_realm)
+                build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ())
             }
         },
-        None => h3_root_http_auth_challenge_response(failed_attempts, http_root_realm),
+        None => build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ()),
     }
-}
-
-fn h3_not_found_response() -> http::Response<()> {
-    http::Response::builder()
-        .status(StatusCode::NOT_FOUND)
-        .body(())
-        .expect("failed to build HTTP/3 not found response")
-}
-
-fn h3_root_http_auth_success_response() -> http::Response<()> {
-    http::Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!("{ROOT_HTTP_AUTH_COOKIE_NAME}=0; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"),
-        )
-        .body(())
-        .expect("failed to build HTTP/3 root auth success response")
-}
-
-fn h3_root_http_auth_challenge_response(failed_attempts: u8, realm: &str) -> http::Response<()> {
-    http::Response::builder()
-        .status(StatusCode::UNAUTHORIZED)
-        .header(
-            header::WWW_AUTHENTICATE,
-            format!("Basic realm=\"{}\"", escape_http_auth_realm(realm)),
-        )
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={failed_attempts}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
-            ),
-        )
-        .body(())
-        .expect("failed to build HTTP/3 root auth challenge response")
-}
-
-fn h3_root_http_auth_forbidden_response() -> http::Response<()> {
-    http::Response::builder()
-        .status(StatusCode::FORBIDDEN)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header(
-            header::SET_COOKIE,
-            format!(
-                "{ROOT_HTTP_AUTH_COOKIE_NAME}={ROOT_HTTP_AUTH_MAX_FAILURES}; Path=/; Max-Age={ROOT_HTTP_AUTH_COOKIE_TTL_SECS}; HttpOnly; SameSite=Lax"
-            ),
-        )
-        .body(())
-        .expect("failed to build HTTP/3 root auth forbidden response")
 }
 
 fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
