@@ -22,9 +22,9 @@ const CIPHER_AES_256: &str = "aes-256-gcm";
 /// this key setup thousands of times over its lifetime without an instance
 /// cache.
 pub enum AeadCipher {
-    Chacha(ChaCha20Poly1305),
-    Aes128(Aes128Gcm),
-    Aes256(Aes256Gcm),
+    Chacha(Box<ChaCha20Poly1305>),
+    Aes128(Box<Aes128Gcm>),
+    Aes256(Box<Aes256Gcm>),
 }
 
 impl AeadCipher {
@@ -32,14 +32,14 @@ impl AeadCipher {
         match cipher {
             CipherKind::Chacha20IetfPoly1305 | CipherKind::Chacha20Poly13052022 => {
                 ChaCha20Poly1305::new_from_slice(key)
-                    .map(Self::Chacha)
+                    .map(|c| Self::Chacha(Box::new(c)))
                     .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_CHACHA })
             },
             CipherKind::Aes128Gcm | CipherKind::Aes128Gcm2022 => Aes128Gcm::new_from_slice(key)
-                .map(Self::Aes128)
+                .map(|c| Self::Aes128(Box::new(c)))
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_128 }),
             CipherKind::Aes256Gcm | CipherKind::Aes256Gcm2022 => Aes256Gcm::new_from_slice(key)
-                .map(Self::Aes256)
+                .map(|c| Self::Aes256(Box::new(c)))
                 .map_err(|_| CryptoError::InvalidKey { cipher: CIPHER_AES_256 }),
         }
     }
