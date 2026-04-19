@@ -988,6 +988,7 @@ pub(super) async fn handle_tcp_h3_connection(
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
     let mut state = TcpRelayState::new();
+    let mut client_closed = false;
 
     while let Some(message) = ws_reader.next().await {
         match message.context("websocket receive failure")? {
@@ -1012,6 +1013,7 @@ pub(super) async fn handle_tcp_h3_connection(
             },
             H3Message::Close(_) => {
                 debug!("client closed tcp websocket");
+                client_closed = true;
                 break;
             },
             H3Message::Ping(payload) => {
@@ -1029,17 +1031,27 @@ pub(super) async fn handle_tcp_h3_connection(
         writer.shutdown().await.ok();
     }
 
-    if let Some(task) = state.upstream_to_client.take() {
-        task.await.context("tcp upstream relay task join failed")??;
+    if client_closed {
+        if let Some(task) = state.upstream_to_client.take() {
+            task.abort();
+        }
+        if let Some(guard) = state.upstream_guard.take() {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        let _ = writer_task.await;
+    } else {
+        if let Some(task) = state.upstream_to_client.take() {
+            task.await.context("tcp upstream relay task join failed")??;
+        }
+        if let Some(guard) = state.upstream_guard.take() {
+            guard.finish();
+        }
+        drop(outbound_ctrl_tx);
+        drop(outbound_data_tx);
+        writer_task.await.context("websocket writer task join failed")??;
     }
-
-    if let Some(guard) = state.upstream_guard.take() {
-        guard.finish();
-    }
-
-    drop(outbound_ctrl_tx);
-    drop(outbound_data_tx);
-    writer_task.await.context("websocket writer task join failed")??;
     Ok(())
 }
 
