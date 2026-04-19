@@ -8,7 +8,7 @@ use outline_routing::RouteTarget;
 use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
 
-use super::{ConfigFile, load_config, resolve_outline_section};
+use super::{ConfigFile, load_config, normalize_outline_section};
 
 #[test]
 fn config_deserializes() {
@@ -217,7 +217,7 @@ fn config_deserializes_multiple_uplinks() {
         password = "Secret1"
     "#;
     let parsed: ConfigFile = toml::from_str(cfg).unwrap();
-    let outline = resolve_outline_section(&parsed).unwrap();
+    let outline = normalize_outline_section(&parsed).unwrap();
     let uplinks = outline.uplinks.unwrap();
     assert_eq!(uplinks.len(), 2);
     assert_eq!(uplinks[0].fwmark, Some(100));
@@ -251,7 +251,7 @@ fn config_deserializes_global_routing_scope() {
         password = "Secret0"
     "#;
     let parsed: ConfigFile = toml::from_str(cfg).unwrap();
-    let outline = resolve_outline_section(&parsed).unwrap();
+    let outline = normalize_outline_section(&parsed).unwrap();
     let lb = outline.load_balancing.unwrap();
     assert_eq!(lb.mode, Some(LoadBalancingMode::ActivePassive));
     assert_eq!(lb.routing_scope, Some(RoutingScope::Global));
@@ -888,7 +888,7 @@ async fn load_config_rejects_inverted_route_without_prefixes() {
     )
     .unwrap();
 
-    // This is caught at load_routing_table validation (no prefixes/file) —
+    // This is caught at load_routing_config validation (no prefixes/file) —
     // the inverted-empty-set safety net in RoutingTable::compile is a
     // defense-in-depth layer behind that. Either message is acceptable.
     let args = super::Args::parse_from(["test"]);

@@ -375,6 +375,7 @@ pub(crate) async fn connect_websocket_h2(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // private helper; grouping into a struct would cost more than it saves
 async fn connect_h2_tcp_reused(
     cache: &DnsCache,
     server_name: &str,

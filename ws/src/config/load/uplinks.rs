@@ -86,23 +86,6 @@ impl ResolvedUplinkInput {
         }
     }
 
-    pub(super) fn from_outline_default(outline: Option<&OutlineSection>) -> Self {
-        Self {
-            name: "default".to_string(),
-            transport: outline.and_then(|section| section.transport).unwrap_or_default(),
-            tcp_ws_url: outline.and_then(|section| section.tcp_ws_url.clone()),
-            tcp_ws_mode: outline.and_then(|section| section.tcp_ws_mode),
-            udp_ws_url: outline.and_then(|section| section.udp_ws_url.clone()),
-            udp_ws_mode: outline.and_then(|section| section.udp_ws_mode),
-            tcp_addr: outline.and_then(|section| section.tcp_addr.clone()),
-            udp_addr: outline.and_then(|section| section.udp_addr.clone()),
-            cipher: outline.and_then(|section| section.method),
-            password: outline.and_then(|section| section.password.clone()),
-            weight: Some(1.0),
-            fwmark: outline.and_then(|section| section.fwmark),
-            ipv6_first: outline.and_then(|section| section.ipv6_first),
-        }
-    }
 }
 
 impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
@@ -188,7 +171,33 @@ pub(super) fn load_uplinks(
     outline: Option<&OutlineSection>,
     args: &Args,
 ) -> Result<Vec<UplinkConfig>> {
-    let cli_override_requested = args.tcp_ws_url.is_some()
+    if cli_uplink_override_requested(args) {
+        return Ok(vec![ResolvedUplinkInput::from_cli(args, outline).try_into()?]);
+    }
+
+    // After compat normalisation, `outline.uplinks` is guaranteed populated
+    // whenever any uplink-definition field is set — either explicitly via
+    // `[[uplinks]]` or synthesised from inline fields. The only way to land
+    // here with `None` is a config that truly declares no uplink.
+    let uplinks = outline.and_then(|o| o.uplinks.as_ref()).ok_or_else(|| {
+        anyhow!(
+            "no uplink configured: add an [outline] section (or at least `password` + \
+             `tcp_ws_url`/`tcp_addr`), use `[[uplink_group]]`, or pass CLI overrides"
+        )
+    })?;
+    if uplinks.is_empty() {
+        bail!("uplinks is present but empty");
+    }
+
+    uplinks
+        .iter()
+        .enumerate()
+        .map(|(index, uplink)| ResolvedUplinkInput::from_section(index, uplink).try_into())
+        .collect()
+}
+
+fn cli_uplink_override_requested(args: &Args) -> bool {
+    args.tcp_ws_url.is_some()
         || args.transport.is_some()
         || args.tcp_ws_mode.is_some()
         || args.udp_ws_url.is_some()
@@ -198,23 +207,5 @@ pub(super) fn load_uplinks(
         || args.method.is_some()
         || args.password.is_some()
         || args.fwmark.is_some()
-        || args.ipv6_first.is_some();
-
-    if cli_override_requested {
-        return Ok(vec![ResolvedUplinkInput::from_cli(args, outline).try_into()?]);
-    }
-
-    if let Some(uplinks) = outline.and_then(|o| o.uplinks.as_ref()) {
-        let resolved = uplinks
-            .iter()
-            .enumerate()
-            .map(|(index, uplink)| ResolvedUplinkInput::from_section(index, uplink).try_into())
-            .collect::<Result<Vec<_>>>()?;
-        if resolved.is_empty() {
-            bail!("uplinks is present but empty");
-        }
-        return Ok(resolved);
-    }
-
-    Ok(vec![ResolvedUplinkInput::from_outline_default(outline).try_into()?])
+        || args.ipv6_first.is_some()
 }

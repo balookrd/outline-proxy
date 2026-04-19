@@ -1,4 +1,5 @@
 mod args;
+mod compat;
 mod load;
 mod schema;
 mod types;
@@ -8,7 +9,9 @@ pub use load::load_config;
 pub use types::{AppConfig, H2Config, MetricsConfig};
 
 #[cfg(test)]
-pub(crate) use schema::{ConfigFile, resolve_outline_section};
+pub(crate) use compat::normalize_outline_section;
+#[cfg(test)]
+pub(crate) use schema::ConfigFile;
 
 #[cfg(test)]
 mod tests;

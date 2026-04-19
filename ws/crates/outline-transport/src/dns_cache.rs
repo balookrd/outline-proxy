@@ -11,6 +11,8 @@ use parking_lot::RwLock;
 /// windows and the previous global cache behaviour.
 pub const DEFAULT_DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+type CacheKey = (u16, bool, Box<str>);
+
 #[derive(Debug)]
 struct Entry {
     /// Already sorted according to the `ipv6_first` bit in the key —
@@ -29,7 +31,7 @@ struct Entry {
 /// `insert` takes a write lock once and updates in-place on a hit.
 #[derive(Debug)]
 pub struct DnsCache {
-    inner: RwLock<HashMap<(u16, bool, Box<str>), Entry>>,
+    inner: RwLock<HashMap<CacheKey, Entry>>,
     ttl: Duration,
 }
 
@@ -43,7 +45,7 @@ fn make_hash(bh: &impl BuildHasher, port: u16, ipv6_first: bool, host: &str) -> 
 }
 
 #[inline]
-fn key_eq(k: &(u16, bool, Box<str>), port: u16, ipv6_first: bool, host: &str) -> bool {
+fn key_eq(k: &CacheKey, port: u16, ipv6_first: bool, host: &str) -> bool {
     k.0 == port && k.1 == ipv6_first && k.2.as_ref() == host
 }
 
