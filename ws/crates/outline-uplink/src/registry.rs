@@ -17,7 +17,7 @@ use tracing::info;
 use crate::config::UplinkGroupConfig;
 
 use super::state::StateStore;
-use super::types::{UplinkManager, UplinkManagerSnapshot};
+use super::types::{TransportKind, UplinkManager, UplinkManagerSnapshot};
 
 /// A named [`UplinkManager`].
 #[derive(Clone, Debug)]
@@ -160,6 +160,31 @@ impl UplinkRegistry {
         for group in &self.groups {
             group.manager.shutdown();
         }
+    }
+
+    /// Manually switch the active uplink identified by `uplink_name`. When
+    /// `group` is `Some`, only that group is considered; otherwise all groups
+    /// are searched (uplink names are globally unique across groups).
+    pub async fn set_active_uplink_by_name(
+        &self,
+        group: Option<&str>,
+        uplink_name: &str,
+        transport: Option<TransportKind>,
+    ) -> Result<(String, usize)> {
+        let manager = if let Some(g) = group {
+            self.group_by_name(g)
+                .ok_or_else(|| anyhow::anyhow!("uplink group \"{}\" not found", g))?
+        } else {
+            self.groups
+                .iter()
+                .find(|g| g.manager.uplinks().iter().any(|u| u.name == uplink_name))
+                .map(|g| &g.manager)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("uplink \"{}\" not found in any group", uplink_name)
+                })?
+        };
+        let index = manager.set_active_uplink_by_name(uplink_name, transport).await?;
+        Ok((manager.group_name().to_string(), index))
     }
 
     /// Snapshot each group for Prometheus rendering. The returned vector

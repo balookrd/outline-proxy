@@ -881,12 +881,46 @@ Requirements:
 If metrics are enabled, the process serves:
 
 - `/metrics` - Prometheus text exposition
+- `/switch` - manual active-uplink override (POST)
 
 Example:
 
 ```bash
 curl http://[::1]:9090/metrics
 ```
+
+### Manual uplink switch
+
+`POST /switch` lets an operator pin the active uplink for an `active_passive`
+group without waiting for the probe loop. The selection is persisted via the
+state store (when configured) so it survives restarts.
+
+Query parameters:
+
+- `uplink` (required) - uplink name to activate.
+- `group` (optional) - target group. When omitted, the registry searches all
+  groups (uplink names are globally unique).
+- `transport` (optional) - `tcp`, `udp`, or `both` (default). Honoured only in
+  `routing_scope = per_uplink`; ignored under `global` scope.
+
+Examples:
+
+```bash
+# Switch the only group to uplink "backup" (both transports if per_uplink)
+curl -XPOST 'http://[::1]:9090/switch?uplink=backup'
+
+# Switch only the UDP active uplink in per_uplink mode
+curl -XPOST 'http://[::1]:9090/switch?uplink=backup&transport=udp'
+
+# Disambiguate by group name
+curl -XPOST 'http://[::1]:9090/switch?group=main&uplink=backup'
+```
+
+Returns `200` on success, `400` when the uplink/group is unknown or the group
+is not in `active_passive` mode, and `405` for non-POST methods. The override
+holds while the chosen uplink is healthy; if the probe loop later marks it
+unhealthy, normal failover takes over. With `auto_failback = true`, the loop
+may flip back to a higher-priority uplink once it stabilises.
 
 Prometheus example:
 

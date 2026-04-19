@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::{Result, bail};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
@@ -527,6 +528,75 @@ impl UplinkManager {
                 uplink: candidate.uplink,
             })
             .collect()
+    }
+
+    /// Manually switch the active uplink for this group to the one identified
+    /// by `name`. When `transport` is `Some(_)` and the group runs in
+    /// `per_uplink` routing scope, only that transport is switched; otherwise
+    /// both transports are updated. The selection is persisted via the state
+    /// store (if configured) so it survives restarts.
+    ///
+    /// Returns the chosen uplink index. Errors when the group is not in
+    /// `active_passive` mode or when the name does not match any configured
+    /// uplink in this group.
+    pub async fn set_active_uplink_by_name(
+        &self,
+        name: &str,
+        transport: Option<TransportKind>,
+    ) -> Result<usize> {
+        if self.inner.load_balancing.mode != LoadBalancingMode::ActivePassive {
+            bail!(
+                "manual switch is only supported in active_passive mode (group \"{}\" is {:?})",
+                self.inner.group_name,
+                self.inner.load_balancing.mode
+            );
+        }
+        let index = self
+            .inner
+            .uplinks
+            .iter()
+            .position(|u| u.name == name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "uplink \"{}\" not found in group \"{}\"",
+                    name,
+                    self.inner.group_name
+                )
+            })?;
+
+        if self.strict_global_active_uplink() {
+            self.set_active_uplink_index_for_transport(TransportKind::Tcp, index)
+                .await;
+        } else if self.strict_per_uplink_active_uplink() {
+            match transport {
+                Some(t) => {
+                    self.set_active_uplink_index_for_transport(t, index).await;
+                },
+                None => {
+                    self.set_active_uplink_index_for_transport(TransportKind::Tcp, index)
+                        .await;
+                    self.set_active_uplink_index_for_transport(TransportKind::Udp, index)
+                        .await;
+                },
+            }
+        }
+
+        // Refresh sticky route(s) so the next dispatch immediately observes
+        // the override instead of being routed by the old sticky entry.
+        let scope = self.inner.load_balancing.routing_scope;
+        if scope == RoutingScope::Global {
+            let key = strict_route_key(TransportKind::Tcp, scope);
+            self.store_sticky_route(&key, index).await;
+        } else if scope == RoutingScope::PerUplink {
+            for t in [TransportKind::Tcp, TransportKind::Udp] {
+                if transport.is_none() || transport == Some(t) {
+                    let key = strict_route_key(t, scope);
+                    self.store_sticky_route(&key, index).await;
+                }
+            }
+        }
+
+        Ok(index)
     }
 
     pub(crate) async fn set_active_uplink_index_for_transport(
