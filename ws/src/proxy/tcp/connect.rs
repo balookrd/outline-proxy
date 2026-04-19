@@ -533,10 +533,12 @@ pub async fn handle_tcp_connect(
         // Preserve client half-close semantics (client EOF while still waiting
         // for the response), but do not keep the upstream transport alive after
         // the server side has already closed cleanly.
+        let target_label: Arc<str> = Arc::from(target.to_string());
         let result = drive_tcp_session_tasks(
             uplink,
             downlink,
             Some(IdleWatcher::new(activity_rx, SOCKS_UPSTREAM_IDLE_TIMEOUT)),
+            target_label,
         )
         .await;
         // Report mid-stream upstream transport failures so that broken transports
