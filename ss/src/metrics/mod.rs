@@ -295,7 +295,7 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             gauge!(
                 "outline_ss_active_tcp_upstream_connections",
-                "user"     => user_id.to_string(),
+                "user"     => Arc::clone(&user_id),
                 "protocol" => protocol.as_str()
             )
             .increment(1.0);
@@ -347,11 +347,10 @@ impl Metrics {
     pub fn record_tcp_authenticated_session(&self, user: impl Into<Arc<str>>, protocol: Protocol) {
         let user: Arc<str> = user.into();
         self.record_client_session(Arc::clone(&user), protocol, Transport::Tcp);
-        let user_str = user.to_string();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_authenticated_sessions_total",
-                "user"     => user_str,
+                "user"     => user,
                 "protocol" => protocol.as_str()
             )
             .increment(1);
@@ -365,11 +364,10 @@ impl Metrics {
         transport: Transport,
     ) {
         let user: Arc<str> = user.into();
-        let user_str = user.to_string();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_client_sessions_total",
-                "user"      => user_str,
+                "user"      => Arc::clone(&user),
                 "protocol"  => protocol.as_str(),
                 "transport" => transport.as_str()
             )
@@ -382,9 +380,8 @@ impl Metrics {
         let user: Arc<str> = user.into();
         let ts = unix_timestamp_seconds();
         *self.client_last_seen.write().entry(Arc::clone(&user)).or_insert(0) = ts;
-        let user_str = user.to_string();
         with_local_recorder(&self.recorder, || {
-            gauge!("outline_ss_client_last_seen_seconds", "user" => user_str).set(ts as f64);
+            gauge!("outline_ss_client_last_seen_seconds", "user" => user).set(ts as f64);
         });
     }
 
@@ -395,18 +392,18 @@ impl Metrics {
         result: &'static str,
         duration_seconds: f64,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_upstream_connects_total",
-                "user"     => user_str.clone(),
+                "user"     => Arc::clone(&user),
                 "protocol" => protocol.as_str(),
                 "result"   => result
             )
             .increment(1);
             histogram!(
                 "outline_ss_tcp_upstream_connect_duration_seconds",
-                "user"     => user_str,
+                "user"     => user,
                 "protocol" => protocol.as_str(),
                 "result"   => result
             )
@@ -421,18 +418,18 @@ impl Metrics {
         direction: &'static str,
         bytes: usize,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_payload_bytes_total",
-                "user"      => user_str.clone(),
+                "user"      => Arc::clone(&user),
                 "protocol"  => protocol.as_str(),
                 "direction" => direction
             )
             .increment(bytes as u64);
             counter!(
                 "outline_ss_client_payload_bytes_total",
-                "user"      => user_str,
+                "user"      => user,
                 "protocol"  => protocol.as_str(),
                 "transport" => Transport::Tcp.as_str(),
                 "direction" => direction
@@ -448,18 +445,18 @@ impl Metrics {
         result: &'static str,
         duration_seconds: f64,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_requests_total",
-                "user"     => user_str.clone(),
+                "user"     => Arc::clone(&user),
                 "protocol" => protocol.as_str(),
                 "result"   => result
             )
             .increment(1);
             histogram!(
                 "outline_ss_udp_relay_duration_seconds",
-                "user"     => user_str,
+                "user"     => user,
                 "protocol" => protocol.as_str(),
                 "result"   => result
             )
@@ -474,18 +471,18 @@ impl Metrics {
         direction: &'static str,
         bytes: usize,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_payload_bytes_total",
-                "user"      => user_str.clone(),
+                "user"      => Arc::clone(&user),
                 "protocol"  => protocol.as_str(),
                 "direction" => direction
             )
             .increment(bytes as u64);
             counter!(
                 "outline_ss_client_payload_bytes_total",
-                "user"      => user_str,
+                "user"      => user,
                 "protocol"  => protocol.as_str(),
                 "transport" => Transport::Udp.as_str(),
                 "direction" => direction
@@ -500,11 +497,11 @@ impl Metrics {
         protocol: Protocol,
         count: usize,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_response_datagrams_total",
-                "user"     => user_str,
+                "user"     => user,
                 "protocol" => protocol.as_str()
             )
             .increment(count as u64);
@@ -534,11 +531,11 @@ impl Metrics {
         protocol: Protocol,
         direction: &'static str,
     ) {
-        let user_str = user.into().to_string();
+        let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_oversized_datagrams_dropped_total",
-                "user"      => user_str,
+                "user"      => user,
                 "protocol"  => protocol.as_str(),
                 "direction" => direction
             )
@@ -586,9 +583,8 @@ impl Metrics {
             for (user, seen_at) in &seen_snapshot {
                 let active =
                     if *seen_at > 0 && now.saturating_sub(*seen_at) <= ttl { 1.0 } else { 0.0 };
-                let user_str = user.to_string();
-                gauge!("outline_ss_client_active", "user" => user_str.clone()).set(active);
-                gauge!("outline_ss_client_up", "user" => user_str).set(active);
+                gauge!("outline_ss_client_active", "user" => Arc::clone(user)).set(active);
+                gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(active);
             }
         });
 
@@ -690,12 +686,12 @@ impl TcpUpstreamGuard {
 
     fn close(&mut self) {
         self.finished = true;
-        let user_str = self.user_id.to_string();
+        let user = Arc::clone(&self.user_id);
         let protocol = self.protocol;
         with_local_recorder(&self.metrics.recorder, || {
             gauge!(
                 "outline_ss_active_tcp_upstream_connections",
-                "user"     => user_str,
+                "user"     => user,
                 "protocol" => protocol.as_str()
             )
             .decrement(1.0);
