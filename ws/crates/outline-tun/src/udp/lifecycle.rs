@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
+use crate::udp::AllUdpUplinksFailed;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{debug, warn};
@@ -374,10 +375,10 @@ async fn select_candidate_and_connect(
             },
         }
     }
-    Err(anyhow!(
+    Err(anyhow::Error::from(AllUdpUplinksFailed).context(format!(
         "all UDP uplinks failed for TUN flow: {}",
         last_error.unwrap_or_else(|| "no UDP-capable uplinks available".to_string())
-    ))
+    )))
 }
 
 async fn oldest_flow_key(

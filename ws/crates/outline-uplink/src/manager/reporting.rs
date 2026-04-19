@@ -83,9 +83,9 @@ impl UplinkManager {
         transport: TransportKind,
         error: &anyhow::Error,
     ) {
+        let failure_cause = classify_runtime_failure_cause(error);
+        let failure_signature = classify_runtime_failure_signature(error);
         let error_text = format!("{error:#}");
-        let failure_cause = classify_runtime_failure_cause(&error_text);
-        let failure_signature = classify_runtime_failure_signature(&error_text);
         let failure_other_detail = (failure_signature == "other")
             .then(|| normalize_other_runtime_failure_detail(&error_text));
         let now = Instant::now();

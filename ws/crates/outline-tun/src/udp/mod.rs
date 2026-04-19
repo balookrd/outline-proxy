@@ -1,3 +1,4 @@
+use std::fmt;
 use std::time::Duration;
 
 use anyhow::Result;
@@ -9,6 +10,20 @@ mod engine;
 mod lifecycle;
 mod types;
 mod wire;
+
+/// Typed marker placed in the error chain when every UDP uplink candidate
+/// failed during TUN flow setup. Classifiers match this via downcast instead
+/// of substring-matching the formatted error string.
+#[derive(Debug)]
+pub(crate) struct AllUdpUplinksFailed;
+
+impl fmt::Display for AllUdpUplinksFailed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "all UDP uplinks failed")
+    }
+}
+
+impl std::error::Error for AllUdpUplinksFailed {}
 
 #[cfg(test)]
 mod tests;

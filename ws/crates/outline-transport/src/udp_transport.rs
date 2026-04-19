@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use crate::WebSocketClosed;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -148,7 +149,7 @@ impl UdpWsTransport {
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        let _ = downlink_tx.send(Err(anyhow!("websocket closed"))).await;
+                        let _ = downlink_tx.send(Err(anyhow::Error::from(WebSocketClosed))).await;
                         return;
                     }
                     Some(Ok(Message::Ping(payload))) => {
@@ -294,7 +295,7 @@ impl UdpWsTransport {
             UdpTransport::Websocket { downlink_rx, .. } => {
                 let bytes = {
                     let mut rx = downlink_rx.lock().await;
-                    rx.recv().await.ok_or_else(|| anyhow!("websocket closed"))??
+                    rx.recv().await.ok_or_else(|| anyhow::Error::from(WebSocketClosed))??
                 };
                 self.decrypt_udp_bytes(&bytes).await.map(Bytes::from)
             },

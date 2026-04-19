@@ -1,14 +1,13 @@
 use std::io::{self, ErrorKind};
 
 use anyhow::Error;
+use socks5_proto::Socks5Error;
+
+use crate::client_io::ClientIo;
+use outline_transport::WebSocketClosed;
 
 /// Walk the anyhow error chain looking for a `std::io::Error`.
 /// Returns the `ErrorKind` of the first one found, if any.
-///
-/// This is the type-safe companion to string-based "os error N" matching.
-/// It works when errors are chained with `.context(...)` (which preserves
-/// the original error as a `source()`), but not when they are formatted
-/// into the message with `bail!("...: {e}")` or `format!`.
 fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
     error
         .chain()
@@ -19,10 +18,6 @@ fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
 /// Return true if any `std::io::Error` in the chain indicates a TCP-level
 /// disconnect: connection reset, broken pipe, unexpected EOF, or connection
 /// aborted.
-///
-/// Prefers `io::ErrorKind` over string matching because it is platform-
-/// independent (no "os error 104" vs "os error 54" across Linux/macOS) and
-/// resilient to error-message wording changes in OS libc or Tokio.
 fn is_transport_level_disconnect(error: &Error) -> bool {
     if let Some(kind) = find_io_error_kind(error) {
         return matches!(
@@ -33,56 +28,57 @@ fn is_transport_level_disconnect(error: &Error) -> bool {
                 | ErrorKind::ConnectionAborted
         );
     }
-    // Fallback for errors formatted into the message string rather than
-    // preserved as a chain source (e.g. bail!("...: {e}")).
+    // Fallback for errors whose io::Error was formatted into the message
+    // string (e.g. via `anyhow!("...: {e}")`).
     contains_any(&lower_error(error), TRANSPORT_DISCONNECT_STRINGS)
 }
 
-const CLIENT_READ_FAILURES: &[&str] = &[
-    "client read failed",
-    "failed to read udp-in-tcp data length",
-    "failed to read udp-in-tcp data length tail",
-    "failed to read udp-in-tcp header length",
-    "failed to read udp-in-tcp target address",
-    "failed to read udp-in-tcp payload",
-    // SOCKS5 negotiation aborts: client closed the TCP connection before
-    // completing the handshake.  Common during reconnect storms when a TUN
-    // interceptor (Sing-box, Clash, etc.) flushes its connection pool.
-    "failed to read method negotiation header",
-    "failed to read authentication methods",
-    "failed to read request header",
-];
-const CLIENT_WRITE_FAILURES: &[&str] = &["client write failed"];
-const CLIENT_IO_FAILURES: &[&str] = &[
-    "client read failed",
-    "client write failed",
-    "failed to read udp-in-tcp data length",
-    "failed to read udp-in-tcp data length tail",
-    "failed to read udp-in-tcp header length",
-    "failed to read udp-in-tcp target address",
-    "failed to read udp-in-tcp payload",
-    "failed to read method negotiation header",
-    "failed to read authentication methods",
-    "failed to read request header",
-];
-const WEBSOCKET_CLOSES: &[&str] = &[
-    "websocket closed",
-    "connection reset without closing handshake",
-    "peer closed connection without sending tls close_notify",
-];
+/// Return true if the error originated from a client-side read operation.
+///
+/// Covers:
+/// - `ClientIo::ReadFailed` attached by `proxy/tcp/connect.rs` during the
+///   active TCP data loop.
+/// - `Socks5Error::Io` produced by `socks5_proto::negotiate` or
+///   `read_udp_tcp_packet` — all IO operations in those functions are reads
+///   from the client socket (write contexts start with "writing").
+fn is_client_read_failure(error: &Error) -> bool {
+    error.chain().any(|e| {
+        if e.downcast_ref::<ClientIo>().is_some_and(|c| c.is_read()) {
+            return true;
+        }
+        // Socks5Error::Io context strings for reads all start with "reading".
+        matches!(
+            e.downcast_ref::<Socks5Error>(),
+            Some(Socks5Error::Io { context, .. }) if context.starts_with("reading")
+                || context.starts_with("reading UDP-in-TCP")
+        )
+    })
+}
+
+fn is_client_write_failure(error: &Error) -> bool {
+    error.chain().any(|e| e.downcast_ref::<ClientIo>().is_some_and(|c| c.is_write()))
+}
+
 /// String-match fallback for transport disconnects.
 ///
 /// Used only when the `io::Error` was formatted into the message string
 /// rather than preserved as a chain source.  The OS error code variants
 /// ("os error 104", "os error 54", "os error 32") are intentionally omitted
 /// here: they are handled type-safely by `is_transport_level_disconnect` via
-/// `io::ErrorKind`.  Keeping them would be harmless but is unnecessary.
+/// `io::ErrorKind`.
 const TRANSPORT_DISCONNECT_STRINGS: &[&str] = &[
     "connection reset by peer",
     "broken pipe",
-    // Tokio's UnexpectedEof message produced by read_exact when the remote side
-    // closes the connection before the full buffer is filled.
+    // Tokio's UnexpectedEof message produced by read_exact when the remote
+    // side closes the connection before the full buffer is filled.
     "early eof",
+];
+
+/// External-library WebSocket close strings that cannot be replaced with a
+/// typed marker (they originate from tungstenite / rustls).
+const EXTERNAL_WEBSOCKET_CLOSE_STRINGS: &[&str] = &[
+    "connection reset without closing handshake",
+    "peer closed connection without sending tls close_notify",
 ];
 
 fn lower_error(error: &Error) -> String {
@@ -94,22 +90,23 @@ fn contains_any(text: &str, patterns: &[&str]) -> bool {
 }
 
 pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {
-    contains_any(&lower_error(error), CLIENT_READ_FAILURES) && is_transport_level_disconnect(error)
+    is_client_read_failure(error) && is_transport_level_disconnect(error)
 }
 
 pub(crate) fn is_client_write_disconnect(error: &Error) -> bool {
-    contains_any(&lower_error(error), CLIENT_WRITE_FAILURES) && is_transport_level_disconnect(error)
+    is_client_write_failure(error) && is_transport_level_disconnect(error)
 }
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
-    contains_any(&lower_error(error), WEBSOCKET_CLOSES)
+    // Prefer typed downcast; fall back to external-library strings.
+    error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())
+        || contains_any(&lower_error(error), EXTERNAL_WEBSOCKET_CLOSE_STRINGS)
 }
 
 pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
-    let lower = lower_error(error);
-    !contains_any(&lower, CLIENT_IO_FAILURES)
-        && !lower.contains("active uplink switched")
-        && !contains_any(&lower, WEBSOCKET_CLOSES)
+    !is_client_read_failure(error)
+        && !is_client_write_failure(error)
+        && !is_websocket_closed(error)
 }
 
 
@@ -141,47 +138,76 @@ mod tests {
     }
 
     #[test]
-    fn udp_in_tcp_client_reset_is_treated_as_expected_disconnect() {
-        let error = anyhow!(
-            "failed to read UDP-in-TCP data length: Connection reset by peer (os error 104)"
-        );
-        assert!(is_expected_client_disconnect(&error));
+    fn typed_websocket_closed_is_detected() {
+        use outline_transport::WebSocketClosed;
+        let error = anyhow::Error::from(WebSocketClosed).context("websocket read failed");
+        assert!(is_websocket_closed(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 
     #[test]
+    fn typed_io_error_connection_reset_detected_regardless_of_os_code() {
+        use std::io;
+        use crate::client_io::ClientIo;
+        let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
+        let error = anyhow::Error::from(ClientIo::ReadFailed(io_err));
+        assert!(is_expected_client_disconnect(&error));
+    }
+
+    #[test]
+    fn typed_io_error_broken_pipe_detected() {
+        use std::io;
+        use crate::client_io::ClientIo;
+        let io_err = io::Error::from(io::ErrorKind::BrokenPipe);
+        let error = anyhow::Error::from(ClientIo::WriteFailed(io_err));
+        assert!(is_client_write_disconnect(&error));
+    }
+
+    #[test]
     fn client_write_reset_is_not_hidden_as_expected_disconnect() {
-        let error = anyhow!("client write failed: Connection reset by peer (os error 54)");
+        use std::io;
+        use crate::client_io::ClientIo;
+        let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
+        let error = anyhow::Error::from(ClientIo::WriteFailed(io_err));
         assert!(!is_expected_client_disconnect(&error));
         assert!(is_client_write_disconnect(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 
-    /// io::ErrorKind::ConnectionReset is detected even when the OS code is
-    /// platform-specific (104 on Linux, 54 on macOS).  The typed path must
-    /// fire regardless of which numeric code the kernel used.
     #[test]
-    fn typed_io_error_connection_reset_detected_regardless_of_os_code() {
+    fn socks5_negotiation_reset_is_expected_client_disconnect() {
         use std::io;
+        use socks5_proto::Socks5Error;
         let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
-        let error = anyhow::Error::from(io_err).context("client read failed");
+        let error = anyhow::Error::from(Socks5Error::Io {
+            context: "reading method negotiation header",
+            source: io_err,
+        });
         assert!(is_expected_client_disconnect(&error));
+        assert!(!is_upstream_runtime_failure(&error));
     }
 
-    /// io::ErrorKind::BrokenPipe is detected via the typed path.
     #[test]
-    fn typed_io_error_broken_pipe_detected() {
+    fn socks5_write_failure_is_not_expected_client_disconnect() {
         use std::io;
-        let io_err = io::Error::from(io::ErrorKind::BrokenPipe);
-        let error = anyhow::Error::from(io_err).context("client write failed");
-        assert!(is_client_write_disconnect(&error));
+        use socks5_proto::Socks5Error;
+        let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
+        let error = anyhow::Error::from(Socks5Error::Io {
+            context: "writing method selection",
+            source: io_err,
+        });
+        assert!(!is_expected_client_disconnect(&error));
     }
 
-    /// An error that carries no io::Error in its chain but whose formatted
-    /// message contains the expected strings still passes string-fallback.
     #[test]
-    fn string_fallback_still_works_for_formatted_messages() {
-        let error = anyhow!("client read failed: early eof");
-        assert!(is_expected_client_disconnect(&error));
+    fn string_fallback_still_works_for_external_websocket_strings() {
+        let error = anyhow!("websocket read failed: early eof");
+        // No ClientIo/WebSocketClosed in chain, but transport disconnect string matches
+        // and there's no client-read marker → not an expected client disconnect
+        assert!(!is_expected_client_disconnect(&error));
+        // And not a websocket close either
+        assert!(!is_websocket_closed(&error));
+        // But IS a runtime failure (no typed markers filtering it out)
+        assert!(is_upstream_runtime_failure(&error));
     }
 }

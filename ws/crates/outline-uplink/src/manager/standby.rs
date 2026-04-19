@@ -13,6 +13,7 @@ use outline_transport::{
 use crate::config::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::is_expected_standby_probe_failure;
+use super::super::error_text::StandbyProbeExpected;
 use super::super::types::{TransportKind, UplinkCandidate, UplinkManager};
 
 const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
@@ -341,7 +342,8 @@ impl UplinkManager {
         while let Some(mut ws) = drained.pop_front() {
             let started = Instant::now();
             let keepalive_result: Result<()> = if !ws.is_connection_alive() {
-                Err(anyhow!("underlying shared connection is closed"))
+                Err(anyhow::Error::from(StandbyProbeExpected)
+                    .context("underlying shared connection is closed"))
             } else {
                 match timeout(
                     STANDBY_TCP_KEEPALIVE_SEND_TIMEOUT,
@@ -349,17 +351,21 @@ impl UplinkManager {
                 )
                 .await
                 {
-                    Err(_elapsed) => Err(anyhow!("standby websocket ping timed out")),
-                    Ok(Err(error)) => Err(anyhow!("standby websocket ping failed: {error}")),
+                    Err(_elapsed) => Err(anyhow::Error::from(StandbyProbeExpected)
+                        .context("standby websocket ping timed out")),
+                    Ok(Err(error)) => Err(anyhow::Error::from(error)
+                        .context("standby websocket ping failed")),
                     Ok(Ok(())) => {
                         match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
                             Err(_elapsed) => Ok(()), // still open — nothing to read
-                            Ok(None) => Err(anyhow!("standby websocket stream ended")),
+                            Ok(None) => Err(anyhow::Error::from(StandbyProbeExpected)
+                                .context("standby websocket stream ended")),
                             Ok(Some(Err(error))) => {
-                                Err(anyhow!("standby websocket error: {error}"))
+                                Err(anyhow::Error::from(error).context("standby websocket error"))
                             },
                             Ok(Some(Ok(Message::Close(frame)))) => {
-                                Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                                Err(anyhow::Error::from(StandbyProbeExpected)
+                                    .context(format!("standby websocket closed by server: {:?}", frame)))
                             },
                             Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
                         }
@@ -607,14 +613,18 @@ impl UplinkManager {
             // will see a Close frame or an error immediately; otherwise the
             // read times out and we treat the connection as still alive.
             let alive_result: Result<()> = if !ws.is_connection_alive() {
-                Err(anyhow!("underlying shared connection is closed"))
+                Err(anyhow::Error::from(StandbyProbeExpected)
+                    .context("underlying shared connection is closed"))
             } else {
                 match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
                     Err(_elapsed) => Ok(()), // still open — nothing to read
-                    Ok(None) => Err(anyhow!("standby websocket stream ended")),
-                    Ok(Some(Err(e))) => Err(anyhow!("standby websocket error: {e}")),
+                    Ok(None) => Err(anyhow::Error::from(StandbyProbeExpected)
+                        .context("standby websocket stream ended")),
+                    Ok(Some(Err(e))) => Err(anyhow::Error::from(e)
+                        .context("standby websocket error")),
                     Ok(Some(Ok(Message::Close(frame)))) => {
-                        Err(anyhow!("standby websocket closed by server: {:?}", frame))
+                        Err(anyhow::Error::from(StandbyProbeExpected)
+                            .context(format!("standby websocket closed by server: {:?}", frame)))
                     },
                     Ok(Some(Ok(_))) => Ok(()), // unexpected data frame — still alive
                 }
