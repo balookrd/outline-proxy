@@ -524,7 +524,6 @@ async fn handle_ss_udp_datagram(
         user_id: Arc::clone(&user_id),
         fwmark: packet.user.fwmark(),
         target: resolved,
-        udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
         .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
@@ -532,10 +531,13 @@ async fn handle_ss_udp_datagram(
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
-        .register_session(UdpResponseSender::new(Arc::new(DatagramResponseSender {
-            socket: outbound_socket,
-            client_addr,
-        })))
+        .register_session(
+            UdpResponseSender::new(Arc::new(DatagramResponseSender {
+                socket: outbound_socket,
+                client_addr,
+            })),
+            packet.session.clone(),
+        )
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {

@@ -53,7 +53,6 @@ pub(crate) struct NatKey {
     pub user_id: Arc<str>,
     pub fwmark: Option<u32>,
     pub target: SocketAddr,
-    pub udp_client_session_id: Option<[u8; 8]>,
 }
 
 // ── Response sender abstraction ───────────────────────────────────────────────
@@ -95,14 +94,21 @@ impl UdpResponseSender {
 
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
-    /// The outbound path for the currently active client session.
-    /// Updated every time a new outbound datagram arrives so responses are
-    /// delivered to the right session even after a reconnect.
-    session_tx: Arc<Mutex<Option<UdpResponseSender>>>,
+    /// The currently active client session: where to deliver upstream responses
+    /// and which `UdpSession` (carrying the live `client_session_id` for SS-2022)
+    /// to use when encrypting them. Replaced atomically on every reconnect so
+    /// the NAT socket — and therefore the source port and server_session_id —
+    /// survives client session changes.
+    active: Arc<Mutex<Option<ActiveSession>>>,
     /// Unix timestamp (seconds) of the last datagram in either direction, for idle eviction.
     last_active_secs: Arc<AtomicU64>,
     /// Dropped when the entry is evicted, which aborts the background reader task.
     _reader: AbortOnDrop,
+}
+
+struct ActiveSession {
+    sender: UdpResponseSender,
+    session: UdpSession,
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -114,10 +120,15 @@ impl Drop for AbortOnDrop {
 }
 
 impl NatEntry {
-    /// Set the active client session that should receive upstream responses.
-    /// The previous session (if any) is replaced; its channel may be closed.
-    pub(crate) async fn register_session(&self, sender: UdpResponseSender) {
-        *self.session_tx.lock().await = Some(sender);
+    /// Set the active client session that should receive upstream responses,
+    /// along with the `UdpSession` used to encrypt them. The previous session
+    /// (if any) is replaced; its channel may be closed.
+    pub(crate) async fn register_session(
+        &self,
+        sender: UdpResponseSender,
+        session: UdpSession,
+    ) {
+        *self.active.lock().await = Some(ActiveSession { sender, session });
     }
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.
@@ -189,7 +200,7 @@ impl NatTable {
             .with_context(|| format!("failed to apply fwmark {:?} to NAT socket", key.fwmark))?;
         let socket = Arc::new(socket);
 
-        let session_tx: Arc<Mutex<Option<UdpResponseSender>>> = Arc::new(Mutex::new(None));
+        let active: Arc<Mutex<Option<ActiveSession>>> = Arc::new(Mutex::new(None));
         let last_active_secs = Arc::new(AtomicU64::new(current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
         let server_session_id = match udp_session {
@@ -201,10 +212,9 @@ impl NatTable {
 
         let reader_task = tokio::spawn(nat_reader_task(
             Arc::clone(&socket),
-            Arc::clone(&session_tx),
+            Arc::clone(&active),
             user.clone(),
             key.target,
-            udp_session.clone(),
             server_session_id,
             Arc::clone(&metrics),
             Arc::clone(&last_active_secs),
@@ -213,7 +223,7 @@ impl NatTable {
 
         let entry = Arc::new(NatEntry {
             socket,
-            session_tx,
+            active,
             last_active_secs,
             _reader: AbortOnDrop(reader_task),
         });
@@ -260,10 +270,9 @@ impl NatTable {
 
 async fn nat_reader_task(
     socket: Arc<UdpSocket>,
-    session_tx: Arc<Mutex<Option<UdpResponseSender>>>,
+    active: Arc<Mutex<Option<ActiveSession>>>,
     user: UserKey,
     target: SocketAddr,
-    udp_session: UdpSession,
     server_session_id: Option<[u8; 8]>,
     metrics: Arc<Metrics>,
     last_active: Arc<AtomicU64>,
@@ -281,12 +290,23 @@ async fn nat_reader_task(
 
         last_active.store(current_unix_secs(), Ordering::Relaxed);
 
+        // Snapshot the active session so encryption picks up the latest
+        // client_session_id after a reconnect.
+        let (sender, session) = match active.lock().await.as_ref() {
+            Some(a) => (a.sender.clone(), a.session.clone()),
+            None => {
+                metrics.record_udp_nat_response_dropped();
+                debug!(%target, "NAT response dropped: no active client session");
+                continue;
+            },
+        };
+
         let packet_id = next_packet_id.fetch_add(1, Ordering::Relaxed);
         let ciphertext = match encrypt_udp_packet_for_response(
             &user,
             &TargetAddr::Socket(source),
             &buf[..n],
-            &udp_session,
+            &session,
             server_session_id,
             packet_id,
         ) {
@@ -297,9 +317,8 @@ async fn nat_reader_task(
             },
         };
 
-        let sender = { session_tx.lock().await.clone() };
         if record_oversized_socket_response_drop(
-            sender.as_ref(),
+            Some(&sender),
             metrics.as_ref(),
             &user,
             source,
@@ -308,18 +327,12 @@ async fn nat_reader_task(
             continue;
         }
 
-        // Deliver to the currently registered client session.
-        if let Some(sender) = sender {
-            let protocol = sender.protocol();
-            let user_id = user.id_arc();
-            metrics.record_udp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", n);
-            metrics.record_udp_response_datagrams(user_id, protocol, 1);
-            if !sender.send_bytes(Bytes::from(ciphertext)).await {
-                debug!(%target, "NAT response dropped: client session disconnected");
-            }
-        } else {
-            metrics.record_udp_nat_response_dropped();
-            debug!(%target, "NAT response dropped: no active client session");
+        let protocol = sender.protocol();
+        let user_id = user.id_arc();
+        metrics.record_udp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", n);
+        metrics.record_udp_response_datagrams(user_id, protocol, 1);
+        if !sender.send_bytes(Bytes::from(ciphertext)).await {
+            debug!(%target, "NAT response dropped: client session disconnected");
         }
     }
 }
@@ -572,7 +585,6 @@ mod tests {
             user_id: user.id_arc(),
             fwmark: None,
             target: SocketAddr::from((Ipv4Addr::LOCALHOST, 5300)),
-            udp_client_session_id: None,
         };
 
         let mut tasks = Vec::new();

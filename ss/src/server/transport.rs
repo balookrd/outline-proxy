@@ -600,7 +600,6 @@ where
         user_id: Arc::clone(&user_id),
         fwmark: packet.user.fwmark(),
         target: resolved,
-        udp_client_session_id: packet.session.client_session_id(),
     };
     let entry = nat_table
         .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
@@ -608,7 +607,10 @@ where
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
-        .register_session(make_response_sender(outbound_tx, protocol))
+        .register_session(
+            make_response_sender(outbound_tx, protocol),
+            packet.session.clone(),
+        )
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
