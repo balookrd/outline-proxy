@@ -16,7 +16,7 @@ use outline_uplink::UplinkRegistry;
 
 use crate::proxy::ProxyConfig;
 
-use super::assoc::{AssocGroupMap, UdpResponse, resolve_group_context};
+use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
 use super::dispatch::{
     MAX_CLIENT_UDP_PACKET_SIZE, MAX_UDP_RELAY_PACKET_SIZE, send_tunneled_udp, send_udp_direct,
     udp_metric_payload_len,

@@ -12,7 +12,7 @@ use outline_uplink::TransportKind;
 
 use socks5_proto::TargetAddr;
 
-use super::assoc::GroupUdpContext;
+use super::group::GroupUdpContext;
 use super::transport::{failover_udp_transport, reconcile_global_udp_transport};
 
 pub(super) const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
