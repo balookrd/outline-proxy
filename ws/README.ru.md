@@ -180,10 +180,10 @@ tun2udp + tun2tcp"]
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) — диагностика стартового и переключательного burst в native Shadowsocks
 - [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) — alert rules Prometheus
 - [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
-- [`src/uplink/`](src/uplink) — выбор аплинка, пробы, failover и standby-логика
-- [`src/transport/`](src/transport) — реализации WebSocket и прямых Shadowsocks transport'ов
-- [`src/tun_tcp/`](src/tun_tcp) и [`src/tun_udp/`](src/tun_udp) — stateful TUN relay engines
-- [`src/crypto/`](src/crypto) — криптография и TLS glue
+- [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
+- [`crates/outline-transport/`](crates/outline-transport) — реализации WebSocket и прямых Shadowsocks transport'ов
+- [`crates/outline-tun/`](crates/outline-tun) — stateful TUN relay engines
+- [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) — криптография и TLS glue
 - [`PATCHES.md`](PATCHES.md) — реестр локальных патчей vendored-зависимостей
 
 ## Сборка
