@@ -1,8 +1,14 @@
 use super::{METRICS, Metrics};
 use anyhow::{Context, Result};
 use prometheus::{Encoder, TextEncoder};
+use std::sync::{LazyLock, Mutex};
 
 use crate::snapshot_types::UplinkManagerSnapshot;
+
+// Serialises the reset → repopulate → gather sequence so concurrent scrapes
+// never observe a registry that is partially reset.  Encoding runs on owned
+// MetricFamily data after the lock is released.
+static RENDER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 impl Metrics {
     fn update_snapshot_metrics(&self, snapshots: &[UplinkManagerSnapshot]) {
@@ -161,8 +167,11 @@ impl Metrics {
 }
 
 pub fn render_prometheus(snapshots: &[UplinkManagerSnapshot]) -> Result<String> {
-    METRICS.update_snapshot_metrics(snapshots);
-    let metric_families = METRICS.registry.gather();
+    let metric_families = {
+        let _guard = RENDER_LOCK.lock().expect("render lock poisoned");
+        METRICS.update_snapshot_metrics(snapshots);
+        METRICS.registry.gather()
+    };
     let encoder = TextEncoder::new();
     let mut buffer = Vec::new();
     encoder
