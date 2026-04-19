@@ -111,8 +111,8 @@ impl UplinkManager {
             // would prevent the probe from ever running and the uplink would
             // never come back online.
             {
-                let statuses = self.inner.statuses.read().await.clone();
-                let s = &statuses[index];
+                let status = self.inner.read_status(index);
+                let s = &status;
                 let threshold = self.inner.probe.interval;
                 // Recent traffic is enough to skip the probe only while there
                 // is no active runtime-failure cooldown. Once a cooldown is
@@ -208,11 +208,8 @@ impl UplinkManager {
                     // Read current h3_downgrade_until values before mutating so
                     // we can emit warn! without holding the write lock.
                     let (prev_tcp_h3, prev_udp_h3) = {
-                        let statuses = self.inner.statuses.read().await.clone();
-                        (
-                            statuses[index].tcp.h3_downgrade_until,
-                            statuses[index].udp.h3_downgrade_until,
-                        )
+                        let s = self.inner.read_status(index);
+                        (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
                     };
                     // Emit warn! for H3 downgrades before acquiring the write lock.
                     if !result.tcp_ok
@@ -240,8 +237,7 @@ impl UplinkManager {
                     }
                     let mut needs_h3_tcp_recovery = false;
                     let mut needs_h3_udp_recovery = false;
-                    self.inner.modify_statuses(|statuses| {
-                        let status = &mut statuses[index];
+                    self.inner.with_status_mut(index, |status| {
                         status.last_checked = Some(now);
                         status.tcp.latency = result.tcp_latency;
                         status.udp.latency = result.udp_latency;
@@ -327,7 +323,7 @@ impl UplinkManager {
                         if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
                             status.last_error = None;
                         }
-                    }).await;
+                    });
                     if needs_h3_tcp_recovery {
                         h3_tcp_recovery_needed.push((index, Arc::clone(&uplink)));
                     }
@@ -335,10 +331,10 @@ impl UplinkManager {
                         h3_udp_recovery_needed.push((index, Arc::clone(&uplink)));
                     }
                     let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
-                        let statuses = self.inner.statuses.read().await.clone();
+                        let s = self.inner.read_status(index);
                         (
-                            statuses[index].tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                            statuses[index].udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                            s.tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                            s.udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
                         )
                     };
                     debug!(
@@ -363,11 +359,8 @@ impl UplinkManager {
                     let load_balancing = self.inner.load_balancing.clone();
                     // Read h3_downgrade_until before mutating for warn! emission.
                     let (prev_tcp_h3, prev_udp_h3) = {
-                        let statuses = self.inner.statuses.read().await.clone();
-                        (
-                            statuses[index].tcp.h3_downgrade_until,
-                            statuses[index].udp.h3_downgrade_until,
-                        )
+                        let s = self.inner.read_status(index);
+                        (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
                     };
                     // Emit warn! before acquiring write lock.
                     if uplink.transport == UplinkTransport::Websocket
@@ -394,8 +387,7 @@ impl UplinkManager {
                         );
                     }
                     let error_text = format!("{error:#}");
-                    self.inner.modify_statuses(|statuses| {
-                        let status = &mut statuses[index];
+                    self.inner.with_status_mut(index, |status| {
                         status.last_checked = Some(now);
                         status.tcp.consecutive_successes = 0;
                         status.tcp.consecutive_failures =
@@ -433,7 +425,7 @@ impl UplinkManager {
                             status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
                         }
                         status.last_error = Some(error_text.clone());
-                    }).await;
+                    });
                     warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
                 },
             }
@@ -524,19 +516,17 @@ impl UplinkManager {
                     kind = ?which,
                     "H3 recovery confirmed by re-probe, clearing downgrade window early"
                 );
-                self.inner.modify_statuses(|statuses| {
-                    match which {
-                        TransportKind::Tcp => statuses[index].tcp.h3_downgrade_until = None,
-                        TransportKind::Udp => statuses[index].udp.h3_downgrade_until = None,
-                    }
-                }).await;
+                self.inner.with_status_mut(index, |status| match which {
+                    TransportKind::Tcp => status.tcp.h3_downgrade_until = None,
+                    TransportKind::Udp => status.udp.h3_downgrade_until = None,
+                });
             } else {
                 let new_until = now + h3_downgrade_duration;
                 let current = {
-                    let statuses = self.inner.statuses.read().await.clone();
+                    let s = self.inner.read_status(index);
                     match which {
-                        TransportKind::Tcp => statuses[index].tcp.h3_downgrade_until,
-                        TransportKind::Udp => statuses[index].udp.h3_downgrade_until,
+                        TransportKind::Tcp => s.tcp.h3_downgrade_until,
+                        TransportKind::Udp => s.udp.h3_downgrade_until,
                     }
                 };
                 if current.is_none_or(|t| t < new_until) {
@@ -546,12 +536,10 @@ impl UplinkManager {
                         downgrade_secs = h3_downgrade_duration.as_secs(),
                         "H3 still unreachable after recovery probe, extending downgrade window"
                     );
-                    self.inner.modify_statuses(|statuses| {
-                        match which {
-                            TransportKind::Tcp => statuses[index].tcp.h3_downgrade_until = Some(new_until),
-                            TransportKind::Udp => statuses[index].udp.h3_downgrade_until = Some(new_until),
-                        }
-                    }).await;
+                    self.inner.with_status_mut(index, |status| match which {
+                        TransportKind::Tcp => status.tcp.h3_downgrade_until = Some(new_until),
+                        TransportKind::Udp => status.udp.h3_downgrade_until = Some(new_until),
+                    });
                 }
             }
         }

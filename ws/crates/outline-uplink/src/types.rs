@@ -3,6 +3,7 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use tokio::time::Instant;
 
@@ -47,7 +48,12 @@ pub(crate) struct UplinkManagerInner {
     pub(crate) uplinks: Vec<Arc<UplinkConfig>>,
     pub(crate) probe: ProbeConfig,
     pub(crate) load_balancing: LoadBalancingConfig,
-    pub(crate) statuses: RwLock<Arc<Vec<UplinkStatus>>>,
+    /// Per-uplink status guarded by an individual sync lock. Length is fixed
+    /// at construction and matches `uplinks`, so indices are stable and no
+    /// outer lock is needed. Using per-element locks lets a probe/reporting
+    /// mutation touch only the affected index in O(1) instead of cloning the
+    /// entire Vec. Critical sections are short and never cross `.await`.
+    pub(crate) statuses: Box<[SyncMutex<UplinkStatus>]>,
     pub(crate) active_uplinks: RwLock<ActiveUplinks>,
     pub(crate) sticky_routes: RwLock<HashMap<RoutingKey, StickyRoute>>,
     pub(crate) standby_pools: Vec<StandbyPool>,
@@ -69,18 +75,27 @@ pub(crate) struct UplinkManagerInner {
 }
 
 impl UplinkManagerInner {
-    /// Clone-modify-replace: the only correct way to mutate statuses.
-    /// Clones the current Vec, applies `f`, wraps in a new Arc.
-    /// Callers never mutate through an Arc (which would be shared), only
-    /// through the owned clone.
-    pub(crate) async fn modify_statuses<F>(&self, f: F)
-    where
-        F: FnOnce(&mut Vec<UplinkStatus>),
-    {
-        let mut lock = self.statuses.write().await;
-        let mut new = (**lock).clone();
-        f(&mut new);
-        *lock = Arc::new(new);
+    /// Mutate a single uplink status under its own lock. Non-async: the
+    /// critical section must not cross `.await`.
+    pub(crate) fn with_status_mut<R>(
+        &self,
+        index: usize,
+        f: impl FnOnce(&mut UplinkStatus) -> R,
+    ) -> R {
+        let mut guard = self.statuses[index].lock();
+        f(&mut guard)
+    }
+
+    /// Read-only snapshot of a single uplink status.
+    pub(crate) fn read_status(&self, index: usize) -> UplinkStatus {
+        self.statuses[index].lock().clone()
+    }
+
+    /// Clone every uplink status into a flat Vec for multi-index iteration.
+    /// Each element is cloned under its own lock, so the resulting Vec is
+    /// eventually-consistent across indices (any single index is coherent).
+    pub(crate) fn snapshot_statuses(&self) -> Vec<UplinkStatus> {
+        self.statuses.iter().map(|m| m.lock().clone()).collect()
     }
 }
 

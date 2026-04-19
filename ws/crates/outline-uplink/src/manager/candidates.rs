@@ -117,7 +117,7 @@ impl UplinkManager {
     /// not in cooldown). Unlike [`tcp_candidates`] / [`udp_candidates`], this
     /// method does not touch sticky routes or active-uplink state.
     pub async fn has_any_healthy(&self, transport: TransportKind) -> bool {
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let scope = self.inner.load_balancing.routing_scope;
         self.inner
@@ -152,7 +152,7 @@ impl UplinkManager {
     ) -> Vec<UplinkCandidate> {
         self.prune_sticky_routes().await;
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
 
         let mut candidates = self
@@ -238,7 +238,7 @@ impl UplinkManager {
         commit_selection: bool,
     ) -> Vec<UplinkCandidate> {
         self.prune_sticky_routes().await;
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let current_active = self.active_uplink_index_for_transport(transport).await;
         let mut candidates = self
