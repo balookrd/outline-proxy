@@ -184,25 +184,24 @@ impl AeadStreamDecryptor {
                 let less_safe = LessSafeKey::new(key);
                 if let Ok(header) =
                     less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut encrypted_fixed)
+                    && header.len() == SS2022_REQUEST_FIXED_HEADER_LEN
                 {
-                    if header.len() == SS2022_REQUEST_FIXED_HEADER_LEN {
-                        let header_len = validate_ss2022_request_fixed_header(header)?;
-                        // One allocation per successful handshake — unavoidable.
-                        let request_salt = self.buffer[..salt_len].to_vec();
-                        self.buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
-                        self.active = Some(ActiveStream {
-                            user: user.clone(),
-                            key: less_safe,
-                            nonce_counter: 1,
-                            mode: ActiveStreamMode::Ss2022 {
-                                request_salt,
-                                header_parsed: false,
-                                pending_header_len: Some(header_len),
-                                pending_chunk_len: None,
-                            },
-                        });
-                        return Ok(());
-                    }
+                    let header_len = validate_ss2022_request_fixed_header(header)?;
+                    // One allocation per successful handshake — unavoidable.
+                    let request_salt = self.buffer[..salt_len].to_vec();
+                    self.buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
+                    self.active = Some(ActiveStream {
+                        user: user.clone(),
+                        key: less_safe,
+                        nonce_counter: 1,
+                        mode: ActiveStreamMode::Ss2022 {
+                            request_salt,
+                            header_parsed: false,
+                            pending_header_len: Some(header_len),
+                            pending_chunk_len: None,
+                        },
+                    });
+                    return Ok(());
                 }
             } else {
                 let salt_len = user.cipher().salt_len();
@@ -223,20 +222,19 @@ impl AeadStreamDecryptor {
                 let less_safe = LessSafeKey::new(key);
                 if let Ok(plaintext_len) =
                     less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate)
+                    && plaintext_len.len() == 2
                 {
-                    if plaintext_len.len() == 2 {
-                        let chunk_len =
-                            u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
-                        if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
-                            self.buffer.advance(salt_len);
-                            self.active = Some(ActiveStream {
-                                user: user.clone(),
-                                key: less_safe,
-                                nonce_counter: 0,
-                                mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
-                            });
-                            return Ok(());
-                        }
+                    let chunk_len =
+                        u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
+                    if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
+                        self.buffer.advance(salt_len);
+                        self.active = Some(ActiveStream {
+                            user: user.clone(),
+                            key: less_safe,
+                            nonce_counter: 0,
+                            mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
+                        });
+                        return Ok(());
                     }
                 }
             }

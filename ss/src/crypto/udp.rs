@@ -45,20 +45,18 @@ pub fn decrypt_udp_packet_with_hint(
         return Err(CryptoError::PacketTooShort);
     }
 
-    if let Some(index) = preferred_user_index.filter(|&index| index < users.len()) {
-        match try_decrypt_udp_packet_for_user(&users[index], packet)? {
-            Some(udp_packet) => return Ok((udp_packet, index)),
-            None => {},
-        }
+    if let Some(index) = preferred_user_index.filter(|&index| index < users.len())
+        && let Some(udp_packet) = try_decrypt_udp_packet_for_user(&users[index], packet)?
+    {
+        return Ok((udp_packet, index));
     }
 
     for (index, user) in users.iter().enumerate() {
         if Some(index) == preferred_user_index {
             continue;
         }
-        match try_decrypt_udp_packet_for_user(user, packet)? {
-            Some(udp_packet) => return Ok((udp_packet, index)),
-            None => {},
+        if let Some(udp_packet) = try_decrypt_udp_packet_for_user(user, packet)? {
+            return Ok((udp_packet, index));
         }
     }
 

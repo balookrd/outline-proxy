@@ -26,6 +26,7 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_udp_datagram_common<Msg>(
     nat_table: Arc<NatTable>,
     users: Arc<[UserKey]>,
@@ -157,6 +158,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_udp_relay<T: WsSocket>(
     socket: T,
     users: Arc<[UserKey]>,
@@ -266,6 +268,7 @@ async fn run_udp_relay<T: WsSocket>(
     loop_result
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_udp_connection(
     socket: WebSocket,
     users: Arc<[UserKey]>,
@@ -291,6 +294,7 @@ pub(super) async fn handle_udp_connection(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn handle_udp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     users: Arc<[UserKey]>,

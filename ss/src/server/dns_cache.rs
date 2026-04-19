@@ -69,7 +69,7 @@ impl DnsCache {
     pub(super) fn new(ttl: Duration) -> Arc<Self> {
         let build_hasher = DefaultHashBuilder::default();
         Arc::new(Self {
-            entries: RwLock::new(HashMap::with_hasher(build_hasher.clone())),
+            entries: RwLock::new(HashMap::with_hasher(build_hasher)),
             build_hasher,
             ttl,
         })

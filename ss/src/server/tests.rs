@@ -434,7 +434,7 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
         .timer(TokioTimer::new())
         .handshake::<_, Empty<Bytes>>(TokioIo::new(tls))
         .await?;
-    let driver = tokio::spawn(async move { conn.await });
+    let driver = tokio::spawn(conn);
 
     let req = Request::builder()
         .method(Method::CONNECT)
@@ -1096,7 +1096,7 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
         .timer(TokioTimer::new())
         .handshake::<_, Empty<Bytes>>(TokioIo::new(tcp))
         .await?;
-    let driver = tokio::spawn(async move { conn.await });
+    let driver = tokio::spawn(conn);
 
     for (payload, expected_reply) in [
         (b"ping-1".as_slice(), b"pong-1".as_slice()),

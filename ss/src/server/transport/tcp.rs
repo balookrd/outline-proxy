@@ -58,6 +58,7 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tcp_relay<T: WsSocket>(
     socket: T,
     users: Arc<[UserKey]>,
@@ -150,6 +151,7 @@ async fn run_tcp_relay<T: WsSocket>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tcp_binary_frame<Msg>(
     state: &mut TcpRelayState,
     decryptor: &mut AeadStreamDecryptor,
@@ -276,6 +278,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_tcp_connection(
     socket: WebSocket,
     users: Arc<[UserKey]>,

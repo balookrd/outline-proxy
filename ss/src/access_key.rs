@@ -191,11 +191,11 @@ fn normalize_host(host: &str) -> String {
         return host.to_owned();
     }
 
-    if let Some((addr, port)) = host.rsplit_once(':') {
-        if addr.parse::<std::net::Ipv6Addr>().is_ok() && port.chars().all(|ch| ch.is_ascii_digit())
-        {
-            return format!("[{addr}]:{port}");
-        }
+    if let Some((addr, port)) = host.rsplit_once(':')
+        && addr.parse::<std::net::Ipv6Addr>().is_ok()
+        && port.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return format!("[{addr}]:{port}");
     }
 
     format!("[{host}]")

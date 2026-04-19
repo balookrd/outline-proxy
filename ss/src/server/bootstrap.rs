@@ -326,6 +326,7 @@ async fn handle_h3_connection(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_h3_request(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
