@@ -21,10 +21,10 @@ impl UplinkManager {
         transport: TransportKind,
     ) -> (Option<u128>, Option<u128>) {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await.clone();
-        let Some(status) = statuses.get(index) else {
+        if index >= self.inner.statuses.len() {
             return (None, None);
-        };
+        }
+        let status = self.inner.read_status(index);
 
         match transport {
             TransportKind::Tcp => (
@@ -48,7 +48,7 @@ impl UplinkManager {
 
     pub async fn tcp_cooldown_debug_summary(&self) -> Vec<String> {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await.clone();
+        let statuses = self.inner.snapshot_statuses();
         self.inner
             .uplinks
             .iter()
@@ -93,10 +93,10 @@ impl UplinkManager {
         let group_name = self.inner.group_name.clone();
         // Read pre-mutation state to determine already_in_cooldown.
         let already_in_cooldown = {
-            let statuses = self.inner.statuses.read().await.clone();
+            let s = self.inner.read_status(index);
             match transport {
-                TransportKind::Tcp => statuses[index].tcp.cooldown_until.is_some_and(|d| d > now),
-                TransportKind::Udp => statuses[index].udp.cooldown_until.is_some_and(|d| d > now),
+                TransportKind::Tcp => s.tcp.cooldown_until.is_some_and(|d| d > now),
+                TransportKind::Udp => s.udp.cooldown_until.is_some_and(|d| d > now),
             }
         };
         let probe_enabled = self.inner.probe.enabled();
@@ -129,9 +129,8 @@ impl UplinkManager {
                 }
             },
         }
-        // Apply mutation via clone-modify-replace.
-        self.inner.modify_statuses(|statuses| {
-            let status = &mut statuses[index];
+        // Apply mutation under the per-uplink lock.
+        self.inner.with_status_mut(index, |status| {
             status.last_error = Some(error_text.clone());
             match transport {
                 TransportKind::Tcp => {
@@ -182,11 +181,10 @@ impl UplinkManager {
                     }
                 },
             }
-        }).await;
+        });
         // Read back post-mutation state for logging / wakeup decision.
         let (cooldown_until, penalty_ms, should_wake_probe) = {
-            let statuses = self.inner.statuses.read().await.clone();
-            let status = &statuses[index];
+            let status = self.inner.read_status(index);
             let load_balancing = &self.inner.load_balancing;
             match transport {
                 TransportKind::Tcp => (
@@ -290,7 +288,7 @@ impl UplinkManager {
             {
                 let now = tokio::time::Instant::now();
                 let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
-                let prev = self.inner.statuses.read().await.clone()[index].tcp.h3_downgrade_until;
+                let prev = self.inner.read_status(index).tcp.h3_downgrade_until;
                 if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
@@ -300,9 +298,9 @@ impl UplinkManager {
                     );
                 }
                 let downgrade_until = now + h3_downgrade_duration;
-                self.inner.modify_statuses(|statuses| {
-                    statuses[index].tcp.h3_downgrade_until = Some(downgrade_until);
-                }).await;
+                self.inner.with_status_mut(index, |status| {
+                    status.tcp.h3_downgrade_until = Some(downgrade_until);
+                });
             }
         }
         // Same downgrade logic for UDP transport.  Without this, a broken H3
@@ -319,7 +317,7 @@ impl UplinkManager {
             {
                 let now = tokio::time::Instant::now();
                 let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
-                let prev = self.inner.statuses.read().await.clone()[index].udp.h3_downgrade_until;
+                let prev = self.inner.read_status(index).udp.h3_downgrade_until;
                 if prev.is_none_or(|t| t < now) {
                     warn!(
                         uplink = %uplink.name,
@@ -329,9 +327,9 @@ impl UplinkManager {
                     );
                 }
                 let downgrade_until = now + h3_downgrade_duration;
-                self.inner.modify_statuses(|statuses| {
-                    statuses[index].udp.h3_downgrade_until = Some(downgrade_until);
-                }).await;
+                self.inner.with_status_mut(index, |status| {
+                    status.udp.h3_downgrade_until = Some(downgrade_until);
+                });
             }
         }
         self.clear_standby(index, transport).await;
@@ -343,8 +341,10 @@ impl UplinkManager {
         transport: TransportKind,
     ) -> Option<u128> {
         let now = Instant::now();
-        let statuses = self.inner.statuses.read().await.clone();
-        let status = statuses.get(index)?;
+        if index >= self.inner.statuses.len() {
+            return None;
+        }
+        let status = self.inner.read_status(index);
         match transport {
             TransportKind::Tcp => status
                 .tcp
@@ -369,22 +369,21 @@ impl UplinkManager {
         let now = Instant::now();
         // Fast path: skip the write lock when we recently reported for this transport.
         {
-            let statuses = self.inner.statuses.read().await.clone();
+            let s = self.inner.read_status(index);
             let last = match transport {
-                TransportKind::Tcp => statuses[index].tcp.last_active,
-                TransportKind::Udp => statuses[index].udp.last_active,
+                TransportKind::Tcp => s.tcp.last_active,
+                TransportKind::Udp => s.udp.last_active,
             };
             if last.is_some_and(|t| now.duration_since(t) < Duration::from_secs(5)) {
                 return;
             }
         }
         let uplink_name = self.inner.uplinks[index].name.clone();
-        // Double-check after acquiring the write (inside modify_statuses) to avoid
-        // a race where two callers both pass the fast-path read.
+        // Double-check after acquiring the write lock to avoid a race where
+        // two callers both pass the fast-path read.
         let probe_enabled = self.inner.probe.enabled();
         let mut did_update = false;
-        self.inner.modify_statuses(|statuses| {
-            let status = &mut statuses[index];
+        self.inner.with_status_mut(index, |status| {
             let last = match transport {
                 TransportKind::Tcp => &mut status.tcp.last_active,
                 TransportKind::Udp => &mut status.udp.last_active,
@@ -426,7 +425,7 @@ impl UplinkManager {
                     }
                 },
             }
-        }).await;
+        });
         if !did_update {
             return;
         }
@@ -455,29 +454,26 @@ impl UplinkManager {
     pub async fn report_upstream_close(&self, index: usize, transport: TransportKind) {
         let now = Instant::now();
         let threshold = self.inner.load_balancing.failure_cooldown;
-        self.inner.modify_statuses(|statuses| {
-            let status = &mut statuses[index];
-            match transport {
-                TransportKind::Tcp => {
-                    let recently_active = status
-                        .tcp
-                        .last_active
-                        .is_some_and(|t| now.duration_since(t) < threshold);
-                    if !recently_active {
-                        status.tcp.last_active = None;
-                    }
-                },
-                TransportKind::Udp => {
-                    let recently_active = status
-                        .udp
-                        .last_active
-                        .is_some_and(|t| now.duration_since(t) < threshold);
-                    if !recently_active {
-                        status.udp.last_active = None;
-                    }
-                },
-            }
-        }).await;
+        self.inner.with_status_mut(index, |status| match transport {
+            TransportKind::Tcp => {
+                let recently_active = status
+                    .tcp
+                    .last_active
+                    .is_some_and(|t| now.duration_since(t) < threshold);
+                if !recently_active {
+                    status.tcp.last_active = None;
+                }
+            },
+            TransportKind::Udp => {
+                let recently_active = status
+                    .udp
+                    .last_active
+                    .is_some_and(|t| now.duration_since(t) < threshold);
+                if !recently_active {
+                    status.udp.last_active = None;
+                }
+            },
+        });
     }
 
     /// Feed a connection-establishment latency sample into the RTT EWMA for
@@ -491,16 +487,13 @@ impl UplinkManager {
         latency: Duration,
     ) {
         let alpha = self.inner.load_balancing.rtt_ewma_alpha;
-        self.inner.modify_statuses(|statuses| {
-            let status = &mut statuses[index];
-            match transport {
-                TransportKind::Tcp => {
-                    update_rtt_ewma(&mut status.tcp.rtt_ewma, Some(latency), alpha);
-                },
-                TransportKind::Udp => {
-                    update_rtt_ewma(&mut status.udp.rtt_ewma, Some(latency), alpha);
-                },
-            }
-        }).await;
+        self.inner.with_status_mut(index, |status| match transport {
+            TransportKind::Tcp => {
+                update_rtt_ewma(&mut status.tcp.rtt_ewma, Some(latency), alpha);
+            },
+            TransportKind::Udp => {
+                update_rtt_ewma(&mut status.udp.rtt_ewma, Some(latency), alpha);
+            },
+        });
     }
 }

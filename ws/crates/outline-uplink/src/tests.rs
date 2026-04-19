@@ -135,19 +135,19 @@ async fn start_keepalive_observer() -> (
 }
 
 async fn set_tcp_status(manager: &UplinkManager, index: usize, healthy: bool, rtt_ms: u64) {
-    manager.inner.modify_statuses(|statuses| {
-        statuses[index].tcp.healthy = Some(healthy);
-        statuses[index].tcp.latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
-    }).await;
+    manager.inner.with_status_mut(index, |status| {
+        status.tcp.healthy = Some(healthy);
+        status.tcp.latency = Some(Duration::from_millis(rtt_ms));
+        status.tcp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    });
 }
 
 async fn set_udp_status(manager: &UplinkManager, index: usize, healthy: bool, rtt_ms: u64) {
-    manager.inner.modify_statuses(|statuses| {
-        statuses[index].udp.healthy = Some(healthy);
-        statuses[index].udp.latency = Some(Duration::from_millis(rtt_ms));
-        statuses[index].udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
-    }).await;
+    manager.inner.with_status_mut(index, |status| {
+        status.udp.healthy = Some(healthy);
+        status.udp.latency = Some(Duration::from_millis(rtt_ms));
+        status.udp.rtt_ewma = Some(Duration::from_millis(rtt_ms));
+    });
 }
 
 #[tokio::test]
@@ -378,12 +378,12 @@ async fn per_uplink_scope_ignores_penalty_in_selection_score() {
 
     set_tcp_status(&manager, 0, true, 20).await;
     set_tcp_status(&manager, 1, true, 30).await;
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].tcp.penalty = PenaltyState {
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
-    }).await;
+    });
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let candidates = manager.tcp_candidates(&target).await;
@@ -575,10 +575,10 @@ async fn global_scope_switches_only_on_probe_confirmed_failure_when_probe_enable
 
     // Runtime failure sets cooldown but probe has not confirmed the server is down.
     // Simulate: cooldown set but tcp_healthy still Some(true).
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].tcp.cooldown_until = Some(Instant::now() + Duration::from_secs(10));
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.cooldown_until = Some(Instant::now() + Duration::from_secs(10));
         // tcp_healthy is still Some(true) — probe has not fired yet
-    }).await;
+    });
 
     // Must keep primary: probe hasn't confirmed it is down.
     let second = manager.tcp_candidates(&target).await;
@@ -612,16 +612,16 @@ async fn global_scope_ignores_penalty_in_selection_score() {
     set_tcp_status(&manager, 1, true, 30).await;
     set_udp_status(&manager, 0, true, 40).await;
     set_udp_status(&manager, 1, true, 50).await;
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].tcp.penalty = PenaltyState {
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
-        statuses[0].udp.penalty = PenaltyState {
+        status.udp.penalty = PenaltyState {
             value_secs: 20.0,
             updated_at: Some(Instant::now()),
         };
-    }).await;
+    });
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let candidates = manager.tcp_candidates(&target).await;
@@ -863,9 +863,9 @@ async fn probe_wakeup_is_rate_limited_across_fresh_cooldowns() {
         .await;
     assert!(first_wakeup_age.is_some());
 
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].udp.cooldown_until = None;
-    }).await;
+    manager.inner.with_status_mut(0, |status| {
+        status.udp.cooldown_until = None;
+    });
 
     let second_error = anyhow!("second failure");
     manager
@@ -927,11 +927,11 @@ async fn global_active_active_does_not_switch_back_during_penalty_window() {
     // Simulate cooldown expiry (probe cleared it) while penalty is still large.
     // Before the fix, global_selection_score_latency ignored the penalty so
     // primary (20ms base) would beat backup (80ms base) + hysteresis and switch back.
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].tcp.cooldown_until = None;
-        statuses[0].tcp.healthy = Some(true); // probe confirmed it is up again
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.cooldown_until = None;
+        status.tcp.healthy = Some(true); // probe confirmed it is up again
         // penalty remains high (500 ms, just added)
-    }).await;
+    });
 
     // Must stay on backup: penalty on primary is still 500 ms, much larger than
     // the 60 ms gap that would be needed to beat backup + hysteresis.
@@ -985,10 +985,10 @@ async fn global_scope_avoids_oscillation_via_penalty_aware_fallback() {
 
     // Probe clears primary's cooldown but leaves the penalty intact.
     // Primary now looks like: healthy, EWMA=15ms (best), but tcp_penalty≈500ms.
-    manager.inner.modify_statuses(|statuses| {
-        statuses[0].tcp.cooldown_until = None;
-        statuses[0].tcp.healthy = Some(true);
-    }).await;
+    manager.inner.with_status_mut(0, |status| {
+        status.tcp.cooldown_until = None;
+        status.tcp.healthy = Some(true);
+    });
 
     // Backup1 (current active) enters cooldown due to runtime failure.
     manager.report_runtime_failure(1, TransportKind::Tcp, &err).await;
