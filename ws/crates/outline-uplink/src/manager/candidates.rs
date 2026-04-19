@@ -617,30 +617,27 @@ impl UplinkManager {
             }
         }
 
-        if let Some(store) = self.inner.state_store.clone() {
+        if let Some(store) = &self.inner.state_store {
             let uplink_name = self.inner.uplinks[uplink_index].name.clone();
-            let group_name = self.inner.group_name.clone();
-            let is_global = self.strict_global_active_uplink();
-            tokio::spawn(async move {
-                if is_global {
-                    store
-                        .update_active(&group_name, Some(Some(uplink_name)), None, None)
-                        .await;
-                } else {
-                    match transport {
-                        TransportKind::Tcp => {
-                            store
-                                .update_active(&group_name, None, Some(Some(uplink_name)), None)
-                                .await;
-                        },
-                        TransportKind::Udp => {
-                            store
-                                .update_active(&group_name, None, None, Some(Some(uplink_name)))
-                                .await;
-                        },
-                    }
+            let group_name = &self.inner.group_name;
+            if self.strict_global_active_uplink() {
+                store
+                    .update_active(group_name, Some(Some(uplink_name)), None, None)
+                    .await;
+            } else {
+                match transport {
+                    TransportKind::Tcp => {
+                        store
+                            .update_active(group_name, None, Some(Some(uplink_name)), None)
+                            .await;
+                    },
+                    TransportKind::Udp => {
+                        store
+                            .update_active(group_name, None, None, Some(Some(uplink_name)))
+                            .await;
+                    },
                 }
-            });
+            }
         }
     }
 }
