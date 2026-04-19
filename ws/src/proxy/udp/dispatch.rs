@@ -6,11 +6,11 @@ use tokio::net::UdpSocket;
 use tracing::warn;
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
-use crate::metrics;
+use outline_metrics as metrics;
 use outline_transport::is_dropped_oversized_udp_error;
 use outline_uplink::TransportKind;
 
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 
 use super::assoc::GroupUdpContext;
 use super::transport::{failover_udp_transport, reconcile_global_udp_transport};

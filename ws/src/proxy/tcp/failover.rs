@@ -9,8 +9,8 @@ use outline_transport::{
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source,
 };
-use crate::types::{TargetAddr, UplinkTransport};
-use outline_uplink::{UplinkCandidate, UplinkManager};
+use socks5_proto::TargetAddr;
+use outline_uplink::{UplinkCandidate, UplinkManager, UplinkTransport};
 
 pub(super) const UPSTREAM_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
@@ -150,7 +150,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
 
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::WsTransportStream,
-    uplink: &crate::config::UplinkConfig,
+    uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,
 ) -> Result<(TcpWriter, TcpReader)> {
@@ -182,7 +182,7 @@ async fn do_tcp_ss_setup(
 
 async fn do_tcp_ss_setup_socket(
     stream: tokio::net::TcpStream,
-    uplink: &crate::config::UplinkConfig,
+    uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,
 ) -> Result<(TcpWriter, TcpReader)> {

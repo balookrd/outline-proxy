@@ -8,10 +8,8 @@ use tokio::time::timeout;
 use tracing::info;
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
-use crate::metrics;
-use socks5_proto::{SOCKS_STATUS_SUCCESS, send_reply};
-
-use crate::types::{TargetAddr, socket_addr_to_target};
+use outline_metrics as metrics;
+use socks5_proto::{SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
 use super::session::POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT;
 
 // Direct TCP sessions (bypass-routed) are held open as long as both sides
@@ -267,7 +265,7 @@ mod tests {
         let mut client_side = connect_res.unwrap();
         let (server_side, _) = accept_res.unwrap();
 
-        let target = crate::types::TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_port);
+        let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_port);
         let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
         let direct_task = tokio::spawn(async move {
             handle_tcp_direct(server_side, target, None, &dns_cache).await

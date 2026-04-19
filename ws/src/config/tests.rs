@@ -4,7 +4,11 @@ use std::time::Duration;
 
 use clap::Parser;
 
-use super::{ConfigFile, LoadBalancingMode, RoutingScope, load_config, resolve_outline_section};
+use outline_routing::RouteTarget;
+use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
+use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
+
+use super::{ConfigFile, load_config, resolve_outline_section};
 
 #[test]
 fn config_deserializes() {
@@ -50,8 +54,8 @@ async fn load_config_enables_single_optional_socks5_auth() {
     let config = load_config(&path, &args).await.unwrap();
     assert_eq!(
         config.socks5_auth,
-        Some(super::Socks5AuthConfig {
-            users: vec![super::Socks5AuthUserConfig {
+        Some(Socks5AuthConfig {
+            users: vec![Socks5AuthUserConfig {
                 username: "alice".to_string(),
                 password: "secret".to_string(),
             }],
@@ -89,13 +93,13 @@ async fn load_config_enables_multiple_socks5_users() {
     let config = load_config(&path, &args).await.unwrap();
     assert_eq!(
         config.socks5_auth,
-        Some(super::Socks5AuthConfig {
+        Some(Socks5AuthConfig {
             users: vec![
-                super::Socks5AuthUserConfig {
+                Socks5AuthUserConfig {
                     username: "alice".to_string(),
                     password: "secret1".to_string(),
                 },
-                super::Socks5AuthUserConfig {
+                Socks5AuthUserConfig {
                     username: "bob".to_string(),
                     password: "secret2".to_string(),
                 },
@@ -478,7 +482,7 @@ async fn load_config_supports_direct_shadowsocks_uplink() {
     assert_eq!(config.groups.len(), 1);
     assert_eq!(config.groups[0].uplinks.len(), 1);
     let uplink = &config.groups[0].uplinks[0];
-    assert_eq!(uplink.transport, crate::types::UplinkTransport::Shadowsocks);
+    assert_eq!(uplink.transport, UplinkTransport::Shadowsocks);
     assert_eq!(uplink.tcp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
     assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
     assert!(uplink.tcp_ws_url.is_none());
@@ -588,12 +592,12 @@ async fn load_config_new_shape_groups_and_routes() {
     // Routing table: 2 rules + 1 default, `direct` + group + fallback parsed.
     let routing = config.routing.as_ref().expect("routing table must be built");
     assert_eq!(routing.rules.len(), 2);
-    assert_eq!(routing.rules[0].target, super::RouteTarget::Direct);
+    assert_eq!(routing.rules[0].target, RouteTarget::Direct);
     assert_eq!(routing.rules[0].fallback, None);
-    assert_eq!(routing.rules[1].target, super::RouteTarget::Group("main".to_string()));
-    assert_eq!(routing.rules[1].fallback, Some(super::RouteTarget::Group("backup".to_string())));
-    assert_eq!(routing.default_target, super::RouteTarget::Group("main".to_string()));
-    assert_eq!(routing.default_fallback, Some(super::RouteTarget::Direct));
+    assert_eq!(routing.rules[1].target, RouteTarget::Group("main".to_string()));
+    assert_eq!(routing.rules[1].fallback, Some(RouteTarget::Group("backup".to_string())));
+    assert_eq!(routing.default_target, RouteTarget::Group("main".to_string()));
+    assert_eq!(routing.default_fallback, Some(RouteTarget::Direct));
 
     let _ = std::fs::remove_file(path);
 }

@@ -4,9 +4,9 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use url::Url;
 
-use crate::types::{CipherKind, ServerAddr, UplinkTransport, WsTransportMode};
-
-use super::types::{LoadBalancingMode, RoutingScope};
+use outline_transport::{ServerAddr, WsTransportMode};
+use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
+use shadowsocks_crypto::CipherKind;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConfigFile {

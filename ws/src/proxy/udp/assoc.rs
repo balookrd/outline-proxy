@@ -7,7 +7,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
 use tracing::debug;
 
-use crate::types::TargetAddr;
+use socks5_proto::TargetAddr;
 use outline_uplink::{UplinkManager, UplinkRegistry};
 
 use super::transport::{

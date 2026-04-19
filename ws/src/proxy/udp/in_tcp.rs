@@ -8,9 +8,10 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
-use crate::metrics;
-use socks5_proto::{SOCKS_STATUS_SUCCESS, read_udp_tcp_packet, send_reply};
-use crate::types::{TargetAddr, socket_addr_to_target};
+use outline_metrics as metrics;
+use socks5_proto::{
+    SOCKS_STATUS_SUCCESS, TargetAddr, read_udp_tcp_packet, send_reply, socket_addr_to_target,
+};
 use outline_uplink::UplinkRegistry;
 
 use crate::proxy::ProxyConfig;

@@ -6,11 +6,12 @@ use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
-use crate::metrics;
-use socks5_proto::{SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, send_reply};
+use outline_metrics as metrics;
+use socks5_proto::{
+    SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target,
+};
 
 use super::super::DispatchTarget;
-use crate::types::{TargetAddr, socket_addr_to_target};
 use outline_uplink::TransportKind;
 use super::failover::{
     ActiveTcpUplink, MAX_CHUNK0_FAILOVER_BUF, UPSTREAM_RESPONSE_TIMEOUT,
@@ -599,7 +600,7 @@ mod tests {
         let mut client_side = connect_res.unwrap();
         let (server_side, _) = accept_res.unwrap();
 
-        let target = crate::types::TargetAddr::IpV4("1.2.3.4".parse().unwrap(), 80);
+        let target = TargetAddr::IpV4("1.2.3.4".parse().unwrap(), 80);
         handle_tcp_drop(server_side, &target).await.unwrap();
 
         // SOCKS5 reply: VER REP RSV ATYP(IPv4) ADDR(4) PORT(2) = 10 bytes
