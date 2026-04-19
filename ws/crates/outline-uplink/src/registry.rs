@@ -66,8 +66,7 @@ impl UplinkRegistry {
             bail!("no uplink groups configured");
         }
         // Reject collisions on uplink names across groups so that Prometheus
-        // labels (`uplink="…"`) remain unambiguous until etap 6 adds a `group`
-        // label.
+        // labels (`uplink="…"`) remain unambiguous.
         validate_uplink_names(&groups)?;
 
         let mut by_name = HashMap::with_capacity(groups.len());
