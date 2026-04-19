@@ -5,7 +5,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpStream, UdpSocket};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{OnceCell, mpsc};
 use tracing::{debug, warn};
 
 use crate::metrics;
@@ -34,6 +34,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
     let session = metrics::track_session("udp");
     let result = async {
         let bind_ip = client.local_addr()?.ip();
+        let client_peer_ip = client.peer_addr()?.ip();
         let udp_socket = UdpSocket::bind(SocketAddr::new(bind_ip, 0))
             .await
             .with_context(|| format!("failed to bind UDP relay on {}", bind_ip))?;
@@ -53,7 +54,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
             None
         };
 
-        let client_udp_addr = Arc::new(Mutex::new(None::<SocketAddr>));
+        let client_udp_addr: Arc<OnceCell<SocketAddr>> = Arc::new(OnceCell::new());
         let groups = AssocGroupMap::new();
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
 
@@ -76,7 +77,20 @@ pub(in crate::proxy) async fn handle_udp_associate(
                     .recv_from(&mut buf)
                     .await
                     .context("UDP relay receive failed")?;
-                *client_udp_addr_uplink.lock().await = Some(addr);
+                if addr.ip() != client_peer_ip {
+                    debug!(%addr, expected_ip = %client_peer_ip, "dropping UDP packet from unexpected source");
+                    continue;
+                }
+                match client_udp_addr_uplink.get() {
+                    Some(locked) if *locked != addr => {
+                        debug!(%addr, locked = %locked, "dropping UDP packet from unexpected port");
+                        continue;
+                    },
+                    Some(_) => {},
+                    None => {
+                        let _ = client_udp_addr_uplink.set(addr);
+                    },
+                }
 
                 let packet = parse_udp_request(&buf[..len])?;
                 let Some(packet) = reassembler.push_fragment(packet)? else {
@@ -137,7 +151,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
         let socket_writer = Arc::clone(&udp_socket);
         let writer = async move {
             while let Some(response) = responses_rx.recv().await {
-                let client_addr = client_udp_addr_writer.lock().await.ok_or_else(|| {
+                let client_addr = *client_udp_addr_writer.get().ok_or_else(|| {
                     anyhow!("received UDP response before client sent any packet")
                 })?;
                 let packet = build_udp_packet(&response.target, &response.payload)?;
@@ -198,7 +212,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
             loop {
                 let (len, src_addr) =
                     sock.recv_from(&mut buf).await.context("direct UDP recv failed")?;
-                let client_addr = client_udp_addr_direct.lock().await.ok_or_else(|| {
+                let client_addr = *client_udp_addr_direct.get().ok_or_else(|| {
                     anyhow!("received direct UDP response before client sent any packet")
                 })?;
                 let target = socket_addr_to_target(src_addr);
