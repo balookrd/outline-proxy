@@ -268,6 +268,7 @@ impl NatTable {
 
 // ── Background reader task ────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn nat_reader_task(
     socket: Arc<UdpSocket>,
     active: Arc<Mutex<Option<ActiveSession>>>,

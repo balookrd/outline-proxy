@@ -445,6 +445,7 @@ pub(super) async fn serve_ss_udp_socket(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_ss_udp_datagram(
     nat_table: Arc<NatTable>,
     users: Arc<[UserKey]>,
