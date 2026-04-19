@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -81,6 +82,7 @@ pub(super) async fn drive_tcp_session_tasks<U, D>(
     uplink: U,
     downlink: D,
     idle: Option<IdleWatcher>,
+    target: Arc<str>,
 ) -> Result<()>
 where
     U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
@@ -90,8 +92,10 @@ where
     let uplink_task = tokio::spawn(uplink);
     let downlink_task = tokio::spawn(downlink);
     match idle {
-        Some(watcher) => drive_with_idle(uplink_task, downlink_task, watcher, started).await,
-        None => drive_without_idle(uplink_task, downlink_task, started).await,
+        Some(watcher) => {
+            drive_with_idle(uplink_task, downlink_task, watcher, started, target).await
+        },
+        None => drive_without_idle(uplink_task, downlink_task, started, target).await,
     }
 }
 
@@ -101,6 +105,7 @@ async fn handle_downlink_first(
     joined: std::result::Result<Result<()>, tokio::task::JoinError>,
     uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
     started: tokio::time::Instant,
+    target: &str,
 ) -> Result<()> {
     let downlink_result = match joined {
         Ok(result) => result,
@@ -112,12 +117,14 @@ async fn handle_downlink_first(
             target: "outline_ws_rust::session_death",
             elapsed_ms,
             winner = "downlink",
+            target_addr = target,
             "downlink finished first, cleanly (server sent Close / upstream EOF)"
         ),
         Err(e) => debug!(
             target: "outline_ws_rust::session_death",
             elapsed_ms,
             winner = "downlink",
+            target_addr = target,
             error = %format!("{e:#}"),
             "downlink finished first with error"
         ),
@@ -140,6 +147,7 @@ async fn handle_uplink_first(
     joined: std::result::Result<Result<UplinkTaskResult>, tokio::task::JoinError>,
     downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
+    target: &str,
 ) -> Result<()> {
     let elapsed_ms = started.elapsed().as_millis();
     match joined {
@@ -149,6 +157,7 @@ async fn handle_uplink_first(
                 elapsed_ms,
                 winner = "uplink",
                 outcome = "Finished",
+                target_addr = target,
                 "uplink finished first (client EOF over socket transport), awaiting downlink"
             );
             // The client closed its side; we already sent FIN to the
@@ -170,6 +179,7 @@ async fn handle_uplink_first(
                     debug!(
                         target: "outline_ws_rust::session_death",
                         timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                        target_addr = target,
                         "downstream timed out after client EOF — forcibly closing session"
                     );
                     downlink_abort.abort();
@@ -183,6 +193,7 @@ async fn handle_uplink_first(
                 elapsed_ms,
                 winner = "uplink",
                 outcome = "CloseSession",
+                target_addr = target,
                 "uplink requested session close (client EOF over websocket-backed transport)"
             );
             downlink_task.abort();
@@ -195,6 +206,7 @@ async fn handle_uplink_first(
                 elapsed_ms,
                 winner = "uplink",
                 outcome = "Error",
+                target_addr = target,
                 error = %format!("{error:#}"),
                 "uplink finished first with error"
             );
@@ -216,10 +228,11 @@ async fn drive_without_idle(
     mut uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
+    target: Arc<str>,
 ) -> Result<()> {
     tokio::select! {
-        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started).await,
+        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target).await,
     }
 }
 
@@ -234,6 +247,7 @@ async fn drive_with_idle(
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
     watcher: IdleWatcher,
     started: tokio::time::Instant,
+    target: Arc<str>,
 ) -> Result<()> {
     let idle_timeout_secs = watcher.idle_timeout.as_secs();
     let watcher_fut = watcher.run();
@@ -241,8 +255,8 @@ async fn drive_with_idle(
 
     tokio::select! {
         biased;
-        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started).await,
+        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target).await,
         fired = &mut watcher_fut => {
             if fired {
                 debug!(
@@ -250,6 +264,7 @@ async fn drive_with_idle(
                     elapsed_ms = started.elapsed().as_millis(),
                     timeout_secs = idle_timeout_secs,
                     winner = "idle",
+                    target_addr = %target,
                     "SOCKS TCP session idle for too long — closing"
                 );
             } else {
@@ -265,6 +280,7 @@ async fn drive_with_idle(
                     target: "outline_ws_rust::session_death",
                     elapsed_ms = started.elapsed().as_millis(),
                     winner = "idle_channel_closed",
+                    target_addr = %target,
                     "activity channel closed concurrently with task completion"
                 );
             }
@@ -309,7 +325,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
             .await
             .expect("driver should return once downlink finishes")
             .unwrap();
@@ -330,7 +346,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
             .await
             .expect("driver should wait for downlink after client EOF")
             .unwrap();
@@ -373,6 +389,7 @@ mod tests {
                 uplink,
                 downlink,
                 Some(IdleWatcher::new(activity_rx, Duration::from_millis(30))),
+                Arc::from("test"),
             ),
         )
         .await
@@ -414,6 +431,7 @@ mod tests {
                 uplink,
                 downlink,
                 Some(IdleWatcher::new(activity_rx, Duration::from_millis(50))),
+                Arc::from("test"),
             ),
         )
         .await
@@ -434,7 +452,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
             .await
             .expect("driver should return once websocket-backed client EOF is observed")
             .unwrap();
