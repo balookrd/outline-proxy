@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use crate::client_io::ClientIo;
 use tokio::net::TcpStream;
 use tracing::{debug, info, warn};
 
@@ -416,7 +417,7 @@ pub async fn handle_tcp_connect(
                 // kill long-lived sessions (SSH, etc.) after ~25–30 s of silence.
                 let read = if let Some(d) = keepalive_interval {
                     tokio::select! {
-                        result = client_read.read(&mut buf) => result.context("client read failed")?,
+                        result = client_read.read(&mut buf) => result.map_err(ClientIo::ReadFailed)?,
                         _ = tokio::time::sleep(d) => {
                             writer
                                 .send_keepalive()
@@ -426,7 +427,7 @@ pub async fn handle_tcp_connect(
                         }
                     }
                 } else {
-                    client_read.read(&mut buf).await.context("client read failed")?
+                    client_read.read(&mut buf).await.map_err(ClientIo::ReadFailed)?
                 };
                 if read == 0 {
                     // Client-side EOF.  Signal the upstream that we will not
@@ -481,7 +482,7 @@ pub async fn handle_tcp_connect(
             client_write
                 .write_all(&first_upstream_chunk)
                 .await
-                .context("client write failed")?;
+                .map_err(ClientIo::WriteFailed)?;
             let _ = activity_for_downlink.send(());
             manager_for_downlink_task
                 .report_active_traffic(active_index, TransportKind::Tcp)
@@ -518,7 +519,7 @@ pub async fn handle_tcp_connect(
                 client_write
                     .write_all(&chunk)
                     .await
-                    .context("client write failed")?;
+                    .map_err(ClientIo::WriteFailed)?;
                 let _ = activity_for_downlink.send(());
                 manager_for_downlink_task
                     .report_active_traffic(active_index, TransportKind::Tcp)

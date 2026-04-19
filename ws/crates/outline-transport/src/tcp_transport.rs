@@ -1,4 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
+use crate::WebSocketClosed;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
@@ -128,7 +129,7 @@ impl ReadTransport for WsReadTransport {
                         have = self.buffer.len(),
                         "reader: websocket stream returned None (EOF without Close frame)"
                     );
-                    bail!("websocket closed");
+                    return Err(anyhow::Error::from(WebSocketClosed));
                 },
                 Some(Ok(msg)) => msg,
                 Some(Err(e)) => {
@@ -139,7 +140,7 @@ impl ReadTransport for WsReadTransport {
                         error = %format!("{e}"),
                         "reader: websocket stream yielded error"
                     );
-                    return Err(anyhow!("websocket read failed: {e}"));
+                    return Err(anyhow::Error::from(e).context("websocket read failed"));
                 },
             };
 
@@ -152,7 +153,7 @@ impl ReadTransport for WsReadTransport {
                         frame = ?frame,
                         "reader: websocket received Close frame from upstream"
                     );
-                    bail!("websocket closed");
+                    return Err(anyhow::Error::from(WebSocketClosed));
                 },
                 Message::Ping(payload) => {
                     let _ = self.ctrl_tx.try_send(Message::Pong(payload));

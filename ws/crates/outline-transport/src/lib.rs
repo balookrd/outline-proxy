@@ -1,4 +1,20 @@
+use std::fmt;
 use std::time::Duration;
+
+/// Typed marker placed in an `anyhow` error chain whenever a WebSocket
+/// connection closes cleanly (Close frame or EOF from the peer). Classifiers
+/// can match this via `error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())`
+/// instead of pattern-matching on the formatted string.
+#[derive(Debug)]
+pub struct WebSocketClosed;
+
+impl fmt::Display for WebSocketClosed {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "websocket closed")
+    }
+}
+
+impl std::error::Error for WebSocketClosed {}
 
 use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};

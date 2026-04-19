@@ -1,4 +1,5 @@
 pub mod config;
+pub(crate) mod client_io;
 pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
