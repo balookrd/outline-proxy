@@ -5,7 +5,6 @@ pub mod metrics;
 #[cfg(feature = "metrics")]
 pub mod metrics_http;
 pub mod proxy;
-pub mod types;
 
 use std::sync::Arc;
 use std::time::Duration;

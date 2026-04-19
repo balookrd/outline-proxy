@@ -6,9 +6,12 @@ use std::sync::{
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use outline_ws_rust::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig, WsProbeConfig};
-use outline_ws_rust::types::{CipherKind, UplinkTransport, WsTransportMode};
-use outline_uplink::UplinkManager;
+use outline_transport::WsTransportMode;
+use outline_uplink::{
+    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, UplinkManager,
+    UplinkTransport, WsProbeConfig,
+};
+use shadowsocks_crypto::CipherKind;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::protocol::Message};
@@ -94,8 +97,8 @@ async fn build_manager(
             tcp: None,
         },
         LoadBalancingConfig {
-            mode: outline_ws_rust::config::LoadBalancingMode::ActiveActive,
-            routing_scope: outline_ws_rust::config::RoutingScope::PerFlow,
+            mode: LoadBalancingMode::ActiveActive,
+            routing_scope: RoutingScope::PerFlow,
             sticky_ttl: Duration::from_secs(300),
             hysteresis: Duration::from_millis(50),
             failure_cooldown: Duration::from_secs(10),

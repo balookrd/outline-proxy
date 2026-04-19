@@ -2,11 +2,10 @@ use std::collections::HashMap;
 
 use tracing::{debug, warn};
 
-use crate::config::RouteTarget;
 use crate::proxy::ProxyConfig;
-use crate::types::TargetAddr;
-use outline_routing::RouteDecision;
+use outline_routing::{RouteDecision, RouteTarget};
 use outline_uplink::{TransportKind, UplinkRegistry};
+use socks5_proto::TargetAddr;
 
 /// Per-packet routing decision for UDP.
 ///
@@ -118,12 +117,11 @@ mod tests {
 
     use url::Url;
 
-    use crate::config::{
+    use outline_transport::WsTransportMode;
+    use outline_uplink::{
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
-        WsProbeConfig,
+        UplinkManager, UplinkRegistry, UplinkTransport, WsProbeConfig,
     };
-    use crate::types::{UplinkTransport, WsTransportMode};
-    use outline_uplink::{UplinkManager, UplinkRegistry};
 
     use super::*;
 
@@ -142,7 +140,7 @@ mod tests {
             udp_ws_mode: WsTransportMode::Http1,
             tcp_addr: None,
             udp_addr: None,
-            cipher: crate::types::CipherKind::Chacha20IetfPoly1305,
+            cipher: shadowsocks_crypto::CipherKind::Chacha20IetfPoly1305,
             password: "s3cr3t_password".to_string(),
             weight: 1.0,
             fwmark: None,
@@ -186,7 +184,7 @@ mod tests {
         // The routing table resolved to group "nonexistent" which is not in the registry.
         let route = classify_decision(
             &registry,
-            crate::config::RouteTarget::Group("nonexistent".into()),
+            RouteTarget::Group("nonexistent".into()),
             None,
         )
         .await;

@@ -9,13 +9,16 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use outline_ws_rust::config::{
-    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RouteRule, RouteTarget, RoutingScope,
-    RoutingTableConfig, UplinkConfig, UplinkGroupConfig, WsProbeConfig,
+use outline_routing::{
+    RouteRule, RouteTarget, RoutingTable, RoutingTableConfig,
 };
-use outline_routing::RoutingTable;
-use outline_ws_rust::types::{CipherKind, TargetAddr, UplinkTransport, WsTransportMode};
-use outline_uplink::{TransportKind, UplinkRegistry};
+use outline_transport::WsTransportMode;
+use outline_uplink::{
+    LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportKind, UplinkConfig,
+    UplinkGroupConfig, UplinkRegistry, UplinkTransport, WsProbeConfig,
+};
+use shadowsocks_crypto::CipherKind;
+use socks5_proto::TargetAddr;
 use url::Url;
 
 // ── Test helpers ─────────────────────────────────────────────────────────────

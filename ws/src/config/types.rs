@@ -2,25 +2,11 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use outline_transport::DnsCache;
-
 use outline_routing::RoutingTable;
-
-// Auth configs live in the `socks5-proto` workspace crate; re-exported so
-// existing `crate::config::Socks5AuthConfig` imports keep working.
-pub use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
-
-// Uplink config types live in the `outline-uplink` workspace crate; re-exported
-// so existing `crate::config::UplinkConfig` etc. imports keep working.
-pub use outline_uplink::{
-    DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
-    RoutingScope, TcpProbeConfig, UplinkConfig, UplinkGroupConfig, WsProbeConfig,
-};
-
-// RouteTarget / RouteRule / RoutingTableConfig live in the `outline-routing`
-// workspace crate; re-exported so existing `crate::config::RouteTarget`
-// imports keep working.
-pub use outline_routing::{RouteRule, RouteTarget, RoutingTableConfig};
+use outline_routing::RoutingTableConfig;
+use outline_transport::DnsCache;
+use outline_uplink::UplinkGroupConfig;
+use socks5_proto::Socks5AuthConfig;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -52,7 +38,7 @@ pub struct AppConfig {
     pub dns_cache: Option<Arc<DnsCache>>,
     pub metrics: Option<MetricsConfig>,
     #[cfg(feature = "tun")]
-    pub tun: Option<TunConfig>,
+    pub tun: Option<outline_tun::TunConfig>,
     pub h2: H2Config,
     /// Override kernel UDP receive buffer size (SO_RCVBUF). None = kernel default.
     pub udp_recv_buf_bytes: Option<usize>,
@@ -82,8 +68,3 @@ pub struct H2Config {
 pub struct MetricsConfig {
     pub listen: SocketAddr,
 }
-
-// TunConfig / TunTcpConfig live in the `outline-tun` workspace crate; re-exported
-// so existing `crate::config::TunConfig` etc. imports keep working.
-#[cfg(feature = "tun")]
-pub use outline_tun::{TunConfig, TunTcpConfig};

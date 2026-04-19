@@ -5,11 +5,9 @@ use anyhow::Result;
 use tokio::net::TcpStream;
 use tracing::debug;
 
-use crate::config::RouteTarget;
-use crate::metrics;
-use outline_routing::RouteDecision;
-use socks5_proto::{SocksRequest, negotiate};
-use crate::types::TargetAddr;
+use outline_metrics as metrics;
+use outline_routing::{RouteDecision, RouteTarget};
+use socks5_proto::{SocksRequest, TargetAddr, negotiate};
 use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 use super::ProxyConfig;

@@ -6,7 +6,16 @@ use tokio::fs;
 use tracing::warn;
 use url::Url;
 
-use crate::types::{CipherKind, UplinkTransport, WsTransportMode};
+use outline_routing::{RouteRule, RouteTarget, RoutingTableConfig};
+use outline_transport::{ServerAddr, WsTransportMode};
+#[cfg(feature = "tun")]
+use outline_tun::{TunConfig, TunTcpConfig};
+use outline_uplink::{
+    DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode, ProbeConfig,
+    RoutingScope, TcpProbeConfig, UplinkConfig, UplinkGroupConfig, UplinkTransport, WsProbeConfig,
+};
+use shadowsocks_crypto::CipherKind;
+use socks5_proto::{Socks5AuthConfig, Socks5AuthUserConfig};
 
 use super::args::Args;
 use super::schema::{
@@ -15,14 +24,7 @@ use super::schema::{
 };
 #[cfg(feature = "tun")]
 use super::schema::TunSection;
-use super::types::{
-    AppConfig, DnsProbeConfig, H2Config, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
-    MetricsConfig, ProbeConfig, RouteRule, RouteTarget, RoutingScope, RoutingTableConfig,
-    Socks5AuthConfig, Socks5AuthUserConfig, TcpProbeConfig, UplinkConfig, UplinkGroupConfig,
-    WsProbeConfig,
-};
-#[cfg(feature = "tun")]
-use super::types::{TunConfig, TunTcpConfig};
+use super::types::{AppConfig, H2Config, MetricsConfig};
 
 pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let file = if path.exists() {
@@ -205,8 +207,8 @@ struct ResolvedUplinkInput {
     tcp_ws_mode: Option<WsTransportMode>,
     udp_ws_url: Option<Url>,
     udp_ws_mode: Option<WsTransportMode>,
-    tcp_addr: Option<crate::types::ServerAddr>,
-    udp_addr: Option<crate::types::ServerAddr>,
+    tcp_addr: Option<ServerAddr>,
+    udp_addr: Option<ServerAddr>,
     cipher: Option<CipherKind>,
     password: Option<String>,
     weight: Option<f64>,

@@ -1,12 +1,7 @@
-//! Metrics facade — re-exports everything from the `outline-metrics`
-//! workspace crate so existing `crate::metrics::*` paths keep working.
-//!
-//! Lives here rather than in the crate: [`spawn_process_metrics_sampler`]
-//! wires the main-binary sampler in `crate::memory` to the crate's
-//! `update_process_memory` on a 15-second tick; the crate itself must not
-//! depend on the sampler (it lives in main because of Linux /proc parsing).
-
-pub use outline_metrics::*;
+//! Main-binary sampler wiring: [`spawn_process_metrics_sampler`] bridges the
+//! `/proc`-parsing sampler in `crate::memory` to `outline_metrics::update_process_memory`
+//! on a 15-second tick. The `outline_metrics` crate itself must not depend on
+//! the sampler (it lives in main because of Linux `/proc` parsing).
 
 #[cfg(feature = "metrics")]
 pub fn spawn_process_metrics_sampler() {

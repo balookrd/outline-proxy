@@ -12,7 +12,8 @@ use shadowsocks_crypto::{
     SHADOWSOCKS_TAG_LEN, decrypt, decrypt_udp_packet, derive_subkey, encrypt, encrypt_udp_packet,
     increment_nonce,
 };
-use outline_ws_rust::types::{CipherKind, TargetAddr};
+use shadowsocks_crypto::CipherKind;
+use socks5_proto::TargetAddr;
 
 #[test]
 fn udp_single_packet_can_receive_five_replies_over_local_direct_shadowsocks()

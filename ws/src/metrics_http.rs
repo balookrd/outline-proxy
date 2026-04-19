@@ -13,7 +13,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
-use crate::metrics::{record_metrics_http_request, render_prometheus};
+use outline_metrics::{record_metrics_http_request, render_prometheus};
 use outline_uplink::{TransportKind, UplinkRegistry};
 
 type MetricsResponse = Response<Full<Bytes>>;

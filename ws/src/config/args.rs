@@ -4,7 +4,9 @@ use std::path::PathBuf;
 use clap::Parser;
 use url::Url;
 
-use crate::types::{CipherKind, ServerAddr, UplinkTransport, WsTransportMode};
+use outline_transport::{ServerAddr, WsTransportMode};
+use outline_uplink::UplinkTransport;
+use shadowsocks_crypto::CipherKind;
 
 #[derive(Debug, Clone, Parser)]
 #[command(version, about = "SOCKS5 -> Outline over WebSocket proxy")]

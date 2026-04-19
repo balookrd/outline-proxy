@@ -4,8 +4,8 @@ use anyhow::{Result, anyhow};
 use tokio::sync::Mutex;
 use tracing::{debug, info};
 
-use crate::metrics;
-use crate::types::TargetAddr;
+use outline_metrics as metrics;
+use socks5_proto::TargetAddr;
 use outline_transport::UdpWsTransport;
 use outline_uplink::{TransportKind, UplinkManager};
 
@@ -204,8 +204,8 @@ mod tests {
     use tokio::net::UdpSocket;
     use tokio::sync::Mutex;
 
-    use crate::types::CipherKind;
     use outline_transport::UdpWsTransport;
+    use shadowsocks_crypto::CipherKind;
 
     use super::*;
 
