@@ -33,12 +33,11 @@ use tokio_tungstenite::{
 };
 
 use super::bootstrap::serve_listener;
-use super::connect::{connect_tcp_addrs, sort_addrs_for_happy_eyeballs};
+use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
 use super::shutdown::ShutdownSignal;
 use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, build_app, build_transport_route_map,
-    build_users, connect_tcp_target, serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket,
-    serve_tcp_listener,
+    build_users, serve_h3_server, serve_ss_tcp_listener, serve_ss_udp_socket, serve_tcp_listener,
 };
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{
