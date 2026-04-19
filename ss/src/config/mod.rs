@@ -1,14 +1,19 @@
+mod cli;
+mod file;
+
 use std::{
     collections::{BTreeSet, HashSet},
-    fs,
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
-use anyhow::{Context, Result, bail};
-use clap::{ArgAction, Parser, ValueEnum};
+use anyhow::{Result, bail};
+use clap::Parser;
 use serde::Deserialize;
 use thiserror::Error;
+
+use cli::ConfigArgs;
+use file::{FileConfig, default_config_path_if_exists, load_file_config};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -28,19 +33,31 @@ pub struct Config {
     pub ws_path_udp: String,
     pub http_root_auth: bool,
     pub http_root_realm: String,
-    pub public_host: Option<String>,
-    pub public_scheme: String,
-    pub access_key_url_base: Option<String>,
-    pub access_key_file_extension: String,
-    pub print_access_keys: bool,
-    pub write_access_keys_dir: Option<PathBuf>,
     pub password: Option<String>,
     pub fwmark: Option<u32>,
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
 }
 
-impl Config {
+#[derive(Debug, Clone)]
+pub struct AccessKeyConfig {
+    pub public_host: Option<String>,
+    pub public_scheme: String,
+    pub access_key_url_base: Option<String>,
+    pub access_key_file_extension: String,
+}
+
+pub enum AppMode {
+    Serve(Config),
+    GenerateKeys {
+        config: Config,
+        access_key: AccessKeyConfig,
+        print: bool,
+        write_dir: Option<PathBuf>,
+    },
+}
+
+impl AppMode {
     pub fn load() -> Result<Self> {
         let args = ConfigArgs::parse();
         let config_path = args.config.clone().or_else(default_config_path_if_exists);
@@ -50,7 +67,7 @@ impl Config {
             FileConfig::default()
         };
 
-        let config = Self {
+        let config = Config {
             listen: args.listen.or(file.listen),
             ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
@@ -88,17 +105,6 @@ impl Config {
                 .http_root_realm
                 .or(file.http_root_realm)
                 .unwrap_or_else(default_http_root_realm),
-            public_host: args.public_host.or(file.public_host),
-            public_scheme: args
-                .public_scheme
-                .or(file.public_scheme)
-                .unwrap_or_else(|| "wss".to_owned()),
-            access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
-            access_key_file_extension: normalize_access_key_file_extension(
-                args.access_key_file_extension.or(file.access_key_file_extension),
-            ),
-            print_access_keys: args.print_access_keys.or(file.print_access_keys).unwrap_or(false),
-            write_access_keys_dir: args.write_access_keys_dir.or(file.write_access_keys_dir),
             password: args.password.or(file.password),
             fwmark: args.fwmark.or(file.fwmark),
             users: if args.users.is_empty() {
@@ -111,11 +117,32 @@ impl Config {
                 .or(file.method)
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
         };
-
         config.validate()?;
-        Ok(config)
-    }
 
+        let print = args.print_access_keys.or(file.print_access_keys).unwrap_or(false);
+        let write_dir = args.write_access_keys_dir.or(file.write_access_keys_dir);
+
+        if print || write_dir.is_some() {
+            let access_key = AccessKeyConfig {
+                public_host: args.public_host.or(file.public_host),
+                public_scheme: args
+                    .public_scheme
+                    .or(file.public_scheme)
+                    .unwrap_or_else(|| "wss".to_owned()),
+                access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
+                access_key_file_extension: normalize_access_key_file_extension(
+                    args.access_key_file_extension.or(file.access_key_file_extension),
+                ),
+            };
+            access_key.validate()?;
+            Ok(AppMode::GenerateKeys { config, access_key, print, write_dir })
+        } else {
+            Ok(AppMode::Serve(config))
+        }
+    }
+}
+
+impl Config {
     pub fn user_entries(&self) -> Result<Vec<UserEntry>, ConfigError> {
         let mut users = self.users.clone();
         if let Some(password) = &self.password {
@@ -155,10 +182,7 @@ impl Config {
         }
     }
 
-    fn validate(&self) -> Result<()> {
-        if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
-            bail!("public_scheme must be either \"ws\" or \"wss\"");
-        }
+    pub fn validate(&self) -> Result<()> {
         if !self.data_plane_listener_enabled() {
             bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
         }
@@ -236,159 +260,16 @@ impl Config {
     }
 }
 
-#[derive(Debug, Clone, Parser)]
-#[command(
-    name = "outline-ss-rust",
-    version,
-    about = "Shadowsocks relay with WebSocket transport, UDP support and multi-user keys"
-)]
-struct ConfigArgs {
-    #[arg(long, env = "OUTLINE_SS_CONFIG")]
-    config: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_LISTEN")]
-    listen: Option<SocketAddr>,
-
-    #[arg(long, env = "OUTLINE_SS_SS_LISTEN")]
-    ss_listen: Option<SocketAddr>,
-
-    #[arg(long, env = "OUTLINE_SS_TLS_CERT_PATH")]
-    tls_cert_path: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_TLS_KEY_PATH")]
-    tls_key_path: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_H3_LISTEN")]
-    h3_listen: Option<SocketAddr>,
-
-    #[arg(long, env = "OUTLINE_SS_H3_CERT_PATH")]
-    h3_cert_path: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_H3_KEY_PATH")]
-    h3_key_path: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_METRICS_LISTEN")]
-    metrics_listen: Option<SocketAddr>,
-
-    #[arg(long, env = "OUTLINE_SS_METRICS_PATH")]
-    metrics_path: Option<String>,
-
-    #[arg(
-        long,
-        env = "OUTLINE_SS_PREFER_IPV4_UPSTREAM",
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-        require_equals = true
-    )]
-    prefer_ipv4_upstream: Option<bool>,
-
-    #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
-    client_active_ttl_secs: Option<u64>,
-
-    #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
-    udp_nat_idle_timeout_secs: Option<u64>,
-
-    #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
-    ws_path_tcp: Option<String>,
-
-    #[arg(
-        long = "ws-path-udp",
-        visible_alias = "udp-ws-path",
-        env = "OUTLINE_SS_WS_PATH_UDP"
-    )]
-    ws_path_udp: Option<String>,
-
-    #[arg(
-        long,
-        env = "OUTLINE_SS_HTTP_ROOT_AUTH",
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-        require_equals = true
-    )]
-    http_root_auth: Option<bool>,
-
-    #[arg(long, env = "OUTLINE_SS_HTTP_ROOT_REALM")]
-    http_root_realm: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_PUBLIC_HOST")]
-    public_host: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_PUBLIC_SCHEME")]
-    public_scheme: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_URL_BASE")]
-    access_key_url_base: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_ACCESS_KEY_FILE_EXTENSION")]
-    access_key_file_extension: Option<String>,
-
-    #[arg(
-        long,
-        env = "OUTLINE_SS_PRINT_ACCESS_KEYS",
-        action = ArgAction::Set,
-        num_args = 0..=1,
-        default_missing_value = "true",
-        require_equals = true
-    )]
-    print_access_keys: Option<bool>,
-
-    #[arg(long, env = "OUTLINE_SS_WRITE_ACCESS_KEYS_DIR")]
-    write_access_keys_dir: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_PASSWORD")]
-    password: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_FWMARK")]
-    fwmark: Option<u32>,
-
-    #[arg(
-        long = "user",
-        env = "OUTLINE_SS_USERS",
-        value_delimiter = ',',
-        value_parser = parse_user_entry
-    )]
-    users: Vec<UserEntry>,
-
-    #[arg(long, env = "OUTLINE_SS_METHOD", value_enum)]
-    method: Option<CipherKind>,
+impl AccessKeyConfig {
+    fn validate(&self) -> Result<()> {
+        if !matches!(self.public_scheme.as_str(), "ws" | "wss") {
+            bail!("public_scheme must be either \"ws\" or \"wss\"");
+        }
+        Ok(())
+    }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct FileConfig {
-    listen: Option<SocketAddr>,
-    ss_listen: Option<SocketAddr>,
-    tls_cert_path: Option<PathBuf>,
-    tls_key_path: Option<PathBuf>,
-    h3_listen: Option<SocketAddr>,
-    h3_cert_path: Option<PathBuf>,
-    h3_key_path: Option<PathBuf>,
-    metrics_listen: Option<SocketAddr>,
-    metrics_path: Option<String>,
-    prefer_ipv4_upstream: Option<bool>,
-    client_active_ttl_secs: Option<u64>,
-    udp_nat_idle_timeout_secs: Option<u64>,
-    #[serde(default)]
-    ws_path_tcp: Option<String>,
-    #[serde(default)]
-    ws_path_udp: Option<String>,
-    http_root_auth: Option<bool>,
-    http_root_realm: Option<String>,
-    public_host: Option<String>,
-    public_scheme: Option<String>,
-    access_key_url_base: Option<String>,
-    access_key_file_extension: Option<String>,
-    print_access_keys: Option<bool>,
-    write_access_keys_dir: Option<PathBuf>,
-    password: Option<String>,
-    fwmark: Option<u32>,
-    users: Option<Vec<UserEntry>>,
-    method: Option<CipherKind>,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum, Deserialize)]
 pub enum CipherKind {
     #[value(name = "aes-128-gcm")]
     #[serde(rename = "aes-128-gcm")]
@@ -482,51 +363,6 @@ pub enum ConfigError {
     DuplicateUserId(String),
 }
 
-fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
-    let (id, password) = value
-        .split_once('=')
-        .ok_or_else(|| "expected format id=password".to_owned())?;
-    let id = id.trim();
-    let password = password.trim();
-
-    if id.is_empty() {
-        return Err("user id must not be empty".to_owned());
-    }
-    if password.is_empty() {
-        return Err("user password must not be empty".to_owned());
-    }
-
-    Ok(UserEntry {
-        id: id.to_owned(),
-        password: password.to_owned(),
-        fwmark: None,
-        method: None,
-        ws_path_tcp: None,
-        ws_path_udp: None,
-    })
-}
-
-fn default_config_path_if_exists() -> Option<PathBuf> {
-    for name in ["config.yaml", "config.yml", "config.toml"] {
-        let path = PathBuf::from(name);
-        if path.exists() {
-            return Some(path);
-        }
-    }
-    None
-}
-
-fn load_file_config(path: &Path) -> Result<FileConfig> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("failed to read config file {}", path.display()))?;
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("yaml" | "yml") => serde_yml::from_str(&contents)
-            .with_context(|| format!("failed to parse config file {}", path.display())),
-        _ => toml::from_str(&contents)
-            .with_context(|| format!("failed to parse config file {}", path.display())),
-    }
-}
-
 fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     let extension = extension.unwrap_or_else(|| ".yaml".to_owned());
     if extension.starts_with('.') {
@@ -536,75 +372,24 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
     }
 }
 
-fn default_http_root_realm() -> String {
+pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CipherKind, Config, FileConfig, default_http_root_realm};
+    use super::{CipherKind, Config, default_http_root_realm};
 
-    #[test]
-    fn parses_new_ws_path_keys() {
-        let config: FileConfig = toml::from_str(
-            r#"
-listen = "0.0.0.0:3000"
-ws_path_tcp = "/custom-tcp"
-ws_path_udp = "/custom-udp"
-http_root_auth = true
-http_root_realm = "VPN"
-
-[[users]]
-id = "alice"
-password = "secret"
-ws_path_tcp = "/alice-tcp"
-ws_path_udp = "/alice-udp"
-"#,
-        )
-        .unwrap();
-
-        assert_eq!(config.ws_path_tcp.as_deref(), Some("/custom-tcp"));
-        assert_eq!(config.ws_path_udp.as_deref(), Some("/custom-udp"));
-        assert_eq!(config.http_root_auth, Some(true));
-        assert_eq!(config.http_root_realm.as_deref(), Some("VPN"));
-        let users = config.users.unwrap();
-        assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
-        assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
-    }
-
-    #[test]
-    fn rejects_legacy_ws_path_keys() {
-        let error = toml::from_str::<FileConfig>(
-            r#"
-listen = "0.0.0.0:3000"
-ws_path = "/legacy-tcp"
-udp_ws_path = "/legacy-udp"
-
-[[users]]
-id = "alice"
-password = "secret"
-ws_path = "/alice-legacy-tcp"
-udp_ws_path = "/alice-legacy-udp"
-"#,
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("unknown field"));
-        assert!(error.contains("ws_path"));
-    }
-
-    #[test]
-    fn requires_at_least_one_data_plane_listener() {
-        let error = Config {
-            listen: None,
+    fn base_config() -> Config {
+        Config {
+            listen: Some("127.0.0.1:3000".parse().unwrap()),
             ss_listen: None,
             tls_cert_path: None,
             tls_key_path: None,
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
-            metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
+            metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
             client_active_ttl_secs: 300,
@@ -613,16 +398,19 @@ udp_ws_path = "/alice-legacy-udp"
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
             http_root_realm: default_http_root_realm(),
-            public_host: None,
-            public_scheme: "wss".into(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
             password: Some("secret".into()),
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+        }
+    }
+
+    #[test]
+    fn requires_at_least_one_data_plane_listener() {
+        let error = Config {
+            listen: None,
+            metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
+            ..base_config()
         }
         .validate()
         .unwrap_err()
@@ -635,31 +423,9 @@ udp_ws_path = "/alice-legacy-udp"
     fn requires_explicit_h3_listener_when_enabled() {
         let error = Config {
             listen: None,
-            ss_listen: None,
-            tls_cert_path: None,
-            tls_key_path: None,
-            h3_listen: None,
             h3_cert_path: Some("cert.pem".into()),
             h3_key_path: Some("key.pem".into()),
-            metrics_listen: None,
-            metrics_path: "/metrics".into(),
-            prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
-            ws_path_tcp: "/tcp".into(),
-            ws_path_udp: "/udp".into(),
-            http_root_auth: false,
-            http_root_realm: default_http_root_realm(),
-            public_host: None,
-            public_scheme: "wss".into(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
-            password: Some("secret".into()),
-            fwmark: None,
-            users: vec![],
-            method: CipherKind::Chacha20IetfPoly1305,
+            ..base_config()
         }
         .validate()
         .unwrap_err()
@@ -671,32 +437,10 @@ udp_ws_path = "/alice-legacy-udp"
     #[test]
     fn allows_h3_listener_to_share_address_with_tcp_listener() {
         Config {
-            listen: Some("127.0.0.1:3000".parse().unwrap()),
-            ss_listen: None,
-            tls_cert_path: None,
-            tls_key_path: None,
             h3_listen: Some("127.0.0.1:3000".parse().unwrap()),
             h3_cert_path: Some("cert.pem".into()),
             h3_key_path: Some("key.pem".into()),
-            metrics_listen: None,
-            metrics_path: "/metrics".into(),
-            prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
-            ws_path_tcp: "/tcp".into(),
-            ws_path_udp: "/udp".into(),
-            http_root_auth: false,
-            http_root_realm: default_http_root_realm(),
-            public_host: None,
-            public_scheme: "wss".into(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
-            password: Some("secret".into()),
-            fwmark: None,
-            users: vec![],
-            method: CipherKind::Chacha20IetfPoly1305,
+            ..base_config()
         }
         .validate()
         .unwrap();
@@ -705,32 +449,9 @@ udp_ws_path = "/alice-legacy-udp"
     #[test]
     fn rejects_http_root_auth_on_root_ws_path() {
         let error = Config {
-            listen: Some("127.0.0.1:3000".parse().unwrap()),
-            ss_listen: None,
-            tls_cert_path: None,
-            tls_key_path: None,
-            h3_listen: None,
-            h3_cert_path: None,
-            h3_key_path: None,
-            metrics_listen: None,
-            metrics_path: "/metrics".into(),
-            prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/".into(),
-            ws_path_udp: "/udp".into(),
             http_root_auth: true,
-            http_root_realm: default_http_root_realm(),
-            public_host: None,
-            public_scheme: "wss".into(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
-            password: Some("secret".into()),
-            fwmark: None,
-            users: vec![],
-            method: CipherKind::Chacha20IetfPoly1305,
+            ..base_config()
         }
         .validate()
         .unwrap_err()
@@ -742,32 +463,9 @@ udp_ws_path = "/alice-legacy-udp"
     #[test]
     fn rejects_http_root_realm_with_control_characters() {
         let error = Config {
-            listen: Some("127.0.0.1:3000".parse().unwrap()),
-            ss_listen: None,
-            tls_cert_path: None,
-            tls_key_path: None,
-            h3_listen: None,
-            h3_cert_path: None,
-            h3_key_path: None,
-            metrics_listen: None,
-            metrics_path: "/metrics".into(),
-            prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
-            ws_path_tcp: "/tcp".into(),
-            ws_path_udp: "/udp".into(),
             http_root_auth: true,
             http_root_realm: "bad\nrealm".into(),
-            public_host: None,
-            public_scheme: "wss".into(),
-            access_key_url_base: None,
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
-            password: Some("secret".into()),
-            fwmark: None,
-            users: vec![],
-            method: CipherKind::Chacha20IetfPoly1305,
+            ..base_config()
         }
         .validate()
         .unwrap_err()

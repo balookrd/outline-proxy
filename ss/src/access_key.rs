@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::config::{Config, UserEntry};
+use crate::config::{AccessKeyConfig, Config, UserEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessKeyArtifact {
@@ -24,23 +24,22 @@ pub struct WrittenAccessKeyArtifact {
     pub access_key_url: Option<String>,
 }
 
-pub fn build_access_key_artifacts(config: &Config) -> Result<Vec<AccessKeyArtifact>> {
+pub fn build_access_key_artifacts(
+    config: &Config,
+    ak: &AccessKeyConfig,
+) -> Result<Vec<AccessKeyArtifact>> {
     if config.listen.is_none() {
         bail!("Outline access keys require the websocket listen listener to be configured");
     }
     let users = config.user_entries()?;
-    let public_host = config
+    let public_host = ak
         .public_host
         .as_deref()
         .ok_or_else(|| anyhow!("--public-host is required to generate Outline access keys"))?;
 
-    if !matches!(config.public_scheme.as_str(), "ws" | "wss") {
-        bail!("--public-scheme must be either ws or wss");
-    }
-
     users
         .into_iter()
-        .map(|user| build_user_artifact(config, &user, public_host))
+        .map(|user| build_user_artifact(config, ak, &user, public_host))
         .collect()
 }
 
@@ -115,12 +114,13 @@ pub fn render_written_access_key_report(artifacts: &[WrittenAccessKeyArtifact]) 
 
 fn build_user_artifact(
     config: &Config,
+    ak: &AccessKeyConfig,
     user: &UserEntry,
     public_host: &str,
 ) -> Result<AccessKeyArtifact> {
     let config_filename =
-        format!("{}{}", sanitize_filename(&user.id), config.access_key_file_extension);
-    let config_url = config
+        format!("{}{}", sanitize_filename(&user.id), ak.access_key_file_extension);
+    let config_url = ak
         .access_key_url_base
         .as_deref()
         .map(|base| join_url(base, &config_filename))
@@ -128,12 +128,12 @@ fn build_user_artifact(
     let access_key_url = config_url.as_deref().map(dynamic_access_key_url).transpose()?;
     let method = user.effective_method(config.method);
     let tcp_url = websocket_url(
-        &config.public_scheme,
+        &ak.public_scheme,
         public_host,
         user.effective_ws_path_tcp(&config.ws_path_tcp),
     );
     let udp_url = websocket_url(
-        &config.public_scheme,
+        &ak.public_scheme,
         public_host,
         user.effective_ws_path_udp(&config.ws_path_udp),
     );
@@ -247,7 +247,7 @@ mod tests {
         build_access_key_artifacts, dynamic_access_key_url, normalize_host,
         render_written_access_key_report, sanitize_filename, write_access_key_artifacts,
     };
-    use crate::config::{CipherKind, Config, UserEntry};
+    use crate::config::{AccessKeyConfig, CipherKind, Config, UserEntry};
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn sample_config() -> Config {
@@ -268,12 +268,6 @@ mod tests {
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
-            public_host: Some("vpn.example.com".into()),
-            public_scheme: "wss".into(),
-            access_key_url_base: Some("https://keys.example.com/outline".into()),
-            access_key_file_extension: ".yaml".into(),
-            print_access_keys: false,
-            write_access_keys_dir: None,
             password: None,
             fwmark: None,
             users: vec![
@@ -298,9 +292,19 @@ mod tests {
         }
     }
 
+    fn sample_ak_config() -> AccessKeyConfig {
+        AccessKeyConfig {
+            public_host: Some("vpn.example.com".into()),
+            public_scheme: "wss".into(),
+            access_key_url_base: Some("https://keys.example.com/outline".into()),
+            access_key_file_extension: ".yaml".into(),
+        }
+    }
+
     #[test]
     fn builds_outline_artifacts_for_all_users() {
-        let artifacts = build_access_key_artifacts(&sample_config()).unwrap();
+        let artifacts =
+            build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
 
         assert_eq!(artifacts.len(), 2);
         assert_eq!(
@@ -335,7 +339,8 @@ mod tests {
 
     #[test]
     fn writes_outline_artifacts_to_directory() {
-        let artifacts = build_access_key_artifacts(&sample_config()).unwrap();
+        let artifacts =
+            build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
         let output_dir = std::env::temp_dir().join(format!(
             "outline-ss-rust-access-key-test-{}-{}",
             std::process::id(),
@@ -359,10 +364,12 @@ mod tests {
 
     #[test]
     fn uses_custom_access_key_file_extension() {
-        let mut config = sample_config();
-        config.access_key_file_extension = ".txt".into();
+        let ak = AccessKeyConfig {
+            access_key_file_extension: ".txt".into(),
+            ..sample_ak_config()
+        };
 
-        let artifacts = build_access_key_artifacts(&config).unwrap();
+        let artifacts = build_access_key_artifacts(&sample_config(), &ak).unwrap();
 
         assert_eq!(artifacts[0].config_filename, "alice.txt");
         assert_eq!(
