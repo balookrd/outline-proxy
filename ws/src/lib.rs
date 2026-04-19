@@ -1,3 +1,9 @@
+//! outline-ws-rust — main binary crate.
+//!
+//! Wires together: configuration loading ([`config`]), startup and listener
+//! binding ([`bootstrap`]), SOCKS5 TCP/UDP ingress ([`proxy`]), and the
+//! optional Prometheus metrics HTTP endpoint ([`metrics_http`]).
+
 pub mod config;
 pub(crate) mod client_io;
 pub(crate) mod error_text;

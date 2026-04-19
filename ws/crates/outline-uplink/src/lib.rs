@@ -1,3 +1,8 @@
+//! Uplink lifecycle management: candidate selection, health probing, failover,
+//! warm-standby pools, sticky per-destination routes, and TOML-backed state
+//! persistence across restarts.  The top-level entry point is
+//! [`UplinkRegistry`], which holds one [`UplinkManager`] per configured group.
+
 pub mod config;
 mod error_text;
 

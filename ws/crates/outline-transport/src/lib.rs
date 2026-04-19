@@ -1,3 +1,10 @@
+//! Transport connectors for outline-ws-rust.
+//!
+//! Provides outbound connection primitives over WebSocket (HTTP/1 upgrade),
+//! HTTP/2, HTTP/3 (QUIC), and direct TCP/UDP, plus shared DNS resolution with
+//! an in-process cache.  All transports carry Shadowsocks-encrypted streams
+//! to the configured uplink server.
+
 use std::fmt;
 use std::time::Duration;
 

@@ -39,7 +39,7 @@ pub struct GroupActiveState {
     pub udp_active: Option<String>,
 }
 
-/// Thread-safe store that persists [`PersistedState`] to a JSON file.
+/// Thread-safe store that persists [`PersistedState`] to a TOML file.
 ///
 /// Callers update the in-memory state via [`StateStore::update_active`] and
 /// the store schedules a debounced background flush automatically.

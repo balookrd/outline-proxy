@@ -1,3 +1,9 @@
+//! TUN device engine for transparent proxying.
+//!
+//! Reads raw IP packets from a TUN interface, reassembles IPv6 fragments, and
+//! dispatches traffic to two relay engines: a stateful userspace TCP stack
+//! (`tun2tcp`) and a stateless UDP forwarder (`tun2udp`).
+
 use std::fs::OpenOptions;
 use std::io::Write as _;
 use std::net::Ipv6Addr;

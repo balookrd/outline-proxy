@@ -179,11 +179,16 @@ The project is intentionally practical, but there are still boundaries:
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) - startup and traffic-switch burst diagnostics for native Shadowsocks mode
 - [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
-- [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers
-- [`src/uplink/`](src/uplink) - uplink selection, probing, failover, and standby management
-- [`src/transport/`](src/transport) - WebSocket and direct Shadowsocks transport implementations
-- [`src/tun_tcp/`](src/tun_tcp) and [`src/tun_udp/`](src/tun_udp) - stateful TUN relay engines
-- [`src/crypto/`](src/crypto) - crypto helpers and TLS glue
+- [`src/bootstrap/`](src/bootstrap) - startup sequence: listener binding and persistent state store
+- [`src/config/`](src/config) - configuration loading, schema, and validated types
+- [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
+- [`crates/outline-uplink/`](crates/outline-uplink) - uplink selection, probing, failover, and standby management
+- [`crates/outline-transport/`](crates/outline-transport) - WebSocket, HTTP/2, HTTP/3, and direct Shadowsocks transports
+- [`crates/outline-tun/`](crates/outline-tun) - stateful TUN relay engines (TCP and UDP)
+- [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) - AEAD crypto helpers for Shadowsocks
+- [`crates/outline-metrics/`](crates/outline-metrics) - Prometheus metrics registration and session/transport snapshots
+- [`crates/outline-routing/`](crates/outline-routing) - CIDR routing table
+- [`crates/socks5-proto/`](crates/socks5-proto) - SOCKS5 protocol primitives
 - [`PATCHES.md`](PATCHES.md) - local vendored patch inventory
 
 ## Build

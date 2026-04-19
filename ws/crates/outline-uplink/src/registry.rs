@@ -3,10 +3,6 @@
 //! Each group has its own probe loop, standby pools, sticky routes,
 //! active-uplink trackers, and load-balancing config; nothing is shared
 //! between groups except through this registry.
-//!
-//! Until the routing integration lands (etap 5), proxy/TUN call sites still
-//! operate on a single [`UplinkManager`] handle — [`UplinkRegistry::default_group`]
-//! returns the first configured group and is what lib.rs hands out.
 
 use std::collections::HashMap;
 use std::sync::Arc;
