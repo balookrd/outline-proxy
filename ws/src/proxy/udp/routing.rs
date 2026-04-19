@@ -5,6 +5,7 @@ use tracing::{debug, warn};
 use crate::config::RouteTarget;
 use crate::proxy::ProxyConfig;
 use crate::types::TargetAddr;
+use outline_routing::RouteDecision;
 use outline_uplink::{TransportKind, UplinkRegistry};
 
 /// Per-packet routing decision for UDP.
@@ -20,11 +21,12 @@ pub(super) enum UdpPacketRoute {
 
 /// Per-association cache of route decisions keyed by destination target.
 ///
-/// The routing table's [`version`](outline_routing::RoutingTable::version) is
-/// captured alongside each entry; when the watcher reloads a rule's CIDR
-/// file it bumps the version and the next lookup for an affected target
-/// falls through to a fresh resolve.
-pub(super) type UdpRouteCache = HashMap<TargetAddr, (UdpPacketRoute, u64)>;
+/// We cache the raw `(primary, fallback)` pair from the routing table — *not*
+/// the final `UdpPacketRoute` — so primary↔fallback selection runs on every
+/// packet and tracks live uplink-group health. The routing table's
+/// [`version`](outline_routing::RoutingTable::version) invalidates entries on
+/// CIDR-file reloads.
+pub(super) type UdpRouteCache = HashMap<TargetAddr, (RouteDecision, u64)>;
 
 pub(super) async fn resolve_udp_packet_route(
     cache: &mut UdpRouteCache,
@@ -37,19 +39,20 @@ pub(super) async fn resolve_udp_packet_route(
         return UdpPacketRoute::Tunnel(default_group);
     };
     let current_version = table.version();
-    if let Some((route, entry_version)) = cache.get(target)
+    let decision = if let Some((cached, entry_version)) = cache.get(target)
         && *entry_version == current_version
     {
-        return route.clone();
-    }
-    // Tag the cached entry with the version captured *before* CIDR reads,
-    // not the post-resolve version — otherwise a reload that races with
-    // resolution would leave a stale decision tagged with the bumped
-    // version and never invalidate. See `RoutingTable::resolve_versioned`.
-    let (decision, resolve_version) = table.resolve_versioned(target).await;
-    let route = classify_decision(registry, decision.primary, decision.fallback).await;
-    cache.insert(target.clone(), (route.clone(), resolve_version));
-    route
+        cached.clone()
+    } else {
+        // Tag the cached entry with the version captured *before* CIDR reads,
+        // not the post-resolve version — otherwise a reload that races with
+        // resolution would leave a stale decision tagged with the bumped
+        // version and never invalidate. See `RoutingTable::resolve_versioned`.
+        let (decision, resolve_version) = table.resolve_versioned(target).await;
+        cache.insert(target.clone(), (decision.clone(), resolve_version));
+        decision
+    };
+    classify_decision(registry, decision.primary, decision.fallback).await
 }
 
 pub(super) async fn classify_decision(
