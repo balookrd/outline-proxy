@@ -24,6 +24,19 @@ use super::session::{
 };
 use super::direct::handle_tcp_direct;
 
+/// Maximum number of transparent retries on the *same* uplink when chunk 0
+/// dies with a transport-level reset (WebSocket RST / clean Close before any
+/// response bytes). Transit flaps routinely RST fresh WS handshakes on
+/// several uplinks within a few hundred milliseconds; silently redialing
+/// once or twice avoids surfacing a brief network event to the client as a
+/// user-visible disconnect, and is cheaper than a full cross-uplink failover.
+const CHUNK0_RST_MAX_RETRIES: u8 = 2;
+
+/// Delay between transparent chunk-0 retries. Short enough that the worst
+/// case (two retries) stays well under a second, long enough to let a
+/// transit/DPI flap clear before dialing again.
+const CHUNK0_RST_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(300);
+
 pub async fn handle_tcp_connect(
     mut client: TcpStream,
     dispatch: DispatchTarget,
@@ -111,6 +124,9 @@ pub async fn handle_tcp_connect(
         let mut replay_overflow = false;
         let mut client_half_closed = false;
         let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
+        // Counts transparent same-uplink retries after a chunk-0 WS reset.
+        // Reset to 0 whenever we switch to a different uplink.
+        let mut rst_retries_on_current_uplink: u8 = 0;
         // Single scratch buffer reused across every phase-1 failover attempt.
         // Hoisted out of the loop so a chunk-0 failover does not re-allocate
         // 64 KiB per retry.
@@ -263,6 +279,55 @@ pub async fn handle_tcp_connect(
                         }
                     }
 
+                    // Transparent same-uplink retry for transport-level WS resets
+                    // (RST / clean Close before chunk 0).  A brief transit flap at
+                    // the uplink egress frequently resets fresh handshakes on
+                    // multiple uplinks within a few hundred ms; jumping straight
+                    // to cross-uplink failover then to the client as a disconnect
+                    // is a worse outcome than re-dialing the same endpoint once
+                    // the flap clears.  Bounded retries + short backoff cap the
+                    // worst-case recovery at well under a second.  Only applied
+                    // to fresh-dial sources: Standby has its own retry branch
+                    // above, and DirectSocket does not go through WebSocket.
+                    if active.source == super::failover::TcpUplinkSource::FreshDial
+                        && rst_retries_on_current_uplink < CHUNK0_RST_MAX_RETRIES
+                        && crate::error_text::is_websocket_closed(&phase1_error)
+                    {
+                        let attempt = rst_retries_on_current_uplink + 1;
+                        debug!(
+                            uplink = %active.name,
+                            target = %target,
+                            retry = attempt,
+                            max_retries = CHUNK0_RST_MAX_RETRIES,
+                            error = %format!("{phase1_error:#}"),
+                            "TCP chunk-0 transport reset; silently retrying same uplink before failover"
+                        );
+                        tokio::time::sleep(CHUNK0_RST_RETRY_BACKOFF).await;
+                        match connect_tcp_uplink_fresh(&uplinks, &active.candidate, &target).await {
+                            Ok(reconnected) => {
+                                active.replace_transport(reconnected);
+                                rst_retries_on_current_uplink = attempt;
+                                for chunk in &replay_buf {
+                                    active.writer
+                                        .send_chunk(chunk)
+                                        .await
+                                        .context("replay to retried uplink after chunk-0 reset failed")?;
+                                }
+                                if client_half_closed {
+                                    active.writer
+                                        .close()
+                                        .await
+                                        .context("retried uplink half-close after chunk-0 reset failed")?;
+                                }
+                                continue 'phase1;
+                            }
+                            Err(connect_err) => {
+                                phase1_error = connect_err
+                                    .context("fresh dial retry after chunk-0 transport reset failed");
+                            }
+                        }
+                    }
+
                     let error_text = format!("{phase1_error:#}");
                     let attempted_uplinks = outline_uplink::deduplicate_attempted_uplink_names(
                         deferred_phase1_failures.iter().map(|(_, name, _)| name.as_str()),
@@ -356,6 +421,7 @@ pub async fn handle_tcp_connect(
                     );
 
                     active.switch_to(next_candidate, reconnected);
+                    rst_retries_on_current_uplink = 0;
 
                     for chunk in &replay_buf {
                         active.writer
