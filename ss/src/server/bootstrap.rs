@@ -6,8 +6,8 @@ use super::auth::{
 use super::connect::configure_tcp_stream;
 use super::shutdown::ShutdownSignal;
 use super::transport::{
-    handle_tcp_h3_connection, handle_udp_h3_connection, is_expected_ws_close,
-    is_normal_h3_shutdown, metrics_handler, not_found_handler, root_http_auth_handler,
+    finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
+    metrics_handler, not_found_handler, root_http_auth_handler,
 };
 use std::{collections::BTreeSet, fs, path::Path, sync::{Arc, OnceLock}};
 
@@ -39,7 +39,7 @@ use tracing::{debug, warn};
 use crate::{
     config::Config,
     crypto::UserKey,
-    metrics::{DisconnectReason, Metrics, Protocol, Transport},
+    metrics::{Metrics, Protocol, Transport},
 };
 
 use super::constants::{
@@ -398,7 +398,7 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = services.metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
-        let outcome = match handle_tcp_h3_connection(
+        let result = handle_tcp_h3_connection(
             socket,
             Arc::clone(&route.users),
             services.metrics.clone(),
@@ -407,23 +407,8 @@ async fn handle_h3_request(
             Arc::clone(&services.dns_cache),
             services.prefer_ipv4_upstream,
         )
-        .await
-        {
-            Ok(()) => DisconnectReason::Normal,
-            Err(error) => {
-                if is_normal_h3_shutdown(&error) {
-                    debug!(?error, "tcp websocket connection closed normally");
-                    DisconnectReason::Normal
-                } else if is_expected_ws_close(&error) {
-                    debug!(?error, "tcp websocket connection closed abruptly");
-                    DisconnectReason::ClientDisconnect
-                } else {
-                    warn!(?error, "tcp websocket connection terminated with error");
-                    DisconnectReason::Error
-                }
-            },
-        };
-        session.finish(outcome);
+        .await;
+        finish_ws_session(session, result, "tcp");
     } else if udp_paths.contains(ws_req.path.as_str()) {
         let route = routes
             .udp
@@ -432,7 +417,7 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
         let session = services.metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
-        let outcome = match handle_udp_h3_connection(
+        let result = handle_udp_h3_connection(
             socket,
             Arc::clone(&route.users),
             services.metrics.clone(),
@@ -442,23 +427,8 @@ async fn handle_h3_request(
             Arc::clone(&services.dns_cache),
             services.prefer_ipv4_upstream,
         )
-        .await
-        {
-            Ok(()) => DisconnectReason::Normal,
-            Err(error) => {
-                if is_normal_h3_shutdown(&error) {
-                    debug!(?error, "udp websocket connection closed normally");
-                    DisconnectReason::Normal
-                } else if is_expected_ws_close(&error) {
-                    debug!(?error, "udp websocket connection closed abruptly");
-                    DisconnectReason::ClientDisconnect
-                } else {
-                    warn!(?error, "udp websocket connection terminated with error");
-                    DisconnectReason::Error
-                }
-            },
-        };
-        session.finish(outcome);
+        .await;
+        finish_ws_session(session, result, "udp");
     }
 
     Ok(())

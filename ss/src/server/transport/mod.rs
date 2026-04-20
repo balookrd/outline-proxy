@@ -17,7 +17,7 @@ use axum::{
 };
 use tracing::{debug, warn};
 
-use crate::metrics::{DisconnectReason, Metrics, Transport};
+use crate::metrics::{DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route};
@@ -52,7 +52,7 @@ pub(super) async fn tcp_websocket_upgrade(
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state.services.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
-        let outcome = match tcp::handle_tcp_connection(
+        let result = tcp::handle_tcp_connection(
             socket,
             Arc::clone(&route.users),
             state.services.metrics.clone(),
@@ -62,23 +62,8 @@ pub(super) async fn tcp_websocket_upgrade(
             Arc::clone(&state.services.dns_cache),
             state.services.prefer_ipv4_upstream,
         )
-        .await
-        {
-            Ok(()) => DisconnectReason::Normal,
-            Err(error) => {
-                if is_normal_h3_shutdown(&error) {
-                    debug!(?error, "tcp websocket connection closed normally");
-                    DisconnectReason::Normal
-                } else if is_expected_ws_close(&error) {
-                    debug!(?error, "tcp websocket connection closed abruptly");
-                    DisconnectReason::ClientDisconnect
-                } else {
-                    warn!(?error, "tcp websocket connection terminated with error");
-                    DisconnectReason::Error
-                }
-            },
-        };
-        session.finish(outcome);
+        .await;
+        finish_ws_session(session, result, "tcp");
     })
 }
 
@@ -156,7 +141,7 @@ pub(super) async fn udp_websocket_upgrade(
     let session = state.services.metrics.open_websocket_session(Transport::Udp, protocol);
     let nat_table = Arc::clone(&state.services.nat_table);
     ws.on_upgrade(move |socket| async move {
-        let outcome = match udp::handle_udp_connection(
+        let result = udp::handle_udp_connection(
             socket,
             Arc::clone(&route.users),
             state.services.metrics.clone(),
@@ -167,24 +152,32 @@ pub(super) async fn udp_websocket_upgrade(
             Arc::clone(&state.services.dns_cache),
             state.services.prefer_ipv4_upstream,
         )
-        .await
-        {
-            Ok(()) => DisconnectReason::Normal,
-            Err(error) => {
-                if is_normal_h3_shutdown(&error) {
-                    debug!(?error, "udp websocket connection closed normally");
-                    DisconnectReason::Normal
-                } else if is_expected_ws_close(&error) {
-                    debug!(?error, "udp websocket connection closed abruptly");
-                    DisconnectReason::ClientDisconnect
-                } else {
-                    warn!(?error, "udp websocket connection terminated with error");
-                    DisconnectReason::Error
-                }
-            },
-        };
-        session.finish(outcome);
+        .await;
+        finish_ws_session(session, result, "udp");
     })
+}
+
+pub(super) fn finish_ws_session(
+    session: WebSocketSessionGuard,
+    result: anyhow::Result<()>,
+    kind: &'static str,
+) {
+    let outcome = match result {
+        Ok(()) => DisconnectReason::Normal,
+        Err(error) => {
+            if is_normal_h3_shutdown(&error) {
+                debug!(?error, "{kind} websocket connection closed normally");
+                DisconnectReason::Normal
+            } else if is_expected_ws_close(&error) {
+                debug!(?error, "{kind} websocket connection closed abruptly");
+                DisconnectReason::ClientDisconnect
+            } else {
+                warn!(?error, "{kind} websocket connection terminated with error");
+                DisconnectReason::Error
+            }
+        },
+    };
+    session.finish(outcome);
 }
 
 pub(super) fn is_expected_ws_close(error: &anyhow::Error) -> bool {
