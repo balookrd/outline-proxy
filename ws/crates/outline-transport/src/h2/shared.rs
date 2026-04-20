@@ -10,7 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -28,7 +28,7 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
@@ -219,6 +219,10 @@ struct SharedH2Connection {
     // .ready() independently; hyper's H2 layer handles flow-control internally.
     send_request: H2SendRequestHandle,
     closed: Arc<AtomicBool>,
+    // conn_life diagnostics: counts every WS stream opened on this connection
+    // (observed at close by the driver task) to correlate session_death bursts
+    // with a single underlying connection's death.
+    streams_opened: Arc<AtomicU64>,
     _driver_task: AbortOnDrop,
 }
 
@@ -290,6 +294,7 @@ impl SharedH2Connection {
             .context("failed to upgrade HTTP/2 websocket stream")?;
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
+        self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok(WsTransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
         })
@@ -299,6 +304,14 @@ impl SharedH2Connection {
 impl SharedConnectionHealth for SharedH2Connection {
     fn is_open(&self) -> bool {
         self.is_open()
+    }
+
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn mode(&self) -> &'static str {
+        "h2"
     }
 }
 
@@ -517,22 +530,67 @@ async fn connect_h2_connection(
     let id = H2_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
     let closed = Arc::new(AtomicBool::new(false));
     let closed_flag = Arc::clone(&closed);
+    let streams_opened = Arc::new(AtomicU64::new(0));
+    let streams_opened_driver = Arc::clone(&streams_opened);
+    let opened_at = Instant::now();
+    let peer = server_addr.to_string();
+    let peer_for_driver = peer.clone();
+    let mode = if use_tls { "h2s" } else { "h2c" };
+    info!(
+        target: "outline_transport::conn_life",
+        id, peer = %peer, mode, "h2 connection opened"
+    );
     let driver_task = AbortOnDrop::new(tokio::spawn(async move {
         let result = conn.await;
         closed_flag.store(true, Ordering::Relaxed);
         if let Some(cache_key) = cache_key {
             invalidate_shared_h2_connection_if_current(&cache_key, id).await;
         }
+        let age_secs = opened_at.elapsed().as_secs();
+        let streams = streams_opened_driver.load(Ordering::Relaxed);
         match result {
-            Ok(()) => debug!("h2 connection closed"),
+            Ok(()) => {
+                info!(
+                    target: "outline_transport::conn_life",
+                    id,
+                    peer = %peer_for_driver,
+                    mode,
+                    age_secs,
+                    streams,
+                    class = "normal",
+                    "h2 connection closed"
+                );
+            }
             Err(error) => {
                 let error_text = error.to_string();
+                let class = classify_h2_close(&error_text);
                 if is_expected_h2_close(&error_text) {
-                    debug!("h2 connection closed: {error_text}");
+                    info!(
+                        target: "outline_transport::conn_life",
+                        id,
+                        peer = %peer_for_driver,
+                        mode,
+                        age_secs,
+                        streams,
+                        class,
+                        error = %error_text,
+                        "h2 connection closed"
+                    );
                 } else {
+                    info!(
+                        target: "outline_transport::conn_life",
+                        id,
+                        peer = %peer_for_driver,
+                        mode,
+                        age_secs,
+                        streams,
+                        class,
+                        error = %error_text,
+                        "h2 connection closed with error"
+                    );
                     error!("h2 connection error: {error_text}");
                 }
-            },
+            }
         }
     }));
 
@@ -540,8 +598,35 @@ async fn connect_h2_connection(
         id,
         send_request,
         closed,
+        streams_opened,
         _driver_task: driver_task,
     })
+}
+
+fn classify_h2_close(error: &str) -> &'static str {
+    let e = error.to_ascii_lowercase();
+    if e.contains("goaway") {
+        "goaway"
+    } else if e.contains("reset") || e.contains("rst") {
+        "rst"
+    } else if e.contains("timed out") || e.contains("timeout") || e.contains("keepalive") {
+        "timeout"
+    } else if e.contains("tls") || e.contains("certificate") || e.contains("handshake") {
+        "tls"
+    } else if e.contains("broken pipe")
+        || e.contains("connection reset")
+        || e.contains("connection closed")
+        || e.contains("eof")
+        || e.contains("unexpected end")
+    {
+        "eof"
+    } else if e.contains("operation was canceled") || e.contains("operation was cancelled") {
+        "cancelled"
+    } else if e.contains("io") {
+        "io"
+    } else {
+        "other"
+    }
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────

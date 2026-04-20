@@ -91,6 +91,13 @@ impl H2WsStream {
     pub(super) fn is_connection_alive(&self) -> bool {
         self._shared_connection.is_open()
     }
+
+    pub(super) fn shared_connection_info(&self) -> (u64, &'static str) {
+        (
+            self._shared_connection.conn_id(),
+            self._shared_connection.mode(),
+        )
+    }
 }
 
 impl Stream for H2WsStream {

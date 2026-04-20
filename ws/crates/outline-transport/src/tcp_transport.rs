@@ -110,11 +110,25 @@ impl WriteTransport for SocketWriteTransport {
 // Concrete read transports
 // ---------------------------------------------------------------------------
 
+/// Diagnostic context attached to a WebSocket reader so that stream-level EOF
+/// logs include the uplink name, target, and — for H2/H3 streams — the shared
+/// connection id.  Correlating bursts of EOFs with a single `conn_id` vs many
+/// distinguishes "underlying transport died" from "server reset individual
+/// streams at the app layer".
+#[derive(Clone, Debug, Default)]
+pub struct WsReadDiag {
+    pub conn_id: Option<u64>,
+    pub mode: &'static str,
+    pub uplink: String,
+    pub target: String,
+}
+
 #[doc(hidden)]
 pub struct WsReadTransport {
     stream: WsStream,
     ctrl_tx: mpsc::Sender<Message>,
     buffer: Vec<u8>,
+    diag: WsReadDiag,
 }
 
 impl ReadTransport for WsReadTransport {
@@ -127,6 +141,10 @@ impl ReadTransport for WsReadTransport {
                         target: "outline_ws_rust::session_death",
                         need = len,
                         have = self.buffer.len(),
+                        uplink = %self.diag.uplink,
+                        target_addr = %self.diag.target,
+                        mode = self.diag.mode,
+                        conn_id = ?self.diag.conn_id,
                         "reader: websocket stream returned None (EOF without Close frame)"
                     );
                     return Err(anyhow::Error::from(WebSocketClosed));
@@ -137,6 +155,10 @@ impl ReadTransport for WsReadTransport {
                         target: "outline_ws_rust::session_death",
                         need = len,
                         have = self.buffer.len(),
+                        uplink = %self.diag.uplink,
+                        target_addr = %self.diag.target,
+                        mode = self.diag.mode,
+                        conn_id = ?self.diag.conn_id,
                         error = %format!("{e}"),
                         "reader: websocket stream yielded error"
                     );
@@ -305,6 +327,14 @@ impl TcpReader {
         match self {
             Self::Ws(r) => Self::Ws(r.with_request_salt(salt)),
             Self::Socket(r) => Self::Socket(r.with_request_salt(salt)),
+        }
+    }
+
+    /// Attach diagnostic context to a WebSocket reader; no-op for socket readers.
+    pub fn with_diag(self, diag: WsReadDiag) -> Self {
+        match self {
+            Self::Ws(r) => Self::Ws(r.with_diag(diag)),
+            other => other,
         }
     }
 
@@ -618,7 +648,12 @@ impl TcpShadowsocksReader<WsReadTransport> {
         let mut mk = [0u8; 32];
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
-            transport: WsReadTransport { stream, ctrl_tx, buffer: Vec::new() },
+            transport: WsReadTransport {
+                stream,
+                ctrl_tx,
+                buffer: Vec::new(),
+                diag: WsReadDiag::default(),
+            },
             cipher,
             master_key: mk,
             cipher_state: None,
@@ -627,6 +662,13 @@ impl TcpShadowsocksReader<WsReadTransport> {
             _lifetime: lifetime,
             closed_cleanly: false,
         }
+    }
+
+    /// Attach diagnostic context so that stream-level EOF logs can be
+    /// correlated against the underlying shared H2/H3 connection.
+    pub fn with_diag(mut self, diag: WsReadDiag) -> Self {
+        self.transport.diag = diag;
+        self
     }
 }
 
