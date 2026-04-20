@@ -12,7 +12,7 @@ Environment=MIMALLOC_ARENA_RESERVE=262144
 # Persist active-uplink selection to the writable state directory.
 # The default path (same dir as config, .state.toml extension) would land in
 # /etc/ which is read-only under ProtectSystem=strict + DynamicUser.
-Environment=STATE_PATH=/var/lib/outline-ws-rust/state.toml
+Environment=STATE_PATH=/var/lib/outline-ws-rust/_default/state.toml
 ExecStart=/usr/local/bin/outline-ws-rust --config /etc/outline-ws-rust/config.toml
 Restart=on-failure
 RestartSec=3s
@@ -29,10 +29,10 @@ TasksMax=infinity
 NoNewPrivileges=true
 
 DynamicUser=true
-StateDirectory=outline-ws-rust
-LogsDirectory=outline-ws-rust
+StateDirectory=outline-ws-rust/_default
+LogsDirectory=outline-ws-rust/_default
 RuntimeDirectory=outline-ws-rust
-WorkingDirectory=/var/lib/outline-ws-rust
+WorkingDirectory=/var/lib/outline-ws-rust/_default
 UMask=0077
 
 PrivateTmp=true
@@ -57,7 +57,7 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-ReadWritePaths=/var/lib/outline-ws-rust /var/log/outline-ws-rust
+ReadWritePaths=/var/lib/outline-ws-rust/_default /var/log/outline-ws-rust/_default
 
 [Install]
 WantedBy=multi-user.target
