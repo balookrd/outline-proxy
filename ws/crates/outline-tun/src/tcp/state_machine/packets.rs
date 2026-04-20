@@ -25,7 +25,7 @@ impl TcpOptions {
 
     #[inline]
     fn push(&mut self, b: u8) {
-        debug_assert!(self.len < 40, "TCP options overflow: max 40 bytes");
+        assert!(self.len < 40, "TCP options overflow: max 40 bytes");
         self.data[self.len] = b;
         self.len += 1;
     }
@@ -33,7 +33,7 @@ impl TcpOptions {
     #[inline]
     fn extend_from_slice(&mut self, s: &[u8]) {
         let end = self.len + s.len();
-        debug_assert!(end <= 40, "TCP options overflow: max 40 bytes");
+        assert!(end <= 40, "TCP options overflow: max 40 bytes");
         self.data[self.len..end].copy_from_slice(s);
         self.len = end;
     }
