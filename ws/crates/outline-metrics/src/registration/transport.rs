@@ -5,6 +5,7 @@ pub(super) struct TransportFields {
     pub(super) transport_connects_active: IntGaugeVec,
     pub(super) upstream_transports_total: IntCounterVec,
     pub(super) upstream_transports_active: IntGaugeVec,
+    pub(super) metrics_http_requests_total: IntCounterVec,
 }
 
 pub(super) fn build(registry: &Registry) -> TransportFields {
@@ -44,6 +45,15 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
     )
     .expect("upstream_transports_active metric");
 
+    let metrics_http_requests_total = IntCounterVec::new(
+        Opts::new(
+            "outline_ws_rust_metrics_http_requests_total",
+            "HTTP requests served by the control and metrics listeners by path and status code.",
+        ),
+        &["path", "status"],
+    )
+    .expect("metrics_http_requests_total metric");
+
     registry
         .register(Box::new(transport_connects_total.clone()))
         .expect("register transport_connects_total");
@@ -56,11 +66,15 @@ pub(super) fn build(registry: &Registry) -> TransportFields {
     registry
         .register(Box::new(upstream_transports_active.clone()))
         .expect("register upstream_transports_active");
+    registry
+        .register(Box::new(metrics_http_requests_total.clone()))
+        .expect("register metrics_http_requests_total");
 
     TransportFields {
         transport_connects_total,
         transport_connects_active,
         upstream_transports_total,
         upstream_transports_active,
+        metrics_http_requests_total,
     }
 }

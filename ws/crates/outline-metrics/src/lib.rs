@@ -110,6 +110,7 @@ struct Metrics {
     transport_connects_active: IntGaugeVec,
     upstream_transports_total: IntCounterVec,
     upstream_transports_active: IntGaugeVec,
+    metrics_http_requests_total: IntCounterVec,
     #[cfg(feature = "tun")]
     tun_packets_total: IntCounterVec,
     #[cfg(feature = "tun")]

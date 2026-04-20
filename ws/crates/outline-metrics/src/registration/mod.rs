@@ -71,6 +71,7 @@ impl Metrics {
             transport_connects_active: t.transport_connects_active,
             upstream_transports_total: t.upstream_transports_total,
             upstream_transports_active: t.upstream_transports_active,
+            metrics_http_requests_total: t.metrics_http_requests_total,
             #[cfg(feature = "tun")]
             tun_packets_total: tun.tun_packets_total,
             #[cfg(feature = "tun")]
