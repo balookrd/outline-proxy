@@ -2,7 +2,8 @@
 //!
 //! Wires together: configuration loading ([`config`]), startup and listener
 //! binding ([`bootstrap`]), SOCKS5 TCP/UDP ingress ([`proxy`]), and the
-//! optional Prometheus metrics HTTP endpoint ([`metrics_http`]).
+//! optional read-only metrics and authenticated control-plane HTTP
+//! listeners ([`http`]).
 
 pub mod config;
 pub(crate) mod client_io;
@@ -10,7 +11,7 @@ pub(crate) mod error_text;
 pub mod memory;
 pub mod metrics;
 #[cfg(feature = "metrics")]
-pub mod metrics_http;
+pub mod http;
 pub mod proxy;
 
 mod bootstrap;

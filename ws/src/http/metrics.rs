@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use http::header::{CONTENT_TYPE, HeaderValue};
-use http::{Method, Request, Response, StatusCode};
+use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
 use outline_metrics::{record_metrics_http_request, render_prometheus};
-use outline_uplink::{TransportKind, UplinkRegistry};
+use outline_uplink::UplinkRegistry;
 
 type MetricsResponse = Response<Full<Bytes>>;
 
@@ -77,83 +77,12 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> 
                 )
             },
         },
-        "/switch" => {
-            let response = handle_switch(&request, uplinks).await;
-            record_metrics_http_request("/switch", response.status().as_u16());
-            response
-        },
         _ => {
             record_metrics_http_request(path, 404);
             plain_response(
                 StatusCode::NOT_FOUND,
                 "text/plain; charset=utf-8",
                 Bytes::from_static(b"not found\n"),
-            )
-        },
-    }
-}
-
-async fn handle_switch(
-    request: &Request<Incoming>,
-    uplinks: UplinkRegistry,
-) -> MetricsResponse {
-    if request.method() != Method::POST {
-        return plain_response(
-            StatusCode::METHOD_NOT_ALLOWED,
-            "text/plain; charset=utf-8",
-            Bytes::from_static(b"use POST\n"),
-        );
-    }
-    let query = request.uri().query().unwrap_or("");
-    let mut uplink_name: Option<String> = None;
-    let mut group_name: Option<String> = None;
-    let mut transport: Option<TransportKind> = None;
-    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
-        match key.as_ref() {
-            "uplink" | "name" => uplink_name = Some(value.into_owned()),
-            "group" => group_name = Some(value.into_owned()),
-            "transport" => match value.as_ref() {
-                "tcp" => transport = Some(TransportKind::Tcp),
-                "udp" => transport = Some(TransportKind::Udp),
-                "both" | "all" | "" => transport = None,
-                other => {
-                    return plain_response(
-                        StatusCode::BAD_REQUEST,
-                        "text/plain; charset=utf-8",
-                        Bytes::from(format!("invalid transport \"{other}\" (use tcp|udp|both)\n")),
-                    );
-                },
-            },
-            _ => {},
-        }
-    }
-    let Some(name) = uplink_name else {
-        return plain_response(
-            StatusCode::BAD_REQUEST,
-            "text/plain; charset=utf-8",
-            Bytes::from_static(b"missing required query parameter \"uplink\"\n"),
-        );
-    };
-    match uplinks
-        .set_active_uplink_by_name(group_name.as_deref(), &name, transport)
-        .await
-    {
-        Ok((group, index)) => {
-            info!(group = %group, uplink = %name, index, ?transport, "manual uplink switch");
-            plain_response(
-                StatusCode::OK,
-                "text/plain; charset=utf-8",
-                Bytes::from(format!(
-                    "switched group \"{group}\" to uplink \"{name}\" (index {index})\n"
-                )),
-            )
-        },
-        Err(error) => {
-            warn!(error = %format!("{error:#}"), uplink = %name, "manual uplink switch failed");
-            plain_response(
-                StatusCode::BAD_REQUEST,
-                "text/plain; charset=utf-8",
-                Bytes::from(format!("{error}\n")),
             )
         },
     }

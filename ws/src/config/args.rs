@@ -59,6 +59,16 @@ pub struct Args {
     #[arg(long, env = "METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
+    /// Bind address for the control-plane HTTP listener. Required in
+    /// combination with `--control-token`/`CONTROL_TOKEN`.
+    #[arg(long, env = "CONTROL_LISTEN")]
+    pub control_listen: Option<SocketAddr>,
+
+    /// Bearer token required on every control-plane request. Must be set
+    /// whenever the control listener is enabled.
+    #[arg(long, env = "CONTROL_TOKEN")]
+    pub control_token: Option<String>,
+
     #[cfg(feature = "tun")]
     #[arg(long, env = "TUN_PATH")]
     pub tun_path: Option<PathBuf>,

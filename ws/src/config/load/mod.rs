@@ -5,8 +5,8 @@ use tokio::fs;
 
 use super::args::Args;
 use super::compat::normalize_outline_section;
-use super::schema::ConfigFile;
-use super::types::{AppConfig, MetricsConfig};
+use super::schema::{ConfigFile, ControlSection};
+use super::types::{AppConfig, ControlConfig, MetricsConfig};
 
 mod auth;
 mod balancing;
@@ -44,6 +44,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let socks5 = file.as_ref().and_then(|f| f.socks5.as_ref());
     let outline = file.as_ref().and_then(normalize_outline_section);
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
+    let control_section = file.as_ref().and_then(|f| f.control.as_ref());
     #[cfg(feature = "tun")]
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
     let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
@@ -62,6 +63,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .metrics_listen
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
+    let control = load_control_config(control_section, args, config_dir).await?;
     #[cfg(feature = "tun")]
     let tun = tun::load_tun_config(tun_section, args)?;
     let h2 = h2::load_h2_config(h2_section);
@@ -95,6 +97,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         groups,
         routing,
         metrics,
+        control,
         #[cfg(feature = "tun")]
         tun,
         h2,
@@ -103,4 +106,45 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         direct_fwmark,
         state_path,
     })
+}
+
+async fn load_control_config(
+    section: Option<&ControlSection>,
+    args: &Args,
+    config_dir: &Path,
+) -> Result<Option<ControlConfig>> {
+    let listen = args.control_listen.or_else(|| section.and_then(|s| s.listen));
+    let cli_token = args.control_token.clone().filter(|t| !t.is_empty());
+    let inline_token = section
+        .and_then(|s| s.token.clone())
+        .filter(|t| !t.is_empty());
+    let file_token = match section.and_then(|s| s.token_file.as_ref()) {
+        Some(path) => {
+            let resolved = routing::resolve_config_path(path, config_dir)
+                .context("invalid [control].token_file")?;
+            let raw = fs::read_to_string(&resolved).await.with_context(|| {
+                format!("failed to read control token from {}", resolved.display())
+            })?;
+            let trimmed = raw.trim().to_owned();
+            if trimmed.is_empty() {
+                bail!("control token file {} is empty", resolved.display());
+            }
+            Some(trimmed)
+        },
+        None => None,
+    };
+    let token = cli_token.or(inline_token).or(file_token);
+
+    match (listen, token) {
+        (None, None) => Ok(None),
+        (Some(listen), Some(token)) => Ok(Some(ControlConfig { listen, token })),
+        (Some(_), None) => bail!(
+            "control listener configured but no token set: provide [control].token, \
+             [control].token_file, --control-token, or CONTROL_TOKEN"
+        ),
+        (None, Some(_)) => bail!(
+            "control token set but no listener: provide [control].listen, \
+             --control-listen, or CONTROL_LISTEN"
+        ),
+    }
 }

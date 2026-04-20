@@ -27,6 +27,7 @@ pub(crate) struct ConfigFile {
     pub(super) load_balancing: Option<LoadBalancingSection>,
     pub(super) outline: Option<OutlineSection>,
     pub(super) metrics: Option<MetricsSection>,
+    pub(super) control: Option<ControlSection>,
     #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
     pub(super) h2: Option<H2Section>,
@@ -81,6 +82,13 @@ pub(crate) struct OutlineSection {
 #[derive(Debug, Deserialize)]
 pub(super) struct MetricsSection {
     pub(super) listen: Option<SocketAddr>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ControlSection {
+    pub(super) listen: Option<SocketAddr>,
+    pub(super) token: Option<String>,
+    pub(super) token_file: Option<PathBuf>,
 }
 
 #[cfg(feature = "tun")]
