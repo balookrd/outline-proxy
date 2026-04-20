@@ -14,6 +14,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Added
 
+- `[[route]]` rules now accept a `files = [..., ...]` list in addition to the existing `file`; all paths are merged into the rule's CIDR set and each one is watched independently for hot-reload. Useful for keeping IPv4 and IPv6 GeoIP feeds in separate files.
 - Split the HTTP surface into independent metrics and control planes; the control plane now requires bearer authentication and can be enabled with its own Cargo feature.
 - Added `POST /switch` for manual active-uplink switching.
 - Added connection limiting with a semaphore to protect the process under connection floods.

@@ -668,6 +668,17 @@ file_poll_secs = 60
 via = "backup"
 fallback_via = "main"     # try "main" if "backup" has no healthy uplinks
 
+# Multiple files merged into one rule — e.g. split IPv4 / IPv6 lists that
+# come from separate upstream feeds. All listed files are watched and
+# reloaded independently; inline `prefixes` may still be combined with them.
+[[route]]
+files = [
+    "/etc/outline-ws-rust/geoip-cn-v4.list",
+    "/etc/outline-ws-rust/geoip-cn-v6.list",
+]
+file_poll_secs = 60
+via = "backup"
+
 # Block a specific range.
 [[route]]
 prefixes = ["198.51.100.0/24"]
@@ -682,11 +693,11 @@ fallback_direct = true    # or: fallback_drop = true / fallback_via = "backup"
 
 Rule fields:
 
-- `prefixes` / `file`: inline list and/or path to a file (one CIDR per line, `#` comments and blank lines ignored). Both are merged.
-- `file_poll_secs`: how often (in seconds) to `stat` the file and reload its CIDRs on mtime change. Default `60`.
+- `prefixes` / `file` / `files`: inline list and/or one or more paths to files (one CIDR per line, `#` comments and blank lines ignored). All sources are merged into the rule's CIDR set. `file` is a convenience shorthand for a single-entry `files`; both may be combined.
+- `file_poll_secs`: how often (in seconds) to `stat` each file and reload its CIDRs on mtime change. Default `60`. Applies to every path in `files`.
 - `via`: target for matching traffic. Required (except on `default = true` rules, where it picks the fallthrough target).
 - `fallback_via` / `fallback_direct` / `fallback_drop`: mutually exclusive; consulted when the primary `via` is a group that has zero healthy uplinks at dispatch time.
-- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set `prefixes` or `file`.
+- `default = true`: exactly one rule must carry this; it matches everything not caught by the previous rules. The `default` rule must not set `prefixes`, `file`, or `files`.
 
 ### Prefix matching
 
@@ -694,7 +705,7 @@ Internally each rule's inline + file prefixes are merged into a [`CidrSet`](src/
 
 ### Hot-reload
 
-Every rule with `file = "..."` gets a background tokio task that polls `mtime` every `file_poll_secs` seconds. On change the rule's CIDR set is rebuilt from its inline + reloaded file and swapped atomically (`Arc<RwLock<CidrSet>>`) — other rules and the table shape are unaffected. Parse errors on reload leave the previous CIDR set in place and log a warning.
+Every rule with at least one `file` / `files` entry gets a background tokio task that polls `mtime` of every listed path every `file_poll_secs` seconds. When any of them changes, the rule's CIDR set is rebuilt from its inline prefixes plus all reloaded files and swapped atomically (`Arc<RwLock<CidrSet>>`) — other rules and the table shape are unaffected. Parse or read errors on reload leave the previous CIDR set in place and log a warning.
 
 ### Direct session idle timeout
 

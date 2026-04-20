@@ -145,8 +145,10 @@ uplinks:
 # group has zero healthy uplinks at dispatch time.
 #
 # Prefixes may be inline via `prefixes: [...]` and/or loaded from a file
-# (one CIDR per line, `#` comments). The file is hot-reloaded on mtime
-# change (poll interval: file_poll_secs, default 60).
+# (one CIDR per line, `#` comments). Use `file:` for a single path or
+# `files: [..., ...]` for several; all sources are merged into one CIDR
+# set. Files are hot-reloaded on mtime change (poll interval:
+# file_poll_secs, default 60; applied to every file in `files`).
 
 route:
   # RFC1918 / ULA / loopback — never through the tunnel.
@@ -168,3 +170,10 @@ route:
   #   file_poll_secs: 60
   #   via: backup
   #   fallback_via: main
+
+  # Example with multiple files merged into one rule (e.g. split IPv4/IPv6):
+  # - files:
+  #     - /etc/outline-ws-rust/geoip-cn-v4.list
+  #     - /etc/outline-ws-rust/geoip-cn-v6.list
+  #   file_poll_secs: 60
+  #   via: backup

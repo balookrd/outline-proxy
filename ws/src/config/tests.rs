@@ -864,6 +864,55 @@ async fn load_config_rejects_cli_override_with_uplink_group() {
 }
 
 #[tokio::test]
+async fn load_config_loads_multiple_route_files() {
+    let dir = std::env::temp_dir().join("outline-ws-rust-route-files-ok");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let v4_path = dir.join("cn-v4.list");
+    let v6_path = dir.join("cn-v6.list");
+    std::fs::write(&v4_path, "1.0.0.0/8\n2.0.0.0/8\n").unwrap();
+    std::fs::write(&v6_path, "2001:db8::/32\n").unwrap();
+    let cfg_path = dir.join("config.toml");
+    std::fs::write(
+        &cfg_path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[uplink_group]]
+        name = "main"
+
+        [[uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[route]]
+        default = true
+        via = "main"
+
+        [[route]]
+        files = ["cn-v4.list", "cn-v6.list"]
+        via = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&cfg_path, &args).await.unwrap();
+    let routing = config.routing.expect("routing must be built");
+    assert_eq!(routing.rules.len(), 1);
+    let rule = &routing.rules[0];
+    assert_eq!(rule.files.len(), 2);
+    assert_eq!(rule.files[0], v4_path);
+    assert_eq!(rule.files[1], v6_path);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
 async fn load_config_rejects_inverted_route_without_prefixes() {
     let path = std::env::temp_dir().join("outline-ws-rust-route-invert-empty.toml");
     std::fs::write(
