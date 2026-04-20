@@ -1320,7 +1320,7 @@ async fn handle_test_tcp_upstream(
     mut send_rx: mpsc::UnboundedReceiver<Vec<u8>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws = accept_async(MaybeTlsStream::Plain(stream)).await?;
-    let ws = WsTransportStream::Http1 { inner: ws };
+    let ws = WsTransportStream::new_http1(ws);
     let (sink, stream) = ws.split();
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key("Secret0").unwrap();

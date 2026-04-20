@@ -119,6 +119,27 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
     ) -> Result<H3WsStream> {
+        match self.open_websocket_inner(server_name, server_port, path).await {
+            Ok(ws) => Ok(ws),
+            Err(error) => {
+                // Any failure opening a new CONNECT stream on an already-cached
+                // shared QUIC connection is a strong signal the connection is
+                // sick (send timeout, response timeout, non-2xx status, etc.).
+                // Soft-close so concurrent callers racing to open another
+                // stream skip this entry in `is_open()` and fall through to
+                // the cache-invalidation path.
+                self.closed.store(true, Ordering::Relaxed);
+                Err(error)
+            },
+        }
+    }
+
+    async fn open_websocket_inner(
+        self: &Arc<Self>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+    ) -> Result<H3WsStream> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
@@ -140,7 +161,6 @@ impl SharedH3Connection {
         })
         .await
         .map_err(|_| {
-            self.closed.store(true, Ordering::Relaxed);
             anyhow!(
                 "HTTP/3 websocket CONNECT request timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -150,7 +170,6 @@ impl SharedH3Connection {
         let response = timeout(OPEN_WEBSOCKET_TIMEOUT, stream.recv_response())
             .await
             .map_err(|_| {
-                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/3 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -218,10 +237,15 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
             let mut config = quinn::ClientConfig::new(Arc::new(quic));
             let mut transport = quinn::TransportConfig::default();
             // Send QUIC PING frames so NAT mappings stay alive and the server
-            // detects dead connections promptly.
+            // detects dead connections promptly.  Tighter max_idle_timeout
+            // (30s, down from 120s) so a silently-dropped QUIC path on
+            // consumer-router conntrack is torn down within ~30s instead of 2
+            // minutes, letting the shared-connection cache evict the dead
+            // entry and reconnects succeed promptly.  PING every 10s keeps
+            // NAT mappings fresh well inside that budget.
             transport.keep_alive_interval(Some(Duration::from_secs(10)));
             transport.max_idle_timeout(Some(
-                Duration::from_secs(120)
+                Duration::from_secs(30)
                     .try_into()
                     .expect("valid H3 QUIC client idle timeout"),
             ));

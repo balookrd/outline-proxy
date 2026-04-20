@@ -1,3 +1,7 @@
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
+
 use futures_util::{Sink, Stream};
 use pin_project_lite::pin_project;
 use tokio::net::TcpStream;
@@ -21,6 +25,48 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
 }
 
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+/// Maximum time an HTTP/1 WebSocket stream may sit idle (no frame in either
+/// direction) before [`WsTransportStream::is_connection_alive`] starts
+/// reporting `false`.  HTTP/1 has no shared multiplexed driver to notice a
+/// silently-dropped TCP path, so the honest signal we have is "did we see
+/// any frame recently?".  The standby pool's keepalive loop sends a Ping
+/// every few seconds, so healthy pooled entries stay well inside this
+/// threshold; stale ones (router NAT lost the mapping, middlebox dropped
+/// the connection without a FIN) exceed it and are discarded at acquisition
+/// time instead of being handed to a session as a zombie transport.
+const H1_STALENESS_THRESHOLD: Duration = Duration::from_secs(60);
+
+/// Tracks last-seen activity on an HTTP/1 WebSocket stream.  Cheap to clone
+/// (internally an `Arc<AtomicU64>`) so split halves share a single counter.
+/// Updated on any frame the [`Stream`] or [`Sink`] impl observes — data,
+/// Ping, Pong, or Close all count as "the peer is still talking to us".
+#[derive(Clone, Debug)]
+pub(crate) struct H1Activity {
+    last_activity_ms: Arc<AtomicU64>,
+    baseline: Instant,
+}
+
+impl H1Activity {
+    fn new() -> Self {
+        let baseline = Instant::now();
+        Self {
+            last_activity_ms: Arc::new(AtomicU64::new(0)),
+            baseline,
+        }
+    }
+
+    fn touch(&self) {
+        let ms = self.baseline.elapsed().as_millis() as u64;
+        self.last_activity_ms.store(ms, Ordering::Relaxed);
+    }
+
+    fn is_fresh(&self, threshold: Duration) -> bool {
+        let now_ms = self.baseline.elapsed().as_millis() as u64;
+        let last_ms = self.last_activity_ms.load(Ordering::Relaxed);
+        now_ms.saturating_sub(last_ms) < threshold.as_millis() as u64
+    }
+}
 
 // When the h3 feature is disabled, provide a zero-size never-constructable
 // stub so that WsTransportStream::H3 remains a valid enum variant. The variant is
@@ -77,22 +123,32 @@ pin_project! {
     /// which transport a given session is using.
     #[project = WsTransportStreamProj]
     pub enum WsTransportStream {
-        Http1 { #[pin] inner: H1WsStream },
+        Http1 { #[pin] inner: H1WsStream, activity: H1Activity },
         H2 { #[pin] inner: H2WsStream },
         H3 { #[pin] inner: H3WsStream },
     }
 }
 
 impl WsTransportStream {
+    /// Wrap a raw HTTP/1 WebSocket stream, initialising activity tracking.
+    pub fn new_http1(inner: H1WsStream) -> Self {
+        let activity = H1Activity::new();
+        // Mark the moment of birth as activity so a freshly-dialed stream is
+        // not immediately reported stale before the first frame arrives.
+        activity.touch();
+        WsTransportStream::Http1 { inner, activity }
+    }
+
     /// Returns `true` when the underlying shared connection (H2 / H3) is still
-    /// usable.  HTTP/1 streams always return `true` because they do not share a
-    /// multiplexed connection.  Used by the standby pool to detect and discard
-    /// websocket streams whose shared connection was marked broken (e.g. after
-    /// an `open_websocket` timeout) — the 1ms peek alone cannot catch this
-    /// because H2 keepalive may still succeed on the dying connection.
+    /// usable.  For HTTP/1 — which has no shared driver — returns `true` while
+    /// the stream has seen any frame (data, ping, pong, close) within the last
+    /// [`H1_STALENESS_THRESHOLD`], and `false` once that quiet period elapses.
+    /// Used by the standby pool to discard zombie transports at acquisition
+    /// time instead of handing them to a session that then hangs on the
+    /// 5-minute idle watcher.
     pub fn is_connection_alive(&self) -> bool {
         match self {
-            WsTransportStream::Http1 { .. } => true,
+            WsTransportStream::Http1 { activity, .. } => activity.is_fresh(H1_STALENESS_THRESHOLD),
             WsTransportStream::H2 { inner } => inner.is_connection_alive(),
             #[cfg(feature = "h3")]
             WsTransportStream::H3 { inner } => inner.is_connection_alive(),
@@ -125,7 +181,13 @@ impl Stream for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::Http1 { inner, activity } => {
+                let poll = inner.poll_next(cx);
+                if let std::task::Poll::Ready(Some(_)) = &poll {
+                    activity.touch();
+                }
+                poll
+            },
             WsTransportStreamProj::H2 { inner } => inner.poll_next(cx),
             #[cfg(feature = "h3")]
             WsTransportStreamProj::H3 { inner } => match inner.poll_next(cx) {
@@ -153,7 +215,7 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_ready(cx),
             WsTransportStreamProj::H2 { inner } => inner.poll_ready(cx),
             #[cfg(feature = "h3")]
             WsTransportStreamProj::H3 { inner } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
@@ -164,7 +226,13 @@ impl Sink<Message> for WsTransportStream {
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner } => inner.start_send(item),
+            WsTransportStreamProj::Http1 { inner, activity } => {
+                let result = inner.start_send(item);
+                if result.is_ok() {
+                    activity.touch();
+                }
+                result
+            },
             WsTransportStreamProj::H2 { inner } => inner.start_send(item),
             #[cfg(feature = "h3")]
             WsTransportStreamProj::H3 { inner } => inner
@@ -180,7 +248,7 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_flush(cx),
             WsTransportStreamProj::H2 { inner } => inner.poll_flush(cx),
             #[cfg(feature = "h3")]
             WsTransportStreamProj::H3 { inner } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
@@ -194,7 +262,7 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_close(cx),
             WsTransportStreamProj::H2 { inner } => inner.poll_close(cx),
             #[cfg(feature = "h3")]
             WsTransportStreamProj::H3 { inner } => inner.poll_close(cx).map_err(sockudo_to_ws_error),

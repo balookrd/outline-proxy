@@ -1285,7 +1285,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
     });
 
     let (ws_stream, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
-    let ws = WsTransportStream::Http1 { inner: ws_stream };
+    let ws = WsTransportStream::new_http1(ws_stream);
     let (sink, _stream) = ws.split();
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key("Secret0").unwrap();
