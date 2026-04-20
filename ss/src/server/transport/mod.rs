@@ -199,9 +199,6 @@ pub(super) fn is_expected_ws_close(error: &anyhow::Error) -> bool {
             || message.contains("ApplicationClose: H3_NO_ERROR")
             || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
             || message.contains("ApplicationClose: 0x0")
-            || message.contains(
-                "InternalError in the quic trait implementation: internal error in the http stack",
-            )
             || message.contains("Connection error: Timeout")
     })
 }
