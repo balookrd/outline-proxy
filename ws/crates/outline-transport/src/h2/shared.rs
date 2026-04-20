@@ -34,6 +34,7 @@ use url::Url;
 
 use crate::{
     AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
+    TransportOperation,
     DnsCache, connect_tcp_socket, resolve_host_with_preference,
 };
 
@@ -388,7 +389,11 @@ pub(crate) async fn connect_websocket_h2(
         .await?
         .first()
         .copied()
-        .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+        .ok_or_else(|| {
+            anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+                host: format!("{host}:{port}"),
+            })
+        })?;
         connect_h2_tcp_new(server_addr, host, use_tls, &target_uri, fwmark, source).await
     }
 }
@@ -468,7 +473,11 @@ async fn connect_h2_tcp_reused(
     .await?
     .first()
     .copied()
-    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {server_name}:{server_port}"))?;
+    .ok_or_else(|| {
+        anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+            host: format!("{server_name}:{server_port}"),
+        })
+    })?;
 
     let mut transport_guard = TransportConnectGuard::new(source, "h2");
     let shared = Arc::new(

@@ -1,9 +1,10 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::lookup_host;
 use tracing::warn;
 
+use crate::TransportOperation;
 use crate::config::ServerAddr;
 use crate::dns_cache::DnsCache;
 
@@ -22,7 +23,9 @@ pub(super) async fn resolve_server_addr(
     .await?
     .first()
     .copied()
-    .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {}", addr))
+    .ok_or_else(|| {
+        anyhow::Error::new(TransportOperation::DnsResolveNoAddresses { host: addr.to_string() })
+    })
 }
 
 /// Resolves `host:port` through the supplied cache, returning addresses

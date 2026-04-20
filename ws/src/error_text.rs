@@ -175,6 +175,21 @@ mod tests {
     }
 
     #[test]
+    fn udp_relay_recv_reset_is_expected_client_disconnect() {
+        // Regression: previously the UDP relay recv_from was wrapped with
+        // `.context("UDP relay receive failed")`, producing a typed-less error
+        // that `is_client_read_failure` could not detect — so a legitimate
+        // client-closed-socket event was misclassified as an upstream runtime
+        // failure. Now wrapped as `ClientIo::ReadFailed`.
+        use std::io;
+        use crate::client_io::ClientIo;
+        let io_err = io::Error::from(io::ErrorKind::ConnectionReset);
+        let error = anyhow::Error::from(ClientIo::ReadFailed(io_err));
+        assert!(is_expected_client_disconnect(&error));
+        assert!(!is_upstream_runtime_failure(&error));
+    }
+
+    #[test]
     fn socks5_negotiation_reset_is_expected_client_disconnect() {
         use std::io;
         use socks5_proto::Socks5Error;

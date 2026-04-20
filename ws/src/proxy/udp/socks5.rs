@@ -14,6 +14,7 @@ use socks5_proto::{
 };
 use outline_uplink::UplinkRegistry;
 
+use crate::client_io::ClientIo;
 use crate::proxy::ProxyConfig;
 
 use super::group::{AssocGroupMap, UdpResponse, resolve_group_context};
@@ -77,7 +78,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
                 let (len, addr) = socket_uplink
                     .recv_from(&mut buf)
                     .await
-                    .context("UDP relay receive failed")?;
+                    .map_err(ClientIo::ReadFailed)?;
                 if addr.ip() != client_peer_ip {
                     debug!(%addr, expected_ip = %client_peer_ip, "dropping UDP packet from unexpected source");
                     continue;
@@ -182,7 +183,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
                 socket_writer
                     .send_to(&packet, client_addr)
                     .await
-                    .context("UDP relay send failed")?;
+                    .map_err(ClientIo::WriteFailed)?;
             }
             Ok::<(), anyhow::Error>(())
         };
@@ -193,7 +194,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
                 let read = client
                     .read(&mut buf)
                     .await
-                    .context("control connection read failed")?;
+                    .map_err(ClientIo::ReadFailed)?;
                 if read == 0 {
                     break;
                 }
