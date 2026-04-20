@@ -257,6 +257,7 @@ fn config_deserializes_global_routing_scope() {
     assert_eq!(lb.routing_scope, Some(RoutingScope::Global));
 }
 
+#[cfg(feature = "tun")]
 #[test]
 fn config_deserializes_tun() {
     let cfg = r#"
@@ -323,6 +324,7 @@ async fn load_config_disables_probes_when_not_configured() {
     let _ = std::fs::remove_file(path);
 }
 
+#[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_enables_tun_when_configured() {
     let path = std::env::temp_dir().join("outline-ws-rust-tun.toml");
@@ -375,6 +377,7 @@ async fn load_config_enables_tun_when_configured() {
     assert_eq!(config.tun.as_ref().unwrap().tcp.max_retransmits, 6);
 }
 
+#[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_enables_tun_from_cli_without_tun_section() {
     let path = std::env::temp_dir().join("outline-ws-rust-no-tun-section.toml");
@@ -659,6 +662,7 @@ async fn load_config_rejects_too_many_uplink_groups() {
     let _ = std::fs::remove_file(path);
 }
 
+#[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_allows_tun_without_socks5_listener() {
     let path = std::env::temp_dir().join("outline-ws-rust-tun-only.toml");
