@@ -63,6 +63,13 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .metrics_listen
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
+    #[cfg(not(feature = "metrics"))]
+    if metrics.is_some() {
+        bail!(
+            "metrics listener requested (via [metrics] or --metrics-listen) but this build has \
+             the `metrics` feature disabled; rebuild with --features metrics"
+        );
+    }
     let control = load_control_config(control_section, args, config_dir).await?;
     #[cfg(not(feature = "control"))]
     if control.is_some() {
