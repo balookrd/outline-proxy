@@ -4,7 +4,7 @@ use anyhow::Error;
 use socks5_proto::Socks5Error;
 
 use crate::client_io::ClientIo;
-use outline_transport::WebSocketClosed;
+use outline_transport::{WebSocketClosed, find_typed};
 
 /// Walk the anyhow error chain looking for a `std::io::Error`.
 /// Returns the `ErrorKind` of the first one found, if any.
@@ -42,21 +42,19 @@ fn is_transport_level_disconnect(error: &Error) -> bool {
 ///   `read_udp_tcp_packet` — all IO operations in those functions are reads
 ///   from the client socket (write contexts start with "writing").
 fn is_client_read_failure(error: &Error) -> bool {
-    error.chain().any(|e| {
-        if e.downcast_ref::<ClientIo>().is_some_and(|c| c.is_read()) {
-            return true;
-        }
-        // Socks5Error::Io context strings for reads all start with "reading".
-        matches!(
-            e.downcast_ref::<Socks5Error>(),
-            Some(Socks5Error::Io { context, .. }) if context.starts_with("reading")
-                || context.starts_with("reading UDP-in-TCP")
-        )
-    })
+    if find_typed::<ClientIo>(error).is_some_and(|c| c.is_read()) {
+        return true;
+    }
+    // Socks5Error::Io context strings for reads all start with "reading".
+    matches!(
+        find_typed::<Socks5Error>(error),
+        Some(Socks5Error::Io { context, .. }) if context.starts_with("reading")
+            || context.starts_with("reading UDP-in-TCP")
+    )
 }
 
 fn is_client_write_failure(error: &Error) -> bool {
-    error.chain().any(|e| e.downcast_ref::<ClientIo>().is_some_and(|c| c.is_write()))
+    find_typed::<ClientIo>(error).is_some_and(|c| c.is_write())
 }
 
 /// String-match fallback for transport disconnects.
@@ -99,7 +97,7 @@ pub(crate) fn is_client_write_disconnect(error: &Error) -> bool {
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
     // Prefer typed downcast; fall back to external-library strings.
-    error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())
+    find_typed::<WebSocketClosed>(error).is_some()
         || contains_any(&lower_error(error), EXTERNAL_WEBSOCKET_CLOSE_STRINGS)
 }
 
