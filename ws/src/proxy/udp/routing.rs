@@ -1,11 +1,19 @@
-use std::collections::HashMap;
+use std::num::NonZeroUsize;
 
+use lru::LruCache;
 use tracing::{debug, warn};
 
 use crate::proxy::ProxyConfig;
 use outline_routing::{RouteDecision, RouteTarget};
 use outline_uplink::{TransportKind, UplinkRegistry};
 use socks5_proto::TargetAddr;
+
+/// Per-association route-cache cap. Bounds memory for clients with large
+/// destination fan-out (DNS scans, QUIC/P2P to many peers) — without a cap,
+/// the cache grows linearly with unique targets over the association lifetime.
+/// 1024 entries ≈ a few hundred KB worst-case and comfortably exceeds the
+/// working set of real clients.
+pub(super) const UDP_ROUTE_CACHE_CAP: usize = 1024;
 
 /// Per-packet routing decision for UDP.
 ///
@@ -25,7 +33,11 @@ pub(super) enum UdpPacketRoute {
 /// packet and tracks live uplink-group health. The routing table's
 /// [`version`](outline_routing::RoutingTable::version) invalidates entries on
 /// CIDR-file reloads.
-pub(super) type UdpRouteCache = HashMap<TargetAddr, (RouteDecision, u64)>;
+pub(super) type UdpRouteCache = LruCache<TargetAddr, (RouteDecision, u64)>;
+
+pub(super) fn new_udp_route_cache() -> UdpRouteCache {
+    LruCache::new(NonZeroUsize::new(UDP_ROUTE_CACHE_CAP).expect("cap is non-zero"))
+}
 
 pub(super) async fn resolve_udp_packet_route(
     cache: &mut UdpRouteCache,
@@ -48,7 +60,7 @@ pub(super) async fn resolve_udp_packet_route(
         // resolution would leave a stale decision tagged with the bumped
         // version and never invalidate. See `RoutingTable::resolve_versioned`.
         let (decision, resolve_version) = table.resolve_versioned(target).await;
-        cache.insert(target.clone(), (decision.clone(), resolve_version));
+        cache.put(target.clone(), (decision.clone(), resolve_version));
         decision
     };
     classify_decision(registry, decision.primary, decision.fallback).await

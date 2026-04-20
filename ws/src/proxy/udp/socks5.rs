@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -22,7 +21,10 @@ use super::dispatch::{
     MAX_CLIENT_UDP_PACKET_SIZE, MAX_UDP_RELAY_PACKET_SIZE, send_tunneled_udp, send_udp_direct,
     udp_metric_payload_len,
 };
-use super::routing::{UdpPacketRoute, UdpRouteCache, resolve_udp_packet_route, routing_table_active};
+use super::routing::{
+    UdpPacketRoute, UdpRouteCache, new_udp_route_cache, resolve_udp_packet_route,
+    routing_table_active,
+};
 
 pub(in crate::proxy) async fn handle_udp_associate(
     mut client: TcpStream,
@@ -70,7 +72,7 @@ pub(in crate::proxy) async fn handle_udp_associate(
         let uplink = async move {
             let mut buf = vec![0u8; 65_535];
             let mut reassembler = UdpFragmentReassembler::default();
-            let mut route_cache: UdpRouteCache = HashMap::new();
+            let mut route_cache: UdpRouteCache = new_udp_route_cache();
             loop {
                 let (len, addr) = socket_uplink
                     .recv_from(&mut buf)
