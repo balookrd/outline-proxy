@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -24,7 +24,7 @@ use sockudo_ws::{
 };
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 use url::Url;
 use webpki_roots::TLS_SERVER_ROOTS;
 
@@ -100,6 +100,10 @@ pub(super) struct SharedH3Connection {
     /// ALL active H3 streams on the shared connection, causing a cascade of
     /// reconnects and rapid FD growth.
     closed: AtomicBool,
+    // conn_life diagnostics: counts every WS stream opened on this connection
+    // (observed at close by the driver task) to correlate session_death bursts
+    // with a single underlying connection's death.
+    streams_opened: Arc<AtomicU64>,
     _connection_guard: H3ConnectionGuard,
     _driver_task: AbortOnDrop,
 }
@@ -158,6 +162,7 @@ impl SharedH3Connection {
         }
 
         let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
+        self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok(H3WsStream {
             inner: SockudoWebSocketStream::from_raw(
                 h3_stream,
@@ -172,6 +177,14 @@ impl SharedH3Connection {
 impl crate::SharedConnectionHealth for SharedH3Connection {
     fn is_open(&self) -> bool {
         self.is_open()
+    }
+
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn mode(&self) -> &'static str {
+        "h3"
     }
 }
 
@@ -505,15 +518,48 @@ async fn connect_h3_connection(
     })??;
 
     let id = H3_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
+    let streams_opened = Arc::new(AtomicU64::new(0));
+    let streams_opened_driver = Arc::clone(&streams_opened);
+    let opened_at = Instant::now();
+    let peer = server_addr.to_string();
+    let peer_for_driver = peer.clone();
+    info!(
+        target: "outline_transport::conn_life",
+        id, peer = %peer, mode = "h3", "h3 connection opened"
+    );
     let driver_task = AbortOnDrop(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         if let Some(cache_key) = cache_key {
             invalidate_shared_h3_connection_if_current(&cache_key, id).await;
         }
         let err_text = err.to_string();
+        let age_secs = opened_at.elapsed().as_secs();
+        let streams = streams_opened_driver.load(Ordering::Relaxed);
+        let class = classify_h3_close(&err_text);
         if is_expected_h3_close(&err_text) {
-            debug!("h3 connection closed: {err_text}");
+            info!(
+                target: "outline_transport::conn_life",
+                id,
+                peer = %peer_for_driver,
+                mode = "h3",
+                age_secs,
+                streams,
+                class,
+                error = %err_text,
+                "h3 connection closed"
+            );
         } else {
+            info!(
+                target: "outline_transport::conn_life",
+                id,
+                peer = %peer_for_driver,
+                mode = "h3",
+                age_secs,
+                streams,
+                class,
+                error = %err_text,
+                "h3 connection closed with error"
+            );
             error!("h3 connection error: {err_text}");
         }
     }));
@@ -524,9 +570,34 @@ async fn connect_h3_connection(
         connection: connection_handle.clone(),
         send_request: Mutex::new(send_request),
         closed: AtomicBool::new(false),
+        streams_opened,
         _connection_guard: H3ConnectionGuard(connection_handle),
         _driver_task: driver_task,
     })
+}
+
+fn classify_h3_close(err: &str) -> &'static str {
+    if err.contains("H3_NO_ERROR") {
+        "h3_no_error"
+    } else if err.contains("H3_INTERNAL_ERROR") {
+        "h3_internal"
+    } else if err.contains("H3_REQUEST_REJECTED") {
+        "h3_rejected"
+    } else if err.contains("H3_CONNECT_ERROR") {
+        "h3_connect_error"
+    } else if err.contains("ApplicationClose") {
+        "app_close"
+    } else if err.contains("Timeout") || err.contains("timed out") {
+        "timeout"
+    } else if err.contains("closed by client") || err.contains("Connection closed by client") {
+        "local_close"
+    } else if err.contains("reset") || err.contains("Reset") {
+        "rst"
+    } else if err.contains("tls") || err.contains("TLS") || err.contains("certificate") {
+        "tls"
+    } else {
+        "other"
+    }
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────

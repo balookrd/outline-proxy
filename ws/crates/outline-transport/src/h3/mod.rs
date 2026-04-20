@@ -46,6 +46,10 @@ impl H3WsStream {
     pub(crate) fn is_connection_alive(&self) -> bool {
         self._shared_connection.is_open()
     }
+
+    pub(crate) fn shared_connection_info(&self) -> (u64, &'static str) {
+        (self._shared_connection.id, "h3")
+    }
 }
 
 impl Stream for H3WsStream {

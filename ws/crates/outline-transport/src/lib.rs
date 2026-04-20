@@ -65,7 +65,7 @@ pub use h2::init_h2_window_sizes;
 pub use socket::{bind_udp_socket, configure_inbound_tcp_stream, connect_tcp_socket, init_udp_socket_bufs};
 pub use tcp_transport::{
     TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    WsTcpReader, WsTcpWriter, SocketTcpReader, SocketTcpWriter,
+    WsReadDiag, WsTcpReader, WsTcpWriter, SocketTcpReader, SocketTcpWriter,
 };
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::WsTransportStream;

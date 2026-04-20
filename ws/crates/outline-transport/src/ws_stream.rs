@@ -16,6 +16,8 @@ use super::h2::H2WsStream;
 /// `SharedH2Connection` and `SharedH3Connection`.
 pub(crate) trait SharedConnectionHealth: Send + Sync {
     fn is_open(&self) -> bool;
+    fn conn_id(&self) -> u64;
+    fn mode(&self) -> &'static str;
 }
 
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -96,6 +98,21 @@ impl WsTransportStream {
             WsTransportStream::H3 { inner } => inner.is_connection_alive(),
             #[cfg(not(feature = "h3"))]
             WsTransportStream::H3 { .. } => true,
+        }
+    }
+
+    /// Returns `(conn_id, mode)` of the underlying shared multiplex connection,
+    /// or `None` for Http1 streams which are 1:1 with their TCP socket.  Used by
+    /// session diagnostics to correlate burst EOFs against a single shared H2/H3
+    /// connection's lifecycle.
+    pub fn shared_connection_info(&self) -> Option<(u64, &'static str)> {
+        match self {
+            WsTransportStream::Http1 { .. } => None,
+            WsTransportStream::H2 { inner } => Some(inner.shared_connection_info()),
+            #[cfg(feature = "h3")]
+            WsTransportStream::H3 { inner } => Some(inner.shared_connection_info()),
+            #[cfg(not(feature = "h3"))]
+            WsTransportStream::H3 { .. } => None,
         }
     }
 }
