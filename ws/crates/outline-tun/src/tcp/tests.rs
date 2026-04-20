@@ -1118,6 +1118,207 @@ async fn server_backlog_pressure_aborts_immediately_above_hard_limit() {
     assert!(pressure.exceeded);
     assert!(pressure.should_abort);
 }
+// --- ISN wraparound: sequence-space arithmetic near u32::MAX ---
+//
+// TCP sequence numbers are a u32 that wraps; comparisons must use modular
+// arithmetic (RFC 1323, "Protection Against Wrapped Sequences"). These
+// tests pin the invariants at the wrap point that normal-range tests
+// never exercise.
+
+#[test]
+fn seq_comparisons_handle_u32_wraparound() {
+    use crate::tcp::state_machine::{seq_ge, seq_gt, seq_lt};
+    assert!(seq_lt(u32::MAX, 0));
+    assert!(seq_gt(0, u32::MAX));
+    assert!(seq_ge(0, u32::MAX));
+    assert!(!seq_lt(0, u32::MAX));
+    assert!(seq_lt(u32::MAX - 10, 5));
+    assert!(seq_gt(5, u32::MAX - 10));
+    assert!(!seq_lt(42, 42));
+    assert!(!seq_gt(42, 42));
+    assert!(seq_ge(42, 42));
+}
+
+#[test]
+fn packet_sequence_len_counts_syn_and_fin_near_wrap() {
+    use crate::tcp::state_machine::packet_sequence_len;
+    let mut packet = ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.1".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 1,
+        destination_port: 2,
+        sequence_number: u32::MAX,
+        acknowledgement_number: 0,
+        window_size: 0,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value: None,
+        timestamp_echo_reply: None,
+        flags: TCP_FLAG_SYN,
+        payload: Bytes::new(),
+    };
+    assert_eq!(packet_sequence_len(&packet), 1);
+    packet.flags = TCP_FLAG_ACK | TCP_FLAG_FIN;
+    packet.payload = Bytes::from_static(b"abc");
+    assert_eq!(packet_sequence_len(&packet), 4);
+}
+
+#[test]
+fn normalize_client_segment_trims_prefix_across_isn_wraparound() {
+    // 6-byte payload starting at u32::MAX - 2 covers seqs
+    // [MAX-2, MAX-1, MAX, 0, 1, 2]. expected_seq = 1 -> drop first 4 bytes.
+    let start = u32::MAX.wrapping_sub(2);
+    let packet = ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.1".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 1,
+        destination_port: 2,
+        sequence_number: start,
+        acknowledgement_number: 0,
+        window_size: 0,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value: None,
+        timestamp_echo_reply: None,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"ABCDEF"),
+    };
+    let segment = normalize_client_segment(&packet, 1);
+    assert_eq!(segment.payload.as_ref(), b"EF");
+    assert!(!segment.fin);
+}
+
+#[test]
+fn queue_future_segment_reassembles_across_isn_wraparound() {
+    // Three 4-byte segments starting at u32::MAX - 3 wrap past zero.
+    let start = u32::MAX.wrapping_sub(3);
+    let mut expected_seq = start;
+    let mut pending = VecDeque::new();
+
+    let first = TrimmedSegment {
+        sequence_number: start,
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"ABCD"),
+    };
+    let second = TrimmedSegment {
+        sequence_number: start.wrapping_add(4),
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"EFGH"),
+    };
+    let third = TrimmedSegment {
+        sequence_number: start.wrapping_add(8),
+        flags: TCP_FLAG_ACK,
+        payload: Bytes::from_static(b"IJKL"),
+    };
+    queue_future_segment(&mut pending, &third, expected_seq);
+    queue_future_segment(&mut pending, &second, expected_seq);
+    queue_future_segment(&mut pending, &first, expected_seq);
+
+    let mut payload = Vec::new();
+    let closed = drain_ready_buffered_segments(&mut expected_seq, &mut pending, &mut payload);
+    assert!(!closed);
+    assert_eq!(payload, b"ABCDEFGHIJKL");
+    assert_eq!(expected_seq, start.wrapping_add(12));
+    assert!(pending.is_empty());
+}
+
+#[test]
+fn is_duplicate_syn_recognised_when_expected_seq_just_wrapped() {
+    // Scenario: server ISN was u32::MAX, client_next_seq wrapped to 0.
+    // A retransmitted SYN with seq == u32::MAX must still be a dup.
+    let packet = ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.1".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 1,
+        destination_port: 2,
+        sequence_number: u32::MAX,
+        acknowledgement_number: 0,
+        window_size: 0,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value: None,
+        timestamp_echo_reply: None,
+        flags: TCP_FLAG_SYN,
+        payload: Bytes::new(),
+    };
+    assert!(super::is_duplicate_syn(&packet, 0));
+}
+
+#[tokio::test]
+async fn process_server_ack_handles_snd_nxt_wrap() {
+    // Server has two 4-byte segments that straddle the wrap point.
+    // A cumulative ACK past u32::MAX must free both, not be treated
+    // as a stale (backwards) ACK.
+    let mut state = tcp_flow_state_for_tests().await;
+    let base = u32::MAX.wrapping_sub(3);
+    state.last_client_ack = base;
+    state.server_seq = base.wrapping_add(8);
+    state.client_window = 8192;
+    state.client_window_end = state.server_seq.wrapping_add(8192);
+    state.unacked_server_segments = VecDeque::from([
+        super::ServerSegment {
+            sequence_number: base,
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+            payload: b"AAAA".to_vec().into(),
+            last_sent: Instant::now(),
+            first_sent: Instant::now(),
+            retransmits: 0,
+        },
+        super::ServerSegment {
+            sequence_number: base.wrapping_add(4),
+            acknowledgement_number: 500,
+            flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+            payload: b"BBBB".to_vec().into(),
+            last_sent: Instant::now(),
+            first_sent: Instant::now(),
+            retransmits: 0,
+        },
+    ]);
+
+    let ack = base.wrapping_add(8);
+    let effect = super::process_server_ack(&mut state, ack, &[]);
+    assert_eq!(effect.bytes_acked, 8);
+    assert!(state.unacked_server_segments.is_empty());
+    assert_eq!(state.last_client_ack, ack);
+}
+
+#[tokio::test]
+async fn process_server_ack_stale_ack_across_wrap_is_rejected() {
+    // Inverse of the above: an ACK for an older value that wrapped past
+    // the current cumulative must be treated as a stale duplicate, not
+    // as progress. Here last_client_ack = 10 (just past wrap) and an
+    // attacker-supplied ACK of u32::MAX - 5 (before the wrap) must not
+    // free segments or advance last_client_ack.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.last_client_ack = 10;
+    state.server_seq = 20;
+    state.unacked_server_segments = VecDeque::from([super::ServerSegment {
+        sequence_number: 10,
+        acknowledgement_number: 500,
+        flags: TCP_FLAG_ACK | super::TCP_FLAG_PSH,
+        payload: b"AAAA".to_vec().into(),
+        last_sent: Instant::now(),
+        first_sent: Instant::now(),
+        retransmits: 0,
+    }]);
+
+    let stale = u32::MAX.wrapping_sub(5);
+    let effect = super::process_server_ack(&mut state, stale, &[]);
+    assert_eq!(effect.bytes_acked, 0);
+    assert_eq!(state.unacked_server_segments.len(), 1);
+    assert_eq!(state.last_client_ack, 10);
+}
+
 pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
     TunTcpConfig {
         connect_timeout: Duration::from_secs(5),
@@ -1130,6 +1331,9 @@ pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
         max_buffered_client_segments: 4096,
         max_buffered_client_bytes: 262_144,
         max_retransmits: 12,
+        keepalive_idle: None,
+        keepalive_interval: Duration::from_secs(30),
+        keepalive_max_probes: 6,
     }
 }
 pub(super) fn build_client_packet(
@@ -1356,6 +1560,8 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         server_fin_pending: false,
         zero_window_probe_backoff: super::TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
         next_zero_window_probe_at: None,
+        keepalive_probes_sent: 0,
+        last_keepalive_probe_at: None,
         reported: super::state_machine::ReportedFlowMetrics::default(),
         created_at: Instant::now(),
         status_since: Instant::now(),
