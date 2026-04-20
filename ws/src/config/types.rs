@@ -17,6 +17,10 @@ pub struct AppConfig {
     /// routed through the first group.
     pub routing: Option<RoutingTableConfig>,
     pub metrics: Option<MetricsConfig>,
+    /// Control plane for mutating endpoints (e.g. manual uplink switch).
+    /// Intentionally separate from `metrics` so observability access does
+    /// not imply authority to flip active uplinks.
+    pub control: Option<ControlConfig>,
     #[cfg(feature = "tun")]
     pub tun: Option<outline_tun::TunConfig>,
     pub h2: H2Config,
@@ -47,4 +51,12 @@ pub struct H2Config {
 #[derive(Debug, Clone)]
 pub struct MetricsConfig {
     pub listen: SocketAddr,
+}
+
+/// Control-plane HTTP listener. Serves mutating endpoints gated by a
+/// mandatory bearer token. Always bound on a separate socket from metrics.
+#[derive(Debug, Clone)]
+pub struct ControlConfig {
+    pub listen: SocketAddr,
+    pub token: String,
 }

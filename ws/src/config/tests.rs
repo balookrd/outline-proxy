@@ -901,3 +901,117 @@ async fn load_config_rejects_inverted_route_without_prefixes() {
 
     let _ = std::fs::remove_file(path);
 }
+
+#[tokio::test]
+async fn load_config_accepts_control_section_with_token() {
+    let path = std::env::temp_dir().join("outline-ws-rust-control-ok.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [control]
+        listen = "127.0.0.1:9091"
+        token = "topsecret"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let control = config.control.expect("control config present");
+    assert_eq!(control.listen, "127.0.0.1:9091".parse::<SocketAddr>().unwrap());
+    assert_eq!(control.token, "topsecret");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_control_listener_without_token() {
+    let path = std::env::temp_dir().join("outline-ws-rust-control-no-token.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [control]
+        listen = "127.0.0.1:9091"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("token"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_control_token_without_listener() {
+    let path = std::env::temp_dir().join("outline-ws-rust-control-no-listen.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [control]
+        token = "topsecret"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("listener"), "got: {msg}");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_reads_control_token_from_file() {
+    let dir = std::env::temp_dir().join("outline-ws-rust-control-tokfile");
+    std::fs::create_dir_all(&dir).unwrap();
+    let token_path = dir.join("token");
+    std::fs::write(&token_path, "  filetoken\n").unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [control]
+        listen = "127.0.0.1:9091"
+        token_file = "token"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.control.unwrap().token, "filetoken");
+
+    let _ = std::fs::remove_dir_all(dir);
+}

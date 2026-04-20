@@ -477,6 +477,16 @@ listen = "[::]:1080"
 [metrics]
 listen = "[::1]:9090"
 
+# Control plane (mutating endpoints, e.g. /switch). Must be bound on a
+# separate socket from [metrics] and is always gated by a bearer token.
+# Omit the section entirely to disable mutating endpoints.
+# [control]
+# listen = "127.0.0.1:9091"
+# token = "long-random-secret"
+# # Or read the token from a sidecar file (path resolved relative to this
+# # config). Use this when secrets must not live in the config itself.
+# # token_file = "/etc/outline-ws/control.token"
+
 [tun]
 # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
 # Linux example:
@@ -608,6 +618,7 @@ via = "main"
 - The legacy `[outline]` format is still accepted as a single-uplink shorthand, and CLI flags (`--tcp-ws-url`, `--password`, ...) synthesise a single-uplink `default` group.
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
+- `--control-listen` / `CONTROL_LISTEN` and `--control-token` / `CONTROL_TOKEN` can enable the control plane without `[control]` in the config. Both must be supplied together; either alone is rejected at startup.
 - `--tun-path` can enable TUN even if `[tun]` is not present.
 - `direct_fwmark` (optional, top-level): `SO_MARK` value applied to TCP and UDP sockets opened for `direct`-routed connections. Use when bypass traffic must be tagged for OS-level policy routing to avoid loops (e.g. the bypass route must itself not be intercepted by the TUN interface).
 - SOCKS5 → upstream TCP sessions are subject to a 5-minute bidirectional idle timeout. If no bytes flow in either direction for 300 seconds, the tunnel is closed and FDs are reclaimed. Any data activity in either direction resets the timer. This prevents FD accumulation from abandoned connections, particularly under TUN interceptors that open many TCP sessions and release them without FIN.
@@ -883,16 +894,41 @@ Requirements:
 
 ## Metrics and Dashboards
 
-If metrics are enabled, the process serves:
+If `[metrics]` is configured the process serves the read-only Prometheus
+endpoint:
 
 - `/metrics` - Prometheus text exposition
-- `/switch` - manual active-uplink override (POST)
-
-Example:
 
 ```bash
 curl http://[::1]:9090/metrics
 ```
+
+The metrics listener has **no** mutating endpoints. The earlier `/switch`
+handler has been moved to a separate, authenticated control-plane listener
+(see below) so observability access does not also grant authority to flip the
+active uplink.
+
+## Control plane
+
+If `[control]` is configured the process serves mutating endpoints on a
+**separate** TCP listener, gated by a mandatory bearer token:
+
+- `POST /switch` - manual active-uplink override
+
+There is no anonymous access path. Requests without a matching
+`Authorization: Bearer <token>` header are rejected with `401 Unauthorized`
+before the request body is inspected.
+
+### Configuration
+
+Either configure both `listen` and a token in `[control]`, or pass
+`--control-listen` (`CONTROL_LISTEN`) together with `--control-token`
+(`CONTROL_TOKEN`). The token may also be read from a sidecar file via
+`token_file = "..."` (path resolved relative to the config file). Setting
+only one of the two halves is a startup error.
+
+Bind the control listener to loopback or a management VLAN; the token is
+defence in depth, not a substitute for network-level isolation.
 
 ### Manual uplink switch
 
@@ -911,21 +947,27 @@ Query parameters:
 Examples:
 
 ```bash
+TOKEN="long-random-secret"
+
 # Switch the only group to uplink "backup" (both transports if per_uplink)
-curl -XPOST 'http://[::1]:9090/switch?uplink=backup'
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/switch?uplink=backup'
 
 # Switch only the UDP active uplink in per_uplink mode
-curl -XPOST 'http://[::1]:9090/switch?uplink=backup&transport=udp'
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/switch?uplink=backup&transport=udp'
 
 # Disambiguate by group name
-curl -XPOST 'http://[::1]:9090/switch?group=main&uplink=backup'
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/switch?group=main&uplink=backup'
 ```
 
 Returns `200` on success, `400` when the uplink/group is unknown or the group
-is not in `active_passive` mode, and `405` for non-POST methods. The override
-holds while the chosen uplink is healthy; if the probe loop later marks it
-unhealthy, normal failover takes over. With `auto_failback = true`, the loop
-may flip back to a higher-priority uplink once it stabilises.
+is not in `active_passive` mode, `401` when the bearer token is missing or
+incorrect, and `405` for non-POST methods. The override holds while the
+chosen uplink is healthy; if the probe loop later marks it unhealthy, normal
+failover takes over. With `auto_failback = true`, the loop may flip back to a
+higher-priority uplink once it stabilises.
 
 Prometheus example:
 
@@ -1122,7 +1164,11 @@ Use `debug` only during troubleshooting — connection lifecycle and transport-l
 
 ### Security Notes
 
-- Protect `metrics_listen`; do not expose it without additional access controls.
+- Protect `metrics.listen`; do not expose it without additional access controls.
+- Protect `control.listen` even more strictly: bind it to loopback or a
+  management network, treat the bearer token as a credential (rotate, store
+  out of band), and never re-use the metrics port for it. The control listener
+  is the only path that can mutate active-uplink selection.
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root.
 - TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).

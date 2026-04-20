@@ -7,7 +7,9 @@ use tracing::info;
 use crate::config::AppConfig;
 use crate::proxy::ProxyConfig;
 #[cfg(feature = "metrics")]
-use crate::metrics_http::spawn_metrics_server;
+use crate::http::control::spawn_control_server;
+#[cfg(feature = "metrics")]
+use crate::http::metrics::spawn_metrics_server;
 use outline_uplink::{UplinkRegistry, log_registry_summary};
 
 mod listener;
@@ -88,6 +90,10 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     #[cfg(feature = "metrics")]
     if let Some(metrics) = config.metrics.clone() {
         spawn_metrics_server(metrics, registry.clone());
+    }
+    #[cfg(feature = "metrics")]
+    if let Some(control) = config.control.clone() {
+        spawn_control_server(control, registry.clone());
     }
 
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
