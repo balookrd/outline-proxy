@@ -39,6 +39,7 @@ http-body-util = "0.1"
 hyper = { version = "1.7", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
+lru = { version = "0.12", default-features = false }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 outline-metrics = { path = "crates/outline-metrics", default-features = false }
 outline-routing = { path = "crates/outline-routing" }
