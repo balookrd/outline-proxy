@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+#[cfg(feature = "tun")]
 use std::path::PathBuf;
 use std::time::Duration;
 
