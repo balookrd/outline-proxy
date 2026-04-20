@@ -2,8 +2,9 @@
 // H2Io async-IO adapter, connect_tls_h2, connection cache, per-key connect
 // locks, and all connect / gc logic.
 //
-// Stream adapter types (H2WsStream) and URL helpers (websocket_target_uri,
-// format_authority, websocket_path) live in the parent module (`mod.rs`).
+// Stream adapter types (H2WsStream) and the `websocket_target_uri` helper live
+// in the parent module (`mod.rs`). Generic URL helpers (`format_authority`,
+// `websocket_path`) are shared with the H3 transport in `crate::url_utils`.
 
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -20,8 +21,8 @@ use hyper::client::conn::http2;
 use hyper::ext::Protocol;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use pin_project_lite::pin_project;
+use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
-use rustls::{ClientConfig, RootCertStore};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
 use tokio::time::timeout;
@@ -30,7 +31,6 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
 use tracing::{debug, error, info};
 use url::Url;
-use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::{
     AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
@@ -69,15 +69,7 @@ fn h2_connection_window_size() -> u32 {
 static H2_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 fn h2_client_tls_config() -> Arc<ClientConfig> {
-    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| {
-        let mut roots = RootCertStore::empty();
-        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        config.alpn_protocols = vec![b"h2".to_vec()];
-        Arc::new(config)
-    }))
+    Arc::clone(H2_CLIENT_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h2"])))
 }
 
 async fn connect_tls_h2(
@@ -189,19 +181,15 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // point a fresh connection is made to the (now re-resolved) new address.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct H2ConnectionKey {
-    server_name: Arc<str>,
-    server_port: u16,
+    base: crate::shared_cache::ConnectionKey,
     use_tls: bool,
-    fwmark: Option<u32>,
 }
 
 impl H2ConnectionKey {
     fn new(server_name: &str, server_port: u16, use_tls: bool, fwmark: Option<u32>) -> Self {
         Self {
-            server_name: Arc::from(server_name),
-            server_port,
+            base: crate::shared_cache::ConnectionKey::new(server_name, server_port, fwmark),
             use_tls,
-            fwmark,
         }
     }
 }
@@ -711,26 +699,7 @@ async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h2_connections() {
-    // Fast path: scan under a read-lock. If nothing is stale we avoid the
-    // write-lock entirely, so a healthy GC tick does not interfere with
-    // concurrent CONNECT lookups.
-    let stale_keys: Vec<H2ConnectionKey> = {
-        let shared = h2_shared_connections().read().await;
-        shared
-            .iter()
-            .filter(|(_, conn)| !conn.is_open())
-            .map(|(k, _)| k.clone())
-            .collect()
-    };
-    if stale_keys.is_empty() {
-        return;
-    }
-    let mut shared = h2_shared_connections().write().await;
-    for key in stale_keys {
-        if shared.get(&key).is_some_and(|conn| !conn.is_open()) {
-            shared.remove(&key);
-        }
-    }
+    crate::shared_cache::gc_stale_entries(h2_shared_connections(), |c| c.is_open()).await;
 }
 
 fn is_expected_h2_close(error: &str) -> bool {

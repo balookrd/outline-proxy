@@ -52,6 +52,9 @@ pub(crate) mod h3;
 mod socket;
 mod tcp_transport;
 mod udp_transport;
+mod shared_cache;
+mod tls;
+mod url_utils;
 mod ws_stream;
 
 pub use config::{ServerAddr, WsTransportMode};

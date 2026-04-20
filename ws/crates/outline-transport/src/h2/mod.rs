@@ -20,34 +20,10 @@ use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
 use url::Url;
 
+use super::url_utils::{format_authority, websocket_path};
 use super::ws_stream::SharedConnectionHealth;
 
 // ── websocket_target_uri ──────────────────────────────────────────────────────
-
-fn format_authority(host: &str, port: Option<u16>) -> String {
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    match port {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    }
-}
-
-fn websocket_path(url: &Url) -> String {
-    let mut path = if url.path().is_empty() {
-        "/".to_string()
-    } else {
-        url.path().to_string()
-    };
-    if let Some(query) = url.query() {
-        path.push('?');
-        path.push_str(query);
-    }
-    path
-}
 
 /// Build an HTTP/2 CONNECT target URI from a WebSocket URL.
 /// `wss://` → `https://`, `ws://` → `http://`, with path and query preserved.
