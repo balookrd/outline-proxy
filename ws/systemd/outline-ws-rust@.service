@@ -28,7 +28,7 @@ NoNewPrivileges=true
 
 DynamicUser=true
 StateDirectory=outline-ws-rust/%i
-LogsDirectory=outline-ws-rust
+LogsDirectory=outline-ws-rust/%i
 RuntimeDirectory=outline-ws-rust-%i
 WorkingDirectory=/var/lib/outline-ws-rust/%i
 UMask=0077
@@ -55,7 +55,7 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-ReadWritePaths=/var/lib/outline-ws-rust/%i /var/log/outline-ws-rust
+ReadWritePaths=/var/lib/outline-ws-rust/%i /var/log/outline-ws-rust/%i
 
 [Install]
 WantedBy=multi-user.target
