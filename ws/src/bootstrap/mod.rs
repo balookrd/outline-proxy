@@ -6,7 +6,7 @@ use tracing::info;
 
 use crate::config::AppConfig;
 use crate::proxy::ProxyConfig;
-#[cfg(feature = "metrics")]
+#[cfg(feature = "control")]
 use crate::http::control::spawn_control_server;
 #[cfg(feature = "metrics")]
 use crate::http::metrics::spawn_metrics_server;
@@ -91,7 +91,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     if let Some(metrics) = config.metrics.clone() {
         spawn_metrics_server(metrics, registry.clone());
     }
-    #[cfg(feature = "metrics")]
+    #[cfg(feature = "control")]
     if let Some(control) = config.control.clone() {
         spawn_control_server(control, registry.clone());
     }
