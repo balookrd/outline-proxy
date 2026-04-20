@@ -17,7 +17,7 @@ use bytes::Bytes;
 use h3::client::{RequestStream as H3RequestStream, SendRequest as H3SendRequest};
 use http::{Method, Request};
 use once_cell::sync::OnceCell;
-use rustls::{ClientConfig, RootCertStore};
+use rustls::ClientConfig;
 use sockudo_ws::{
     Config as SockudoConfig, Http3 as SockudoHttp3, Stream as SockudoTransportStream,
     WebSocketStream as SockudoWebSocketStream,
@@ -26,7 +26,6 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::{debug, error, info};
 use url::Url;
-use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::{
     AbortOnDrop, WsTransportStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
@@ -66,22 +65,7 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 // means there is at most one shared H3 connection per logical server: when the
 // DNS answer changes, the old connection is kept until it fails naturally, at
 // which point a fresh connection is made to the (now re-resolved) new address.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub(super) struct H3ConnectionKey {
-    server_name: String,
-    server_port: u16,
-    fwmark: Option<u32>,
-}
-
-impl H3ConnectionKey {
-    pub(super) fn new(server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self {
-        Self {
-            server_name: server_name.to_string(),
-            server_port,
-            fwmark,
-        }
-    }
-}
+pub(super) type H3ConnectionKey = crate::shared_cache::ConnectionKey;
 
 // ── Shared connection ─────────────────────────────────────────────────────────
 
@@ -216,15 +200,7 @@ static H3_QUIC_CLIENT_CONFIG: OnceLock<quinn::ClientConfig> = OnceLock::new();
 /// Building the config (parsing root certificates) is expensive; doing it once
 /// avoids the cost on every connection attempt and every warm-standby refill.
 fn h3_client_tls_config() -> Arc<ClientConfig> {
-    Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| {
-        let mut roots = RootCertStore::empty();
-        roots.extend(TLS_SERVER_ROOTS.iter().cloned());
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(roots)
-            .with_no_client_auth();
-        config.alpn_protocols = vec![b"h3".to_vec()];
-        Arc::new(config)
-    }))
+    Arc::clone(H3_CLIENT_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h3"])))
 }
 
 /// Returns a cloned QUIC client config built once from the cached TLS config.
@@ -680,26 +656,7 @@ async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h3_connections() {
-    // Fast path: scan under a read-lock. If nothing is stale we avoid the
-    // write-lock entirely, so a healthy GC tick does not interfere with
-    // concurrent CONNECT lookups.
-    let stale_keys: Vec<H3ConnectionKey> = {
-        let shared = h3_shared_connections().read().await;
-        shared
-            .iter()
-            .filter(|(_, conn)| !conn.is_open())
-            .map(|(k, _)| k.clone())
-            .collect()
-    };
-    if stale_keys.is_empty() {
-        return;
-    }
-    let mut shared = h3_shared_connections().write().await;
-    for key in stale_keys {
-        if shared.get(&key).is_some_and(|conn| !conn.is_open()) {
-            shared.remove(&key);
-        }
-    }
+    crate::shared_cache::gc_stale_entries(h3_shared_connections(), |c| c.is_open()).await;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

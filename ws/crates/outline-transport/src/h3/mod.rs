@@ -107,32 +107,8 @@ impl Drop for H3ConnectionGuard {
     }
 }
 
-// ── URL utilities (h3-local) ──────────────────────────────────────────────────
-
-fn format_authority(host: &str, port: Option<u16>) -> String {
-    let host = if host.contains(':') && !host.starts_with('[') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    match port {
-        Some(port) => format!("{host}:{port}"),
-        None => host,
-    }
-}
-
-pub(super) fn websocket_path(url: &url::Url) -> String {
-    let mut path = if url.path().is_empty() {
-        "/".to_string()
-    } else {
-        url.path().to_string()
-    };
-    if let Some(query) = url.query() {
-        path.push('?');
-        path.push_str(query);
-    }
-    path
-}
+use crate::url_utils::format_authority;
+pub(super) use crate::url_utils::websocket_path;
 
 // ── URI helper ────────────────────────────────────────────────────────────────
 
