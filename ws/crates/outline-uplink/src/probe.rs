@@ -394,6 +394,7 @@ pub(crate) async fn run_http_probe(
                 .with_context(|| {
                     format!("failed to connect HTTP probe websocket for uplink {}", uplink.name)
                 })?;
+                let shared_conn_info = ws_stream.shared_connection_info();
                 let (ws_sink, ws_stream) = ws_stream.split();
                 let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
                     ws_sink,
@@ -403,6 +404,12 @@ pub(crate) async fn run_http_probe(
                 )
                 .await?;
                 let request_salt = writer.request_salt();
+                let diag = outline_transport::WsReadDiag {
+                    conn_id: shared_conn_info.map(|(id, _)| id),
+                    mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+                    uplink: uplink.name.clone(),
+                    target: target.to_string(),
+                };
                 let reader = TcpShadowsocksReader::new(
                     ws_stream,
                     uplink.cipher,
@@ -410,7 +417,8 @@ pub(crate) async fn run_http_probe(
                     lifetime,
                     ctrl_tx,
                 )
-                .with_request_salt(request_salt);
+                .with_request_salt(request_salt)
+                .with_diag(diag);
                 (TcpWriter::Ws(writer), TcpReader::Ws(reader))
             },
             UplinkTransport::Shadowsocks => {
@@ -556,6 +564,7 @@ pub(crate) async fn run_tcp_tunnel_probe(
                         uplink.name
                     )
                 })?;
+                let shared_conn_info = ws_stream.shared_connection_info();
                 let (ws_sink, ws_stream) = ws_stream.split();
                 let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
                     ws_sink,
@@ -565,6 +574,12 @@ pub(crate) async fn run_tcp_tunnel_probe(
                 )
                 .await?;
                 let request_salt = writer.request_salt();
+                let diag = outline_transport::WsReadDiag {
+                    conn_id: shared_conn_info.map(|(id, _)| id),
+                    mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+                    uplink: uplink.name.clone(),
+                    target: target.to_string(),
+                };
                 let reader = TcpShadowsocksReader::new(
                     ws_stream,
                     uplink.cipher,
@@ -572,7 +587,8 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     lifetime,
                     ctrl_tx,
                 )
-                .with_request_salt(request_salt);
+                .with_request_salt(request_salt)
+                .with_diag(diag);
                 (TcpWriter::Ws(writer), TcpReader::Ws(reader))
             },
             UplinkTransport::Shadowsocks => {

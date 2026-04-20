@@ -148,6 +148,7 @@ async fn do_tcp_ss_setup(
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
 ) -> Result<(TcpWriter, TcpReader)> {
+    let shared_conn_info = ws_stream.shared_connection_info();
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
@@ -155,9 +156,16 @@ async fn do_tcp_ss_setup(
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
     let request_salt = writer.request_salt();
+    let diag = outline_transport::WsReadDiag {
+        conn_id: shared_conn_info.map(|(id, _)| id),
+        mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+        uplink: uplink.name.clone(),
+        target: target.to_string(),
+    };
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
-            .with_request_salt(request_salt);
+            .with_request_salt(request_salt)
+            .with_diag(diag);
     writer
         .send_chunk(&target.to_wire_bytes()?)
         .await
