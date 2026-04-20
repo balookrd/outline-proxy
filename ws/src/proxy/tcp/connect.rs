@@ -337,6 +337,7 @@ pub async fn handle_tcp_connect(
                         uplink = %active.name,
                         attempted_uplinks = ?attempted_uplinks,
                         target = %target,
+                        rst_retries_applied = rst_retries_on_current_uplink,
                         error = %error_text,
                         "TCP chunk-0 failure"
                     );
