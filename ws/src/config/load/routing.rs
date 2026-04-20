@@ -56,12 +56,13 @@ pub(super) fn load_routing_config(
 
         let is_default = section.default.unwrap_or(false);
         let has_prefixes = section.prefixes.as_ref().is_some_and(|v| !v.is_empty());
-        let has_file = section.file.is_some();
+        let has_files = section.file.is_some()
+            || section.files.as_ref().is_some_and(|v| !v.is_empty());
 
         if is_default {
-            if has_prefixes || has_file {
+            if has_prefixes || has_files {
                 bail!(
-                    "[[route]] entry {} has `default = true` and must not set prefixes/file",
+                    "[[route]] entry {} has `default = true` and must not set prefixes/file/files",
                     index + 1
                 );
             }
@@ -71,24 +72,28 @@ pub(super) fn load_routing_config(
             default_target = Some(target);
             default_fallback = fallback;
         } else {
-            if !has_prefixes && !has_file {
+            if !has_prefixes && !has_files {
                 bail!(
-                    "[[route]] entry {} must set `prefixes` and/or `file` (or `default = true`)",
+                    "[[route]] entry {} must set `prefixes` and/or `file`/`files` (or `default = true`)",
                     index + 1
                 );
             }
-            let resolved_file = section
-                .file
-                .as_deref()
-                .map(|p| {
-                    resolve_config_path(p, config_dir).with_context(|| {
-                        format!("invalid file in [[route]] entry {}", index + 1)
-                    })
-                })
-                .transpose()?;
+            let mut resolved_files: Vec<PathBuf> = Vec::new();
+            if let Some(p) = section.file.as_deref() {
+                resolved_files.push(resolve_config_path(p, config_dir).with_context(|| {
+                    format!("invalid file in [[route]] entry {}", index + 1)
+                })?);
+            }
+            if let Some(list) = section.files.as_deref() {
+                for p in list {
+                    resolved_files.push(resolve_config_path(p, config_dir).with_context(
+                        || format!("invalid files entry in [[route]] entry {}", index + 1),
+                    )?);
+                }
+            }
             rules.push(RouteRule {
                 inline_prefixes: section.prefixes.clone().unwrap_or_default(),
-                file: resolved_file,
+                files: resolved_files,
                 file_poll: Duration::from_secs(section.file_poll_secs.unwrap_or(60)),
                 target,
                 fallback,

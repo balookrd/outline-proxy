@@ -26,7 +26,7 @@ pub struct CompiledRule {
     /// Inline prefixes from config — merged with file contents on each
     /// reload so removing the file doesn't drop the inline entries.
     pub inline_prefixes: Vec<String>,
-    pub file: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
     pub file_poll: Duration,
     pub target: RouteTarget,
     pub fallback: Option<RouteTarget>,
@@ -75,7 +75,7 @@ impl RoutingTable {
             rules.push(CompiledRule {
                 cidrs: Arc::new(RwLock::new(cidrs)),
                 inline_prefixes: rule.inline_prefixes.clone(),
-                file: rule.file.clone(),
+                files: rule.files.clone(),
                 file_poll: rule.file_poll,
                 target: rule.target.clone(),
                 fallback: rule.fallback.clone(),
@@ -144,7 +144,7 @@ impl RoutingTable {
 
 async fn build_cidr_set(rule: &RouteRule) -> Result<CidrSet> {
     let mut prefixes = rule.inline_prefixes.clone();
-    if let Some(file) = &rule.file {
+    for file in &rule.files {
         let from_file = read_prefixes_from_file(file)
             .await
             .with_context(|| format!("failed to read route prefix file {}", file.display()))?;
@@ -153,35 +153,53 @@ async fn build_cidr_set(rule: &RouteRule) -> Result<CidrSet> {
     CidrSet::parse(&prefixes)
 }
 
-/// Spawn a file watcher for every rule that has `file` set. On mtime change
-/// the rule's CIDR set is rebuilt (inline + file) and swapped atomically,
-/// then [`RoutingTable::version`] is bumped so per-association caches that
-/// hold stale resolutions re-resolve on the next hit.
+/// Spawn a file watcher for every rule that has at least one `files` entry.
+/// On mtime change in any of the rule's files the whole CIDR set is rebuilt
+/// (inline + all files) and swapped atomically, then
+/// [`RoutingTable::version`] is bumped so per-association caches that hold
+/// stale resolutions re-resolve on the next hit.
 pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
     for (index, rule) in table.rules.iter().enumerate() {
-        let Some(file) = rule.file.clone() else {
+        if rule.files.is_empty() {
             continue;
-        };
+        }
+        let files = rule.files.clone();
         let cidrs = Arc::clone(&rule.cidrs);
         let inline = rule.inline_prefixes.clone();
         let poll = rule.file_poll;
         let invert = rule.invert;
         let table_for_version = Arc::clone(&table);
         tokio::spawn(async move {
-            // Seed from the file's current mtime so the first poll cycle does
-            // not reload a file that hasn't changed since compile() read it.
-            let mut last_mtime: Option<SystemTime> = tokio::fs::metadata(&file)
-                .await
-                .ok()
-                .and_then(|m| m.modified().ok());
+            // Seed from each file's current mtime so the first poll cycle
+            // does not reload files that haven't changed since compile() read
+            // them. A missing file is represented as `None` and still triggers
+            // a reload once it reappears with a readable mtime.
+            let mut last_mtimes: Vec<Option<SystemTime>> = Vec::with_capacity(files.len());
+            for f in &files {
+                last_mtimes.push(
+                    tokio::fs::metadata(f)
+                        .await
+                        .ok()
+                        .and_then(|m| m.modified().ok()),
+                );
+            }
             loop {
                 tokio::time::sleep(poll).await;
-                let mtime = tokio::fs::metadata(&file).await.ok().and_then(|m| m.modified().ok());
-                if mtime == last_mtime {
+                let mut changed = false;
+                for (i, f) in files.iter().enumerate() {
+                    let mtime = tokio::fs::metadata(f)
+                        .await
+                        .ok()
+                        .and_then(|m| m.modified().ok());
+                    if mtime != last_mtimes[i] {
+                        last_mtimes[i] = mtime;
+                        changed = true;
+                    }
+                }
+                if !changed {
                     continue;
                 }
-                last_mtime = mtime;
-                match reload_rule_cidrs(&file, &inline).await {
+                match reload_rule_cidrs(&files, &inline).await {
                     Ok(new_set) => {
                         // Safety net: an inverted rule with an empty set
                         // would match everything. Refuse the swap and keep
@@ -189,7 +207,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                         if invert && new_set.is_empty() {
                             warn!(
                                 rule_index = index,
-                                path = %file.display(),
+                                paths = ?files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                                 "refusing to reload inverted route with empty CIDR set — \
                                  would match every address; keeping previous"
                             );
@@ -202,7 +220,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                             table_for_version.version.fetch_add(1, Ordering::AcqRel) + 1;
                         info!(
                             rule_index = index,
-                            path = %file.display(),
+                            paths = ?files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                             v4_ranges = count_v4,
                             v6_ranges = count_v6,
                             table_version = new_version,
@@ -212,7 +230,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
                     Err(err) => {
                         warn!(
                             rule_index = index,
-                            path = %file.display(),
+                            paths = ?files.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
                             error = %format!("{err:#}"),
                             "failed to reload route CIDR set, keeping previous"
                         );
@@ -223,11 +241,14 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
     }
 }
 
-async fn reload_rule_cidrs(file: &std::path::Path, inline: &[String]) -> Result<CidrSet> {
-    let from_file = read_prefixes_from_file(file).await?;
-    let mut all = Vec::with_capacity(inline.len() + from_file.len());
-    all.extend_from_slice(inline);
-    all.extend(from_file);
+async fn reload_rule_cidrs(files: &[PathBuf], inline: &[String]) -> Result<CidrSet> {
+    let mut all: Vec<String> = inline.to_vec();
+    for file in files {
+        let from_file = read_prefixes_from_file(file)
+            .await
+            .with_context(|| format!("failed to read route prefix file {}", file.display()))?;
+        all.extend(from_file);
+    }
     CidrSet::parse(&all)
 }
 
@@ -249,7 +270,7 @@ mod tests {
     fn rule(prefixes: &[&str], target: RouteTarget, fallback: Option<RouteTarget>) -> RouteRule {
         RouteRule {
             inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
-            file: None,
+            files: Vec::new(),
             file_poll: Duration::from_secs(60),
             target,
             fallback,
@@ -264,7 +285,7 @@ mod tests {
     ) -> RouteRule {
         RouteRule {
             inline_prefixes: prefixes.iter().map(|s| s.to_string()).collect(),
-            file: None,
+            files: Vec::new(),
             file_poll: Duration::from_secs(60),
             target,
             fallback,
@@ -428,7 +449,7 @@ mod tests {
         let cfg = RoutingTableConfig {
             rules: vec![RouteRule {
                 inline_prefixes: vec![],
-                file: Some(tmp.clone()),
+                files: vec![tmp.clone()],
                 file_poll: Duration::from_millis(30),
                 target: RouteTarget::Direct,
                 fallback: None,

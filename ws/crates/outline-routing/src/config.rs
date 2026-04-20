@@ -19,13 +19,14 @@ pub enum RouteTarget {
 
 /// One policy routing rule.
 ///
-/// Prefixes come from `inline_prefixes` and/or `file`. When `file` is set,
-/// a background watcher polls `file_poll` for mtime changes and swaps the
-/// compiled CIDR set in place.
+/// Prefixes come from `inline_prefixes` and/or one or more `files`. When
+/// `files` is non-empty, a background watcher polls `file_poll` for mtime
+/// changes on every listed file and swaps the compiled CIDR set in place
+/// whenever any file changes.
 #[derive(Debug, Clone)]
 pub struct RouteRule {
     pub inline_prefixes: Vec<String>,
-    pub file: Option<PathBuf>,
+    pub files: Vec<PathBuf>,
     pub file_poll: Duration,
     pub target: RouteTarget,
     pub fallback: Option<RouteTarget>,
