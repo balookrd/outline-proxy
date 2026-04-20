@@ -409,6 +409,7 @@ async fn load_config_enables_tun_from_cli_without_tun_section() {
     let _ = std::fs::remove_file(path);
 }
 
+#[cfg(feature = "metrics")]
 #[tokio::test]
 async fn load_config_enables_metrics_from_cli_without_metrics_section() {
     let path = std::env::temp_dir().join("outline-ws-rust-no-metrics-section.toml");
@@ -907,6 +908,7 @@ async fn load_config_rejects_inverted_route_without_prefixes() {
     let _ = std::fs::remove_file(path);
 }
 
+#[cfg(feature = "control")]
 #[tokio::test]
 async fn load_config_accepts_control_section_with_token() {
     let path = std::env::temp_dir().join("outline-ws-rust-control-ok.toml");
@@ -990,6 +992,7 @@ async fn load_config_rejects_control_token_without_listener() {
     let _ = std::fs::remove_file(path);
 }
 
+#[cfg(feature = "control")]
 #[tokio::test]
 async fn load_config_reads_control_token_from_file() {
     let dir = std::env::temp_dir().join("outline-ws-rust-control-tokfile");
