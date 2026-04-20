@@ -1319,6 +1319,188 @@ async fn process_server_ack_stale_ack_across_wrap_is_rejected() {
     assert_eq!(state.last_client_ack, 10);
 }
 
+// --- PAWS (RFC 7323): timestamp-based stale-segment rejection ---
+//
+// The engine-level test covers the happy path end-to-end; these cases
+// pin the per-branch decisions in the validator and the TS.Recent
+// bookkeeping helper, including behavior across a 2^32 timestamp wrap.
+
+fn paws_packet(
+    sequence_number: u32,
+    timestamp_value: Option<u32>,
+    flags: u8,
+    payload: &'static [u8],
+) -> ParsedTcpPacket {
+    ParsedTcpPacket {
+        version: super::IpVersion::V4,
+        source_ip: "10.0.0.2".parse().unwrap(),
+        destination_ip: "8.8.8.8".parse().unwrap(),
+        source_port: 40000,
+        destination_port: 443,
+        sequence_number,
+        acknowledgement_number: 1000,
+        window_size: 4096,
+        max_segment_size: None,
+        window_scale: None,
+        sack_permitted: false,
+        sack_blocks: Vec::new(),
+        timestamp_value,
+        timestamp_echo_reply: None,
+        flags,
+        payload: Bytes::from_static(payload),
+    }
+}
+
+fn matches_challenge_ack(
+    validation: crate::tcp::validation::PacketValidation,
+    expected_reason: &'static str,
+) -> bool {
+    matches!(
+        validation,
+        crate::tcp::validation::PacketValidation::ChallengeAck(reason) if reason == expected_reason,
+    )
+}
+
+#[test]
+fn timestamp_lt_handles_wraparound() {
+    use crate::tcp::state_machine::timestamp_lt;
+    assert!(timestamp_lt(u32::MAX, 0));
+    assert!(!timestamp_lt(0, u32::MAX));
+    assert!(timestamp_lt(u32::MAX - 10, 5));
+    assert!(!timestamp_lt(5, u32::MAX - 10));
+    assert!(!timestamp_lt(42, 42));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_accepts_when_timestamps_disabled() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = false;
+    state.recent_client_timestamp = None;
+    let packet = paws_packet(state.client_next_seq, None, TCP_FLAG_ACK, b"abc");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
+    assert!(matches!(validation, crate::tcp::validation::PacketValidation::Accept));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_paws_rejects_stale_timestamp_within_window() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(100);
+    let packet = paws_packet(state.client_next_seq, Some(50), TCP_FLAG_ACK, b"abc");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
+    assert!(matches_challenge_ack(validation, "paws_reject"));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_paws_ignores_stale_timestamp_outside_window() {
+    // A stale TS on a segment outside the receive window must be silently
+    // dropped (PacketValidation::Ignore) rather than triggering a challenge
+    // ACK; otherwise we give an off-path attacker a reflection primitive
+    // for arbitrary sequence numbers.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(100);
+    // Place the segment far outside the receive window.
+    let far_seq = state.client_next_seq.wrapping_add(1 << 30);
+    let packet = paws_packet(far_seq, Some(50), TCP_FLAG_ACK, b"abc");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
+    assert!(matches!(validation, crate::tcp::validation::PacketValidation::Ignore));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_challenges_missing_timestamp_within_window() {
+    // Once timestamps are negotiated the peer must include TSopt on every
+    // non-RST segment (RFC 7323 §3.2). A missing TS inside the window is
+    // either a protocol violation or a forged segment; answer with a
+    // challenge ACK rather than silently accepting.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(100);
+    let packet = paws_packet(state.client_next_seq, None, TCP_FLAG_ACK, b"abc");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
+    assert!(matches_challenge_ack(validation, "missing_timestamp"));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_accepts_equal_or_newer_timestamp() {
+    // PAWS uses strict-less-than: TSval == TS.Recent must still be accepted
+    // (RFC 7323 §5.3) — retransmitted segments legitimately carry the same
+    // TSval as the previously accepted one.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(100);
+
+    let equal = paws_packet(state.client_next_seq, Some(100), TCP_FLAG_ACK, b"abc");
+    let newer = paws_packet(state.client_next_seq, Some(101), TCP_FLAG_ACK, b"abc");
+
+    assert!(matches!(
+        crate::tcp::validation::validate_existing_packet(&state, &equal),
+        crate::tcp::validation::PacketValidation::Accept,
+    ));
+    assert!(matches!(
+        crate::tcp::validation::validate_existing_packet(&state, &newer),
+        crate::tcp::validation::PacketValidation::Accept,
+    ));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_paws_accepts_timestamp_across_wrap() {
+    // TSval wraps modulo 2^32 just like sequence numbers. When TS.Recent
+    // is near u32::MAX, a TSval that wrapped past zero is "newer" and
+    // must be accepted.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(u32::MAX - 10);
+    let newer_wrapped = paws_packet(state.client_next_seq, Some(5), TCP_FLAG_ACK, b"abc");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &newer_wrapped);
+    assert!(matches!(validation, crate::tcp::validation::PacketValidation::Accept));
+}
+
+#[tokio::test]
+async fn validate_existing_packet_rst_bypasses_paws_check() {
+    // RST handling runs before PAWS; a valid RST with a stale (or missing)
+    // timestamp must close the flow, not trigger a PAWS challenge.
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(100);
+    let packet = paws_packet(state.client_next_seq, Some(1), TCP_FLAG_RST, b"");
+
+    let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
+    assert!(matches!(
+        validation,
+        crate::tcp::validation::PacketValidation::CloseFlow("client_rst"),
+    ));
+}
+
+#[tokio::test]
+async fn note_recent_client_timestamp_is_noop_when_feature_disabled() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = false;
+    state.recent_client_timestamp = None;
+
+    super::state_machine::note_recent_client_timestamp(&mut state, Some(42));
+    assert_eq!(state.recent_client_timestamp, None);
+}
+
+#[tokio::test]
+async fn note_recent_client_timestamp_records_when_enabled() {
+    let mut state = tcp_flow_state_for_tests().await;
+    state.timestamps_enabled = true;
+    state.recent_client_timestamp = Some(50);
+
+    super::state_machine::note_recent_client_timestamp(&mut state, Some(100));
+    assert_eq!(state.recent_client_timestamp, Some(100));
+
+    // None must leave the existing value untouched.
+    super::state_machine::note_recent_client_timestamp(&mut state, None);
+    assert_eq!(state.recent_client_timestamp, Some(100));
+}
+
 pub(super) fn test_tun_tcp_config() -> TunTcpConfig {
     TunTcpConfig {
         connect_timeout: Duration::from_secs(5),
