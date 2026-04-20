@@ -71,6 +71,7 @@ impl std::error::Error for Ss2022Error {}
 #[derive(Debug)]
 pub enum TransportOperation {
     WebSocketRead,
+    WebSocketSend,
     SocketShutdown,
     Connect { target: String },
     DnsResolveNoAddresses { host: String },
@@ -80,6 +81,7 @@ impl fmt::Display for TransportOperation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TransportOperation::WebSocketRead => write!(f, "websocket read failed"),
+            TransportOperation::WebSocketSend => write!(f, "failed to send websocket frame"),
             TransportOperation::SocketShutdown => write!(f, "socket shutdown failed"),
             TransportOperation::Connect { target } => write!(f, "failed to connect {target}"),
             TransportOperation::DnsResolveNoAddresses { host } => {
@@ -90,6 +92,27 @@ impl fmt::Display for TransportOperation {
 }
 
 impl std::error::Error for TransportOperation {}
+
+/// Find a typed error of type `T` in an `anyhow::Error`.
+///
+/// `anyhow` exposes two distinct namespaces:
+/// 1. Context layers added via `.context(T)` / `.with_context(|| T)` — these
+///    are found by `anyhow::Error::downcast_ref::<T>()` but NOT by walking
+///    `chain()` (the std `Error::source()` iterator does not expose
+///    context values).
+/// 2. Typed root/source errors (e.g. `bail!(Ss2022Error::…)`, `Error::new(T)`)
+///    — found by either `downcast_ref` or `chain().find_map()`.
+///
+/// Many call-sites use form 1 (`.with_context(|| TransportOperation::…)`), so
+/// classifiers MUST call `downcast_ref` on the `Error` itself; the chain walk
+/// is kept as a fallback for typed errors constructed deeper.
+pub fn find_typed<T: std::error::Error + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> Option<&T> {
+    error
+        .downcast_ref::<T>()
+        .or_else(|| error.chain().find_map(|e| e.downcast_ref::<T>()))
+}
 
 use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};

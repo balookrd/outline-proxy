@@ -255,7 +255,7 @@ impl UdpWsTransport {
             UdpTransport::Websocket { data_tx, .. } => data_tx
                 .send(Message::Binary(packet.into()))
                 .await
-                .context("failed to send UDP websocket frame"),
+                .context(TransportOperation::WebSocketSend),
             UdpTransport::Socket { socket } => {
                 if packet.len() > MAX_UDP_SOCKET_PACKET_SIZE {
                     warn!(

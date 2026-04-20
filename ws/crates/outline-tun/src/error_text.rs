@@ -1,7 +1,7 @@
 use std::io::{self, ErrorKind};
 
 use anyhow::Error;
-use outline_transport::WebSocketClosed;
+use outline_transport::{TransportOperation, WebSocketClosed, find_typed};
 
 use crate::udp::AllUdpUplinksFailed;
 
@@ -36,7 +36,7 @@ const EXTERNAL_WEBSOCKET_CLOSE_STRINGS: &[&str] = &[
 ];
 
 pub(crate) fn is_websocket_closed(error: &Error) -> bool {
-    error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())
+    find_typed::<WebSocketClosed>(error).is_some()
         || is_transport_level_disconnect(error)
         || {
             let lower = format!("{error:#}").to_ascii_lowercase();
@@ -45,23 +45,24 @@ pub(crate) fn is_websocket_closed(error: &Error) -> bool {
 }
 
 pub(crate) fn classify_tun_udp_forward_error(error: &Error) -> &'static str {
-    if error.chain().any(|e| e.downcast_ref::<AllUdpUplinksFailed>().is_some()) {
+    if find_typed::<AllUdpUplinksFailed>(error).is_some() {
         return "all_uplinks_failed";
     }
-    // Transport errors: WebSocketClosed or typed transport disconnect
-    if error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())
-        || is_transport_level_disconnect(error)
-    {
+    // Transport errors: WebSocketClosed or typed transport disconnect.
+    if find_typed::<WebSocketClosed>(error).is_some() || is_transport_level_disconnect(error) {
         return "transport_error";
     }
-    // "websocket read failed" context string is still needed: the underlying
-    // tungstenite error is preserved in the chain but has no stable typed API.
-    let lower = format!("{error:#}").to_ascii_lowercase();
-    if lower.contains("websocket read failed") || lower.contains("failed to send udp websocket frame") {
-        return "transport_error";
-    }
-    if lower.contains("failed to connect to") {
-        return "connect_failed";
+    // Typed: high-level transport operation marker attached at the failure
+    // site (preferred over substring matching on Display output).
+    if let Some(op) = find_typed::<TransportOperation>(error) {
+        return match op {
+            TransportOperation::WebSocketRead
+            | TransportOperation::WebSocketSend
+            | TransportOperation::SocketShutdown => "transport_error",
+            TransportOperation::Connect { .. } | TransportOperation::DnsResolveNoAddresses { .. } => {
+                "connect_failed"
+            },
+        };
     }
     "other"
 }

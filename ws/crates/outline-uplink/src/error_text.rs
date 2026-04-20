@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{self, ErrorKind};
 
 use anyhow::Error;
-use outline_transport::{Ss2022Error, TransportOperation, WebSocketClosed};
+use outline_transport::{Ss2022Error, TransportOperation, WebSocketClosed, find_typed};
 use shadowsocks_crypto::CryptoError;
 
 /// Typed marker placed in the error chain by the warm-standby maintenance
@@ -25,25 +25,6 @@ fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
         .chain()
         .find_map(|e| e.downcast_ref::<io::Error>())
         .map(|e| e.kind())
-}
-
-/// Find a typed error of type `T` in an `anyhow::Error`.
-///
-/// `anyhow` exposes two distinct namespaces:
-/// 1. Context layers added via `.context(T)` / `.with_context(|| T)` — these
-///    are found by `anyhow::Error::downcast_ref::<T>()` but NOT by walking
-///    `chain()` (the std `Error::source()` iterator does not expose
-///    context values).
-/// 2. Typed root/source errors (e.g. `bail!(Ss2022Error::…)`) — found by
-///    either `downcast_ref` or `chain().find_map()`.
-///
-/// Most call-sites use form 1 (`.with_context(|| TransportOperation::…)`),
-/// so classifiers MUST call `downcast_ref` on the `Error` itself. The chain
-/// walk is kept as a fallback for typed errors constructed deeper.
-fn find_typed<T: std::error::Error + Send + Sync + 'static>(error: &Error) -> Option<&T> {
-    error
-        .downcast_ref::<T>()
-        .or_else(|| error.chain().find_map(|e| e.downcast_ref::<T>()))
 }
 
 fn is_transport_level_disconnect(error: &Error) -> bool {
@@ -189,6 +170,7 @@ pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str 
     if let Some(op) = find_typed::<TransportOperation>(error) {
         return match op {
             TransportOperation::WebSocketRead => "ws_read_failed",
+            TransportOperation::WebSocketSend => "ws_send_failed",
             TransportOperation::SocketShutdown => "socket_shutdown_failed",
             TransportOperation::Connect { .. } => "connect_failed",
             TransportOperation::DnsResolveNoAddresses { .. } => "dns_no_addresses",
