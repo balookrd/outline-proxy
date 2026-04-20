@@ -121,8 +121,12 @@ fn configure_tcp_stream_low_latency(stream: &TcpStream, addr: SocketAddr) -> Res
         .set_nodelay(true)
         .with_context(|| format!("failed to enable TCP_NODELAY for {addr}"))?;
     // Keep idle connections alive through NAT/middlebox timeouts that would
-    // otherwise silently drop the TCP flow (common with SOCKS5-QUIC bridging).
-    apply_tcp_keepalive(stream, addr, 60, 10, 6)
+    // otherwise silently drop the TCP flow (common with SOCKS5-QUIC bridging
+    // and router-level conntrack like hev-socks5-tunnel).  Tight budget —
+    // first probe at 30 s, then every 10 s × 3 retries — means a dead uplink
+    // is detected within ~60 s and gets surfaced as a write error so the
+    // session can fail over instead of hanging on an H2/H3 shared connection.
+    apply_tcp_keepalive(stream, addr, 30, 10, 3)
 }
 
 /// Configure an inbound SOCKS5 client socket (the one we accepted from

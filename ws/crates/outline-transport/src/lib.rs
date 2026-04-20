@@ -109,7 +109,7 @@ pub async fn connect_websocket_with_source(
         WsTransportMode::Http1 => {
             let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
-            Ok(WsTransportStream::Http1 { inner: ws_stream })
+            Ok(WsTransportStream::new_http1(ws_stream))
         },
         WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
             Ok(stream) => {
@@ -125,7 +125,7 @@ pub async fn connect_websocket_with_source(
                 );
                 let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(WsTransportStream::Http1 { inner: ws_stream })
+                Ok(WsTransportStream::new_http1(ws_stream))
             },
         },
         #[cfg(feature = "h3")]
@@ -156,7 +156,7 @@ pub async fn connect_websocket_with_source(
                         let ws_stream =
                             connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(WsTransportStream::Http1 { inner: ws_stream })
+                        Ok(WsTransportStream::new_http1(ws_stream))
                     },
                 }
             },
@@ -174,7 +174,7 @@ pub async fn connect_websocket_with_source(
                     let ws_stream =
                         connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(WsTransportStream::Http1 { inner: ws_stream })
+                    Ok(WsTransportStream::new_http1(ws_stream))
                 },
             }
         },

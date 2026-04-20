@@ -232,6 +232,26 @@ impl SharedH2Connection {
     }
 
     async fn open_websocket(self: &Arc<Self>, target_uri: &str) -> Result<WsTransportStream> {
+        match self.open_websocket_inner(target_uri).await {
+            Ok(ws) => Ok(ws),
+            Err(error) => {
+                // Any failure opening a new CONNECT stream on an already-cached
+                // shared connection is a strong signal the connection is sick
+                // (hyper's .ready() failed, server sent non-2xx, upgrade hung,
+                // etc.).  Mark it closed now so concurrent callers racing to
+                // open another stream skip this entry in `is_open()` instead
+                // of repeating the same failure before the caller invalidates
+                // the cache entry.
+                self.closed.store(true, Ordering::Relaxed);
+                Err(error)
+            },
+        }
+    }
+
+    async fn open_websocket_inner(
+        self: &Arc<Self>,
+        target_uri: &str,
+    ) -> Result<WsTransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
         }
@@ -261,7 +281,6 @@ impl SharedH2Connection {
         })
         .await
         .map_err(|_| {
-            self.closed.store(true, Ordering::Relaxed);
             anyhow!(
                 "HTTP/2 websocket CONNECT send timed out after {}s on shared connection",
                 OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -271,7 +290,6 @@ impl SharedH2Connection {
         let mut response = timeout(OPEN_WEBSOCKET_TIMEOUT, response_future)
             .await
             .map_err(|_| {
-                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket CONNECT response timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -285,7 +303,6 @@ impl SharedH2Connection {
         let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
             .map_err(|_| {
-                self.closed.store(true, Ordering::Relaxed);
                 anyhow!(
                     "HTTP/2 websocket upgrade timed out after {}s on shared connection",
                     OPEN_WEBSOCKET_TIMEOUT.as_secs()
@@ -513,8 +530,13 @@ async fn connect_h2_connection(
             .timer(TokioTimer::new())
             .initial_stream_window_size(Some(h2_stream_window_size()))
             .initial_connection_window_size(Some(h2_connection_window_size()))
-            .keep_alive_interval(Some(Duration::from_secs(20)))
-            .keep_alive_timeout(Duration::from_secs(20))
+            // Tighter than the previous 20s/20s so a silently-broken shared
+            // connection (e.g. NAT/conntrack on the router path through
+            // hev-socks5-tunnel loses the TCP mapping) is detected within ~20s
+            // instead of ~40s, bounding how long new SOCKS sessions stall on
+            // the dead cache entry before failover can pick a fresh uplink.
+            .keep_alive_interval(Some(Duration::from_secs(10)))
+            .keep_alive_timeout(Duration::from_secs(10))
             .handshake::<_, Empty<Bytes>>(TokioIo::new(io))
             .await
             .context("HTTP/2 handshake failed")

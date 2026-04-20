@@ -4,12 +4,30 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::debug;
+
+// Maximum time an upstream WebSocket read may sit idle without producing any
+// frame (data, ping, pong, or close) before the reader assumes the stream is
+// dead and lets the session fail over to a fresh uplink.  Without this bound,
+// a silently-broken shared H2/H3 connection (NAT loss on the router path, or a
+// middlebox that drops idle TCP without sending FIN) leaves the reader blocked
+// on `stream.next()` forever — the SOCKS session idle-watcher only fires after
+// 5 minutes of no payload, and during that window reconnects hit the same
+// half-dead cached shared connection and fail.
+//
+// 120s is comfortably above typical SSE heartbeat cadences (10–30s for the
+// Anthropic API, similar for most streaming endpoints), so healthy idle
+// streams are unaffected.  When the underlying H2/H3 keepalive (10s interval,
+// 10s timeout) already detects a dead connection, this cap is a defence in
+// depth: if the driver task fails to propagate the closure to individual
+// streams, the reader still unblocks within 2 minutes.
+const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 
 use shadowsocks_crypto::{
     AeadCipher, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce, validate_ss2022_timestamp,
@@ -134,8 +152,30 @@ pub struct WsReadTransport {
 impl ReadTransport for WsReadTransport {
     async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
         while self.buffer.len() < len {
-            let next = match self.stream.next().await {
-                None => {
+            let next = match timeout(WS_READ_IDLE_TIMEOUT, self.stream.next()).await {
+                Err(_elapsed) => {
+                    // `closed_cleanly` stays false so the session layer reports
+                    // a runtime uplink failure; this is what triggers prompt
+                    // failover and cache eviction of the broken shared conn.
+                    debug!(
+                        target: "outline_ws_rust::session_death",
+                        timeout_secs = WS_READ_IDLE_TIMEOUT.as_secs(),
+                        need = len,
+                        have = self.buffer.len(),
+                        uplink = %self.diag.uplink,
+                        target_addr = %self.diag.target,
+                        mode = self.diag.mode,
+                        conn_id = ?self.diag.conn_id,
+                        "reader: websocket stream idle beyond timeout; treating as dead"
+                    );
+                    bail!(
+                        "websocket upstream read idle for {}s on uplink {} target {}",
+                        WS_READ_IDLE_TIMEOUT.as_secs(),
+                        self.diag.uplink,
+                        self.diag.target,
+                    );
+                },
+                Ok(None) => {
                     *closed_cleanly = true;
                     debug!(
                         target: "outline_ws_rust::session_death",
@@ -149,8 +189,8 @@ impl ReadTransport for WsReadTransport {
                     );
                     return Err(anyhow::Error::from(WebSocketClosed));
                 },
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
+                Ok(Some(Ok(msg))) => msg,
+                Ok(Some(Err(e))) => {
                     debug!(
                         target: "outline_ws_rust::session_death",
                         need = len,
