@@ -23,6 +23,74 @@ impl fmt::Display for WebSocketClosed {
 
 impl std::error::Error for WebSocketClosed {}
 
+/// Typed marker for Shadowsocks-2022 framing and replay errors. Placed in the
+/// `anyhow` error chain (as a `bail!` value or `.context` layer) so that
+/// classifiers can match by variant via `downcast_ref` instead of grepping
+/// formatted strings.
+#[derive(Debug)]
+pub enum Ss2022Error {
+    InvalidResponseHeaderLength(usize),
+    InvalidResponseHeaderType(u8),
+    RequestSaltMismatch,
+    InvalidInitialTargetHeader,
+    DuplicateOrOutOfOrderUdpPacket,
+    OversizedUdpUplink,
+}
+
+impl fmt::Display for Ss2022Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Ss2022Error::InvalidResponseHeaderLength(len) => {
+                write!(f, "invalid ss2022 response header length: {len}")
+            },
+            Ss2022Error::InvalidResponseHeaderType(ty) => {
+                write!(f, "invalid ss2022 response header type: {ty}")
+            },
+            Ss2022Error::RequestSaltMismatch => {
+                write!(f, "ss2022 response header request salt mismatch")
+            },
+            Ss2022Error::InvalidInitialTargetHeader => {
+                write!(f, "invalid ss2022 initial target header")
+            },
+            Ss2022Error::DuplicateOrOutOfOrderUdpPacket => {
+                write!(f, "duplicate or out-of-order ss2022 UDP packet")
+            },
+            Ss2022Error::OversizedUdpUplink => {
+                write!(f, "oversized UDP packet dropped before uplink send")
+            },
+        }
+    }
+}
+
+impl std::error::Error for Ss2022Error {}
+
+/// Typed marker for the high-level operation that produced a transport error.
+/// Placed as an `anyhow` context layer at the failure site so classifiers can
+/// identify the operation via `downcast_ref` rather than grepping the
+/// formatted error string.
+#[derive(Debug)]
+pub enum TransportOperation {
+    WebSocketRead,
+    SocketShutdown,
+    Connect { target: String },
+    DnsResolveNoAddresses { host: String },
+}
+
+impl fmt::Display for TransportOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransportOperation::WebSocketRead => write!(f, "websocket read failed"),
+            TransportOperation::SocketShutdown => write!(f, "socket shutdown failed"),
+            TransportOperation::Connect { target } => write!(f, "failed to connect {target}"),
+            TransportOperation::DnsResolveNoAddresses { host } => {
+                write!(f, "DNS resolution returned no addresses for {host}")
+            },
+        }
+    }
+}
+
+impl std::error::Error for TransportOperation {}
+
 use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
@@ -42,7 +110,7 @@ const HTTP1_WS_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 #[cfg(feature = "h3")]
 use crate::h3::connect_websocket_h3;
 
-pub mod config;
+mod config;
 mod dns;
 mod dns_cache;
 mod guards;
@@ -57,27 +125,47 @@ mod tls;
 mod url_utils;
 mod ws_stream;
 
-pub use config::{ServerAddr, WsTransportMode};
-pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
-
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
 use ws_stream::H1WsStream;
 
-pub use h2::init_h2_window_sizes;
-pub use socket::{bind_udp_socket, configure_inbound_tcp_stream, connect_tcp_socket, init_udp_socket_bufs};
-pub use tcp_transport::{
-    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    WsReadDiag, WsTcpReader, WsTcpWriter, SocketTcpReader, SocketTcpWriter,
-};
-pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-pub use ws_stream::WsTransportStream;
-pub(crate) use ws_stream::SharedConnectionHealth;
-
-pub use dns::resolve_host_with_preference;
-pub use guards::UpstreamTransportGuard;
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard};
 pub(crate) use socket::bind_addr_for;
+pub(crate) use ws_stream::SharedConnectionHealth;
+
+// --- Public surface kept intentionally narrow. Group by concern so it's
+// --- clear at a glance what the transport crate exposes. -------------------
+
+// Config data types reused by callers that construct transport parameters
+// (uplink config loader, CLI args, main-binary schema).
+pub use config::{ServerAddr, WsTransportMode};
+
+// DNS cache: shared by every resolve path in the main binary.
+pub use dns::resolve_host_with_preference;
+pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
+
+// Entry points — connection constructors for TCP/UDP/WebSocket transports.
+pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
+pub use ws_stream::WsTransportStream;
+
+// Low-level socket helpers used by TUN and by test setup in other crates.
+pub use socket::{bind_udp_socket, configure_inbound_tcp_stream, connect_tcp_socket, init_udp_socket_bufs};
+
+// TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums
+// TUN and the proxy plumb through; the `TcpShadowsocks*` helpers construct
+// them. The half-specific variants (`WsTcpWriter`, `SocketTcpWriter`) are
+// re-exported for TUN's state-machine pattern matching.
+pub use tcp_transport::{
+    TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
+    WsReadDiag, WsTcpWriter, SocketTcpWriter,
+};
+
+// HTTP/2 window-size tuning: called once during startup from the main binary.
+pub use h2::init_h2_window_sizes;
+
+// Transport lifetime guards — published because the uplink crate pairs a
+// `UpstreamTransportGuard` to every connection it hands out.
+pub use guards::UpstreamTransportGuard;
 
 /// Sweep H2 (and H3 when enabled) shared-connection caches, removing entries
 /// whose underlying connection is no longer open.  Should be called
@@ -88,16 +176,6 @@ pub async fn gc_shared_connections() {
     h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
     crate::h3::gc_shared_h3_connections().await;
-}
-
-pub async fn connect_websocket(
-    cache: &DnsCache,
-    url: &Url,
-    mode: WsTransportMode,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-) -> Result<WsTransportStream> {
-    connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, "direct").await
 }
 
 pub async fn connect_websocket_with_source(
@@ -219,7 +297,9 @@ pub async fn connect_shadowsocks_udp_with_source(
     socket
         .connect(server_addr)
         .await
-        .with_context(|| format!("failed to connect UDP socket to {server_addr}"))?;
+        .with_context(|| TransportOperation::Connect {
+            target: format!("UDP socket to {server_addr}"),
+        })?;
     connect_guard.finish("success");
     Ok(socket)
 }
@@ -241,7 +321,11 @@ async fn connect_websocket_http1(
             .await?
             .first()
             .copied()
-            .ok_or_else(|| anyhow!("DNS resolution returned no addresses for {host}:{port}"))?;
+            .ok_or_else(|| {
+                anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+                    host: format!("{host}:{port}"),
+                })
+            })?;
     let ws_stream = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
         let tcp = connect_tcp_socket(server_addr, fwmark).await?;
         let (ws_stream, _) = client_async_tls(url.as_str(), tcp)

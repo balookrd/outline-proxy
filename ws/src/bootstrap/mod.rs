@@ -102,7 +102,9 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     let proxy_config = Arc::new(ProxyConfig {
         socks5_auth: config.socks5_auth.clone(),
         dns_cache: dns_cache.clone(),
-        routing_table: routing_table.clone(),
+        router: routing_table
+            .clone()
+            .map(|t| t as Arc<dyn crate::proxy::Router>),
         direct_fwmark: config.direct_fwmark,
     });
 
