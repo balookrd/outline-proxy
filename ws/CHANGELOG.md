@@ -28,6 +28,10 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Reduced hot-path overhead with lower-allocation DNS caching, boxed AEAD variants, finer-grained uplink status locking, non-blocking `AsyncFd` TUN I/O, and less heap churn in UDP/TCP paths.
 - Switched more internal paths to direct workspace crate usage instead of root-level facades and aliases.
 
+### Deprecated
+
+- The flat uplink config layout (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) is now deprecated; the canonical form nests these under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The old layout is still accepted and logs a deprecation warning on startup. Example configs and README were updated to the new form.
+
 ### Fixed
 
 - Serialized Prometheus rendering to avoid concurrent scrape races.

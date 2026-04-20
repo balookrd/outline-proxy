@@ -504,31 +504,32 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
-# Top-level [probe] — шаблон, наследуемый каждой [[uplink_group]];
+# [outline.probe] — шаблон, наследуемый каждой [[uplink_group]];
 # конкретные группы могут переопределить любое поле через [uplink_group.probe].
-[probe]
+[outline.probe]
 interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
 min_failures = 1
 
-[probe.ws]
+[outline.probe.ws]
 enabled = true
 
-[probe.http]
+[outline.probe.http]
 url = "http://example.com/"
 
-# `probe.http` отправляет HTTP `HEAD`, а не `GET`, чтобы health-check не тянул
-# тело ответа через uplink.
+# `outline.probe.http` отправляет HTTP `HEAD`, а не `GET`, чтобы health-check
+# не тянул тело ответа через uplink.
 
-[probe.dns]
+[outline.probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
 
 # Каждая группа — изолированный UplinkManager со своим probe loop, standby
 # pool, sticky-routes, активным аплинком и LB-политикой.
+# Обратите внимание: [[uplink_group]] остаётся на верхнем уровне, не под [outline].
 [[uplink_group]]
 name = "main"
 mode = "active_active"
@@ -546,9 +547,9 @@ failure_penalty_halflife_secs = 60
 h3_downgrade_secs = 60
 # auto_failback = false
 
-# Каждая запись [[uplinks]] должна содержать `group = "..."`, совпадающее с
-# [[uplink_group]].name выше.
-[[uplinks]]
+# Аплинки живут под [outline]. Каждая запись [[outline.uplinks]] должна
+# содержать `group = "..."`, совпадающее с [[uplink_group]].name выше.
+[[outline.uplinks]]
 name = "primary"
 group = "main"
 transport = "websocket"
@@ -562,7 +563,7 @@ udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-[[uplinks]]
+[[outline.uplinks]]
 name = "backup"
 group = "main"
 transport = "websocket"
@@ -598,18 +599,18 @@ via = "main"
 - `[socks5] username` + `password` по-прежнему поддерживаются как shorthand для одного пользователя.
 - CLI/env-эквиваленты `--socks5-username` / `SOCKS5_USERNAME` и `--socks5-password` / `SOCKS5_PASSWORD` тоже задают одного пользователя.
 - Тот же SOCKS5-listener принимает и стандартный `UDP ASSOCIATE`, и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); отдельный server-side переключатель не нужен.
-- `[probe] min_failures` (по умолчанию `1`): количество последовательных неудачных проб, необходимых для объявления аплинка нездоровым. Увеличьте до `2` или `3`, чтобы допускать разовые сбои проб без запуска failover. То же значение используется в качестве порога стабильности последовательных успехов для `auto_failback`.
-- `[load_balancing] tcp_chunk0_failover_timeout_secs` (по умолчанию `10`): сколько ждать первых байтов ответа от upstream после последней активности клиента, прежде чем разрешать TCP chunk-0 failover на другой аплинк. Увеличьте это значение, если линки всё ещё переключаются на медленных first-byte ответах.
-- `[load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
+- `[outline.probe] min_failures` (по умолчанию `1`): количество последовательных неудачных проб, необходимых для объявления аплинка нездоровым. Увеличьте до `2` или `3`, чтобы допускать разовые сбои проб без запуска failover. То же значение используется в качестве порога стабильности последовательных успехов для `auto_failback`.
+- `[outline.load_balancing] tcp_chunk0_failover_timeout_secs` (по умолчанию `10`): сколько ждать первых байтов ответа от upstream после последней активности клиента, прежде чем разрешать TCP chunk-0 failover на другой аплинк. Увеличьте это значение, если линки всё ещё переключаются на медленных first-byte ответах. (Применимо к single-group конфигам; для multi-group то же поле живёт на каждом `[[uplink_group]]`.)
+- `[outline.load_balancing] auto_failback` (по умолчанию `false`): управляет тем, возвращает ли прокси трафик на восстановившийся аплинк с более высоким приоритетом.
   - `false` (по умолчанию): активный аплинк заменяется **только при сбое**. Как только прокси переключился на резервный, он остаётся на нём, пока не упадёт сам резервный — никакого автоматического возврата на primary. Рекомендуется для production, чтобы исключить лишние обрывы соединений.
   - `true`: если текущий активный аплинк здоров, но существует кандидат с **более высоким `weight`** (или равным weight и меньшим индексом в конфиге), прокси может вернуть трафик на него — но только после того, как кандидат накопит `min_failures` последовательных успешных циклов проб. Приоритет определяется `weight`, а не EWMA RTT: это исключает ложные переключения под нагрузкой, когда EWMA активного аплинка временно растёт из-за медленных соединений, а idle-резервный выглядит лучше по latency. Failback всегда движется в сторону большего `weight` (`1.0 → 1.5 → 2.0`): переключение на аплинк с меньшим weight через auto_failback невозможно — это failover, который требует probe-подтверждённого сбоя.
 - `h3_downgrade_secs` (per-group, по умолчанию `60`): сколько секунд аплинк, получивший H3-ошибку на уровне приложения (например, `H3_INTERNAL_ERROR`), будет использовать H2-fallback перед повторной попыткой H3. Установите `0`, чтобы отключить автоматический H3-даунгрейд.
 - `state_path` (опционально): путь к TOML-файлу, в котором сохраняется выбор активного аплинка между рестартами. По умолчанию — путь к конфигу с заменой расширения на `.state.toml` (например, `config.toml` → `config.state.toml`). Если файл не удаётся открыть на запись (например, конфиг находится в `/etc/` с `ProtectSystem=strict`), при старте выводится предупреждение и процесс продолжает работу без персистентности. Прилагаемые systemd-юниты задают `STATE_PATH=/var/lib/outline-ws-rust/state.toml`, чтобы состояние попадало в записываемую директорию. Сохраняется только выбор активного аплинка (по имени); EWMA и штрафы не сохраняются — они восстанавливаются за один цикл проб после рестарта.
 - Группы аплинков (`[[uplink_group]]`) полностью изолированы в runtime: у каждой свой probe loop, standby pool, sticky-routes, активный аплинк и load-balancing политика.
-- Top-level `[probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[probe.http]` для неё игнорируется.
+- `[outline.probe]` — шаблон: каждая группа его наследует, а `[uplink_group.probe]` переопределяет поля по отдельности. Подтаблицы пробников (`ws`/`http`/`dns`/`tcp`) заменяются целиком — если группа задаёт `[uplink_group.probe.http]`, шаблонный `[outline.probe.http]` для неё игнорируется.
 - Имена аплинков должны быть глобально уникальны по всем группам (Prometheus-метрики пока используют лейбл `uplink="..."` без квалификатора группы).
 - Устаревшая секция `[bypass]` удалена. Мигрируйте bypass-префиксы в `[[route]]` с `via = "direct"`. Загрузка конфига с оставшейся `[bypass]`-таблицей завершится с явным сообщением о миграции.
-- Устаревший формат `[outline]` по-прежнему поддерживается как single-uplink shorthand, а CLI-флаги (`--tcp-ws-url`, `--password`, ...) синтезируют single-uplink группу `default`.
+- Аплинки, шаблон пробника и настройки load-balancing живут под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая плоская форма с top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` по-прежнему принимается для обратной совместимости и на старте логирует deprecation-предупреждение — мигрируйте в секцию `[outline]`. Без `[[uplinks]]` top-level `tcp_ws_url` / `password` / CLI-флаги (`--tcp-ws-url`, `--password`, ...) синтезируют single-uplink группу `default` как shorthand.
 - Флаги CLI и переменные окружения переопределяют настройки из файла.
 - `--metrics-listen` включает метрики даже без секции `[metrics]` в конфиге.
 - `--control-listen` / `CONTROL_LISTEN` и `--control-token` / `CONTROL_TOKEN` включают control plane без секции `[control]`. Оба значения должны быть заданы вместе; одно без другого приводит к ошибке старта.

@@ -510,31 +510,32 @@ listen = "[::1]:9090"
 # max_buffered_client_bytes = 262144
 # max_retransmits = 12
 
-# Top-level [probe] acts as a template inherited by every [[uplink_group]].
+# [outline.probe] acts as a template inherited by every [[uplink_group]].
 # Individual groups can override any field via [uplink_group.probe].
-[probe]
+[outline.probe]
 interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
 min_failures = 1
 
-[probe.ws]
+[outline.probe.ws]
 enabled = true
 
-[probe.http]
+[outline.probe.http]
 url = "http://example.com/"
 
-# `probe.http` sends an HTTP `HEAD` request (not `GET`), so health checks do
-# not download response bodies through the uplink.
+# `outline.probe.http` sends an HTTP `HEAD` request (not `GET`), so health
+# checks do not download response bodies through the uplink.
 
-[probe.dns]
+[outline.probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
 
 # Each uplink group is an isolated UplinkManager with its own probe loop,
 # standby pool, sticky-routes store, active-uplink state, and LB policy.
+# Note: [[uplink_group]] stays at the top level, not under [outline].
 [[uplink_group]]
 name = "main"
 mode = "active_active"
@@ -552,9 +553,9 @@ failure_penalty_halflife_secs = 60
 h3_downgrade_secs = 60
 # auto_failback = false
 
-# Each [[uplinks]] entry must declare `group = "..."` matching an
-# [[uplink_group]].name above.
-[[uplinks]]
+# Uplinks live under [outline]. Each [[outline.uplinks]] entry must declare
+# `group = "..."` matching an [[uplink_group]].name above.
+[[outline.uplinks]]
 name = "primary"
 group = "main"
 transport = "websocket"
@@ -568,7 +569,7 @@ udp_ws_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
-[[uplinks]]
+[[outline.uplinks]]
 name = "backup"
 group = "main"
 transport = "websocket"
@@ -604,18 +605,18 @@ via = "main"
 - `[socks5] username` + `password` is still accepted as a shorthand for a single user.
 - CLI/env equivalents `--socks5-username` / `SOCKS5_USERNAME` and `--socks5-password` / `SOCKS5_PASSWORD` also configure a single user.
 - The same SOCKS5 listener accepts both standard `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`); no extra config switch is required on the server.
-- `[probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering failover. The same value also sets the consecutive-success stability threshold for `auto_failback`.
-- `[load_balancing] tcp_chunk0_failover_timeout_secs` (default `10`): how long the proxy waits for the first upstream response bytes after the most recent client request activity before allowing TCP chunk-0 failover to another uplink. Increase this if links still switch on slow first-byte responses.
-- `[load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
+- `[outline.probe] min_failures` (default `1`): consecutive probe failures required before an uplink is declared unhealthy. Increase to `2` or `3` to tolerate intermittent probe blips without triggering failover. The same value also sets the consecutive-success stability threshold for `auto_failback`.
+- `[outline.load_balancing] tcp_chunk0_failover_timeout_secs` (default `10`): how long the proxy waits for the first upstream response bytes after the most recent client request activity before allowing TCP chunk-0 failover to another uplink. Increase this if links still switch on slow first-byte responses. (Applies to single-group configs; for multi-group setups the same field lives on each `[[uplink_group]]`.)
+- `[outline.load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
   - `true`: when the current active is healthy and a candidate with a **higher `weight`** (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA RTT: this prevents spurious switches under load, when the active uplink's EWMA temporarily inflates due to slow connections while an idle backup looks better by latency. Failback always moves toward higher weight (`1.0 → 1.5 → 2.0`): switching to a lower-weight uplink via auto_failback is not possible — that requires a probe-confirmed failover.
 - `h3_downgrade_secs` (per-group, default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
 - `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
 - Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
-- Top-level `[probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[probe.http]` is dropped for that group.
+- `[outline.probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group.
 - Uplink names must be globally unique across all groups (Prometheus labels currently use `uplink="..."` without a group qualifier).
 - The legacy `[bypass]` section has been removed. Migrate bypass prefixes to a `[[route]]` with `via = "direct"`. Loading a config that still has a `[bypass]` table fails with an explicit migration error.
-- The legacy `[outline]` format is still accepted as a single-uplink shorthand, and CLI flags (`--tcp-ws-url`, `--password`, ...) synthesise a single-uplink `default` group.
+- Uplinks, the probe template, and load-balancing settings all live under `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). The older flat layout with top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]` is still accepted for backwards compatibility and logs a deprecation warning on startup — migrate to the `[outline]` section. Without any `[[uplinks]]` entry, top-level `tcp_ws_url` / `password` / CLI flags (`--tcp-ws-url`, `--password`, …) synthesise a single-uplink `default` group as a shorthand.
 - CLI flags and environment variables can override file settings.
 - `--metrics-listen` can enable metrics even if `[metrics]` is not present.
 - `--control-listen` / `CONTROL_LISTEN` and `--control-token` / `CONTROL_TOKEN` can enable the control plane without `[control]` in the config. Both must be supplied together; either alone is rejected at startup.

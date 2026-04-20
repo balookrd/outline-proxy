@@ -51,21 +51,21 @@ listen = "[::1]:9090"
 # direct_fwmark = 100
 
 # ── Probe template ──────────────────────────────────────────────────────────
-# Top-level [probe] is a template: each [[uplink_group]] inherits these
+# [outline.probe] is a template: each [[uplink_group]] inherits these
 # defaults, and [uplink_group.probe] overrides individual fields per group.
-[probe]
+[outline.probe]
 interval_secs = 30
 timeout_secs = 10
 max_concurrent = 4
 max_dials = 2
 
-[probe.ws]
+[outline.probe.ws]
 enabled = true
 
-[probe.http]
+[outline.probe.http]
 url = "http://example.com/"
 
-[probe.dns]
+[outline.probe.dns]
 server = "1.1.1.1"
 port = 53
 name = "example.com"
@@ -74,6 +74,8 @@ name = "example.com"
 # Each group is an isolated UplinkManager with its own probe loop, standby
 # pool, sticky-routes store, active-uplink state, and load-balancing policy.
 # Uplinks below are assigned to a group via `group = "..."`.
+#
+# Note: [[uplink_group]] stays at the top level, not under [outline].
 [[uplink_group]]
 name = "main"
 mode = "active_active"          # "active_active" or "active_passive"
@@ -95,14 +97,14 @@ failure_penalty_halflife_secs = 60
 # mode = "active_passive"
 # routing_scope = "global"
 #
-# # Per-group probe override (merged with the top-level template).
+# # Per-group probe override (merged with the [outline.probe] template).
 # [uplink_group.probe]
 # interval_secs = 60
 
 # ── Uplinks ─────────────────────────────────────────────────────────────────
-# Each [[uplinks]] entry must set `group = "..."` matching an
-# [[uplink_group]].name above.
-[[uplinks]]
+# Uplinks live under [outline]. Each [[outline.uplinks]] entry must set
+# `group = "..."` matching an [[uplink_group]].name above.
+[[outline.uplinks]]
 name = "primary"
 group = "main"
 transport = "websocket"
@@ -124,7 +126,7 @@ password = "Secret0"
 # method = "2022-blake3-chacha20-poly1305"
 # password = "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="
 
-[[uplinks]]
+[[outline.uplinks]]
 name = "backup"
 group = "main"
 transport = "websocket"
@@ -138,7 +140,7 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # Direct Shadowsocks example (no WebSocket wrapper):
-# [[uplinks]]
+# [[outline.uplinks]]
 # name = "direct-ss"
 # group = "main"
 # transport = "shadowsocks"
