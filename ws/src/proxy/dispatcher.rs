@@ -48,7 +48,14 @@ pub async fn handle_client(
     match request {
         SocksRequest::Connect(target) => {
             let dispatch = resolve_dispatch(&config, &registry, &target, TransportKind::Tcp).await;
-            super::tcp::handle_tcp_connect(client, dispatch, target, Arc::clone(&config.dns_cache)).await
+            super::tcp::handle_tcp_connect(
+                client,
+                dispatch,
+                target,
+                Arc::clone(&config.dns_cache),
+                config.tcp_timeouts,
+            )
+            .await
         },
         SocksRequest::UdpAssociate(client_hint) => {
             // UDP associate has no target yet — pick the default group. The

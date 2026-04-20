@@ -106,6 +106,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
             .clone()
             .map(|t| t as Arc<dyn crate::proxy::Router>),
         direct_fwmark: config.direct_fwmark,
+        tcp_timeouts: config.tcp_timeouts,
     });
 
     let Some(listener) = listener else {

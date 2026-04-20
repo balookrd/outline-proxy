@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -10,7 +9,7 @@ use tracing::info;
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_metrics as metrics;
 use socks5_proto::{SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
-use super::session::POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT;
+use crate::proxy::TcpTimeouts;
 
 // Direct TCP sessions (bypass-routed) are held open as long as both sides
 // keep the connection alive.  Applications such as DNS-over-HTTPS/TLS clients
@@ -18,18 +17,18 @@ use super::session::POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT;
 // without sending FIN — the HTTP/2 server keeps its side open.  Without a
 // bound these accumulate indefinitely.
 //
-// DIRECT_IDLE_TIMEOUT closes a direct session once BOTH directions have been
-// silent for this long.  Activity in either direction resets the timer.
-// 2 minutes is generous for DoH/DoT (a silent connection is always abandoned)
-// while still being safe for periodic-push traffic (Telegram, FCM, etc. send
-// heartbeats every 30–60 s so their connections will never hit this timeout).
-pub(super) const DIRECT_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+// `direct_idle` (from TcpTimeouts) closes a direct session once BOTH
+// directions have been silent for this long.  Activity in either direction
+// resets the timer.  Default 2 min: generous for DoH/DoT (a silent connection
+// is always abandoned) while safe for periodic-push traffic (Telegram, FCM,
+// etc. send heartbeats every 30–60 s so their connections will never hit it).
 
 pub(super) async fn handle_tcp_direct(
     mut client: TcpStream,
     target: TargetAddr,
     fwmark: Option<u32>,
     cache: &outline_transport::DnsCache,
+    timeouts: TcpTimeouts,
 ) -> Result<()> {
     let addr = match &target {
         TargetAddr::IpV4(ip, port) => SocketAddr::new(std::net::IpAddr::V4(*ip), *port),
@@ -59,7 +58,7 @@ pub(super) async fn handle_tcp_direct(
 
     // Activity channel: c2u and u2c signal after every successful read.
     // The idle watcher resets its timer on each token; if the channel is silent
-    // for DIRECT_IDLE_TIMEOUT it fires, closing the session.
+    // for timeouts.direct_idle it fires, closing the session.
     //
     // Capacity-1 bounded channel: we only care about "any activity", not how
     // many bytes moved, so a single queued token is enough.  try_send discards
@@ -112,14 +111,14 @@ pub(super) async fn handle_tcp_direct(
     };
 
     // Idle watcher: loops receiving activity tokens.  Each received token
-    // resets the DIRECT_IDLE_TIMEOUT deadline.  If the deadline expires before
+    // resets the timeouts.direct_idle deadline.  If the deadline expires before
     // the next token (no data in either direction), the future returns,
     // signalling that the session should be forcibly closed.  When the channel
     // is closed (both tasks finished normally), recv() returns None and the
     // watcher exits without triggering the idle path.
     let idle_watcher = async move {
         loop {
-            match timeout(DIRECT_IDLE_TIMEOUT, activity_rx.recv()).await {
+            match timeout(timeouts.direct_idle, activity_rx.recv()).await {
                 Ok(Some(())) => continue,
                 Ok(None) => return false, // channel closed — tasks completed normally
                 Err(_elapsed) => return true, // idle timeout
@@ -141,7 +140,7 @@ pub(super) async fn handle_tcp_direct(
     // signalling server — holds two socket FDs (inbound SOCKS + outbound
     // direct) open forever.
     //
-    // If neither side closes and no data flows for DIRECT_IDLE_TIMEOUT, the
+    // If neither side closes and no data flows for timeouts.direct_idle, the
     // idle watcher fires and we forcibly close both sides.
     let mut c2u_task = tokio::spawn(c2u);
     let mut u2c_task = tokio::spawn(u2c);
@@ -153,13 +152,13 @@ pub(super) async fn handle_tcp_direct(
             let _ = idle_task.await;
             match c2u_done {
                 Ok(Ok(())) => {
-                    match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, &mut u2c_task).await {
+                    match timeout(timeouts.post_client_eof_downstream, &mut u2c_task).await {
                         Ok(Ok(result)) => result,
                         Ok(Err(e)) => Err(anyhow!("direct TCP u2c task failed: {e}")),
                         Err(_elapsed) => {
                             info!(
                                 %target,
-                                timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                                timeout_secs = timeouts.post_client_eof_downstream.as_secs(),
                                 "direct TCP upstream did not close within timeout after client EOF"
                             );
                             u2c_task.abort();
@@ -185,10 +184,10 @@ pub(super) async fn handle_tcp_direct(
         idle_done = &mut idle_task => {
             match idle_done {
                 Ok(true) => {
-                    // Idle timeout — no data in either direction for DIRECT_IDLE_TIMEOUT.
+                    // Idle timeout — no data in either direction for timeouts.direct_idle.
                     info!(
                         %target,
-                        timeout_secs = DIRECT_IDLE_TIMEOUT.as_secs(),
+                        timeout_secs = timeouts.direct_idle.as_secs(),
                         "direct TCP session idle timeout — closing"
                     );
                     c2u_task.abort();
@@ -241,7 +240,7 @@ mod tests {
     use super::*;
 
     /// `handle_tcp_direct` must close the session with `Ok(())` once both
-    /// directions have been silent for `DIRECT_IDLE_TIMEOUT`.
+    /// directions have been silent for `timeouts.direct_idle`.
     ///
     /// Requires the `test-util` tokio feature (added to dev-dependencies).
     /// Time is paused so the 120-second timeout fires without real waiting.
@@ -267,8 +266,9 @@ mod tests {
 
         let target = TargetAddr::IpV4(Ipv4Addr::LOCALHOST, upstream_port);
         let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
+        let timeouts = TcpTimeouts::DEFAULT;
         let direct_task = tokio::spawn(async move {
-            handle_tcp_direct(server_side, target, None, &dns_cache).await
+            handle_tcp_direct(server_side, target, None, &dns_cache, timeouts).await
         });
 
         // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.
@@ -277,7 +277,7 @@ mod tests {
         assert_eq!(socks_reply[1], SOCKS_STATUS_SUCCESS, "expected SUCCESS reply");
 
         // Advance mock time past the idle timeout and yield to let tasks run.
-        tokio::time::advance(DIRECT_IDLE_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::advance(timeouts.direct_idle + Duration::from_secs(1)).await;
         // Multiple yields let the spawned select! arms process the fired timer.
         for _ in 0..5 {
             tokio::task::yield_now().await;
