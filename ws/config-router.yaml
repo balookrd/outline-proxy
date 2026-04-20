@@ -90,21 +90,38 @@ h2:
   initial_stream_window_size: 262144
   initial_connection_window_size: 524288
 
-# Probe template
-# Top-level probe is shared across all groups unless a group overrides it
+# Outline section: uplinks and the probe template live here.
+# outline.probe is shared across all groups unless a group overrides it
 # in uplink_group[].probe.
-probe:
-  interval_secs: 60
-  timeout_secs: 10
-  max_concurrent: 1
-  max_dials: 1
-  min_failures: 2
-  attempts: 1
-  ws:
-    enabled: true
+# Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that
+# is expensive on low-end MIPS/ARM. h2 over TLS is lighter.
+outline:
+  probe:
+    interval_secs: 60
+    timeout_secs: 10
+    max_concurrent: 1
+    max_dials: 1
+    min_failures: 2
+    attempts: 1
+    ws:
+      enabled: true
+
+  uplinks:
+    - name: primary
+      group: main
+      transport: websocket
+      tcp_ws_url: "wss://your-server.example.com/SECRET/tcp"
+      tcp_ws_mode: h2
+      udp_ws_url: "wss://your-server.example.com/SECRET/udp"
+      udp_ws_mode: h2
+      method: chacha20-ietf-poly1305
+      password: YourPasswordHere
+      # ChaCha20-Poly1305 is preferred over AES-GCM on MIPS/ARM cores that lack
+      # hardware AES acceleration. On routers with AES-NI use aes-256-gcm instead.
 
 # Uplink group
 # Single group in active_passive mode. No warm standby — saves RAM and CPU.
+# uplink_group stays at the top level (not under outline).
 uplink_group:
   - name: main
     mode: active_passive      # single active uplink, fail over on error
@@ -120,22 +137,6 @@ uplink_group:
     failure_penalty_halflife_secs: 120
     # Keepalive on the active UDP path to prevent NAT timeouts.
     udp_ws_keepalive_secs: 60
-
-# Uplinks
-# Use h2 instead of h3/QUIC: QUIC requires maintaining per-packet state that
-# is expensive on low-end MIPS/ARM. h2 over TLS is lighter.
-uplinks:
-  - name: primary
-    group: main
-    transport: websocket
-    tcp_ws_url: "wss://your-server.example.com/SECRET/tcp"
-    tcp_ws_mode: h2
-    udp_ws_url: "wss://your-server.example.com/SECRET/udp"
-    udp_ws_mode: h2
-    method: chacha20-ietf-poly1305
-    password: YourPasswordHere
-    # ChaCha20-Poly1305 is preferred over AES-GCM on MIPS/ARM cores that lack
-    # hardware AES acceleration. On routers with AES-NI use aes-256-gcm instead.
 
 # Optional: policy routing
 # Uncomment to route local/LAN/loopback traffic outside the tunnel and send
