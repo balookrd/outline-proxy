@@ -78,7 +78,7 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> 
             },
         },
         _ => {
-            record_metrics_http_request(path, 404);
+            record_metrics_http_request("other", 404);
             plain_response(
                 StatusCode::NOT_FOUND,
                 "text/plain; charset=utf-8",

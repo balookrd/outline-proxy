@@ -77,21 +77,24 @@ async fn handle_connection(stream: TcpStream, state: Arc<ControlState>) -> Resul
 }
 
 async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) -> ControlResponse {
-    let path = request.uri().path().to_owned();
+    let label_path: &'static str = match request.uri().path() {
+        "/switch" => "/switch",
+        _ => "other",
+    };
 
     if !is_authorized(&request, &state.token) {
-        record_metrics_http_request(&path, 401);
+        record_metrics_http_request(label_path, 401);
         return unauthorized_response();
     }
 
-    match path.as_str() {
+    match label_path {
         "/switch" => {
             let response = handle_switch(&request, state.uplinks.clone()).await;
             record_metrics_http_request("/switch", response.status().as_u16());
             response
         },
         _ => {
-            record_metrics_http_request(&path, 404);
+            record_metrics_http_request("other", 404);
             plain_response(
                 StatusCode::NOT_FOUND,
                 "text/plain; charset=utf-8",

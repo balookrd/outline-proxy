@@ -147,7 +147,7 @@ pub fn record_warm_standby_refill(
     _success: bool,
 ) {
 }
-pub fn record_metrics_http_request(_path: &str, _status: u16) {}
+pub fn record_metrics_http_request(_path: &'static str, _status: u16) {}
 
 // ── TUN ───────────────────────────────────────────────────────────────────────
 

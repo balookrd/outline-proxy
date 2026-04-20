@@ -209,6 +209,14 @@ pub fn record_warm_standby_refill(
         .inc();
 }
 
-pub fn record_metrics_http_request(path: &str, status: u16) {
-    let _ = (path, status);
+/// Record an HTTP request served by the control or metrics listener.
+///
+/// `path` must be a low-cardinality label — a known route like `"/metrics"` or
+/// `"/switch"`, or `"other"` for unmatched paths. Never pass a raw request URI
+/// here: it would let an external caller inflate the label set.
+pub fn record_metrics_http_request(path: &'static str, status: u16) {
+    METRICS
+        .metrics_http_requests_total
+        .with_label_values(&[path, status.to_string().as_str()])
+        .inc();
 }
