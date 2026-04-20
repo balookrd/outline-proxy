@@ -45,6 +45,17 @@ pub(crate) struct ConfigFile {
     /// Set to a writable location when the config directory is read-only
     /// (e.g. `/var/lib/outline-ws/state.toml`).
     pub(super) state_path: Option<PathBuf>,
+    /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
+    /// All fields optional; unset ones inherit compile-time defaults.
+    pub(super) tcp_timeouts: Option<TcpTimeoutsSection>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct TcpTimeoutsSection {
+    pub(super) post_client_eof_downstream_secs: Option<u64>,
+    pub(super) upstream_response_secs: Option<u64>,
+    pub(super) socks_upstream_idle_secs: Option<u64>,
+    pub(super) direct_idle_secs: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,6 +136,9 @@ pub(super) struct TunTcpSection {
     pub(super) max_buffered_client_segments: Option<usize>,
     pub(super) max_buffered_client_bytes: Option<usize>,
     pub(super) max_retransmits: Option<u32>,
+    pub(super) keepalive_idle_secs: Option<u64>,
+    pub(super) keepalive_interval_secs: Option<u64>,
+    pub(super) keepalive_max_probes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -177,13 +191,18 @@ pub(super) struct UplinkGroupSection {
 
 /// New: policy routing rule.
 ///
-/// Exactly one of `default = true` or non-empty `prefixes`/`file` must be set.
+/// Exactly one of `default = true` or non-empty `prefixes`/`file`/`files`
+/// must be set.
 /// `via` picks the target: either a group name or the reserved `"direct"`.
 /// At most one of `fallback_via` / `fallback_direct` / `fallback_drop` is allowed.
+///
+/// Prefix sources are merged: inline `prefixes`, a single `file`, and any
+/// additional paths in `files` all contribute to the same CIDR set.
 #[derive(Debug, Deserialize, Clone)]
 pub(super) struct RouteSection {
     pub(super) prefixes: Option<Vec<String>>,
     pub(super) file: Option<PathBuf>,
+    pub(super) files: Option<Vec<PathBuf>>,
     pub(super) file_poll_secs: Option<u64>,
     pub(super) default: Option<bool>,
     pub(super) via: Option<String>,

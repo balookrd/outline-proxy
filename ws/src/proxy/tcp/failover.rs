@@ -12,7 +12,6 @@ use outline_transport::{
 use socks5_proto::TargetAddr;
 use outline_uplink::{UplinkCandidate, UplinkManager, UplinkTransport};
 
-pub(super) const UPSTREAM_RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -7,28 +7,19 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tracing::debug;
 
-// After the client sends EOF (uplink task returns Finished), the server still
-// has the floor: it may flush in-flight data and then send its own FIN.
-// Without a bound, a server that never sends FIN (e.g. a VPN or signalling
-// server that holds the connection half-open indefinitely) keeps two socket
-// FDs alive forever — the inbound SOCKS socket and the outbound socket to the
-// upstream.  30 seconds is a generous window for any well-behaved server to
-// respond to our FIN.
-pub(super) const POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT: Duration = Duration::from_secs(30);
-
-// SOCKS_UPSTREAM_IDLE_TIMEOUT closes a SOCKS-through-uplink TCP session once
-// BOTH directions have been silent (no real payload bytes) for this long.
-// Keepalive frames emitted by the uplink task (see tcp_active_keepalive_secs)
-// do NOT count as activity — their purpose is to defeat middlebox idle
-// timeouts, but they only prove the local WebSocket writer task is alive, not
-// that the upstream server is still reading.  Without this watcher, sessions
-// where both the client and the server silently stall (no FIN, no RST, no
-// data) accumulate forever — the upstream transport, its tasks, and the
-// underlying H2/H3 stream stay pinned as long as the client keeps its TCP
-// socket open.  5 minutes is generous for interactive traffic (browsers hold
-// idle sockets for ~60–90 s before reusing them) and short enough that
-// abandoned sessions do not hoard FDs for a noticeable fraction of a day.
-pub(super) const SOCKS_UPSTREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+// The post-client-EOF downstream timeout and SOCKS upstream idle timeout are
+// injected at call-site from `TcpTimeouts` (see `crate::proxy::config`).  They
+// were previously compile-time constants; defaults remain 30 s and 300 s.
+//
+// post-client-EOF: after the client half-closes, the server may still flush
+// in-flight data and then send its own FIN; without a bound a server that
+// holds the connection half-open indefinitely would pin two socket FDs.
+//
+// socks-upstream-idle: closes a SOCKS-through-uplink TCP session once BOTH
+// directions have been silent (no real payload bytes) for this long.
+// Keepalive frames do NOT count as activity — they only prove the local
+// WebSocket writer task is alive, not that the upstream server is still
+// reading.
 
 pub(super) enum UplinkTaskResult {
     Finished,
@@ -83,6 +74,7 @@ pub(super) async fn drive_tcp_session_tasks<U, D>(
     downlink: D,
     idle: Option<IdleWatcher>,
     target: Arc<str>,
+    post_client_eof_downstream: Duration,
 ) -> Result<()>
 where
     U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
@@ -93,9 +85,26 @@ where
     let downlink_task = tokio::spawn(downlink);
     match idle {
         Some(watcher) => {
-            drive_with_idle(uplink_task, downlink_task, watcher, started, target).await
+            drive_with_idle(
+                uplink_task,
+                downlink_task,
+                watcher,
+                started,
+                target,
+                post_client_eof_downstream,
+            )
+            .await
         },
-        None => drive_without_idle(uplink_task, downlink_task, started, target).await,
+        None => {
+            drive_without_idle(
+                uplink_task,
+                downlink_task,
+                started,
+                target,
+                post_client_eof_downstream,
+            )
+            .await
+        },
     }
 }
 
@@ -148,6 +157,7 @@ async fn handle_uplink_first(
     downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
     target: &str,
+    post_client_eof_downstream: Duration,
 ) -> Result<()> {
     let elapsed_ms = started.elapsed().as_millis();
     match joined {
@@ -172,13 +182,13 @@ async fn handle_uplink_first(
             // the downlink task would keep running indefinitely, holding
             // Arc<UpstreamTransportGuard> and inflating the active counter.
             let downlink_abort = downlink_task.abort_handle();
-            match timeout(POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT, downlink_task).await {
+            match timeout(post_client_eof_downstream, downlink_task).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(error)) => Err(anyhow!("SOCKS TCP downlink task failed: {error}")),
                 Err(_elapsed) => {
                     debug!(
                         target: "outline_ws_rust::session_death",
-                        timeout_secs = POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT.as_secs(),
+                        timeout_secs = post_client_eof_downstream.as_secs(),
                         target_addr = target,
                         "downstream timed out after client EOF — forcibly closing session"
                     );
@@ -229,10 +239,11 @@ async fn drive_without_idle(
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
     target: Arc<str>,
+    post_client_eof_downstream: Duration,
 ) -> Result<()> {
     tokio::select! {
         joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target, post_client_eof_downstream).await,
     }
 }
 
@@ -248,6 +259,7 @@ async fn drive_with_idle(
     watcher: IdleWatcher,
     started: tokio::time::Instant,
     target: Arc<str>,
+    post_client_eof_downstream: Duration,
 ) -> Result<()> {
     let idle_timeout_secs = watcher.idle_timeout.as_secs();
     let watcher_fut = watcher.run();
@@ -256,7 +268,7 @@ async fn drive_with_idle(
     tokio::select! {
         biased;
         joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target).await,
+        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target, post_client_eof_downstream).await,
         fired = &mut watcher_fut => {
             if fired {
                 debug!(
@@ -325,7 +337,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
             .await
             .expect("driver should return once downlink finishes")
             .unwrap();
@@ -346,7 +358,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
             .await
             .expect("driver should wait for downlink after client EOF")
             .unwrap();
@@ -390,6 +402,7 @@ mod tests {
                 downlink,
                 Some(IdleWatcher::new(activity_rx, Duration::from_millis(30))),
                 Arc::from("test"),
+                Duration::from_secs(30),
             ),
         )
         .await
@@ -432,6 +445,7 @@ mod tests {
                 downlink,
                 Some(IdleWatcher::new(activity_rx, Duration::from_millis(50))),
                 Arc::from("test"),
+                Duration::from_secs(30),
             ),
         )
         .await
@@ -452,7 +466,7 @@ mod tests {
             Ok::<(), anyhow::Error>(())
         };
 
-        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test")))
+        tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))
             .await
             .expect("driver should return once websocket-backed client EOF is observed")
             .unwrap();

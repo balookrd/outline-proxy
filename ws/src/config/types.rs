@@ -5,6 +5,8 @@ use outline_routing::RoutingTableConfig;
 use outline_uplink::UplinkGroupConfig;
 use socks5_proto::Socks5AuthConfig;
 
+use crate::proxy::TcpTimeouts;
+
 #[derive(Debug, Clone)]
 pub struct AppConfig {
     pub listen: Option<SocketAddr>,
@@ -37,6 +39,8 @@ pub struct AppConfig {
     /// across restarts.  Derived from the config path at startup; `None`
     /// disables persistence (e.g. in tests).
     pub state_path: Option<PathBuf>,
+    /// TCP session timeouts (SOCKS CONNECT and direct sessions).
+    pub tcp_timeouts: TcpTimeouts,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

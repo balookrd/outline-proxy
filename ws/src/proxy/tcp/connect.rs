@@ -15,14 +15,14 @@ use socks5_proto::{
 use super::super::DispatchTarget;
 use outline_uplink::TransportKind;
 use super::failover::{
-    ActiveTcpUplink, MAX_CHUNK0_FAILOVER_BUF, UPSTREAM_RESPONSE_TIMEOUT,
+    ActiveTcpUplink, MAX_CHUNK0_FAILOVER_BUF,
     connect_tcp_uplink, connect_tcp_uplink_fresh,
 };
 use super::session::{
-    IdleWatcher, UplinkTaskResult, SOCKS_UPSTREAM_IDLE_TIMEOUT,
-    drive_tcp_session_tasks,
+    IdleWatcher, UplinkTaskResult, drive_tcp_session_tasks,
 };
 use super::direct::handle_tcp_direct;
+use crate::proxy::TcpTimeouts;
 
 /// Maximum number of transparent retries on the *same* uplink when chunk 0
 /// dies with a transport-level reset (WebSocket RST / clean Close before any
@@ -42,11 +42,12 @@ pub async fn handle_tcp_connect(
     dispatch: DispatchTarget,
     target: TargetAddr,
     dns_cache: Arc<outline_transport::DnsCache>,
+    timeouts: TcpTimeouts,
 ) -> Result<()> {
     let uplinks = match dispatch {
         DispatchTarget::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
-            return handle_tcp_direct(client, target, fwmark, &dns_cache).await;
+            return handle_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
         }
         DispatchTarget::Drop => {
             info!(target = %target, "TCP route: policy drop");
@@ -139,7 +140,7 @@ pub async fn handle_tcp_connect(
             let attempt_timeout = if can_failover {
                 chunk0_attempt_timeout
             } else {
-                UPSTREAM_RESPONSE_TIMEOUT
+                timeouts.upstream_response
             };
             let mut deadline = tokio::time::Instant::now() + attempt_timeout;
 
@@ -606,8 +607,9 @@ pub async fn handle_tcp_connect(
         let result = drive_tcp_session_tasks(
             uplink,
             downlink,
-            Some(IdleWatcher::new(activity_rx, SOCKS_UPSTREAM_IDLE_TIMEOUT)),
+            Some(IdleWatcher::new(activity_rx, timeouts.socks_upstream_idle)),
             target_label,
+            timeouts.post_client_eof_downstream,
         )
         .await;
         // Report mid-stream upstream transport failures so that broken transports
