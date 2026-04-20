@@ -13,10 +13,13 @@ edition = "2024"
 #          disables H3/QUIC and Prometheus metrics
 #          build with: cargo zigbuild --profile release-router --no-default-features --features router --target armv7-unknown-linux-musleabihf
 [features]
-default = ["h3", "metrics", "env-filter", "multi-thread", "mimalloc", "tun"]
+default = ["h3", "metrics", "control", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
 h3 = ["outline-transport/h3"]
 metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
+# control: authenticated mutating HTTP plane (manual uplink switch etc.).
+# Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
+control = ["hyper/server"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
@@ -24,7 +27,7 @@ env-filter = ["tracing-subscriber/env-filter"]
 # single-threaded), removing ~100–200 KB of scheduler code on MIPS.
 multi-thread = ["tokio/rt-multi-thread"]
 mimalloc = ["dep:mimalloc"]
-router = []  # convenience alias: use with --no-default-features --features router
+router = ["control"]  # convenience alias: use with --no-default-features --features router
 
 [dependencies]
 anyhow = "1.0"

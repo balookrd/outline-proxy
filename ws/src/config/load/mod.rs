@@ -64,6 +64,13 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         .or_else(|| metrics_section.and_then(|section| section.listen))
         .map(|listen| MetricsConfig { listen });
     let control = load_control_config(control_section, args, config_dir).await?;
+    #[cfg(not(feature = "control"))]
+    if control.is_some() {
+        bail!(
+            "control listener requested (via [control], --control-listen, or CONTROL_LISTEN) \
+             but this build has the `control` feature disabled; rebuild with --features control"
+        );
+    }
     #[cfg(feature = "tun")]
     let tun = tun::load_tun_config(tun_section, args)?;
     let h2 = h2::load_h2_config(h2_section);
