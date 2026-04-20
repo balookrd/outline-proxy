@@ -46,10 +46,10 @@ pub(super) async fn resolve_udp_packet_route(
     target: &TargetAddr,
 ) -> UdpPacketRoute {
     let default_group = registry.default_group_name().to_string();
-    let Some(table) = config.routing_table.as_ref() else {
+    let Some(router) = config.router.as_ref() else {
         return UdpPacketRoute::Tunnel(default_group);
     };
-    let current_version = table.version();
+    let current_version = router.version();
     let decision = if let Some((cached, entry_version)) = cache.get(target)
         && *entry_version == current_version
     {
@@ -59,7 +59,7 @@ pub(super) async fn resolve_udp_packet_route(
         // not the post-resolve version — otherwise a reload that races with
         // resolution would leave a stale decision tagged with the bumped
         // version and never invalidate. See `RoutingTable::resolve_versioned`.
-        let (decision, resolve_version) = table.resolve_versioned(target).await;
+        let (decision, resolve_version) = router.resolve_versioned(target).await;
         cache.put(target.clone(), (decision.clone(), resolve_version));
         decision
     };
@@ -120,7 +120,7 @@ pub(super) async fn classify_decision(
 /// would couple this to routing internals and still require a fallback for
 /// dynamically reloaded rules; a single socket bind is cheap by comparison.
 pub(super) fn routing_table_active(config: &ProxyConfig) -> bool {
-    config.routing_table.is_some()
+    config.router.is_some()
 }
 
 #[cfg(test)]

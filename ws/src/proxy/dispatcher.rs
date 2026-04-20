@@ -75,8 +75,8 @@ async fn resolve_dispatch(
     target: &TargetAddr,
     transport: TransportKind,
 ) -> DispatchTarget {
-    if let Some(table) = config.routing_table.as_ref() {
-        let decision = table.resolve(target).await;
+    if let Some(router) = config.router.as_ref() {
+        let decision = router.resolve(target).await;
         return resolve_decision(registry, decision, transport, config.direct_fwmark).await;
     }
 
