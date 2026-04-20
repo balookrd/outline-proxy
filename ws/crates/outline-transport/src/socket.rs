@@ -1,6 +1,7 @@
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
 use anyhow::{Context, Result};
+use crate::TransportOperation;
 use socket2::{Domain, Protocol as SocketProtocol, Socket, TcpKeepalive, Type};
 use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -32,7 +33,7 @@ pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result
     if fwmark.is_none() {
         let stream = TcpStream::connect(addr)
             .await
-            .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
+            .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })?;
         configure_tcp_stream_low_latency(&stream, addr)?;
         return Ok(stream);
     }
@@ -64,7 +65,11 @@ async fn connect_tcp_socket_with_fwmark(
         {
             // Connection in progress; writable() below will signal completion.
         },
-        Err(e) => return Err(e).with_context(|| format!("failed to connect TCP socket to {addr}")),
+        Err(e) => {
+            return Err(e).with_context(|| TransportOperation::Connect {
+                target: format!("TCP socket to {addr}"),
+            });
+        },
     }
     let stream =
         TcpStream::from_std(socket.into()).context("failed to adopt TCP socket into tokio")?;

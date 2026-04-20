@@ -8,7 +8,8 @@ use tracing::{debug, warn};
 use crate::utils::maybe_shrink_vecdeque;
 use outline_metrics as metrics;
 use outline_transport::{
-    WsTransportStream, UdpWsTransport, connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+    TransportOperation, WsTransportStream, UdpWsTransport,
+    connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
 use crate::config::{UplinkTransport, WsTransportMode};
 
@@ -164,11 +165,11 @@ impl UplinkManager {
                 source,
             )
             .await
-            .with_context(|| {
-                format!(
-                    "failed to connect to {}",
+            .with_context(|| TransportOperation::Connect {
+                target: format!(
+                    "to {}",
                     candidate.uplink.tcp_ws_url.as_ref().expect("validated tcp_ws_url")
-                )
+                ),
             })?;
         // Feed the on-demand dial latency into the RTT EWMA so real connection
         // quality is reflected in routing scores, not just probe ping/pong times.
@@ -212,7 +213,7 @@ impl UplinkManager {
                 source,
             )
             .await
-            .with_context(|| format!("failed to connect to {}", udp_addr))?;
+            .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_addr) })?;
             self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
                 .await;
             return UdpWsTransport::from_socket(
@@ -284,7 +285,7 @@ impl UplinkManager {
             self.inner.load_balancing.udp_ws_keepalive_interval,
         )
         .await
-        .with_context(|| format!("failed to connect to {}", udp_ws_url))?;
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_ws_url) })?;
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
         Ok(transport)

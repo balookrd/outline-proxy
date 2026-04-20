@@ -28,7 +28,8 @@ use tracing::{debug, error, info};
 use url::Url;
 
 use crate::{
-    AbortOnDrop, WsTransportStream, TransportConnectGuard, bind_addr_for, bind_udp_socket,
+    AbortOnDrop, WsTransportStream, TransportConnectGuard, TransportOperation,
+    bind_addr_for, bind_udp_socket,
     DnsCache, resolve_host_with_preference,
 };
 
@@ -330,7 +331,9 @@ pub(crate) async fn connect_websocket_h3(
     )
     .await?;
     if server_addrs.is_empty() {
-        bail!("DNS resolution returned no addresses for {host}:{port}");
+        return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+            host: format!("{host}:{port}"),
+        }));
     }
 
     let mut last_error = None;
@@ -341,10 +344,12 @@ pub(crate) async fn connect_websocket_h3(
         }
     }
 
-    Err(anyhow!(
-        "failed to connect to any resolved h3 address for {host}:{port}: {}",
-        last_error.unwrap_or_else(|| "unknown error".to_string())
-    ))
+    Err(anyhow::Error::new(TransportOperation::Connect {
+        target: format!(
+            "to any resolved h3 address for {host}:{port}: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        ),
+    }))
 }
 
 async fn connect_h3_quic_reused(
@@ -419,7 +424,9 @@ async fn connect_h3_quic_reused(
     )
     .await?;
     if server_addrs.is_empty() {
-        bail!("DNS resolution returned no addresses for {server_name}:{server_port}");
+        return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+            host: format!("{server_name}:{server_port}"),
+        }));
     }
 
     let mut last_error = None;
@@ -440,10 +447,12 @@ async fn connect_h3_quic_reused(
         }
     }
 
-    Err(anyhow!(
-        "failed to connect to any resolved h3 address for {server_name}:{server_port}: {}",
-        last_error.unwrap_or_else(|| "unknown error".to_string())
-    ))
+    Err(anyhow::Error::new(TransportOperation::Connect {
+        target: format!(
+            "to any resolved h3 address for {server_name}:{server_port}: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        ),
+    }))
 }
 
 /// Establishes a brand-new QUIC + HTTP/3 connection to `server_addr`, opens

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::WebSocketClosed;
+use crate::{Ss2022Error, TransportOperation, WebSocketClosed};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use rand::RngCore;
@@ -116,7 +116,7 @@ impl WriteTransport for SocketWriteTransport {
     }
 
     async fn close(&mut self) -> Result<()> {
-        self.writer.shutdown().await.context("socket shutdown failed")
+        self.writer.shutdown().await.context(TransportOperation::SocketShutdown)
     }
 
     fn supports_half_close(&self) -> bool {
@@ -202,7 +202,11 @@ impl ReadTransport for WsReadTransport {
                         error = %format!("{e}"),
                         "reader: websocket stream yielded error"
                     );
-                    return Err(anyhow::Error::from(e).context("websocket read failed"));
+                    // Use Result-form .context() so the typed marker is
+                    // preserved in the anyhow chain for downcast_ref (anyhow
+                    // only preserves typed context when applied to Result,
+                    // not when applied to an already-constructed Error).
+                    return Err(e).context(TransportOperation::WebSocketRead);
                 },
             };
 
@@ -430,10 +434,10 @@ fn parse_ss2022_response_header(
 ) -> Result<usize> {
     let expected_len = 1 + 8 + cipher.salt_len() + 2;
     if plaintext.len() != expected_len {
-        bail!("invalid ss2022 response header length: {}", plaintext.len());
+        bail!(Ss2022Error::InvalidResponseHeaderLength(plaintext.len()));
     }
     if plaintext[0] != 1 {
-        bail!("invalid ss2022 response header type: {}", plaintext[0]);
+        bail!(Ss2022Error::InvalidResponseHeaderType(plaintext[0]));
     }
     let mut timestamp_bytes = [0u8; 8];
     timestamp_bytes.copy_from_slice(&plaintext[1..9]);
@@ -442,7 +446,7 @@ fn parse_ss2022_response_header(
     let request_salt_start = 9;
     let request_salt_end = request_salt_start + cipher.salt_len();
     if &plaintext[request_salt_start..request_salt_end] != request_salt {
-        bail!("ss2022 response header request salt mismatch");
+        bail!(Ss2022Error::RequestSaltMismatch);
     }
 
     Ok(u16::from_be_bytes([plaintext[request_salt_end], plaintext[request_salt_end + 1]]) as usize)
@@ -586,7 +590,7 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
             && !state.header_sent
         {
             let target = TargetAddr::from_wire_bytes(payload)
-                .context("invalid ss2022 initial target header")?
+                .context(Ss2022Error::InvalidInitialTargetHeader)?
                 .0;
             let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
             let encrypted_fixed = self.cipher_state.encrypt(&self.nonce, &fixed_header)?;

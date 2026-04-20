@@ -11,7 +11,7 @@ use tracing::debug;
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use outline_transport::{
     DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    UdpWsTransport, UpstreamTransportGuard,
+    TransportOperation, UdpWsTransport, UpstreamTransportGuard,
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
     connect_websocket_with_source,
 };
@@ -237,7 +237,9 @@ pub(crate) async fn run_ws_probe(
     // data-path is checked by the http / dns sub-probes that follow.
     let mut ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, false, "probe_ws")
         .await
-        .with_context(|| format!("failed to connect WebSocket probe to {url}"))?;
+        .with_context(|| TransportOperation::Connect {
+            target: format!("WebSocket probe to {url}"),
+        })?;
 
     debug!(
         uplink = %uplink_name,
@@ -391,8 +393,8 @@ pub(crate) async fn run_http_probe(
                     "probe_http",
                 )
                 .await
-                .with_context(|| {
-                    format!("failed to connect HTTP probe websocket for uplink {}", uplink.name)
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("HTTP probe websocket for uplink {}", uplink.name),
                 })?;
                 let shared_conn_info = ws_stream.shared_connection_info();
                 let (ws_sink, ws_stream) = ws_stream.split();
@@ -432,11 +434,11 @@ pub(crate) async fn run_http_probe(
                     "probe_http",
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect HTTP probe shadowsocks socket for uplink {}",
+                .with_context(|| TransportOperation::Connect {
+                    target: format!(
+                        "HTTP probe shadowsocks socket for uplink {}",
                         uplink.name
-                    )
+                    ),
                 })?;
                 let (reader_half, writer_half) = stream.into_split();
                 let writer = TcpShadowsocksWriter::connect_socket(
@@ -558,11 +560,11 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     "probe_tcp_tunnel",
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect TCP-tunnel probe websocket for uplink {}",
+                .with_context(|| TransportOperation::Connect {
+                    target: format!(
+                        "TCP-tunnel probe websocket for uplink {}",
                         uplink.name
-                    )
+                    ),
                 })?;
                 let shared_conn_info = ws_stream.shared_connection_info();
                 let (ws_sink, ws_stream) = ws_stream.split();
@@ -602,11 +604,11 @@ pub(crate) async fn run_tcp_tunnel_probe(
                     "probe_tcp_tunnel",
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect TCP-tunnel probe shadowsocks socket for uplink {}",
+                .with_context(|| TransportOperation::Connect {
+                    target: format!(
+                        "TCP-tunnel probe shadowsocks socket for uplink {}",
                         uplink.name
-                    )
+                    ),
                 })?;
                 let (reader_half, writer_half) = stream.into_split();
                 let writer = TcpShadowsocksWriter::connect_socket(
@@ -712,8 +714,8 @@ pub(crate) async fn run_dns_probe(
                     None,
                 )
                 .await
-                .with_context(|| {
-                    format!("failed to connect DNS probe websocket for uplink {}", uplink.name)
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("DNS probe websocket for uplink {}", uplink.name),
                 })?
             },
             UplinkTransport::Shadowsocks => {
@@ -726,11 +728,11 @@ pub(crate) async fn run_dns_probe(
                     "probe_dns",
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed to connect DNS probe shadowsocks socket for uplink {}",
+                .with_context(|| TransportOperation::Connect {
+                    target: format!(
+                        "DNS probe shadowsocks socket for uplink {}",
                         uplink.name
-                    )
+                    ),
                 })?;
                 UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")?
             },

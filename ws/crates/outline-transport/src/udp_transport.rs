@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::WebSocketClosed;
+use crate::{Ss2022Error, TransportOperation, WebSocketClosed};
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
@@ -20,7 +20,6 @@ use crate::config::WsTransportMode;
 use super::{AbortOnDrop, DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
-const OVERSIZED_UDP_UPLINK_DROP_ERR: &str = "oversized UDP packet dropped before uplink send";
 
 struct Ss2022UdpState {
     client_session_id: u64,
@@ -52,7 +51,9 @@ pub struct UdpWsTransport {
 }
 
 pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
-    format!("{error:#}").contains(OVERSIZED_UDP_UPLINK_DROP_ERR)
+    error
+        .chain()
+        .any(|e| matches!(e.downcast_ref::<Ss2022Error>(), Some(Ss2022Error::OversizedUdpUplink)))
 }
 
 impl UdpWsTransport {
@@ -138,9 +139,13 @@ impl UdpWsTransport {
                 match msg {
                     None => return,
                     Some(Err(e)) => {
-                        let _ = downlink_tx
-                            .send(Err(anyhow::Error::from(e).context("websocket read failed")))
-                            .await;
+                        // Result-form .context() so the typed marker is
+                        // preserved for downcast_ref (anyhow only preserves
+                        // typed context when applied to Result, not to an
+                        // already-constructed Error).
+                        let err: anyhow::Result<()> =
+                            Err(e).context(TransportOperation::WebSocketRead);
+                        let _ = downlink_tx.send(Err(err.unwrap_err())).await;
                         return;
                     }
                     Some(Ok(Message::Binary(bytes))) => {
@@ -227,7 +232,7 @@ impl UdpWsTransport {
     ) -> Result<Self> {
         let ws_stream = connect_websocket_with_source(cache, url, mode, fwmark, ipv6_first, source)
             .await
-            .with_context(|| format!("failed to connect to {}", url))?;
+            .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)
     }
 
@@ -260,7 +265,7 @@ impl UdpWsTransport {
                         "dropping oversized UDP packet before shadowsocks uplink send"
                     );
                     outline_metrics::record_dropped_oversized_udp_packet("outgoing");
-                    bail!(OVERSIZED_UDP_UPLINK_DROP_ERR);
+                    bail!(Ss2022Error::OversizedUdpUplink);
                 }
                 socket
                     .send(&packet)
@@ -323,7 +328,7 @@ impl UdpWsTransport {
             if let Some(last_server_packet_id) = state.last_server_packet_id
                 && state.server_session_id == Some(session_id) && packet_id <= last_server_packet_id
                 {
-                    bail!("duplicate or out-of-order ss2022 UDP packet");
+                    bail!(Ss2022Error::DuplicateOrOutOfOrderUdpPacket);
                 }
             state.server_session_id = Some(session_id);
             state.last_server_packet_id = Some(packet_id);
