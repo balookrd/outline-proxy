@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
-use tracing::info;
+use tokio::sync::watch;
+use tracing::{info, warn};
 
 use crate::config::AppConfig;
 use crate::proxy::ProxyConfig;
@@ -17,6 +18,26 @@ mod state_store;
 
 pub async fn run_with_config(config: AppConfig) -> Result<()> {
     let state_store = state_store::init(config.state_path.clone()).await;
+
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sigterm = signal(SignalKind::terminate())
+                .expect("SIGTERM handler registration failed");
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = sigterm.recv() => {},
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        warn!("shutdown signal received, draining active connections");
+        let _ = shutdown_tx.send(true);
+    });
 
     // Shared DNS cache used by every transport resolve path. Built here
     // (not stored in AppConfig) so the runtime paths receive the same
@@ -110,9 +131,11 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     });
 
     let Some(listener) = listener else {
-        std::future::pending::<()>().await;
-        unreachable!("pending future never resolves");
+        // TUN-only mode: no TCP listener; block until shutdown signal.
+        let mut rx = shutdown_rx;
+        let _ = rx.wait_for(|&v| v).await;
+        return Ok(());
     };
 
-    listener::run_accept_loop(listener, proxy_config, registry).await
+    listener::run_accept_loop(listener, proxy_config, registry, shutdown_rx).await
 }

@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use tokio::net::TcpListener;
-use tokio::sync::Semaphore;
-use tracing::{debug, warn};
+use tokio::sync::{Semaphore, watch};
+use tracing::{debug, info, warn};
 
 use crate::config::AppConfig;
 use crate::proxy::{self, ProxyConfig};
@@ -33,6 +33,7 @@ pub(super) async fn run_accept_loop(
     listener: TcpListener,
     proxy_config: Arc<ProxyConfig>,
     registry: UplinkRegistry,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<()> {
     // Cap concurrent in-flight connections to bound task memory under DDoS.
     // Accepting continues at full speed; only the spawn blocks when the limit
@@ -51,7 +52,17 @@ pub(super) async fn run_accept_loop(
     const FD_BACKOFF_MAX: Duration = Duration::from_secs(5);
 
     loop {
-        let (stream, peer) = match listener.accept().await {
+        // Race the next accepted connection against the shutdown signal so that
+        // SIGTERM (systemctl stop) cleanly stops accepting without waiting for
+        // the next incoming SYN.
+        let accept_res = tokio::select! {
+            res = listener.accept() => Some(res),
+            _ = shutdown.changed() => None,
+        };
+
+        let Some(accept_res) = accept_res else { break };
+
+        let (stream, peer) = match accept_res {
             Ok(v) => {
                 // Successful accept: any previous FD backoff is no longer
                 // relevant — connections are flowing again.
@@ -83,7 +94,11 @@ pub(super) async fn run_accept_loop(
                         backoff_ms = fd_backoff.as_millis(),
                         "accept failed (FD limit hit), backing off"
                     );
-                    tokio::time::sleep(fd_backoff).await;
+                    // Sleep is interruptible: honour shutdown even under FD pressure.
+                    tokio::select! {
+                        _ = tokio::time::sleep(fd_backoff) => {},
+                        _ = shutdown.changed() => break,
+                    }
                     continue;
                 }
                 return Err(e).context("accept failed");
@@ -121,4 +136,23 @@ pub(super) async fn run_accept_loop(
             }
         });
     }
+
+    // Drain: wait for every in-flight connection to release its semaphore
+    // permit.  The 60 s window keeps us well inside systemd's default
+    // TimeoutStopSec (90 s); the kernel will SIGKILL us if we overshoot.
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+    let in_flight = MAX_CONCURRENT_CONNECTIONS.saturating_sub(conn_sem.available_permits());
+    info!(in_flight, "draining connections before exit");
+    if in_flight > 0 {
+        tokio::select! {
+            _ = conn_sem.acquire_many(MAX_CONCURRENT_CONNECTIONS as u32) => {
+                info!("connections drained cleanly");
+            },
+            _ = tokio::time::sleep(DRAIN_TIMEOUT) => {
+                warn!(timeout_secs = DRAIN_TIMEOUT.as_secs(), "drain timeout reached, forcing exit");
+            },
+        }
+    }
+
+    Ok(())
 }
