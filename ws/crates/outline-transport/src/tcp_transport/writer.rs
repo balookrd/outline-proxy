@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
-use crate::{Ss2022Error, TransportOperation};
+use crate::TransportOperation;
+use outline_ss2022::Ss2022Error;
 use futures_util::stream::SplitSink;
 use futures_util::SinkExt;
 use rand::RngCore;

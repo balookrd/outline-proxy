@@ -21,6 +21,8 @@ hyper = { version = "1.7", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 once_cell = { version = "1.21", optional = true }
 outline-metrics = { path = "../outline-metrics", default-features = false }
+outline-net = { path = "../outline-net" }
+outline-ss2022 = { path = "../outline-ss2022" }
 parking_lot = "0.12"
 pin-project-lite = "0.2"
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring"], optional = true }

@@ -293,7 +293,7 @@ impl TunTcpEngine {
                 };
                 let stream = match timeout(
                     engine.inner.tcp.connect_timeout,
-                    outline_transport::connect_tcp_socket(addr, fwmark),
+                    outline_net::connect_tcp_socket(addr, fwmark),
                 )
                 .await
                 {

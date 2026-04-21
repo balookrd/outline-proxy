@@ -11,6 +11,7 @@ metrics = ["outline-metrics/prometheus"]
 anyhow = "1.0"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 outline-metrics = { path = "../outline-metrics", default-features = false }
+outline-ss2022 = { path = "../outline-ss2022" }
 outline-transport = { path = "../outline-transport" }
 parking_lot = "0.12"
 rand = "0.8"
