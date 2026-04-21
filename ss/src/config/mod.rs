@@ -175,6 +175,9 @@ impl TuningProfile {
         if self.h3_max_concurrent_bidi_streams == 0 {
             bail!("tuning.h3_max_concurrent_bidi_streams must be > 0");
         }
+        if self.h3_max_concurrent_uni_streams == 0 {
+            bail!("tuning.h3_max_concurrent_uni_streams must be > 0");
+        }
         if self.h3_write_buffer_bytes == 0 {
             bail!("tuning.h3_write_buffer_bytes must be > 0");
         }
