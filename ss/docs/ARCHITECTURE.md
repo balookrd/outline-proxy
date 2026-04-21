@@ -2,6 +2,8 @@
 
 This document describes the runtime architecture of `outline-ss-rust` and how traffic flows through the server.
 
+*Русская версия: [ARCHITECTURE.ru.md](ARCHITECTURE.ru.md)*
+
 ## Component Overview
 
 ```mermaid
@@ -160,7 +162,7 @@ Uses RFC 9220 Extended CONNECT over QUIC. This requires:
 - UDP reachability
 - HTTP/3-capable clients
 
-The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](/Users/mmalykhin/Documents/outline-ss-rust/PATCHES.md).
+The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](PATCHES.md).
 
 ## Observability Design
 

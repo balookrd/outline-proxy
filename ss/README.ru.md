@@ -79,15 +79,18 @@ flowchart LR
 
 ## Структура репозитория
 
-- [src/server.rs](src/server.rs): транспортные слушатели, обработка WebSocket Upgrade, логика TCP и UDP relay
-- [src/crypto.rs](src/crypto.rs): шифрование/расшифровка Shadowsocks AEAD для потоков и UDP-пакетов
-- [src/config.rs](src/config.rs): загрузка конфигурации из CLI, переменных окружения и TOML
+- [src/server/](src/server): транспортные слушатели, обработка WebSocket Upgrade, логика TCP и UDP relay
+- [src/crypto/](src/crypto): шифрование/расшифровка Shadowsocks AEAD для потоков и UDP-пакетов
+- [src/config/](src/config): загрузка конфигурации из CLI, переменных окружения и TOML
 - [src/access_key.rs](src/access_key.rs): генерация Outline динамических ключей и YAML
-- [src/metrics.rs](src/metrics.rs): экспортёр Prometheus и семейства метрик
+- [src/metrics/](src/metrics): экспортёр Prometheus и семейства метрик
+- [src/protocol.rs](src/protocol.rs): хелперы формата Shadowsocks (SOCKS-совместимый target address)
+- [src/nat.rs](src/nat.rs): таблица UDP NAT-сессий
+- [src/fwmark.rs](src/fwmark.rs): хелперы Linux SO_MARK для исходящих сокетов
 - [config.toml](config.toml): пример production-конфигурации
 - [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service): production-ориентированный systemd unit
 - [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json): готовый Grafana-дашборд
-- [PATCHES.md](PATCHES.md): локальные патчи крейтов для HTTP/3 стека
+- [PATCHES.ru.md](PATCHES.ru.md): локальные патчи крейтов для HTTP/3 стека
 
 ## Транспортная модель
 
@@ -555,7 +558,7 @@ RUST_LOG=outline_ss_rust=info,tower_http=info
 
 - Поддержка WebSocket через HTTP/2 опирается на RFC 8441 Extended CONNECT.
 - Поддержка WebSocket через HTTP/3 опирается на RFC 9220.
-- Репозиторий вендорит и патчит `h3` и `sockudo-ws` для поведения HTTP/3, необходимого проекту. Подробности — в [PATCHES.md](PATCHES.md).
+- Репозиторий вендорит и патчит `h3` и `sockudo-ws` для поведения HTTP/3, необходимого проекту. Подробности — в [PATCHES.ru.md](PATCHES.ru.md).
 - Вендоризованный патч `sockudo-ws` отправляет QUIC FIN (через `AsyncWriteExt::shutdown`) после доставки WebSocket Close-фрейма. Без этого дроп `SendStream` инициирует `RESET_STREAM`, который ряд H3-клиентов и промежуточных узлов трактует как ошибку уровня соединения и отвечает `H3_INTERNAL_ERROR`, разрывая всё QUIC-соединение.
 - QUIC idle timeout — 120 секунд, интервал WebSocket ping — 10 секунд. Значения согласованы между QUIC transport layer и WebSocket idle-настройками.
 - Следующие условия закрытия QUIC считаются штатными (не учитываются как ошибки): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0`, внутренние ошибки QUIC-стека из HTTP-слоя и idle timeout соединения.

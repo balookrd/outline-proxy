@@ -50,7 +50,7 @@ It supports:
 
 ## Architecture
 
-High-level architecture documentation is available in [docs/ARCHITECTURE.md](/Users/mmalykhin/Documents/outline-ss-rust/docs/ARCHITECTURE.md).
+High-level architecture documentation is available in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 Quick view:
 
@@ -77,15 +77,18 @@ flowchart LR
 
 ## Repository Layout
 
-- [src/server.rs](/Users/mmalykhin/Documents/outline-ss-rust/src/server.rs): transport listeners, WebSocket upgrade handling, TCP and UDP relay logic
-- [src/crypto.rs](/Users/mmalykhin/Documents/outline-ss-rust/src/crypto.rs): Shadowsocks AEAD stream and UDP packet encryption/decryption
-- [src/config.rs](/Users/mmalykhin/Documents/outline-ss-rust/src/config.rs): CLI, environment, and TOML configuration loading
-- [src/access_key.rs](/Users/mmalykhin/Documents/outline-ss-rust/src/access_key.rs): Outline dynamic access key and YAML generation
-- [src/metrics.rs](/Users/mmalykhin/Documents/outline-ss-rust/src/metrics.rs): Prometheus exporter and metric families
-- [config.toml](/Users/mmalykhin/Documents/outline-ss-rust/config.toml): example production configuration
-- [systemd/outline-ss-rust.service](/Users/mmalykhin/Documents/outline-ss-rust/systemd/outline-ss-rust.service): production-oriented systemd unit
-- [grafana/outline-ss-rust-dashboard.json](/Users/mmalykhin/Documents/outline-ss-rust/grafana/outline-ss-rust-dashboard.json): ready-made Grafana dashboard
-- [PATCHES.md](/Users/mmalykhin/Documents/outline-ss-rust/PATCHES.md): local crate patches used by the HTTP/3 stack
+- [src/server/](src/server): transport listeners, WebSocket upgrade handling, TCP and UDP relay logic
+- [src/crypto/](src/crypto): Shadowsocks AEAD stream and UDP packet encryption/decryption
+- [src/config/](src/config): CLI, environment, and TOML configuration loading
+- [src/access_key.rs](src/access_key.rs): Outline dynamic access key and YAML generation
+- [src/metrics/](src/metrics): Prometheus exporter and metric families
+- [src/protocol.rs](src/protocol.rs): Shadowsocks wire format helpers (SOCKS-style target address)
+- [src/nat.rs](src/nat.rs): UDP NAT session table
+- [src/fwmark.rs](src/fwmark.rs): Linux SO_MARK helpers for outbound sockets
+- [config.toml](config.toml): example production configuration
+- [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service): production-oriented systemd unit
+- [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json): ready-made Grafana dashboard
+- [PATCHES.md](PATCHES.md): local crate patches used by the HTTP/3 stack
 
 ## Transport Model
 
@@ -148,7 +151,7 @@ Example:
 cargo run -- --config ./config.toml
 ```
 
-A ready-to-edit example is available in [config.toml](/Users/mmalykhin/Documents/outline-ss-rust/config.toml).
+A ready-to-edit example is available in [config.toml](config.toml).
 
 Listener configuration is explicit: if none of `listen`, `h3_listen`, or `ss_listen` is configured, the server exits with a configuration error. Only the listeners you set are started.
 
@@ -396,7 +399,7 @@ The bundled binary uses `mimalloc` as its global allocator. On Linux this usuall
 
 ### Grafana
 
-Import [grafana/outline-ss-rust-dashboard.json](/Users/mmalykhin/Documents/outline-ss-rust/grafana/outline-ss-rust-dashboard.json) into Grafana.
+Import [grafana/outline-ss-rust-dashboard.json](grafana/outline-ss-rust-dashboard.json) into Grafana.
 
 The dashboard covers:
 
@@ -458,7 +461,7 @@ sysctl -w kern.ipc.maxsockbuf=33554432
 
 ### `install.sh`
 
-For a basic production install on Linux you can use the bundled [install.sh](/Users/mvmalykh/IdeaProjects/outline-ss-rust/install.sh) script. Run it as `root` on the target host:
+For a basic production install on Linux you can use the bundled [install.sh](install.sh) script. Run it as `root` on the target host:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/balookrd/outline-ss-rust/main/install.sh -o install.sh
@@ -519,7 +522,7 @@ Useful overrides:
 
 ### systemd
 
-A production-oriented systemd unit is included at [systemd/outline-ss-rust.service](/Users/mmalykhin/Documents/outline-ss-rust/systemd/outline-ss-rust.service).
+A production-oriented systemd unit is included at [systemd/outline-ss-rust.service](systemd/outline-ss-rust.service).
 
 Typical installation flow:
 
@@ -568,7 +571,7 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 
 - HTTP/2 WebSocket support relies on RFC 8441 Extended CONNECT.
 - HTTP/3 WebSocket support relies on RFC 9220.
-- The repository currently vendors and patches `h3` and `sockudo-ws` for HTTP/3 behavior needed by this project. Details are documented in [PATCHES.md](/Users/mmalykhin/Documents/outline-ss-rust/PATCHES.md).
+- The repository currently vendors and patches `h3` and `sockudo-ws` for HTTP/3 behavior needed by this project. Details are documented in [PATCHES.md](PATCHES.md).
 - The vendored `sockudo-ws` patch now sends a QUIC FIN (via `AsyncWriteExt::shutdown`) after delivering the WebSocket Close frame. Without this, dropping the `SendStream` triggers `RESET_STREAM`, which some H3 clients and intermediaries treat as a connection-level error and respond with `H3_INTERNAL_ERROR`, tearing down the entire QUIC connection.
 - QUIC idle timeout is 120 seconds and WebSocket ping interval is 10 seconds. These values are consistent between the QUIC transport layer and the WebSocket idle settings.
 - The following QUIC close conditions are treated as benign (not counted as errors): `ApplicationClose: H3_NO_ERROR`, `ApplicationClose: 0x0`, QUIC stack internal errors from the http layer, and connection idle timeouts.
@@ -599,4 +602,4 @@ The project contains unit and smoke tests for:
 
 ## License
 
-See [LICENSE](/Users/mmalykhin/Documents/outline-ss-rust/LICENSE).
+See [LICENSE](LICENSE).
