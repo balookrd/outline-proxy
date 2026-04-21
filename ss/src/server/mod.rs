@@ -66,16 +66,18 @@ pub async fn run(config: Config) -> Result<()> {
     let users = build_users(&config)?;
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
-    let nat_table = NatTable::new(Duration::from_secs(config.udp_nat_idle_timeout_secs));
+    let nat_table = NatTable::new(Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs));
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let routes = Arc::new(RouteRegistry {
         tcp: Arc::clone(&tcp_routes),
         udp: Arc::clone(&udp_routes),
     });
-    let udp_relay_semaphore = if config.udp_max_concurrent_relay_tasks == 0 {
+    let udp_relay_semaphore = if config.tuning.udp_max_concurrent_relay_tasks == 0 {
         None
     } else {
-        Some(Arc::new(Semaphore::new(config.udp_max_concurrent_relay_tasks)))
+        Some(Arc::new(Semaphore::new(
+            config.tuning.udp_max_concurrent_relay_tasks,
+        )))
     };
     let services = Arc::new(Services {
         metrics: metrics.clone(),
@@ -210,7 +212,7 @@ pub async fn run(config: Config) -> Result<()> {
         user_routes = ?user_routes,
         method = ?config.method,
         users = users.len(),
-        udp_nat_idle_timeout_secs = config.udp_nat_idle_timeout_secs,
+        udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,
         prefer_ipv4_upstream = config.prefer_ipv4_upstream,
         "websocket shadowsocks server listening",
     );

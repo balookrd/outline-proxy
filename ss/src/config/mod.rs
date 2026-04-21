@@ -27,8 +27,6 @@ pub struct Config {
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,
-    pub client_active_ttl_secs: u64,
-    pub udp_nat_idle_timeout_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub http_root_auth: bool,
@@ -37,14 +35,11 @@ pub struct Config {
     pub fwmark: Option<u32>,
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
-    /// Resolved HTTP/2 and HTTP/3 resource limits. Derived from the
-    /// `tuning_profile` preset with any per-field overrides from `[tuning]`
-    /// applied on top. Validated at config load time.
+    /// Resolved tuning knobs (H2/H3 resource limits plus session/NAT timeouts
+    /// and global UDP relay cap). Derived from the `tuning_profile` preset
+    /// with any per-field overrides from `[tuning]` applied on top. Validated
+    /// at config load time.
     pub tuning: TuningProfile,
-    /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
-    /// sessions. Protects against fan-out when many sessions each try to use
-    /// the per-session limit. `0` disables the global cap.
-    pub udp_max_concurrent_relay_tasks: usize,
 }
 
 /// Named bundle of HTTP/2 and HTTP/3 resource limits. Pick the smallest
@@ -93,6 +88,16 @@ pub struct TuningProfile {
     pub h3_write_buffer_bytes: usize,
     pub h3_max_backpressure_bytes: usize,
     pub h3_udp_socket_buffer_bytes: usize,
+
+    /// TTL in seconds used to compute `client_active` / `client_up` metrics.
+    pub client_active_ttl_secs: u64,
+    /// How long a UDP NAT entry is kept alive after the last outbound
+    /// datagram.
+    pub udp_nat_idle_timeout_secs: u64,
+    /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
+    /// sessions. Protects against fan-out when many sessions each try to use
+    /// the per-session limit. `0` disables the global cap.
+    pub udp_max_concurrent_relay_tasks: usize,
 }
 
 impl TuningProfile {
@@ -110,6 +115,9 @@ impl TuningProfile {
         h3_write_buffer_bytes: 128 * 1024,
         h3_max_backpressure_bytes: 1024 * 1024,
         h3_udp_socket_buffer_bytes: 4 * 1024 * 1024,
+        client_active_ttl_secs: 180,
+        udp_nat_idle_timeout_secs: 120,
+        udp_max_concurrent_relay_tasks: 1_024,
     };
 
     /// Balanced profile for typical deployments.
@@ -124,6 +132,9 @@ impl TuningProfile {
         h3_write_buffer_bytes: 256 * 1024,
         h3_max_backpressure_bytes: 4 * 1024 * 1024,
         h3_udp_socket_buffer_bytes: 8 * 1024 * 1024,
+        client_active_ttl_secs: 300,
+        udp_nat_idle_timeout_secs: 240,
+        udp_max_concurrent_relay_tasks: 2_048,
     };
 
     /// Maximum-throughput profile for single-tenant, high-bandwidth-delay-
@@ -139,6 +150,9 @@ impl TuningProfile {
         h3_write_buffer_bytes: 512 * 1024,
         h3_max_backpressure_bytes: 16 * 1024 * 1024,
         h3_udp_socket_buffer_bytes: 32 * 1024 * 1024,
+        client_active_ttl_secs: 300,
+        udp_nat_idle_timeout_secs: 300,
+        udp_max_concurrent_relay_tasks: 4_096,
     };
 
     pub(crate) fn validate(&self) -> Result<()> {
@@ -215,6 +229,14 @@ impl TuningProfile {
             );
         }
 
+        if self.client_active_ttl_secs == 0 {
+            bail!("tuning.client_active_ttl_secs must be > 0");
+        }
+        if self.udp_nat_idle_timeout_secs == 0 {
+            bail!("tuning.udp_nat_idle_timeout_secs must be > 0");
+        }
+        // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
+
         Ok(())
     }
 
@@ -233,6 +255,11 @@ impl TuningProfile {
         if let Some(v) = o.h3_write_buffer_bytes { self.h3_write_buffer_bytes = v; }
         if let Some(v) = o.h3_max_backpressure_bytes { self.h3_max_backpressure_bytes = v; }
         if let Some(v) = o.h3_udp_socket_buffer_bytes { self.h3_udp_socket_buffer_bytes = v; }
+        if let Some(v) = o.client_active_ttl_secs { self.client_active_ttl_secs = v; }
+        if let Some(v) = o.udp_nat_idle_timeout_secs { self.udp_nat_idle_timeout_secs = v; }
+        if let Some(v) = o.udp_max_concurrent_relay_tasks {
+            self.udp_max_concurrent_relay_tasks = v;
+        }
     }
 }
 
@@ -258,6 +285,9 @@ pub struct TuningOverrides {
     #[serde(default)] pub h3_write_buffer_bytes: Option<usize>,
     #[serde(default)] pub h3_max_backpressure_bytes: Option<usize>,
     #[serde(default)] pub h3_udp_socket_buffer_bytes: Option<usize>,
+    #[serde(default)] pub client_active_ttl_secs: Option<u64>,
+    #[serde(default)] pub udp_nat_idle_timeout_secs: Option<u64>,
+    #[serde(default)] pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -314,14 +344,6 @@ impl AppMode {
                 .prefer_ipv4_upstream
                 .or(file.prefer_ipv4_upstream)
                 .unwrap_or(false),
-            client_active_ttl_secs: args
-                .client_active_ttl_secs
-                .or(file.client_active_ttl_secs)
-                .unwrap_or(300),
-            udp_nat_idle_timeout_secs: args
-                .udp_nat_idle_timeout_secs
-                .or(file.udp_nat_idle_timeout_secs)
-                .unwrap_or(300),
             ws_path_tcp: args
                 .ws_path_tcp
                 .or(file.ws_path_tcp)
@@ -347,10 +369,6 @@ impl AppMode {
                 .or(file.method)
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
             tuning,
-            udp_max_concurrent_relay_tasks: args
-                .udp_max_concurrent_relay_tasks
-                .or(file.udp_max_concurrent_relay_tasks)
-                .unwrap_or(default_udp_max_concurrent_relay_tasks()),
         };
         config.validate()?;
 
@@ -612,16 +630,6 @@ pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
 }
 
-/// Default global ceiling for concurrent UDP relay tasks.
-///
-/// Chosen to comfortably absorb bursts from several dozen WebSocket sessions
-/// without letting the in-flight task count blow up under pathological load.
-/// Override via `udp_max_concurrent_relay_tasks` (config file or CLI) when
-/// tuning for very large deployments.
-pub const fn default_udp_max_concurrent_relay_tasks() -> usize {
-    4_096
-}
-
 #[cfg(test)]
 mod tests {
     use super::{CipherKind, Config, default_http_root_realm};
@@ -638,8 +646,6 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -649,7 +655,6 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: super::TuningProfile::LARGE,
-            udp_max_concurrent_relay_tasks: super::default_udp_max_concurrent_relay_tasks(),
         }
     }
 

@@ -22,8 +22,6 @@ pub(super) struct FileConfig {
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: Option<String>,
     pub prefer_ipv4_upstream: Option<bool>,
-    pub client_active_ttl_secs: Option<u64>,
-    pub udp_nat_idle_timeout_secs: Option<u64>,
     #[serde(default)]
     pub ws_path_tcp: Option<String>,
     #[serde(default)]
@@ -43,7 +41,6 @@ pub(super) struct FileConfig {
     pub tuning_profile: Option<TuningProfileKind>,
     #[serde(default)]
     pub tuning: Option<TuningOverrides>,
-    pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

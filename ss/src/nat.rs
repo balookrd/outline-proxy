@@ -441,8 +441,6 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -452,7 +450,6 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
-            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new(
@@ -493,8 +490,6 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -504,7 +499,6 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
-            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new(
@@ -547,8 +541,6 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -558,7 +550,6 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
-            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(Duration::from_secs(300));

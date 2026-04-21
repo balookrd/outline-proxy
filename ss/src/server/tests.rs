@@ -1280,8 +1280,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         metrics_listen: None,
         metrics_path: "/metrics".into(),
         prefer_ipv4_upstream: false,
-        client_active_ttl_secs: 300,
-        udp_nat_idle_timeout_secs: 300,
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
         http_root_auth: false,
@@ -1291,8 +1289,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         users,
         method: CipherKind::Chacha20IetfPoly1305,
         tuning: Default::default(),
-        udp_max_concurrent_relay_tasks:
-            crate::config::default_udp_max_concurrent_relay_tasks(),
     }
 }
 
