@@ -171,6 +171,8 @@ pub struct LoadBalancingConfig {
     /// How often to send a Shadowsocks keepalive frame on an idle active SOCKS TCP
     /// session (SS2022 only — SS1 uplinks treat this as a no-op). Defeats upstream
     /// proxy or NAT idle-timeout disconnections for long-lived flows like SSH.
+    /// These keepalives preserve the transport path but do NOT reset the
+    /// session-level `socks_upstream_idle` watcher; only real payload bytes do.
     /// None disables per-session keepalive (relies solely on OS TCP keepalive).
     pub tcp_active_keepalive_interval: Option<Duration>,
     /// When false (default), the active uplink is only replaced when it fails.

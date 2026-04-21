@@ -9,7 +9,8 @@ use tracing::debug;
 
 // The post-client-EOF downstream timeout and SOCKS upstream idle timeout are
 // injected at call-site from `TcpTimeouts` (see `crate::proxy::config`).  They
-// were previously compile-time constants; defaults remain 30 s and 300 s.
+// were previously compile-time constants; defaults now live in
+// `TcpTimeouts::DEFAULT` (currently 600 s and 300 s).
 //
 // post-client-EOF: after the client half-closes, the server may still flush
 // in-flight data and then send its own FIN; without a bound a server that
