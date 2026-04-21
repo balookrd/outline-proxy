@@ -107,8 +107,8 @@ pub fn log_process_fd_snapshot() {
 
 #[cfg(target_os = "linux")]
 fn sample_process_rss_bytes() -> Option<u64> {
-    sample_proc_statm_resident_bytes()
-        .or_else(|| sample_proc_status_kib("VmRSS").map(|value_kib| value_kib.saturating_mul(1024)))
+    read_proc_statm_resident_bytes()
+        .or_else(|| read_proc_status_kib("VmRSS").map(|value_kib| value_kib.saturating_mul(1024)))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -119,7 +119,7 @@ fn sample_process_rss_bytes() -> Option<u64> {
 #[cfg(target_os = "linux")]
 fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'static str) {
     let estimated_heap_bytes =
-        sample_proc_status_kib("VmData").map(|value_kib| value_kib.saturating_mul(1024));
+        read_proc_status_kib("VmData").map(|value_kib| value_kib.saturating_mul(1024));
     (estimated_heap_bytes, estimated_heap_bytes, None, "estimated")
 }
 
@@ -130,8 +130,8 @@ fn sample_process_heap_state() -> (Option<u64>, Option<u64>, Option<u64>, &'stat
 
 #[cfg(target_os = "linux")]
 fn sample_process_virtual_bytes() -> Option<u64> {
-    sample_proc_statm_virtual_bytes().or_else(|| {
-        sample_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024))
+    read_proc_statm_virtual_bytes().or_else(|| {
+        read_proc_status_kib("VmSize").map(|value_kib| value_kib.saturating_mul(1024))
     })
 }
 
@@ -141,7 +141,7 @@ fn sample_process_virtual_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn sample_proc_status_kib(field: &str) -> Option<u64> {
+fn read_proc_status_kib(field: &str) -> Option<u64> {
     let status = fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
         let value = line.strip_prefix(field)?.trim();
@@ -153,7 +153,7 @@ fn sample_proc_status_kib(field: &str) -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn sample_proc_statm_resident_bytes() -> Option<u64> {
+fn read_proc_statm_resident_bytes() -> Option<u64> {
     let statm = fs::read_to_string("/proc/self/statm").ok()?;
     let resident_pages = statm.split_whitespace().nth(1)?.parse::<u64>().ok()?;
     let page_size = page_size_bytes()?;
@@ -161,7 +161,7 @@ fn sample_proc_statm_resident_bytes() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-fn sample_proc_statm_virtual_bytes() -> Option<u64> {
+fn read_proc_statm_virtual_bytes() -> Option<u64> {
     let statm = fs::read_to_string("/proc/self/statm").ok()?;
     let total_pages = statm.split_whitespace().next()?.parse::<u64>().ok()?;
     let page_size = page_size_bytes()?;
@@ -235,8 +235,8 @@ fn sample_socket_states(owned_inodes: &HashSet<u64>) -> Vec<SocketStateCount> {
                 continue;
             }
             let state_name = match protocol {
-                "tcp" => tcp_state_name(state_hex),
-                "udp" => udp_state_name(state_hex),
+                "tcp" => tcp_state_str(state_hex),
+                "udp" => udp_state_str(state_hex),
                 _ => "unknown",
             };
             *counts.entry((protocol, family, state_name)).or_insert(0) += 1;
@@ -277,7 +277,7 @@ fn parse_proc_net_line(line: &str) -> Option<(u8, u64)> {
 }
 
 #[cfg(target_os = "linux")]
-fn tcp_state_name(state: u8) -> &'static str {
+fn tcp_state_str(state: u8) -> &'static str {
     // From include/net/tcp_states.h
     match state {
         0x01 => "established",
@@ -297,7 +297,7 @@ fn tcp_state_name(state: u8) -> &'static str {
 }
 
 #[cfg(target_os = "linux")]
-fn udp_state_name(state: u8) -> &'static str {
+fn udp_state_str(state: u8) -> &'static str {
     // UDP only really uses TCP_ESTABLISHED (connected) and TCP_CLOSE (unbound/unconnected).
     match state {
         0x01 => "connected",
