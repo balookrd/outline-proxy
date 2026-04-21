@@ -9,7 +9,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::sync::mpsc;
 use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::tungstenite::protocol::{
+    Message,
+    frame::coding::CloseCode,
+};
 use tracing::debug;
 
 // Maximum time an upstream WebSocket read may sit idle without producing any
@@ -213,9 +216,22 @@ impl ReadTransport for WsReadTransport {
             match next {
                 Message::Binary(bytes) => self.buffer.extend_from_slice(&bytes),
                 Message::Close(frame) => {
-                    *closed_cleanly = true;
+                    // RFC 6455 code 1013 "Try Again Later" means the server
+                    // could not reach the upstream target but the request
+                    // itself is valid.  Treat it the same as a TCP RST:
+                    // closed_cleanly stays false so the proxy layer retries
+                    // on the same or a different uplink.  All other close
+                    // codes are normal terminations (closed_cleanly = true).
+                    let try_again = frame
+                        .as_ref()
+                        .map(|f| f.code == CloseCode::Again)
+                        .unwrap_or(false);
+                    if !try_again {
+                        *closed_cleanly = true;
+                    }
                     debug!(
                         target: "outline_ws_rust::session_death",
+                        try_again,
                         frame = ?frame,
                         "reader: websocket received Close frame from upstream"
                     );
