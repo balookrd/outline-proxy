@@ -318,27 +318,47 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
             return Ok(());
         }
 
-        for chunk in payload.chunks(self.cipher.max_payload_len()) {
-            self.send_payload_frame(chunk).await?;
+        let max = self.cipher.max_payload_len();
+        if payload.len() <= max {
+            self.send_payload_frame(payload).await?;
+        } else {
+            // Coalesce all SS2022 frames into one write (one WS message / one
+            // syscall) to avoid N separate send() calls for large payloads.
+            // The reader accumulates bytes across WS messages, so batching is
+            // transparent to it.
+            let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
+            let n_chunks = payload.chunks(max).count();
+            let mut frame = Vec::with_capacity(
+                salt_len + payload.len() + n_chunks * (2 + 2 * SHADOWSOCKS_TAG_LEN),
+            );
+            for chunk in payload.chunks(max) {
+                self.encrypt_payload_frame_into(chunk, &mut frame)?;
+            }
+            self.write_frame(frame).await?;
         }
         Ok(())
     }
 
     async fn send_payload_frame(&mut self, payload: &[u8]) -> Result<()> {
         let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
-        let frame_capacity = salt_len
-            + 2 + SHADOWSOCKS_TAG_LEN   // encrypted length field
-            + payload.len() + SHADOWSOCKS_TAG_LEN; // encrypted payload
-        let mut frame = Vec::with_capacity(frame_capacity);
+        let mut frame = Vec::with_capacity(
+            salt_len + 2 + SHADOWSOCKS_TAG_LEN + payload.len() + SHADOWSOCKS_TAG_LEN,
+        );
+        self.encrypt_payload_frame_into(payload, &mut frame)?;
+        self.write_frame(frame).await
+    }
+
+    // Encrypt one SS2022 payload chunk and append it (plus salt prefix, if pending)
+    // to `frame`.  No allocation — the caller pre-sizes the buffer.
+    fn encrypt_payload_frame_into(&mut self, payload: &[u8], frame: &mut Vec<u8>) -> Result<()> {
         if let Some(salt) = self.pending_salt.take() {
             frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
         }
         let len = (payload.len() as u16).to_be_bytes();
-        self.cipher_state.encrypt_into(&self.nonce, &len, &mut frame)?;
+        self.cipher_state.encrypt_into(&self.nonce, &len, frame)?;
         increment_nonce(&mut self.nonce)?;
-        self.cipher_state.encrypt_into(&self.nonce, payload, &mut frame)?;
+        self.cipher_state.encrypt_into(&self.nonce, payload, frame)?;
         increment_nonce(&mut self.nonce)?;
-        self.write_frame(frame).await?;
         Ok(())
     }
 
