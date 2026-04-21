@@ -8,13 +8,13 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use outline_metrics as metrics;
-use super::state_machine::{ServerFlush, TunTcpUpstreamWriter};
+use super::state_machine::{ServerFlush, TunTcpUpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet};
 use crate::{SharedTunWriter, TunRouting};
 use outline_uplink::{TransportKind, UplinkManager};
 
 use super::state_machine::TcpFlowState;
 use super::wire::parse_tcp_packet;
-use super::{TCP_FLAG_RST, TcpFlowKey};
+use super::{TCP_FLAG_ACK, TCP_FLAG_RST, TcpFlowKey};
 
 mod connect;
 mod flow_ops;
@@ -147,6 +147,81 @@ impl TunTcpEngine {
         Ok(())
     }
 
+    /// Variant of [`write_server_flush`] that closes the flow on the first
+    /// TUN-write error instead of bubbling the error up to the caller. Used
+    /// by the per-packet path in `handle_existing_flow`, where a write
+    /// failure means the flow is dead and the caller cannot retry.
+    pub(super) async fn write_server_flush_or_close(
+        &self,
+        key: &TcpFlowKey,
+        flush: ServerFlush,
+        group_name: &str,
+        uplink_name: &str,
+    ) -> Result<()> {
+        let ip_family = ip_family_from_version(key.version);
+        if flush.window_stalled {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "window_stall");
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
+        }
+        for packet in flush.data_packets {
+            self.write_tun_packet_or_close_flow(key, &packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
+        }
+        if let Some(packet) = flush.probe_packet {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "zero_window_probe");
+            self.write_tun_packet_or_close_flow(key, &packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
+        }
+        if let Some(packet) = flush.fin_packet {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "deferred_fin_sent");
+            self.write_tun_packet_or_close_flow(key, &packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
+        }
+        Ok(())
+    }
+
+    /// Build a pure-ACK packet from the current state (server_seq /
+    /// client_next_seq), drop the passed-in state guard so the TUN write
+    /// doesn't run under the per-flow lock, then write the packet and
+    /// record the `tcp_ack` metric.
+    pub(super) async fn write_pure_ack_and_drop(
+        &self,
+        state: tokio::sync::MutexGuard<'_, TcpFlowState>,
+        ip_family: &'static str,
+    ) -> Result<()> {
+        let ack = build_flow_ack_packet(
+            &state,
+            state.server_seq,
+            state.client_next_seq,
+            TCP_FLAG_ACK,
+        )?;
+        let key = state.key.clone();
+        drop(state);
+        self.write_tun_packet_or_close_flow(&key, &ack).await?;
+        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+        Ok(())
+    }
+
+    /// Build a SYN/ACK retransmit from the current state and write it to
+    /// the TUN, mirroring [`write_pure_ack_and_drop`] for the handshake
+    /// path. The state guard is dropped before the async write.
+    pub(super) async fn write_syn_ack_and_drop(
+        &self,
+        state: tokio::sync::MutexGuard<'_, TcpFlowState>,
+        ip_family: &'static str,
+    ) -> Result<()> {
+        let syn_ack = build_flow_syn_ack_packet(
+            &state,
+            state.server_seq.wrapping_sub(1),
+            state.client_next_seq,
+        )?;
+        let key = state.key.clone();
+        drop(state);
+        self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
+        metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
+        Ok(())
+    }
+
     pub(super) async fn write_ack_packet_with_event(
         &self,
         key: &TcpFlowKey,
@@ -211,3 +286,23 @@ pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Ar
 }
 
 pub(super) use crate::wire::{ip_family_from_version, ip_to_target};
+
+/// Policy predicate: returns `true` when a flow bound to `flow_uplink_index`
+/// must be torn down because its group is in strict-active-uplink mode and
+/// has repointed to a different uplink. The `usize::MAX` sentinel marks a
+/// flow that hasn't been bound to an uplink yet (SynReceived mid-handshake)
+/// — such flows are never migrated.
+pub(super) async fn should_migrate_tcp_flow(
+    manager: &UplinkManager,
+    flow_uplink_index: usize,
+) -> bool {
+    if !manager.strict_active_uplink_for(TransportKind::Tcp) {
+        return false;
+    }
+    manager
+        .active_uplink_index_for_transport(TransportKind::Tcp)
+        .await
+        .is_some_and(|active| {
+            flow_uplink_index != usize::MAX && flow_uplink_index != active
+        })
+}
