@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
@@ -38,6 +38,10 @@ pub(super) struct TunTcpEngineInner {
     pub(super) idle_timeout: Duration,
     pub(super) tcp: TunTcpConfig,
     pub(super) dns_cache: Arc<outline_transport::DnsCache>,
+    /// Shared notifier for the central maintenance loop. All flows call
+    /// `notify_one()` on this when their state changes; the single
+    /// `spawn_maintenance_loop` task wakes and re-evaluates deadlines.
+    pub(super) maintenance_notify: Arc<Notify>,
 }
 
 impl TunTcpEngine {
@@ -60,9 +64,11 @@ impl TunTcpEngine {
                 idle_timeout,
                 tcp,
                 dns_cache,
+                maintenance_notify: Arc::new(Notify::new()),
             }),
         };
         engine.spawn_cleanup_loop();
+        engine.spawn_maintenance_loop();
         engine
     }
 
