@@ -4,7 +4,7 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use anyhow::{Result, bail};
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, watch};
 use tracing::debug;
 
 use crate::utils::maybe_shrink_hash_map;
@@ -72,7 +72,7 @@ impl TunTcpEngine {
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let (close_signal, close_rx) = watch::channel(false);
-        let maintenance_notify = Arc::new(Notify::new());
+        let maintenance_notify = Arc::clone(&self.inner.maintenance_notify);
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
@@ -143,7 +143,6 @@ impl TunTcpEngine {
             ip_family_from_version(packet.version),
             "tcp_synack",
         );
-        self.spawn_flow_maintenance(key.clone(), state.clone(), close_rx.clone());
         self.spawn_upstream_connect(
             key,
             target,

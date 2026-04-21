@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::anyhow;
 use bytes::Bytes;
@@ -87,84 +87,141 @@ impl TunTcpEngine {
         debug!(count, "TUN TCP GC: reaped idle flows");
     }
 
-    pub(super) fn spawn_flow_maintenance(
-        &self,
-        key: TcpFlowKey,
-        flow: Arc<Mutex<TcpFlowState>>,
-        mut close_rx: watch::Receiver<bool>,
-    ) {
+    /// Single engine-wide maintenance task that replaces the former
+    /// per-flow `spawn_flow_maintenance` tasks.  A shared `Arc<Notify>`
+    /// (stored in both `TunTcpEngineInner` and each `TcpFlowState`) wakes
+    /// this loop whenever any flow's state changes; the loop then scans
+    /// the flow table, running `plan_flow_maintenance` for every flow
+    /// whose deadline has arrived, and sleeps until the next one.
+    ///
+    /// Using `try_lock` keeps the scan non-blocking: a flow held by
+    /// another task is skipped and retried on the next wakeup, which
+    /// happens at most 1 ms later.
+    pub(super) fn spawn_maintenance_loop(&self) {
         let engine = self.clone();
         tokio::spawn(async move {
-            let maintenance_notify = { flow.lock().await.maintenance_notify.clone() };
+            let notify = engine.inner.maintenance_notify.clone();
             loop {
-                let plan = {
-                    let mut state = flow.lock().await;
-                    if state.status == TcpFlowStatus::Closed {
-                        return;
-                    }
-                    plan_flow_maintenance(
-                        &mut state,
-                        &engine.inner.tcp,
-                        engine.inner.idle_timeout,
-                        Instant::now(),
-                    )
+                let now = Instant::now();
+                let mut next_deadline: Option<Instant> = None;
+
+                let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = {
+                    let guard = engine.inner.flows.read().await;
+                    guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
                 };
 
-                match plan {
-                    Ok(FlowMaintenancePlan::Abort(reason)) => {
-                        engine.abort_flow_with_rst(&key, reason).await;
-                        return;
-                    },
-                    Ok(FlowMaintenancePlan::Close(reason)) => {
-                        engine.close_flow(&key, reason).await;
-                        return;
-                    },
-                    Ok(FlowMaintenancePlan::SendPacket { packet, packet_metric, event }) => {
-                        let ip_family = ip_family_from_version(key.version);
-                        if let Err(error) = engine.inner.writer.write_packet(&packet).await {
-                            warn!(
-                                error = %format!("{error:#}"),
-                                "failed to write maintenance TUN TCP packet"
+                'flows: for (key, flow) in &handles {
+                    let mut state = match flow.try_lock() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            // Retry after a short sleep rather than busy-polling.
+                            let retry = now + Duration::from_millis(1);
+                            next_deadline = Some(
+                                next_deadline.map_or(retry, |d: Instant| d.min(retry)),
                             );
-                            engine.close_flow(&key, "write_tun_error").await;
-                            return;
+                            continue;
+                        },
+                    };
+
+                    // Inner loop: keep processing this flow until it asks to Wait.
+                    loop {
+                        if state.status == TcpFlowStatus::Closed {
+                            break;
                         }
-                        let (group_name, uplink_name) = super::key_group_and_uplink(&flow).await;
-                        metrics::record_tun_tcp_event(&group_name, &uplink_name, event);
-                        metrics::record_tun_packet("upstream_to_tun", ip_family, packet_metric);
-                    },
-                    Ok(FlowMaintenancePlan::Wait(deadline)) => match deadline {
-                        Some(deadline) if deadline <= Instant::now() => continue,
-                        Some(deadline) => {
-                            tokio::select! {
-                                changed = close_rx.changed() => {
-                                    if changed.is_err() || *close_rx.borrow() {
-                                        return;
-                                    }
-                                }
-                                _ = maintenance_notify.notified() => {}
-                                _ = sleep_until(tokio::time::Instant::from_std(deadline)) => {}
-                            }
-                        },
-                        None => {
-                            tokio::select! {
-                                changed = close_rx.changed() => {
-                                    if changed.is_err() || *close_rx.borrow() {
-                                        return;
-                                    }
-                                }
-                                _ = maintenance_notify.notified() => {}
-                            }
-                        },
-                    },
-                    Err(error) => {
-                        warn!(
-                            error = %format!("{error:#}"),
-                            "failed to plan TUN TCP flow maintenance"
+
+                        let plan = plan_flow_maintenance(
+                            &mut state,
+                            &engine.inner.tcp,
+                            engine.inner.idle_timeout,
+                            Instant::now(),
                         );
-                        engine.abort_flow_with_rst(&key, "retransmit_build_error").await;
-                        return;
+
+                        match plan {
+                            Ok(FlowMaintenancePlan::Wait(deadline)) => {
+                                if let Some(d) = deadline {
+                                    next_deadline = Some(
+                                        next_deadline.map_or(d, |nd: Instant| nd.min(d)),
+                                    );
+                                }
+                                break;
+                            },
+                            Ok(FlowMaintenancePlan::Abort(reason)) => {
+                                drop(state);
+                                engine.abort_flow_with_rst(key, reason).await;
+                                continue 'flows;
+                            },
+                            Ok(FlowMaintenancePlan::Close(reason)) => {
+                                drop(state);
+                                engine.close_flow(key, reason).await;
+                                continue 'flows;
+                            },
+                            Ok(FlowMaintenancePlan::SendPacket {
+                                packet,
+                                packet_metric,
+                                event,
+                            }) => {
+                                let ip_family = ip_family_from_version(key.version);
+                                drop(state);
+                                if let Err(error) =
+                                    engine.inner.writer.write_packet(&packet).await
+                                {
+                                    warn!(
+                                        error = %format!("{error:#}"),
+                                        "failed to write maintenance TUN TCP packet"
+                                    );
+                                    engine.close_flow(key, "write_tun_error").await;
+                                    continue 'flows;
+                                }
+                                let (group_name, uplink_name) =
+                                    super::key_group_and_uplink(flow).await;
+                                metrics::record_tun_tcp_event(
+                                    &group_name,
+                                    &uplink_name,
+                                    event,
+                                );
+                                metrics::record_tun_packet(
+                                    "upstream_to_tun",
+                                    ip_family,
+                                    packet_metric,
+                                );
+                                // Re-acquire lock to process the next action for
+                                // this flow (e.g., back-to-back retransmissions).
+                                state = match flow.try_lock() {
+                                    Ok(s) => s,
+                                    Err(_) => {
+                                        let retry = Instant::now();
+                                        next_deadline = Some(
+                                            next_deadline
+                                                .map_or(retry, |d| d.min(retry)),
+                                        );
+                                        continue 'flows;
+                                    },
+                                };
+                            },
+                            Err(error) => {
+                                warn!(
+                                    error = %format!("{error:#}"),
+                                    "failed to plan TUN TCP flow maintenance"
+                                );
+                                drop(state);
+                                engine
+                                    .abort_flow_with_rst(key, "retransmit_build_error")
+                                    .await;
+                                continue 'flows;
+                            },
+                        }
+                    }
+                }
+
+                match next_deadline {
+                    Some(d) if d > Instant::now() => {
+                        tokio::select! {
+                            _ = notify.notified() => {}
+                            _ = sleep_until(tokio::time::Instant::from_std(d)) => {}
+                        }
                     },
+                    Some(_) => tokio::task::yield_now().await,
+                    None => notify.notified().await,
                 }
             }
         });
