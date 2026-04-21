@@ -24,13 +24,23 @@ use tracing::debug;
 // 5 minutes of no payload, and during that window reconnects hit the same
 // half-dead cached shared connection and fail.
 //
-// 120s is comfortably above typical SSE heartbeat cadences (10–30s for the
-// Anthropic API, similar for most streaming endpoints), so healthy idle
-// streams are unaffected.  When the underlying H2/H3 keepalive (10s interval,
-// 10s timeout) already detects a dead connection, this cap is a defence in
-// depth: if the driver task fails to propagate the closure to individual
-// streams, the reader still unblocks within 2 minutes.
-const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+// H2/H3 keepalive PING frames operate at the protocol multiplexer level and
+// do NOT produce WS-layer messages, so stream.next() stays blocked even on a
+// healthy H2/H3 connection that is merely waiting for the upstream target to
+// start responding.  Long-running requests such as Codex/ChatGPT context
+// compact operations can legitimately spend 2–5 minutes receiving nothing
+// while the server processes the request before starting the streaming
+// response.  120s was too short and caused "stream disconnected before
+// completion" errors for those operations.
+//
+// Dead connections are detected by other mechanisms before this timeout fires:
+//  • H2 keepalive: detects a dead connection in ~40s (20s interval + 20s timeout)
+//  • H3 QUIC: idle timeout 120s with 10s ping interval
+//  • tungstenite IO error: NAT/middlebox RST propagates immediately
+// This timeout is therefore only a last-resort defence for H1 WS with a
+// completely silent middlebox.  300s matches the SOCKS idle-watcher timeout,
+// so both defences fire at the same time when the upstream is truly dead.
+const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 use shadowsocks_crypto::{
     AeadCipher, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce, validate_ss2022_timestamp,
