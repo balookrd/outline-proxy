@@ -81,24 +81,35 @@ impl AeadCipher {
     }
 
     pub fn decrypt(&self, nonce: &[u8; 12], payload: &[u8]) -> Result<Vec<u8>> {
-        if payload.len() < SHADOWSOCKS_TAG_LEN {
+        let mut buf = payload.to_vec();
+        self.decrypt_in_place(nonce, &mut buf)?;
+        Ok(buf)
+    }
+
+    /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place.
+    /// On success `buf` is truncated to the plaintext length; no new allocation.
+    pub fn decrypt_in_place(&self, nonce: &[u8; 12], buf: &mut Vec<u8>) -> Result<()> {
+        if buf.len() < SHADOWSOCKS_TAG_LEN {
             return Err(CryptoError::ShortCiphertext);
         }
-        let split_at = payload.len() - SHADOWSOCKS_TAG_LEN;
-        let mut buffer = payload[..split_at].to_vec();
-        let tag = &payload[split_at..];
+        let split_at = buf.len() - SHADOWSOCKS_TAG_LEN;
+        // Copy the tag to the stack before taking &mut buf[..split_at].
+        let mut tag_arr = [0u8; SHADOWSOCKS_TAG_LEN];
+        tag_arr.copy_from_slice(&buf[split_at..]);
+        let tag: &[u8] = &tag_arr;
         match self {
             Self::Chacha(c) => c
-                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .decrypt_in_place_detached(ChaNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_CHACHA })?,
             Self::Aes128(c) => c
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_128 })?,
             Self::Aes256(c) => c
-                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buffer, tag.into())
+                .decrypt_in_place_detached(AesNonce::from_slice(nonce), b"", &mut buf[..split_at], tag.into())
                 .map_err(|_| CryptoError::DecryptFailed { cipher: CIPHER_AES_256 })?,
         };
-        Ok(buffer)
+        buf.truncate(split_at);
+        Ok(())
     }
 }
 

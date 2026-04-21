@@ -298,21 +298,20 @@ impl<T: WriteTransport> TcpShadowsocksWriter<T> {
                 .context(Ss2022Error::InvalidInitialTargetHeader)?
                 .0;
             let (fixed_header, variable_header) = build_ss2022_request_header(&target)?;
-            let encrypted_fixed = self.cipher_state.encrypt(&self.nonce, &fixed_header)?;
-            increment_nonce(&mut self.nonce)?;
-            let encrypted_variable = self.cipher_state.encrypt(&self.nonce, &variable_header)?;
-            increment_nonce(&mut self.nonce)?;
-
             let salt_len = self.pending_salt.as_ref().map_or(0, |_| self.cipher.salt_len());
             let mut frame = Vec::with_capacity(
-                salt_len + encrypted_fixed.len() + encrypted_variable.len(),
+                salt_len
+                    + fixed_header.len() + SHADOWSOCKS_TAG_LEN
+                    + variable_header.len() + SHADOWSOCKS_TAG_LEN,
             );
             if let Some(salt) = self.pending_salt.take() {
                 state.request_salt = salt;
                 frame.extend_from_slice(&salt[..self.cipher.salt_len()]);
             }
-            frame.extend_from_slice(&encrypted_fixed);
-            frame.extend_from_slice(&encrypted_variable);
+            self.cipher_state.encrypt_into(&self.nonce, &fixed_header, &mut frame)?;
+            increment_nonce(&mut self.nonce)?;
+            self.cipher_state.encrypt_into(&self.nonce, &variable_header, &mut frame)?;
+            increment_nonce(&mut self.nonce)?;
             state.header_sent = true;
 
             self.write_frame(frame).await?;

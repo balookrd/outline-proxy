@@ -354,18 +354,18 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
                 .map(|state| (state.request_salt, self.cipher.salt_len()))
                 .ok_or_else(|| anyhow!("missing ss2022 request salt"))?;
             let header_len = 1 + 8 + self.cipher.salt_len() + 2 + SHADOWSOCKS_TAG_LEN;
-            let encrypted_header = self.transport.read_exact(header_len, &mut self.closed_cleanly).await?;
-            let header = self.decrypt_with_session(&encrypted_header)?;
+            let mut header_buf = self.transport.read_exact(header_len, &mut self.closed_cleanly).await?;
+            self.decrypt_in_place_session(&mut header_buf)?;
             let payload_len =
-                parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header)?;
-            let encrypted_payload =
+                parse_ss2022_response_header(self.cipher, &request_salt[..salt_len], &header_buf)?;
+            let mut payload_buf =
                 self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
-            let payload = self.decrypt_with_session(&encrypted_payload)?;
+            self.decrypt_in_place_session(&mut payload_buf)?;
             if let Some(state) = &mut self.ss2022 {
                 state.response_header_read = true;
             }
-            if !payload.is_empty() {
-                return Ok(payload);
+            if !payload_buf.is_empty() {
+                return Ok(payload_buf);
             }
             // Empty initial payload is valid in SS2022 (the server had no
             // target data to bundle yet).  Fall through to read the first
@@ -373,31 +373,31 @@ impl<T: ReadTransport> TcpShadowsocksReader<T> {
             // that would be misinterpreted as EOF.
         }
 
-        let encrypted_len = self.transport.read_exact(2 + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
-        let len = self.decrypt_with_session(&encrypted_len)?;
+        let mut len_buf = self.transport.read_exact(2 + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
+        self.decrypt_in_place_session(&mut len_buf)?;
 
-        if len.len() != 2 {
+        if len_buf.len() != 2 {
             bail!("invalid decrypted length block");
         }
-        let payload_len = u16::from_be_bytes([len[0], len[1]]) as usize;
+        let payload_len = u16::from_be_bytes([len_buf[0], len_buf[1]]) as usize;
         if payload_len > self.cipher.max_payload_len() {
             bail!("payload length exceeds limit: {payload_len}");
         }
 
-        let encrypted_payload = self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
-        self.decrypt_with_session(&encrypted_payload)
+        let mut payload_buf = self.transport.read_exact(payload_len + SHADOWSOCKS_TAG_LEN, &mut self.closed_cleanly).await?;
+        self.decrypt_in_place_session(&mut payload_buf)?;
+        Ok(payload_buf)
     }
 
-    /// Decrypt `ciphertext` with the session cipher and advance the nonce.
-    /// Kept as a tight helper so the session-cipher borrow does not straddle
-    /// the surrounding `read_exact` `&mut self` calls.
-    fn decrypt_with_session(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let plaintext = self
-            .cipher_state
+    /// Decrypt `buf` (layout: `[ciphertext || tag]`) in-place with the session
+    /// cipher and advance the nonce.  No new allocation — `buf` is truncated to
+    /// plaintext length on success.
+    fn decrypt_in_place_session(&mut self, buf: &mut Vec<u8>) -> Result<()> {
+        self.cipher_state
             .as_ref()
             .ok_or_else(|| anyhow!("missing session cipher"))?
-            .decrypt(&self.nonce, ciphertext)?;
+            .decrypt_in_place(&self.nonce, buf)?;
         increment_nonce(&mut self.nonce)?;
-        Ok(plaintext)
+        Ok(())
     }
 }
