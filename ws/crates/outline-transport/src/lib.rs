@@ -136,6 +136,7 @@ use crate::h3::connect_websocket_h3;
 mod config;
 mod dns;
 mod dns_cache;
+mod error_classify;
 mod guards;
 mod h2;
 #[cfg(feature = "h3")]
@@ -182,6 +183,9 @@ pub use tcp_transport::{
     TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
     WsReadDiag, WsTcpWriter, SocketTcpWriter,
 };
+
+// Error-chain inspection helpers shared across crates.
+pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_disconnect, lower_error};
 
 // HTTP/2 window-size tuning: called once during startup from the main binary.
 pub use h2::init_h2_window_sizes;
