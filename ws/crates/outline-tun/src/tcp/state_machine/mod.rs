@@ -48,9 +48,9 @@ pub(super) use send::{
 pub(super) use seq::{packet_sequence_len, seq_ge, seq_gt, seq_lt, timestamp_lt};
 #[allow(unused_imports)]
 pub(super) use transitions::{
-    client_fin_seen, note_recent_client_timestamp, reset_zero_window_persist,
-    server_fin_awaiting_ack, server_fin_sent, set_flow_status, transition_on_client_fin,
-    transition_on_server_fin_ack,
+    absorb_accepted_client_packet, client_fin_seen, note_recent_client_timestamp,
+    reset_zero_window_persist, server_fin_awaiting_ack, server_fin_sent, set_flow_status,
+    transition_on_client_fin, transition_on_server_fin_ack,
 };
 #[allow(unused_imports)]
 pub(super) use types::{

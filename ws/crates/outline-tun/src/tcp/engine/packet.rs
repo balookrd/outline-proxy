@@ -1,28 +1,25 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use anyhow::Result;
 use tokio::sync::Mutex;
 
 use outline_metrics as metrics;
-use outline_uplink::TransportKind;
 
 use super::super::maintenance::sync_flow_metrics_and_wake;
 use super::super::state_machine::{
     InboundSegmentDisposition, QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus,
-    ack_covers_server_fin, ack_is_stale_server_fin_retry, apply_inbound_and_flush,
-    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet,
-    classify_inbound_segment, client_fin_seen, completes_syn_received_handshake,
-    exceeds_client_reassembly_limits, is_duplicate_syn, note_ack_progress,
-    note_recent_client_timestamp, process_server_ack, queue_future_segment_with_recv_window,
-    reset_zero_window_persist, retransmit_budget_exhausted, retransmit_oldest_unacked_packet,
-    segment_requires_ack, server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
-    transition_on_server_fin_ack, update_client_send_window,
+    absorb_accepted_client_packet, ack_covers_server_fin, ack_is_stale_server_fin_retry,
+    apply_inbound_and_flush, build_flow_ack_packet, build_flow_packet, classify_inbound_segment,
+    client_fin_seen, completes_syn_received_handshake, exceeds_client_reassembly_limits,
+    is_duplicate_syn, note_ack_progress, process_server_ack,
+    queue_future_segment_with_recv_window, retransmit_budget_exhausted,
+    retransmit_oldest_unacked_packet, segment_requires_ack, server_fin_awaiting_ack,
+    set_flow_status, transition_on_client_fin, transition_on_server_fin_ack,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
 use super::super::{TCP_FLAG_ACK, TCP_FLAG_FIN};
-use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version};
+use super::{TunTcpEngine, close_upstream_writer, ip_family_from_version, should_migrate_tcp_flow};
 
 impl TunTcpEngine {
     pub(super) async fn handle_existing_flow(
@@ -30,46 +27,28 @@ impl TunTcpEngine {
         flow: Arc<Mutex<TcpFlowState>>,
         packet: ParsedTcpPacket,
     ) -> Result<()> {
-        let manager = { flow.lock().await.manager.clone() };
-        if manager.strict_active_uplink_for(TransportKind::Tcp) {
-            let active_uplink =
-                manager.active_uplink_index_for_transport(TransportKind::Tcp).await;
-            let (should_abort, key) = {
-                let state = flow.lock().await;
-                (
-                    active_uplink.is_some_and(|active| {
-                        state.uplink_index != usize::MAX && state.uplink_index != active
-                    }),
-                    state.key.clone(),
-                )
-            };
-            if should_abort {
-                self.abort_flow_with_rst(&key, "global_switch").await;
-                return Ok(());
-            }
+        let (uplink_index, manager, flow_key) = {
+            let state = flow.lock().await;
+            (state.uplink_index, state.manager.clone(), state.key.clone())
+        };
+        if should_migrate_tcp_flow(&manager, uplink_index).await {
+            self.abort_flow_with_rst(&flow_key, "global_switch").await;
+            return Ok(());
         }
 
         let ip_family = ip_family_from_version(packet.version);
         let mut state = flow.lock().await;
 
         if state.status == TcpFlowStatus::SynReceived
-            && is_duplicate_syn(&packet, state.client_next_seq) {
-                metrics::record_tun_tcp_event(
-                    &state.group_name,
-                    &state.uplink_name,
-                    "duplicate_syn",
-                );
-                let syn_ack = build_flow_syn_ack_packet(
-                    &state,
-                    state.server_seq.wrapping_sub(1),
-                    state.client_next_seq,
-                )?;
-                let key = state.key.clone();
-                drop(state);
-                self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
-                return Ok(());
-            }
+            && is_duplicate_syn(&packet, state.client_next_seq)
+        {
+            metrics::record_tun_tcp_event(
+                &state.group_name,
+                &state.uplink_name,
+                "duplicate_syn",
+            );
+            return self.write_syn_ack_and_drop(state, ip_family).await;
+        }
 
         match validate_existing_packet(&state, &packet) {
             PacketValidation::Accept => {},
@@ -107,14 +86,7 @@ impl TunTcpEngine {
             },
         }
 
-        note_recent_client_timestamp(&mut state, packet.timestamp_value);
-        state.last_seen = Instant::now();
-        state.keepalive_probes_sent = 0;
-        state.last_keepalive_probe_at = None;
-        update_client_send_window(&mut state, &packet);
-        if state.client_window > 0 {
-            reset_zero_window_persist(&mut state);
-        }
+        absorb_accepted_client_packet(&mut state, &packet);
         sync_flow_metrics_and_wake(&mut state);
 
         if state.status == TcpFlowStatus::SynReceived {
@@ -128,16 +100,7 @@ impl TunTcpEngine {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
                 sync_flow_metrics_and_wake(&mut state);
             } else {
-                let syn_ack = build_flow_syn_ack_packet(
-                    &state,
-                    state.server_seq.wrapping_sub(1),
-                    state.client_next_seq,
-                )?;
-                let key = state.key.clone();
-                drop(state);
-                self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_synack");
-                return Ok(());
+                return self.write_syn_ack_and_drop(state, ip_family).await;
             }
         }
 
@@ -218,17 +181,7 @@ impl TunTcpEngine {
                 state.client_next_seq,
             )
         {
-            let ack = build_flow_ack_packet(
-                &state,
-                state.server_seq,
-                state.client_next_seq,
-                TCP_FLAG_ACK,
-            )?;
-            let key = state.key.clone();
-            drop(state);
-            self.write_tun_packet_or_close_flow(&key, &ack).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
-            return Ok(());
+            return self.write_pure_ack_and_drop(state, ip_family).await;
         }
 
         let trimmed = match classify_inbound_segment(&state, &packet) {
@@ -244,30 +197,10 @@ impl TunTcpEngine {
                     | QueueFutureSegmentOutcome::Queued => {},
                 }
                 sync_flow_metrics_and_wake(&mut state);
-                let ack = build_flow_ack_packet(
-                    &state,
-                    state.server_seq,
-                    state.client_next_seq,
-                    TCP_FLAG_ACK,
-                )?;
-                let key = state.key.clone();
-                drop(state);
-                self.write_tun_packet_or_close_flow(&key, &ack).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
-                return Ok(());
+                return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::OutsideReceiveWindow => {
-                let ack = build_flow_ack_packet(
-                    &state,
-                    state.server_seq,
-                    state.client_next_seq,
-                    TCP_FLAG_ACK,
-                )?;
-                let key = state.key.clone();
-                drop(state);
-                self.write_tun_packet_or_close_flow(&key, &ack).await?;
-                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
-                return Ok(());
+                return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::Deliver(trimmed) => trimmed,
         };
@@ -331,24 +264,8 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         }
 
-        if outcome.server_flush.window_stalled {
-            metrics::record_tun_tcp_event(&group_name, &uplink_name, "window_stall");
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
-        }
-        for packet in outcome.server_flush.data_packets {
-            self.write_tun_packet_or_close_flow(&key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
-        }
-        if let Some(packet) = outcome.server_flush.probe_packet {
-            metrics::record_tun_tcp_event(&group_name, &uplink_name, "zero_window_probe");
-            self.write_tun_packet_or_close_flow(&key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
-        }
-        if let Some(packet) = outcome.server_flush.fin_packet {
-            metrics::record_tun_tcp_event(&group_name, &uplink_name, "deferred_fin_sent");
-            self.write_tun_packet_or_close_flow(&key, &packet).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
-        }
+        self.write_server_flush_or_close(&key, outcome.server_flush, &group_name, &uplink_name)
+            .await?;
 
         if outcome.should_close_client_half {
             {
