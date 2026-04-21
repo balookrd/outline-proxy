@@ -25,8 +25,8 @@ pub struct CompiledRule {
     pub cidrs: Arc<RwLock<CidrSet>>,
     /// Inline prefixes from config — merged with file contents on each
     /// reload so removing the file doesn't drop the inline entries.
-    pub inline_prefixes: Vec<String>,
-    pub files: Vec<PathBuf>,
+    pub inline_prefixes: Arc<[String]>,
+    pub files: Arc<[PathBuf]>,
     pub file_poll: Duration,
     pub target: RouteTarget,
     pub fallback: Option<RouteTarget>,
@@ -74,8 +74,8 @@ impl RoutingTable {
             }
             rules.push(CompiledRule {
                 cidrs: Arc::new(RwLock::new(cidrs)),
-                inline_prefixes: rule.inline_prefixes.clone(),
-                files: rule.files.clone(),
+                inline_prefixes: rule.inline_prefixes.as_slice().into(),
+                files: rule.files.as_slice().into(),
                 file_poll: rule.file_poll,
                 target: rule.target.clone(),
                 fallback: rule.fallback.clone(),
@@ -175,7 +175,7 @@ pub fn spawn_route_watchers(table: Arc<RoutingTable>) {
             // them. A missing file is represented as `None` and still triggers
             // a reload once it reappears with a readable mtime.
             let mut last_mtimes: Vec<Option<SystemTime>> = Vec::with_capacity(files.len());
-            for f in &files {
+            for f in files.iter() {
                 last_mtimes.push(
                     tokio::fs::metadata(f)
                         .await

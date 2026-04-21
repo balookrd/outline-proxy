@@ -3,6 +3,7 @@
 //! [`crate::RoutingTable`]).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Action a matched route should take for the traffic.
@@ -14,7 +15,7 @@ pub enum RouteTarget {
     /// Silently drop the connection (TCP → SOCKS5 reply `REP=0x02`, UDP → drop).
     Drop,
     /// Route through the named group.
-    Group(String),
+    Group(Arc<str>),
 }
 
 /// One policy routing rule.

@@ -34,7 +34,7 @@ pub struct TunRouting {
 pub enum TunRoute {
     /// Forward this flow through the named group's uplink manager.
     Group {
-        name: String,
+        name: Arc<str>,
         manager: UplinkManager,
     },
     /// Forward via a local socket (with optional SO_MARK to escape the TUN
@@ -78,7 +78,7 @@ impl TunRouting {
     pub async fn resolve(&self, target: &TargetAddr) -> TunRoute {
         let Some(table) = self.routing.as_ref() else {
             return TunRoute::Group {
-                name: self.registry.default_group_name().to_string(),
+                name: self.registry.default_group_name().into(),
                 manager: self.default_group.clone(),
             };
         };
