@@ -55,7 +55,7 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-ReadWritePaths=/var/lib/outline-ws-rust/%i /var/log/outline-ws-rust/%i
+ReadWritePaths=/var/lib/outline-ws-rust/%i
 
 [Install]
 WantedBy=multi-user.target
