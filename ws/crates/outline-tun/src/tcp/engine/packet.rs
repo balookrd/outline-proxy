@@ -269,6 +269,7 @@ impl TunTcpEngine {
         let key = state.key.clone();
         let uplink_index = state.uplink_index;
         let uplink_name = state.uplink_name.clone();
+        let group_name = state.group_name.clone();
         let flow_manager = state.manager.clone();
         let upstream_writer = state.upstream_writer.clone();
         if !packet.payload.is_empty()
@@ -295,10 +296,7 @@ impl TunTcpEngine {
             sync_flow_metrics_and_wake(&mut state);
             drop(state);
             if flush.window_stalled {
-                {
-                    let (g, u) = super::key_group_and_uplink(&flow).await;
-                    metrics::record_tun_tcp_event(&g, &u, "window_stall");
-                }
+                metrics::record_tun_tcp_event(&group_name, &uplink_name, "window_stall");
                 metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
             }
             for packet in flush.data_packets {
@@ -319,6 +317,11 @@ impl TunTcpEngine {
         let flush = flush_server_output(&mut state)?;
         sync_flow_metrics_and_wake(&mut state);
 
+        let pending_ack = if should_send_ack {
+            Some(build_flow_ack_packet(&state, seq_number, ack_number, TCP_FLAG_ACK)?)
+        } else {
+            None
+        };
         drop(state);
 
         if !pending_payload.is_empty() {
@@ -362,23 +365,15 @@ impl TunTcpEngine {
                 }
                 sync_flow_metrics_and_wake(&mut state);
             }
-            should_send_ack = true;
         }
 
-        if should_send_ack {
-            let ack = {
-                let state = flow.lock().await;
-                build_flow_ack_packet(&state, seq_number, ack_number, TCP_FLAG_ACK)?
-            };
+        if let Some(ack) = pending_ack {
             self.write_tun_packet_or_close_flow(&key, &ack).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
         }
 
         if flush.window_stalled {
-            {
-                let (g, u) = super::key_group_and_uplink(&flow).await;
-                metrics::record_tun_tcp_event(&g, &u, "window_stall");
-            }
+            metrics::record_tun_tcp_event(&group_name, &uplink_name, "window_stall");
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
         }
         for packet in flush.data_packets {
@@ -386,18 +381,12 @@ impl TunTcpEngine {
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
         }
         if let Some(packet) = flush.probe_packet {
-            {
-                let (g, u) = super::key_group_and_uplink(&flow).await;
-                metrics::record_tun_tcp_event(&g, &u, "zero_window_probe");
-            }
+            metrics::record_tun_tcp_event(&group_name, &uplink_name, "zero_window_probe");
             self.write_tun_packet_or_close_flow(&key, &packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
         }
         if let Some(packet) = flush.fin_packet {
-            {
-                let (g, u) = super::key_group_and_uplink(&flow).await;
-                metrics::record_tun_tcp_event(&g, &u, "deferred_fin_sent");
-            }
+            metrics::record_tun_tcp_event(&group_name, &uplink_name, "deferred_fin_sent");
             self.write_tun_packet_or_close_flow(&key, &packet).await?;
             metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
         }
