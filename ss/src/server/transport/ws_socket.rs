@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use axum::extract::ws::{Message, WebSocket};
+use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use bytes::Bytes;
 use futures_util::{
     SinkExt, StreamExt,
@@ -44,6 +44,10 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     fn classify(msg: Self::Msg) -> WsFrame;
     fn binary_msg(data: Bytes) -> Self::Msg;
     fn close_msg() -> Self::Msg;
+    /// Close frame asking the client to retry the same request (RFC 6455 code 1013).
+    /// Used when the server cannot reach the upstream target but the client
+    /// may succeed if it retries on the same or a different uplink.
+    fn close_try_again_msg() -> Self::Msg;
     fn pong_msg(payload: Bytes) -> Self::Msg;
     fn binary_len(msg: &Self::Msg) -> Option<usize>;
     fn make_udp_response_sender(
@@ -90,6 +94,9 @@ impl WsSocket for AxumWs {
 
     fn binary_msg(data: Bytes) -> Message { Message::Binary(data) }
     fn close_msg() -> Message { Message::Close(None) }
+    fn close_try_again_msg() -> Message {
+        Message::Close(Some(CloseFrame { code: close_code::AGAIN, reason: "".into() }))
+    }
     fn pong_msg(p: Bytes) -> Message { Message::Pong(p) }
     fn binary_len(m: &Message) -> Option<usize> {
         if let Message::Binary(b) = m { Some(b.len()) } else { None }
@@ -138,6 +145,7 @@ impl WsSocket for H3Ws {
 
     fn binary_msg(data: Bytes) -> H3Message { H3Message::Binary(data) }
     fn close_msg() -> H3Message { H3Message::Close(None) }
+    fn close_try_again_msg() -> H3Message { H3Message::Close(None) }
     fn pong_msg(p: Bytes) -> H3Message { H3Message::Pong(p) }
     fn binary_len(m: &H3Message) -> Option<usize> {
         if let H3Message::Binary(b) = m { Some(b.len()) } else { None }

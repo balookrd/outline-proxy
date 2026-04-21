@@ -5,7 +5,24 @@ use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::{io::AsyncWriteExt, sync::mpsc};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Typed marker attached to errors that originate from a failed upstream TCP
+/// connect inside [`handle_tcp_binary_frame`].  [`run_tcp_relay`] checks for
+/// this marker to decide whether to send the client a "try again" close frame
+/// (RFC 6455 code 1013) rather than a plain close or a silent drop, so the
+/// proxy can retry on the same or a different uplink instead of surfacing the
+/// failure to the SOCKS client.
+#[derive(Debug)]
+struct UpstreamConnectFailed;
+
+impl std::fmt::Display for UpstreamConnectFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("upstream tcp connect failed")
+    }
+}
+
+impl std::error::Error for UpstreamConnectFailed {}
 
 use crate::{
     crypto::{
@@ -89,7 +106,7 @@ async fn run_tcp_relay<T: WsSocket>(
     while let Some(msg) = T::recv(&mut reader).await? {
         match T::classify(msg) {
             WsFrame::Binary(data) => {
-                handle_tcp_binary_frame(
+                if let Err(err) = handle_tcp_binary_frame(
                     &mut state,
                     &mut decryptor,
                     &mut plaintext_buffer,
@@ -105,7 +122,28 @@ async fn run_tcp_relay<T: WsSocket>(
                     T::binary_msg,
                     T::close_msg,
                 )
-                .await?;
+                .await
+                {
+                    // Pick the appropriate WS close code.  When the upstream
+                    // TCP connect failed the client has a reasonable chance of
+                    // succeeding if it retries (same or different uplink), so
+                    // send code 1013 "Try Again Later".  Any other error
+                    // (auth failure, protocol error) is terminal — send a
+                    // generic close so the client can fail fast.
+                    let is_upstream_connect_failure = err
+                        .chain()
+                        .any(|e| e.downcast_ref::<UpstreamConnectFailed>().is_some());
+                    let close_msg = if is_upstream_connect_failure {
+                        T::close_try_again_msg()
+                    } else {
+                        T::close_msg()
+                    };
+                    let _ = outbound_ctrl_tx.send(close_msg).await;
+                    drop(outbound_ctrl_tx);
+                    drop(outbound_data_tx);
+                    let _ = writer_task.await;
+                    return Err(err);
+                }
             },
             WsFrame::Close => {
                 debug!("client closed tcp websocket");
@@ -223,7 +261,17 @@ where
                     "error",
                     connect_started.elapsed().as_secs_f64(),
                 );
-                return Err(error).with_context(|| format!("failed to connect to {target_display}"));
+                warn!(
+                    user = user.id(),
+                    protocol = ?protocol,
+                    path = %path,
+                    target = %target_display,
+                    error = %error,
+                    "websocket tcp upstream connect failed; sending try-again close to client"
+                );
+                return Err(anyhow!(UpstreamConnectFailed))
+                    .with_context(|| format!("failed to connect to {target_display}"))
+                    .with_context(|| format!("{error:#}"));
             },
         };
         info!(
