@@ -117,7 +117,7 @@ Each incoming datagram is dispatched to an independent relay task. At most 256 c
 - Unsolicited upstream responses (server-initiated pushes, QUIC stream continuations) are delivered to the currently active WebSocket session even if they arrive between datagrams.
 - After a WebSocket reconnect, the existing upstream socket is reused immediately — no new UDP handshake or association required on the upstream side.
 
-NAT entries are evicted after `udp_nat_idle_timeout_secs` (default 300 seconds) of no outbound traffic. A background task scans for idle entries every 60 seconds.
+NAT entries are evicted after `tuning.udp_nat_idle_timeout_secs` (default 300 seconds under the `large` profile) of no outbound traffic. A background task scans for idle entries every 60 seconds.
 
 ## User Model
 
@@ -185,8 +185,12 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
-| `client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
-| `udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram; default is `300` (5 minutes) |
+| `tuning_profile` | Named resource-limit preset: `small` / `medium` / `large` (default). Scales H2/H3 flow-control windows, stream caps, session/NAT timeouts and the global UDP relay task cap |
+| `[tuning]` | Per-field overrides on top of the selected profile. See `tuning.*` keys below |
+| `tuning.client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
+| `tuning.udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram (default depends on profile; `300` on `large`) |
+| `tuning.udp_max_concurrent_relay_tasks` | Process-wide cap on in-flight UDP relay tasks across all WebSocket sessions. `0` disables the global cap |
+| `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
@@ -349,6 +353,8 @@ Expose metrics on a dedicated listener:
 ```toml
 metrics_listen = "127.0.0.1:9090"
 metrics_path = "/metrics"
+
+[tuning]
 client_active_ttl_secs = 300
 ```
 

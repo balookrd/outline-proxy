@@ -122,7 +122,7 @@ impl Metrics {
             method: config.method.as_str().to_owned(),
             tcp_tls_enabled: config.tcp_tls_enabled(),
             h3_enabled: config.h3_enabled(),
-            client_active_ttl_secs: config.client_active_ttl_secs,
+            client_active_ttl_secs: config.tuning.client_active_ttl_secs,
             process_memory_snapshot: RwLock::new(sample_process_memory()),
             client_last_seen: RwLock::new(HashMap::new()),
             recorder,
@@ -740,8 +740,6 @@ mod tests {
             metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
             metrics_path: "/metrics".to_owned(),
             prefer_ipv4_upstream: false,
-            client_active_ttl_secs: 300,
-            udp_nat_idle_timeout_secs: 300,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
             http_root_auth: false,
@@ -751,8 +749,6 @@ mod tests {
             users: vec![],
             method: crate::config::CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
-            udp_max_concurrent_relay_tasks:
-                crate::config::default_udp_max_concurrent_relay_tasks(),
         }
     }
 

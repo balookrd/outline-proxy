@@ -54,12 +54,6 @@ pub(super) struct ConfigArgs {
     )]
     pub prefer_ipv4_upstream: Option<bool>,
 
-    #[arg(long, env = "OUTLINE_SS_CLIENT_ACTIVE_TTL_SECS")]
-    pub client_active_ttl_secs: Option<u64>,
-
-    #[arg(long, env = "OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS")]
-    pub udp_nat_idle_timeout_secs: Option<u64>,
-
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     pub ws_path_tcp: Option<String>,
 
@@ -127,9 +121,6 @@ pub(super) struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_TUNING_PROFILE", value_enum)]
     pub tuning_profile: Option<TuningProfileKind>,
-
-    #[arg(long, env = "OUTLINE_SS_UDP_MAX_CONCURRENT_RELAY_TASKS")]
-    pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
