@@ -3,4 +3,4 @@ mod direct;
 mod failover;
 mod session;
 
-pub(super) use connect::handle_tcp_connect;
+pub(super) use connect::serve_tcp_connect;

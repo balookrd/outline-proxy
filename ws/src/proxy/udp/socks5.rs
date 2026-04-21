@@ -27,7 +27,7 @@ use super::routing::{
     routing_table_active,
 };
 
-pub(in crate::proxy) async fn handle_udp_associate(
+pub(in crate::proxy) async fn serve_udp_associate(
     mut client: TcpStream,
     config: Arc<ProxyConfig>,
     registry: UplinkRegistry,

@@ -6,5 +6,5 @@ mod udp;
 
 pub use config::{ProxyConfig, TcpTimeouts};
 pub use dispatcher::handle_client;
-pub(crate) use dispatcher::DispatchTarget;
+pub(crate) use dispatcher::Route;
 pub use router::Router;
