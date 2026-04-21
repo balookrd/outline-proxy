@@ -28,7 +28,8 @@ pub(super) use recv::normalize_client_segment;
 #[allow(unused_imports)]
 pub(super) use send::{
     assess_server_backlog_pressure, clear_flow_metrics, flush_server_output,
-    maybe_emit_zero_window_probe, retransmit_budget_exhausted, retransmit_due_segment,
+    keepalive_probe_eligible, maybe_emit_keepalive_probe, maybe_emit_zero_window_probe,
+    next_keepalive_deadline, retransmit_budget_exhausted, retransmit_due_segment,
     retransmit_oldest_unacked_packet, sync_flow_metrics,
 };
 #[allow(unused_imports)]

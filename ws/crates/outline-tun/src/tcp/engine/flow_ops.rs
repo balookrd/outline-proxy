@@ -118,6 +118,8 @@ impl TunTcpEngine {
             server_fin_pending: false,
             zero_window_probe_backoff: TCP_ZERO_WINDOW_PROBE_BASE_INTERVAL,
             next_zero_window_probe_at: None,
+            keepalive_probes_sent: 0,
+            last_keepalive_probe_at: None,
             reported: super::super::state_machine::ReportedFlowMetrics::default(),
             created_at: now,
             status_since: now,

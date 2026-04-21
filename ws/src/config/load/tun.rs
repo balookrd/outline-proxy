@@ -81,6 +81,17 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
             .and_then(|section| section.max_buffered_client_bytes)
             .unwrap_or(262_144),
         max_retransmits: tcp_section.and_then(|section| section.max_retransmits).unwrap_or(12),
+        keepalive_idle: tcp_section
+            .and_then(|section| section.keepalive_idle_secs)
+            .map(Duration::from_secs),
+        keepalive_interval: Duration::from_secs(
+            tcp_section
+                .and_then(|section| section.keepalive_interval_secs)
+                .unwrap_or(30),
+        ),
+        keepalive_max_probes: tcp_section
+            .and_then(|section| section.keepalive_max_probes)
+            .unwrap_or(6),
     };
     if tcp.connect_timeout < Duration::from_secs(1) {
         bail!("tun.tcp.connect_timeout_secs must be at least 1");
@@ -114,6 +125,17 @@ pub(super) fn load_tun_config(tun: Option<&TunSection>, args: &Args) -> Result<O
     }
     if tcp.max_retransmits == 0 {
         bail!("tun.tcp.max_retransmits must be greater than zero");
+    }
+    if let Some(idle) = tcp.keepalive_idle {
+        if idle < Duration::from_secs(5) {
+            bail!("tun.tcp.keepalive_idle_secs must be at least 5");
+        }
+        if tcp.keepalive_interval < Duration::from_secs(1) {
+            bail!("tun.tcp.keepalive_interval_secs must be at least 1");
+        }
+        if tcp.keepalive_max_probes == 0 {
+            bail!("tun.tcp.keepalive_max_probes must be greater than zero");
+        }
     }
 
     #[cfg(target_os = "linux")]
