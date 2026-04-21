@@ -259,7 +259,7 @@ impl TunUdpEngine {
                 0,
             ),
         };
-        let std_sock = outline_transport::bind_udp_socket(bind_addr, fwmark)
+        let std_sock = outline_net::bind_udp_socket(bind_addr, fwmark)
             .with_context(|| format!("failed to bind direct UDP socket for TUN flow to {remote_target}"))?;
         let sock = Arc::new(UdpSocket::from_std(std_sock)?);
         sock.send_to(&packet.payload, target_addr)

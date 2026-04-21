@@ -35,7 +35,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
     let result = async {
         let bind_ip = client.local_addr()?.ip();
         let direct_socket = if routing_table_active(&config) {
-            let std_sock = outline_transport::bind_udp_socket(
+            let std_sock = outline_net::bind_udp_socket(
                 SocketAddr::new(bind_ip, 0),
                 config.direct_fwmark,
             )

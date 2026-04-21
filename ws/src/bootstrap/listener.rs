@@ -109,7 +109,7 @@ pub(super) async fn run_accept_loop(
         // silently close long-lived idle flows like SSH.  Failures are
         // non-fatal: log and keep the connection, since the effect is only
         // degradation to the pre-fix behaviour.
-        if let Err(error) = outline_transport::configure_inbound_tcp_stream(&stream, peer) {
+        if let Err(error) = outline_net::configure_inbound_tcp_stream(&stream, peer) {
             debug!(%peer, error = %format!("{error:#}"), "failed to arm inbound TCP keepalive; proceeding without it");
         }
         let config = Arc::clone(&proxy_config);

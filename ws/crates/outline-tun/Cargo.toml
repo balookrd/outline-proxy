@@ -13,6 +13,7 @@ bytes = "1.10"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 libc = "0.2"
 outline-metrics = { path = "../outline-metrics", default-features = false }
+outline-net = { path = "../outline-net" }
 outline-routing = { path = "../outline-routing" }
 outline-transport = { path = "../outline-transport" }
 outline-uplink = { path = "../outline-uplink", default-features = false }

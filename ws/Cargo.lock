@@ -1324,6 +1324,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "outline-net"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "socket2 0.5.10",
+ "tokio",
+]
+
+[[package]]
 name = "outline-routing"
 version = "0.1.0"
 dependencies = [
@@ -1332,6 +1342,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "outline-ss2022"
+version = "0.1.0"
 
 [[package]]
 name = "outline-transport"
@@ -1350,6 +1364,8 @@ dependencies = [
  "libc",
  "once_cell",
  "outline-metrics",
+ "outline-net",
+ "outline-ss2022",
  "parking_lot",
  "pin-project-lite",
  "quinn",
@@ -1377,6 +1393,7 @@ dependencies = [
  "futures-util",
  "libc",
  "outline-metrics",
+ "outline-net",
  "outline-routing",
  "outline-transport",
  "outline-uplink",
@@ -1398,6 +1415,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "outline-metrics",
+ "outline-ss2022",
  "outline-transport",
  "parking_lot",
  "rand 0.8.5",
@@ -1429,6 +1447,7 @@ dependencies = [
  "lru",
  "mimalloc",
  "outline-metrics",
+ "outline-net",
  "outline-routing",
  "outline-transport",
  "outline-tun",

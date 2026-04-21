@@ -46,7 +46,7 @@ pub(super) async fn handle_tcp_direct(
         .ok_or_else(|| anyhow!("no address resolved for {target}"))?,
     };
 
-    let upstream = outline_transport::connect_tcp_socket(addr, fwmark)
+    let upstream = outline_net::connect_tcp_socket(addr, fwmark)
         .await
         .with_context(|| format!("direct TCP connect to {target} failed"))?;
 

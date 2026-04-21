@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::{Ss2022Error, TransportOperation, WebSocketClosed};
+use crate::{TransportOperation, WebSocketClosed};
+use outline_ss2022::Ss2022Error;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;

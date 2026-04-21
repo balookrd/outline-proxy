@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::{Ss2022Error, WebSocketClosed};
+use crate::WebSocketClosed;
+use outline_ss2022::Ss2022Error;
 use futures_util::stream::SplitStream;
 use futures_util::StreamExt;
 use shadowsocks_crypto::{AeadCipher, CipherKind, SHADOWSOCKS_TAG_LEN, derive_subkey, increment_nonce, validate_ss2022_timestamp};

@@ -23,47 +23,6 @@ impl fmt::Display for WebSocketClosed {
 
 impl std::error::Error for WebSocketClosed {}
 
-/// Typed marker for Shadowsocks-2022 framing and replay errors. Placed in the
-/// `anyhow` error chain (as a `bail!` value or `.context` layer) so that
-/// classifiers can match by variant via `downcast_ref` instead of grepping
-/// formatted strings.
-#[derive(Debug)]
-pub enum Ss2022Error {
-    InvalidResponseHeaderLength(usize),
-    InvalidResponseHeaderType(u8),
-    RequestSaltMismatch,
-    InvalidInitialTargetHeader,
-    DuplicateOrOutOfOrderUdpPacket,
-    OversizedUdpUplink,
-}
-
-impl fmt::Display for Ss2022Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Ss2022Error::InvalidResponseHeaderLength(len) => {
-                write!(f, "invalid ss2022 response header length: {len}")
-            },
-            Ss2022Error::InvalidResponseHeaderType(ty) => {
-                write!(f, "invalid ss2022 response header type: {ty}")
-            },
-            Ss2022Error::RequestSaltMismatch => {
-                write!(f, "ss2022 response header request salt mismatch")
-            },
-            Ss2022Error::InvalidInitialTargetHeader => {
-                write!(f, "invalid ss2022 initial target header")
-            },
-            Ss2022Error::DuplicateOrOutOfOrderUdpPacket => {
-                write!(f, "duplicate or out-of-order ss2022 UDP packet")
-            },
-            Ss2022Error::OversizedUdpUplink => {
-                write!(f, "oversized UDP packet dropped before uplink send")
-            },
-        }
-    }
-}
-
-impl std::error::Error for Ss2022Error {}
-
 /// Typed marker for the high-level operation that produced a transport error.
 /// Placed as an `anyhow` context layer at the failure site so classifiers can
 /// identify the operation via `downcast_ref` rather than grepping the
@@ -100,7 +59,7 @@ impl std::error::Error for TransportOperation {}
 ///    are found by `anyhow::Error::downcast_ref::<T>()` but NOT by walking
 ///    `chain()` (the std `Error::source()` iterator does not expose
 ///    context values).
-/// 2. Typed root/source errors (e.g. `bail!(Ss2022Error::…)`, `Error::new(T)`)
+/// 2. Typed root/source errors (e.g. `bail!(outline_ss2022::Ss2022Error::…)`, `Error::new(T)`)
 ///    — found by either `downcast_ref` or `chain().find_map()`.
 ///
 /// Many call-sites use form 1 (`.with_context(|| TransportOperation::…)`), so
@@ -142,21 +101,37 @@ mod guards;
 mod h2;
 #[cfg(feature = "h3")]
 pub(crate) mod h3;
-mod socket;
 mod tcp_transport;
 mod udp_transport;
 mod shared_cache;
 mod tls;
+// Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod url_utils;
 mod ws_stream;
 
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
+pub(crate) use outline_net::{bind_addr_for, bind_udp_socket};
+use std::net::SocketAddr;
 use ws_stream::H1WsStream;
 
 pub(crate) use guards::{AbortOnDrop, TransportConnectGuard};
-pub(crate) use socket::bind_addr_for;
 pub(crate) use ws_stream::SharedConnectionHealth;
+
+/// Local wrapper around `outline_net::connect_tcp_socket` that layers the
+/// transport-level `TransportOperation::Connect` context onto the error so
+/// classifiers in `outline-uplink` / `outline-tun` can recognise connect
+/// failures via `find_typed::<TransportOperation>`. Kept as a thin wrapper
+/// because `outline-net` is intentionally protocol-agnostic and does not
+/// depend on the `TransportOperation` enum.
+pub(crate) async fn connect_tcp_socket(
+    addr: SocketAddr,
+    fwmark: Option<u32>,
+) -> Result<TcpStream> {
+    outline_net::connect_tcp_socket(addr, fwmark)
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })
+}
 
 // --- Public surface kept intentionally narrow. Group by concern so it's
 // --- clear at a glance what the transport crate exposes. -------------------
@@ -172,9 +147,6 @@ pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
 pub use ws_stream::WsTransportStream;
-
-// Low-level socket helpers used by TUN and by test setup in other crates.
-pub use socket::{bind_udp_socket, configure_inbound_tcp_stream, connect_tcp_socket, init_udp_socket_bufs};
 
 // TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums
 // TUN and the proxy plumb through; the `TcpShadowsocks*` helpers construct

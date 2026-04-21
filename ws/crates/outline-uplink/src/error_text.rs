@@ -2,8 +2,9 @@ use std::fmt;
 use std::io::ErrorKind;
 
 use anyhow::Error;
+use outline_ss2022::Ss2022Error;
 use outline_transport::{
-    Ss2022Error, TransportOperation, WebSocketClosed, contains_any, find_io_error_kind, find_typed,
+    TransportOperation, WebSocketClosed, contains_any, find_io_error_kind, find_typed,
     is_transport_level_disconnect, lower_error,
 };
 use shadowsocks_crypto::CryptoError;

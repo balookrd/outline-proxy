@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/outline-metrics", "crates/outline-routing", "crates/outline-transport", "crates/outline-tun", "crates/outline-uplink", "crates/shadowsocks-crypto", "crates/socks5-proto"]
+members = [".", "crates/outline-metrics", "crates/outline-net", "crates/outline-routing", "crates/outline-ss2022", "crates/outline-transport", "crates/outline-tun", "crates/outline-uplink", "crates/shadowsocks-crypto", "crates/socks5-proto"]
 
 [package]
 name = "outline-ws-rust"
@@ -43,6 +43,7 @@ libc = "0.2"
 lru = { version = "0.12", default-features = false }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 outline-metrics = { path = "crates/outline-metrics", default-features = false }
+outline-net = { path = "crates/outline-net" }
 outline-routing = { path = "crates/outline-routing" }
 outline-transport = { path = "crates/outline-transport" }
 outline-tun = { path = "crates/outline-tun", default-features = false, optional = true }

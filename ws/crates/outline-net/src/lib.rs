@@ -1,7 +1,14 @@
+//! Pure-OS socket helpers shared across outline crates.
+//!
+//! This crate owns low-level plumbing that is protocol-agnostic: TCP connect
+//! with fwmark/keepalive, UDP bind with buffer sizing, and inbound-socket
+//! tuning. It has no knowledge of Shadowsocks, WebSocket, or any transport
+//! protocol — callers layer their own context (e.g. `TransportOperation`)
+//! on top of the returned `anyhow::Error`.
+
 #[cfg(not(target_os = "linux"))]
 use anyhow::bail;
 use anyhow::{Context, Result};
-use crate::TransportOperation;
 use socket2::{Domain, Protocol as SocketProtocol, Socket, TcpKeepalive, Type};
 use std::mem::ManuallyDrop;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -33,7 +40,7 @@ pub async fn connect_tcp_socket(addr: SocketAddr, fwmark: Option<u32>) -> Result
     if fwmark.is_none() {
         let stream = TcpStream::connect(addr)
             .await
-            .with_context(|| TransportOperation::Connect { target: format!("TCP socket to {addr}") })?;
+            .with_context(|| format!("failed to connect TCP socket to {addr}"))?;
         configure_tcp_stream_low_latency(&stream, addr)?;
         return Ok(stream);
     }
@@ -66,9 +73,8 @@ async fn connect_tcp_socket_with_fwmark(
             // Connection in progress; writable() below will signal completion.
         },
         Err(e) => {
-            return Err(e).with_context(|| TransportOperation::Connect {
-                target: format!("TCP socket to {addr}"),
-            });
+            return Err(e)
+                .with_context(|| format!("failed to connect TCP socket to {addr}"));
         },
     }
     let stream =
@@ -202,7 +208,7 @@ fn apply_fwmark(socket: &Socket, fwmark: Option<u32>) -> Result<()> {
     }
 }
 
-pub(crate) fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
+pub fn bind_addr_for(server_addr: SocketAddr) -> SocketAddr {
     match server_addr.ip() {
         IpAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
         IpAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
