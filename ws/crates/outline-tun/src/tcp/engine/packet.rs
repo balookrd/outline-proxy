@@ -9,14 +9,16 @@ use outline_uplink::TransportKind;
 
 use super::super::maintenance::sync_flow_metrics_and_wake;
 use super::super::state_machine::{
-    QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus, apply_client_segment,
-    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, client_fin_seen,
+    InboundSegmentDisposition, QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus,
+    ack_covers_server_fin, ack_is_stale_server_fin_retry, apply_client_segment,
+    build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet,
+    classify_inbound_segment, client_fin_seen, completes_syn_received_handshake,
     drain_ready_buffered_segments_from_state, exceeds_client_reassembly_limits,
     flush_server_output, is_duplicate_syn, normalize_trimmed_segment, note_ack_progress,
     note_recent_client_timestamp, process_server_ack, queue_future_segment_with_recv_window,
     reset_zero_window_persist, retransmit_budget_exhausted, retransmit_oldest_unacked_packet,
-    seq_gt, seq_lt, server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
-    transition_on_server_fin_ack, trim_packet_to_receive_window, update_client_send_window,
+    segment_requires_ack, server_fin_awaiting_ack, set_flow_status, transition_on_client_fin,
+    transition_on_server_fin_ack, update_client_send_window,
 };
 use super::super::validation::{PacketValidation, validate_existing_packet};
 use super::super::wire::ParsedTcpPacket;
@@ -117,10 +119,13 @@ impl TunTcpEngine {
         sync_flow_metrics_and_wake(&mut state);
 
         if state.status == TcpFlowStatus::SynReceived {
-            if (packet.flags & TCP_FLAG_ACK) != 0
-                && packet.acknowledgement_number == state.server_seq
-                && packet.sequence_number == state.client_next_seq
-            {
+            if completes_syn_received_handshake(
+                packet.flags,
+                packet.acknowledgement_number,
+                packet.sequence_number,
+                state.server_seq,
+                state.client_next_seq,
+            ) {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
                 sync_flow_metrics_and_wake(&mut state);
             } else {
@@ -151,9 +156,8 @@ impl TunTcpEngine {
             sync_flow_metrics_and_wake(&mut state);
         }
 
-        if (packet.flags & TCP_FLAG_ACK) != 0
-            && server_fin_awaiting_ack(state.status)
-            && packet.acknowledgement_number >= state.server_seq
+        if server_fin_awaiting_ack(state.status)
+            && ack_covers_server_fin(packet.flags, packet.acknowledgement_number, state.server_seq)
         {
             if transition_on_server_fin_ack(&mut state) {
                 let key = state.key.clone();
@@ -187,8 +191,11 @@ impl TunTcpEngine {
         }
 
         if server_fin_awaiting_ack(state.status)
-            && (packet.flags & TCP_FLAG_ACK) != 0
-            && seq_lt(packet.acknowledgement_number, state.server_seq)
+            && ack_is_stale_server_fin_retry(
+                packet.flags,
+                packet.acknowledgement_number,
+                state.server_seq,
+            )
         {
             let fin_ack = build_flow_packet(
                 &state,
@@ -205,9 +212,12 @@ impl TunTcpEngine {
         }
 
         if client_fin_seen(state.status)
-            && (!packet.payload.is_empty()
-                || (packet.flags & TCP_FLAG_FIN) != 0
-                || seq_lt(packet.sequence_number, state.client_next_seq))
+            && segment_requires_ack(
+                packet.sequence_number,
+                packet.flags,
+                packet.payload.len(),
+                state.client_next_seq,
+            )
         {
             let ack = build_flow_ack_packet(
                 &state,
@@ -222,48 +232,56 @@ impl TunTcpEngine {
             return Ok(());
         }
 
-        if seq_gt(packet.sequence_number, state.client_next_seq) {
-            match queue_future_segment_with_recv_window(&mut state, &self.inner.tcp, &packet) {
-                QueueFutureSegmentOutcome::WouldExceedLimits => {
-                    let key = state.key.clone();
-                    drop(state);
-                    self.abort_flow_with_rst(&key, "client_reassembly_limit").await;
-                    return Ok(());
-                },
-                QueueFutureSegmentOutcome::OutsideWindow | QueueFutureSegmentOutcome::Queued => {},
-            }
-            sync_flow_metrics_and_wake(&mut state);
-            let ack = build_flow_ack_packet(
-                &state,
-                state.server_seq,
-                state.client_next_seq,
-                TCP_FLAG_ACK,
-            )?;
-            let key = state.key.clone();
-            drop(state);
-            self.write_tun_packet_or_close_flow(&key, &ack).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
-            return Ok(());
-        }
-
-        let Some(packet) = trim_packet_to_receive_window(&state, &packet) else {
-            let ack = build_flow_ack_packet(
-                &state,
-                state.server_seq,
-                state.client_next_seq,
-                TCP_FLAG_ACK,
-            )?;
-            let key = state.key.clone();
-            drop(state);
-            self.write_tun_packet_or_close_flow(&key, &ack).await?;
-            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
-            return Ok(());
+        let trimmed = match classify_inbound_segment(&state, &packet) {
+            InboundSegmentDisposition::BeyondExpectedSequence => {
+                match queue_future_segment_with_recv_window(&mut state, &self.inner.tcp, &packet) {
+                    QueueFutureSegmentOutcome::WouldExceedLimits => {
+                        let key = state.key.clone();
+                        drop(state);
+                        self.abort_flow_with_rst(&key, "client_reassembly_limit").await;
+                        return Ok(());
+                    },
+                    QueueFutureSegmentOutcome::OutsideWindow
+                    | QueueFutureSegmentOutcome::Queued => {},
+                }
+                sync_flow_metrics_and_wake(&mut state);
+                let ack = build_flow_ack_packet(
+                    &state,
+                    state.server_seq,
+                    state.client_next_seq,
+                    TCP_FLAG_ACK,
+                )?;
+                let key = state.key.clone();
+                drop(state);
+                self.write_tun_packet_or_close_flow(&key, &ack).await?;
+                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+                return Ok(());
+            },
+            InboundSegmentDisposition::OutsideReceiveWindow => {
+                let ack = build_flow_ack_packet(
+                    &state,
+                    state.server_seq,
+                    state.client_next_seq,
+                    TCP_FLAG_ACK,
+                )?;
+                let key = state.key.clone();
+                drop(state);
+                self.write_tun_packet_or_close_flow(&key, &ack).await?;
+                metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_ack");
+                return Ok(());
+            },
+            InboundSegmentDisposition::Deliver(trimmed) => trimmed,
         };
 
-        let segment = normalize_trimmed_segment(&packet, state.client_next_seq);
-        let mut pending_payload = Vec::with_capacity(packet.payload.len());
+        let segment = normalize_trimmed_segment(&trimmed, state.client_next_seq);
+        let mut pending_payload = Vec::with_capacity(trimmed.payload.len());
         let mut should_close_client_half = false;
-        let mut should_send_ack = false;
+        let should_send_ack = segment_requires_ack(
+            trimmed.sequence_number,
+            trimmed.flags,
+            trimmed.payload.len(),
+            state.client_next_seq,
+        );
         let mut ack_number = state.client_next_seq;
         let seq_number = state.server_seq;
         let key = state.key.clone();
@@ -272,12 +290,6 @@ impl TunTcpEngine {
         let group_name = state.group_name.clone();
         let flow_manager = state.manager.clone();
         let upstream_writer = state.upstream_writer.clone();
-        if !packet.payload.is_empty()
-            || (packet.flags & TCP_FLAG_FIN) != 0
-            || seq_lt(packet.sequence_number, state.client_next_seq)
-        {
-            should_send_ack = true;
-        }
         if !segment.payload.is_empty() || segment.fin {
             apply_client_segment(
                 &mut state.client_next_seq,
@@ -291,7 +303,7 @@ impl TunTcpEngine {
             }
             ack_number = state.client_next_seq;
             sync_flow_metrics_and_wake(&mut state);
-        } else if (packet.flags & TCP_FLAG_ACK) != 0 && packet.payload.is_empty() {
+        } else if (trimmed.flags & TCP_FLAG_ACK) != 0 && trimmed.payload.is_empty() {
             let flush = flush_server_output(&mut state)?;
             sync_flow_metrics_and_wake(&mut state);
             drop(state);
