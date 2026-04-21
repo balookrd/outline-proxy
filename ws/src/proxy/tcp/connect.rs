@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
+use bytes::BytesMut;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
@@ -53,13 +54,22 @@ const CHUNK0_RST_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_
 /// given the full `upstream_response` window instead of the aggressive
 /// chunk-0 timeout, and no replay attempt is made on any subsequent uplink.
 struct ReplayBufState {
-    buf: Vec<Vec<u8>>,
+    /// All chunk bytes stored contiguously; avoids one heap allocation per chunk.
+    buf: BytesMut,
+    /// End offset of each logical chunk within `buf`.
+    splits: Vec<usize>,
+    total: usize,
     overflow: bool,
 }
 
 impl ReplayBufState {
     fn new() -> Self {
-        Self { buf: Vec::with_capacity(8), overflow: false }
+        Self {
+            buf: BytesMut::new(),
+            splits: Vec::with_capacity(8),
+            total: 0,
+            overflow: false,
+        }
     }
 
     /// Attempts to buffer `chunk`.
@@ -73,9 +83,10 @@ impl ReplayBufState {
         if self.overflow {
             return false;
         }
-        let total: usize = self.buf.iter().map(|c| c.len()).sum();
-        if total + chunk.len() <= MAX_CHUNK0_FAILOVER_BUF {
-            self.buf.push(chunk.to_vec());
+        if self.total + chunk.len() <= MAX_CHUNK0_FAILOVER_BUF {
+            self.buf.extend_from_slice(chunk);
+            self.total += chunk.len();
+            self.splits.push(self.total);
             false
         } else {
             self.overflow = true;
@@ -86,8 +97,11 @@ impl ReplayBufState {
     /// Sends every buffered chunk to `writer` in order.  Wraps errors with
     /// the supplied `context` string before propagating.
     async fn replay_to(&self, writer: &mut TcpWriter, context: &'static str) -> Result<()> {
-        for chunk in &self.buf {
-            writer.send_chunk(chunk).await.context(context)?;
+        let bytes = &self.buf[..];
+        let mut start = 0;
+        for &end in &self.splits {
+            writer.send_chunk(&bytes[start..end]).await.context(context)?;
+            start = end;
         }
         Ok(())
     }
