@@ -17,10 +17,10 @@ use outline_metrics as metrics;
 use outline_transport::is_dropped_oversized_udp_error;
 use crate::{SharedTunWriter, TunRoute, TunRouting};
 use socks5_proto::TargetAddr;
-use outline_uplink::TransportKind;
-
 use super::lifecycle::CloseWork;
-use super::types::{DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey};
+use super::types::{
+    DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey, bump_last_seen_if_current,
+};
 use super::wire::ParsedUdpPacket;
 
 #[derive(Clone)]
@@ -98,13 +98,7 @@ impl TunUdpEngine {
                 .send_to(&packet.payload, target_addr)
                 .await
                 .context("direct UDP send failed")?;
-            metrics::add_udp_datagram(
-                "client_to_upstream",
-                metrics::DIRECT_GROUP_LABEL,
-                metrics::DIRECT_UPLINK_LABEL,
-            );
-            metrics::add_bytes(
-                "udp",
+            super::record_udp_xfer(
                 "client_to_upstream",
                 metrics::DIRECT_GROUP_LABEL,
                 metrics::DIRECT_UPLINK_LABEL,
@@ -136,26 +130,16 @@ impl TunUdpEngine {
         // A group in active_passive / global scope may have repointed; the
         // flow must follow or be torn down. The removal takes the write-lock
         // only if the flow is actually stale — common case is no-op.
-        let existing_tuple = if let Some((_, _, flow_index, _, ref flow_manager)) =
-            existing_tuple
-        {
-            if flow_manager.strict_active_uplink_for(TransportKind::Udp) {
-                let active_uplink = flow_manager
-                    .active_uplink_index_for_transport(TransportKind::Udp)
-                    .await;
-                if active_uplink.is_some_and(|active| active != flow_index) {
-                    if let Some(stale) = self.inner.flows.write().await.remove(&key) {
-                        self.enqueue_close(stale, "global_switch");
-                    }
-                    None
-                } else {
-                    existing_tuple
+        let existing_tuple = match &existing_tuple {
+            Some((_, _, flow_index, _, flow_manager))
+                if super::should_migrate_flow(flow_manager, *flow_index).await =>
+            {
+                if let Some(stale) = self.inner.flows.write().await.remove(&key) {
+                    self.enqueue_close(stale, "global_switch");
                 }
-            } else {
-                existing_tuple
-            }
-        } else {
-            existing_tuple
+                None
+            },
+            _ => existing_tuple,
         };
 
         let (flow_id, transport, uplink_index, uplink_name, manager) = match existing_tuple {
@@ -206,13 +190,7 @@ impl TunUdpEngine {
                 }
                 return Err(error);
             }
-            metrics::add_udp_datagram(
-                "client_to_upstream",
-                manager.group_name(),
-                &replacement_name,
-            );
-            metrics::add_bytes(
-                "udp",
+            super::record_udp_xfer(
                 "client_to_upstream",
                 manager.group_name(),
                 &replacement_name,
@@ -225,9 +203,7 @@ impl TunUdpEngine {
             );
             let _ = replacement_index;
         } else {
-            metrics::add_udp_datagram("client_to_upstream", manager.group_name(), &uplink_name);
-            metrics::add_bytes(
-                "udp",
+            super::record_udp_xfer(
                 "client_to_upstream",
                 manager.group_name(),
                 &uplink_name,
@@ -296,13 +272,7 @@ impl TunUdpEngine {
                     Ok(p) => p,
                     Err(_) => continue,
                 };
-                metrics::add_udp_datagram(
-                    "upstream_to_client",
-                    metrics::DIRECT_GROUP_LABEL,
-                    metrics::DIRECT_UPLINK_LABEL,
-                );
-                metrics::add_bytes(
-                    "udp",
+                super::record_udp_xfer(
                     "upstream_to_client",
                     metrics::DIRECT_GROUP_LABEL,
                     metrics::DIRECT_UPLINK_LABEL,
@@ -318,13 +288,7 @@ impl TunUdpEngine {
                 );
                 // Update last_seen on the flow. Read-lock to clone the Arc,
                 // then per-flow Mutex — does not block other flows' I/O.
-                let handle = direct_flows.read().await.get(&reader_key).map(Arc::clone);
-                if let Some(handle) = handle {
-                    let mut flow = handle.lock().await;
-                    if flow.id == flow_id {
-                        flow.last_seen = Instant::now();
-                    }
-                }
+                bump_last_seen_if_current(&direct_flows, &reader_key, flow_id).await;
             }
         });
 
@@ -339,13 +303,7 @@ impl TunUdpEngine {
             })),
         );
 
-        metrics::add_udp_datagram(
-            "client_to_upstream",
-            metrics::DIRECT_GROUP_LABEL,
-            metrics::DIRECT_UPLINK_LABEL,
-        );
-        metrics::add_bytes(
-            "udp",
+        super::record_udp_xfer(
             "client_to_upstream",
             metrics::DIRECT_GROUP_LABEL,
             metrics::DIRECT_UPLINK_LABEL,
