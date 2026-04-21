@@ -511,7 +511,7 @@ impl TunTcpEngine {
                             continue;
                         }
                         let chunk_len = chunk.len();
-                        let (flush, ip_family, backlog_pressure, uplink_name) = {
+                        let (flush, backlog_pressure, uplink_name) = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
@@ -526,12 +526,7 @@ impl TunTcpEngine {
                                 flush.as_ref().map(|flush| flush.window_stalled).unwrap_or(false),
                             );
                             sync_flow_metrics_and_wake(&mut state);
-                            (
-                                flush,
-                                ip_family_from_version(key.version),
-                                backlog_pressure,
-                                state.uplink_name.clone(),
-                            )
+                            (flush, backlog_pressure, state.uplink_name.clone())
                         };
 
                         if backlog_pressure.should_abort {
@@ -576,69 +571,13 @@ impl TunTcpEngine {
                             Ok(flush) => {
                                 let (group_name, uplink_name) =
                                     super::key_group_and_uplink(&flow).await;
-                                if flush.window_stalled {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "window_stall",
-                                    );
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_window_stall",
-                                    );
-                                }
-                                for packet in flush.data_packets {
-                                    if let Err(error) =
-                                        engine.inner.writer.write_packet(&packet).await
-                                    {
-                                        warn!(error = %format!("{error:#}"), "failed to write TUN TCP data packet");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_data",
-                                    );
-                                }
-                                if let Some(packet) = flush.probe_packet {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "zero_window_probe",
-                                    );
-                                    if let Err(error) =
-                                        engine.inner.writer.write_packet(&packet).await
-                                    {
-                                        warn!(error = %format!("{error:#}"), "failed to write TUN TCP zero-window probe");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_window_probe",
-                                    );
-                                }
-                                if let Some(packet) = flush.fin_packet {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "deferred_fin_sent",
-                                    );
-                                    if let Err(error) =
-                                        engine.inner.writer.write_packet(&packet).await
-                                    {
-                                        warn!(error = %format!("{error:#}"), "failed to write deferred TUN TCP FIN packet");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_fin",
-                                    );
+                                if let Err(error) = engine
+                                    .write_server_flush(&key, flush, &group_name, &uplink_name)
+                                    .await
+                                {
+                                    warn!(error = %format!("{error:#}"), "failed to write TUN TCP flush");
+                                    engine.close_flow(&key, "write_tun_error").await;
+                                    return;
                                 }
                                 metrics::add_bytes(
                                     "tcp",
@@ -700,70 +639,13 @@ impl TunTcpEngine {
                             Ok(flush) => {
                                 let (group_name, uplink_name) =
                                     super::key_group_and_uplink(&flow).await;
-                                let ip_family = ip_family_from_version(key.version);
-                                if flush.window_stalled {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "window_stall",
-                                    );
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_window_stall",
-                                    );
-                                }
-                                for packet in flush.data_packets {
-                                    if let Err(write_error) =
-                                        engine.inner.writer.write_packet(&packet).await
-                                    {
-                                        warn!(error = %format!("{write_error:#}"), "failed to write pending TUN TCP data packet");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_data",
-                                    );
-                                }
-                                if let Some(packet) = flush.probe_packet {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "zero_window_probe",
-                                    );
-                                    if let Err(write_error) =
-                                        engine.inner.writer.write_packet(&packet).await
-                                    {
-                                        warn!(error = %format!("{write_error:#}"), "failed to write TUN TCP zero-window probe");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_window_probe",
-                                    );
-                                }
-                                if let Some(fin) = flush.fin_packet {
-                                    metrics::record_tun_tcp_event(
-                                        &group_name,
-                                        &uplink_name,
-                                        "deferred_fin_sent",
-                                    );
-                                    if let Err(write_error) =
-                                        engine.inner.writer.write_packet(&fin).await
-                                    {
-                                        warn!(error = %format!("{write_error:#}"), "failed to write TUN TCP FIN packet");
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_fin",
-                                    );
+                                if let Err(write_error) = engine
+                                    .write_server_flush(&key, flush, &group_name, &uplink_name)
+                                    .await
+                                {
+                                    warn!(error = %format!("{write_error:#}"), "failed to write deferred TUN TCP FIN/data");
+                                    engine.close_flow(&key, "write_tun_error").await;
+                                    return;
                                 }
                             },
                             Err(flush_error) => {
@@ -813,7 +695,6 @@ impl TunTcpEngine {
                 match read_result {
                     Ok(0) => {
                         // EOF — upstream closed.
-                        let ip_family = ip_family_from_version(key.version);
                         let flush = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
@@ -826,27 +707,17 @@ impl TunTcpEngine {
                         };
                         match flush {
                             Ok(flush) => {
-                                for packet in flush.data_packets {
-                                    if engine.inner.writer.write_packet(&packet).await.is_err() {
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_data",
-                                    );
-                                }
-                                if let Some(fin) = flush.fin_packet {
-                                    if engine.inner.writer.write_packet(&fin).await.is_err() {
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_fin",
-                                    );
+                                if engine
+                                    .write_server_flush(
+                                        &key,
+                                        flush,
+                                        metrics::DIRECT_GROUP_LABEL,
+                                        metrics::DIRECT_UPLINK_LABEL,
+                                    )
+                                    .await
+                                    .is_err()
+                                {
+                                    engine.close_flow(&key, "write_tun_error").await;
                                 }
                             },
                             Err(_) => {
@@ -857,7 +728,6 @@ impl TunTcpEngine {
                     },
                     Ok(n) => {
                         let chunk = Bytes::copy_from_slice(&buf[..n]);
-                        let ip_family = ip_family_from_version(key.version);
                         let flush = {
                             let mut state = flow.lock().await;
                             if matches!(state.status, TcpFlowStatus::Closed) {
@@ -871,16 +741,18 @@ impl TunTcpEngine {
                         };
                         match flush {
                             Ok(flush) => {
-                                for packet in flush.data_packets {
-                                    if engine.inner.writer.write_packet(&packet).await.is_err() {
-                                        engine.close_flow(&key, "write_tun_error").await;
-                                        return;
-                                    }
-                                    metrics::record_tun_packet(
-                                        "upstream_to_tun",
-                                        ip_family,
-                                        "tcp_data",
-                                    );
+                                if let Err(error) = engine
+                                    .write_server_flush(
+                                        &key,
+                                        flush,
+                                        metrics::DIRECT_GROUP_LABEL,
+                                        metrics::DIRECT_UPLINK_LABEL,
+                                    )
+                                    .await
+                                {
+                                    warn!(error = %format!("{error:#}"), "failed to write direct TUN TCP flush");
+                                    engine.close_flow(&key, "write_tun_error").await;
+                                    return;
                                 }
                                 metrics::add_bytes(
                                     "tcp",
