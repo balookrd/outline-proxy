@@ -1,7 +1,9 @@
-use super::super::{ParsedTcpPacket, TCP_FLAG_ACK, TCP_FLAG_FIN};
+use std::time::{Duration, Instant};
+
+use super::super::{ParsedTcpPacket, TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_TIME_WAIT_TIMEOUT};
 use super::recv::{TrimmedSegment, trim_packet_to_receive_window};
 use super::seq::{seq_gt, seq_lt};
-use super::types::TcpFlowState;
+use super::types::{TcpFlowState, TcpFlowStatus};
 
 // The engine's dispatch verdict for an in-window inbound segment. Keep
 // this pure — mutation (enqueue, deliver, flush) happens in the engine
@@ -70,6 +72,74 @@ pub(in crate::tcp) fn ack_is_stale_server_fin_retry(
     server_seq: u32,
 ) -> bool {
     (flags & TCP_FLAG_ACK) != 0 && seq_lt(acknowledgement_number, server_seq)
+}
+
+// Statuses in which at least one half of the connection is closed and the
+// flow is waiting for the peer to finish its side.
+pub(in crate::tcp) fn is_half_closed_status(status: TcpFlowStatus) -> bool {
+    matches!(
+        status,
+        TcpFlowStatus::CloseWait
+            | TcpFlowStatus::FinWait1
+            | TcpFlowStatus::FinWait2
+            | TcpFlowStatus::Closing
+            | TcpFlowStatus::LastAck,
+    )
+}
+
+pub(in crate::tcp) fn time_wait_expired(
+    status: TcpFlowStatus,
+    status_since: Instant,
+    now: Instant,
+) -> bool {
+    status == TcpFlowStatus::TimeWait
+        && now.saturating_duration_since(status_since) >= TCP_TIME_WAIT_TIMEOUT
+}
+
+pub(in crate::tcp) fn handshake_timed_out(
+    status: TcpFlowStatus,
+    status_since: Instant,
+    handshake_timeout: Duration,
+    now: Instant,
+) -> bool {
+    status == TcpFlowStatus::SynReceived
+        && now.saturating_duration_since(status_since) >= handshake_timeout
+}
+
+pub(in crate::tcp) fn half_close_timed_out(
+    status: TcpFlowStatus,
+    status_since: Instant,
+    half_close_timeout: Duration,
+    now: Instant,
+) -> bool {
+    is_half_closed_status(status)
+        && now.saturating_duration_since(status_since) >= half_close_timeout
+}
+
+// TimeWait flows are excluded: they drain on their own timer, not the
+// generic idle timer.
+pub(in crate::tcp) fn idle_timed_out(
+    status: TcpFlowStatus,
+    last_seen: Instant,
+    idle_timeout: Duration,
+    now: Instant,
+) -> bool {
+    status != TcpFlowStatus::TimeWait && now.saturating_duration_since(last_seen) >= idle_timeout
+}
+
+// We've burned through the probe budget and the last probe is older than
+// the interval — the peer is unreachable.
+pub(in crate::tcp) fn keepalive_probes_exhausted(
+    probes_sent: u32,
+    max_probes: u32,
+    last_probe_at: Option<Instant>,
+    keepalive_interval: Duration,
+    now: Instant,
+) -> bool {
+    probes_sent >= max_probes
+        && last_probe_at
+            .map(|last| now.saturating_duration_since(last) >= keepalive_interval)
+            .unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -141,5 +211,107 @@ mod tests {
     #[test]
     fn stale_server_fin_retry_rejects_current_ack() {
         assert!(!ack_is_stale_server_fin_retry(TCP_FLAG_ACK, 1000, 1000));
+    }
+
+    #[test]
+    fn half_closed_statuses_cover_close_wait_and_fin_waits() {
+        for status in [
+            TcpFlowStatus::CloseWait,
+            TcpFlowStatus::FinWait1,
+            TcpFlowStatus::FinWait2,
+            TcpFlowStatus::Closing,
+            TcpFlowStatus::LastAck,
+        ] {
+            assert!(is_half_closed_status(status), "{status:?} should be half-closed");
+        }
+        for status in [
+            TcpFlowStatus::SynReceived,
+            TcpFlowStatus::Established,
+            TcpFlowStatus::TimeWait,
+        ] {
+            assert!(!is_half_closed_status(status), "{status:?} should not be half-closed");
+        }
+    }
+
+    #[test]
+    fn time_wait_expired_requires_status_and_elapsed_timeout() {
+        let now = Instant::now();
+        assert!(time_wait_expired(
+            TcpFlowStatus::TimeWait,
+            now - TCP_TIME_WAIT_TIMEOUT,
+            now,
+        ));
+        assert!(!time_wait_expired(
+            TcpFlowStatus::TimeWait,
+            now - TCP_TIME_WAIT_TIMEOUT + Duration::from_millis(1),
+            now,
+        ));
+        assert!(!time_wait_expired(
+            TcpFlowStatus::Established,
+            now - TCP_TIME_WAIT_TIMEOUT,
+            now,
+        ));
+    }
+
+    #[test]
+    fn handshake_timed_out_only_fires_in_syn_received() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(5);
+        assert!(handshake_timed_out(TcpFlowStatus::SynReceived, now - timeout, timeout, now));
+        assert!(!handshake_timed_out(
+            TcpFlowStatus::Established,
+            now - timeout,
+            timeout,
+            now,
+        ));
+        assert!(!handshake_timed_out(
+            TcpFlowStatus::SynReceived,
+            now - timeout + Duration::from_millis(1),
+            timeout,
+            now,
+        ));
+    }
+
+    #[test]
+    fn half_close_timed_out_respects_half_closed_statuses_only() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(30);
+        assert!(half_close_timed_out(TcpFlowStatus::CloseWait, now - timeout, timeout, now));
+        assert!(!half_close_timed_out(
+            TcpFlowStatus::Established,
+            now - timeout,
+            timeout,
+            now,
+        ));
+    }
+
+    #[test]
+    fn idle_timed_out_skips_time_wait() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(60);
+        assert!(idle_timed_out(TcpFlowStatus::Established, now - timeout, timeout, now));
+        assert!(!idle_timed_out(TcpFlowStatus::TimeWait, now - timeout, timeout, now));
+        assert!(!idle_timed_out(
+            TcpFlowStatus::Established,
+            now - timeout + Duration::from_millis(1),
+            timeout,
+            now,
+        ));
+    }
+
+    #[test]
+    fn keepalive_exhausted_needs_budget_spent_and_interval_elapsed() {
+        let now = Instant::now();
+        let interval = Duration::from_secs(15);
+        assert!(keepalive_probes_exhausted(3, 3, Some(now - interval), interval, now));
+        assert!(!keepalive_probes_exhausted(2, 3, Some(now - interval), interval, now));
+        assert!(!keepalive_probes_exhausted(3, 3, None, interval, now));
+        assert!(!keepalive_probes_exhausted(
+            3,
+            3,
+            Some(now - interval + Duration::from_millis(1)),
+            interval,
+            now,
+        ));
     }
 }
