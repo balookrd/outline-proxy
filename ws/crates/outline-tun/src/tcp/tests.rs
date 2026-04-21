@@ -1691,7 +1691,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
             .await,
         route: crate::TunRoute::Group {
-            name: "test".to_string(),
+            name: "test".into(),
             manager: super::engine::tests::build_test_manager(
                 "ws://127.0.0.1:1/".parse().unwrap(),
             )

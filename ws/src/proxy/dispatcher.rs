@@ -26,7 +26,7 @@ pub(crate) enum DispatchTarget {
     Drop,
     /// Forward through this group's uplink manager.
     Group {
-        name: String,
+        name: Arc<str>,
         manager: UplinkManager,
     },
 }
@@ -88,7 +88,7 @@ async fn resolve_dispatch(
     }
 
     DispatchTarget::Group {
-        name: registry.default_group_name().to_string(),
+        name: registry.default_group_name().into(),
         manager: registry.default_group().clone(),
     }
 }

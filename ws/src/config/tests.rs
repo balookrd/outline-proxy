@@ -599,9 +599,9 @@ async fn load_config_new_shape_groups_and_routes() {
     assert_eq!(routing.rules.len(), 2);
     assert_eq!(routing.rules[0].target, RouteTarget::Direct);
     assert_eq!(routing.rules[0].fallback, None);
-    assert_eq!(routing.rules[1].target, RouteTarget::Group("main".to_string()));
-    assert_eq!(routing.rules[1].fallback, Some(RouteTarget::Group("backup".to_string())));
-    assert_eq!(routing.default_target, RouteTarget::Group("main".to_string()));
+    assert_eq!(routing.rules[1].target, RouteTarget::Group("main".into()));
+    assert_eq!(routing.rules[1].fallback, Some(RouteTarget::Group("backup".into())));
+    assert_eq!(routing.default_target, RouteTarget::Group("main".into()));
     assert_eq!(routing.default_fallback, Some(RouteTarget::Direct));
 
     let _ = std::fs::remove_file(path);

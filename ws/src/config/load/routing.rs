@@ -184,7 +184,7 @@ fn route_target_from_name(
         return Ok(RouteTarget::Drop);
     }
     if group_names.contains(&name) {
-        return Ok(RouteTarget::Group(name.to_string()));
+        return Ok(RouteTarget::Group(name.into()));
     }
     bail!(
         "{context}: via = \"{name}\" does not match any declared group; \

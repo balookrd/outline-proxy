@@ -1,4 +1,5 @@
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use lru::LruCache;
 use tracing::{debug, warn};
@@ -23,7 +24,7 @@ pub(super) const UDP_ROUTE_CACHE_CAP: usize = 1024;
 pub(super) enum UdpPacketRoute {
     Direct,
     Drop,
-    Tunnel(String),
+    Tunnel(Arc<str>),
 }
 
 /// Per-association cache of route decisions keyed by destination target.
@@ -45,9 +46,8 @@ pub(super) async fn resolve_udp_packet_route(
     registry: &UplinkRegistry,
     target: &TargetAddr,
 ) -> UdpPacketRoute {
-    let default_group = registry.default_group_name().to_string();
     let Some(router) = config.router.as_ref() else {
-        return UdpPacketRoute::Tunnel(default_group);
+        return UdpPacketRoute::Tunnel(registry.default_group_name().into());
     };
     let current_version = router.version();
     let decision = if let Some((cached, entry_version)) = cache.get(target)
@@ -99,7 +99,7 @@ pub(super) async fn classify_decision(
                 default = registry.default_group_name(),
                 "UDP route: unknown group and no fallback; dispatching to default"
             );
-            return UdpPacketRoute::Tunnel(registry.default_group_name().to_string());
+            return UdpPacketRoute::Tunnel(registry.default_group_name().into());
         }
         let manager = manager.unwrap();
         if manager.has_any_healthy(TransportKind::Udp).await {
@@ -204,7 +204,7 @@ mod tests {
         // Must fall back to the registry's default group name.
         match route {
             UdpPacketRoute::Tunnel(name) => {
-                assert_eq!(name, registry.default_group_name(), "must fall back to default group")
+                assert_eq!(&*name, registry.default_group_name(), "must fall back to default group")
             }
             other => panic!("expected Tunnel(default), got {other:?}"),
         }
