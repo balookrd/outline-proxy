@@ -31,7 +31,7 @@ pub(crate) enum Route {
     },
 }
 
-pub async fn handle_client(
+pub async fn serve_socks5_client(
     mut client: TcpStream,
     peer: SocketAddr,
     config: Arc<ProxyConfig>,

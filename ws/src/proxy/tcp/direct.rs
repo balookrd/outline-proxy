@@ -23,7 +23,7 @@ use crate::proxy::TcpTimeouts;
 // is always abandoned) while safe for periodic-push traffic (Telegram, FCM,
 // etc. send heartbeats every 30–60 s so their connections will never hit it).
 
-pub(super) async fn handle_tcp_direct(
+pub(super) async fn relay_tcp_direct(
     mut client: TcpStream,
     target: TargetAddr,
     fwmark: Option<u32>,
@@ -239,13 +239,13 @@ mod tests {
 
     use super::*;
 
-    /// `handle_tcp_direct` must close the session with `Ok(())` once both
+    /// `relay_tcp_direct` must close the session with `Ok(())` once both
     /// directions have been silent for `timeouts.direct_idle`.
     ///
     /// Requires the `test-util` tokio feature (added to dev-dependencies).
     /// Time is paused so the 120-second timeout fires without real waiting.
     #[tokio::test(start_paused = true)]
-    async fn handle_tcp_direct_closes_session_after_idle_timeout() {
+    async fn relay_tcp_direct_closes_session_after_idle_timeout() {
         // Upstream: accepts but sends nothing (simulates idle server).
         let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let upstream_port = upstream_listener.local_addr().unwrap().port();
@@ -268,7 +268,7 @@ mod tests {
         let dns_cache = std::sync::Arc::new(outline_transport::DnsCache::default());
         let timeouts = TcpTimeouts::DEFAULT;
         let direct_task = tokio::spawn(async move {
-            handle_tcp_direct(server_side, target, None, &dns_cache, timeouts).await
+            relay_tcp_direct(server_side, target, None, &dns_cache, timeouts).await
         });
 
         // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.
@@ -285,10 +285,10 @@ mod tests {
 
         assert!(
             direct_task.is_finished(),
-            "handle_tcp_direct should return after idle timeout"
+            "relay_tcp_direct should return after idle timeout"
         );
         let result = direct_task.await.unwrap();
-        assert!(result.is_ok(), "handle_tcp_direct must return Ok(()) on idle timeout");
+        assert!(result.is_ok(), "relay_tcp_direct must return Ok(()) on idle timeout");
 
         upstream_task.abort();
         let _ = upstream_task.await;
