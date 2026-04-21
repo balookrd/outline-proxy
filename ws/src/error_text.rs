@@ -1,37 +1,8 @@
-use std::io::{self, ErrorKind};
-
 use anyhow::Error;
 use socks5_proto::Socks5Error;
 
 use crate::client_io::ClientIo;
-use outline_transport::{WebSocketClosed, find_typed};
-
-/// Walk the anyhow error chain looking for a `std::io::Error`.
-/// Returns the `ErrorKind` of the first one found, if any.
-fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
-    error
-        .chain()
-        .find_map(|e| e.downcast_ref::<io::Error>())
-        .map(|e| e.kind())
-}
-
-/// Return true if any `std::io::Error` in the chain indicates a TCP-level
-/// disconnect: connection reset, broken pipe, unexpected EOF, or connection
-/// aborted.
-fn is_transport_level_disconnect(error: &Error) -> bool {
-    if let Some(kind) = find_io_error_kind(error) {
-        return matches!(
-            kind,
-            ErrorKind::ConnectionReset
-                | ErrorKind::BrokenPipe
-                | ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionAborted
-        );
-    }
-    // Fallback for errors whose io::Error was formatted into the message
-    // string (e.g. via `anyhow!("...: {e}")`).
-    contains_any(&lower_error(error), TRANSPORT_DISCONNECT_STRINGS)
-}
+use outline_transport::{WebSocketClosed, contains_any, find_typed, is_transport_level_disconnect, lower_error};
 
 /// Return true if the error originated from a client-side read operation.
 ///
@@ -57,35 +28,12 @@ fn is_client_write_failure(error: &Error) -> bool {
     find_typed::<ClientIo>(error).is_some_and(|c| c.is_write())
 }
 
-/// String-match fallback for transport disconnects.
-///
-/// Used only when the `io::Error` was formatted into the message string
-/// rather than preserved as a chain source.  The OS error code variants
-/// ("os error 104", "os error 54", "os error 32") are intentionally omitted
-/// here: they are handled type-safely by `is_transport_level_disconnect` via
-/// `io::ErrorKind`.
-const TRANSPORT_DISCONNECT_STRINGS: &[&str] = &[
-    "connection reset by peer",
-    "broken pipe",
-    // Tokio's UnexpectedEof message produced by read_exact when the remote
-    // side closes the connection before the full buffer is filled.
-    "early eof",
-];
-
 /// External-library WebSocket close strings that cannot be replaced with a
 /// typed marker (they originate from tungstenite / rustls).
 const EXTERNAL_WEBSOCKET_CLOSE_STRINGS: &[&str] = &[
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
 ];
-
-fn lower_error(error: &Error) -> String {
-    format!("{error:#}").to_ascii_lowercase()
-}
-
-fn contains_any(text: &str, patterns: &[&str]) -> bool {
-    patterns.iter().any(|pattern| text.contains(pattern))
-}
 
 pub(crate) fn is_expected_client_disconnect(error: &Error) -> bool {
     is_client_read_failure(error) && is_transport_level_disconnect(error)

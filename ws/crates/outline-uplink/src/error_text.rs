@@ -1,8 +1,11 @@
 use std::fmt;
-use std::io::{self, ErrorKind};
+use std::io::ErrorKind;
 
 use anyhow::Error;
-use outline_transport::{Ss2022Error, TransportOperation, WebSocketClosed, find_typed};
+use outline_transport::{
+    Ss2022Error, TransportOperation, WebSocketClosed, contains_any, find_io_error_kind, find_typed,
+    is_transport_level_disconnect, lower_error,
+};
 use shadowsocks_crypto::CryptoError;
 
 /// Typed marker placed in the error chain by the warm-standby maintenance
@@ -19,40 +22,6 @@ impl fmt::Display for StandbyProbeExpected {
 }
 
 impl std::error::Error for StandbyProbeExpected {}
-
-fn find_io_error_kind(error: &Error) -> Option<ErrorKind> {
-    error
-        .chain()
-        .find_map(|e| e.downcast_ref::<io::Error>())
-        .map(|e| e.kind())
-}
-
-fn is_transport_level_disconnect(error: &Error) -> bool {
-    if let Some(kind) = find_io_error_kind(error) {
-        return matches!(
-            kind,
-            ErrorKind::ConnectionReset
-                | ErrorKind::BrokenPipe
-                | ErrorKind::UnexpectedEof
-                | ErrorKind::ConnectionAborted
-        );
-    }
-    contains_any(&lower_error(error), TRANSPORT_DISCONNECT_STRINGS)
-}
-
-const TRANSPORT_DISCONNECT_STRINGS: &[&str] = &[
-    "connection reset by peer",
-    "broken pipe",
-    "early eof",
-];
-
-fn lower_error(error: &Error) -> String {
-    format!("{error:#}").to_ascii_lowercase()
-}
-
-fn contains_any(text: &str, patterns: &[&str]) -> bool {
-    patterns.iter().any(|pattern| text.contains(pattern))
-}
 
 /// Return true if a warm-standby probe failure is expected (the connection
 /// was stale or the server closed it).  Expected failures are logged at
