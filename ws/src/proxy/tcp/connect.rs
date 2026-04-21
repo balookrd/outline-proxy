@@ -345,13 +345,29 @@ pub async fn handle_tcp_connect(
 
                     if !can_failover {
                         if deferred_phase1_failures.is_empty() {
-                            uplinks
-                                .report_runtime_failure(
-                                    active.index,
-                                    TransportKind::Tcp,
-                                    &phase1_error,
-                                )
-                                .await;
+                            // Apply the same attribution logic as phase-2: a
+                            // WebSocket close (including Close 1013 "try again"
+                            // from the server) means the uplink itself is
+                            // healthy — the remote target was just unreachable.
+                            // Using report_runtime_failure here would put the
+                            // uplink into a cooldown and degrade unrelated
+                            // sessions (e.g. Claude Code, Codex) for blocked
+                            // social-media targets.  Use the lighter
+                            // report_upstream_close instead so the probe cycle
+                            // is not skipped but no cooldown is imposed.
+                            if crate::error_text::is_upstream_runtime_failure(&phase1_error) {
+                                uplinks
+                                    .report_runtime_failure(
+                                        active.index,
+                                        TransportKind::Tcp,
+                                        &phase1_error,
+                                    )
+                                    .await;
+                            } else if crate::error_text::is_websocket_closed(&phase1_error) {
+                                uplinks
+                                    .report_upstream_close(active.index, TransportKind::Tcp)
+                                    .await;
+                            }
                         } else {
                             warn!(
                                 last_uplink = %active.name,
