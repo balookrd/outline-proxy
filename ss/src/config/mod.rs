@@ -37,6 +37,227 @@ pub struct Config {
     pub fwmark: Option<u32>,
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
+    /// Resolved HTTP/2 and HTTP/3 resource limits. Derived from the
+    /// `tuning_profile` preset with any per-field overrides from `[tuning]`
+    /// applied on top. Validated at config load time.
+    pub tuning: TuningProfile,
+    /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
+    /// sessions. Protects against fan-out when many sessions each try to use
+    /// the per-session limit. `0` disables the global cap.
+    pub udp_max_concurrent_relay_tasks: usize,
+}
+
+/// Named bundle of HTTP/2 and HTTP/3 resource limits. Pick the smallest
+/// profile that still saturates your expected bandwidth×RTT — larger
+/// profiles scale memory per connection linearly.
+#[derive(Copy, Clone, Debug, Default, Eq, PartialEq, clap::ValueEnum, Deserialize)]
+pub enum TuningProfileKind {
+    #[value(name = "small")]
+    #[serde(rename = "small")]
+    Small,
+    #[value(name = "medium")]
+    #[serde(rename = "medium")]
+    Medium,
+    #[value(name = "large")]
+    #[serde(rename = "large")]
+    #[default]
+    Large,
+}
+
+impl TuningProfileKind {
+    pub fn preset(self) -> TuningProfile {
+        match self {
+            Self::Small => TuningProfile::SMALL,
+            Self::Medium => TuningProfile::MEDIUM,
+            Self::Large => TuningProfile::LARGE,
+        }
+    }
+}
+
+/// Resolved HTTP/2 and HTTP/3 resource limits used by the server transports.
+///
+/// Upper-bound memory per connection is roughly `h3_connection_window_bytes`
+/// (flow-control) + `h3_max_backpressure_bytes` (write-side) + datagram
+/// buffers, so `profile × max_expected_connections` should fit in the host's
+/// available RAM with headroom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TuningProfile {
+    pub h2_stream_window_bytes: u32,
+    pub h2_connection_window_bytes: u32,
+    pub h2_max_send_buf_size: usize,
+
+    pub h3_stream_window_bytes: u64,
+    pub h3_connection_window_bytes: u64,
+    pub h3_max_concurrent_bidi_streams: u32,
+    pub h3_max_concurrent_uni_streams: u32,
+    pub h3_write_buffer_bytes: usize,
+    pub h3_max_backpressure_bytes: usize,
+    pub h3_udp_socket_buffer_bytes: usize,
+}
+
+impl TuningProfile {
+    /// Conservative profile for shared / low-memory hosts. Trades peak
+    /// throughput on fat long-RTT links for predictable memory footprint when
+    /// many connections are multiplexed.
+    pub const SMALL: Self = Self {
+        h2_stream_window_bytes: 1024 * 1024,
+        h2_connection_window_bytes: 4 * 1024 * 1024,
+        h2_max_send_buf_size: 1024 * 1024,
+        h3_stream_window_bytes: 1024 * 1024,
+        h3_connection_window_bytes: 4 * 1024 * 1024,
+        h3_max_concurrent_bidi_streams: 256,
+        h3_max_concurrent_uni_streams: 128,
+        h3_write_buffer_bytes: 128 * 1024,
+        h3_max_backpressure_bytes: 1024 * 1024,
+        h3_udp_socket_buffer_bytes: 4 * 1024 * 1024,
+    };
+
+    /// Balanced profile for typical deployments.
+    pub const MEDIUM: Self = Self {
+        h2_stream_window_bytes: 4 * 1024 * 1024,
+        h2_connection_window_bytes: 16 * 1024 * 1024,
+        h2_max_send_buf_size: 4 * 1024 * 1024,
+        h3_stream_window_bytes: 4 * 1024 * 1024,
+        h3_connection_window_bytes: 16 * 1024 * 1024,
+        h3_max_concurrent_bidi_streams: 1_024,
+        h3_max_concurrent_uni_streams: 512,
+        h3_write_buffer_bytes: 256 * 1024,
+        h3_max_backpressure_bytes: 4 * 1024 * 1024,
+        h3_udp_socket_buffer_bytes: 8 * 1024 * 1024,
+    };
+
+    /// Maximum-throughput profile for single-tenant, high-bandwidth-delay-
+    /// product links. This is the historical default.
+    pub const LARGE: Self = Self {
+        h2_stream_window_bytes: 16 * 1024 * 1024,
+        h2_connection_window_bytes: 64 * 1024 * 1024,
+        h2_max_send_buf_size: 16 * 1024 * 1024,
+        h3_stream_window_bytes: 16 * 1024 * 1024,
+        h3_connection_window_bytes: 64 * 1024 * 1024,
+        h3_max_concurrent_bidi_streams: 4_096,
+        h3_max_concurrent_uni_streams: 1_024,
+        h3_write_buffer_bytes: 512 * 1024,
+        h3_max_backpressure_bytes: 16 * 1024 * 1024,
+        h3_udp_socket_buffer_bytes: 32 * 1024 * 1024,
+    };
+
+    pub(crate) fn validate(&self) -> Result<()> {
+        // Guard against zeroed values that would silently stall a transport.
+        if self.h2_stream_window_bytes == 0 {
+            bail!("tuning.h2_stream_window_bytes must be > 0");
+        }
+        if self.h2_connection_window_bytes == 0 {
+            bail!("tuning.h2_connection_window_bytes must be > 0");
+        }
+        if self.h2_max_send_buf_size == 0 {
+            bail!("tuning.h2_max_send_buf_size must be > 0");
+        }
+        if self.h3_stream_window_bytes == 0 {
+            bail!("tuning.h3_stream_window_bytes must be > 0");
+        }
+        if self.h3_connection_window_bytes == 0 {
+            bail!("tuning.h3_connection_window_bytes must be > 0");
+        }
+        if self.h3_max_concurrent_bidi_streams == 0 {
+            bail!("tuning.h3_max_concurrent_bidi_streams must be > 0");
+        }
+        if self.h3_write_buffer_bytes == 0 {
+            bail!("tuning.h3_write_buffer_bytes must be > 0");
+        }
+        if self.h3_max_backpressure_bytes == 0 {
+            bail!("tuning.h3_max_backpressure_bytes must be > 0");
+        }
+        if self.h3_udp_socket_buffer_bytes == 0 {
+            bail!("tuning.h3_udp_socket_buffer_bytes must be > 0");
+        }
+
+        // HTTP/2 and HTTP/3 both require stream ≤ connection flow-control
+        // windows, otherwise a single stream can deadlock on the connection
+        // window.
+        if self.h2_stream_window_bytes > self.h2_connection_window_bytes {
+            bail!(
+                "tuning.h2_stream_window_bytes ({}) must not exceed h2_connection_window_bytes ({})",
+                self.h2_stream_window_bytes,
+                self.h2_connection_window_bytes,
+            );
+        }
+        if self.h3_stream_window_bytes > self.h3_connection_window_bytes {
+            bail!(
+                "tuning.h3_stream_window_bytes ({}) must not exceed h3_connection_window_bytes ({})",
+                self.h3_stream_window_bytes,
+                self.h3_connection_window_bytes,
+            );
+        }
+
+        // `quinn` encodes QUIC flow-control windows as VarInt from u32, so
+        // anything wider would panic at runtime.
+        if self.h3_stream_window_bytes > u32::MAX as u64 {
+            bail!(
+                "tuning.h3_stream_window_bytes must fit in u32 (max {})",
+                u32::MAX
+            );
+        }
+        if self.h3_connection_window_bytes > u32::MAX as u64 {
+            bail!(
+                "tuning.h3_connection_window_bytes must fit in u32 (max {})",
+                u32::MAX
+            );
+        }
+
+        // UDP receive buffer must hold at least one max-size datagram,
+        // otherwise inbound QUIC packets are dropped by the kernel.
+        const MIN_UDP_BUFFER: usize = 64 * 1024;
+        if self.h3_udp_socket_buffer_bytes < MIN_UDP_BUFFER {
+            bail!(
+                "tuning.h3_udp_socket_buffer_bytes ({}) must be at least {} bytes",
+                self.h3_udp_socket_buffer_bytes,
+                MIN_UDP_BUFFER,
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn apply_overrides(&mut self, o: &TuningOverrides) {
+        if let Some(v) = o.h2_stream_window_bytes { self.h2_stream_window_bytes = v; }
+        if let Some(v) = o.h2_connection_window_bytes { self.h2_connection_window_bytes = v; }
+        if let Some(v) = o.h2_max_send_buf_size { self.h2_max_send_buf_size = v; }
+        if let Some(v) = o.h3_stream_window_bytes { self.h3_stream_window_bytes = v; }
+        if let Some(v) = o.h3_connection_window_bytes { self.h3_connection_window_bytes = v; }
+        if let Some(v) = o.h3_max_concurrent_bidi_streams {
+            self.h3_max_concurrent_bidi_streams = v;
+        }
+        if let Some(v) = o.h3_max_concurrent_uni_streams {
+            self.h3_max_concurrent_uni_streams = v;
+        }
+        if let Some(v) = o.h3_write_buffer_bytes { self.h3_write_buffer_bytes = v; }
+        if let Some(v) = o.h3_max_backpressure_bytes { self.h3_max_backpressure_bytes = v; }
+        if let Some(v) = o.h3_udp_socket_buffer_bytes { self.h3_udp_socket_buffer_bytes = v; }
+    }
+}
+
+impl Default for TuningProfile {
+    fn default() -> Self {
+        Self::LARGE
+    }
+}
+
+/// Per-field overrides for [`TuningProfile`], parsed from the `[tuning]`
+/// section of the config file. Any field left `None` is inherited from the
+/// selected `tuning_profile` preset.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TuningOverrides {
+    #[serde(default)] pub h2_stream_window_bytes: Option<u32>,
+    #[serde(default)] pub h2_connection_window_bytes: Option<u32>,
+    #[serde(default)] pub h2_max_send_buf_size: Option<usize>,
+    #[serde(default)] pub h3_stream_window_bytes: Option<u64>,
+    #[serde(default)] pub h3_connection_window_bytes: Option<u64>,
+    #[serde(default)] pub h3_max_concurrent_bidi_streams: Option<u32>,
+    #[serde(default)] pub h3_max_concurrent_uni_streams: Option<u32>,
+    #[serde(default)] pub h3_write_buffer_bytes: Option<usize>,
+    #[serde(default)] pub h3_max_backpressure_bytes: Option<usize>,
+    #[serde(default)] pub h3_udp_socket_buffer_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +287,15 @@ impl AppMode {
         } else {
             FileConfig::default()
         };
+
+        let mut tuning = args
+            .tuning_profile
+            .or(file.tuning_profile)
+            .unwrap_or_default()
+            .preset();
+        if let Some(overrides) = file.tuning.as_ref() {
+            tuning.apply_overrides(overrides);
+        }
 
         let config = Config {
             listen: args.listen.or(file.listen),
@@ -116,6 +346,11 @@ impl AppMode {
                 .method
                 .or(file.method)
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
+            tuning,
+            udp_max_concurrent_relay_tasks: args
+                .udp_max_concurrent_relay_tasks
+                .or(file.udp_max_concurrent_relay_tasks)
+                .unwrap_or(default_udp_max_concurrent_relay_tasks()),
         };
         config.validate()?;
 
@@ -236,6 +471,7 @@ impl Config {
         if self.http_root_realm.chars().any(char::is_control) {
             bail!("http_root_realm must not contain control characters");
         }
+        self.tuning.validate()?;
         Ok(())
     }
 
@@ -376,6 +612,16 @@ pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
 }
 
+/// Default global ceiling for concurrent UDP relay tasks.
+///
+/// Chosen to comfortably absorb bursts from several dozen WebSocket sessions
+/// without letting the in-flight task count blow up under pathological load.
+/// Override via `udp_max_concurrent_relay_tasks` (config file or CLI) when
+/// tuning for very large deployments.
+pub const fn default_udp_max_concurrent_relay_tasks() -> usize {
+    4_096
+}
+
 #[cfg(test)]
 mod tests {
     use super::{CipherKind, Config, default_http_root_realm};
@@ -402,6 +648,8 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+            tuning: super::TuningProfile::LARGE,
+            udp_max_concurrent_relay_tasks: super::default_udp_max_concurrent_relay_tasks(),
         }
     }
 
@@ -458,6 +706,49 @@ mod tests {
         .to_string();
 
         assert!(error.contains("http_root_auth requires all websocket paths to differ from '/'"));
+    }
+
+    #[test]
+    fn tuning_rejects_stream_window_above_connection_window() {
+        let mut tuning = super::TuningProfile::LARGE;
+        tuning.h3_stream_window_bytes = tuning.h3_connection_window_bytes + 1;
+        let error = Config { tuning, ..base_config() }.validate().unwrap_err().to_string();
+        assert!(error.contains("h3_stream_window_bytes"));
+        assert!(error.contains("must not exceed"));
+    }
+
+    #[test]
+    fn tuning_rejects_zero_values() {
+        let mut tuning = super::TuningProfile::LARGE;
+        tuning.h3_udp_socket_buffer_bytes = 0;
+        let error = Config { tuning, ..base_config() }.validate().unwrap_err().to_string();
+        assert!(error.contains("h3_udp_socket_buffer_bytes"));
+    }
+
+    #[test]
+    fn tuning_rejects_oversized_h3_windows() {
+        let mut tuning = super::TuningProfile::LARGE;
+        tuning.h3_connection_window_bytes = (u32::MAX as u64) + 1;
+        let error = Config { tuning, ..base_config() }.validate().unwrap_err().to_string();
+        assert!(error.contains("h3_connection_window_bytes"));
+    }
+
+    #[test]
+    fn tuning_overrides_apply_on_top_of_preset() {
+        use super::{TuningOverrides, TuningProfile, TuningProfileKind};
+        let mut tuning = TuningProfileKind::Medium.preset();
+        tuning.apply_overrides(&TuningOverrides {
+            h3_udp_socket_buffer_bytes: Some(2 * 1024 * 1024),
+            h3_max_concurrent_bidi_streams: Some(128),
+            ..TuningOverrides::default()
+        });
+        // Overridden fields take the new value; others stay at the preset.
+        assert_eq!(tuning.h3_udp_socket_buffer_bytes, 2 * 1024 * 1024);
+        assert_eq!(tuning.h3_max_concurrent_bidi_streams, 128);
+        assert_eq!(
+            tuning.h3_connection_window_bytes,
+            TuningProfile::MEDIUM.h3_connection_window_bytes,
+        );
     }
 
     #[test]

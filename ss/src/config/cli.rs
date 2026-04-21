@@ -5,7 +5,7 @@ use std::{
 
 use clap::{ArgAction, Parser};
 
-use super::{CipherKind, UserEntry};
+use super::{CipherKind, TuningProfileKind, UserEntry};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -124,6 +124,12 @@ pub(super) struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_METHOD", value_enum)]
     pub method: Option<CipherKind>,
+
+    #[arg(long, env = "OUTLINE_SS_TUNING_PROFILE", value_enum)]
+    pub tuning_profile: Option<TuningProfileKind>,
+
+    #[arg(long, env = "OUTLINE_SS_UDP_MAX_CONCURRENT_RELAY_TASKS")]
+    pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {

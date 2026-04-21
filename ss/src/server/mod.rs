@@ -18,6 +18,7 @@ use std::{
 use anyhow::{Context, Result};
 use tokio::{
     net::{TcpListener, UdpSocket},
+    sync::Semaphore,
     task::JoinSet,
     time::Duration,
 };
@@ -71,11 +72,17 @@ pub async fn run(config: Config) -> Result<()> {
         tcp: Arc::clone(&tcp_routes),
         udp: Arc::clone(&udp_routes),
     });
+    let udp_relay_semaphore = if config.udp_max_concurrent_relay_tasks == 0 {
+        None
+    } else {
+        Some(Arc::new(Semaphore::new(config.udp_max_concurrent_relay_tasks)))
+    };
     let services = Arc::new(Services {
         metrics: metrics.clone(),
         nat_table: Arc::clone(&nat_table),
         dns_cache: Arc::clone(&dns_cache),
         prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+        udp_relay_semaphore,
     });
     let auth = Arc::new(AuthPolicy {
         users: users.clone(),
