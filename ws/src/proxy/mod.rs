@@ -5,6 +5,6 @@ mod tcp;
 mod udp;
 
 pub use config::{ProxyConfig, TcpTimeouts};
-pub use dispatcher::handle_client;
+pub use dispatcher::serve_socks5_client;
 pub(crate) use dispatcher::Route;
 pub use router::Router;

@@ -17,7 +17,7 @@ use socks5_proto::{
 use outline_uplink::TransportKind;
 
 use super::super::Route;
-use super::direct::handle_tcp_direct;
+use super::direct::relay_tcp_direct;
 use super::failover::{ActiveTcpUplink, connect_tcp_uplink};
 use crate::proxy::TcpTimeouts;
 
@@ -35,11 +35,11 @@ pub async fn serve_tcp_connect(
     let uplinks = match dispatch {
         Route::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
-            return handle_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
+            return relay_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
         }
         Route::Drop => {
             info!(target = %target, "TCP route: policy drop");
-            return handle_tcp_drop(client, &target).await;
+            return reject_tcp_connection(client, &target).await;
         }
         Route::Group { name, manager } => {
             debug!(target = %target, group = %name, "TCP route: dispatching via group");
@@ -157,7 +157,7 @@ pub async fn serve_tcp_connect(
 
 /// Send a SOCKS5 reply with REP=0x02 (connection not allowed by ruleset) and
 /// close the client connection. Used when a matched route has `via = "drop"`.
-async fn handle_tcp_drop(mut client: TcpStream, target: &TargetAddr) -> Result<()> {
+async fn reject_tcp_connection(mut client: TcpStream, target: &TargetAddr) -> Result<()> {
     let bound_addr = socket_addr_to_target(client.local_addr()?);
     send_reply(&mut client, SOCKS_STATUS_NOT_ALLOWED, &bound_addr).await?;
     debug!(target = %target, "TCP route: drop reply sent");
@@ -169,10 +169,10 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
 
-    /// `handle_tcp_drop` must send a SOCKS5 REP=0x02 (not allowed) reply and
+    /// `reject_tcp_connection` must send a SOCKS5 REP=0x02 (not allowed) reply and
     /// return `Ok(())` without forwarding any data.
     #[tokio::test]
-    async fn handle_tcp_drop_sends_not_allowed_reply() {
+    async fn reject_tcp_connection_sends_not_allowed_reply() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
 
@@ -183,7 +183,7 @@ mod tests {
         let (server_side, _) = accept_res.unwrap();
 
         let target = TargetAddr::IpV4("1.2.3.4".parse().unwrap(), 80);
-        handle_tcp_drop(server_side, &target).await.unwrap();
+        reject_tcp_connection(server_side, &target).await.unwrap();
 
         // SOCKS5 reply: VER REP RSV ATYP(IPv4) ADDR(4) PORT(2) = 10 bytes
         let mut reply = [0u8; 10];

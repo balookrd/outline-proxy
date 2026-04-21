@@ -121,7 +121,7 @@ pub(super) async fn run_accept_loop(
             .expect("semaphore closed");
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {
+            if let Err(error) = proxy::serve_socks5_client(stream, peer, config, registry).await {
                 if crate::disconnect::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
                 } else if crate::disconnect::is_client_write_disconnect(&error) {

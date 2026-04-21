@@ -108,9 +108,9 @@ where
     }
 }
 
-/// Handles the "downlink finished first" branch: the server closed cleanly or
-/// failed mid-stream.  Aborts the uplink task and returns the downlink result.
-async fn handle_downlink_first(
+/// Downlink finished first: the server closed cleanly or failed mid-stream.
+/// Aborts the uplink task and returns the downlink result.
+async fn finish_on_downlink_close(
     joined: std::result::Result<Result<()>, tokio::task::JoinError>,
     uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     started: tokio::time::Instant,
@@ -143,8 +143,7 @@ async fn handle_downlink_first(
     downlink_result
 }
 
-/// Handles the "uplink finished first" branch.  Behaviour depends on the
-/// uplink task's outcome:
+/// Uplink finished first.  Behaviour depends on the uplink task's outcome:
 ///
 /// * `Finished` — client sent EOF over a socket transport; wait up to
 ///   `POST_CLIENT_EOF_DOWNSTREAM_TIMEOUT` for the downlink to flush, then
@@ -152,7 +151,7 @@ async fn handle_downlink_first(
 /// * `CloseSession` — client sent EOF over a WebSocket-backed transport;
 ///   abort the downlink immediately.
 /// * `Err` / `JoinError` — propagate the error after aborting the downlink.
-async fn handle_uplink_first(
+async fn finish_on_uplink_close(
     joined: std::result::Result<Result<UplinkOutcome>, tokio::task::JoinError>,
     downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
@@ -242,8 +241,8 @@ async fn drive_without_idle(
     post_client_eof_downstream: Duration,
 ) -> Result<()> {
     tokio::select! {
-        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target, post_client_eof_downstream).await,
+        joined = &mut downlink_task => finish_on_downlink_close(joined, uplink_task, started, &target).await,
+        joined = &mut uplink_task => finish_on_uplink_close(joined, downlink_task, started, &target, post_client_eof_downstream).await,
     }
 }
 
@@ -267,8 +266,8 @@ async fn drive_with_idle(
 
     tokio::select! {
         biased;
-        joined = &mut downlink_task => handle_downlink_first(joined, uplink_task, started, &target).await,
-        joined = &mut uplink_task => handle_uplink_first(joined, downlink_task, started, &target, post_client_eof_downstream).await,
+        joined = &mut downlink_task => finish_on_downlink_close(joined, uplink_task, started, &target).await,
+        joined = &mut uplink_task => finish_on_uplink_close(joined, downlink_task, started, &target, post_client_eof_downstream).await,
         fired = &mut watcher_fut => {
             if fired {
                 debug!(
