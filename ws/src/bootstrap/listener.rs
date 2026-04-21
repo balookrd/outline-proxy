@@ -122,9 +122,9 @@ pub(super) async fn run_accept_loop(
         tokio::spawn(async move {
             let _permit = permit;
             if let Err(error) = proxy::handle_client(stream, peer, config, registry).await {
-                if crate::error_text::is_expected_client_disconnect(&error) {
+                if crate::disconnect::is_expected_client_disconnect(&error) {
                     debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
-                } else if crate::error_text::is_client_write_disconnect(&error) {
+                } else if crate::disconnect::is_client_write_disconnect(&error) {
                     warn!(
                         %peer,
                         error = %format!("{error:#}"),

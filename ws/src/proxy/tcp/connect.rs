@@ -308,7 +308,7 @@ async fn phase1_failover(
                 // DirectSocket does not go through WebSocket.
                 if active.source == super::failover::TcpUplinkSource::FreshDial
                     && rst_retries_on_current_uplink < CHUNK0_RST_MAX_RETRIES
-                    && crate::error_text::is_websocket_closed(&phase1_error)
+                    && crate::disconnect::is_websocket_closed(&phase1_error)
                 {
                     let attempt_num = rst_retries_on_current_uplink + 1;
                     debug!(
@@ -367,7 +367,7 @@ async fn phase1_failover(
                         // social-media targets.  Use the lighter
                         // report_upstream_close instead so the probe cycle is
                         // not skipped but no cooldown is imposed.
-                        if crate::error_text::is_upstream_runtime_failure(&phase1_error) {
+                        if crate::disconnect::is_upstream_runtime_failure(&phase1_error) {
                             uplinks
                                 .report_runtime_failure(
                                     active.index,
@@ -375,7 +375,7 @@ async fn phase1_failover(
                                     &phase1_error,
                                 )
                                 .await;
-                        } else if crate::error_text::is_websocket_closed(&phase1_error) {
+                        } else if crate::disconnect::is_websocket_closed(&phase1_error) {
                             uplinks
                                 .report_upstream_close(active.index, TransportKind::Tcp)
                                 .await;
@@ -667,11 +667,11 @@ async fn phase2_relay(
     // immediately, rather than waiting for the next connection attempt to fail.
     // Client-side disconnects and intentional uplink switches are excluded.
     if let Err(ref err) = result {
-        if crate::error_text::is_upstream_runtime_failure(err) {
+        if crate::disconnect::is_upstream_runtime_failure(err) {
             uplinks
                 .report_runtime_failure(active_index, TransportKind::Tcp, err)
                 .await;
-        } else if crate::error_text::is_websocket_closed(err) {
+        } else if crate::disconnect::is_websocket_closed(err) {
             // The upstream server closed the WebSocket connection
             // mid-stream (server-initiated close, not a client
             // disconnect).  We do not set a full runtime-failure
