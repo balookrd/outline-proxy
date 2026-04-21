@@ -87,12 +87,12 @@ pub(crate) fn encrypt_udp_packet_2022_aes(
     nonce.copy_from_slice(&separate_header[4..16]);
 
     let key = derive_subkey(cipher, master_key, &separate_header[..8])?;
-    let mut encrypted_body = encrypt(cipher, &key[..cipher.key_len()], &nonce, plaintext)?;
+    let encrypted_body = encrypt(cipher, &key[..cipher.key_len()], &nonce, plaintext)?;
     let encrypted_header = encrypt_udp_separate_header(cipher, master_key, &separate_header)?;
 
     let mut packet = Vec::with_capacity(16 + encrypted_body.len());
     packet.extend_from_slice(&encrypted_header);
-    packet.append(&mut encrypted_body);
+    packet.extend_from_slice(&encrypted_body);
     Ok(packet)
 }
 
