@@ -1,5 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::hash::{BuildHasher, Hash};
+use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
@@ -9,6 +8,8 @@ use crate::config::{LoadBalancingConfig, LoadBalancingMode, RoutingScope};
 use socks5_proto::TargetAddr;
 
 use super::types::{PenaltyState, RoutingKey, TransportKind};
+
+pub(crate) use outline_transport::collections::{maybe_shrink_hash_map, maybe_shrink_vecdeque};
 
 /// Maximum number of distinct normalized `detail` label values that the
 /// `uplink_runtime_failure_other_details_total` metric may track globally.
@@ -25,28 +26,6 @@ use super::types::{PenaltyState, RoutingKey, TransportKind};
 const MAX_DETAIL_CARDINALITY: usize = 64;
 
 static DETAIL_SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-const SHRINK_MIN_CAPACITY: usize = 256;
-
-pub(crate) fn maybe_shrink_hash_map<K, V, S>(map: &mut HashMap<K, V, S>)
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    if should_shrink(map.len(), map.capacity()) {
-        map.shrink_to_fit();
-    }
-}
-
-pub(crate) fn maybe_shrink_vecdeque<T>(deque: &mut VecDeque<T>) {
-    if should_shrink(deque.len(), deque.capacity()) {
-        deque.shrink_to_fit();
-    }
-}
-
-fn should_shrink(len: usize, capacity: usize) -> bool {
-    capacity >= SHRINK_MIN_CAPACITY && len.saturating_mul(4) <= capacity
-}
 
 pub(crate) fn update_rtt_ewma(
     current: &mut Option<Duration>,
