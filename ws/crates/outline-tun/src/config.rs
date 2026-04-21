@@ -31,4 +31,12 @@ pub struct TunTcpConfig {
     pub max_buffered_client_segments: usize,
     pub max_buffered_client_bytes: usize,
     pub max_retransmits: u32,
+    /// Idle duration after which the stack emits a TCP keepalive probe
+    /// (ACK with seq = SND.NXT−1, no payload). `None` disables keepalives.
+    pub keepalive_idle: Option<Duration>,
+    /// Spacing between subsequent keepalive probes once armed.
+    pub keepalive_interval: Duration,
+    /// Max unanswered keepalive probes before the flow is aborted with
+    /// `keepalive_timeout`. Only consulted when `keepalive_idle` is `Some`.
+    pub keepalive_max_probes: u32,
 }

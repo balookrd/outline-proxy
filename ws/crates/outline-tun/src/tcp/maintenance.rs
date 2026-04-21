@@ -6,7 +6,8 @@ use crate::config::TunTcpConfig;
 
 use super::TCP_TIME_WAIT_TIMEOUT;
 use super::state_machine::{
-    TcpFlowState, TcpFlowStatus, maybe_emit_zero_window_probe, next_retransmission_deadline,
+    TcpFlowState, TcpFlowStatus, keepalive_probe_eligible, maybe_emit_keepalive_probe,
+    maybe_emit_zero_window_probe, next_keepalive_deadline, next_retransmission_deadline,
     note_congestion_event, retransmit_budget_exhausted, retransmit_due_segment, sync_flow_metrics,
 };
 
@@ -45,6 +46,11 @@ fn next_flow_deadline(
     let mut deadline = next_retransmission_deadline(state)
         .into_iter()
         .chain(next_zero_window_probe_deadline(state))
+        .chain(next_keepalive_deadline(
+            state,
+            tcp.keepalive_idle,
+            tcp.keepalive_interval,
+        ))
         .min();
 
     if state.status == TcpFlowStatus::SynReceived {
@@ -142,6 +148,28 @@ pub(super) fn plan_flow_maintenance(
             packet,
             packet_metric: "tcp_window_probe",
             event: "zero_window_probe",
+        });
+    }
+
+    if tcp.keepalive_idle.is_some()
+        && keepalive_probe_eligible(state)
+        && state.keepalive_probes_sent >= tcp.keepalive_max_probes
+        && state
+            .last_keepalive_probe_at
+            .map(|last| now.saturating_duration_since(last) >= tcp.keepalive_interval)
+            .unwrap_or(false)
+    {
+        return Ok(FlowMaintenancePlan::Abort("keepalive_timeout"));
+    }
+
+    if let Some(packet) =
+        maybe_emit_keepalive_probe(state, tcp.keepalive_idle, tcp.keepalive_interval)?
+    {
+        sync_flow_metrics_and_wake(state);
+        return Ok(FlowMaintenancePlan::SendPacket {
+            packet,
+            packet_metric: "tcp_keepalive_probe",
+            event: "keepalive_probe",
         });
     }
 

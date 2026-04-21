@@ -108,6 +108,8 @@ impl TunTcpEngine {
 
         note_recent_client_timestamp(&mut state, packet.timestamp_value);
         state.last_seen = Instant::now();
+        state.keepalive_probes_sent = 0;
+        state.last_keepalive_probe_at = None;
         update_client_send_window(&mut state, &packet);
         if state.client_window > 0 {
             reset_zero_window_persist(&mut state);

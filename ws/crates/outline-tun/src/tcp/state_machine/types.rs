@@ -107,6 +107,8 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) server_fin_pending: bool,
     pub(in crate::tcp) zero_window_probe_backoff: Duration,
     pub(in crate::tcp) next_zero_window_probe_at: Option<Instant>,
+    pub(in crate::tcp) keepalive_probes_sent: u32,
+    pub(in crate::tcp) last_keepalive_probe_at: Option<Instant>,
     /// Last-emitted values for Prometheus gauges. Private to the metric
     /// sync code (`sync_flow_metrics` / `clear_flow_metrics`); used to
     /// compute +/- deltas so the gauge accumulates correctly.

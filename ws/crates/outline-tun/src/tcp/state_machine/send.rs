@@ -9,6 +9,7 @@ use outline_metrics as metrics;
 use super::super::{
     TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_FLAG_PSH, TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL,
 };
+use super::packets::build_flow_ack_packet;
 use super::congestion::{
     bytes_in_pipe, congestion_window_remaining, count_segments_in_pipe,
     current_retransmission_timeout, preferred_retransmit_index, server_max_segment_payload,
@@ -211,6 +212,55 @@ pub(in crate::tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> 
     state.next_zero_window_probe_at = Some(now + current);
     state.zero_window_probe_backoff =
         (current.saturating_mul(2)).min(TCP_ZERO_WINDOW_PROBE_MAX_INTERVAL);
+    Ok(Some(packet))
+}
+
+/// True when the flow is quiet enough that a keepalive probe is safe
+/// and useful: fully established, no data to send or in-flight.
+pub(in crate::tcp) fn keepalive_probe_eligible(state: &TcpFlowState) -> bool {
+    state.status == TcpFlowStatus::Established
+        && state.pending_server_data.is_empty()
+        && state.unacked_server_segments.is_empty()
+}
+
+/// Scheduled time for the next keepalive probe, or `None` when
+/// keepalives are disabled or the flow is not eligible.
+pub(in crate::tcp) fn next_keepalive_deadline(
+    state: &TcpFlowState,
+    keepalive_idle: Option<Duration>,
+    keepalive_interval: Duration,
+) -> Option<Instant> {
+    let idle = keepalive_idle?;
+    if !keepalive_probe_eligible(state) {
+        return None;
+    }
+    Some(match state.last_keepalive_probe_at {
+        Some(last) => last + keepalive_interval,
+        None => state.last_seen + idle,
+    })
+}
+
+/// Emit a keepalive probe (ACK carrying seq = SND.NXT−1) when the flow
+/// has been idle for `keepalive_idle` or since the previous probe by
+/// `keepalive_interval`. The probe byte is one below the already-acked
+/// send sequence, so the peer replies with a pure ACK; this traverses
+/// any stateful middlebox in both directions and refreshes NAT bindings.
+pub(in crate::tcp) fn maybe_emit_keepalive_probe(
+    state: &mut TcpFlowState,
+    keepalive_idle: Option<Duration>,
+    keepalive_interval: Duration,
+) -> Result<Option<Vec<u8>>> {
+    let Some(deadline) = next_keepalive_deadline(state, keepalive_idle, keepalive_interval) else {
+        return Ok(None);
+    };
+    let now = Instant::now();
+    if deadline > now {
+        return Ok(None);
+    }
+    let probe_seq = state.server_seq.wrapping_sub(1);
+    let packet = build_flow_ack_packet(state, probe_seq, state.client_next_seq, TCP_FLAG_ACK)?;
+    state.keepalive_probes_sent = state.keepalive_probes_sent.saturating_add(1);
+    state.last_keepalive_probe_at = Some(now);
     Ok(Some(packet))
 }
 
