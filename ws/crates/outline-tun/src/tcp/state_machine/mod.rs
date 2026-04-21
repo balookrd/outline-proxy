@@ -1,5 +1,6 @@
 mod congestion;
 mod packets;
+mod policy;
 mod recv;
 mod send;
 mod seq;
@@ -14,6 +15,11 @@ pub(super) use congestion::{
 pub(super) use packets::{
     build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, decode_client_window,
     packet_overlaps_receive_window, update_client_send_window,
+};
+#[allow(unused_imports)]
+pub(super) use policy::{
+    InboundSegmentDisposition, ack_covers_server_fin, ack_is_stale_server_fin_retry,
+    classify_inbound_segment, completes_syn_received_handshake, segment_requires_ack,
 };
 #[allow(unused_imports)]
 pub(super) use recv::{
