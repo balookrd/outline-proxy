@@ -1321,12 +1321,107 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 34
+      },
+      "id": 42,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (short_instance, transport, protocol, reason) (label_replace(rate(outline_ss_udp_relay_drops_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{transport}}/{{protocol}} {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "UDP Relay Drops by Reason",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 34
+        "y": 41
       },
       "id": 30,
       "panels": [],
@@ -1400,7 +1495,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 35
+        "y": 42
       },
       "id": 13,
       "options": {
@@ -1496,7 +1591,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 35
+        "y": 42
       },
       "id": 19,
       "options": {
@@ -1608,7 +1703,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 42
+        "y": 49
       },
       "id": 33,
       "options": {
@@ -1711,7 +1806,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 42
+        "y": 49
       },
       "id": 34,
       "options": {
@@ -1807,7 +1902,7 @@
         "h": 6,
         "w": 24,
         "x": 0,
-        "y": 49
+        "y": 56
       },
       "id": 14,
       "options": {
@@ -1873,7 +1968,7 @@
         "h": 4,
         "w": 24,
         "x": 0,
-        "y": 55
+        "y": 62
       },
       "id": 18,
       "options": {
@@ -1929,7 +2024,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 66
       },
       "id": 31,
       "panels": [],
@@ -1972,7 +2067,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 60
+        "y": 67
       },
       "id": 24,
       "options": {
@@ -2041,7 +2136,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 60
+        "y": 67
       },
       "id": 25,
       "options": {
@@ -2110,7 +2205,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 60
+        "y": 67
       },
       "id": 26,
       "options": {
@@ -2179,7 +2274,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 60
+        "y": 67
       },
       "id": 27,
       "options": {
@@ -2291,7 +2386,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 64
+        "y": 71
       },
       "id": 20,
       "options": {
@@ -2390,7 +2485,7 @@
         "h": 7,
         "w": 12,
         "x": 0,
-        "y": 71
+        "y": 78
       },
       "id": 37,
       "options": {
@@ -2528,7 +2623,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 64
+        "y": 71
       },
       "id": 38,
       "options": {
@@ -2655,7 +2750,7 @@
         "h": 7,
         "w": 12,
         "x": 12,
-        "y": 71
+        "y": 78
       },
       "id": 39,
       "options": {
@@ -2746,7 +2841,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 78
+        "y": 85
       },
       "id": 40,
       "options": {
@@ -2837,7 +2932,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 78
+        "y": 85
       },
       "id": 41,
       "options": {
