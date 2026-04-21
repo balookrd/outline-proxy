@@ -7,10 +7,11 @@ use crate::config::TunTcpConfig;
 use super::TCP_TIME_WAIT_TIMEOUT;
 use super::state_machine::{
     TcpFlowState, TcpFlowStatus, half_close_timed_out, handshake_timed_out, idle_timed_out,
-    is_half_closed_status, keepalive_probe_eligible, keepalive_probes_exhausted,
-    maybe_emit_keepalive_probe, maybe_emit_zero_window_probe, next_keepalive_deadline,
-    next_retransmission_deadline, note_congestion_event, retransmit_budget_exhausted,
-    retransmit_due_segment, sync_flow_metrics, time_wait_expired,
+    is_half_closed_status, keepalive_probe_eligible, keepalive_probe_is_due,
+    keepalive_probes_exhausted, maybe_emit_keepalive_probe, maybe_emit_zero_window_probe,
+    next_keepalive_deadline, next_retransmission_deadline, note_congestion_event,
+    retransmit_budget_exhausted, retransmit_due_segment, retransmit_is_due, sync_flow_metrics,
+    time_wait_expired, zero_window_probe_is_due,
 };
 
 pub(super) enum FlowMaintenancePlan {
@@ -110,7 +111,9 @@ pub(super) fn plan_flow_maintenance(
         return Ok(FlowMaintenancePlan::Abort("idle_timeout"));
     }
 
-    if let Some(packet) = retransmit_due_segment(state)? {
+    if retransmit_is_due(state, now)
+        && let Some(packet) = retransmit_due_segment(state)?
+    {
         note_congestion_event(state, true);
         if retransmit_budget_exhausted(state, tcp) {
             return Ok(FlowMaintenancePlan::Abort("retransmit_budget_exhausted"));
@@ -123,7 +126,9 @@ pub(super) fn plan_flow_maintenance(
         });
     }
 
-    if let Some(packet) = maybe_emit_zero_window_probe(state)? {
+    if zero_window_probe_is_due(state, now)
+        && let Some(packet) = maybe_emit_zero_window_probe(state)?
+    {
         sync_flow_metrics_and_wake(state);
         return Ok(FlowMaintenancePlan::SendPacket {
             packet,
@@ -145,8 +150,9 @@ pub(super) fn plan_flow_maintenance(
         return Ok(FlowMaintenancePlan::Abort("keepalive_timeout"));
     }
 
-    if let Some(packet) =
-        maybe_emit_keepalive_probe(state, tcp.keepalive_idle, tcp.keepalive_interval)?
+    if keepalive_probe_is_due(state, tcp.keepalive_idle, tcp.keepalive_interval, now)
+        && let Some(packet) =
+            maybe_emit_keepalive_probe(state, tcp.keepalive_idle, tcp.keepalive_interval)?
     {
         sync_flow_metrics_and_wake(state);
         return Ok(FlowMaintenancePlan::SendPacket {

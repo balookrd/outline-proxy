@@ -23,8 +23,9 @@ pub(super) use packets::{
 pub(super) use policy::{
     InboundSegmentDisposition, ack_covers_server_fin, ack_is_stale_server_fin_retry,
     classify_inbound_segment, completes_syn_received_handshake, half_close_timed_out,
-    handshake_timed_out, idle_timed_out, is_half_closed_status, keepalive_probes_exhausted,
-    segment_requires_ack, time_wait_expired,
+    handshake_timed_out, idle_timed_out, is_half_closed_status, keepalive_probe_is_due,
+    keepalive_probes_exhausted, retransmit_is_due, segment_requires_ack, time_wait_expired,
+    zero_window_probe_is_due,
 };
 #[allow(unused_imports)]
 pub(super) use recv::{

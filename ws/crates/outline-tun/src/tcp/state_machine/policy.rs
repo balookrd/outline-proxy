@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
 use super::super::{ParsedTcpPacket, TCP_FLAG_ACK, TCP_FLAG_FIN, TCP_TIME_WAIT_TIMEOUT};
+use super::congestion::next_retransmission_deadline;
 use super::recv::{TrimmedSegment, trim_packet_to_receive_window};
+use super::send::next_keepalive_deadline;
 use super::seq::{seq_gt, seq_lt};
 use super::types::{TcpFlowState, TcpFlowStatus};
 
@@ -125,6 +127,50 @@ pub(in crate::tcp) fn idle_timed_out(
     now: Instant,
 ) -> bool {
     status != TcpFlowStatus::TimeWait && now.saturating_duration_since(last_seen) >= idle_timeout
+}
+
+// A non-sacked unacked segment has passed its retransmission deadline —
+// the engine should build and send a retransmission.
+pub(in crate::tcp) fn retransmit_is_due(state: &TcpFlowState, now: Instant) -> bool {
+    next_retransmission_deadline(state).is_some_and(|deadline| deadline <= now)
+}
+
+// Client advertised a zero send window while we have data to push and
+// nothing in flight — and the backoff timer (or its initial absence) says
+// it's time to poke with a one-byte probe.
+pub(in crate::tcp) fn zero_window_probe_is_due(state: &TcpFlowState, now: Instant) -> bool {
+    zero_window_probe_is_due_from_primitives(
+        state.client_window,
+        !state.pending_server_data.is_empty(),
+        state.unacked_server_segments.is_empty(),
+        state.next_zero_window_probe_at,
+        now,
+    )
+}
+
+fn zero_window_probe_is_due_from_primitives(
+    client_window: u32,
+    has_pending_data: bool,
+    unacked_empty: bool,
+    next_probe_at: Option<Instant>,
+    now: Instant,
+) -> bool {
+    if client_window != 0 || !has_pending_data || !unacked_empty {
+        return false;
+    }
+    next_probe_at.is_none_or(|deadline| deadline <= now)
+}
+
+// Keepalive is enabled, the flow is eligible, and the next probe deadline
+// has passed — the engine should emit a probe.
+pub(in crate::tcp) fn keepalive_probe_is_due(
+    state: &TcpFlowState,
+    keepalive_idle: Option<Duration>,
+    keepalive_interval: Duration,
+    now: Instant,
+) -> bool {
+    next_keepalive_deadline(state, keepalive_idle, keepalive_interval)
+        .is_some_and(|deadline| deadline <= now)
 }
 
 // We've burned through the probe budget and the last probe is older than
@@ -295,6 +341,34 @@ mod tests {
             TcpFlowStatus::Established,
             now - timeout + Duration::from_millis(1),
             timeout,
+            now,
+        ));
+    }
+
+    #[test]
+    fn zero_window_probe_requires_zero_window_with_pending_and_no_inflight() {
+        let now = Instant::now();
+        assert!(zero_window_probe_is_due_from_primitives(0, true, true, None, now));
+        assert!(!zero_window_probe_is_due_from_primitives(1, true, true, None, now));
+        assert!(!zero_window_probe_is_due_from_primitives(0, false, true, None, now));
+        assert!(!zero_window_probe_is_due_from_primitives(0, true, false, None, now));
+    }
+
+    #[test]
+    fn zero_window_probe_honours_backoff_deadline() {
+        let now = Instant::now();
+        assert!(zero_window_probe_is_due_from_primitives(
+            0,
+            true,
+            true,
+            Some(now - Duration::from_millis(1)),
+            now,
+        ));
+        assert!(!zero_window_probe_is_due_from_primitives(
+            0,
+            true,
+            true,
+            Some(now + Duration::from_millis(1)),
             now,
         ));
     }
