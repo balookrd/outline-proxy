@@ -289,13 +289,14 @@ async fn nat_reader_task(
             },
         };
 
-        last_active.store(current_unix_secs(), Ordering::Relaxed);
-
         // Snapshot the active session so encryption picks up the latest
         // client_session_id after a reconnect.
         let (sender, session) = match active.lock().await.as_ref() {
             Some(a) => (a.sender.clone(), a.session.clone()),
             None => {
+                // Intentionally do NOT touch last_active here: otherwise a
+                // chatty upstream keeps the entry (and its socket + reader
+                // task) alive forever after the client has gone away.
                 metrics.record_udp_nat_response_dropped();
                 debug!(%target, "NAT response dropped: no active client session");
                 continue;
@@ -332,7 +333,12 @@ async fn nat_reader_task(
         let user_id = user.id_arc();
         metrics.record_udp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", n);
         metrics.record_udp_response_datagrams(user_id, protocol, 1);
-        if !sender.send_bytes(Bytes::from(ciphertext)).await {
+        if sender.send_bytes(Bytes::from(ciphertext)).await {
+            // Only a delivered response resets the idle timer. Otherwise a
+            // chatty upstream pointed at a dead client would hold the NAT
+            // entry (and its socket + reader task) alive indefinitely.
+            last_active.store(current_unix_secs(), Ordering::Relaxed);
+        } else {
             debug!(%target, "NAT response dropped: client session disconnected");
         }
     }
