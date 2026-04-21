@@ -12,6 +12,9 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Added
 
+- Added configurable H2/H3 resource tuning profiles (`small`, `medium`, `large`) with optional per-field `[tuning]` overrides.
+- Added process-wide `udp_max_concurrent_relay_tasks` semaphore for capping concurrent UDP relay tasks.
+- Added Grafana panel for UDP relay drops broken down by transport, protocol, and drop reason.
 - Added YAML configuration file support.
 - Added cooperative graceful shutdown on `SIGTERM` and `SIGINT`.
 - Added install-script version checks and nightly commit SHA resolution.
@@ -20,6 +23,9 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Changed
 
+- Moved tuning parameters (`client_active_ttl_secs`, `udp_nat_idle_timeout_secs`, `udp_max_concurrent_relay_tasks`) from top-level config fields into `TuningProfile` inside `[tuning]`. **Breaking change**: configs with old top-level keys fail on `deny_unknown_fields`.
+- Split the metrics module into focused submodules (`labels`, `registry`, `guards`, `sampler`, `render`).
+- Consolidated transport session lifecycle and error classification into shared helpers, eliminating duplicated match blocks across TCP/UDP and WS/H3 paths.
 - Split large server, transport, crypto, and config modules into smaller submodules for maintainability.
 - Migrated the metrics stack to `metrics` and `metrics-exporter-prometheus`.
 - Decoupled UDP NAT internals from transport-specific response handling.
@@ -28,6 +34,7 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Fixed
 
+- Fixed H3 internal stack errors being silently classified as client disconnects; they now surface as `DisconnectReason::Error`.
 - Fixed QUIC connection cycling by adding server-side keep-alive pings.
 - Fixed HTTP/3 double-write paths that could trigger `H3_INTERNAL_ERROR` during write and shutdown.
 - Fixed NAT entry reuse when a client session reconnects.
