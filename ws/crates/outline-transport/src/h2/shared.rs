@@ -321,6 +321,16 @@ impl SharedConnectionHealth for SharedH2Connection {
     }
 }
 
+impl crate::shared_cache::CachedEntry for SharedH2Connection {
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+}
+
 // ── Shared-connection cache ───────────────────────────────────────────────────
 
 // Global shared-connection cache. `RwLock<HashMap<K, Arc<V>>>` mirrors the
@@ -335,22 +345,15 @@ static H2_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 // Per-server-key mutex that serialises concurrent H2 connection establishment.
 // Prevents a thundering herd when the shared H2 connection drops and N sessions
 // all try to reconnect simultaneously — identical pattern to H3_CONNECT_LOCKS.
-static H2_CONNECT_LOCKS: OnceLock<
-    parking_lot::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
-> = OnceLock::new();
+static H2_CONNECT_LOCKS: OnceLock<crate::shared_cache::ConnectLocks<H2ConnectionKey>> =
+    OnceLock::new();
 
 fn h2_shared_connections() -> &'static RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
     H2_SHARED_CONNECTIONS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn h2_connect_locks(
-) -> &'static parking_lot::Mutex<HashMap<H2ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
-    H2_CONNECT_LOCKS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
-}
-
 fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = h2_connect_locks().lock();
-    locks.entry(key.clone()).or_default().clone()
+    H2_CONNECT_LOCKS.get_or_init(crate::shared_cache::ConnectLocks::new).get_lock(key)
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
@@ -651,56 +654,19 @@ fn classify_h2_close(error: &str) -> &'static str {
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
 fn should_reuse_h2_connection(source: &'static str) -> bool {
-    !source.starts_with("probe_")
+    crate::shared_cache::should_reuse_connection(source)
 }
 
 async fn cached_shared_h2_connection(key: &H2ConnectionKey) -> Option<Arc<SharedH2Connection>> {
-    // Hot path: read-lock, clone the `Arc`, release the lock. Concurrent
-    // lookups on *other* keys are no longer serialised behind a single Mutex.
-    let candidate = {
-        let shared = h2_shared_connections().read().await;
-        shared.get(key).cloned()
-    };
-    match candidate {
-        Some(connection) if connection.is_open() => Some(connection),
-        Some(stale) => {
-            // Slow path: take the write-lock only to evict the stale entry,
-            // and re-check under it — another waiter may have already replaced
-            // the entry with a fresh connection between our read/write locks.
-            let mut shared = h2_shared_connections().write().await;
-            if shared.get(key).is_some_and(|c| c.id == stale.id) {
-                shared.remove(key);
-            }
-            None
-        },
-        None => None,
-    }
+    crate::shared_cache::cached_connection(h2_shared_connections(), key).await
 }
 
 async fn cache_shared_h2_connection(key: H2ConnectionKey, connection: Arc<SharedH2Connection>) {
-    let mut shared = h2_shared_connections().write().await;
-    match shared.get(&key) {
-        Some(existing) if existing.is_open() => {},
-        _ => {
-            shared.insert(key, connection);
-        },
-    }
+    crate::shared_cache::cache_connection(h2_shared_connections(), key, connection).await
 }
 
 async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u64) {
-    // Cheap pre-check under the read-lock — the common case (entry gone or
-    // replaced) avoids taking the write-lock at all.
-    let needs_evict = {
-        let shared = h2_shared_connections().read().await;
-        shared.get(key).is_some_and(|connection| connection.id == id)
-    };
-    if !needs_evict {
-        return;
-    }
-    let mut shared = h2_shared_connections().write().await;
-    if shared.get(key).is_some_and(|connection| connection.id == id) {
-        shared.remove(key);
-    }
+    crate::shared_cache::invalidate_if_current(h2_shared_connections(), key, id).await
 }
 
 /// Remove all cache entries whose shared connection is no longer open.

@@ -192,6 +192,16 @@ impl crate::SharedConnectionHealth for SharedH3Connection {
     }
 }
 
+impl crate::shared_cache::CachedEntry for SharedH3Connection {
+    fn conn_id(&self) -> u64 {
+        self.id
+    }
+
+    fn is_open(&self) -> bool {
+        self.is_open()
+    }
+}
+
 // ── TLS / QUIC client configs (initialised once) ─────────────────────────────
 
 static H3_CLIENT_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
@@ -270,25 +280,11 @@ static H3_SHARED_CONNECTIONS: OnceCell<RwLock<HashMap<H3ConnectionKey, Arc<Share
     OnceCell::new();
 static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
 
-// Per-server-key mutex that serialises concurrent QUIC connection establishment.
-// Without this, when the shared QUIC connection drops and N sessions try to
-// reconnect simultaneously, each starts its own QUIC handshake (thundering herd).
-// With the lock: the first waiter establishes the connection and caches it; the
-// rest re-check the cache after acquiring the lock and reuse the result.
-// The HashMap entries are never removed; they remain as empty Mutex<()> objects
-// (a few bytes each) — acceptable because the set of unique server keys is small.
-static H3_CONNECT_LOCKS: OnceCell<
-    parking_lot::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>>,
-> = OnceCell::new();
-
-fn h3_connect_locks(
-) -> &'static parking_lot::Mutex<HashMap<H3ConnectionKey, Arc<tokio::sync::Mutex<()>>>> {
-    H3_CONNECT_LOCKS.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
-}
+static H3_CONNECT_LOCKS: OnceCell<crate::shared_cache::ConnectLocks<H3ConnectionKey>> =
+    OnceCell::new();
 
 fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    let mut locks = h3_connect_locks().lock();
-    locks.entry(key.clone()).or_default().clone()
+    H3_CONNECT_LOCKS.get_or_init(crate::shared_cache::ConnectLocks::new).get_lock(key)
 }
 
 fn h3_shared_connections() -> &'static RwLock<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>> {
@@ -612,52 +608,15 @@ fn classify_h3_close(err: &str) -> &'static str {
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
 async fn cached_shared_h3_connection(key: &H3ConnectionKey) -> Option<Arc<SharedH3Connection>> {
-    // Hot path: read-lock, clone the `Arc`, release the lock. Concurrent
-    // lookups on *other* keys are no longer serialised behind a single Mutex.
-    let candidate = {
-        let shared = h3_shared_connections().read().await;
-        shared.get(key).cloned()
-    };
-    match candidate {
-        Some(connection) if connection.is_open() => Some(connection),
-        Some(stale) => {
-            // Slow path: take the write-lock only to evict the stale entry,
-            // and re-check under it — another waiter may have already replaced
-            // the entry with a fresh connection between our read/write locks.
-            let mut shared = h3_shared_connections().write().await;
-            if shared.get(key).is_some_and(|c| c.id == stale.id) {
-                shared.remove(key);
-            }
-            None
-        },
-        None => None,
-    }
+    crate::shared_cache::cached_connection(h3_shared_connections(), key).await
 }
 
 async fn cache_shared_h3_connection(key: H3ConnectionKey, connection: Arc<SharedH3Connection>) {
-    let mut shared = h3_shared_connections().write().await;
-    match shared.get(&key) {
-        Some(existing) if existing.is_open() => {},
-        _ => {
-            shared.insert(key, connection);
-        },
-    }
+    crate::shared_cache::cache_connection(h3_shared_connections(), key, connection).await
 }
 
 async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u64) {
-    // Cheap pre-check under the read-lock — the common case (entry gone or
-    // replaced) avoids taking the write-lock at all.
-    let needs_evict = {
-        let shared = h3_shared_connections().read().await;
-        shared.get(key).is_some_and(|connection| connection.id == id)
-    };
-    if !needs_evict {
-        return;
-    }
-    let mut shared = h3_shared_connections().write().await;
-    if shared.get(key).is_some_and(|connection| connection.id == id) {
-        shared.remove(key);
-    }
+    crate::shared_cache::invalidate_if_current(h3_shared_connections(), key, id).await
 }
 
 /// Remove all cache entries whose shared connection is no longer open.
@@ -671,7 +630,7 @@ pub(crate) async fn gc_shared_h3_connections() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 pub(super) fn should_reuse_h3_connection(source: &'static str) -> bool {
-    !source.starts_with("probe_")
+    crate::shared_cache::should_reuse_connection(source)
 }
 
 fn is_expected_h3_close(err: &str) -> bool {
