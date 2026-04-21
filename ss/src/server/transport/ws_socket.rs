@@ -11,6 +11,7 @@ use futures_util::{
 use sockudo_ws::{
     Http3 as H3Transport, Message as H3Message, SplitReader as H3SplitReader,
     SplitWriter as H3SplitWriter, Stream as H3Stream, WebSocketStream as H3WebSocketStream,
+    error::CloseReason,
 };
 use tokio::sync::mpsc;
 
@@ -145,7 +146,7 @@ impl WsSocket for H3Ws {
 
     fn binary_msg(data: Bytes) -> H3Message { H3Message::Binary(data) }
     fn close_msg() -> H3Message { H3Message::Close(None) }
-    fn close_try_again_msg() -> H3Message { H3Message::Close(None) }
+    fn close_try_again_msg() -> H3Message { H3Message::Close(Some(CloseReason::new(1013, ""))) }
     fn pong_msg(p: Bytes) -> H3Message { H3Message::Pong(p) }
     fn binary_len(m: &H3Message) -> Option<usize> {
         if let H3Message::Binary(b) = m { Some(b.len()) } else { None }
