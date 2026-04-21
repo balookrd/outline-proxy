@@ -137,7 +137,20 @@ pub async fn handle_tcp_connect(
             let can_failover = strict_transport
                 && !replay_overflow
                 && tried_indexes.len() < uplinks.uplinks().len();
-            let attempt_timeout = if can_failover {
+            // `attempt_timeout` is mutable because `replay_overflow` can flip
+            // to true mid-iteration (when the client body exceeds
+            // MAX_CHUNK0_FAILOVER_BUF). Once replay is no longer possible,
+            // cross-uplink failover is pointless, so we must switch to the
+            // configured `upstream_response` window instead of continuing to
+            // enforce the aggressive chunk-0 timeout. Without this promotion,
+            // a large request body (e.g. Codex `compact`, which ships several
+            // MB of context and then waits minutes for the model) would always
+            // hit the 10 s deadline as soon as the client finished sending —
+            // fail over to the next uplink with a truncated replay — time out
+            // again on that one — and eventually surface a client-side
+            // "error sending request" even though the upstream was simply
+            // taking longer than 10 s to produce its first byte.
+            let mut attempt_timeout = if can_failover {
                 chunk0_attempt_timeout
             } else {
                 timeouts.upstream_response
@@ -172,12 +185,6 @@ pub async fn handle_tcp_connect(
                                     .send_chunk(&chunk)
                                     .await
                                     .context("uplink write failed")?;
-                                // Treat the timeout as "no response after the last
-                                // request activity", not "no response since the
-                                // beginning of phase 1". Some protocols do not send
-                                // any server bytes until the client has finished
-                                // sending the request preface or body.
-                                deadline = tokio::time::Instant::now() + attempt_timeout;
                                 metrics::add_bytes(
                                     "tcp",
                                     "client_to_upstream",
@@ -198,8 +205,21 @@ pub async fn handle_tcp_connect(
                                         replay_buf.push(chunk);
                                     } else {
                                         replay_overflow = true;
+                                        // Failover is no longer possible — give
+                                        // the upstream the full response window
+                                        // instead of the aggressive chunk-0 timer.
+                                        attempt_timeout = timeouts.upstream_response;
                                     }
                                 }
+                                // Treat the timeout as "no response after the last
+                                // request activity", not "no response since the
+                                // beginning of phase 1". Some protocols do not send
+                                // any server bytes until the client has finished
+                                // sending the request preface or body.
+                                // (Computed after the possible attempt_timeout
+                                // promotion above so the longer window takes
+                                // effect immediately once replay overflows.)
+                                deadline = tokio::time::Instant::now() + attempt_timeout;
                             }
                             Err(e) => break Err(e.into()),
                         }
