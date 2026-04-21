@@ -8,14 +8,15 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
-use crate::utils::maybe_shrink_hash_map;
 use outline_metrics as metrics;
 use outline_transport::UdpWsTransport;
 use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::wire::build_response_packet;
-use super::types::DirectUdpFlowState;
+use super::types::{
+    DirectUdpFlowState, bump_last_seen_if_current, drain_idle_flows, flow_is_current,
+};
 use super::{
     TUN_FLOW_CLEANUP_INTERVAL, TunUdpEngine, UdpFlowKey, UdpFlowState, ip_family_from_version,
     ip_to_target,
@@ -180,12 +181,7 @@ impl TunUdpEngine {
         tokio::spawn(async move {
             let result = async {
                 loop {
-                    if manager.strict_active_uplink_for(TransportKind::Udp)
-                        && manager
-                            .active_uplink_index_for_transport(TransportKind::Udp)
-                            .await
-                            .is_some_and(|active| active != uplink_index)
-                    {
+                    if super::should_migrate_flow(&manager, uplink_index).await {
                         engine.close_flow_if_current(&key, flow_id, "global_switch").await;
                         return Ok(());
                     }
@@ -212,13 +208,7 @@ impl TunUdpEngine {
                             None => Arc::from("unknown"),
                         }
                     };
-                    metrics::add_udp_datagram(
-                        "upstream_to_client",
-                        manager.group_name(),
-                        &uplink_name,
-                    );
-                    metrics::add_bytes(
-                        "udp",
+                    super::record_udp_xfer(
                         "upstream_to_client",
                         manager.group_name(),
                         &uplink_name,
@@ -230,13 +220,7 @@ impl TunUdpEngine {
                         ip_family_from_version(key.version),
                         "accepted",
                     );
-                    let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
-                    if let Some(handle) = handle {
-                        let mut flow = handle.lock().await;
-                        if flow.id == flow_id {
-                            flow.last_seen = Instant::now();
-                        }
-                    }
+                    bump_last_seen_if_current(&engine.inner.flows, &key, flow_id).await;
                 }
                 #[allow(unreachable_code)]
                 Ok::<(), anyhow::Error>(())
@@ -244,27 +228,20 @@ impl TunUdpEngine {
             .await;
             let close_reason = if result.is_ok() { "closed" } else { "read_error" };
 
-            if let Err(ref error) = result {
-                let is_current = {
-                    let handle = engine.inner.flows.read().await.get(&key).map(Arc::clone);
-                    match handle {
-                        Some(h) => h.lock().await.id == flow_id,
-                        None => false,
-                    }
-                };
-                if is_current {
-                    report_udp_runtime_failure(&manager, uplink_index, error).await;
-                    metrics::record_tun_packet(
-                        "upstream_to_tun",
-                        ip_family_from_version(key.version),
-                        "error",
-                    );
-                    warn!(
-                        flow_id,
-                        error = %format!("{error:#}"),
-                        "TUN UDP flow reader stopped"
-                    );
-                }
+            if let Err(ref error) = result
+                && flow_is_current(&engine.inner.flows, &key, flow_id).await
+            {
+                report_udp_runtime_failure(&manager, uplink_index, error).await;
+                metrics::record_tun_packet(
+                    "upstream_to_tun",
+                    ip_family_from_version(key.version),
+                    "error",
+                );
+                warn!(
+                    flow_id,
+                    error = %format!("{error:#}"),
+                    "TUN UDP flow reader stopped"
+                );
             }
             engine.close_flow_if_current(&key, flow_id, close_reason).await;
         });
@@ -280,14 +257,7 @@ impl TunUdpEngine {
         // mutating the map, then take the write-lock only if removal is
         // actually warranted. Avoids acquiring the map write-lock on every
         // call from reader tasks that lost the race.
-        let should_remove = {
-            let handle = self.inner.flows.read().await.get(key).map(Arc::clone);
-            match handle {
-                Some(h) => h.lock().await.id == flow_id,
-                None => return,
-            }
-        };
-        if !should_remove {
+        if !flow_is_current(&self.inner.flows, key, flow_id).await {
             return;
         }
         let removed = {
@@ -311,65 +281,10 @@ impl TunUdpEngine {
         let now = Instant::now();
         let idle_timeout = self.inner.idle_timeout;
 
-        // Collect keys whose last_seen has expired without holding the map
-        // write-lock across per-flow locks: read-lock + snapshot Arc clones,
-        // then inspect each flow's Mutex individually.
-        let expired_keys: Vec<UdpFlowKey> = {
-            let handles: Vec<(UdpFlowKey, Arc<Mutex<UdpFlowState>>)> = {
-                let guard = self.inner.flows.read().await;
-                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
-            };
-            let mut expired = Vec::new();
-            for (key, handle) in handles {
-                let flow = handle.lock().await;
-                if now.saturating_duration_since(flow.last_seen) >= idle_timeout {
-                    expired.push(key);
-                }
-            }
-            expired
-        };
-
-        let expired_flows = {
-            let mut guard = self.inner.flows.write().await;
-            let mut removed = Vec::with_capacity(expired_keys.len());
-            for key in expired_keys {
-                if let Some(flow) = guard.remove(&key) {
-                    removed.push(flow);
-                }
-            }
-            maybe_shrink_hash_map(&mut guard);
-            removed
-        };
-
-        for flow in expired_flows {
+        for flow in drain_idle_flows(&self.inner.flows, idle_timeout, now).await {
             self.enqueue_close(flow, "idle_timeout");
         }
-
-        // Clean up idle direct-routed flows — same pattern.
-        let direct_expired_keys: Vec<super::UdpFlowKey> = {
-            let handles: Vec<(UdpFlowKey, Arc<Mutex<super::types::DirectUdpFlowState>>)> = {
-                let guard = self.inner.direct_flows.read().await;
-                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
-            };
-            let mut expired = Vec::new();
-            for (key, handle) in handles {
-                let flow = handle.lock().await;
-                if now.saturating_duration_since(flow.last_seen) >= idle_timeout {
-                    expired.push(key);
-                }
-            }
-            expired
-        };
-        let expired_direct: Vec<Arc<Mutex<DirectUdpFlowState>>> = {
-            let mut direct = self.inner.direct_flows.write().await;
-            let removed = direct_expired_keys
-                .into_iter()
-                .filter_map(|k| direct.remove(&k))
-                .collect();
-            maybe_shrink_hash_map(&mut direct);
-            removed
-        };
-        for flow in expired_direct {
+        for flow in drain_idle_flows(&self.inner.direct_flows, idle_timeout, now).await {
             self.enqueue_close_direct(flow, "idle_timeout");
         }
     }
