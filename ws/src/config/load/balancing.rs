@@ -52,7 +52,8 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         // Default: 20 s — keeps active SOCKS TCP sessions alive through common
         // 25-30 s upstream idle-timeout windows (HAProxy, nginx, NAT tables).
         // Keepalives are SS2022 0-length encrypted chunks; SS1 uplinks ignore them.
-        // Set to 0 to disable.
+        // They keep the path alive but do NOT reset `tcp_timeouts.socks_upstream_idle`;
+        // only real payload bytes count as session activity. Set to 0 to disable.
         tcp_active_keepalive_interval: {
             let secs = lb.and_then(|l| l.tcp_active_keepalive_secs).unwrap_or(20);
             if secs == 0 {
