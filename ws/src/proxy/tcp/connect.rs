@@ -180,9 +180,8 @@ pub async fn handle_tcp_connect(
                                 client_half_closed = true;
                             }
                             Ok(n) => {
-                                let chunk = rbuf[..n].to_vec();
                                 active.writer
-                                    .send_chunk(&chunk)
+                                    .send_chunk(&rbuf[..n])
                                     .await
                                     .context("uplink write failed")?;
                                 metrics::add_bytes(
@@ -202,7 +201,7 @@ pub async fn handle_tcp_connect(
                                 if !replay_overflow {
                                     let total: usize = replay_buf.iter().map(|c| c.len()).sum();
                                     if total + n <= MAX_CHUNK0_FAILOVER_BUF {
-                                        replay_buf.push(chunk);
+                                        replay_buf.push(rbuf[..n].to_vec());
                                     } else {
                                         replay_overflow = true;
                                         // Failover is no longer possible — give
