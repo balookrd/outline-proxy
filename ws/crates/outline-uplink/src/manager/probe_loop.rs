@@ -11,7 +11,7 @@ use crate::config::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::probe_uplink;
 use super::super::selection::cooldown_active;
-use super::super::types::{TransportKind, UplinkManager, UplinkStatus};
+use super::super::types::{ProbeOutcome, TransportKind, UplinkManager, UplinkStatus};
 use super::super::utils::{add_penalty, update_rtt_ewma};
 
 fn should_skip_probe_cycle_for_recent_activity(
@@ -37,7 +37,7 @@ async fn run_probe_attempt_with_timeout(
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::config::WsTransportMode,
     effective_udp_mode: crate::config::WsTransportMode,
-) -> Result<super::super::types::ProbeOutcome> {
+) -> Result<ProbeOutcome> {
     let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;
     let transport_budgets = (tcp_budget + udp_budget).max(1);
@@ -200,233 +200,18 @@ impl UplinkManager {
             let mut refill_udp = false;
             match outcome {
                 Ok(result) => {
-                    let now = Instant::now();
-                    let min_failures = self.inner.probe.min_failures;
-                    let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
-                    let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
-                    let load_balancing = self.inner.load_balancing.clone();
-                    // Read current h3_downgrade_until values before mutating so
-                    // we can emit warn! without holding the write lock.
-                    let (prev_tcp_h3, prev_udp_h3) = {
-                        let s = self.inner.read_status(index);
-                        (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
-                    };
-                    // Emit warn! for H3 downgrades before acquiring the write lock.
-                    if !result.tcp_ok
-                        && uplink.transport == UplinkTransport::Websocket
-                        && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
-                        && prev_tcp_h3.is_none_or(|t| t < now)
-                    {
-                        warn!(
-                            uplink = %uplink.name,
-                            downgrade_secs = h3_downgrade_duration.as_secs(),
-                            "H3 TCP probe failed, downgrading to H2 for next probe cycle"
-                        );
-                    }
-                    if result.udp_applicable
-                        && !result.udp_ok
-                        && uplink.transport == UplinkTransport::Websocket
-                        && uplink.udp_ws_mode == WsTransportMode::H3
-                        && prev_udp_h3.is_none_or(|t| t < now)
-                    {
-                        warn!(
-                            uplink = %uplink.name,
-                            downgrade_secs = h3_downgrade_duration.as_secs(),
-                            "H3 UDP probe failed, downgrading to H2 for next probe cycle"
-                        );
-                    }
-                    let mut needs_h3_tcp_recovery = false;
-                    let mut needs_h3_udp_recovery = false;
-                    self.inner.with_status_mut(index, |status| {
-                        status.last_checked = Some(now);
-                        status.tcp.latency = result.tcp_latency;
-                        status.udp.latency = result.udp_latency;
-                        update_rtt_ewma(&mut status.tcp.rtt_ewma, result.tcp_latency, rtt_ewma_alpha);
-                        update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
-                        if !result.tcp_ok {
-                            status.tcp.consecutive_successes = 0;
-                            status.tcp.consecutive_failures =
-                                status.tcp.consecutive_failures.saturating_add(1);
-                            if status.tcp.consecutive_failures >= min_failures as u32 {
-                                status.tcp.healthy = Some(false);
-                                add_penalty(&mut status.tcp.penalty, now, &load_balancing);
-                            }
-                            // If this uplink is configured for H3 and the TCP
-                            // probe failed, downgrade to H2 for the next probe
-                            // cycle.  Without this, intermittent H3 probe
-                            // failures cause probe-driven flapping in
-                            // active-passive / global scope: the probe
-                            // alternates pass (H3) / fail (H3) → switch to
-                            // backup / switch back to primary on every cycle.
-                            // With H2 downgrade, recovery probing uses H2
-                            // which is stable, and H3 is only retried after the
-                            // downgrade timer expires.
-                            if uplink.transport == UplinkTransport::Websocket
-                                && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
-                            {
-                                status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
-                            }
-                        } else {
-                            status.tcp.consecutive_failures = 0;
-                            status.tcp.consecutive_successes =
-                                status.tcp.consecutive_successes.saturating_add(1);
-                            status.tcp.healthy = Some(true);
-                            // Only clear runtime-failure cooldown when the probe confirms TCP is
-                            // healthy. Clearing unconditionally would make a recently-failed
-                            // uplink immediately eligible again, causing oscillation under load.
-                            status.tcp.cooldown_until = None;
-                            // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
-                            // effective (possibly downgraded) WS mode, so a successful probe
-                            // only confirms H2 connectivity during a downgrade window — it does
-                            // not prove that H3 is healthy again.  Instead, schedule an H3
-                            // recovery re-probe below to confirm H3 liveness explicitly.
-                            if effective_tcp_mode == WsTransportMode::H2
-                                && uplink.transport == UplinkTransport::Websocket
-                                && uplink.tcp_ws_mode == WsTransportMode::H3
-                                && status.tcp.h3_downgrade_until.is_some_and(|t| t > now)
-                            {
-                                needs_h3_tcp_recovery = true;
-                            }
-                        }
-                        if result.udp_applicable {
-                            if !result.udp_ok {
-                                status.udp.consecutive_failures =
-                                    status.udp.consecutive_failures.saturating_add(1);
-                                if status.udp.consecutive_failures >= min_failures as u32 {
-                                    status.udp.healthy = Some(false);
-                                    add_penalty(&mut status.udp.penalty, now, &load_balancing);
-                                }
-                                // Mirror of the TCP H3 downgrade above for UDP.
-                                if uplink.transport == UplinkTransport::Websocket
-                                    && uplink.udp_ws_mode == WsTransportMode::H3
-                                {
-                                    status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
-                                }
-                            } else {
-                                status.udp.consecutive_failures = 0;
-                                status.udp.consecutive_successes =
-                                    status.udp.consecutive_successes.saturating_add(1);
-                                status.udp.healthy = Some(true);
-                                status.udp.cooldown_until = None;
-                                // Schedule UDP H3 recovery re-probe — mirror of the
-                                // TCP path.  Successful H2 probe doesn't prove H3 is
-                                // back, so verify it explicitly below.
-                                if effective_udp_mode == WsTransportMode::H2
-                                    && uplink.transport == UplinkTransport::Websocket
-                                    && uplink.udp_ws_mode == WsTransportMode::H3
-                                    && status.udp.h3_downgrade_until.is_some_and(|t| t > now)
-                                {
-                                    needs_h3_udp_recovery = true;
-                                }
-                            }
-                        }
-                        if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
-                            status.last_error = None;
-                        }
-                    });
-                    if needs_h3_tcp_recovery {
-                        h3_tcp_recovery_needed.push((index, Arc::clone(&uplink)));
-                    }
-                    if needs_h3_udp_recovery {
-                        h3_udp_recovery_needed.push((index, Arc::clone(&uplink)));
-                    }
-                    let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
-                        let s = self.inner.read_status(index);
-                        (
-                            s.tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                            s.udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                        )
-                    };
-                    debug!(
-                        uplink = %uplink.name,
-                        tcp_healthy = result.tcp_ok,
-                        udp_healthy = result.udp_ok,
-                        tcp_latency_ms = result.tcp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                        udp_latency_ms = result.udp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
-                        tcp_rtt_ewma_ms,
-                        udp_rtt_ewma_ms,
-                        "uplink probe succeeded"
+                    (refill_tcp, refill_udp) = self.process_probe_ok(
+                        index,
+                        &uplink,
+                        result,
+                        effective_tcp_mode,
+                        effective_udp_mode,
+                        &mut h3_tcp_recovery_needed,
+                        &mut h3_udp_recovery_needed,
                     );
-                    refill_tcp = result.tcp_ok;
-                    // When UDP is not configured for this uplink, leave the
-                    // standby pool alone (don't clear it, don't refill it).
-                    refill_udp = result.udp_applicable && result.udp_ok;
                 },
                 Err(error) => {
-                    let now = Instant::now();
-                    let min_failures = self.inner.probe.min_failures;
-                    let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
-                    let load_balancing = self.inner.load_balancing.clone();
-                    // Read h3_downgrade_until before mutating for warn! emission.
-                    let (prev_tcp_h3, prev_udp_h3) = {
-                        let s = self.inner.read_status(index);
-                        (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
-                    };
-                    // Emit warn! before acquiring write lock.
-                    if uplink.transport == UplinkTransport::Websocket
-                        && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
-                        && prev_tcp_h3.is_none_or(|t| t < now)
-                    {
-                        warn!(
-                            uplink = %uplink.name,
-                            error = %format!("{error:#}"),
-                            downgrade_secs = h3_downgrade_duration.as_secs(),
-                            "H3 probe connection failed, downgrading TCP to H2"
-                        );
-                    }
-                    if uplink.supports_udp()
-                        && uplink.transport == UplinkTransport::Websocket
-                        && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
-                        && prev_udp_h3.is_none_or(|t| t < now)
-                    {
-                        warn!(
-                            uplink = %uplink.name,
-                            error = %format!("{error:#}"),
-                            downgrade_secs = h3_downgrade_duration.as_secs(),
-                            "H3 probe connection failed, downgrading UDP to H2"
-                        );
-                    }
-                    let error_text = format!("{error:#}");
-                    self.inner.with_status_mut(index, |status| {
-                        status.last_checked = Some(now);
-                        status.tcp.consecutive_successes = 0;
-                        status.tcp.consecutive_failures =
-                            status.tcp.consecutive_failures.saturating_add(1);
-                        if status.tcp.consecutive_failures >= min_failures as u32 {
-                            status.tcp.healthy = Some(false);
-                            add_penalty(&mut status.tcp.penalty, now, &load_balancing);
-                        }
-                        // Only penalise UDP when it is actually configured.
-                        // The probe Err path is usually a TCP connect failure;
-                        // penalising UDP here when there is no udp_ws_url would
-                        // permanently mark UDP unhealthy for TCP-only uplinks.
-                        if uplink.supports_udp() {
-                            status.udp.consecutive_failures =
-                                status.udp.consecutive_failures.saturating_add(1);
-                            if status.udp.consecutive_failures >= min_failures as u32 {
-                                status.udp.healthy = Some(false);
-                                add_penalty(&mut status.udp.penalty, now, &load_balancing);
-                            }
-                        }
-                        // Probe connection itself failed (ws connect / timeout).
-                        // Same H3 downgrade logic as the tcp_ok=false case above.
-                        if uplink.transport == UplinkTransport::Websocket
-                            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
-                        {
-                            status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
-                        }
-                        // Same for UDP — when the uplink supports UDP and is on H3,
-                        // a probe-level failure also forces UDP H2 fallback so the
-                        // failover loop on a broken H3 server doesn't spin.
-                        if uplink.supports_udp()
-                            && uplink.transport == UplinkTransport::Websocket
-                            && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
-                        {
-                            status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
-                        }
-                        status.last_error = Some(error_text.clone());
-                    });
-                    warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
+                    self.process_probe_err(index, &uplink, error);
                 },
             }
 
@@ -454,6 +239,253 @@ impl UplinkManager {
         // preventing oscillation if H3 is still unstable.
         self.run_h3_recovery_probes(h3_tcp_recovery_needed, TransportKind::Tcp).await;
         self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp).await;
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_probe_ok(
+        &self,
+        index: usize,
+        uplink: &Arc<crate::config::UplinkConfig>,
+        result: ProbeOutcome,
+        effective_tcp_mode: WsTransportMode,
+        effective_udp_mode: WsTransportMode,
+        h3_tcp_recovery: &mut Vec<(usize, Arc<crate::config::UplinkConfig>)>,
+        h3_udp_recovery: &mut Vec<(usize, Arc<crate::config::UplinkConfig>)>,
+    ) -> (bool, bool) {
+        let now = Instant::now();
+        let min_failures = self.inner.probe.min_failures;
+        let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
+        let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
+        let load_balancing = self.inner.load_balancing.clone();
+        // Read current h3_downgrade_until values before mutating so
+        // we can emit warn! without holding the write lock.
+        let (prev_tcp_h3, prev_udp_h3) = {
+            let s = self.inner.read_status(index);
+            (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
+        };
+        // Emit warn! for H3 downgrades before acquiring the write lock.
+        if !result.tcp_ok
+            && uplink.transport == UplinkTransport::Websocket
+            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
+            && prev_tcp_h3.is_none_or(|t| t < now)
+        {
+            warn!(
+                uplink = %uplink.name,
+                downgrade_secs = h3_downgrade_duration.as_secs(),
+                "H3 TCP probe failed, downgrading to H2 for next probe cycle"
+            );
+        }
+        if result.udp_applicable
+            && !result.udp_ok
+            && uplink.transport == UplinkTransport::Websocket
+            && uplink.udp_ws_mode == WsTransportMode::H3
+            && prev_udp_h3.is_none_or(|t| t < now)
+        {
+            warn!(
+                uplink = %uplink.name,
+                downgrade_secs = h3_downgrade_duration.as_secs(),
+                "H3 UDP probe failed, downgrading to H2 for next probe cycle"
+            );
+        }
+        let mut needs_h3_tcp_recovery = false;
+        let mut needs_h3_udp_recovery = false;
+        self.inner.with_status_mut(index, |status| {
+            status.last_checked = Some(now);
+            status.tcp.latency = result.tcp_latency;
+            status.udp.latency = result.udp_latency;
+            update_rtt_ewma(&mut status.tcp.rtt_ewma, result.tcp_latency, rtt_ewma_alpha);
+            update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
+            if !result.tcp_ok {
+                status.tcp.consecutive_successes = 0;
+                status.tcp.consecutive_failures =
+                    status.tcp.consecutive_failures.saturating_add(1);
+                if status.tcp.consecutive_failures >= min_failures as u32 {
+                    status.tcp.healthy = Some(false);
+                    add_penalty(&mut status.tcp.penalty, now, &load_balancing);
+                }
+                // If this uplink is configured for H3 and the TCP
+                // probe failed, downgrade to H2 for the next probe
+                // cycle.  Without this, intermittent H3 probe
+                // failures cause probe-driven flapping in
+                // active-passive / global scope: the probe
+                // alternates pass (H3) / fail (H3) → switch to
+                // backup / switch back to primary on every cycle.
+                // With H2 downgrade, recovery probing uses H2
+                // which is stable, and H3 is only retried after the
+                // downgrade timer expires.
+                if uplink.transport == UplinkTransport::Websocket
+                    && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
+                {
+                    status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
+                }
+            } else {
+                status.tcp.consecutive_failures = 0;
+                status.tcp.consecutive_successes =
+                    status.tcp.consecutive_successes.saturating_add(1);
+                status.tcp.healthy = Some(true);
+                // Only clear runtime-failure cooldown when the probe confirms TCP is
+                // healthy. Clearing unconditionally would make a recently-failed
+                // uplink immediately eligible again, causing oscillation under load.
+                status.tcp.cooldown_until = None;
+                // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
+                // effective (possibly downgraded) WS mode, so a successful probe
+                // only confirms H2 connectivity during a downgrade window — it does
+                // not prove that H3 is healthy again.  Instead, schedule an H3
+                // recovery re-probe below to confirm H3 liveness explicitly.
+                if effective_tcp_mode == WsTransportMode::H2
+                    && uplink.transport == UplinkTransport::Websocket
+                    && uplink.tcp_ws_mode == WsTransportMode::H3
+                    && status.tcp.h3_downgrade_until.is_some_and(|t| t > now)
+                {
+                    needs_h3_tcp_recovery = true;
+                }
+            }
+            if result.udp_applicable {
+                if !result.udp_ok {
+                    status.udp.consecutive_failures =
+                        status.udp.consecutive_failures.saturating_add(1);
+                    if status.udp.consecutive_failures >= min_failures as u32 {
+                        status.udp.healthy = Some(false);
+                        add_penalty(&mut status.udp.penalty, now, &load_balancing);
+                    }
+                    // Mirror of the TCP H3 downgrade above for UDP.
+                    if uplink.transport == UplinkTransport::Websocket
+                        && uplink.udp_ws_mode == WsTransportMode::H3
+                    {
+                        status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
+                    }
+                } else {
+                    status.udp.consecutive_failures = 0;
+                    status.udp.consecutive_successes =
+                        status.udp.consecutive_successes.saturating_add(1);
+                    status.udp.healthy = Some(true);
+                    status.udp.cooldown_until = None;
+                    // Schedule UDP H3 recovery re-probe — mirror of the
+                    // TCP path.  Successful H2 probe doesn't prove H3 is
+                    // back, so verify it explicitly below.
+                    if effective_udp_mode == WsTransportMode::H2
+                        && uplink.transport == UplinkTransport::Websocket
+                        && uplink.udp_ws_mode == WsTransportMode::H3
+                        && status.udp.h3_downgrade_until.is_some_and(|t| t > now)
+                    {
+                        needs_h3_udp_recovery = true;
+                    }
+                }
+            }
+            if result.tcp_ok && (!result.udp_applicable || result.udp_ok) {
+                status.last_error = None;
+            }
+        });
+        if needs_h3_tcp_recovery {
+            h3_tcp_recovery.push((index, Arc::clone(uplink)));
+        }
+        if needs_h3_udp_recovery {
+            h3_udp_recovery.push((index, Arc::clone(uplink)));
+        }
+        let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
+            let s = self.inner.read_status(index);
+            (
+                s.tcp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+                s.udp.rtt_ewma.map(|v| v.as_millis() as u64).unwrap_or_default(),
+            )
+        };
+        debug!(
+            uplink = %uplink.name,
+            tcp_healthy = result.tcp_ok,
+            udp_healthy = result.udp_ok,
+            tcp_latency_ms = result.tcp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
+            udp_latency_ms = result.udp_latency.map(|v| v.as_millis() as u64).unwrap_or_default(),
+            tcp_rtt_ewma_ms,
+            udp_rtt_ewma_ms,
+            "uplink probe succeeded"
+        );
+        let refill_tcp = result.tcp_ok;
+        // When UDP is not configured for this uplink, leave the
+        // standby pool alone (don't clear it, don't refill it).
+        let refill_udp = result.udp_applicable && result.udp_ok;
+        (refill_tcp, refill_udp)
+    }
+
+    fn process_probe_err(
+        &self,
+        index: usize,
+        uplink: &Arc<crate::config::UplinkConfig>,
+        error: anyhow::Error,
+    ) {
+        let now = Instant::now();
+        let min_failures = self.inner.probe.min_failures;
+        let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
+        let load_balancing = self.inner.load_balancing.clone();
+        // Read h3_downgrade_until before mutating for warn! emission.
+        let (prev_tcp_h3, prev_udp_h3) = {
+            let s = self.inner.read_status(index);
+            (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
+        };
+        // Emit warn! before acquiring write lock.
+        if uplink.transport == UplinkTransport::Websocket
+            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
+            && prev_tcp_h3.is_none_or(|t| t < now)
+        {
+            warn!(
+                uplink = %uplink.name,
+                error = %format!("{error:#}"),
+                downgrade_secs = h3_downgrade_duration.as_secs(),
+                "H3 probe connection failed, downgrading TCP to H2"
+            );
+        }
+        if uplink.supports_udp()
+            && uplink.transport == UplinkTransport::Websocket
+            && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
+            && prev_udp_h3.is_none_or(|t| t < now)
+        {
+            warn!(
+                uplink = %uplink.name,
+                error = %format!("{error:#}"),
+                downgrade_secs = h3_downgrade_duration.as_secs(),
+                "H3 probe connection failed, downgrading UDP to H2"
+            );
+        }
+        let error_text = format!("{error:#}");
+        self.inner.with_status_mut(index, |status| {
+            status.last_checked = Some(now);
+            status.tcp.consecutive_successes = 0;
+            status.tcp.consecutive_failures =
+                status.tcp.consecutive_failures.saturating_add(1);
+            if status.tcp.consecutive_failures >= min_failures as u32 {
+                status.tcp.healthy = Some(false);
+                add_penalty(&mut status.tcp.penalty, now, &load_balancing);
+            }
+            // Only penalise UDP when it is actually configured.
+            // The probe Err path is usually a TCP connect failure;
+            // penalising UDP here when there is no udp_ws_url would
+            // permanently mark UDP unhealthy for TCP-only uplinks.
+            if uplink.supports_udp() {
+                status.udp.consecutive_failures =
+                    status.udp.consecutive_failures.saturating_add(1);
+                if status.udp.consecutive_failures >= min_failures as u32 {
+                    status.udp.healthy = Some(false);
+                    add_penalty(&mut status.udp.penalty, now, &load_balancing);
+                }
+            }
+            // Probe connection itself failed (ws connect / timeout).
+            // Same H3 downgrade logic as the tcp_ok=false case above.
+            if uplink.transport == UplinkTransport::Websocket
+                && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
+            {
+                status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
+            }
+            // Same for UDP — when the uplink supports UDP and is on H3,
+            // a probe-level failure also forces UDP H2 fallback so the
+            // failover loop on a broken H3 server doesn't spin.
+            if uplink.supports_udp()
+                && uplink.transport == UplinkTransport::Websocket
+                && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
+            {
+                status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
+            }
+            status.last_error = Some(error_text.clone());
+        });
+        warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
     }
 
     async fn run_h3_recovery_probes(
