@@ -507,6 +507,12 @@ pub async fn handle_tcp_connect(
                                 .send_keepalive()
                                 .await
                                 .context("upstream TCP keepalive failed")?;
+                            // A successfully sent keepalive means the upstream
+                            // path is alive.  Signal the idle watcher so it
+                            // doesn't kill the session while the remote target
+                            // is merely slow to respond (e.g. a long model
+                            // inference step on an SSE stream).
+                            let _ = activity_for_uplink.send(());
                             continue;
                         }
                     }
