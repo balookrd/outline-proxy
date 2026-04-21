@@ -4,6 +4,8 @@ use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
+use std::time::Duration;
+
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::{debug, info, warn};
 
@@ -36,6 +38,7 @@ use crate::{
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 use super::super::connect::connect_tcp_target;
+use super::super::constants::WS_TCP_KEEPALIVE_PING_INTERVAL_SECS;
 use super::super::dns_cache::DnsCache;
 
 struct TcpRelayState {
@@ -103,61 +106,94 @@ async fn run_tcp_relay<T: WsSocket>(
     let mut state = TcpRelayState::new();
     let mut client_closed = false;
 
-    while let Some(msg) = T::recv(&mut reader).await? {
-        match T::classify(msg) {
-            WsFrame::Binary(data) => {
-                if let Err(err) = handle_tcp_binary_frame(
-                    &mut state,
-                    &mut decryptor,
-                    &mut plaintext_buffer,
-                    data,
-                    &outbound_data_tx,
-                    users.as_ref(),
-                    &metrics,
-                    protocol,
-                    &path,
-                    candidate_users.as_ref(),
-                    dns_cache.as_ref(),
-                    prefer_ipv4_upstream,
-                    T::binary_msg,
-                    T::close_msg,
-                )
-                .await
-                {
-                    // Pick the appropriate WS close code.  When the upstream
-                    // TCP connect failed the client has a reasonable chance of
-                    // succeeding if it retries (same or different uplink), so
-                    // send code 1013 "Try Again Later".  Any other error
-                    // (auth failure, protocol error) is terminal — send a
-                    // generic close so the client can fail fast.
-                    let is_upstream_connect_failure = err
-                        .chain()
-                        .any(|e| e.downcast_ref::<UpstreamConnectFailed>().is_some());
-                    let close_msg = if is_upstream_connect_failure {
-                        T::close_try_again_msg()
-                    } else {
-                        T::close_msg()
-                    };
-                    let _ = outbound_ctrl_tx.send(close_msg).await;
-                    drop(outbound_ctrl_tx);
-                    drop(outbound_data_tx);
-                    let _ = writer_task.await;
-                    return Err(err);
+    // Periodic WebSocket Ping sent from server to client.
+    //
+    // The client's WsReadTransport has a WS_READ_IDLE_TIMEOUT (currently 300 s)
+    // that fires when no WS frame has been received.  On a healthy session where
+    // the remote target is slow to respond (e.g. a long model-inference step),
+    // that timer would fire and abort an otherwise live connection.
+    //
+    // Sending a Ping every WS_TCP_KEEPALIVE_PING_INTERVAL_SECS seconds keeps
+    // the client's timer reset for as long as the session is alive, regardless
+    // of how long the remote target takes.  The client's WsReadTransport already
+    // handles incoming Pings: it queues a Pong response and loops — every Ping
+    // frame also resets the idle timeout.
+    let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let mut keepalive = tokio::time::interval(ping_interval);
+    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    keepalive.tick().await; // skip the first immediate tick
+
+    loop {
+        tokio::select! {
+            biased;
+            result = T::recv(&mut reader) => {
+                let msg = match result? {
+                    Some(m) => m,
+                    None => break,
+                };
+                match T::classify(msg) {
+                    WsFrame::Binary(data) => {
+                        if let Err(err) = handle_tcp_binary_frame(
+                            &mut state,
+                            &mut decryptor,
+                            &mut plaintext_buffer,
+                            data,
+                            &outbound_data_tx,
+                            users.as_ref(),
+                            &metrics,
+                            protocol,
+                            &path,
+                            candidate_users.as_ref(),
+                            dns_cache.as_ref(),
+                            prefer_ipv4_upstream,
+                            T::binary_msg,
+                            T::close_msg,
+                        )
+                        .await
+                        {
+                            // Pick the appropriate WS close code.  When the upstream
+                            // TCP connect failed the client has a reasonable chance of
+                            // succeeding if it retries (same or different uplink), so
+                            // send code 1013 "Try Again Later".  Any other error
+                            // (auth failure, protocol error) is terminal — send a
+                            // generic close so the client can fail fast.
+                            let is_upstream_connect_failure = err
+                                .chain()
+                                .any(|e| e.downcast_ref::<UpstreamConnectFailed>().is_some());
+                            let close_msg = if is_upstream_connect_failure {
+                                T::close_try_again_msg()
+                            } else {
+                                T::close_msg()
+                            };
+                            let _ = outbound_ctrl_tx.send(close_msg).await;
+                            drop(outbound_ctrl_tx);
+                            drop(outbound_data_tx);
+                            let _ = writer_task.await;
+                            return Err(err);
+                        }
+                    },
+                    WsFrame::Close => {
+                        debug!("client closed tcp websocket");
+                        client_closed = true;
+                        break;
+                    },
+                    WsFrame::Ping(payload) => {
+                        outbound_ctrl_tx
+                            .send(T::pong_msg(payload))
+                            .await
+                            .map_err(|_| anyhow!("failed to queue websocket pong"))?;
+                    },
+                    WsFrame::Pong => {},
+                    WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
                 }
             },
-            WsFrame::Close => {
-                debug!("client closed tcp websocket");
-                client_closed = true;
-                break;
-            },
-            WsFrame::Ping(payload) => {
-                outbound_ctrl_tx
-                    .send(T::pong_msg(payload))
-                    .await
-                    .map_err(|_| anyhow!("failed to queue websocket pong"))?;
-            },
-            WsFrame::Pong => {},
-            WsFrame::Text => return Err(anyhow!("text websocket frames are not supported")),
+            _ = keepalive.tick() => {
+                // Don't fail the session on a Ping send error — the writer task
+                // may have already exited if the WS connection closed cleanly on
+                // the write side while we were reading.  The next T::recv() call
+                // will then return None and we exit normally.
+                let _ = outbound_ctrl_tx.send(T::ping_msg()).await;
+            }
         }
     }
 
