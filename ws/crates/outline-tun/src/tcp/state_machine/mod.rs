@@ -1,4 +1,5 @@
 mod congestion;
+mod deliver;
 mod packets;
 mod policy;
 mod recv;
@@ -11,6 +12,8 @@ mod types;
 pub(super) use congestion::{
     next_retransmission_deadline, note_ack_progress, note_congestion_event, process_server_ack,
 };
+#[allow(unused_imports)]
+pub(super) use deliver::{DeliverOutcome, apply_inbound_and_flush};
 #[allow(unused_imports)]
 pub(super) use packets::{
     build_flow_ack_packet, build_flow_packet, build_flow_syn_ack_packet, decode_client_window,
