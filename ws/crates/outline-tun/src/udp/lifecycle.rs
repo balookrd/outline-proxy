@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use anyhow::{Result, bail};
 use crate::udp::AllUdpUplinksFailed;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tracing::{debug, warn};
 
@@ -15,10 +15,16 @@ use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
 use super::wire::build_response_packet;
+use super::types::DirectUdpFlowState;
 use super::{
     TUN_FLOW_CLEANUP_INTERVAL, TunUdpEngine, UdpFlowKey, UdpFlowState, ip_family_from_version,
     ip_to_target,
 };
+
+pub(super) enum CloseWork {
+    Tunnel { flow: Arc<Mutex<UdpFlowState>>, reason: &'static str },
+    Direct { flow: Arc<Mutex<DirectUdpFlowState>>, reason: &'static str },
+}
 
 impl TunUdpEngine {
     pub(super) fn spawn_cleanup_loop(&self) {
@@ -29,6 +35,50 @@ impl TunUdpEngine {
                 engine.cleanup_idle_flows().await;
             }
         });
+    }
+
+    /// Spawn the async cleanup pool. Flows removed from the flow table are
+    /// sent to this pool so that `transport.close()` (async, potentially
+    /// slow) runs without holding any map lock and without blocking the
+    /// calling task. Each close request is dispatched to its own spawned
+    /// task for full concurrency.
+    pub(super) fn spawn_cleanup_pool(
+        &self,
+        mut rx: mpsc::UnboundedReceiver<CloseWork>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(work) = rx.recv().await {
+                match work {
+                    CloseWork::Tunnel { flow, reason } => {
+                        tokio::spawn(close_udp_flow(flow, reason));
+                    }
+                    CloseWork::Direct { flow, reason } => {
+                        tokio::spawn(async move {
+                            let flow = flow.lock().await;
+                            flow._reader.abort();
+                            metrics::record_tun_flow_closed(
+                                metrics::DIRECT_GROUP_LABEL,
+                                metrics::DIRECT_UPLINK_LABEL,
+                                reason,
+                                Instant::now().saturating_duration_since(flow.created_at),
+                            );
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    pub(super) fn enqueue_close(&self, flow: Arc<Mutex<UdpFlowState>>, reason: &'static str) {
+        let _ = self.inner.close_tx.send(CloseWork::Tunnel { flow, reason });
+    }
+
+    fn enqueue_close_direct(
+        &self,
+        flow: Arc<Mutex<DirectUdpFlowState>>,
+        reason: &'static str,
+    ) {
+        let _ = self.inner.close_tx.send(CloseWork::Direct { flow, reason });
     }
 
     pub(super) async fn create_flow(
@@ -94,7 +144,7 @@ impl TunUdpEngine {
         }
 
         if let Some(flow) = evicted_flow {
-            close_udp_flow(flow, "evicted").await;
+            self.enqueue_close(flow, "evicted");
         }
 
         metrics::record_uplink_selected("udp", manager.group_name(), &candidate.uplink.name);
@@ -253,7 +303,7 @@ impl TunUdpEngine {
         };
 
         if let Some(flow) = removed {
-            close_udp_flow(flow, reason).await;
+            self.enqueue_close(flow, reason);
         }
     }
 
@@ -292,7 +342,7 @@ impl TunUdpEngine {
         };
 
         for flow in expired_flows {
-            close_udp_flow(flow, "idle_timeout").await;
+            self.enqueue_close(flow, "idle_timeout");
         }
 
         // Clean up idle direct-routed flows — same pattern.
@@ -310,20 +360,17 @@ impl TunUdpEngine {
             }
             expired
         };
-        {
+        let expired_direct: Vec<Arc<Mutex<DirectUdpFlowState>>> = {
             let mut direct = self.inner.direct_flows.write().await;
-            for key in direct_expired_keys {
-                if let Some(flow_handle) = direct.remove(&key) {
-                    let flow = flow_handle.lock().await;
-                    flow._reader.abort();
-                    metrics::record_tun_flow_closed(
-                        metrics::DIRECT_GROUP_LABEL,
-                        metrics::DIRECT_UPLINK_LABEL,
-                        "idle_timeout",
-                        now.saturating_duration_since(flow.created_at),
-                    );
-                }
-            }
+            let removed = direct_expired_keys
+                .into_iter()
+                .filter_map(|k| direct.remove(&k))
+                .collect();
+            maybe_shrink_hash_map(&mut direct);
+            removed
+        };
+        for flow in expired_direct {
+            self.enqueue_close_direct(flow, "idle_timeout");
         }
     }
 
