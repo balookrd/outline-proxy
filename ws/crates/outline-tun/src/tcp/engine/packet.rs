@@ -261,7 +261,7 @@ impl TunTcpEngine {
         };
 
         let segment = normalize_trimmed_segment(&packet, state.client_next_seq);
-        let mut pending_payload = Vec::new();
+        let mut pending_payload = Vec::with_capacity(packet.payload.len());
         let mut should_close_client_half = false;
         let mut should_send_ack = false;
         let mut ack_number = state.client_next_seq;
