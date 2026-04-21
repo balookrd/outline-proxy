@@ -4,6 +4,24 @@
 # Override when the config directory is not writable by the process, e.g.:
 # state_path = "/var/lib/outline-ws-rust/state.toml"
 
+# ── TCP session timeouts ─────────────────────────────────────────────────────
+# upstream_response_secs: how long to wait for the first response byte from the
+# upstream target after the full request has been sent to the server (phase 1,
+# no-failover path).  The default (15 s) is fine for normal browsing but far
+# too short for long-running AI operations such as Codex context compact, which
+# send a large request body and then wait for the server to process and return a
+# large result — a step that routinely takes 1-5 minutes.
+#
+# socks_upstream_idle_secs: how long a fully-established session may be
+# bidirectionally silent before it is torn down (default: 300 s = 5 min).
+# During long model-inference pauses neither direction carries payload; the
+# 60 s server-side WS Ping and the 20 s SS2022 application keepalive prevent
+# NAT/HAProxy from dropping the path, but the idle watcher still fires at this
+# ceiling.  Raise it if you regularly have thinking pauses longer than 5 min.
+[tcp_timeouts]
+upstream_response_secs = 300     # 5 min — covers long Codex compact / AI batch
+# socks_upstream_idle_secs = 600  # uncomment if model pauses exceed 5 min
+
 [socks5]
 # Optional. If omitted, the SOCKS5 listener is disabled.
 listen = "[::]:1080"
