@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, mpsc};
 use tracing::debug;
 
 use std::net::SocketAddr;
@@ -19,6 +19,7 @@ use crate::{SharedTunWriter, TunRoute, TunRouting};
 use socks5_proto::TargetAddr;
 use outline_uplink::TransportKind;
 
+use super::lifecycle::CloseWork;
 use super::types::{DirectFlowTable, DirectUdpFlowState, FlowTable, UdpFlowKey};
 use super::wire::ParsedUdpPacket;
 
@@ -39,6 +40,9 @@ pub(super) struct TunUdpEngineInner {
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
+    /// Async cleanup pool: flows removed from the table are sent here so
+    /// `transport.close()` runs off the hot path without holding any map lock.
+    pub(super) close_tx: mpsc::UnboundedSender<CloseWork>,
 }
 
 impl TunUdpEngine {
@@ -48,6 +52,7 @@ impl TunUdpEngine {
         max_flows: usize,
         idle_timeout: Duration,
     ) -> Self {
+        let (close_tx, close_rx) = mpsc::unbounded_channel();
         let engine = Self {
             inner: Arc::new(TunUdpEngineInner {
                 writer,
@@ -57,9 +62,11 @@ impl TunUdpEngine {
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
+                close_tx,
             }),
         };
         engine.spawn_cleanup_loop();
+        engine.spawn_cleanup_pool(close_rx);
         engine
     }
 
@@ -137,9 +144,8 @@ impl TunUdpEngine {
                     .active_uplink_index_for_transport(TransportKind::Udp)
                     .await;
                 if active_uplink.is_some_and(|active| active != flow_index) {
-                    let stale = self.inner.flows.write().await.remove(&key);
-                    if let Some(stale) = stale {
-                        super::lifecycle::close_udp_flow(stale, "global_switch").await;
+                    if let Some(stale) = self.inner.flows.write().await.remove(&key) {
+                        self.enqueue_close(stale, "global_switch");
                     }
                     None
                 } else {
