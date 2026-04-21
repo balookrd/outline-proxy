@@ -8,7 +8,7 @@ use tokio::sync::{Mutex, Notify, RwLock};
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use outline_metrics as metrics;
-use super::state_machine::TunTcpUpstreamWriter;
+use super::state_machine::{ServerFlush, TunTcpUpstreamWriter};
 use crate::{SharedTunWriter, TunRouting};
 use outline_uplink::{TransportKind, UplinkManager};
 
@@ -110,6 +110,39 @@ impl TunTcpEngine {
         if let Err(error) = self.inner.writer.write_packet(packet).await {
             self.close_flow(key, "write_tun_error").await;
             return Err(error);
+        }
+        Ok(())
+    }
+
+    // Emit the packets produced by `flush_server_output` to the TUN,
+    // recording per-stage metrics (window-stall, data, zero-window probe,
+    // deferred FIN). On write failure the caller is expected to close the
+    // flow — this method records the first failure and bubbles it up.
+    pub(super) async fn write_server_flush(
+        &self,
+        key: &TcpFlowKey,
+        flush: ServerFlush,
+        group_name: &str,
+        uplink_name: &str,
+    ) -> Result<()> {
+        let ip_family = ip_family_from_version(key.version);
+        if flush.window_stalled {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "window_stall");
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_stall");
+        }
+        for packet in flush.data_packets {
+            self.inner.writer.write_packet(&packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_data");
+        }
+        if let Some(packet) = flush.probe_packet {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "zero_window_probe");
+            self.inner.writer.write_packet(&packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_window_probe");
+        }
+        if let Some(packet) = flush.fin_packet {
+            metrics::record_tun_tcp_event(group_name, uplink_name, "deferred_fin_sent");
+            self.inner.writer.write_packet(&packet).await?;
+            metrics::record_tun_packet("upstream_to_tun", ip_family, "tcp_fin");
         }
         Ok(())
     }
