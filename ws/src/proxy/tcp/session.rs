@@ -21,7 +21,7 @@ use tracing::debug;
 // WebSocket writer task is alive, not that the upstream server is still
 // reading.
 
-pub(super) enum UplinkTaskResult {
+pub(super) enum UplinkOutcome {
     Finished,
     /// Kept in the signature of the drive loop for future use (protocols where
     /// tearing down the upstream side eagerly on client EOF is actually
@@ -46,12 +46,12 @@ pub(super) enum UplinkTaskResult {
 /// writer task is alive, not that the upstream server is still reading.
 /// Counting them as activity would make the watcher useless against the
 /// exact stall we are trying to detect.
-pub(super) struct IdleWatcher {
+pub(super) struct IdleGuard {
     activity_rx: mpsc::UnboundedReceiver<()>,
     pub(super) idle_timeout: Duration,
 }
 
-impl IdleWatcher {
+impl IdleGuard {
     pub(super) fn new(activity_rx: mpsc::UnboundedReceiver<()>, idle_timeout: Duration) -> Self {
         Self { activity_rx, idle_timeout }
     }
@@ -72,12 +72,12 @@ impl IdleWatcher {
 pub(super) async fn drive_tcp_session_tasks<U, D>(
     uplink: U,
     downlink: D,
-    idle: Option<IdleWatcher>,
+    idle: Option<IdleGuard>,
     target: Arc<str>,
     post_client_eof_downstream: Duration,
 ) -> Result<()>
 where
-    U: Future<Output = Result<UplinkTaskResult>> + Send + 'static,
+    U: Future<Output = Result<UplinkOutcome>> + Send + 'static,
     D: Future<Output = Result<()>> + Send + 'static,
 {
     let started = tokio::time::Instant::now();
@@ -112,7 +112,7 @@ where
 /// failed mid-stream.  Aborts the uplink task and returns the downlink result.
 async fn handle_downlink_first(
     joined: std::result::Result<Result<()>, tokio::task::JoinError>,
-    uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     started: tokio::time::Instant,
     target: &str,
 ) -> Result<()> {
@@ -153,7 +153,7 @@ async fn handle_downlink_first(
 ///   abort the downlink immediately.
 /// * `Err` / `JoinError` — propagate the error after aborting the downlink.
 async fn handle_uplink_first(
-    joined: std::result::Result<Result<UplinkTaskResult>, tokio::task::JoinError>,
+    joined: std::result::Result<Result<UplinkOutcome>, tokio::task::JoinError>,
     downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
     target: &str,
@@ -161,7 +161,7 @@ async fn handle_uplink_first(
 ) -> Result<()> {
     let elapsed_ms = started.elapsed().as_millis();
     match joined {
-        Ok(Ok(UplinkTaskResult::Finished)) => {
+        Ok(Ok(UplinkOutcome::Finished)) => {
             debug!(
                 target: "outline_ws_rust::session_death",
                 elapsed_ms,
@@ -197,7 +197,7 @@ async fn handle_uplink_first(
                 }
             }
         }
-        Ok(Ok(UplinkTaskResult::CloseSession)) => {
+        Ok(Ok(UplinkOutcome::CloseSession)) => {
             debug!(
                 target: "outline_ws_rust::session_death",
                 elapsed_ms,
@@ -235,7 +235,7 @@ async fn handle_uplink_first(
 /// Classic two-arm driver used when no idle watcher is configured (tests,
 /// callers that manage idleness externally).
 async fn drive_without_idle(
-    mut uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    mut uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
     started: tokio::time::Instant,
     target: Arc<str>,
@@ -254,9 +254,9 @@ async fn drive_without_idle(
 /// we log the usual `session_death` reason.  The watcher arm only wins when
 /// neither task is ready — i.e. the session is genuinely idle.
 async fn drive_with_idle(
-    mut uplink_task: tokio::task::JoinHandle<Result<UplinkTaskResult>>,
+    mut uplink_task: tokio::task::JoinHandle<Result<UplinkOutcome>>,
     mut downlink_task: tokio::task::JoinHandle<Result<()>>,
-    watcher: IdleWatcher,
+    watcher: IdleGuard,
     started: tokio::time::Instant,
     target: Arc<str>,
     post_client_eof_downstream: Duration,
@@ -330,7 +330,7 @@ mod tests {
             let _drop_signal = DropSignal { notify: uplink_dropped_clone };
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
-            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
         };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -351,7 +351,7 @@ mod tests {
         let downlink_completed = std::sync::Arc::new(Notify::new());
         let downlink_completed_clone = std::sync::Arc::clone(&downlink_completed);
         let uplink =
-            async move { Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished) };
+            async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished) };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
             downlink_completed_clone.notify_one();
@@ -377,7 +377,7 @@ mod tests {
             let _drop_signal = DropSignal { notify: uplink_dropped_clone };
             std::future::pending::<()>().await;
             #[allow(unreachable_code)]
-            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
         };
         let downlink = async move {
             let _drop_signal = DropSignal { notify: downlink_dropped_clone };
@@ -389,7 +389,7 @@ mod tests {
         // Activity channel is never signalled, so the watcher must fire and
         // abort both stalled tasks.  The senders are kept alive inside the
         // data tasks' closures (they only drop when the tasks are aborted),
-        // mirroring how `handle_tcp_connect` wires them in.
+        // mirroring how `serve_tcp_connect` wires them in.
         let (activity_tx, activity_rx) = mpsc::unbounded_channel::<()>();
         let _uplink_tx = activity_tx.clone();
         let _downlink_tx = activity_tx.clone();
@@ -400,7 +400,7 @@ mod tests {
             drive_tcp_session_tasks(
                 uplink,
                 downlink,
-                Some(IdleWatcher::new(activity_rx, Duration::from_millis(30))),
+                Some(IdleGuard::new(activity_rx, Duration::from_millis(30))),
                 Arc::from("test"),
                 Duration::from_secs(30),
             ),
@@ -430,7 +430,7 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let _ = uplink_tx.send(());
             }
-            Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
         };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(210)).await;
@@ -443,7 +443,7 @@ mod tests {
             drive_tcp_session_tasks(
                 uplink,
                 downlink,
-                Some(IdleWatcher::new(activity_rx, Duration::from_millis(50))),
+                Some(IdleGuard::new(activity_rx, Duration::from_millis(50))),
                 Arc::from("test"),
                 Duration::from_secs(30),
             ),
@@ -458,7 +458,7 @@ mod tests {
         let downlink_dropped = std::sync::Arc::new(Notify::new());
         let downlink_dropped_clone = std::sync::Arc::clone(&downlink_dropped);
         let uplink =
-            async move { Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::CloseSession) };
+            async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::CloseSession) };
         let downlink = async move {
             let _drop_signal = DropSignal { notify: downlink_dropped_clone };
             std::future::pending::<()>().await;

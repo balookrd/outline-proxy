@@ -15,14 +15,14 @@ use socks5_proto::{
     SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target,
 };
 
-use super::super::DispatchTarget;
+use super::super::Route;
 use outline_uplink::{TransportKind, UplinkManager};
 use super::failover::{
     ActiveTcpUplink, MAX_CHUNK0_FAILOVER_BUF,
     connect_tcp_uplink, connect_tcp_uplink_fresh,
 };
 use super::session::{
-    IdleWatcher, UplinkTaskResult, drive_tcp_session_tasks,
+    IdleGuard, UplinkOutcome, drive_tcp_session_tasks,
 };
 use super::direct::handle_tcp_direct;
 use crate::client_io::ClientIo;
@@ -119,7 +119,7 @@ impl ReplayBufState {
 /// `Ok(None)` when the upstream closed cleanly before sending any data; in
 /// that case `client_write` has already been shut down and the caller should
 /// return `Ok(())` immediately.
-async fn phase1_failover(
+async fn try_uplinks(
     uplinks: &UplinkManager,
     active: &mut ActiveTcpUplink,
     target: &TargetAddr,
@@ -482,7 +482,7 @@ async fn phase1_failover(
 /// mid-stream transport failures back to the uplink manager so that broken
 /// transports trigger the H3→H2 downgrade and flush stale standby connections
 /// promptly.
-async fn phase2_relay(
+async fn run_relay(
     uplinks: UplinkManager,
     active: ActiveTcpUplink,
     target_label: Arc<str>,
@@ -583,7 +583,7 @@ async fn phase2_relay(
                 .report_active_traffic(active_index, TransportKind::Tcp)
                 .await;
         }
-        Ok::<UplinkTaskResult, anyhow::Error>(UplinkTaskResult::Finished)
+        Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
     };
 
     let name_for_downlink_task = Arc::clone(&active_name);
@@ -655,7 +655,7 @@ async fn phase2_relay(
     let result = drive_tcp_session_tasks(
         uplink,
         downlink,
-        Some(IdleWatcher::new(activity_rx, timeouts.socks_upstream_idle)),
+        Some(IdleGuard::new(activity_rx, timeouts.socks_upstream_idle)),
         target_label,
         timeouts.post_client_eof_downstream,
     )
@@ -692,23 +692,23 @@ async fn phase2_relay(
 // Public entry point
 // ---------------------------------------------------------------------------
 
-pub async fn handle_tcp_connect(
+pub async fn serve_tcp_connect(
     mut client: TcpStream,
-    dispatch: DispatchTarget,
+    dispatch: Route,
     target: TargetAddr,
     dns_cache: Arc<outline_transport::DnsCache>,
     timeouts: TcpTimeouts,
 ) -> Result<()> {
     let uplinks = match dispatch {
-        DispatchTarget::Direct { fwmark } => {
+        Route::Direct { fwmark } => {
             info!(target = %target, "TCP route: direct connection");
             return handle_tcp_direct(client, target, fwmark, &dns_cache, timeouts).await;
         }
-        DispatchTarget::Drop => {
+        Route::Drop => {
             info!(target = %target, "TCP route: policy drop");
             return handle_tcp_drop(client, &target).await;
         }
-        DispatchTarget::Group { name, manager } => {
+        Route::Group { name, manager } => {
             debug!(target = %target, group = %name, "TCP route: dispatching via group");
             manager
         }
@@ -781,7 +781,7 @@ pub async fn handle_tcp_connect(
         let mut replay = ReplayBufState::new();
 
         // ── Phase 1: chunk-0 failover ────────────────────────────────────────
-        let first_chunk = match phase1_failover(
+        let first_chunk = match try_uplinks(
             &uplinks,
             &mut active,
             &target,
@@ -805,7 +805,7 @@ pub async fn handle_tcp_connect(
 
         // ── Phase 2: bidirectional relay ─────────────────────────────────────
         let target_label: Arc<str> = Arc::from(target.to_string());
-        phase2_relay(
+        run_relay(
             uplinks,
             active,
             target_label,
