@@ -217,7 +217,7 @@ struct SharedH2Connection {
 
 impl SharedH2Connection {
     fn is_open(&self) -> bool {
-        !self.closed.load(Ordering::Relaxed)
+        !self.closed.load(Ordering::Acquire)
     }
 
     async fn open_websocket(self: &Arc<Self>, target_uri: &str) -> Result<WsTransportStream> {
@@ -231,7 +231,7 @@ impl SharedH2Connection {
                 // open another stream skip this entry in `is_open()` instead
                 // of repeating the same failure before the caller invalidates
                 // the cache entry.
-                self.closed.store(true, Ordering::Relaxed);
+                self.closed.store(true, Ordering::Release);
                 Err(error)
             },
         }
@@ -564,7 +564,7 @@ async fn connect_h2_connection(
     );
     let driver_task = AbortOnDrop::new(tokio::spawn(async move {
         let result = conn.await;
-        closed_flag.store(true, Ordering::Relaxed);
+        closed_flag.store(true, Ordering::Release);
         if let Some(cache_key) = cache_key {
             invalidate_shared_h2_connection_if_current(&cache_key, id).await;
         }
