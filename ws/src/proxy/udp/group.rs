@@ -8,7 +8,9 @@ use tokio::task::JoinSet;
 use tracing::debug;
 
 use socks5_proto::TargetAddr;
-use outline_uplink::{UplinkManager, UplinkRegistry};
+use outline_metrics as metrics;
+use outline_transport::is_dropped_oversized_udp_error;
+use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
 use super::transport::{
     ActiveUdpTransport, close_active_udp_transport, failover_udp_transport,
@@ -26,6 +28,54 @@ pub(super) struct GroupUdpContext {
     pub(super) manager: UplinkManager,
     pub(super) active: Arc<Mutex<ActiveUdpTransport>>,
     pub(super) group_name: Arc<str>,
+}
+
+impl GroupUdpContext {
+    /// Send a pre-wrapped payload through this group's active transport.
+    ///
+    /// Reconciles global transport state before sending, and falls over to a
+    /// replacement uplink on error. All transport-state side effects are
+    /// contained here so callers in the dispatch layer stay stateless.
+    pub(super) async fn send_packet(
+        &self,
+        target: Option<&TargetAddr>,
+        payload: &[u8],
+    ) -> Result<()> {
+        reconcile_global_udp_transport(&self.manager, &self.active, target).await?;
+        let (transport, uplink_name, active_index) = {
+            let active = self.active.lock().await;
+            (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
+        };
+        let group = self.manager.group_name();
+        if let Err(error) = transport.send_packet(payload).await {
+            if is_dropped_oversized_udp_error(&error) {
+                return Ok(());
+            }
+            let replacement =
+                failover_udp_transport(&self.manager, &self.active, target, active_index, error)
+                    .await?;
+            if let Err(error) = replacement.transport.send_packet(payload).await {
+                if is_dropped_oversized_udp_error(&error) {
+                    return Ok(());
+                }
+                return Err(error);
+            }
+            metrics::add_udp_datagram("client_to_upstream", group, &replacement.uplink_name);
+            metrics::add_bytes(
+                "udp",
+                "client_to_upstream",
+                group,
+                &replacement.uplink_name,
+                payload.len(),
+            );
+            self.manager.report_active_traffic(replacement.index, TransportKind::Udp).await;
+        } else {
+            metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
+            metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
+            self.manager.report_active_traffic(active_index, TransportKind::Udp).await;
+        }
+        Ok(())
+    }
 }
 
 /// A response datagram emitted by some group's downlink task, waiting to be
