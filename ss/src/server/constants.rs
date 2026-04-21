@@ -12,6 +12,14 @@ pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 
 pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
+// Interval at which the server sends WebSocket Ping frames to clients on active
+// TCP relay sessions.  The client's WsReadTransport resets its WS_READ_IDLE_TIMEOUT
+// on every received frame, including Ping.  Without these Pings the client times
+// out (currently 300 s) when the remote target is slow to respond — e.g. during
+// a long model-inference step on an SSE/streaming API.  60 s is well below the
+// 300 s client timeout and low enough that even a Ping lost to transient packet
+// loss is recovered before the timer fires.
+pub(super) const WS_TCP_KEEPALIVE_PING_INTERVAL_SECS: u64 = 60;
 pub(super) const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
 pub(super) const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;

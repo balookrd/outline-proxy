@@ -49,6 +49,7 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     /// Used when the server cannot reach the upstream target but the client
     /// may succeed if it retries on the same or a different uplink.
     fn close_try_again_msg() -> Self::Msg;
+    fn ping_msg() -> Self::Msg;
     fn pong_msg(payload: Bytes) -> Self::Msg;
     fn binary_len(msg: &Self::Msg) -> Option<usize>;
     fn make_udp_response_sender(
@@ -98,6 +99,7 @@ impl WsSocket for AxumWs {
     fn close_try_again_msg() -> Message {
         Message::Close(Some(CloseFrame { code: close_code::AGAIN, reason: "".into() }))
     }
+    fn ping_msg() -> Message { Message::Ping(Bytes::new()) }
     fn pong_msg(p: Bytes) -> Message { Message::Pong(p) }
     fn binary_len(m: &Message) -> Option<usize> {
         if let Message::Binary(b) = m { Some(b.len()) } else { None }
@@ -147,6 +149,7 @@ impl WsSocket for H3Ws {
     fn binary_msg(data: Bytes) -> H3Message { H3Message::Binary(data) }
     fn close_msg() -> H3Message { H3Message::Close(None) }
     fn close_try_again_msg() -> H3Message { H3Message::Close(Some(CloseReason::new(1013, ""))) }
+    fn ping_msg() -> H3Message { H3Message::Ping(Bytes::new()) }
     fn pong_msg(p: Bytes) -> H3Message { H3Message::Pong(p) }
     fn binary_len(m: &H3Message) -> Option<usize> {
         if let H3Message::Binary(b) = m { Some(b.len()) } else { None }
