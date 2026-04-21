@@ -5,6 +5,15 @@
 # state_path = "/var/lib/outline-ws-rust/state.toml"
 
 # ── TCP session timeouts ─────────────────────────────────────────────────────
+# post_client_eof_downstream_secs: after the client half-closes (sent full
+# request body), how long the downstream half-flow is allowed to keep
+# flushing the server's response before being forcibly closed.  The default
+# (600 s = 10 min) covers modern AI inference patterns where the client
+# finishes uploading, then the server thinks for minutes before streaming
+# back. Earlier versions used 30 s here, which silently killed Codex
+# `compact` and Claude long-context jobs mid-response and surfaced as
+# client-side "error sending request" / "stream disconnected".
+#
 # upstream_response_secs: how long to wait for the first response byte from the
 # upstream target after the full request has been sent to the server (phase 1,
 # no-failover path).  The default (15 s) is fine for normal browsing but far
@@ -20,6 +29,7 @@
 # ceiling.  Raise it if you regularly have thinking pauses longer than 5 min.
 [tcp_timeouts]
 upstream_response_secs = 300     # 5 min — covers long Codex compact / AI batch
+# post_client_eof_downstream_secs = 600  # default; raise for >10 min thinking
 # socks_upstream_idle_secs = 600  # uncomment if model pauses exceed 5 min
 
 [socks5]

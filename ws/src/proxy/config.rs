@@ -10,7 +10,12 @@ use super::router::Router;
 ///
 /// `post_client_eof_downstream` — bound for the downstream side to flush and
 /// send FIN after the client half-closes; otherwise stuck half-open sessions
-/// pin two socket FDs forever.
+/// pin two socket FDs forever. Default 600 s (10 min): long enough to cover
+/// modern AI inference patterns that upload a large request body, close the
+/// request stream, and then wait minutes for the server to think (Codex
+/// `compact`, Claude long-context jobs, etc.). Short values (the previous
+/// 30 s default) aborted those sessions mid-response and surfaced to the
+/// client as "error sending request" / "stream disconnected".
 ///
 /// `upstream_response` — chunk-0 response deadline per uplink when no
 /// failover is available (strict or exhausted candidates).
@@ -30,7 +35,7 @@ pub struct TcpTimeouts {
 
 impl TcpTimeouts {
     pub const DEFAULT: Self = Self {
-        post_client_eof_downstream: Duration::from_secs(30),
+        post_client_eof_downstream: Duration::from_secs(600),
         upstream_response: Duration::from_secs(15),
         socks_upstream_idle: Duration::from_secs(300),
         direct_idle: Duration::from_secs(120),
