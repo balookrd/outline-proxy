@@ -37,18 +37,14 @@ use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
 use crate::{
-    config::Config,
+    config::{Config, TuningProfile},
     crypto::UserKey,
     metrics::{Metrics, Protocol, Transport},
 };
 
 use super::constants::{
-    H2_CONNECTION_WINDOW_BYTES, H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
-    H2_MAX_SEND_BUF_SIZE, H2_STREAM_WINDOW_BYTES,
-    H3_CONNECTION_WINDOW_BYTES, H3_MAX_BACKPRESSURE_BYTES, H3_MAX_CONCURRENT_BIDI_STREAMS,
-    H3_MAX_CONCURRENT_UNI_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS,
-    H3_QUIC_PING_INTERVAL_SECS, H3_STREAM_WINDOW_BYTES, H3_UDP_SOCKET_BUFFER_BYTES,
-    H3_WRITE_BUFFER_BYTES,
+    H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, H3_MAX_UDP_PAYLOAD_SIZE,
+    H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
 };
 use super::state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route};
 use super::transport::{tcp_websocket_upgrade, udp_websocket_upgrade};
@@ -86,10 +82,11 @@ pub(super) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer
     let listen = config
         .effective_h3_listen()
         .ok_or_else(|| anyhow!("h3 server requested without tls configuration"))?;
+    let profile = &config.tuning;
     let tls_config = load_h3_tls_config(config)?;
-    let ws_config = build_h3_ws_config();
-    let server_config = build_h3_quinn_server_config(tls_config)?;
-    let socket = bind_h3_udp_socket(listen)?;
+    let ws_config = build_h3_ws_config(profile);
+    let server_config = build_h3_quinn_server_config(tls_config, profile)?;
+    let socket = bind_h3_udp_socket(listen, profile)?;
     let mut endpoint_config = quinn::EndpointConfig::default();
     endpoint_config
         .max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
@@ -104,32 +101,35 @@ pub(super) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer
     Ok(H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, ws_config))
 }
 
-fn build_h3_ws_config() -> H3WebSocketConfig {
+fn build_h3_ws_config(profile: &TuningProfile) -> H3WebSocketConfig {
     H3WebSocketConfig::builder()
         .idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS as u32)
         .ping_interval(H3_QUIC_PING_INTERVAL_SECS as u32)
-        .max_backpressure(H3_MAX_BACKPRESSURE_BYTES)
-        .write_buffer_size(H3_WRITE_BUFFER_BYTES)
+        .max_backpressure(profile.h3_max_backpressure_bytes)
+        .write_buffer_size(profile.h3_write_buffer_bytes)
         .http3_idle_timeout(H3_QUIC_IDLE_TIMEOUT_SECS * 1_000)
-        .http3_stream_window_size(H3_STREAM_WINDOW_BYTES)
+        .http3_stream_window_size(profile.h3_stream_window_bytes)
         .http3_enable_connect_protocol(true)
         .http3_max_udp_payload_size(H3_MAX_UDP_PAYLOAD_SIZE)
         .build()
 }
 
-fn build_h3_quinn_server_config(tls_config: rustls::ServerConfig) -> Result<quinn::ServerConfig> {
+fn build_h3_quinn_server_config(
+    tls_config: rustls::ServerConfig,
+    profile: &TuningProfile,
+) -> Result<quinn::ServerConfig> {
     let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
         .map_err(|_| anyhow!("invalid HTTP/3 TLS config"))?;
     let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
-    server_config.transport_config(Arc::new(build_h3_transport_config()?));
+    server_config.transport_config(Arc::new(build_h3_transport_config(profile)?));
     Ok(server_config)
 }
 
-fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
+fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport
-        .max_concurrent_bidi_streams(quinn::VarInt::from_u32(H3_MAX_CONCURRENT_BIDI_STREAMS))
-        .max_concurrent_uni_streams(quinn::VarInt::from_u32(H3_MAX_CONCURRENT_UNI_STREAMS))
+        .max_concurrent_bidi_streams(quinn::VarInt::from_u32(profile.h3_max_concurrent_bidi_streams))
+        .max_concurrent_uni_streams(quinn::VarInt::from_u32(profile.h3_max_concurrent_uni_streams))
         .max_idle_timeout(Some(
             Duration::from_secs(H3_QUIC_IDLE_TIMEOUT_SECS)
                 .try_into()
@@ -142,19 +142,23 @@ fn build_h3_transport_config() -> Result<quinn::TransportConfig> {
         // H3_QUIC_IDLE_TIMEOUT_SECS, killing all multiplexed WebSocket sessions.
         .keep_alive_interval(Some(Duration::from_secs(H3_QUIC_PING_INTERVAL_SECS)))
         .stream_receive_window(quinn::VarInt::from_u32(
-            u32::try_from(H3_STREAM_WINDOW_BYTES).expect("H3_STREAM_WINDOW_BYTES exceeds u32"),
+            u32::try_from(profile.h3_stream_window_bytes)
+                .expect("h3_stream_window_bytes exceeds u32"),
         ))
         .receive_window(quinn::VarInt::from_u32(
-            u32::try_from(H3_CONNECTION_WINDOW_BYTES)
-                .expect("H3_CONNECTION_WINDOW_BYTES exceeds u32"),
+            u32::try_from(profile.h3_connection_window_bytes)
+                .expect("h3_connection_window_bytes exceeds u32"),
         ))
-        .send_window(H3_CONNECTION_WINDOW_BYTES)
-        .datagram_receive_buffer_size(Some(H3_CONNECTION_WINDOW_BYTES as usize))
-        .datagram_send_buffer_size(H3_CONNECTION_WINDOW_BYTES as usize);
+        .send_window(profile.h3_connection_window_bytes)
+        .datagram_receive_buffer_size(Some(profile.h3_connection_window_bytes as usize))
+        .datagram_send_buffer_size(profile.h3_connection_window_bytes as usize);
     Ok(transport)
 }
 
-fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocket> {
+fn bind_h3_udp_socket(
+    listen: std::net::SocketAddr,
+    profile: &TuningProfile,
+) -> Result<std::net::UdpSocket> {
     let domain = if listen.is_ipv6() {
         socket2::Domain::IPV6
     } else {
@@ -163,26 +167,26 @@ fn bind_h3_udp_socket(listen: std::net::SocketAddr) -> Result<std::net::UdpSocke
     let socket = socket2::Socket::new(domain, socket2::Type::DGRAM, Some(socket2::Protocol::UDP))
         .context("failed to create HTTP/3 UDP socket")?;
     socket
-        .set_recv_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
+        .set_recv_buffer_size(profile.h3_udp_socket_buffer_bytes)
         .context("failed to set HTTP/3 UDP receive buffer")?;
     if let Ok(actual) = socket.recv_buffer_size()
-        && actual < H3_UDP_SOCKET_BUFFER_BYTES
+        && actual < profile.h3_udp_socket_buffer_bytes
     {
         tracing::warn!(
-            requested = H3_UDP_SOCKET_BUFFER_BYTES,
+            requested = profile.h3_udp_socket_buffer_bytes,
             actual,
             "HTTP/3 UDP receive buffer capped by OS — increase net.core.rmem_max (Linux) \
              or kern.ipc.maxsockbuf (macOS) to reduce packet drops"
         );
     }
     socket
-        .set_send_buffer_size(H3_UDP_SOCKET_BUFFER_BYTES)
+        .set_send_buffer_size(profile.h3_udp_socket_buffer_bytes)
         .context("failed to set HTTP/3 UDP send buffer")?;
     if let Ok(actual) = socket.send_buffer_size()
-        && actual < H3_UDP_SOCKET_BUFFER_BYTES
+        && actual < profile.h3_udp_socket_buffer_bytes
     {
         tracing::warn!(
-            requested = H3_UDP_SOCKET_BUFFER_BYTES,
+            requested = profile.h3_udp_socket_buffer_bytes,
             actual,
             "HTTP/3 UDP send buffer capped by OS — increase net.core.wmem_max (Linux) \
              or kern.ipc.maxsockbuf (macOS) to reduce packet drops"
@@ -206,7 +210,7 @@ pub(super) async fn serve_tcp_listener(
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
         let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(listener, app, acceptor, shutdown).await
+        serve_tls_listener(listener, app, acceptor, config.tuning, shutdown).await
     } else {
         serve_listener(listener, app, shutdown).await
     }
@@ -426,6 +430,7 @@ async fn handle_h3_request(
             Arc::clone(&services.nat_table),
             Arc::clone(&services.dns_cache),
             services.prefer_ipv4_upstream,
+            services.udp_relay_semaphore.clone(),
         )
         .await;
         finish_ws_session(session, result, "udp");
@@ -576,6 +581,7 @@ async fn serve_tls_listener(
     listener: TcpListener,
     app: Router,
     acceptor: TlsAcceptor,
+    profile: TuningProfile,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     loop {
@@ -615,7 +621,7 @@ async fn serve_tls_listener(
 
             let io = TokioIo::new(tls_stream);
             let service = TowerToHyperService::new(app);
-            let builder = build_http_server_builder();
+            let builder = build_http_server_builder(&profile);
 
             if let Err(error) = builder.serve_connection_with_upgrades(io, service).await
                 && !is_benign_http_serve_error(error.as_ref())
@@ -626,15 +632,15 @@ async fn serve_tls_listener(
     }
 }
 
-fn build_http_server_builder() -> HyperBuilder<TokioExecutor> {
+fn build_http_server_builder(profile: &TuningProfile) -> HyperBuilder<TokioExecutor> {
     let mut builder = HyperBuilder::new(TokioExecutor::new());
     builder
         .http2()
         .timer(TokioTimer::new())
         .enable_connect_protocol()
-        .initial_stream_window_size(Some(H2_STREAM_WINDOW_BYTES))
-        .initial_connection_window_size(Some(H2_CONNECTION_WINDOW_BYTES))
-        .max_send_buf_size(H2_MAX_SEND_BUF_SIZE)
+        .initial_stream_window_size(Some(profile.h2_stream_window_bytes))
+        .initial_connection_window_size(Some(profile.h2_connection_window_bytes))
+        .max_send_buf_size(profile.h2_max_send_buf_size)
         .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
         .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
     builder

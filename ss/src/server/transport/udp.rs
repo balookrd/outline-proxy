@@ -8,7 +8,7 @@ use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::{
@@ -169,6 +169,7 @@ async fn run_udp_relay<T: WsSocket>(
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    global_relay_semaphore: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
@@ -206,6 +207,28 @@ async fn run_udp_relay<T: WsSocket>(
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
+                        // Reserve a slot against the process-wide cap so that
+                        // fan-out across WebSocket sessions cannot blow up the
+                        // total in-flight task count. Drop the datagram with a
+                        // distinct label when the global ceiling is reached.
+                        let global_permit = match global_relay_semaphore
+                            .as_ref()
+                            .map(|sem| Arc::clone(sem).try_acquire_owned())
+                        {
+                            Some(Ok(permit)) => Some(permit),
+                            Some(Err(_)) => {
+                                metrics.record_udp_relay_drop(
+                                    Transport::Udp,
+                                    protocol,
+                                    "global_concurrency_limit",
+                                );
+                                warn!(
+                                    "global udp concurrent relay limit reached, dropping datagram"
+                                );
+                                continue;
+                            }
+                            None => None,
+                        };
                         let tx = outbound_data_tx.clone();
                         let users = users.clone();
                         let metrics = metrics.clone();
@@ -235,6 +258,10 @@ async fn run_udp_relay<T: WsSocket>(
                             {
                                 warn!(?error, "udp datagram relay failed");
                             }
+                            // Hold the permit until the relay future completes
+                            // so the semaphore accurately reflects in-flight
+                            // work; dropping here releases the slot.
+                            drop(global_permit);
                         }.boxed());
                     }
                     WsFrame::Close => {
@@ -279,6 +306,7 @@ pub(super) async fn handle_udp_connection(
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    global_relay_semaphore: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     run_udp_relay::<AxumWs>(
         AxumWs(socket),
@@ -290,6 +318,7 @@ pub(super) async fn handle_udp_connection(
         nat_table,
         dns_cache,
         prefer_ipv4_upstream,
+        global_relay_semaphore,
     )
     .await
 }
@@ -304,6 +333,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    global_relay_semaphore: Option<Arc<Semaphore>>,
 ) -> Result<()> {
     run_udp_relay::<H3Ws>(
         H3Ws(socket),
@@ -315,6 +345,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
         nat_table,
         dns_cache,
         prefer_ipv4_upstream,
+        global_relay_semaphore,
     )
     .await
 }

@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::{CipherKind, UserEntry};
+use super::{CipherKind, TuningOverrides, TuningProfileKind, UserEntry};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,6 +40,10 @@ pub(super) struct FileConfig {
     pub fwmark: Option<u32>,
     pub users: Option<Vec<UserEntry>>,
     pub method: Option<CipherKind>,
+    pub tuning_profile: Option<TuningProfileKind>,
+    #[serde(default)]
+    pub tuning: Option<TuningOverrides>,
+    pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {
@@ -93,6 +97,46 @@ ws_path_udp = "/alice-udp"
         let users = config.users.unwrap();
         assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
         assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
+    }
+
+    #[test]
+    fn parses_tuning_profile_and_overrides() {
+        let config: FileConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:3000"
+tuning_profile = "medium"
+
+[tuning]
+h3_udp_socket_buffer_bytes = 2097152
+h3_max_concurrent_bidi_streams = 128
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.tuning_profile,
+            Some(super::TuningProfileKind::Medium),
+        );
+        let tuning = config.tuning.unwrap();
+        assert_eq!(tuning.h3_udp_socket_buffer_bytes, Some(2_097_152));
+        assert_eq!(tuning.h3_max_concurrent_bidi_streams, Some(128));
+        assert_eq!(tuning.h3_connection_window_bytes, None);
+    }
+
+    #[test]
+    fn rejects_unknown_tuning_fields() {
+        let error = toml::from_str::<FileConfig>(
+            r#"
+listen = "0.0.0.0:3000"
+
+[tuning]
+not_a_real_field = 123
+"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unknown field"));
+        assert!(error.contains("not_a_real_field"));
     }
 
     #[test]

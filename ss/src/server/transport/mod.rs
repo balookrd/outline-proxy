@@ -151,6 +151,7 @@ pub(super) async fn udp_websocket_upgrade(
             nat_table,
             Arc::clone(&state.services.dns_cache),
             state.services.prefer_ipv4_upstream,
+            state.services.udp_relay_semaphore.clone(),
         )
         .await;
         finish_ws_session(session, result, "udp");

@@ -750,6 +750,9 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: crate::config::CipherKind::Chacha20IetfPoly1305,
+            tuning: Default::default(),
+            udp_max_concurrent_relay_tasks:
+                crate::config::default_udp_max_concurrent_relay_tasks(),
         }
     }
 

@@ -63,6 +63,7 @@ fn build_test_state(
         nat_table,
         dns_cache,
         prefer_ipv4_upstream: false,
+        udp_relay_semaphore: None,
     });
     let auth = Arc::new(AuthPolicy {
         users,
@@ -1289,6 +1290,9 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         fwmark: None,
         users,
         method: CipherKind::Chacha20IetfPoly1305,
+        tuning: Default::default(),
+        udp_max_concurrent_relay_tasks:
+            crate::config::default_udp_max_concurrent_relay_tasks(),
     }
 }
 

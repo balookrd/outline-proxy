@@ -451,6 +451,8 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+            tuning: Default::default(),
+            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new(
@@ -501,6 +503,8 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+            tuning: Default::default(),
+            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new(
@@ -553,6 +557,8 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+            tuning: Default::default(),
+            udp_max_concurrent_relay_tasks: 0,
         };
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(Duration::from_secs(300));
