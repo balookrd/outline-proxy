@@ -7,13 +7,10 @@ use tracing::warn;
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_metrics as metrics;
-use outline_transport::is_dropped_oversized_udp_error;
-use outline_uplink::TransportKind;
 
 use socks5_proto::TargetAddr;
 
 use super::group::GroupUdpContext;
-use super::transport::{failover_udp_transport, reconcile_global_udp_transport};
 
 pub(super) const MAX_CLIENT_UDP_PACKET_SIZE: usize = SHADOWSOCKS_MAX_PAYLOAD;
 pub(super) const MAX_UDP_RELAY_PACKET_SIZE: usize = 65_507;
@@ -77,44 +74,10 @@ pub(super) async fn send_udp_direct(
     Ok(())
 }
 
-/// Send a pre-wrapped payload through a group's active transport, with
-/// reconciliation + runtime failover mirroring the pre-refactor uplink loop.
 pub(super) async fn send_tunneled_udp(
     ctx: &GroupUdpContext,
     target: Option<&TargetAddr>,
     payload: &[u8],
 ) -> Result<()> {
-    reconcile_global_udp_transport(&ctx.manager, &ctx.active, target).await?;
-    let (transport, uplink_name, active_index) = {
-        let active = ctx.active.lock().await;
-        (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
-    };
-    let group = ctx.manager.group_name();
-    if let Err(error) = transport.send_packet(payload).await {
-        if is_dropped_oversized_udp_error(&error) {
-            return Ok(());
-        }
-        let replacement =
-            failover_udp_transport(&ctx.manager, &ctx.active, target, active_index, error).await?;
-        if let Err(error) = replacement.transport.send_packet(payload).await {
-            if is_dropped_oversized_udp_error(&error) {
-                return Ok(());
-            }
-            return Err(error);
-        }
-        metrics::add_udp_datagram("client_to_upstream", group, &replacement.uplink_name);
-        metrics::add_bytes(
-            "udp",
-            "client_to_upstream",
-            group,
-            &replacement.uplink_name,
-            payload.len(),
-        );
-        ctx.manager.report_active_traffic(replacement.index, TransportKind::Udp).await;
-    } else {
-        metrics::add_udp_datagram("client_to_upstream", group, &uplink_name);
-        metrics::add_bytes("udp", "client_to_upstream", group, &uplink_name, payload.len());
-        ctx.manager.report_active_traffic(active_index, TransportKind::Udp).await;
-    }
-    Ok(())
+    ctx.send_packet(target, payload).await
 }
