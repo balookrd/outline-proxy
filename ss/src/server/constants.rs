@@ -10,7 +10,7 @@ pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
 
-pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
+pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 pub(super) const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
