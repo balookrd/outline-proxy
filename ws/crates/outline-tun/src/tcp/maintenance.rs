@@ -6,9 +6,11 @@ use crate::config::TunTcpConfig;
 
 use super::TCP_TIME_WAIT_TIMEOUT;
 use super::state_machine::{
-    TcpFlowState, TcpFlowStatus, keepalive_probe_eligible, maybe_emit_keepalive_probe,
-    maybe_emit_zero_window_probe, next_keepalive_deadline, next_retransmission_deadline,
-    note_congestion_event, retransmit_budget_exhausted, retransmit_due_segment, sync_flow_metrics,
+    TcpFlowState, TcpFlowStatus, half_close_timed_out, handshake_timed_out, idle_timed_out,
+    is_half_closed_status, keepalive_probe_eligible, keepalive_probes_exhausted,
+    maybe_emit_keepalive_probe, maybe_emit_zero_window_probe, next_keepalive_deadline,
+    next_retransmission_deadline, note_congestion_event, retransmit_budget_exhausted,
+    retransmit_due_segment, sync_flow_metrics, time_wait_expired,
 };
 
 pub(super) enum FlowMaintenancePlan {
@@ -61,14 +63,7 @@ fn next_flow_deadline(
         );
     }
 
-    if matches!(
-        state.status,
-        TcpFlowStatus::CloseWait
-            | TcpFlowStatus::FinWait1
-            | TcpFlowStatus::FinWait2
-            | TcpFlowStatus::Closing
-            | TcpFlowStatus::LastAck
-    ) {
+    if is_half_closed_status(state.status) {
         deadline = Some(
             deadline
                 .map(|current| current.min(state.status_since + tcp.half_close_timeout))
@@ -99,33 +94,19 @@ pub(super) fn plan_flow_maintenance(
     idle_timeout: Duration,
     now: Instant,
 ) -> Result<FlowMaintenancePlan> {
-    if state.status == TcpFlowStatus::TimeWait
-        && now.saturating_duration_since(state.status_since) >= TCP_TIME_WAIT_TIMEOUT
-    {
+    if time_wait_expired(state.status, state.status_since, now) {
         return Ok(FlowMaintenancePlan::Close("time_wait_expired"));
     }
 
-    if state.status == TcpFlowStatus::SynReceived
-        && now.saturating_duration_since(state.status_since) >= tcp.handshake_timeout
-    {
+    if handshake_timed_out(state.status, state.status_since, tcp.handshake_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("handshake_timeout"));
     }
 
-    if matches!(
-        state.status,
-        TcpFlowStatus::CloseWait
-            | TcpFlowStatus::FinWait1
-            | TcpFlowStatus::FinWait2
-            | TcpFlowStatus::Closing
-            | TcpFlowStatus::LastAck
-    ) && now.saturating_duration_since(state.status_since) >= tcp.half_close_timeout
-    {
+    if half_close_timed_out(state.status, state.status_since, tcp.half_close_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("half_close_timeout"));
     }
 
-    if state.status != TcpFlowStatus::TimeWait
-        && now.saturating_duration_since(state.last_seen) >= idle_timeout
-    {
+    if idle_timed_out(state.status, state.last_seen, idle_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("idle_timeout"));
     }
 
@@ -153,11 +134,13 @@ pub(super) fn plan_flow_maintenance(
 
     if tcp.keepalive_idle.is_some()
         && keepalive_probe_eligible(state)
-        && state.keepalive_probes_sent >= tcp.keepalive_max_probes
-        && state
-            .last_keepalive_probe_at
-            .map(|last| now.saturating_duration_since(last) >= tcp.keepalive_interval)
-            .unwrap_or(false)
+        && keepalive_probes_exhausted(
+            state.keepalive_probes_sent,
+            tcp.keepalive_max_probes,
+            state.last_keepalive_probe_at,
+            tcp.keepalive_interval,
+            now,
+        )
     {
         return Ok(FlowMaintenancePlan::Abort("keepalive_timeout"));
     }
