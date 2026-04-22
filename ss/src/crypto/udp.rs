@@ -169,6 +169,7 @@ fn try_decrypt_udp_packet_for_user(
     Ok(None)
 }
 
+#[cfg(test)]
 pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let mut salt = vec![0_u8; user.cipher().salt_len()];
     SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
@@ -198,24 +199,55 @@ pub fn encrypt_udp_packet_for_response(
 ) -> Result<Vec<u8>, CryptoError> {
     match session {
         UdpSession::Legacy => {
-            let mut plaintext = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
-            plaintext.extend_from_slice(payload);
-            encrypt_udp_packet(user, &plaintext)
+            let header = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
+            let salt_len = user.cipher().salt_len();
+            let plaintext_len = header.len() + payload.len();
+            let mut packet = Vec::with_capacity(salt_len + plaintext_len + TAG_LEN);
+            packet.resize(salt_len, 0);
+            SystemRandom::new()
+                .fill(&mut packet[..salt_len])
+                .map_err(|_| CryptoError::Random)?;
+            packet.extend_from_slice(&header);
+            packet.extend_from_slice(payload);
+
+            let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+            let key_len =
+                derive_subkey(user.cipher(), user.master_key(), &packet[..salt_len], &mut subkey)?;
+            let algorithm = cipher_algorithm(user.cipher());
+            let key =
+                UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
+            let less_safe = LessSafeKey::new(key);
+            let tag = less_safe
+                .seal_in_place_separate_tag(
+                    nonce_zero(),
+                    Aad::empty(),
+                    &mut packet[salt_len..],
+                )
+                .map_err(|_| CryptoError::Cipher)?;
+            packet.extend_from_slice(tag.as_ref());
+            Ok(packet)
         },
         UdpSession::Aes2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
             let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
-            let mut body = Vec::with_capacity(1 + 8 + 8 + 2 + target.len() + payload.len());
-            body.push(SS2022_UDP_SERVER_TYPE);
-            body.extend_from_slice(&current_unix_secs().to_be_bytes());
-            body.extend_from_slice(client_session_id);
-            body.extend_from_slice(&0_u16.to_be_bytes());
-            body.extend_from_slice(&target);
-            body.extend_from_slice(payload);
+            let body_len = 1 + 8 + 8 + 2 + target.len() + payload.len();
 
             let mut separate_header = [0_u8; SS2022_UDP_SEPARATE_HEADER_LEN];
             separate_header[..8].copy_from_slice(&server_session_id);
             separate_header[8..].copy_from_slice(&packet_id.to_be_bytes());
+            let encrypted_header = encrypt_ss2022_separate_header(user, &separate_header)?;
+
+            let mut packet =
+                Vec::with_capacity(SS2022_UDP_SEPARATE_HEADER_LEN + body_len + TAG_LEN);
+            packet.extend_from_slice(&encrypted_header);
+            let body_start = packet.len();
+            packet.push(SS2022_UDP_SERVER_TYPE);
+            packet.extend_from_slice(&current_unix_secs().to_be_bytes());
+            packet.extend_from_slice(client_session_id);
+            packet.extend_from_slice(&0_u16.to_be_bytes());
+            packet.extend_from_slice(&target);
+            packet.extend_from_slice(payload);
+
             let mut subkey = [0_u8; MAX_SUBKEY_LEN];
             let key_len =
                 derive_subkey(user.cipher(), user.master_key(), &server_session_id, &mut subkey)?;
@@ -223,42 +255,45 @@ pub fn encrypt_udp_packet_for_response(
             let key =
                 UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
             let less_safe = LessSafeKey::new(key);
-            less_safe
-                .seal_in_place_append_tag(
+            let tag = less_safe
+                .seal_in_place_separate_tag(
                     ss2022_udp_nonce(&separate_header)?,
                     Aad::empty(),
-                    &mut body,
+                    &mut packet[body_start..],
                 )
                 .map_err(|_| CryptoError::Cipher)?;
-
-            let encrypted_header = encrypt_ss2022_separate_header(user, &separate_header)?;
-            let mut packet = encrypted_header.to_vec();
-            packet.extend_from_slice(&body);
+            packet.extend_from_slice(tag.as_ref());
             Ok(packet)
         },
         UdpSession::Chacha2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
             let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
-            let mut body = Vec::with_capacity(8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len());
-            body.extend_from_slice(&server_session_id);
-            body.extend_from_slice(&packet_id.to_be_bytes());
-            body.push(SS2022_UDP_SERVER_TYPE);
-            body.extend_from_slice(&current_unix_secs().to_be_bytes());
-            body.extend_from_slice(client_session_id);
-            body.extend_from_slice(&0_u16.to_be_bytes());
-            body.extend_from_slice(&target);
-            body.extend_from_slice(payload);
+            let body_len = 8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len();
 
             let mut nonce = [0_u8; XNONCE_LEN];
-            SystemRandom::new()
-                .fill(&mut nonce)
-                .map_err(|_| CryptoError::Random)?;
-            user.xchacha_cipher()?
-                .encrypt_in_place(XNonce::from_slice(&nonce), b"", &mut body)
-                .map_err(|_| CryptoError::Cipher)?;
+            SystemRandom::new().fill(&mut nonce).map_err(|_| CryptoError::Random)?;
 
-            let mut packet = nonce.to_vec();
-            packet.extend_from_slice(&body);
+            let mut packet = Vec::with_capacity(XNONCE_LEN + body_len + TAG_LEN);
+            packet.extend_from_slice(&nonce);
+            let body_start = packet.len();
+            packet.extend_from_slice(&server_session_id);
+            packet.extend_from_slice(&packet_id.to_be_bytes());
+            packet.push(SS2022_UDP_SERVER_TYPE);
+            packet.extend_from_slice(&current_unix_secs().to_be_bytes());
+            packet.extend_from_slice(client_session_id);
+            packet.extend_from_slice(&0_u16.to_be_bytes());
+            packet.extend_from_slice(&target);
+            packet.extend_from_slice(payload);
+
+            let tag = user
+                .xchacha_cipher()?
+                .encrypt_in_place_detached(
+                    XNonce::from_slice(&nonce),
+                    b"",
+                    &mut packet[body_start..],
+                )
+                .map_err(|_| CryptoError::Cipher)?;
+            packet.extend_from_slice(tag.as_slice());
             Ok(packet)
         },
     }
