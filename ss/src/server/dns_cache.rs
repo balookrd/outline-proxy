@@ -9,14 +9,22 @@
 //! data overwrites them on the next successful lookup.
 
 use std::{
+    collections::HashMap as StdHashMap,
+    future::Future,
     hash::{BuildHasher, Hash, Hasher},
     net::SocketAddr,
-    sync::Arc,
+    sync::{Arc, Weak},
 };
 
+use anyhow::Result;
+use futures_util::future::{BoxFuture, FutureExt, Shared};
 use hashbrown::{DefaultHashBuilder, HashMap, hash_map::RawEntryMut};
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
 use tokio::time::Duration;
+
+type SharedResolve =
+    Shared<BoxFuture<'static, std::result::Result<Arc<[SocketAddr]>, Arc<anyhow::Error>>>>;
+type InFlightKey = (u16, bool, Box<str>);
 
 #[derive(Clone, Debug)]
 struct DnsCacheEntry {
@@ -62,15 +70,23 @@ pub(super) struct DnsCache {
     // Stored separately so raw_entry_mut closures can borrow it without
     // aliasing the mutable map borrow in insert_with_hasher's rehash closure.
     build_hasher: DefaultHashBuilder,
+    // Singleflight map: coalesces concurrent misses on the same key so only
+    // one `lookup_host` call is in-flight per (port, prefer_ipv4, host).
+    // Stores `Weak` so slots that were dropped before completion don't pin
+    // memory — the next caller overwrites the stale weak.
+    in_flight: Mutex<StdHashMap<InFlightKey, Weak<SharedResolve>>>,
+    me: Weak<Self>,
     ttl: Duration,
 }
 
 impl DnsCache {
     pub(super) fn new(ttl: Duration) -> Arc<Self> {
         let build_hasher = DefaultHashBuilder::default();
-        Arc::new(Self {
+        Arc::new_cyclic(|me| Self {
             entries: RwLock::new(HashMap::with_hasher(build_hasher)),
             build_hasher,
+            in_flight: Mutex::new(StdHashMap::new()),
+            me: me.clone(),
             ttl,
         })
     }
@@ -148,6 +164,58 @@ impl DnsCache {
                 );
             }
         }
+    }
+
+    /// Coalesces concurrent DNS misses for the same key: the first caller
+    /// drives `loader`, followers await the same shared future. The result
+    /// is also checked under the in-flight lock to avoid racing with a
+    /// loader that just finished and populated the cache.
+    pub(super) async fn resolve_or_join<F, Fut>(
+        &self,
+        host: &str,
+        port: u16,
+        prefer_ipv4_upstream: bool,
+        loader: F,
+    ) -> Result<Arc<[SocketAddr]>>
+    where
+        F: FnOnce(Arc<Self>) -> Fut,
+        Fut: Future<Output = Result<Arc<[SocketAddr]>>> + Send + 'static,
+    {
+        if let Some(hit) = self.lookup_all(host, port, prefer_ipv4_upstream) {
+            return Ok(hit);
+        }
+
+        let me = self.me.upgrade().expect("DnsCache dropped while in use");
+        let shared: Arc<SharedResolve> = {
+            let mut in_flight = self.in_flight.lock();
+            // Re-check under the lock: a loader may have finished and stored
+            // to the cache between our first check and acquiring this lock.
+            if let Some(hit) = self.lookup_all(host, port, prefer_ipv4_upstream) {
+                return Ok(hit);
+            }
+            let key: InFlightKey = (port, prefer_ipv4_upstream, Box::<str>::from(host));
+            if let Some(existing) = in_flight.get(&key).and_then(Weak::upgrade) {
+                existing
+            } else {
+                let cleanup_key = key.clone();
+                let cleanup_cache = Arc::clone(&me);
+                let loader_fut = loader(Arc::clone(&me));
+                let fut: BoxFuture<'static, _> = async move {
+                    let result = loader_fut.await.map_err(Arc::new);
+                    cleanup_cache.in_flight.lock().remove(&cleanup_key);
+                    result
+                }
+                .boxed();
+                let arc = Arc::new(fut.shared());
+                in_flight.insert(key, Arc::downgrade(&arc));
+                arc
+            }
+        };
+
+        (*shared)
+            .clone()
+            .await
+            .map_err(|e| anyhow::anyhow!("{:#}", e))
     }
 
     /// Removes entries whose expiry is older than `stale_grace` — callers that
