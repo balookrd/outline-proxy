@@ -235,7 +235,7 @@ async fn handle_ss_tcp_connection(
 
     let target_display = handshake.target.display_host_port();
     let connect_started = std::time::Instant::now();
-    info!(
+    debug!(
         peer_addr = ?peer_addr,
         user = handshake.user.id(),
         fwmark = ?handshake.user.fwmark(),
@@ -361,7 +361,7 @@ impl super::relay::UpstreamSink for SocketSink {
     }
 
     fn on_first_payload(&mut self, bytes: usize) {
-        info!(
+        debug!(
             peer_addr = ?self.peer_addr,
             user = %self.user_id,
             target = %self.target,
@@ -371,7 +371,7 @@ impl super::relay::UpstreamSink for SocketSink {
     }
 
     fn on_eof_before_payload(&mut self) {
-        info!(
+        debug!(
             peer_addr = ?self.peer_addr,
             user = %self.user_id,
             target = %self.target,
@@ -507,7 +507,7 @@ async fn handle_ss_udp_datagram(
         plaintext_bytes = payload.len(),
         "socket udp resolved target"
     );
-    info!(
+    debug!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
         client_addr = %client_addr,
