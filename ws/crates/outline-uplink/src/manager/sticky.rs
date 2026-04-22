@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep};
 
 use crate::config::{LoadBalancingMode, RoutingScope};
 use crate::utils::maybe_shrink_hash_map;
@@ -9,6 +9,11 @@ use super::super::selection::score_latency;
 use super::super::types::{
     CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager, UplinkStatus,
 };
+
+/// Lower bound for the background sticky-route prune cadence. Keeps the sweep
+/// bounded when `sticky_ttl` is very small (or zero, which disables per-flow
+/// expiry entirely but can still leave pinned entries around).
+const STICKY_PRUNE_MIN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Hard cap on non-pinned per-flow sticky-route entries.
 ///
@@ -109,6 +114,27 @@ impl UplinkManager {
                 },
             },
         );
+    }
+
+    /// Spawns a background loop that evicts expired per-flow sticky routes at
+    /// roughly `sticky_ttl / 2` (clamped to `STICKY_PRUNE_MIN_INTERVAL`). The
+    /// sweep used to run inline on every connect, taking the sticky-routes
+    /// write lock on every TCP/UDP dispatch; moving it off the hot path keeps
+    /// the lock uncontended under load.
+    pub fn spawn_sticky_prune_loop(&self) {
+        let interval = (self.inner.load_balancing.sticky_ttl / 2).max(STICKY_PRUNE_MIN_INTERVAL);
+        let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(interval) => {}
+                }
+                manager.prune_sticky_routes().await;
+            }
+        });
     }
 
     pub(crate) async fn prune_sticky_routes(&self) {

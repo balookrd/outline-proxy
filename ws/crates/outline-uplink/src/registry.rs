@@ -148,6 +148,12 @@ impl UplinkRegistry {
         }
     }
 
+    pub fn spawn_sticky_prune_loops(&self) {
+        for group in &self.groups {
+            group.manager.spawn_sticky_prune_loop();
+        }
+    }
+
     /// Spawn a single process-wide sweeper for the H2/H3 shared-connection
     /// caches. Independent of warm-standby so that groups with
     /// `warm_standby_tcp = warm_standby_udp = 0` still get stale entries

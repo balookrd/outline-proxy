@@ -53,6 +53,7 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     registry.spawn_probe_loops();
     registry.spawn_warm_standby_loops();
     registry.spawn_standby_keepalive_loops();
+    registry.spawn_sticky_prune_loops();
     registry.spawn_shared_connection_gc_loop();
 
     // Compile the policy routing table (if user declared [[route]]) and

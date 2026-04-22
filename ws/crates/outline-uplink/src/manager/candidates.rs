@@ -149,7 +149,6 @@ impl UplinkManager {
         transport: TransportKind,
         target: Option<&TargetAddr>,
     ) -> Vec<UplinkCandidate> {
-        self.prune_sticky_routes().await;
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
         let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
@@ -236,7 +235,6 @@ impl UplinkManager {
         failed_active_index: Option<usize>,
         commit_selection: bool,
     ) -> Vec<UplinkCandidate> {
-        self.prune_sticky_routes().await;
         let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let current_active = self.active_uplink_index_for_transport(transport).await;
