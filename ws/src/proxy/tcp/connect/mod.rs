@@ -25,7 +25,7 @@ use super::direct::relay_tcp_direct;
 use super::failover::{ActiveTcpUplink, connect_tcp_uplink};
 use crate::proxy::TcpTimeouts;
 
-use phase1::try_uplinks;
+use phase1::{Phase1Params, try_uplinks};
 use phase2::run_relay;
 use replay::ReplayBufState;
 
@@ -118,14 +118,17 @@ pub async fn serve_tcp_connect(
         let mut replay = ReplayBufState::new();
 
         // ── Phase 1: chunk-0 failover ────────────────────────────────────────
-        let first_chunk = match try_uplinks(
-            &uplinks,
-            &mut active,
-            &target,
+        let phase1_params = Phase1Params {
+            uplinks: &uplinks,
+            target: &target,
             strict_transport,
-            &mut tried_indexes,
             chunk0_attempt_timeout,
-            &timeouts,
+            timeouts: &timeouts,
+        };
+        let first_chunk = match try_uplinks(
+            &phase1_params,
+            &mut active,
+            &mut tried_indexes,
             &mut client_read,
             &mut client_write,
             &mut replay,

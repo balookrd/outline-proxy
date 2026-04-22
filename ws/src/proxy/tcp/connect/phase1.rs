@@ -13,13 +13,24 @@ use outline_uplink::{TransportKind, UplinkManager};
 use super::super::failover::{ActiveTcpUplink, TcpUplinkSource};
 use super::attribution::attribute_terminal_chunk0_failure;
 use super::failover_step::{FailoverStep, failover_to_next_candidate, replay_after_failover};
-use super::first_chunk::await_first_upstream_chunk;
+use super::first_chunk::{FirstChunkCtx, await_first_upstream_chunk};
 use super::replay::ReplayBufState;
 use super::retry::{
     CHUNK0_RST_MAX_RETRIES, CHUNK0_RST_RETRY_BACKOFF, redial_current_uplink_and_replay,
     should_retry_rst_on_current_uplink,
 };
 use crate::proxy::TcpTimeouts;
+
+/// Static inputs for a phase-1 run.  Bundled so the retry/failover loop can
+/// pass them around without swelling individual function signatures.
+#[derive(Clone, Copy)]
+pub(super) struct Phase1Params<'a> {
+    pub uplinks: &'a UplinkManager,
+    pub target: &'a TargetAddr,
+    pub strict_transport: bool,
+    pub chunk0_attempt_timeout: std::time::Duration,
+    pub timeouts: &'a TcpTimeouts,
+}
 
 /// Waits for the first upstream response chunk while forwarding client data,
 /// transparently failing over to alternative uplinks (and replaying buffered
@@ -30,17 +41,20 @@ use crate::proxy::TcpTimeouts;
 /// that case `client_write` has already been shut down and the caller should
 /// return `Ok(())` immediately.
 pub(super) async fn try_uplinks(
-    uplinks: &UplinkManager,
+    params: &Phase1Params<'_>,
     active: &mut ActiveTcpUplink,
-    target: &TargetAddr,
-    strict_transport: bool,
     tried_indexes: &mut HashSet<usize>,
-    chunk0_attempt_timeout: std::time::Duration,
-    timeouts: &TcpTimeouts,
     client_read: &mut OwnedReadHalf,
     client_write: &mut OwnedWriteHalf,
     replay: &mut ReplayBufState,
 ) -> Result<Option<Vec<u8>>> {
+    let Phase1Params {
+        uplinks,
+        target,
+        strict_transport,
+        chunk0_attempt_timeout,
+        timeouts,
+    } = *params;
     let mut client_half_closed = false;
     let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
     // Counts transparent same-uplink retries after a chunk-0 WS reset.
@@ -73,15 +87,18 @@ pub(super) async fn try_uplinks(
             timeouts.upstream_response
         };
 
-        let attempt = await_first_upstream_chunk(
+        let chunk_ctx = FirstChunkCtx {
             uplinks,
+            initial_attempt_timeout,
+            upstream_response_timeout: timeouts.upstream_response,
+        };
+        let attempt = await_first_upstream_chunk(
+            &chunk_ctx,
             active,
             client_read,
             &mut rbuf,
             replay,
             &mut client_half_closed,
-            initial_attempt_timeout,
-            timeouts.upstream_response,
         )
         .await;
 

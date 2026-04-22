@@ -18,27 +18,33 @@ use outline_uplink::UplinkManager;
 use super::super::failover::ActiveTcpUplink;
 use super::replay::ReplayBufState;
 
-/// Drives the uplink-read / client-forward select until a chunk0 outcome is
-/// decided for the current attempt.
+/// Per-attempt context for [`await_first_upstream_chunk`].
 ///
 /// `initial_attempt_timeout` is used up to the moment `replay` overflows; past
 /// that point further cross-uplink failover is impossible, so the deadline is
 /// promoted to `upstream_response_timeout` to avoid timing out a genuinely
-/// slow-but-working upstream.  `client_half_closed` is tracked across attempts
-/// by the outer phase-1 loop — it is both read (to take the read-only path
-/// once the client has already EOF'd) and written (when this call observes
-/// the EOF for the first time).
+/// slow-but-working upstream.
+pub(super) struct FirstChunkCtx<'a> {
+    pub uplinks: &'a UplinkManager,
+    pub initial_attempt_timeout: Duration,
+    pub upstream_response_timeout: Duration,
+}
+
+/// Drives the uplink-read / client-forward select until a chunk0 outcome is
+/// decided for the current attempt.
+///
+/// `client_half_closed` is tracked across attempts by the outer phase-1 loop —
+/// it is both read (to take the read-only path once the client has already
+/// EOF'd) and written (when this call observes the EOF for the first time).
 pub(super) async fn await_first_upstream_chunk(
-    uplinks: &UplinkManager,
+    ctx: &FirstChunkCtx<'_>,
     active: &mut ActiveTcpUplink,
     client_read: &mut OwnedReadHalf,
     rbuf: &mut [u8],
     replay: &mut ReplayBufState,
     client_half_closed: &mut bool,
-    initial_attempt_timeout: Duration,
-    upstream_response_timeout: Duration,
 ) -> Result<Vec<u8>> {
-    let mut attempt_timeout = initial_attempt_timeout;
+    let mut attempt_timeout = ctx.initial_attempt_timeout;
     let mut deadline = tokio::time::Instant::now() + attempt_timeout;
 
     loop {
@@ -76,7 +82,7 @@ pub(super) async fn await_first_upstream_chunk(
                         metrics::add_bytes(
                             "tcp",
                             "client_to_upstream",
-                            uplinks.group_name(),
+                            ctx.uplinks.group_name(),
                             &active.name,
                             n,
                         );
@@ -88,7 +94,7 @@ pub(super) async fn await_first_upstream_chunk(
                             // Overflow just triggered — promote to the full
                             // response window immediately so the deadline
                             // reflects the new timeout before we reset it.
-                            attempt_timeout = upstream_response_timeout;
+                            attempt_timeout = ctx.upstream_response_timeout;
                         }
                         // Treat the deadline as "no response after the last
                         // request activity", not "no response since the
