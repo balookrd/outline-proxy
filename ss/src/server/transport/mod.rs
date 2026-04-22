@@ -141,6 +141,7 @@ pub(super) async fn udp_websocket_upgrade(
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let session = state.services.metrics.open_websocket_session(Transport::Udp, protocol);
     let nat_table = Arc::clone(&state.services.nat_table);
+    let replay_store = Arc::clone(&state.services.replay_store);
     ws.on_upgrade(move |socket| async move {
         let result = udp::handle_udp_connection(
             socket,
@@ -150,6 +151,7 @@ pub(super) async fn udp_websocket_upgrade(
             Arc::clone(&path),
             Arc::clone(&route.candidate_users),
             nat_table,
+            replay_store,
             Arc::clone(&state.services.dns_cache),
             state.services.prefer_ipv4_upstream,
             state.services.udp_relay_semaphore.clone(),

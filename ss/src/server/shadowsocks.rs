@@ -13,7 +13,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     crypto::{
-        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UdpSession, UserKey,
         decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet,
     },
     metrics::{Metrics, Protocol, Transport},
@@ -22,6 +22,7 @@ use crate::{
 };
 
 use super::nat::{NatKey, NatTable, ResponseSender, UdpResponseSender};
+use super::replay::ReplayStore;
 
 use super::connect::{configure_tcp_stream, connect_tcp_target, resolve_udp_target};
 use super::constants::{
@@ -390,11 +391,25 @@ impl super::relay::UpstreamSink for SocketSink {
     }
 }
 
+fn ss_udp_replay_key(
+    session: &UdpSession,
+    packet_id: Option<u64>,
+) -> Option<([u8; 8], u64)> {
+    let csid = match session {
+        UdpSession::Legacy => return None,
+        UdpSession::Aes2022 { client_session_id }
+        | UdpSession::Chacha2022 { client_session_id } => *client_session_id,
+    };
+    packet_id.map(|pid| (csid, pid))
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn serve_ss_udp_socket(
     socket: Arc<UdpSocket>,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     mut shutdown: ShutdownSignal,
@@ -437,11 +452,13 @@ pub(super) async fn serve_ss_udp_socket(
                 let users = users.clone();
                 let metrics = metrics.clone();
                 let nat_table = Arc::clone(&nat_table);
+                let replay_store = Arc::clone(&replay_store);
                 let socket = Arc::clone(&socket);
                 let dns_cache = Arc::clone(&dns_cache);
                 in_flight.push(async move {
                     if let Err(error) = handle_ss_udp_datagram(
                         nat_table,
+                        replay_store,
                         users,
                         data,
                         client_addr,
@@ -463,6 +480,7 @@ pub(super) async fn serve_ss_udp_socket(
 #[allow(clippy::too_many_arguments)]
 async fn handle_ss_udp_datagram(
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     users: Arc<[UserKey]>,
     data: Bytes,
     client_addr: SocketAddr,
@@ -486,6 +504,18 @@ async fn handle_ss_udp_datagram(
         Err(error) => return Err(anyhow!(error)),
     };
     let user_id = packet.user.id_arc();
+    if let Some((csid, pid)) = ss_udp_replay_key(&packet.session, packet.packet_id)
+        && !replay_store.check_and_mark(csid, pid)
+    {
+        metrics.record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
+        warn!(
+            user = packet.user.id(),
+            client_addr = %client_addr,
+            packet_id = pid,
+            "dropping replayed ss-2022 udp datagram"
+        );
+        return Ok(());
+    }
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };

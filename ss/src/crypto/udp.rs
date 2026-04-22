@@ -45,6 +45,9 @@ pub struct UdpPacket {
     pub user: UserKey,
     pub payload: Vec<u8>,
     pub session: UdpSession,
+    /// SS-2022 per-session monotonic packet counter; `None` for legacy cipher.
+    /// Used by the replay filter to reject duplicates within a sliding window.
+    pub packet_id: Option<u64>,
 }
 
 pub fn decrypt_udp_packet(users: &[UserKey], packet: &[u8]) -> Result<UdpPacket, CryptoError> {
@@ -98,11 +101,12 @@ fn try_decrypt_udp_packet_for_user(
             }
             parse_ss2022_chacha_udp_request_body(buf).map(Some)
         })?;
-        if let Some((payload, client_session_id)) = parsed {
+        if let Some((payload, client_session_id, packet_id)) = parsed {
             return Ok(Some(UdpPacket {
                 user: user.clone(),
                 payload,
                 session: UdpSession::Chacha2022 { client_session_id },
+                packet_id: Some(packet_id),
             }));
         }
         return Ok(None);
@@ -118,6 +122,11 @@ fn try_decrypt_udp_packet_for_user(
         let client_session_id = separate_header[..8]
             .try_into()
             .map_err(|_| CryptoError::InvalidHeader)?;
+        let packet_id = u64::from_be_bytes(
+            separate_header[8..16]
+                .try_into()
+                .map_err(|_| CryptoError::InvalidHeader)?,
+        );
         let mut subkey = [0_u8; MAX_SUBKEY_LEN];
         let key_len =
             derive_subkey(user.cipher(), user.master_key(), &separate_header[..8], &mut subkey)?;
@@ -136,6 +145,7 @@ fn try_decrypt_udp_packet_for_user(
                 user: user.clone(),
                 payload,
                 session: UdpSession::Aes2022 { client_session_id },
+                packet_id: Some(packet_id),
             }));
         }
         return Ok(None);
@@ -163,6 +173,7 @@ fn try_decrypt_udp_packet_for_user(
             user: user.clone(),
             payload: plaintext,
             session: UdpSession::Legacy,
+            packet_id: None,
         }));
     }
 

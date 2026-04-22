@@ -430,6 +430,7 @@ async fn handle_h3_request(
             Arc::from(ws_req.path.as_str()),
             Arc::clone(&route.candidate_users),
             Arc::clone(&services.nat_table),
+            Arc::clone(&services.replay_store),
             Arc::clone(&services.dns_cache),
             services.prefer_ipv4_upstream,
             services.udp_relay_semaphore.clone(),
