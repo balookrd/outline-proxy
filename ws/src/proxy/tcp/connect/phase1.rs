@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 
 use anyhow::{Context, Result, anyhow};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tracing::{debug, warn};
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
-use outline_metrics as metrics;
 use socks5_proto::TargetAddr;
 
 use outline_uplink::{TransportKind, UplinkManager};
@@ -14,6 +13,7 @@ use outline_uplink::{TransportKind, UplinkManager};
 use super::super::failover::{ActiveTcpUplink, TcpUplinkSource};
 use super::attribution::attribute_terminal_chunk0_failure;
 use super::failover_step::{FailoverStep, failover_to_next_candidate, replay_after_failover};
+use super::first_chunk::await_first_upstream_chunk;
 use super::replay::ReplayBufState;
 use super::retry::{
     CHUNK0_RST_MAX_RETRIES, CHUNK0_RST_RETRY_BACKOFF, redial_current_uplink_and_replay,
@@ -67,75 +67,23 @@ pub(super) async fn try_uplinks(
         // eventually surface a client-side "error sending request" even
         // though the upstream was simply taking longer than 10 s to produce
         // its first byte.
-        let mut attempt_timeout = if can_failover {
+        let initial_attempt_timeout = if can_failover {
             chunk0_attempt_timeout
         } else {
             timeouts.upstream_response
         };
-        let mut deadline = tokio::time::Instant::now() + attempt_timeout;
 
-        let attempt: Result<Vec<u8>> = loop {
-            if client_half_closed {
-                break tokio::time::timeout_at(deadline, active.reader.read_chunk())
-                    .await
-                    .map_err(|_| {
-                        anyhow!(
-                            "upstream did not respond within {}s (chunk 0)",
-                            attempt_timeout.as_secs(),
-                        )
-                    })?;
-            }
-
-            tokio::select! {
-                result = active.reader.read_chunk() => {
-                    break result;
-                }
-                n_res = client_read.read(&mut rbuf) => {
-                    match n_res {
-                        Ok(0) => {
-                            active.writer.close().await.context("uplink half-close failed")?;
-                            client_half_closed = true;
-                        }
-                        Ok(n) => {
-                            active.writer
-                                .send_chunk(&rbuf[..n])
-                                .await
-                                .context("uplink write failed")?;
-                            metrics::add_bytes(
-                                "tcp",
-                                "client_to_upstream",
-                                uplinks.group_name(),
-                                &active.name,
-                                n,
-                            );
-                            // Do not treat client→upstream bytes during phase 1
-                            // as proof that the uplink is healthy yet.  A broken
-                            // uplink can still accept writes and then reset or
-                            // stall before producing the first response byte.
-                            if replay.push(&rbuf[..n]) {
-                                // Overflow just triggered — promote to the full
-                                // response window immediately so the deadline
-                                // reflects the new timeout before we reset it.
-                                attempt_timeout = timeouts.upstream_response;
-                            }
-                            // Treat the deadline as "no response after the last
-                            // request activity", not "no response since the
-                            // beginning of phase 1".  Computed after the
-                            // possible promotion above so the longer window
-                            // takes effect on the very same chunk.
-                            deadline = tokio::time::Instant::now() + attempt_timeout;
-                        }
-                        Err(e) => break Err(e.into()),
-                    }
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    break Err(anyhow!(
-                        "upstream did not respond within {}s (chunk 0)",
-                        attempt_timeout.as_secs(),
-                    ));
-                }
-            }
-        };
+        let attempt = await_first_upstream_chunk(
+            uplinks,
+            active,
+            client_read,
+            &mut rbuf,
+            replay,
+            &mut client_half_closed,
+            initial_attempt_timeout,
+            timeouts.upstream_response,
+        )
+        .await;
 
         match attempt {
             Ok(chunk) if chunk.is_empty() => {
