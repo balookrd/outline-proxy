@@ -14,6 +14,80 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use tokio::sync::RwLock;
+use tracing::{error, info};
+
+// ── Error classification ──────────────────────────────────────────────────────
+
+/// Classify a connection-close error by substring match against `table`.
+/// Returns the first matching category (table order), or `fallback`.
+///
+/// The caller is responsible for any normalization (e.g. H2 lowercases `err`
+/// once before calling; H3 matches mixed case directly).
+pub(crate) fn classify_by_substrings(
+    err: &str,
+    table: &[(&[&str], &'static str)],
+    fallback: &'static str,
+) -> &'static str {
+    for (needles, category) in table {
+        if needles.iter().any(|n| err.contains(n)) {
+            return category;
+        }
+    }
+    fallback
+}
+
+// ── Connection-close logging ──────────────────────────────────────────────────
+
+/// Identity fields common to every `conn_life` log line emitted from a driver
+/// task.  Packaging them in a struct keeps the call site short and guarantees
+/// H2 and H3 produce the same schema.
+pub(crate) struct ConnCloseLog<'a> {
+    pub id: u64,
+    pub peer: &'a str,
+    pub mode: &'static str,
+    pub age_secs: u64,
+    pub streams: u64,
+}
+
+/// Emit the standard `outline_transport::conn_life` close log.
+///
+/// `error_text = None` signals a clean close (`Ok(())` from the driver).
+/// Otherwise `class` describes the error bucket and `is_expected` gates whether
+/// an additional `error!` line is emitted; expected closes (graceful shutdown,
+/// local cancel, idle timeout already reported elsewhere) stay at info level
+/// to avoid log noise.
+pub(crate) fn log_conn_close(
+    fields: ConnCloseLog<'_>,
+    error_text: Option<&str>,
+    class: &'static str,
+    is_expected: bool,
+) {
+    let ConnCloseLog { id, peer, mode, age_secs, streams } = fields;
+    match error_text {
+        None => {
+            info!(
+                target: "outline_transport::conn_life",
+                id, peer, mode, age_secs, streams, class,
+                "{mode} connection closed"
+            );
+        }
+        Some(err) if is_expected => {
+            info!(
+                target: "outline_transport::conn_life",
+                id, peer, mode, age_secs, streams, class, error = %err,
+                "{mode} connection closed"
+            );
+        }
+        Some(err) => {
+            info!(
+                target: "outline_transport::conn_life",
+                id, peer, mode, age_secs, streams, class, error = %err,
+                "{mode} connection closed with error"
+            );
+            error!("{mode} connection error: {err}");
+        }
+    }
+}
 
 /// Hostname-based identity of a cached shared connection.
 ///
