@@ -16,6 +16,7 @@ use tracing::warn;
 use outline_uplink::{TransportKind, UplinkManager};
 
 use super::super::failover::ActiveTcpUplink;
+use super::phase1::DeferredFailure;
 
 /// Reports (or deliberately suppresses) the terminal chunk-0 failure against
 /// the appropriate uplink.  Called on the final phase-1 error path, after any
@@ -24,7 +25,7 @@ pub(super) async fn attribute_terminal_chunk0_failure(
     uplinks: &UplinkManager,
     active: &ActiveTcpUplink,
     phase1_error: &anyhow::Error,
-    deferred_failures: &[(usize, String, String)],
+    deferred_failures: &[DeferredFailure],
     attempted_uplinks: &[&str],
     error_text: &str,
 ) {
