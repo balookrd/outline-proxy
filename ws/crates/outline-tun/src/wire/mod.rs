@@ -20,7 +20,7 @@ pub(crate) const IPV6_NEXT_HEADER_ICMPV6: u8 = 58;
 pub(crate) const IPV6_NEXT_HEADER_DESTINATION_OPTIONS: u8 = 60;
 pub(crate) const IPV6_NEXT_HEADER_NONE: u8 = 59;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) enum IpVersion {
     V4,
     V6,

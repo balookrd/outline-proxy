@@ -58,7 +58,7 @@ const TCP_TIME_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 /// loop is a safety net against task panics / spurious exits.
 const TUN_TCP_FLOW_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct TcpFlowKey {
     version: IpVersion,
     client_ip: IpAddr,
