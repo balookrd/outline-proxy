@@ -6,7 +6,6 @@
 // in the parent module (`mod.rs`). Generic URL helpers (`format_authority`,
 // `websocket_path`) are shared with the H3 transport in `crate::url_utils`.
 
-use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -24,7 +23,6 @@ use pin_project_lite::pin_project;
 use rustls::ClientConfig;
 use rustls::pki_types::ServerName;
 use tokio::net::TcpStream;
-use tokio::sync::RwLock;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
@@ -37,6 +35,7 @@ use crate::{
     TransportOperation,
     DnsCache, connect_tcp_socket, resolve_host_with_preference,
 };
+use crate::shared_cache::SharedConnectionRegistry;
 
 use super::{H2WsStream, websocket_h2_target_uri};
 
@@ -333,27 +332,16 @@ impl crate::shared_cache::CachedEntry for SharedH2Connection {
 
 // ── Shared-connection cache ───────────────────────────────────────────────────
 
-// Global shared-connection cache. `RwLock<HashMap<K, Arc<V>>>` mirrors the
-// flow-table pattern in `tun_tcp` / `tun_udp`: hot-path lookups take a brief
-// read-lock, clone the `Arc`, and release before any `.await` on the value
-// itself. Only cache mutations (insert / evict / gc) take the write-lock.
-// Avoids adding a DashMap dependency while removing the serialisation that a
-// single `Mutex` imposed on every H2 CONNECT attempt.
-static H2_SHARED_CONNECTIONS: OnceLock<RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>>> =
-    OnceLock::new();
-static H2_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
-// Per-server-key mutex that serialises concurrent H2 connection establishment.
-// Prevents a thundering herd when the shared H2 connection drops and N sessions
-// all try to reconnect simultaneously — identical pattern to H3_CONNECT_LOCKS.
-static H2_CONNECT_LOCKS: OnceLock<crate::shared_cache::ConnectLocks<H2ConnectionKey>> =
+// Global registry holding the shared-connection map, the per-key reconnect
+// locks, and the connection-id counter. Hot-path lookups take only a brief
+// read-lock on the inner map, mirroring the flow-table pattern in `tun_tcp` /
+// `tun_udp`. The registry abstraction lives in `shared_cache` and is shared
+// with H3.
+static H2_REGISTRY: OnceLock<SharedConnectionRegistry<H2ConnectionKey, SharedH2Connection>> =
     OnceLock::new();
 
-fn h2_shared_connections() -> &'static RwLock<HashMap<H2ConnectionKey, Arc<SharedH2Connection>>> {
-    H2_SHARED_CONNECTIONS.get_or_init(|| RwLock::new(HashMap::new()))
-}
-
-fn get_h2_connect_lock(key: &H2ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    H2_CONNECT_LOCKS.get_or_init(crate::shared_cache::ConnectLocks::new).get_lock(key)
+fn h2_registry() -> &'static SharedConnectionRegistry<H2ConnectionKey, SharedH2Connection> {
+    H2_REGISTRY.get_or_init(SharedConnectionRegistry::new)
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
@@ -414,82 +402,58 @@ async fn connect_h2_tcp_reused(
 ) -> Result<WsTransportStream> {
     let key = H2ConnectionKey::new(server_name, server_port, use_tls, fwmark);
 
-    // Fast path: reuse an already-established shared connection without locking.
-    // DNS is NOT resolved here — the key is hostname-based so cache lookups are
-    // independent of which IP address the server currently resolves to.
-    if let Some(shared) = cached_shared_h2_connection(&key).await {
-        match shared.open_websocket(target_uri).await {
-            Ok(ws) => {
-                outline_metrics::record_transport_connect(source, "h2", "reused");
-                return Ok(ws);
-            },
-            Err(error) => {
-                debug!(
-                    server_name,
-                    server_port,
-                    use_tls,
-                    error = %format!("{error:#}"),
-                    "cached shared h2 connection failed to open websocket stream; reconnecting"
-                );
-                invalidate_shared_h2_connection_if_current(&key, shared.id).await;
-            },
-        }
-    }
+    crate::shared_cache::with_reuse(
+        h2_registry(),
+        key.clone(),
+        |shared| async move {
+            match shared.open_websocket(target_uri).await {
+                Ok(ws) => {
+                    outline_metrics::record_transport_connect(source, "h2", "reused");
+                    Ok(ws)
+                },
+                Err(error) => {
+                    debug!(
+                        server_name,
+                        server_port,
+                        use_tls,
+                        error = %format!("{error:#}"),
+                        "cached shared h2 connection failed to open websocket stream; reconnecting"
+                    );
+                    Err(error)
+                },
+            }
+        },
+        || async {
+            // Resolve DNS only now — we actually need a new TCP connection.
+            // Deferring resolution to this point keeps the cache key
+            // hostname-based while still connecting to the *current* address.
+            let server_addr = resolve_host_with_preference(
+                cache,
+                server_name,
+                server_port,
+                "failed to resolve h2 websocket host",
+                ipv6_first,
+            )
+            .await?
+            .first()
+            .copied()
+            .ok_or_else(|| {
+                anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+                    host: format!("{server_name}:{server_port}"),
+                })
+            })?;
 
-    // Slow path: need to establish a new H2 connection.  Serialise per server
-    // key so that concurrent reconnect attempts share the result rather than
-    // each starting their own TCP+TLS+H2 handshake (thundering herd).
-    let connect_lock = get_h2_connect_lock(&key);
-    let _connect_guard = connect_lock.lock().await;
-
-    // Re-check under the lock: another waiter may have established and cached
-    // a fresh connection while we were waiting.
-    if let Some(shared) = cached_shared_h2_connection(&key).await {
-        match shared.open_websocket(target_uri).await {
-            Ok(ws) => {
-                outline_metrics::record_transport_connect(source, "h2", "reused");
-                return Ok(ws);
-            },
-            Err(error) => {
-                debug!(
-                    server_name,
-                    server_port,
-                    use_tls,
-                    error = %format!("{error:#}"),
-                    "shared h2 connection (post-lock recheck) failed to open websocket stream; reconnecting"
-                );
-                invalidate_shared_h2_connection_if_current(&key, shared.id).await;
-            },
-        }
-    }
-
-    // Resolve DNS only now — we actually need a new TCP connection.  By
-    // deferring resolution to this point we always connect to the *current*
-    // address while keeping the cache key hostname-based.
-    let server_addr = resolve_host_with_preference(
-        cache,
-        server_name,
-        server_port,
-        "failed to resolve h2 websocket host",
-        ipv6_first,
+            let mut transport_guard = TransportConnectGuard::new(source, "h2");
+            let shared = Arc::new(
+                connect_h2_connection(server_addr, server_name, use_tls, fwmark, Some(key.clone()))
+                    .await?,
+            );
+            let ws = shared.open_websocket(target_uri).await?;
+            transport_guard.finish("success");
+            Ok((shared, ws))
+        },
     )
-    .await?
-    .first()
-    .copied()
-    .ok_or_else(|| {
-        anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-            host: format!("{server_name}:{server_port}"),
-        })
-    })?;
-
-    let mut transport_guard = TransportConnectGuard::new(source, "h2");
-    let shared = Arc::new(
-        connect_h2_connection(server_addr, server_name, use_tls, fwmark, Some(key.clone())).await?,
-    );
-    let ws = shared.open_websocket(target_uri).await?;
-    transport_guard.finish("success");
-    cache_shared_h2_connection(key, Arc::clone(&shared)).await;
-    Ok(ws)
+    .await
 }
 
 async fn connect_h2_tcp_new(
@@ -549,7 +513,7 @@ async fn connect_h2_connection(
         )
     })??;
 
-    let id = H2_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
+    let id = h2_registry().next_id();
     let closed = Arc::new(AtomicBool::new(false));
     let closed_flag = Arc::clone(&closed);
     let streams_opened = Arc::new(AtomicU64::new(0));
@@ -566,7 +530,7 @@ async fn connect_h2_connection(
         let result = conn.await;
         closed_flag.store(true, Ordering::Release);
         if let Some(cache_key) = cache_key {
-            invalidate_shared_h2_connection_if_current(&cache_key, id).await;
+            h2_registry().invalidate_if_current(&cache_key, id).await;
         }
         let age_secs = opened_at.elapsed().as_secs();
         let streams = streams_opened_driver.load(Ordering::Relaxed);
@@ -657,24 +621,12 @@ fn should_reuse_h2_connection(source: &'static str) -> bool {
     crate::shared_cache::should_reuse_connection(source)
 }
 
-async fn cached_shared_h2_connection(key: &H2ConnectionKey) -> Option<Arc<SharedH2Connection>> {
-    crate::shared_cache::cached_connection(h2_shared_connections(), key).await
-}
-
-async fn cache_shared_h2_connection(key: H2ConnectionKey, connection: Arc<SharedH2Connection>) {
-    crate::shared_cache::cache_connection(h2_shared_connections(), key, connection).await
-}
-
-async fn invalidate_shared_h2_connection_if_current(key: &H2ConnectionKey, id: u64) {
-    crate::shared_cache::invalidate_if_current(h2_shared_connections(), key, id).await
-}
-
 /// Remove all cache entries whose shared connection is no longer open.
 /// Called periodically from the warm-standby maintenance loop so dead entries
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h2_connections() {
-    crate::shared_cache::gc_stale_entries(h2_shared_connections(), |c| c.is_open()).await;
+    h2_registry().gc().await;
 }
 
 fn is_expected_h2_close(error: &str) -> bool {
