@@ -27,6 +27,25 @@ metrics_path: "/metrics"
 # Useful when some clients or CDNs break over IPv6 but work over IPv4.
 # prefer_ipv4_upstream: true
 
+# Randomize the source address of every upstream IPv6 TCP connect and UDP NAT
+# socket. Pick ONE of the two modes below (they are mutually exclusive); IPv4
+# upstream traffic is unaffected in either case.
+#
+# Mode A — static CIDR. Each bind picks a random address inside the prefix.
+# Typical setup: `ip -6 addr add 2001:db8:dead::1/64 dev eth0` so the whole /64
+# is on-link; IPV6_FREEBIND (set automatically on Linux) lets bind() use any
+# address from the prefix. Fallback when FREEBIND is unavailable:
+# `ip -6 route add local 2001:db8:dead::/64 dev lo` (AnyIP).
+# outbound_ipv6_prefix: "2001:db8:dead::/64"
+#
+# Mode B — enumerate prefixes from a live interface (for DHCPv6 / SLAAC, where
+# the prefix is not known statically). Each global-unicast (2000::/3) address
+# on the interface is combined with its netmask into a CIDR; random sources are
+# drawn inside those prefixes. The pool is refreshed periodically so prefixes
+# added/removed after startup take effect without a restart. Linux and macOS.
+# outbound_ipv6_interface: "eth0"
+# outbound_ipv6_refresh_secs: 30
+
 ws_path_tcp: "/tcp"
 ws_path_udp: "/udp"
 
