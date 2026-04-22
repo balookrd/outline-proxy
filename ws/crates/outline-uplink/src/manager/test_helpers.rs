@@ -8,8 +8,9 @@ use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use super::super::types::UplinkManager;
 
 impl UplinkManager {
-    /// Test-only constructor that supplies a fresh throwaway [`DnsCache`] so
-    /// existing tests do not need to build one at every call site.
+    /// Test-only constructor that supplies a fresh throwaway
+    /// [`DnsCache`](outline_transport::DnsCache) so existing tests do not need
+    /// to build one at every call site.
     pub fn new_for_test(
         group_name: impl Into<String>,
         uplinks: Vec<UplinkConfig>,

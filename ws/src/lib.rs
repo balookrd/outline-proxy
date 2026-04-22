@@ -1,8 +1,8 @@
 //! outline-ws-rust — main binary crate.
 //!
 //! Wires together: configuration loading ([`config`]), startup and listener
-//! binding ([`bootstrap`]), SOCKS5 TCP/UDP ingress ([`proxy`]), and the
-//! optional read-only metrics and authenticated control-plane HTTP
+//! binding (private `bootstrap` module), SOCKS5 TCP/UDP ingress ([`proxy`]),
+//! and the optional read-only metrics and authenticated control-plane HTTP
 //! listeners ([`http`]).
 
 pub mod config;

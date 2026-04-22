@@ -55,7 +55,7 @@ impl UplinkRegistry {
         Ok(Self { groups: managed, by_name })
     }
 
-    /// Like [`new`] but restores active-uplink selection from `state_store`
+    /// Like [`Self::new`] but restores active-uplink selection from `state_store`
     /// (loaded by the caller) and wires it for future persistence.
     pub async fn new_with_state(
         groups: Vec<UplinkGroupConfig>,
@@ -220,7 +220,7 @@ impl UplinkRegistry {
     /// Test-only helper: build a registry wrapping a single pre-constructed
     /// [`UplinkManager`] under its own group name. Lets TUN / proxy tests
     /// that already hand-build an `UplinkManager` stand up a minimal
-    /// [`UplinkRegistry`] for [`crate::tun::TunRouting`] without going
+    /// [`UplinkRegistry`] for `outline_tun::TunRouting` without going
     /// through `UplinkGroupConfig`.
     pub fn from_single_manager(manager: UplinkManager) -> Self {
         let name = manager.group_name().to_string();

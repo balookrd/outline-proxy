@@ -142,7 +142,7 @@ impl WsTransportStream {
     /// Returns `true` when the underlying shared connection (H2 / H3) is still
     /// usable.  For HTTP/1 — which has no shared driver — returns `true` while
     /// the stream has seen any frame (data, ping, pong, close) within the last
-    /// [`H1_STALENESS_THRESHOLD`], and `false` once that quiet period elapses.
+    /// `H1_STALENESS_THRESHOLD` (60 s), and `false` once that quiet period elapses.
     /// Used by the standby pool to discard zombie transports at acquisition
     /// time instead of handing them to a session that then hangs on the
     /// 5-minute idle watcher.

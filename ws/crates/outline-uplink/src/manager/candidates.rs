@@ -113,7 +113,7 @@ impl UplinkManager {
     ///
     /// Returns true when at least one transport-capable uplink in this group
     /// is currently healthy (probe-confirmed or, when probes are disabled,
-    /// not in cooldown). Unlike [`tcp_candidates`] / [`udp_candidates`], this
+    /// not in cooldown). Unlike [`Self::tcp_candidates`] / [`Self::udp_candidates`], this
     /// method does not touch sticky routes or active-uplink state.
     pub async fn has_any_healthy(&self, transport: TransportKind) -> bool {
         let statuses = self.inner.snapshot_statuses();
