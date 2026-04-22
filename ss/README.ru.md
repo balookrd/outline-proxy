@@ -190,6 +190,9 @@ cargo release-musl-armv7
 | `metrics_listen` | Опциональный Prometheus-слушатель |
 | `metrics_path` | Путь Prometheus-эндпоинта |
 | `prefer_ipv4_upstream` | Предпочитать IPv4 для upstream DNS и connect; полезно, если IPv6-путь ломает трафик |
+| `outbound_ipv6_prefix` | Опциональный IPv6 CIDR (например `2001:db8:dead::/64`). Если задан, каждый upstream IPv6 TCP-connect и UDP NAT-сокет биндится на случайный адрес из этого префикса вместо kernel-default источника. Типовая настройка: `ip -6 addr add 2001:db8:dead::1/64 dev eth0`, тогда весь /64 считается on-link — `IPV6_FREEBIND` (включается автоматически на Linux) позволит `bind()` взять любой адрес из префикса. Фолбэк, когда FREEBIND недоступен: добавить AnyIP-маршрут `ip -6 route add local 2001:db8:dead::/64 dev lo`. IPv4 upstreams не затрагиваются |
+| `outbound_ipv6_interface` | Альтернатива `outbound_ipv6_prefix` для DHCPv6 / SLAAC-развёртываний, где префикс заранее неизвестен. Имя сетевого интерфейса (например `eth0`); каждый global-unicast IPv6 адрес на интерфейсе комбинируется со своей netmask в CIDR — случайные source-адреса выбираются **внутри этих префиксов** (как в prefix-режиме), а не из набора сконфигурированных ядром /128. Принимается любая непрерывная длина префикса (/48, /56, /60, /64, /96, /128…), читается через `getifaddrs(3)`. В пул попадают только адреса `2000::/3` — loopback, link-local, ULA (`fc00::/7`), multicast, IPv4-mapped, discard (`100::/64`) и прочие неглобальные диапазоны отфильтровываются. Пул периодически обновляется, поэтому адреса, добавленные/удалённые DHCPv6/SLAAC после старта, применяются без перезапуска. Взаимоисключим с `outbound_ipv6_prefix`. Если пул пуст в момент bind (на интерфейсе ещё нет global-unicast v6), сокет биндится wildcard kernel-default с записью `DEBUG` в лог — relay продолжает работать без random-source до следующего refresh. Только Linux и macOS |
+| `outbound_ipv6_refresh_secs` | Интервал в секундах между переэнумерациями пула префиксов `outbound_ipv6_interface`. По умолчанию `30`. Игнорируется, если `outbound_ipv6_interface` не задан |
 | `tuning_profile` | Именованный пресет ресурсных лимитов: `small` / `medium` / `large` (по умолчанию). Задаёт H2/H3 flow-control windows, лимиты стримов, таймауты сессий/NAT и глобальный cap UDP-relay-тасков |
 | `[tuning]` | Per-field оверрайды поверх выбранного профиля. См. ключи `tuning.*` ниже |
 | `tuning.client_active_ttl_secs` | TTL в секундах для вычисления `client_active` / `client_up` |
@@ -239,6 +242,9 @@ ws_path_udp = "/alice/udp"
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
 - `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
+- `OUTLINE_SS_OUTBOUND_IPV6_PREFIX`
+- `OUTLINE_SS_OUTBOUND_IPV6_INTERFACE`
+- `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`
