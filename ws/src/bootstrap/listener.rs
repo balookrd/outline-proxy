@@ -130,9 +130,9 @@ pub(super) async fn run_accept_loop(
             tokio::select! {
                 res = serve => {
                     if let Err(error) = res {
-                        if crate::disconnect::is_expected_client_disconnect(&error) {
+                        if crate::error_class::is_expected_client_disconnect(&error) {
                             debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
-                        } else if crate::disconnect::is_client_write_disconnect(&error) {
+                        } else if crate::error_class::is_client_write_disconnect(&error) {
                             warn!(
                                 %peer,
                                 error = %format!("{error:#}"),

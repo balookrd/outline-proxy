@@ -49,7 +49,7 @@ pub(super) fn should_retry_rst_on_current_uplink(
 ) -> bool {
     source == TcpUplinkSource::FreshDial
         && retries_used < CHUNK0_RST_MAX_RETRIES
-        && crate::disconnect::is_ws_closed(error)
+        && crate::error_class::is_ws_closed(error)
 }
 
 /// Reconnects the currently-active uplink candidate with a fresh dial and

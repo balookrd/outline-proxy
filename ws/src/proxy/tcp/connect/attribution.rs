@@ -29,11 +29,11 @@ pub(super) async fn attribute_terminal_chunk0_failure(
     error_text: &str,
 ) {
     if deferred_failures.is_empty() {
-        if crate::disconnect::is_upstream_runtime_failure(phase1_error) {
+        if crate::error_class::is_upstream_runtime_failure(phase1_error) {
             uplinks
                 .report_runtime_failure(active.index, TransportKind::Tcp, phase1_error)
                 .await;
-        } else if crate::disconnect::is_ws_closed(phase1_error) {
+        } else if crate::error_class::is_ws_closed(phase1_error) {
             uplinks
                 .report_upstream_close(active.index, TransportKind::Tcp)
                 .await;
