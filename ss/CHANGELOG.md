@@ -20,6 +20,10 @@ Changes after `v1.0.2` (2026-04-12):
 - Added install-script version checks and nightly commit SHA resolution.
 - Added regression coverage for WebSocket and HTTP/3 UDP NAT reconnect behavior.
 - Added a Russian translation for `PATCHES.md`.
+- Added randomized upstream IPv6 source selection from a configured prefix or interface.
+- Added bounded TLS listener with graceful drain on shutdown.
+- Added periodic WebSocket Ping (every 60s) over TCP to keep client `WS_READ_IDLE_TIMEOUT` alive.
+- Added DNS singleflight to coalesce concurrent misses on the same host/port, with test coverage for coalescing and error recovery.
 
 ### Changed
 
@@ -31,6 +35,9 @@ Changes after `v1.0.2` (2026-04-12):
 - Decoupled UDP NAT internals from transport-specific response handling.
 - Continued hot-path optimization work across DNS cache, crypto, route maps, and metrics labels to reduce allocations and lock contention.
 - Unified parts of server logging and general internal naming for clarity.
+- Reduced TCP upstream connect timeout from 10s to 5s.
+- Relaxed systemd sandbox to allow `AF_NETLINK` so `getifaddrs` works for outbound IPv6 interface selection.
+- Documented outbound IPv6 prefix/interface options in the Russian README and sample configs.
 
 ### Fixed
 
@@ -40,6 +47,10 @@ Changes after `v1.0.2` (2026-04-12):
 - Fixed NAT entry reuse when a client session reconnects.
 - Fixed TCP-over-H3 teardown symmetry when the client closes the connection.
 - Treated unknown-user decrypt attempts as a handled condition instead of surfacing them as server errors.
+- Fixed NAT eviction to drop uninitialised cells, keeping the active-entries metric honest.
+- Fixed UDP NAT idle timer to only refresh on delivered responses, preventing stuck entries from extending their lifetime.
+- Fixed HTTP/3 to send WebSocket Close 1013 on upstream connect failure (parity with TCP path).
+- Fixed config validation so `h3_max_concurrent_uni_streams` must be non-zero.
 
 ## 1.0.2 - 2026-04-12
 
