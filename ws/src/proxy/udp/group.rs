@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinSet;
@@ -26,7 +27,7 @@ use super::transport::{
 #[derive(Clone)]
 pub(super) struct GroupUdpContext {
     pub(super) manager: UplinkManager,
-    pub(super) active: Arc<Mutex<ActiveUdpTransport>>,
+    pub(super) active: Arc<ArcSwap<ActiveUdpTransport>>,
     pub(super) group_name: Arc<str>,
 }
 
@@ -42,10 +43,10 @@ impl GroupUdpContext {
         payload: &[u8],
     ) -> Result<()> {
         reconcile_global_udp_transport(&self.manager, &self.active, target).await?;
-        let (transport, uplink_name, active_index) = {
-            let active = self.active.lock().await;
-            (Arc::clone(&active.transport), active.uplink_name.clone(), active.index)
-        };
+        let snapshot = self.active.load_full();
+        let transport = Arc::clone(&snapshot.transport);
+        let uplink_name = snapshot.uplink_name.clone();
+        let active_index = snapshot.index;
         let group = self.manager.group_name();
         if let Err(error) = transport.send_packet(payload).await {
             if is_dropped_oversized_udp_error(&error) {
@@ -158,7 +159,7 @@ pub(super) async fn resolve_group_context(
         .ok_or_else(|| anyhow!("uplink group \"{group_name}\" is not configured"))?
         .clone();
     let initial = select_udp_transport(&manager, None).await?;
-    let active = Arc::new(Mutex::new(initial));
+    let active = Arc::new(ArcSwap::from_pointee(initial));
     let ctx = GroupUdpContext {
         manager: manager.clone(),
         active: Arc::clone(&active),
@@ -205,10 +206,11 @@ pub(super) async fn run_group_downlink(
 ) -> Result<()> {
     loop {
         reconcile_global_udp_transport(&ctx.manager, &ctx.active, None).await?;
-        let (index, name, transport) = {
-            let a = ctx.active.lock().await;
-            (a.index, a.uplink_name.clone(), Arc::clone(&a.transport))
-        };
+        let snapshot = ctx.active.load_full();
+        let index = snapshot.index;
+        let name = snapshot.uplink_name.clone();
+        let transport = Arc::clone(&snapshot.transport);
+        drop(snapshot);
         let payload = match transport.read_packet().await {
             Ok(payload) => payload,
             Err(error) => {

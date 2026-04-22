@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
-use tokio::sync::Mutex;
+use arc_swap::ArcSwap;
 use tracing::{debug, info};
 
 use outline_metrics as metrics;
@@ -59,15 +59,15 @@ pub(super) async fn select_udp_transport(
 
 pub(super) async fn failover_udp_transport(
     uplinks: &UplinkManager,
-    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    active_transport: &ArcSwap<ActiveUdpTransport>,
     target: Option<&TargetAddr>,
     failed_index: usize,
     error: anyhow::Error,
 ) -> Result<ActiveUdpTransport> {
     let failed_uplink_name = {
-        let active = active_transport.lock().await;
+        let active = active_transport.load();
         if active.index != failed_index {
-            return Ok(active.clone());
+            return Ok((**active).clone());
         }
         active.uplink_name.clone()
     };
@@ -78,15 +78,8 @@ pub(super) async fn failover_udp_transport(
     if let Some(previous_transport) = replace_active_udp_transport_if_current(
         active_transport,
         failed_index,
-        ActiveUdpTransport {
-            index: replacement.index,
-            uplink_name: replacement.uplink_name.clone(),
-            uplink_weight: replacement.uplink_weight,
-            transport: Arc::clone(&replacement.transport),
-        },
-    )
-    .await
-    {
+        replacement.clone(),
+    ) {
         info!(
             failed_index,
             failed_uplink = %failed_uplink_name,
@@ -108,12 +101,12 @@ pub(super) async fn failover_udp_transport(
         close_udp_transport(previous_transport, "failover").await;
         return Ok(replacement);
     }
-    Ok(active_transport.lock().await.clone())
+    Ok((**active_transport.load()).clone())
 }
 
 pub(super) async fn reconcile_global_udp_transport(
     uplinks: &UplinkManager,
-    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    active_transport: &ArcSwap<ActiveUdpTransport>,
     target: Option<&TargetAddr>,
 ) -> Result<()> {
     if !uplinks.strict_active_uplink_for(TransportKind::Udp) {
@@ -121,13 +114,13 @@ pub(super) async fn reconcile_global_udp_transport(
     }
 
     let current_active = uplinks.active_uplink_index_for_transport(TransportKind::Udp).await;
-    let selected = active_transport.lock().await.index;
+    let selected = active_transport.load().index;
     if current_active == Some(selected) || current_active.is_none() {
         return Ok(());
     }
 
     let replaced_uplink_name = {
-        let active = active_transport.lock().await;
+        let active = active_transport.load();
         if active.index != selected {
             return Ok(());
         }
@@ -137,15 +130,8 @@ pub(super) async fn reconcile_global_udp_transport(
     if let Some(previous_transport) = replace_active_udp_transport_if_current(
         active_transport,
         selected,
-        ActiveUdpTransport {
-            index: replacement.index,
-            uplink_name: replacement.uplink_name.clone(),
-            uplink_weight: replacement.uplink_weight,
-            transport: Arc::clone(&replacement.transport),
-        },
-    )
-    .await
-    {
+        replacement.clone(),
+    ) {
         metrics::record_failover(
             "udp",
             uplinks.group_name(),
@@ -162,28 +148,34 @@ pub(super) async fn reconcile_global_udp_transport(
     Ok(())
 }
 
-pub(super) async fn replace_active_udp_transport_if_current(
-    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+/// Atomically swap in `replacement` iff the current snapshot still has
+/// `expected_index`. Returns the previous transport handle on success so the
+/// caller can close it; returns `None` if some other task already replaced the
+/// active transport (the freshly built `replacement` is dropped — its reader
+/// will be torn down via the transport's own Drop / close path).
+pub(super) fn replace_active_udp_transport_if_current(
+    active_transport: &ArcSwap<ActiveUdpTransport>,
     expected_index: usize,
     replacement: ActiveUdpTransport,
 ) -> Option<Arc<UdpWsTransport>> {
-    let mut active = active_transport.lock().await;
-    if active.index != expected_index {
+    let current = active_transport.load_full();
+    if current.index != expected_index {
         return None;
     }
-    let previous_transport = Arc::clone(&active.transport);
-    *active = replacement;
-    Some(previous_transport)
+    let new_arc = Arc::new(replacement);
+    let prev = active_transport.compare_and_swap(&current, Arc::clone(&new_arc));
+    if Arc::ptr_eq(&prev, &current) {
+        Some(Arc::clone(&current.transport))
+    } else {
+        None
+    }
 }
 
 pub(super) async fn close_active_udp_transport(
-    active_transport: &Arc<Mutex<ActiveUdpTransport>>,
+    active_transport: &ArcSwap<ActiveUdpTransport>,
     reason: &'static str,
 ) {
-    let transport = {
-        let active = active_transport.lock().await;
-        Arc::clone(&active.transport)
-    };
+    let transport = Arc::clone(&active_transport.load().transport);
     close_udp_transport(transport, reason).await;
 }
 
@@ -201,8 +193,8 @@ async fn close_udp_transport(transport: Arc<UdpWsTransport>, reason: &'static st
 mod tests {
     use std::time::Duration;
 
+    use arc_swap::ArcSwap;
     use tokio::net::UdpSocket;
-    use tokio::sync::Mutex;
 
     use outline_transport::UdpWsTransport;
     use shadowsocks_crypto::CipherKind;
@@ -229,12 +221,12 @@ mod tests {
             )
             .unwrap(),
         );
-        let active_transport = Arc::new(Mutex::new(ActiveUdpTransport {
+        let active_transport = ArcSwap::from_pointee(ActiveUdpTransport {
             index: 1,
             uplink_name: Arc::from("old"),
             uplink_weight: 1.0,
             transport: Arc::clone(&old_transport),
-        }));
+        });
 
         let reader_transport = Arc::clone(&old_transport);
         let read_task = tokio::spawn(async move { reader_transport.read_packet().await });
@@ -249,7 +241,6 @@ mod tests {
                 transport: Arc::clone(&new_transport),
             },
         )
-        .await
         .expect("active transport should be replaced");
         close_udp_transport(previous_transport, "test_replace").await;
 
@@ -259,6 +250,6 @@ mod tests {
         .await
         .unwrap();
         assert!(format!("{error:#}").contains("udp transport closed"));
-        assert_eq!(active_transport.lock().await.index, 2);
+        assert_eq!(active_transport.load().index, 2);
     }
 }
