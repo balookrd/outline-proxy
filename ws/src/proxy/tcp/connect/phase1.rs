@@ -11,24 +11,13 @@ use socks5_proto::TargetAddr;
 
 use outline_uplink::{TransportKind, UplinkManager};
 
-use super::super::failover::{
-    ActiveTcpUplink, TcpUplinkSource, connect_tcp_uplink, connect_tcp_uplink_fresh,
-};
+use super::super::failover::{ActiveTcpUplink, TcpUplinkSource, connect_tcp_uplink};
 use super::replay::ReplayBufState;
+use super::retry::{
+    CHUNK0_RST_MAX_RETRIES, CHUNK0_RST_RETRY_BACKOFF, redial_current_uplink_and_replay,
+    should_retry_rst_on_current_uplink,
+};
 use crate::proxy::TcpTimeouts;
-
-/// Maximum number of transparent retries on the *same* uplink when chunk 0
-/// dies with a transport-level reset (WebSocket RST / clean Close before any
-/// response bytes). Transit flaps routinely RST fresh WS handshakes on
-/// several uplinks within a few hundred milliseconds; silently redialing
-/// once or twice avoids surfacing a brief network event to the client as a
-/// user-visible disconnect, and is cheaper than a full cross-uplink failover.
-const CHUNK0_RST_MAX_RETRIES: u8 = 2;
-
-/// Delay between transparent chunk-0 retries. Short enough that the worst
-/// case (two retries) stays well under a second, long enough to let a
-/// transit/DPI flap clear before dialing again.
-const CHUNK0_RST_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Waits for the first upstream response chunk while forwarding client data,
 /// transparently failing over to alternative uplinks (and replaying buffered
@@ -195,20 +184,18 @@ pub(super) async fn try_uplinks(
                         error = %format!("{phase1_error:#}"),
                         "TCP phase-1 failure on warm-standby socket; retrying same uplink with a fresh dial"
                     );
-                    match connect_tcp_uplink_fresh(uplinks, &active.candidate, target).await {
-                        Ok(reconnected) => {
-                            active.replace_transport(reconnected);
-                            replay
-                                .replay_to(&mut active.writer, "replay to fresh uplink after standby failure failed")
-                                .await?;
-                            if client_half_closed {
-                                active.writer
-                                    .close()
-                                    .await
-                                    .context("fresh uplink half-close after standby failure failed")?;
-                            }
-                            continue;
-                        }
+                    match redial_current_uplink_and_replay(
+                        uplinks,
+                        active,
+                        target,
+                        replay,
+                        client_half_closed,
+                        "replay to fresh uplink after standby failure failed",
+                        "fresh uplink half-close after standby failure failed",
+                    )
+                    .await
+                    {
+                        Ok(()) => continue,
                         Err(connect_err) => {
                             phase1_error = connect_err
                                 .context("fresh dial retry after warm-standby phase-1 failure failed");
@@ -225,10 +212,11 @@ pub(super) async fn try_uplinks(
                 // recovery at well under a second.  Only applied to fresh-dial
                 // sources: Standby has its own retry branch above, and
                 // DirectSocket does not go through WebSocket.
-                if active.source == TcpUplinkSource::FreshDial
-                    && rst_retries_on_current_uplink < CHUNK0_RST_MAX_RETRIES
-                    && crate::disconnect::is_ws_closed(&phase1_error)
-                {
+                if should_retry_rst_on_current_uplink(
+                    active.source,
+                    rst_retries_on_current_uplink,
+                    &phase1_error,
+                ) {
                     let attempt_num = rst_retries_on_current_uplink + 1;
                     debug!(
                         uplink = %active.name,
@@ -239,19 +227,19 @@ pub(super) async fn try_uplinks(
                         "TCP chunk-0 transport reset; silently retrying same uplink before failover"
                     );
                     tokio::time::sleep(CHUNK0_RST_RETRY_BACKOFF).await;
-                    match connect_tcp_uplink_fresh(uplinks, &active.candidate, target).await {
-                        Ok(reconnected) => {
-                            active.replace_transport(reconnected);
+                    match redial_current_uplink_and_replay(
+                        uplinks,
+                        active,
+                        target,
+                        replay,
+                        client_half_closed,
+                        "replay to retried uplink after chunk-0 reset failed",
+                        "retried uplink half-close after chunk-0 reset failed",
+                    )
+                    .await
+                    {
+                        Ok(()) => {
                             rst_retries_on_current_uplink = attempt_num;
-                            replay
-                                .replay_to(&mut active.writer, "replay to retried uplink after chunk-0 reset failed")
-                                .await?;
-                            if client_half_closed {
-                                active.writer
-                                    .close()
-                                    .await
-                                    .context("retried uplink half-close after chunk-0 reset failed")?;
-                            }
                             continue;
                         }
                         Err(connect_err) => {
