@@ -1,3 +1,5 @@
+mod metrics;
+
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use outline_transport::{
 };
 use crate::config::{TargetAddr, UplinkTransport};
 
+use self::metrics::{BytesRecorder, record_attempt};
 use super::types::ProbeOutcome;
 
 pub(crate) async fn probe_uplink(
@@ -60,81 +63,66 @@ pub(crate) async fn run_tcp_probe(
 ) -> Result<(bool, Option<Duration>)> {
     let started = Instant::now();
     if probe.ws.enabled {
-        let probe_started = Instant::now();
-        let result = match uplink.transport {
-            UplinkTransport::Ws => {
-                run_ws_probe(
-                    cache,
-                    group,
-                    &uplink.name,
-                    "tcp",
-                    uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                    effective_tcp_mode,
-                    uplink.fwmark,
-                    Arc::clone(&dial_limit),
-                    probe.timeout,
-                )
-                .await
-            },
-            UplinkTransport::Shadowsocks => {
-                run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
-            },
+        let ws_attempt = async {
+            match uplink.transport {
+                UplinkTransport::Ws => {
+                    run_ws_probe(
+                        cache,
+                        group,
+                        &uplink.name,
+                        "tcp",
+                        uplink
+                            .tcp_ws_url
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                        effective_tcp_mode,
+                        uplink.fwmark,
+                        Arc::clone(&dial_limit),
+                        probe.timeout,
+                    )
+                    .await
+                },
+                UplinkTransport::Shadowsocks => {
+                    run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
+                },
+            }
         };
-        outline_metrics::record_probe(
-            group,
-            &uplink.name,
-            "tcp",
-            "ws",
-            result.is_ok(),
-            probe_started.elapsed(),
-        );
-        result?;
+        record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
     }
     if let Some(http_probe) = &probe.http {
-        let probe_started = Instant::now();
-        let result = run_http_probe(
-                    cache,
-            group,
-            uplink,
-            http_probe,
-            Arc::clone(&dial_limit),
-            effective_tcp_mode,
-        )
-        .await;
-        outline_metrics::record_probe(
+        let ok = record_attempt(
             group,
             &uplink.name,
             "tcp",
             "http",
-            result.is_ok(),
-            probe_started.elapsed(),
-        );
-        let ok = result?;
+            run_http_probe(
+                cache,
+                group,
+                uplink,
+                http_probe,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+            ),
+        )
+        .await?;
         return Ok((ok, Some(started.elapsed())));
     }
     if let Some(tcp_probe) = &probe.tcp {
-        let probe_started = Instant::now();
-        let result = run_tcp_tunnel_probe(
-                    cache,
-            group,
-            uplink,
-            tcp_probe,
-            Arc::clone(&dial_limit),
-            effective_tcp_mode,
-        )
-        .await;
-        outline_metrics::record_probe(
+        let ok = record_attempt(
             group,
             &uplink.name,
             "tcp",
             "tcp",
-            result.is_ok(),
-            probe_started.elapsed(),
-        );
-        let ok = result?;
+            run_tcp_tunnel_probe(
+                cache,
+                group,
+                uplink,
+                tcp_probe,
+                Arc::clone(&dial_limit),
+                effective_tcp_mode,
+            ),
+        )
+        .await?;
         return Ok((ok, Some(started.elapsed())));
     }
     if probe.ws.enabled {
@@ -157,59 +145,48 @@ pub(crate) async fn run_udp_probe(
 
     let started = Instant::now();
     if probe.ws.enabled {
-        let probe_started = Instant::now();
-        let result = match uplink.transport {
-            UplinkTransport::Ws => {
-                run_ws_probe(
-                    cache,
-                    group,
-                    &uplink.name,
-                    "udp",
-                    uplink
-                        .udp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
-                    effective_udp_mode,
-                    uplink.fwmark,
-                    Arc::clone(&dial_limit),
-                    probe.timeout,
-                )
-                .await
-            },
-            UplinkTransport::Shadowsocks => {
-                run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
-            },
+        let ws_attempt = async {
+            match uplink.transport {
+                UplinkTransport::Ws => {
+                    run_ws_probe(
+                        cache,
+                        group,
+                        &uplink.name,
+                        "udp",
+                        uplink
+                            .udp_ws_url
+                            .as_ref()
+                            .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
+                        effective_udp_mode,
+                        uplink.fwmark,
+                        Arc::clone(&dial_limit),
+                        probe.timeout,
+                    )
+                    .await
+                },
+                UplinkTransport::Shadowsocks => {
+                    run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
+                },
+            }
         };
-        outline_metrics::record_probe(
-            group,
-            &uplink.name,
-            "udp",
-            "ws",
-            result.is_ok(),
-            probe_started.elapsed(),
-        );
-        result?;
+        record_attempt(group, &uplink.name, "udp", "ws", ws_attempt).await?;
     }
     if let Some(dns_probe) = &probe.dns {
-        let probe_started = Instant::now();
-        let result = run_dns_probe(
-                    cache,
-            group,
-            uplink,
-            dns_probe,
-            Arc::clone(&dial_limit),
-            effective_udp_mode,
-        )
-        .await;
-        outline_metrics::record_probe(
+        let ok = record_attempt(
             group,
             &uplink.name,
             "udp",
             "dns",
-            result.is_ok(),
-            probe_started.elapsed(),
-        );
-        let ok = result?;
+            run_dns_probe(
+                cache,
+                group,
+                uplink,
+                dns_probe,
+                Arc::clone(&dial_limit),
+                effective_udp_mode,
+            ),
+        )
+        .await?;
         return Ok((ok, true, Some(started.elapsed())));
     }
     if probe.ws.enabled {
@@ -459,19 +436,13 @@ pub(crate) async fn run_http_probe(
             },
         }
     };
+    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "http" };
     let result = async {
         writer
             .send_chunk(&target_wire)
             .await
             .context("failed to send HTTP probe target")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "tcp",
-            "http",
-            "outgoing",
-            target_wire.len(),
-        );
+        bytes.outgoing(target_wire.len());
 
         // Use HEAD so health checks do not pull response bodies through the data
         // path. This keeps probe traffic tiny even when the probe URL points at a
@@ -481,27 +452,13 @@ pub(crate) async fn run_http_probe(
             .send_chunk(request.as_bytes())
             .await
             .context("failed to send HTTP probe request")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "tcp",
-            "http",
-            "outgoing",
-            request.len(),
-        );
+        bytes.outgoing(request.len());
 
         let response = reader
             .read_chunk()
             .await
             .context("failed to read HTTP probe response")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "tcp",
-            "http",
-            "incoming",
-            response.len(),
-        );
+        bytes.incoming(response.len());
         let line = String::from_utf8_lossy(&response);
         let status = line
             .lines()
@@ -630,30 +587,17 @@ pub(crate) async fn run_tcp_tunnel_probe(
         }
     };
 
+    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tcp" };
     let result = async {
         writer
             .send_chunk(&target_wire)
             .await
             .context("failed to send TCP tunnel probe target address")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "tcp",
-            "tcp",
-            "outgoing",
-            target_wire.len(),
-        );
+        bytes.outgoing(target_wire.len());
 
         match reader.read_chunk().await {
             Ok(chunk) => {
-                outline_metrics::add_probe_bytes(
-                    group,
-                    &uplink.name,
-                    "tcp",
-                    "tcp",
-                    "incoming",
-                    chunk.len(),
-                );
+                bytes.incoming(chunk.len());
                 debug!(
                     uplink = %uplink.name,
                     target = %format!("{}:{}", probe.host, probe.port),
@@ -739,31 +683,18 @@ pub(crate) async fn run_dns_probe(
         }
     };
 
+    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "udp", probe: "dns" };
     let result = async {
         transport
             .send_packet(&payload)
             .await
             .context("failed to send DNS probe packet")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "udp",
-            "dns",
-            "outgoing",
-            payload.len(),
-        );
+        bytes.outgoing(payload.len());
         let response = transport
             .read_packet()
             .await
             .context("failed to read DNS probe response")?;
-        outline_metrics::add_probe_bytes(
-            group,
-            &uplink.name,
-            "udp",
-            "dns",
-            "incoming",
-            response.len(),
-        );
+        bytes.incoming(response.len());
         let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
         let dns = &response[consumed..];
 
