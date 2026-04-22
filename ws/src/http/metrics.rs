@@ -1,6 +1,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -12,7 +12,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
@@ -39,6 +39,20 @@ const MAX_CONCURRENT_METRICS_CONNECTIONS: usize = 64;
 /// Prevents slowloris-style idle holds against the observability plane.
 const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Time window during which a rendered Prometheus body is reused instead of
+/// rebuilt. Bounds snapshot/render cost to ~1 Hz regardless of how many
+/// scrapers hit the endpoint; clients receive data at most this stale.
+const METRICS_CACHE_TTL: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct RenderCache {
+    entry: Option<(Instant, Bytes)>,
+}
+
+/// Shared across all incoming scrapes. Concurrent requests serialize on the
+/// mutex: within one TTL the first rebuilds, the rest return the cached body.
+type SharedCache = Arc<Mutex<RenderCache>>;
+
 async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
@@ -46,10 +60,12 @@ async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> R
     info!(listen = %config.listen, "metrics server started");
 
     let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_METRICS_CONNECTIONS));
+    let cache: SharedCache = Arc::new(Mutex::new(RenderCache::default()));
 
     loop {
         let (stream, peer) = listener.accept().await.context("metrics accept failed")?;
         let uplinks = uplinks.clone();
+        let cache = cache.clone();
         let permit = conn_sem
             .clone()
             .acquire_owned()
@@ -57,14 +73,18 @@ async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> R
             .expect("semaphore closed");
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = handle_connection(stream, uplinks).await {
+            if let Err(error) = handle_connection(stream, uplinks, cache).await {
                 warn!(%peer, error = %format!("{error:#}"), "metrics request failed");
             }
         });
     }
 }
 
-async fn handle_connection(stream: TcpStream, uplinks: UplinkRegistry) -> Result<()> {
+async fn handle_connection(
+    stream: TcpStream,
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> Result<()> {
     let io = TokioIo::new(stream);
     http1::Builder::new()
         .timer(TokioTimer::new())
@@ -73,7 +93,8 @@ async fn handle_connection(stream: TcpStream, uplinks: UplinkRegistry) -> Result
             io,
             service_fn(move |request: Request<Incoming>| {
                 let uplinks = uplinks.clone();
-                async move { Ok::<_, Infallible>(handle_request(request, uplinks).await) }
+                let cache = cache.clone();
+                async move { Ok::<_, Infallible>(handle_request(request, uplinks, cache).await) }
             }),
         )
         .await
@@ -81,11 +102,15 @@ async fn handle_connection(stream: TcpStream, uplinks: UplinkRegistry) -> Result
     Ok(())
 }
 
-async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> MetricsResponse {
+async fn handle_request(
+    request: Request<Incoming>,
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> MetricsResponse {
     let path = request.uri().path();
 
     match path {
-        "/metrics" => match render_metrics_response(uplinks).await {
+        "/metrics" => match render_metrics_response(uplinks, cache).await {
             Ok(response) => {
                 record_metrics_http_request("/metrics", 200);
                 response
@@ -111,10 +136,28 @@ async fn handle_request(request: Request<Incoming>, uplinks: UplinkRegistry) -> 
     }
 }
 
-async fn render_metrics_response(uplinks: UplinkRegistry) -> Result<MetricsResponse> {
+async fn render_metrics_response(
+    uplinks: UplinkRegistry,
+    cache: SharedCache,
+) -> Result<MetricsResponse> {
+    let body = cached_render(&uplinks, &cache).await?;
+    Ok(plain_response(StatusCode::OK, "text/plain; version=0.0.4", body))
+}
+
+async fn cached_render(uplinks: &UplinkRegistry, cache: &SharedCache) -> Result<Bytes> {
+    // Hold the lock across the rebuild so that concurrent scrapes coalesce
+    // onto a single snapshot+render instead of each doing their own.
+    let mut guard = cache.lock().await;
+    if let Some((stored_at, body)) = guard.entry.as_ref() {
+        if stored_at.elapsed() < METRICS_CACHE_TTL {
+            return Ok(body.clone());
+        }
+    }
     let snapshots = uplinks.snapshots().await;
-    let body = render_prometheus(&snapshots)?;
-    Ok(plain_response(StatusCode::OK, "text/plain; version=0.0.4", Bytes::from(body)))
+    let rendered = render_prometheus(&snapshots)?;
+    let body = Bytes::from(rendered);
+    guard.entry = Some((Instant::now(), body.clone()));
+    Ok(body)
 }
 
 fn plain_response(status: StatusCode, content_type: &'static str, body: Bytes) -> MetricsResponse {

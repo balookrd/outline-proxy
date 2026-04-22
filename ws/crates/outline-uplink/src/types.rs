@@ -1,6 +1,8 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex as SyncMutex;
@@ -227,9 +229,56 @@ impl fmt::Display for RoutingKey {
 pub use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 
 
+/// Deque guarded by an async `Mutex` that also maintains an `AtomicUsize`
+/// length counter. The counter is refreshed on `Drop` of the lock guard so
+/// observers that only need a size hint (e.g. `/metrics` scrapes) can read
+/// it without contending with hot-path mutations.
+pub(crate) struct TrackedDeque {
+    deque: Mutex<VecDeque<WsTransportStream>>,
+    len: AtomicUsize,
+}
+
+impl TrackedDeque {
+    pub(crate) fn new() -> Self {
+        Self { deque: Mutex::new(VecDeque::new()), len: AtomicUsize::new(0) }
+    }
+
+    pub(crate) async fn lock(&self) -> TrackedDequeGuard<'_> {
+        TrackedDequeGuard { guard: self.deque.lock().await, len: &self.len }
+    }
+
+    pub(crate) fn len_hint(&self) -> usize {
+        self.len.load(Ordering::Relaxed)
+    }
+}
+
+pub(crate) struct TrackedDequeGuard<'a> {
+    guard: tokio::sync::MutexGuard<'a, VecDeque<WsTransportStream>>,
+    len: &'a AtomicUsize,
+}
+
+impl Deref for TrackedDequeGuard<'_> {
+    type Target = VecDeque<WsTransportStream>;
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl DerefMut for TrackedDequeGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl Drop for TrackedDequeGuard<'_> {
+    fn drop(&mut self) {
+        self.len.store(self.guard.len(), Ordering::Relaxed);
+    }
+}
+
 pub(crate) struct StandbyPool {
-    pub(crate) tcp: Mutex<VecDeque<WsTransportStream>>,
-    pub(crate) udp: Mutex<VecDeque<WsTransportStream>>,
+    pub(crate) tcp: TrackedDeque,
+    pub(crate) udp: TrackedDeque,
     pub(crate) tcp_refill: Mutex<()>,
     pub(crate) udp_refill: Mutex<()>,
 }
@@ -237,8 +286,8 @@ pub(crate) struct StandbyPool {
 impl StandbyPool {
     pub(crate) fn new() -> Self {
         Self {
-            tcp: Mutex::new(VecDeque::new()),
-            udp: Mutex::new(VecDeque::new()),
+            tcp: TrackedDeque::new(),
+            udp: TrackedDeque::new(),
             tcp_refill: Mutex::new(()),
             udp_refill: Mutex::new(()),
         }

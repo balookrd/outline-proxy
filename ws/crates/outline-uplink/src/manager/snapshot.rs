@@ -21,8 +21,8 @@ impl UplinkManager {
         let mut uplinks = Vec::with_capacity(self.inner.uplinks.len());
         for (index, uplink) in self.inner.uplinks.iter().enumerate() {
             let status = &statuses[index];
-            let standby_tcp_ready = self.inner.standby_pools[index].tcp.lock().await.len();
-            let standby_udp_ready = self.inner.standby_pools[index].udp.lock().await.len();
+            let standby_tcp_ready = self.inner.standby_pools[index].tcp.len_hint();
+            let standby_udp_ready = self.inner.standby_pools[index].udp.len_hint();
             let tcp_penalty = current_penalty(&status.tcp.penalty, now, &self.inner.load_balancing);
             let udp_penalty = current_penalty(&status.udp.penalty, now, &self.inner.load_balancing);
             let tcp_effective_latency =
