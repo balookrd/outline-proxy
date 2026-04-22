@@ -12,6 +12,7 @@ use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkManager};
 
 use super::super::failover::{ActiveTcpUplink, TcpUplinkSource};
+use super::attribution::attribute_terminal_chunk0_failure;
 use super::failover_step::{FailoverStep, failover_to_next_candidate, replay_after_failover};
 use super::replay::ReplayBufState;
 use super::retry::{
@@ -265,38 +266,15 @@ pub(super) async fn try_uplinks(
                 );
 
                 if !can_failover {
-                    if deferred_phase1_failures.is_empty() {
-                        // Apply the same attribution logic as phase 2: a
-                        // WebSocket close (including Close 1013 "try again"
-                        // from the server) means the uplink itself is healthy —
-                        // the remote target was just unreachable.  Using
-                        // report_runtime_failure here would put the uplink into
-                        // a cooldown and degrade unrelated sessions for blocked
-                        // social-media targets.  Use the lighter
-                        // report_upstream_close instead so the probe cycle is
-                        // not skipped but no cooldown is imposed.
-                        if crate::disconnect::is_upstream_runtime_failure(&phase1_error) {
-                            uplinks
-                                .report_runtime_failure(
-                                    active.index,
-                                    TransportKind::Tcp,
-                                    &phase1_error,
-                                )
-                                .await;
-                        } else if crate::disconnect::is_ws_closed(&phase1_error) {
-                            uplinks
-                                .report_upstream_close(active.index, TransportKind::Tcp)
-                                .await;
-                        }
-                    } else {
-                        warn!(
-                            last_uplink = %active.name,
-                            attempts = attempted_uplinks.len(),
-                            attempted_uplinks = ?attempted_uplinks,
-                            error = %error_text,
-                            "suppressing TCP chunk-0 runtime failure attribution because every attempted uplink stalled before the first response"
-                        );
-                    }
+                    attribute_terminal_chunk0_failure(
+                        uplinks,
+                        active,
+                        &phase1_error,
+                        &deferred_phase1_failures,
+                        &attempted_uplinks,
+                        &error_text,
+                    )
+                    .await;
                     return Err(phase1_error);
                 }
 
