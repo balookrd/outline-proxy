@@ -20,7 +20,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub struct StreamResponseContext {
-    pub(super) request_salt: Vec<u8>,
+    pub(super) request_salt: Arc<[u8]>,
 }
 
 struct ActiveStream {
@@ -35,7 +35,7 @@ enum ActiveStreamMode {
         pending_chunk_len: Option<usize>,
     },
     Ss2022 {
-        request_salt: Vec<u8>,
+        request_salt: Arc<[u8]>,
         header_parsed: bool,
         pending_header_len: Option<usize>,
         pending_chunk_len: Option<usize>,
@@ -85,7 +85,7 @@ impl AeadStreamDecryptor {
         match self.active.as_ref()?.mode {
             ActiveStreamMode::Legacy { .. } => None,
             ActiveStreamMode::Ss2022 { ref request_salt, .. } => {
-                Some(StreamResponseContext { request_salt: request_salt.clone() })
+                Some(StreamResponseContext { request_salt: Arc::clone(request_salt) })
             },
         }
     }
@@ -194,7 +194,7 @@ impl AeadStreamDecryptor {
                 {
                     let header_len = validate_ss2022_request_fixed_header(header)?;
                     // One allocation per successful handshake — unavoidable.
-                    let request_salt = self.buffer[..salt_len].to_vec();
+                    let request_salt: Arc<[u8]> = Arc::from(&self.buffer[..salt_len]);
                     self.buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
                     self.active = Some(ActiveStream {
                         user: user.clone(),
@@ -275,7 +275,7 @@ enum StreamEncryptorMode {
         nonce_counter: u64,
         salt: Vec<u8>,
         sent_header: bool,
-        request_salt: Vec<u8>,
+        request_salt: Arc<[u8]>,
     },
 }
 
