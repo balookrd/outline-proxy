@@ -466,15 +466,13 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
     let flow = engine
         .inner
         .flows
-        .read()
-        .await
         .get(&key)
-        .cloned()
+        .map(|v| Arc::clone(v.value()))
         .expect("flow must exist");
     {
         let mut state = flow.lock().await;
         state.retransmission_timeout = Duration::from_millis(200);
-        state.maintenance_notify.notify_one();
+        super::super::maintenance::sync_flow_metrics_and_wake(&mut state);
     }
 
     let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
@@ -631,7 +629,7 @@ async fn tun_tcp_invalid_rst_in_window_is_challenge_acked() {
     let ack = parse_tcp_packet(&capture.next_packet().await).unwrap();
     assert_eq!(ack.flags, TCP_FLAG_ACK);
     assert_eq!(ack.acknowledgement_number, 1001);
-    assert!(engine.inner.flows.read().await.get(&key).is_some());
+    assert!(engine.inner.flows.contains_key(&key));
 }
 
 #[tokio::test]
@@ -920,10 +918,8 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     let flow = engine
         .inner
         .flows
-        .read()
-        .await
         .get(&key)
-        .cloned()
+        .map(|v| Arc::clone(v.value()))
         .expect("flow must remain after client FIN");
     assert!(matches!(
         flow.lock().await.status,
@@ -936,10 +932,8 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
     let flow = engine
         .inner
         .flows
-        .read()
-        .await
         .get(&key)
-        .cloned()
+        .map(|v| Arc::clone(v.value()))
         .expect("flow must remain in LAST_ACK");
     assert_eq!(flow.lock().await.status, TcpFlowStatus::LastAck);
 
@@ -958,7 +952,7 @@ async fn tun_tcp_client_fin_transitions_through_last_ack() {
         .await
         .unwrap();
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(engine.inner.flows.read().await.get(&key).is_none());
+    assert!(!engine.inner.flows.contains_key(&key));
 }
 
 #[tokio::test]
@@ -1042,10 +1036,8 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     let flow = engine
         .inner
         .flows
-        .read()
-        .await
         .get(&time_wait_key)
-        .cloned()
+        .map(|v| Arc::clone(v.value()))
         .expect("flow must remain in FIN_WAIT_2");
     assert_eq!(flow.lock().await.status, TcpFlowStatus::FinWait2);
 
@@ -1070,19 +1062,21 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
     let flow = engine
         .inner
         .flows
-        .read()
-        .await
         .get(&time_wait_key)
-        .cloned()
+        .map(|v| Arc::clone(v.value()))
         .expect("flow must stay alive in TIME_WAIT");
     {
         let mut state = flow.lock().await;
         assert_eq!(state.status, TcpFlowStatus::TimeWait);
-        state.status_since = Instant::now() - TCP_TIME_WAIT_TIMEOUT - Duration::from_millis(1);
-        state.maintenance_notify.notify_one();
+        state.timestamps.status_since = Instant::now() - TCP_TIME_WAIT_TIMEOUT - Duration::from_millis(1);
+        // Force an immediate wake even though the newly-computed deadline
+        // is in the past — scheduler's "earlier-only" push gate would
+        // otherwise no-op on a later deadline.
+        state.next_scheduled_deadline = None;
+        super::super::maintenance::sync_flow_metrics_and_wake(&mut state);
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(engine.inner.flows.read().await.get(&time_wait_key).is_none());
+    assert!(!engine.inner.flows.contains_key(&time_wait_key));
 }
 #[tokio::test]
 async fn new_flow_is_removed_when_synack_write_fails() {
@@ -1129,7 +1123,7 @@ async fn new_flow_is_removed_when_synack_write_fails() {
             || error_text.contains("failed to flush TUN packet"),
         "{error_text}"
     );
-    assert!(engine.inner.flows.read().await.is_empty());
+    assert!(engine.inner.flows.is_empty());
     assert!(engine.inner.pending_connects.lock().await.is_empty());
 
     let _ = std::fs::remove_file(path);

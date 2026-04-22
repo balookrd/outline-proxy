@@ -54,7 +54,8 @@ pub(super) use transitions::{
 };
 #[allow(unused_imports)]
 pub(super) use types::{
-    AckEffect, BufferedClientSegment, ClientSegmentView, ReportedFlowMetrics, SequenceRange,
-    ServerBacklogPressure, ServerFlush, ServerSegment, TcpFlowState, TcpFlowStatus,
+    AckEffect, BufferedClientSegment, ClientSegmentView, FlowControlSignals, FlowRouting,
+    FlowTimestamps, ReportedFlowMetrics, SequenceRange, ServerBacklogPressure, ServerFlush,
+    ServerSegment, TcpFlowState, TcpFlowStatus,
 };
 pub(crate) use types::TunTcpUpstreamWriter;

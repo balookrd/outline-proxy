@@ -7,13 +7,12 @@ use anyhow::{Result, bail};
 use tokio::sync::{Mutex, watch};
 use tracing::debug;
 
-use crate::utils::maybe_shrink_hash_map;
 use outline_metrics as metrics;
 
 use super::super::maintenance::sync_flow_metrics_and_wake;
 use super::super::state_machine::{
-    TcpFlowState, TcpFlowStatus, build_flow_packet, build_flow_syn_ack_packet, clear_flow_metrics,
-    decode_client_window, set_flow_status,
+    FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus, build_flow_packet,
+    build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window, set_flow_status,
 };
 use super::super::wire::{ParsedTcpPacket, build_reset_response};
 use super::super::{
@@ -72,18 +71,26 @@ impl TunTcpEngine {
         let flow_id = self.inner.next_flow_id.fetch_add(1, Ordering::Relaxed);
         let now = Instant::now();
         let (close_signal, close_rx) = watch::channel(false);
-        let maintenance_notify = Arc::clone(&self.inner.maintenance_notify);
+        let scheduler = Arc::clone(&self.inner.scheduler);
+        let tcp_config = Arc::clone(&self.inner.tcp);
+        let idle_timeout = self.inner.idle_timeout;
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
             key: key.clone(),
-            uplink_index: usize::MAX,
-            uplink_name: Arc::from("connecting"),
-            group_name: Arc::from(manager.group_name()),
-            manager: manager.clone(),
-            route: route.clone(),
-            upstream_writer: None,
-            close_signal,
-            maintenance_notify,
+            routing: FlowRouting {
+                uplink_index: usize::MAX,
+                uplink_name: Arc::from("connecting"),
+                group_name: Arc::from(manager.group_name()),
+                manager: manager.clone(),
+                route: route.clone(),
+                upstream_writer: None,
+            },
+            signals: FlowControlSignals {
+                close_signal,
+                scheduler,
+                tcp_config,
+                idle_timeout,
+            },
             status: TcpFlowStatus::SynReceived,
             client_next_seq: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
@@ -121,9 +128,12 @@ impl TunTcpEngine {
             keepalive_probes_sent: 0,
             last_keepalive_probe_at: None,
             reported: super::super::state_machine::ReportedFlowMetrics::default(),
-            created_at: now,
-            status_since: now,
-            last_seen: now,
+            timestamps: FlowTimestamps {
+                created_at: now,
+                status_since: now,
+                last_seen: now,
+            },
+            next_scheduled_deadline: None,
         }));
 
         if let Err(error) = self.insert_flow(key.clone(), Arc::clone(&state)).await {
@@ -168,7 +178,7 @@ impl TunTcpEngine {
         key: TcpFlowKey,
         flow: Arc<Mutex<TcpFlowState>>,
     ) -> Result<()> {
-        if self.inner.flows.read().await.len() >= self.inner.max_flows {
+        if self.inner.flows.len() >= self.inner.max_flows {
             if let Some(evicted_key) = self.oldest_flow_key().await {
                 self.abort_flow_with_rst(&evicted_key, "evicted").await;
             } else {
@@ -178,20 +188,16 @@ impl TunTcpEngine {
 
         let (group_name, uplink_name) = {
             let state = flow.lock().await;
-            (state.group_name.clone(), state.uplink_name.clone())
+            (state.routing.group_name.clone(), state.routing.uplink_name.clone())
         };
-        {
-            let mut guard = self.inner.flows.write().await;
-            guard.insert(key, flow);
-        }
+        self.inner.flows.insert(key, flow);
         metrics::record_tun_tcp_event(&group_name, &uplink_name, "flow_created");
 
         Ok(())
     }
 
     pub(super) async fn abort_flow_with_rst(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.write().await.remove(key);
-        let Some(flow) = flow else {
+        let Some((_, flow)) = self.inner.flows.remove(key) else {
             return;
         };
 
@@ -213,11 +219,11 @@ impl TunTcpEngine {
             clear_flow_metrics(&mut state);
             (
                 state.id,
-                state.group_name.clone(),
-                state.uplink_name.clone(),
-                state.created_at.elapsed(),
-                state.upstream_writer.clone(),
-                state.close_signal.clone(),
+                state.routing.group_name.clone(),
+                state.routing.uplink_name.clone(),
+                state.timestamps.created_at.elapsed(),
+                state.routing.upstream_writer.clone(),
+                state.signals.close_signal.clone(),
                 rst_packet,
             )
         };
@@ -234,44 +240,40 @@ impl TunTcpEngine {
         close_upstream_writer(upstream_writer).await;
         metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
         debug!(flow_id, uplink = %uplink_name, reason, "aborted TUN TCP flow");
-        self.maybe_shrink_flow_table().await;
     }
 
     pub(super) async fn close_flow(&self, key: &TcpFlowKey, reason: &'static str) {
-        let flow = self.inner.flows.write().await.remove(key);
-        if let Some(flow) = flow {
+        if let Some((_, flow)) = self.inner.flows.remove(key) {
             let (flow_id, group_name, uplink_name, _duration, upstream_writer, close_signal) = {
                 let mut state = flow.lock().await;
                 set_flow_status(&mut state, TcpFlowStatus::Closed);
                 clear_flow_metrics(&mut state);
                 (
                     state.id,
-                    state.group_name.clone(),
-                    state.uplink_name.clone(),
-                    state.created_at.elapsed(),
-                    state.upstream_writer.clone(),
-                    state.close_signal.clone(),
+                    state.routing.group_name.clone(),
+                    state.routing.uplink_name.clone(),
+                    state.timestamps.created_at.elapsed(),
+                    state.routing.upstream_writer.clone(),
+                    state.signals.close_signal.clone(),
                 )
             };
             let _ = close_signal.send(true);
             close_upstream_writer(upstream_writer).await;
             metrics::record_tun_tcp_event(&group_name, &uplink_name, reason);
             debug!(flow_id, uplink = %uplink_name, reason, "closed TUN TCP flow");
-            self.maybe_shrink_flow_table().await;
         }
     }
 
     async fn oldest_flow_key(&self) -> Option<TcpFlowKey> {
-        let flows = {
-            let guard = self.inner.flows.read().await;
-            guard
-                .iter()
-                .map(|(key, flow)| (key.clone(), Arc::clone(flow)))
-                .collect::<Vec<_>>()
-        };
+        let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = self
+            .inner
+            .flows
+            .iter()
+            .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
+            .collect();
         let mut oldest = None;
-        for (key, flow) in flows {
-            let last_seen = flow.lock().await.last_seen;
+        for (key, flow) in handles {
+            let last_seen = flow.lock().await.timestamps.last_seen;
             if oldest
                 .as_ref()
                 .map(|(_, best_last_seen)| last_seen < *best_last_seen)
@@ -281,10 +283,5 @@ impl TunTcpEngine {
             }
         }
         oldest.map(|(key, _)| key)
-    }
-
-    async fn maybe_shrink_flow_table(&self) {
-        let mut guard = self.inner.flows.write().await;
-        maybe_shrink_hash_map(&mut guard);
     }
 }

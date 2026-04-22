@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, watch};
 
 use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
@@ -11,9 +11,11 @@ use tokio::net::tcp::OwnedWriteHalf;
 
 use outline_transport::{WsTcpWriter, SocketTcpWriter};
 use crate::TunRoute;
+use crate::config::TunTcpConfig;
 use outline_uplink::UplinkManager;
 
 use super::super::TcpFlowKey;
+use super::super::engine::scheduler::FlowScheduler;
 
 /// Abstraction over the upstream TCP write half — tunneled (Shadowsocks
 /// framing) or direct (plain bytes).
@@ -59,9 +61,11 @@ pub(in crate::tcp) enum TcpFlowStatus {
     Closed,
 }
 
-pub(in crate::tcp) struct TcpFlowState {
-    pub(in crate::tcp) id: u64,
-    pub(in crate::tcp) key: TcpFlowKey,
+/// Routing/binding data for a flow — which group and uplink it lives on,
+/// how to reach the upstream, and which route (tunneled vs direct) it was
+/// opened for. Fixed after flow creation except `upstream_writer` /
+/// `uplink_index` / `uplink_name`, which are updated on runtime failover.
+pub(in crate::tcp) struct FlowRouting {
     pub(in crate::tcp) uplink_index: usize,
     pub(in crate::tcp) uplink_name: Arc<str>,
     pub(in crate::tcp) group_name: Arc<str>,
@@ -73,8 +77,37 @@ pub(in crate::tcp) struct TcpFlowState {
     /// `Direct` for local-socket direct route.
     pub(in crate::tcp) route: TunRoute,
     pub(in crate::tcp) upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
+}
+
+/// External notification channels a flow exposes — the close broadcaster
+/// used by per-flow tasks to observe abort, and the shared deadline
+/// scheduler that drives the central maintenance loop.
+///
+/// `tcp_config` and `idle_timeout` are carried here (rather than looked up
+/// via the engine) so deadline recomputation on state change does not need
+/// an extra engine-pointer parameter threaded through all mutation sites.
+pub(in crate::tcp) struct FlowControlSignals {
     pub(in crate::tcp) close_signal: watch::Sender<bool>,
-    pub(in crate::tcp) maintenance_notify: Arc<Notify>,
+    pub(in crate::tcp) scheduler: Arc<FlowScheduler>,
+    pub(in crate::tcp) tcp_config: Arc<TunTcpConfig>,
+    pub(in crate::tcp) idle_timeout: Duration,
+}
+
+/// Wall-clock markers: creation, last status transition, last observed
+/// traffic. Read by the maintenance loop to compute deadlines; written on
+/// state transitions and packet ingress.
+#[derive(Debug, Clone, Copy)]
+pub(in crate::tcp) struct FlowTimestamps {
+    pub(in crate::tcp) created_at: Instant,
+    pub(in crate::tcp) status_since: Instant,
+    pub(in crate::tcp) last_seen: Instant,
+}
+
+pub(in crate::tcp) struct TcpFlowState {
+    pub(in crate::tcp) id: u64,
+    pub(in crate::tcp) key: TcpFlowKey,
+    pub(in crate::tcp) routing: FlowRouting,
+    pub(in crate::tcp) signals: FlowControlSignals,
     pub(in crate::tcp) status: TcpFlowStatus,
     pub(in crate::tcp) client_next_seq: u32,
     pub(in crate::tcp) client_window_scale: u8,
@@ -113,14 +146,18 @@ pub(in crate::tcp) struct TcpFlowState {
     /// sync code (`sync_flow_metrics` / `clear_flow_metrics`); used to
     /// compute +/- deltas so the gauge accumulates correctly.
     pub(in crate::tcp) reported: ReportedFlowMetrics,
-    pub(in crate::tcp) created_at: Instant,
-    pub(in crate::tcp) status_since: Instant,
-    pub(in crate::tcp) last_seen: Instant,
+    pub(in crate::tcp) timestamps: FlowTimestamps,
+    /// Most recently scheduled maintenance deadline for this flow.  A heap
+    /// entry in `FlowScheduler` is considered live only when its deadline
+    /// matches this value; any other popped entry is a stale leftover from
+    /// a previous `sync_flow_metrics_and_schedule` call and is dropped.
+    pub(in crate::tcp) next_scheduled_deadline: Option<Instant>,
 }
 
-/// Cache of last values emitted to Prometheus gauges for this flow. Kept
-/// out of the main TCP state so readers of `TcpFlowState` see only
-/// protocol-relevant fields, not metric bookkeeping.
+/// Cache of last values emitted to Prometheus gauges for this flow.
+/// Separated from the protocol fields in `TcpFlowState` so metric
+/// bookkeeping (`sync_flow_metrics` / `clear_flow_metrics`) does not
+/// visually mix with TCP state.
 #[derive(Debug, Default)]
 pub(in crate::tcp) struct ReportedFlowMetrics {
     pub(in crate::tcp) inflight_segments: usize,

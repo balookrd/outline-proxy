@@ -22,7 +22,7 @@ use futures_util::StreamExt;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng, seq::SliceRandom};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::Mutex;
 use tokio_tungstenite::{accept_async, connect_async};
 
 fn parse_action_response(packet: &[u8]) -> Vec<u8> {
@@ -1685,31 +1685,37 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             remote_ip: "8.8.8.8".parse().unwrap(),
             remote_port: 443,
         },
-        uplink_index: 0,
-        uplink_name: Arc::from("test"),
-        group_name: Arc::from("test"),
-        manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
-            .await,
-        route: crate::TunRoute::Group {
-            name: "test".into(),
-            manager: super::engine::tests::build_test_manager(
-                "ws://127.0.0.1:1/".parse().unwrap(),
-            )
-            .await,
+        routing: super::state_machine::FlowRouting {
+            uplink_index: 0,
+            uplink_name: Arc::from("test"),
+            group_name: Arc::from("test"),
+            manager: super::engine::tests::build_test_manager("ws://127.0.0.1:1/".parse().unwrap())
+                .await,
+            route: crate::TunRoute::Group {
+                name: "test".into(),
+                manager: super::engine::tests::build_test_manager(
+                    "ws://127.0.0.1:1/".parse().unwrap(),
+                )
+                .await,
+            },
+            upstream_writer: Some(Arc::new(Mutex::new(crate::tcp::TunTcpUpstreamWriter::TunneledWs({
+                let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
+                    sink,
+                    cipher,
+                    &master_key,
+                    super::UpstreamTransportGuard::new("test", "tcp"),
+                )
+                .await
+                .unwrap();
+                writer
+            })))),
         },
-        upstream_writer: Some(Arc::new(Mutex::new(crate::tcp::TunTcpUpstreamWriter::TunneledWs({
-            let (writer, _ctrl_tx) = TcpShadowsocksWriter::connect(
-                sink,
-                cipher,
-                &master_key,
-                super::UpstreamTransportGuard::new("test", "tcp"),
-            )
-            .await
-            .unwrap();
-            writer
-        })))),
-        close_signal,
-        maintenance_notify: Arc::new(Notify::new()),
+        signals: super::state_machine::FlowControlSignals {
+            close_signal,
+            scheduler: Arc::new(super::engine::scheduler::FlowScheduler::new()),
+            tcp_config: Arc::new(test_tun_tcp_config()),
+            idle_timeout: std::time::Duration::from_secs(60),
+        },
         status: super::TcpFlowStatus::Established,
         client_next_seq: 100,
         client_window_scale: 0,
@@ -1745,8 +1751,11 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         keepalive_probes_sent: 0,
         last_keepalive_probe_at: None,
         reported: super::state_machine::ReportedFlowMetrics::default(),
-        created_at: Instant::now(),
-        status_since: Instant::now(),
-        last_seen: Instant::now(),
+        timestamps: super::state_machine::FlowTimestamps {
+            created_at: Instant::now(),
+            status_since: Instant::now(),
+            last_seen: Instant::now(),
+        },
+        next_scheduled_deadline: None,
     }
 }
