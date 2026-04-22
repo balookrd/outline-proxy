@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
 use tokio::sync::Semaphore;
+use tracing::debug;
 
 use outline_transport::{
     DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
@@ -120,3 +121,24 @@ pub(super) async fn connect_probe_tcp(
         },
     }
 }
+
+/// Best-effort teardown for a Shadowsocks TCP probe writer.  Close failures
+/// are logged at debug level rather than surfaced to the caller — by the time
+/// we get here the probe result has already been decided and the interesting
+/// error is whatever led us to tear down in the first place.
+pub(super) async fn close_probe_tcp_writer(
+    uplink_name: &str,
+    probe: &'static str,
+    writer: &mut TcpWriter,
+) {
+    if let Err(error) = writer.close().await {
+        debug!(
+            uplink = %uplink_name,
+            transport = "tcp",
+            probe,
+            error = %format!("{error:#}"),
+            "probe transport close returned error during teardown"
+        );
+    }
+}
+
