@@ -121,8 +121,14 @@ impl UserKey {
     }
 
     pub fn matches_password(&self, password: &str) -> Result<bool, CryptoError> {
-        let derived = password_to_master_key(password, self.cipher)?;
-        Ok(self.master_key() == derived.as_slice())
+        if self.cipher.is_2022() {
+            let Ok(decoded) = STANDARD.decode(password.as_bytes()) else {
+                return Ok(false);
+            };
+            return Ok(constant_time_eq(self.master_key(), &decoded));
+        }
+        let derived = bytes_to_key(password.as_bytes(), self.cipher.key_len())?;
+        Ok(constant_time_eq(self.master_key(), &derived))
     }
 
     pub(super) fn master_key(&self) -> &[u8] {
@@ -148,20 +154,33 @@ fn password_to_master_key(password: &str, cipher: CipherKind) -> Result<Vec<u8>,
     }
 }
 
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff: u8 = 0;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 fn bytes_to_key(password: &[u8], key_len: usize) -> Result<Vec<u8>, CryptoError> {
     if password.is_empty() {
         return Err(CryptoError::EmptyPassword);
     }
 
     let mut key = Vec::with_capacity(key_len);
-    let mut previous = Vec::new();
+    let mut previous = [0u8; 16];
+    let mut has_previous = false;
     while key.len() < key_len {
-        let mut material = Vec::with_capacity(previous.len() + password.len());
-        if !previous.is_empty() {
-            material.extend_from_slice(&previous);
+        let mut hasher = Md5::new();
+        if has_previous {
+            hasher.update(previous);
         }
-        material.extend_from_slice(password);
-        previous = Md5::digest(&material).to_vec();
+        hasher.update(password);
+        previous = hasher.finalize().into();
+        has_previous = true;
         key.extend_from_slice(&previous);
     }
     key.truncate(key_len);
