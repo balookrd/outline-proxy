@@ -32,6 +32,7 @@ use crate::{
         diagnose_stream_handshake,
     },
     metrics::{Metrics, Protocol, TcpUpstreamGuard, Transport},
+    outbound::OutboundIpv6,
     protocol::parse_target_addr,
 };
 
@@ -88,6 +89,7 @@ async fn run_tcp_relay<T: WsSocket>(
     candidate_users: Arc<[Arc<str>]>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
@@ -146,6 +148,7 @@ async fn run_tcp_relay<T: WsSocket>(
                             candidate_users.as_ref(),
                             dns_cache.as_ref(),
                             prefer_ipv4_upstream,
+                            outbound_ipv6.as_deref(),
                             T::binary_msg,
                             T::close_msg,
                         )
@@ -239,6 +242,7 @@ async fn handle_tcp_binary_frame<Msg>(
     candidate_users: &[Arc<str>],
     dns_cache: &DnsCache,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<&OutboundIpv6>,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
 ) -> Result<()>
@@ -280,7 +284,15 @@ where
         let user_id = user.id_arc();
         let target_display = target.display_host_port();
         let connect_started = std::time::Instant::now();
-        let stream = match connect_tcp_target(dns_cache, &target, user.fwmark(), prefer_ipv4_upstream).await {
+        let stream = match connect_tcp_target(
+            dns_cache,
+            &target,
+            user.fwmark(),
+            prefer_ipv4_upstream,
+            outbound_ipv6,
+        )
+        .await
+        {
             Ok(stream) => {
                 metrics.record_tcp_connect(
                     Arc::clone(&user_id),
@@ -372,6 +384,7 @@ pub(super) async fn handle_tcp_connection(
     candidate_users: Arc<[Arc<str>]>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
 ) -> Result<()> {
     run_tcp_relay::<AxumWs>(
         AxumWs(socket),
@@ -382,10 +395,12 @@ pub(super) async fn handle_tcp_connection(
         candidate_users,
         dns_cache,
         prefer_ipv4_upstream,
+        outbound_ipv6,
     )
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     users: Arc<[UserKey]>,
@@ -394,6 +409,7 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
     candidate_users: Arc<[Arc<str>]>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
 ) -> Result<()> {
     run_tcp_relay::<H3Ws>(
         H3Ws(socket),
@@ -404,6 +420,7 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
         candidate_users,
         dns_cache,
         prefer_ipv4_upstream,
+        outbound_ipv6,
     )
     .await
 }

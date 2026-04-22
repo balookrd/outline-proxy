@@ -18,6 +18,7 @@ use crate::{
     },
     metrics::{Metrics, Protocol, Transport},
     nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
+    outbound::OutboundIpv6,
     protocol::{TargetAddr, parse_target_addr},
 };
 
@@ -45,12 +46,14 @@ impl ResponseSender for DatagramResponseSender {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn serve_ss_tcp_listener(
     listener: TcpListener,
     users: Arc<[UserKey]>,
     metrics: Arc<Metrics>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
@@ -83,11 +86,18 @@ pub(super) async fn serve_ss_tcp_listener(
         let users = users.clone();
         let metrics = metrics.clone();
         let dns_cache = Arc::clone(&dns_cache);
+        let outbound_ipv6 = outbound_ipv6.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) =
-                handle_ss_tcp_connection(stream, users, metrics, dns_cache, prefer_ipv4_upstream)
-                    .await
+            if let Err(error) = handle_ss_tcp_connection(
+                stream,
+                users,
+                metrics,
+                dns_cache,
+                prefer_ipv4_upstream,
+                outbound_ipv6,
+            )
+            .await
             {
                 if is_expected_ws_close(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
@@ -214,6 +224,7 @@ async fn handle_ss_tcp_connection(
     metrics: Arc<Metrics>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
 ) -> Result<()> {
     let peer_addr = socket.peer_addr().ok();
     let (mut client_reader, client_writer) = socket.into_split();
@@ -237,6 +248,7 @@ async fn handle_ss_tcp_connection(
         &handshake.target,
         handshake.user.fwmark(),
         prefer_ipv4_upstream,
+        outbound_ipv6.as_deref(),
     )
     .await
     {

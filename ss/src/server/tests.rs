@@ -63,6 +63,7 @@ fn build_test_state(
         nat_table,
         dns_cache,
         prefer_ipv4_upstream: false,
+        outbound_ipv6: None,
         udp_relay_semaphore: None,
     });
     let auth = Arc::new(AuthPolicy {
@@ -92,7 +93,7 @@ async fn tcp_ipv6_loopback_smoke() -> Result<()> {
 
     let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let mut client = connect_tcp_target(dns_cache.as_ref(), &target, None, false).await?;
+    let mut client = connect_tcp_target(dns_cache.as_ref(), &target, None, false, None).await?;
     client.write_all(b"ping").await?;
 
     let mut reply = [0_u8; 4];
@@ -225,7 +226,7 @@ async fn tcp_connect_tries_next_resolved_address() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(buf)
     });
 
-    let mut client = connect_tcp_addrs(&[blocked_addr, addr], None).await?;
+    let mut client = connect_tcp_addrs(&[blocked_addr, addr], None, None).await?;
     client.write_all(b"ping").await?;
 
     let mut reply = [0_u8; 4];
@@ -791,6 +792,7 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
             metrics,
             dns_cache,
             false,
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -1349,6 +1351,9 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         metrics_listen: None,
         metrics_path: "/metrics".into(),
         prefer_ipv4_upstream: false,
+            outbound_ipv6_prefix: None,
+            outbound_ipv6_interface: None,
+            outbound_ipv6_refresh_secs: 30,
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
         http_root_auth: false,

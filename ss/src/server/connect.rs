@@ -1,6 +1,6 @@
 use std::{
     collections::{HashSet, VecDeque},
-    net::SocketAddr,
+    net::{SocketAddr, SocketAddrV6},
     sync::Arc,
 };
 
@@ -12,7 +12,11 @@ use tokio::{
 };
 use tracing::warn;
 
-use crate::{fwmark::apply_fwmark_if_needed, protocol::TargetAddr};
+use crate::{
+    fwmark::apply_fwmark_if_needed,
+    outbound::{OutboundIpv6, set_ipv6_freebind},
+    protocol::TargetAddr,
+};
 
 use super::constants::{TCP_CONNECT_TIMEOUT_SECS, TCP_HAPPY_EYEBALLS_DELAY_MS};
 use super::dns_cache::DnsCache;
@@ -27,7 +31,7 @@ pub(super) async fn resolve_udp_target(
             if let Some(resolved) = dns_cache.lookup_one(host, *port, prefer_ipv4_upstream) {
                 return Ok(resolved);
             }
-            let addrs = resolve_and_cache(dns_cache, host, *port, prefer_ipv4_upstream).await?;
+            let addrs = resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await?;
             addrs.first().copied().ok_or_else(|| {
                 anyhow!("dns lookup returned no records for {}", target.display_host_port())
             })
@@ -60,23 +64,37 @@ async fn resolve_target_addrs(
             if let Some(addrs) = dns_cache.lookup_all(host, *port, prefer_ipv4_upstream) {
                 return Ok(addrs);
             }
-            resolve_and_cache(dns_cache, host, *port, prefer_ipv4_upstream).await
+            resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await
         },
     }
 }
 
-async fn resolve_and_cache(
+async fn resolve_via_singleflight(
     dns_cache: &DnsCache,
     host: &str,
     port: u16,
     prefer_ipv4_upstream: bool,
 ) -> Result<Arc<[SocketAddr]>> {
-    let mut addrs = match lookup_host((host, port)).await {
+    let host_owned = host.to_string();
+    dns_cache
+        .resolve_or_join(host, port, prefer_ipv4_upstream, move |cache| {
+            resolve_and_cache(cache, host_owned, port, prefer_ipv4_upstream)
+        })
+        .await
+}
+
+async fn resolve_and_cache(
+    dns_cache: Arc<DnsCache>,
+    host: String,
+    port: u16,
+    prefer_ipv4_upstream: bool,
+) -> Result<Arc<[SocketAddr]>> {
+    let mut addrs = match lookup_host((host.as_str(), port)).await {
         Ok(resolved) => resolved.collect::<Vec<_>>(),
         Err(error) => {
-            if let Some(stale) = dns_cache.lookup_all_stale(host, port, prefer_ipv4_upstream) {
+            if let Some(stale) = dns_cache.lookup_all_stale(&host, port, prefer_ipv4_upstream) {
                 warn!(
-                    host,
+                    host = %host,
                     port,
                     error = %error,
                     "dns lookup failed, serving stale cached addresses",
@@ -94,7 +112,7 @@ async fn resolve_and_cache(
         return Err(anyhow!("dns lookup returned no records for {host}:{port}"));
     }
     let addrs: Arc<[SocketAddr]> = Arc::from(addrs.into_boxed_slice());
-    dns_cache.store(host, port, prefer_ipv4_upstream, Arc::clone(&addrs));
+    dns_cache.store(&host, port, prefer_ipv4_upstream, Arc::clone(&addrs));
     Ok(addrs)
 }
 
@@ -103,12 +121,13 @@ pub(super) async fn connect_tcp_target(
     target: &TargetAddr,
     fwmark: Option<u32>,
     prefer_ipv4_upstream: bool,
+    outbound_ipv6: Option<&OutboundIpv6>,
 ) -> Result<TcpStream> {
     let resolved = sort_addrs_for_happy_eyeballs(
         resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?.to_vec(),
         prefer_ipv4_upstream,
     );
-    connect_tcp_addrs(&resolved, fwmark)
+    connect_tcp_addrs(&resolved, fwmark, outbound_ipv6)
         .await
         .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
 }
@@ -156,9 +175,11 @@ pub(super) fn sort_addrs_for_happy_eyeballs(
 pub(super) async fn connect_tcp_addrs(
     addrs: &[SocketAddr],
     fwmark: Option<u32>,
+    outbound_ipv6: Option<&OutboundIpv6>,
 ) -> Result<TcpStream> {
     let mut attempts = FuturesUnordered::new();
     for (index, addr) in addrs.iter().copied().enumerate() {
+        let outbound = outbound_ipv6;
         attempts.push(async move {
             if index > 0 {
                 tokio::time::sleep(Duration::from_millis(
@@ -166,7 +187,7 @@ pub(super) async fn connect_tcp_addrs(
                 ))
                 .await;
             }
-            let result = connect_tcp_addr(addr, fwmark).await;
+            let result = connect_tcp_addr(addr, fwmark, outbound).await;
             (addr, result)
         });
     }
@@ -186,7 +207,11 @@ pub(super) async fn connect_tcp_addrs(
     }
 }
 
-async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<TcpStream> {
+async fn connect_tcp_addr(
+    resolved: SocketAddr,
+    fwmark: Option<u32>,
+    outbound_ipv6: Option<&OutboundIpv6>,
+) -> Result<TcpStream> {
     let socket = if resolved.is_ipv4() {
         TcpSocket::new_v4()
     } else {
@@ -196,6 +221,31 @@ async fn connect_tcp_addr(resolved: SocketAddr, fwmark: Option<u32>) -> Result<T
 
     apply_fwmark_if_needed(&socket, fwmark)
         .with_context(|| format!("failed to apply fwmark {fwmark:?} to tcp socket"))?;
+
+    if let Some(out) = outbound_ipv6
+        && resolved.is_ipv6()
+    {
+        match out
+            .random_addr()
+            .context("failed to generate random outbound IPv6 address")?
+        {
+            Some(source) => {
+                set_ipv6_freebind(&socket)
+                    .with_context(|| "failed to set IPV6_FREEBIND on outbound tcp socket")?;
+                let bind = SocketAddr::V6(SocketAddrV6::new(source, 0, 0, 0));
+                socket
+                    .bind(bind)
+                    .with_context(|| format!("failed to bind outbound tcp source {bind}"))?;
+            },
+            None => {
+                tracing::debug!(
+                    target = %resolved,
+                    source = %out,
+                    "outbound IPv6 pool is empty; tcp socket falling back to kernel default source",
+                );
+            },
+        }
+    }
 
     match timeout(Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS), socket.connect(resolved)).await {
         Ok(Ok(stream)) => {

@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use tokio::sync::Semaphore;
 
-use crate::{crypto::UserKey, metrics::Metrics, nat::NatTable};
+use crate::{crypto::UserKey, metrics::Metrics, nat::NatTable, outbound::OutboundIpv6};
 
 use super::dns_cache::DnsCache;
 
@@ -20,6 +20,7 @@ pub(super) struct Services {
     pub(super) nat_table: Arc<NatTable>,
     pub(super) dns_cache: Arc<DnsCache>,
     pub(super) prefer_ipv4_upstream: bool,
+    pub(super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
     /// Process-wide semaphore limiting concurrent UDP relay tasks across all
     /// WebSocket sessions. `None` means no global cap is enforced.
     pub(super) udp_relay_semaphore: Option<Arc<Semaphore>>,

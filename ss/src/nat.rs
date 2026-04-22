@@ -38,6 +38,7 @@ use crate::{
     crypto::{UdpSession, UserKey, encrypt_udp_packet_for_response},
     fwmark::apply_fwmark_if_needed,
     metrics::{Metrics, Protocol},
+    outbound::{OutboundIpv6, set_ipv6_freebind},
     protocol::TargetAddr,
 };
 
@@ -147,13 +148,23 @@ impl NatEntry {
 pub(crate) struct NatTable {
     entries: Mutex<HashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>>,
     idle_timeout: Duration,
+    outbound_ipv6: Option<Arc<OutboundIpv6>>,
 }
 
 impl NatTable {
+    #[cfg(test)]
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
+        Self::with_outbound_ipv6(idle_timeout, None)
+    }
+
+    pub(crate) fn with_outbound_ipv6(
+        idle_timeout: Duration,
+        outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             entries: Mutex::new(HashMap::new()),
             idle_timeout,
+            outbound_ipv6,
         })
     }
 
@@ -179,8 +190,9 @@ impl NatTable {
         // On error the cell stays uninitialised. evict_idle already removes
         // cells whose get() is None, so no second lock is needed to clean up.
         let create_user = user.clone();
+        let outbound = self.outbound_ipv6.clone();
         cell.get_or_try_init(|| async move {
-            Self::create_entry(&key, create_user, udp_session, metrics).await
+            Self::create_entry(&key, create_user, udp_session, metrics, outbound).await
         })
         .await
         .map(Arc::clone)
@@ -191,10 +203,9 @@ impl NatTable {
         user: UserKey,
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
+        outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Result<Arc<NatEntry>> {
-        let bind_addr: &str = if key.target.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-        let socket = UdpSocket::bind(bind_addr)
-            .await
+        let socket = bind_nat_udp_socket(key.target, outbound_ipv6.as_deref())
             .with_context(|| format!("failed to bind NAT UDP socket for {}", key.target))?;
         apply_fwmark_if_needed(&socket, key.fwmark)
             .with_context(|| format!("failed to apply fwmark {:?} to NAT socket", key.fwmark))?;
@@ -264,6 +275,72 @@ impl NatTable {
             debug!(evicted, remaining = entries.len(), "evicted idle UDP NAT entries");
         }
     }
+}
+
+// ── Socket helpers ────────────────────────────────────────────────────────────
+
+/// Create the NAT upstream UDP socket. When `outbound_ipv6` is configured and
+/// the target is IPv6, the socket is bound to a random address from the pool
+/// (with `IPV6_FREEBIND` to allow non-local bind); otherwise it falls back to
+/// the kernel default wildcard bind, matching legacy behaviour. Interface
+/// mode may return no usable address (e.g. interface not up yet) — in that
+/// case we also fall back to the wildcard bind rather than fail the datagram.
+fn bind_nat_udp_socket(
+    target: SocketAddr,
+    outbound_ipv6: Option<&OutboundIpv6>,
+) -> Result<UdpSocket> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+
+    let source = if target.is_ipv6() {
+        match outbound_ipv6 {
+            Some(src) => {
+                let picked = src
+                    .random_addr()
+                    .context("failed to generate random outbound IPv6 address")?;
+                if picked.is_none() {
+                    debug!(
+                        %target,
+                        source = %src,
+                        "outbound IPv6 pool is empty; NAT UDP socket falling back to wildcard bind",
+                    );
+                }
+                picked
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    if source.is_none() {
+        let bind_addr: SocketAddr = if target.is_ipv4() {
+            "0.0.0.0:0".parse().unwrap()
+        } else {
+            "[::]:0".parse().unwrap()
+        };
+        let std_socket = std::net::UdpSocket::bind(bind_addr)
+            .with_context(|| format!("failed to bind NAT UDP socket on {bind_addr}"))?;
+        std_socket
+            .set_nonblocking(true)
+            .context("failed to set NAT UDP socket nonblocking")?;
+        return UdpSocket::from_std(std_socket).context("failed to register NAT UDP socket");
+    }
+
+    // IPv6 with random source.
+    let source = source.expect("checked above");
+    let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(socket2::Protocol::UDP))
+        .context("failed to create NAT UDP socket")?;
+    set_ipv6_freebind(&socket)
+        .context("failed to set IPV6_FREEBIND on NAT UDP socket")?;
+    let bind_addr = SocketAddr::V6(std::net::SocketAddrV6::new(source, 0, 0, 0));
+    socket
+        .bind(&SockAddr::from(bind_addr))
+        .with_context(|| format!("failed to bind NAT UDP socket {bind_addr}"))?;
+    socket
+        .set_nonblocking(true)
+        .context("failed to set NAT UDP socket nonblocking")?;
+    let std_socket: std::net::UdpSocket = socket.into();
+    UdpSocket::from_std(std_socket).context("failed to register NAT UDP socket")
 }
 
 // ── Background reader task ────────────────────────────────────────────────────
@@ -447,6 +524,9 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
+            outbound_ipv6_prefix: None,
+            outbound_ipv6_interface: None,
+            outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -496,6 +576,9 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
+            outbound_ipv6_prefix: None,
+            outbound_ipv6_interface: None,
+            outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
@@ -547,6 +630,9 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
+            outbound_ipv6_prefix: None,
+            outbound_ipv6_interface: None,
+            outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
