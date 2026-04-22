@@ -27,7 +27,7 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use url::Url;
 
 use crate::{
@@ -35,7 +35,9 @@ use crate::{
     TransportOperation,
     DnsCache, connect_tcp_socket, resolve_host_with_preference,
 };
-use crate::shared_cache::SharedConnectionRegistry;
+use crate::shared_cache::{
+    ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
+};
 
 use super::{H2WsStream, websocket_h2_target_uri};
 
@@ -532,50 +534,20 @@ async fn connect_h2_connection(
         if let Some(cache_key) = cache_key {
             h2_registry().invalidate_if_current(&cache_key, id).await;
         }
-        let age_secs = opened_at.elapsed().as_secs();
-        let streams = streams_opened_driver.load(Ordering::Relaxed);
+        let fields = ConnCloseLog {
+            id,
+            peer: &peer_for_driver,
+            mode,
+            age_secs: opened_at.elapsed().as_secs(),
+            streams: streams_opened_driver.load(Ordering::Relaxed),
+        };
         match result {
-            Ok(()) => {
-                info!(
-                    target: "outline_transport::conn_life",
-                    id,
-                    peer = %peer_for_driver,
-                    mode,
-                    age_secs,
-                    streams,
-                    class = "normal",
-                    "h2 connection closed"
-                );
-            }
+            Ok(()) => log_conn_close(fields, None, "normal", true),
             Err(error) => {
                 let error_text = error.to_string();
                 let class = classify_h2_close(&error_text);
-                if is_expected_h2_close(&error_text) {
-                    info!(
-                        target: "outline_transport::conn_life",
-                        id,
-                        peer = %peer_for_driver,
-                        mode,
-                        age_secs,
-                        streams,
-                        class,
-                        error = %error_text,
-                        "h2 connection closed"
-                    );
-                } else {
-                    info!(
-                        target: "outline_transport::conn_life",
-                        id,
-                        peer = %peer_for_driver,
-                        mode,
-                        age_secs,
-                        streams,
-                        class,
-                        error = %error_text,
-                        "h2 connection closed with error"
-                    );
-                    error!("h2 connection error: {error_text}");
-                }
+                let expected = is_expected_h2_close(&error_text);
+                log_conn_close(fields, Some(&error_text), class, expected);
             }
         }
     }));
@@ -590,29 +562,31 @@ async fn connect_h2_connection(
 }
 
 fn classify_h2_close(error: &str) -> &'static str {
+    // H2 errors come from several layers (hyper, h2 crate, rustls, tokio IO);
+    // normalize to lowercase once so the table stays case-insensitive.
     let e = error.to_ascii_lowercase();
-    if e.contains("goaway") {
-        "goaway"
-    } else if e.contains("reset") || e.contains("rst") {
-        "rst"
-    } else if e.contains("timed out") || e.contains("timeout") || e.contains("keepalive") {
-        "timeout"
-    } else if e.contains("tls") || e.contains("certificate") || e.contains("handshake") {
-        "tls"
-    } else if e.contains("broken pipe")
-        || e.contains("connection reset")
-        || e.contains("connection closed")
-        || e.contains("eof")
-        || e.contains("unexpected end")
-    {
-        "eof"
-    } else if e.contains("operation was canceled") || e.contains("operation was cancelled") {
-        "cancelled"
-    } else if e.contains("io") {
-        "io"
-    } else {
-        "other"
-    }
+    classify_by_substrings(
+        &e,
+        &[
+            (&["goaway"], "goaway"),
+            (&["reset", "rst"], "rst"),
+            (&["timed out", "timeout", "keepalive"], "timeout"),
+            (&["tls", "certificate", "handshake"], "tls"),
+            (
+                &[
+                    "broken pipe",
+                    "connection reset",
+                    "connection closed",
+                    "eof",
+                    "unexpected end",
+                ],
+                "eof",
+            ),
+            (&["operation was canceled", "operation was cancelled"], "cancelled"),
+            (&["io"], "io"),
+        ],
+        "other",
+    )
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────

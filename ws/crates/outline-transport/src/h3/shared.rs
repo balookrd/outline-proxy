@@ -23,7 +23,7 @@ use sockudo_ws::{
 };
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tracing::{debug, error, info};
+use tracing::{debug, info};
 use url::Url;
 
 use crate::{
@@ -31,7 +31,9 @@ use crate::{
     bind_addr_for, bind_udp_socket,
     DnsCache, resolve_host_with_preference,
 };
-use crate::shared_cache::SharedConnectionRegistry;
+use crate::shared_cache::{
+    ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
+};
 
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
 
@@ -502,35 +504,16 @@ async fn connect_h3_connection(
             h3_registry().invalidate_if_current(&cache_key, id).await;
         }
         let err_text = err.to_string();
-        let age_secs = opened_at.elapsed().as_secs();
-        let streams = streams_opened_driver.load(Ordering::Relaxed);
         let class = classify_h3_close(&err_text);
-        if is_expected_h3_close(&err_text) {
-            info!(
-                target: "outline_transport::conn_life",
-                id,
-                peer = %peer_for_driver,
-                mode = "h3",
-                age_secs,
-                streams,
-                class,
-                error = %err_text,
-                "h3 connection closed"
-            );
-        } else {
-            info!(
-                target: "outline_transport::conn_life",
-                id,
-                peer = %peer_for_driver,
-                mode = "h3",
-                age_secs,
-                streams,
-                class,
-                error = %err_text,
-                "h3 connection closed with error"
-            );
-            error!("h3 connection error: {err_text}");
-        }
+        let expected = is_expected_h3_close(&err_text);
+        let fields = ConnCloseLog {
+            id,
+            peer: &peer_for_driver,
+            mode: "h3",
+            age_secs: opened_at.elapsed().as_secs(),
+            streams: streams_opened_driver.load(Ordering::Relaxed),
+        };
+        log_conn_close(fields, Some(&err_text), class, expected);
     }));
 
     Ok(SharedH3Connection {
@@ -546,27 +529,24 @@ async fn connect_h3_connection(
 }
 
 fn classify_h3_close(err: &str) -> &'static str {
-    if err.contains("H3_NO_ERROR") {
-        "h3_no_error"
-    } else if err.contains("H3_INTERNAL_ERROR") {
-        "h3_internal"
-    } else if err.contains("H3_REQUEST_REJECTED") {
-        "h3_rejected"
-    } else if err.contains("H3_CONNECT_ERROR") {
-        "h3_connect_error"
-    } else if err.contains("ApplicationClose") {
-        "app_close"
-    } else if err.contains("Timeout") || err.contains("timed out") {
-        "timeout"
-    } else if err.contains("closed by client") || err.contains("Connection closed by client") {
-        "local_close"
-    } else if err.contains("reset") || err.contains("Reset") {
-        "rst"
-    } else if err.contains("tls") || err.contains("TLS") || err.contains("certificate") {
-        "tls"
-    } else {
-        "other"
-    }
+    // H3 close strings are produced by h3/quinn and retain mixed case; match
+    // as-is rather than normalizing so categories remain precise (e.g.
+    // `Timeout` is quinn's idle-timeout enum variant).
+    classify_by_substrings(
+        err,
+        &[
+            (&["H3_NO_ERROR"], "h3_no_error"),
+            (&["H3_INTERNAL_ERROR"], "h3_internal"),
+            (&["H3_REQUEST_REJECTED"], "h3_rejected"),
+            (&["H3_CONNECT_ERROR"], "h3_connect_error"),
+            (&["ApplicationClose"], "app_close"),
+            (&["Timeout", "timed out"], "timeout"),
+            (&["closed by client", "Connection closed by client"], "local_close"),
+            (&["reset", "Reset"], "rst"),
+            (&["tls", "TLS", "certificate"], "tls"),
+        ],
+        "other",
+    )
 }
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
