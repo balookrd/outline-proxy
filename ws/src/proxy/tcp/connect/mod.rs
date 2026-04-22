@@ -1,5 +1,6 @@
 mod attribution;
 mod failover_step;
+mod first_chunk;
 mod phase1;
 mod phase2;
 mod replay;
