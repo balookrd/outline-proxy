@@ -214,7 +214,42 @@ impl TunTcpEngine {
         let group_name = state.group_name.clone();
         let flow_manager = state.manager.clone();
         let upstream_writer = state.upstream_writer.clone();
+
+        // If there is no upstream writer yet (connect still in flight),
+        // queue the payload onto `pending_client_data` under the same
+        // lock we already hold rather than dropping and re-acquiring.
+        // `buffered_client_bytes` sums both pending_client_data and
+        // pending_client_segments, so this uses the same cap as the
+        // out-of-order reassembly path.
+        let abort_for_pending_limit =
+            if !outcome.pending_payload.is_empty() && upstream_writer.is_none() {
+                state
+                    .pending_client_data
+                    .push_back(std::mem::take(&mut outcome.pending_payload).into());
+                let over_limit = exceeds_client_reassembly_limits(&state, &self.inner.tcp);
+                if !over_limit {
+                    sync_flow_metrics_and_wake(&mut state);
+                }
+                over_limit
+            } else {
+                false
+            };
+
+        // Apply the client-FIN transition before releasing the lock so we
+        // don't re-acquire it just to mutate state after the async writes
+        // below. The actual upstream-writer close is async and stays past
+        // the drop point.
+        if outcome.should_close_client_half {
+            transition_on_client_fin(&mut state);
+            sync_flow_metrics_and_wake(&mut state);
+        }
+
         drop(state);
+
+        if abort_for_pending_limit {
+            self.abort_flow_with_rst(&key, "client_pending_data_limit").await;
+            return Ok(());
+        }
 
         if !outcome.pending_payload.is_empty() {
             if let Some(upstream_writer) = upstream_writer.clone() {
@@ -240,22 +275,6 @@ impl TunTcpEngine {
                     &uplink_name,
                     outcome.pending_payload.len(),
                 );
-            } else if let Some(flow) = self.lookup_flow(&key).await {
-                let mut state = flow.lock().await;
-                state
-                    .pending_client_data
-                    .push_back(std::mem::take(&mut outcome.pending_payload).into());
-                // Guard against unbounded growth of pending_client_data when
-                // the upstream connect is slow/stuck and a client keeps
-                // pumping bytes. `buffered_client_bytes` sums both
-                // pending_client_data and pending_client_segments, so this
-                // uses the same cap as the out-of-order reassembly path.
-                if exceeds_client_reassembly_limits(&state, &self.inner.tcp) {
-                    drop(state);
-                    self.abort_flow_with_rst(&key, "client_pending_data_limit").await;
-                    return Ok(());
-                }
-                sync_flow_metrics_and_wake(&mut state);
             }
         }
 
@@ -268,11 +287,6 @@ impl TunTcpEngine {
             .await?;
 
         if outcome.should_close_client_half {
-            {
-                let mut state = flow.lock().await;
-                transition_on_client_fin(&mut state);
-                sync_flow_metrics_and_wake(&mut state);
-            }
             close_upstream_writer(upstream_writer).await;
         }
 
