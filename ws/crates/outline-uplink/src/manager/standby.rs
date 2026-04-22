@@ -2,8 +2,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use futures_util::{SinkExt, StreamExt};
-use tokio::time::{Instant, timeout};
+use tokio::time::{Instant, sleep, timeout};
 use tracing::{debug, warn};
+
+const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
 use crate::utils::maybe_shrink_vecdeque;
 use outline_metrics as metrics;
@@ -683,5 +685,63 @@ impl UplinkManager {
                 maybe_shrink_vecdeque(&mut guard);
             },
         }
+    }
+
+    pub fn spawn_warm_standby_loop(&self) {
+        if self.inner.load_balancing.warm_standby_tcp == 0
+            && self.inner.load_balancing.warm_standby_udp == 0
+        {
+            return;
+        }
+
+        let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
+        tokio::spawn(async move {
+            manager.refill_all_standby().await;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(WARM_STANDBY_MAINTENANCE_INTERVAL) => {}
+                }
+                manager.refill_all_standby().await;
+            }
+        });
+    }
+
+    /// Spawns a background loop that pings warm-standby **TCP** pool connections
+    /// at `tcp_ws_standby_keepalive_interval` to keep them alive through NAT/
+    /// firewall idle-timeout windows.  This is separate from the 15-second
+    /// validation loop: the validation loop also runs for UDP and handles
+    /// refill; this loop is TCP-only and intentionally runs more frequently.
+    pub fn spawn_standby_keepalive_loop(&self) {
+        let interval = match self.inner.load_balancing.tcp_ws_standby_keepalive_interval {
+            Some(d) if self.inner.load_balancing.warm_standby_tcp > 0 => d,
+            _ => return,
+        };
+
+        let manager = self.clone();
+        let mut shutdown = self.shutdown_rx();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => break,
+                    _ = sleep(interval) => {}
+                }
+                for index in 0..manager.inner.uplinks.len() {
+                    manager.keepalive_tcp_pool(index).await;
+                }
+            }
+        });
+    }
+
+    pub async fn run_standby_maintenance(&self) {
+        self.refill_all_standby().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn run_tcp_standby_keepalive(&self, index: usize) {
+        self.keepalive_tcp_pool(index).await;
     }
 }
