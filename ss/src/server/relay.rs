@@ -46,6 +46,7 @@ pub(in crate::server) async fn relay_upstream_to_client<S: UpstreamSink>(
     user_id: Arc<str>,
 ) -> Result<()> {
     let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
+    let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
     loop {
         buffer.clear();
@@ -66,9 +67,10 @@ pub(in crate::server) async fn relay_upstream_to_client<S: UpstreamSink>(
         }
 
         metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
-        let ciphertext = encryptor.encrypt_chunk(&buffer)?;
+        encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
+        let ciphertext = out_buf.split().freeze();
         sink.on_chunk_encrypted(read, ciphertext.len());
-        sink.send_ciphertext(ciphertext.into()).await?;
+        sink.send_ciphertext(ciphertext).await?;
     }
 
     sink.close().await;

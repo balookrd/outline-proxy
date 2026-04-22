@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use bytes::BytesMut;
 use ring::aead::{Aad, LessSafeKey, UnboundKey};
 
 use super::{
@@ -45,7 +46,9 @@ fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey
 fn roundtrip_chacha20_stream() {
     let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[1], None).unwrap();
-    let ciphertext = encryptor.encrypt_chunk(b"hello over websocket").unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"hello over websocket", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
 
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
     decryptor.feed_ciphertext(&ciphertext);
@@ -60,7 +63,9 @@ fn roundtrip_chacha20_stream() {
 fn decryptor_handles_fragmented_frames() {
     let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
-    let ciphertext = encryptor.encrypt_chunk(b"fragmented").unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"fragmented", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     for chunk in ciphertext.chunks(3) {
@@ -77,7 +82,9 @@ fn decryptor_handles_fragmented_frames() {
 fn roundtrip_aes128_stream() {
     let users = users(CipherKind::Aes128Gcm, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
-    let ciphertext = encryptor.encrypt_chunk(b"aes128").unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"aes128", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     decryptor.feed_ciphertext(&ciphertext);
@@ -93,7 +100,9 @@ fn legacy_stream_encryptor_splits_large_responses() {
     let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
     let plaintext = vec![0x5a; super::primitives::LEGACY_MAX_CHUNK_SIZE + 10_000];
-    let ciphertext = encryptor.encrypt_chunk(&plaintext).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(&plaintext, &mut buf).unwrap();
+    let ciphertext = buf.freeze();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     decryptor.feed_ciphertext(&ciphertext);
@@ -153,7 +162,9 @@ fn decryptor_matches_user_with_different_cipher() {
         .into_boxed_slice(),
     );
     let mut encryptor = AeadStreamEncryptor::new(&users[1], None).unwrap();
-    let ciphertext = encryptor.encrypt_chunk(b"mixed cipher").unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"mixed cipher", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
 
     let mut decryptor = AeadStreamDecryptor::new(users);
     decryptor.feed_ciphertext(&ciphertext);
@@ -223,7 +234,8 @@ fn roundtrip_ss2022_tcp_stream() {
 
     let context = decryptor.response_context();
     let mut encryptor = AeadStreamEncryptor::new(&users[0], context).unwrap();
-    let response = encryptor.encrypt_chunk(b"pong").unwrap();
+    let mut response = BytesMut::new();
+    encryptor.encrypt_chunk(b"pong", &mut response).unwrap();
     assert!(!response.is_empty());
 }
 
@@ -286,7 +298,8 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
 
     let context = decryptor.response_context();
     let mut encryptor = AeadStreamEncryptor::new(&users[0], context).unwrap();
-    let response = encryptor.encrypt_chunk(b"pong").unwrap();
+    let mut response = BytesMut::new();
+    encryptor.encrypt_chunk(b"pong", &mut response).unwrap();
     assert!(!response.is_empty());
 }
 
