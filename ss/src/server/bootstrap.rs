@@ -32,7 +32,7 @@ use sockudo_ws::{
     WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
     build_extended_connect_error, build_extended_connect_response,
 };
-use tokio::{net::TcpListener, time::Duration};
+use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet, time::Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
@@ -44,7 +44,8 @@ use crate::{
 
 use super::constants::{
     H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, H3_MAX_UDP_PAYLOAD_SIZE,
-    H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+    H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS, TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+    TLS_MAX_CONCURRENT_CONNECTIONS,
 };
 use super::state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route};
 use super::transport::{tcp_websocket_upgrade, udp_websocket_upgrade};
@@ -584,12 +585,31 @@ async fn serve_tls_listener(
     profile: TuningProfile,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
+    let connection_limit = Arc::new(Semaphore::new(TLS_MAX_CONCURRENT_CONNECTIONS));
+    let mut tasks: JoinSet<()> = JoinSet::new();
+
     loop {
+        // Reap already-finished tasks so JoinSet storage stays bounded under
+        // long-lived listeners with high connection churn.
+        while tasks.try_join_next().is_some() {}
+
+        let permit = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("TLS listener stopping on shutdown signal");
+                break;
+            }
+            permit = connection_limit.clone().acquire_owned() => {
+                // The semaphore is never closed while the listener is running.
+                permit.expect("TLS connection semaphore unexpectedly closed")
+            }
+        };
+
         let (stream, peer_addr) = tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
                 debug!("TLS listener stopping on shutdown signal");
-                return Ok(());
+                break;
             }
             res = listener.accept() => match res {
                 Ok(v) => v,
@@ -605,31 +625,67 @@ async fn serve_tls_listener(
         }
         let acceptor = acceptor.clone();
         let app = app.clone();
+        let mut task_shutdown = shutdown.clone();
 
-        tokio::spawn(async move {
-            let tls_stream = match acceptor.accept(stream).await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    if is_benign_tls_handshake_error(&error) {
-                        debug!(?error, %peer_addr, "tls handshake closed before completion");
-                    } else {
-                        warn!(?error, %peer_addr, "tls handshake failed");
-                    }
+        tasks.spawn(async move {
+            let _permit = permit;
+            let tls_stream = tokio::select! {
+                biased;
+                _ = task_shutdown.cancelled() => {
+                    debug!(%peer_addr, "aborting TLS handshake on shutdown");
                     return;
+                }
+                res = acceptor.accept(stream) => match res {
+                    Ok(s) => s,
+                    Err(error) => {
+                        if is_benign_tls_handshake_error(&error) {
+                            debug!(?error, %peer_addr, "tls handshake closed before completion");
+                        } else {
+                            warn!(?error, %peer_addr, "tls handshake failed");
+                        }
+                        return;
+                    },
                 },
             };
 
             let io = TokioIo::new(tls_stream);
             let service = TowerToHyperService::new(app);
             let builder = build_http_server_builder(&profile);
+            let conn = builder.serve_connection_with_upgrades(io, service);
+            tokio::pin!(conn);
 
-            if let Err(error) = builder.serve_connection_with_upgrades(io, service).await
+            let result = tokio::select! {
+                biased;
+                res = conn.as_mut() => res,
+                _ = task_shutdown.cancelled() => {
+                    conn.as_mut().graceful_shutdown();
+                    conn.as_mut().await
+                }
+            };
+            if let Err(error) = result
                 && !is_benign_http_serve_error(error.as_ref())
             {
                 warn!(?error, %peer_addr, "tls http server connection terminated with error");
             }
         });
     }
+
+    let drain_timeout = Duration::from_secs(TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    let drain = tokio::time::timeout(drain_timeout, async {
+        while tasks.join_next().await.is_some() {}
+    })
+    .await;
+    if drain.is_err() {
+        warn!(
+            remaining = tasks.len(),
+            timeout_secs = TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+            "TLS connections did not drain within shutdown timeout; aborting"
+        );
+        tasks.shutdown().await;
+    } else {
+        debug!("TLS listener drained all connections");
+    }
+    Ok(())
 }
 
 fn build_http_server_builder(profile: &TuningProfile) -> HyperBuilder<TokioExecutor> {

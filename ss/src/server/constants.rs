@@ -6,6 +6,13 @@
 pub(super) const H2_KEEPALIVE_INTERVAL_SECS: u64 = 20;
 pub(super) const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
 
+// Cap on concurrent active TLS connections (handshake + established). Matches
+// the plain-TCP shadowsocks cap so a TLS listener cannot spawn unbounded tasks.
+pub(super) const TLS_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
+// How long the TLS listener waits for in-flight connections to finish after
+// the shutdown signal fires before forcibly aborting remaining tasks.
+pub(super) const TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
+
 pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
