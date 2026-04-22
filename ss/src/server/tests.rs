@@ -6,7 +6,7 @@ use std::{
 use anyhow::{Context, Result};
 use axum::http::{Method, Request, StatusCode, Version, header};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::{SinkExt, StreamExt};
 use h3::ext::Protocol as H3Protocol;
 use http_body_util::Empty;
@@ -584,8 +584,9 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
     let mut request = TargetAddr::Socket(upstream_addr).encode()?;
     request.extend_from_slice(b"ping");
     let mut encryptor = AeadStreamEncryptor::new(&bob, None)?;
-    let ciphertext = encryptor.encrypt_chunk(&request)?;
-    socket.send(WsMessage::Binary(ciphertext.into())).await?;
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(&request, &mut buf)?;
+    socket.send(WsMessage::Binary(buf.freeze())).await?;
 
     let client_outcome =
         tokio::time::timeout(std::time::Duration::from_secs(1), socket.next()).await;
@@ -802,8 +803,9 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
     let mut request = TargetAddr::Socket(upstream_addr).encode()?;
     request.extend_from_slice(b"ping");
     let mut encryptor = AeadStreamEncryptor::new(&user, None)?;
-    let ciphertext = encryptor.encrypt_chunk(&request)?;
-    client.write_all(&ciphertext).await?;
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(&request, &mut buf)?;
+    client.write_all(&buf).await?;
 
     let mut encrypted_reply = [0_u8; 256];
     let read =

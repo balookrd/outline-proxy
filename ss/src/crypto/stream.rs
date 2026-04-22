@@ -320,10 +320,14 @@ impl AeadStreamEncryptor {
         Ok(Self { mode })
     }
 
-    pub fn encrypt_chunk(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    pub fn encrypt_chunk(
+        &mut self,
+        plaintext: &[u8],
+        output: &mut BytesMut,
+    ) -> Result<(), CryptoError> {
         match &mut self.mode {
             StreamEncryptorMode::Legacy { key, nonce_counter, salt, sent_salt } => {
-                encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext)
+                encrypt_legacy_chunks(key, nonce_counter, salt, sent_salt, plaintext, output)
             },
             StreamEncryptorMode::Ss2022 {
                 key,
@@ -331,9 +335,15 @@ impl AeadStreamEncryptor {
                 salt,
                 sent_header,
                 request_salt,
-            } => {
-                encrypt_ss2022_chunk(key, nonce_counter, salt, sent_header, request_salt, plaintext)
-            },
+            } => encrypt_ss2022_chunk(
+                key,
+                nonce_counter,
+                salt,
+                sent_header,
+                request_salt,
+                plaintext,
+                output,
+            ),
         }
     }
 }
@@ -425,25 +435,20 @@ fn encrypt_legacy_chunks(
     salt: &[u8],
     sent_salt: &mut bool,
     plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+    output: &mut BytesMut,
+) -> Result<(), CryptoError> {
     let chunk_count = plaintext.len().div_ceil(LEGACY_MAX_CHUNK_SIZE).max(1);
-    let mut output = Vec::with_capacity(
+    output.reserve(
         (!*sent_salt as usize) * salt.len()
             + plaintext.len()
             + chunk_count * (2 + TAG_LEN + TAG_LEN),
     );
 
     for chunk in plaintext.chunks(LEGACY_MAX_CHUNK_SIZE) {
-        output.extend_from_slice(&encrypt_legacy_chunk(
-            key,
-            nonce_counter,
-            salt,
-            sent_salt,
-            chunk,
-        )?);
+        encrypt_legacy_chunk(key, nonce_counter, salt, sent_salt, chunk, output)?;
     }
 
-    Ok(output)
+    Ok(())
 }
 
 fn encrypt_legacy_chunk(
@@ -452,13 +457,14 @@ fn encrypt_legacy_chunk(
     salt: &[u8],
     sent_salt: &mut bool,
     plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+    output: &mut BytesMut,
+) -> Result<(), CryptoError> {
     if plaintext.len() > LEGACY_MAX_CHUNK_SIZE {
         return Err(CryptoError::InvalidChunkSize(plaintext.len()));
     }
 
     let salt_len = if *sent_salt { 0 } else { salt.len() };
-    let mut output = Vec::with_capacity(salt_len + 2 + TAG_LEN + plaintext.len() + TAG_LEN);
+    output.reserve(salt_len + 2 + TAG_LEN + plaintext.len() + TAG_LEN);
     if !*sent_salt {
         output.extend_from_slice(salt);
         *sent_salt = true;
@@ -482,7 +488,7 @@ fn encrypt_legacy_chunk(
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
-    Ok(output)
+    Ok(())
 }
 
 fn encrypt_ss2022_chunk(
@@ -492,7 +498,8 @@ fn encrypt_ss2022_chunk(
     sent_header: &mut bool,
     request_salt: &[u8],
     plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+    output: &mut BytesMut,
+) -> Result<(), CryptoError> {
     if plaintext.len() > MAX_CHUNK_SIZE {
         return Err(CryptoError::InvalidChunkSize(plaintext.len()));
     }
@@ -502,11 +509,11 @@ fn encrypt_ss2022_chunk(
     } else {
         2 + TAG_LEN + plaintext.len() + TAG_LEN
     };
-    let mut output = Vec::with_capacity(capacity);
+    output.reserve(capacity);
     if !*sent_header {
         output.extend_from_slice(salt);
         let header_start = output.len();
-        output.push(SS2022_TCP_RESPONSE_TYPE);
+        output.extend_from_slice(&[SS2022_TCP_RESPONSE_TYPE]);
         output.extend_from_slice(&current_unix_secs().to_be_bytes());
         output.extend_from_slice(request_salt);
         output.extend_from_slice(
@@ -528,7 +535,7 @@ fn encrypt_ss2022_chunk(
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(tag.as_ref());
         *sent_header = true;
-        return Ok(output);
+        return Ok(());
     }
 
     let len_start = output.len();
@@ -550,5 +557,5 @@ fn encrypt_ss2022_chunk(
         .seal_in_place_separate_tag(payload_nonce, Aad::empty(), &mut output[payload_start..])
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
-    Ok(output)
+    Ok(())
 }
