@@ -11,6 +11,26 @@ use super::{
 };
 use crate::{config::CipherKind, protocol::TargetAddr};
 
+#[test]
+fn next_stream_nonce_rejects_after_threshold() {
+    use super::error::CryptoError;
+    use super::primitives::{MAX_NONCE_COUNTER, next_stream_nonce};
+
+    let mut counter = MAX_NONCE_COUNTER - 1;
+    assert!(next_stream_nonce(&mut counter).is_ok());
+    assert_eq!(counter, MAX_NONCE_COUNTER);
+    assert!(matches!(
+        next_stream_nonce(&mut counter),
+        Err(CryptoError::NonceExhausted)
+    ));
+    // Counter must not advance past the limit on subsequent calls.
+    assert_eq!(counter, MAX_NONCE_COUNTER);
+    assert!(matches!(
+        next_stream_nonce(&mut counter),
+        Err(CryptoError::NonceExhausted)
+    ));
+}
+
 fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey]> {
     Arc::from(
         vec![
@@ -176,7 +196,7 @@ fn roundtrip_ss2022_tcp_stream() {
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter),
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut fixed_ct,
     )
@@ -188,7 +208,7 @@ fn roundtrip_ss2022_tcp_stream() {
     var_header.push(0xaa);
     let mut var_ct = var_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter),
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut var_ct,
     )
@@ -239,7 +259,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter),
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut fixed_ct,
     )
@@ -251,7 +271,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     var_header.push(0xbb);
     let mut var_ct = var_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter),
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut var_ct,
     )

@@ -129,8 +129,9 @@ impl AeadStreamDecryptor {
                         }
 
                         let mut encrypted_header = self.buffer.split_to(header_len + TAG_LEN);
+                        let nonce = next_stream_nonce(&mut active.nonce_counter)?;
                         let header = active.key.open_in_place(
-                            next_stream_nonce(&mut active.nonce_counter),
+                            nonce,
                             Aad::empty(),
                             &mut encrypted_header,
                         )?;
@@ -348,7 +349,7 @@ fn drain_length_header(
     }
 
     let mut encrypted_len = buffer.split_to(2 + TAG_LEN);
-    let nonce = next_stream_nonce(nonce_counter);
+    let nonce = next_stream_nonce(nonce_counter)?;
     let decrypted_len = key
         .open_in_place(nonce, Aad::empty(), &mut encrypted_len)
         .map_err(|_| CryptoError::InvalidLengthHeader)?;
@@ -384,7 +385,7 @@ fn drain_legacy_payload(
     }
 
     let mut encrypted_payload = buffer.split_to(chunk_len + TAG_LEN);
-    let nonce = next_stream_nonce(nonce_counter);
+    let nonce = next_stream_nonce(nonce_counter)?;
     let decrypted_payload = key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
     output.extend_from_slice(decrypted_payload);
     *pending_chunk_len = None;
@@ -411,7 +412,7 @@ fn drain_ss2022_payload(
     }
 
     let mut encrypted_payload = buffer.split_to(chunk_len + TAG_LEN);
-    let nonce = next_stream_nonce(nonce_counter);
+    let nonce = next_stream_nonce(nonce_counter)?;
     let decrypted_payload = key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
     output.extend_from_slice(decrypted_payload);
     *pending_chunk_len = None;
@@ -467,23 +468,17 @@ fn encrypt_legacy_chunk(
         .to_be_bytes();
     let len_start = output.len();
     output.extend_from_slice(&length);
+    let len_nonce = next_stream_nonce(nonce_counter)?;
     let tag = key
-        .seal_in_place_separate_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut output[len_start..],
-        )
+        .seal_in_place_separate_tag(len_nonce, Aad::empty(), &mut output[len_start..])
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
     let payload_start = output.len();
     output.extend_from_slice(plaintext);
+    let payload_nonce = next_stream_nonce(nonce_counter)?;
     let tag = key
-        .seal_in_place_separate_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut output[payload_start..],
-        )
+        .seal_in_place_separate_tag(payload_nonce, Aad::empty(), &mut output[payload_start..])
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
@@ -519,23 +514,17 @@ fn encrypt_ss2022_chunk(
                 .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
                 .to_be_bytes(),
         );
+        let header_nonce = next_stream_nonce(nonce_counter)?;
         let tag = key
-            .seal_in_place_separate_tag(
-                next_stream_nonce(nonce_counter),
-                Aad::empty(),
-                &mut output[header_start..],
-            )
+            .seal_in_place_separate_tag(header_nonce, Aad::empty(), &mut output[header_start..])
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(tag.as_ref());
 
         let payload_start = output.len();
         output.extend_from_slice(plaintext);
+        let payload_nonce = next_stream_nonce(nonce_counter)?;
         let tag = key
-            .seal_in_place_separate_tag(
-                next_stream_nonce(nonce_counter),
-                Aad::empty(),
-                &mut output[payload_start..],
-            )
+            .seal_in_place_separate_tag(payload_nonce, Aad::empty(), &mut output[payload_start..])
             .map_err(|_| CryptoError::Cipher)?;
         output.extend_from_slice(tag.as_ref());
         *sent_header = true;
@@ -548,23 +537,17 @@ fn encrypt_ss2022_chunk(
             .map_err(|_| CryptoError::InvalidChunkSize(plaintext.len()))?
             .to_be_bytes(),
     );
+    let len_nonce = next_stream_nonce(nonce_counter)?;
     let tag = key
-        .seal_in_place_separate_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut output[len_start..],
-        )
+        .seal_in_place_separate_tag(len_nonce, Aad::empty(), &mut output[len_start..])
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
 
     let payload_start = output.len();
     output.extend_from_slice(plaintext);
+    let payload_nonce = next_stream_nonce(nonce_counter)?;
     let tag = key
-        .seal_in_place_separate_tag(
-            next_stream_nonce(nonce_counter),
-            Aad::empty(),
-            &mut output[payload_start..],
-        )
+        .seal_in_place_separate_tag(payload_nonce, Aad::empty(), &mut output[payload_start..])
         .map_err(|_| CryptoError::Cipher)?;
     output.extend_from_slice(tag.as_ref());
     Ok(output)
