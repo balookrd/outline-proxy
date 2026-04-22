@@ -11,7 +11,7 @@ use super::super::selection::{
     cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
     strict_gate_transport, supports_transport_for_scope,
 };
-use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager};
+use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager, UplinkStatus};
 use super::super::utils::{rightless_bool, routing_key, strict_route_key};
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
@@ -144,6 +144,34 @@ impl UplinkManager {
         None
     }
 
+    fn build_candidate_states(
+        &self,
+        transport: TransportKind,
+        statuses: &[UplinkStatus],
+        now: Instant,
+    ) -> Vec<CandidateState> {
+        let scope = self.inner.load_balancing.routing_scope;
+        self.inner
+            .uplinks
+            .iter()
+            .enumerate()
+            .filter(|(_, uplink)| supports_transport_for_scope(uplink, transport, scope))
+            .map(|(index, uplink)| CandidateState {
+                index,
+                uplink: uplink.clone(),
+                healthy: selection_health(&statuses[index], transport, now, scope),
+                score: selection_score(
+                    &statuses[index],
+                    uplink.weight,
+                    transport,
+                    now,
+                    &self.inner.load_balancing,
+                    scope,
+                ),
+            })
+            .collect()
+    }
+
     async fn ordered_candidates(
         &self,
         transport: TransportKind,
@@ -153,37 +181,7 @@ impl UplinkManager {
         let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
 
-        let mut candidates = self
-            .inner
-            .uplinks
-            .iter()
-            .enumerate()
-            .filter(|(_, uplink)| {
-                supports_transport_for_scope(
-                    uplink,
-                    transport,
-                    self.inner.load_balancing.routing_scope,
-                )
-            })
-            .map(|(index, uplink)| CandidateState {
-                index,
-                uplink: uplink.clone(),
-                healthy: selection_health(
-                    &statuses[index],
-                    transport,
-                    now,
-                    self.inner.load_balancing.routing_scope,
-                ),
-                score: selection_score(
-                    &statuses[index],
-                    uplink.weight,
-                    transport,
-                    now,
-                    &self.inner.load_balancing,
-                    self.inner.load_balancing.routing_scope,
-                ),
-            })
-            .collect::<Vec<_>>();
+        let mut candidates = self.build_candidate_states(transport, &statuses, now);
 
         if candidates.is_empty() {
             return Vec::new();
@@ -238,37 +236,7 @@ impl UplinkManager {
         let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let current_active = self.active_uplink_index_for_transport(transport).await;
-        let mut candidates = self
-            .inner
-            .uplinks
-            .iter()
-            .enumerate()
-            .filter(|(_, uplink)| {
-                supports_transport_for_scope(
-                    uplink,
-                    transport,
-                    self.inner.load_balancing.routing_scope,
-                )
-            })
-            .map(|(index, uplink)| CandidateState {
-                index,
-                uplink: uplink.clone(),
-                healthy: selection_health(
-                    &statuses[index],
-                    transport,
-                    now,
-                    self.inner.load_balancing.routing_scope,
-                ),
-                score: selection_score(
-                    &statuses[index],
-                    uplink.weight,
-                    transport,
-                    now,
-                    &self.inner.load_balancing,
-                    self.inner.load_balancing.routing_scope,
-                ),
-            })
-            .collect::<Vec<_>>();
+        let mut candidates = self.build_candidate_states(transport, &statuses, now);
 
         if candidates.is_empty() {
             return Vec::new();
