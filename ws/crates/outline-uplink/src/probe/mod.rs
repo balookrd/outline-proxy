@@ -1,25 +1,26 @@
 mod metrics;
+mod transport;
 
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::SinkExt;
 use tokio::sync::Semaphore;
 use tokio::time::{Instant, timeout};
 use tracing::debug;
 
 use crate::config::{DnsProbeConfig, HttpProbeConfig, ProbeConfig, TcpProbeConfig, UplinkConfig};
 use outline_transport::{
-    DnsCache, TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
-    TransportOperation, UdpWsTransport, UpstreamTransportGuard,
+    DnsCache, TransportOperation, UdpWsTransport, TcpWriter,
     connect_shadowsocks_tcp_with_source, connect_shadowsocks_udp_with_source,
     connect_websocket_with_source,
 };
 use crate::config::{TargetAddr, UplinkTransport};
 
 use self::metrics::{BytesRecorder, record_attempt};
+use self::transport::connect_probe_tcp;
 use super::types::ProbeOutcome;
 
 pub(crate) async fn probe_uplink(
@@ -353,89 +354,16 @@ pub(crate) async fn run_http_probe(
     };
 
     let target_wire = target.to_wire_bytes()?;
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let lifetime = UpstreamTransportGuard::new("probe_http", "tcp");
-    let (mut writer, mut reader): (TcpWriter, TcpReader) = {
-        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-        match uplink.transport {
-            UplinkTransport::Ws => {
-                let ws_stream = connect_websocket_with_source(cache,
-                    uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                    effective_tcp_mode,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_http",
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("HTTP probe websocket for uplink {}", uplink.name),
-                })?;
-                let shared_conn_info = ws_stream.shared_connection_info();
-                let (ws_sink, ws_stream) = ws_stream.split();
-                let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
-                    ws_sink,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
-                )
-                .await?;
-                let request_salt = writer.request_salt();
-                let diag = outline_transport::WsReadDiag {
-                    conn_id: shared_conn_info.map(|(id, _)| id),
-                    mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
-                    uplink: uplink.name.clone(),
-                    target: target.to_string(),
-                };
-                let reader = TcpShadowsocksReader::new(
-                    ws_stream,
-                    uplink.cipher,
-                    &master_key,
-                    lifetime,
-                    ctrl_tx,
-                )
-                .with_request_salt(request_salt)
-                .with_diag(diag);
-                (TcpWriter::Ws(writer), TcpReader::Ws(reader))
-            },
-            UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(cache,
-                    uplink
-                        .tcp_addr
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_http",
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!(
-                        "HTTP probe shadowsocks socket for uplink {}",
-                        uplink.name
-                    ),
-                })?;
-                let (reader_half, writer_half) = stream.into_split();
-                let writer = TcpShadowsocksWriter::connect_socket(
-                    writer_half,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
-                )?;
-                let request_salt = writer.request_salt();
-                let reader = TcpShadowsocksReader::new_socket(
-                    reader_half,
-                    uplink.cipher,
-                    &master_key,
-                    lifetime,
-                )
-                .with_request_salt(request_salt);
-                (TcpWriter::Socket(writer), TcpReader::Socket(reader))
-            },
-        }
-    };
+    let (mut writer, mut reader) = connect_probe_tcp(
+        cache,
+        uplink,
+        &target,
+        "probe_http",
+        "HTTP probe",
+        effective_tcp_mode,
+        dial_limit,
+    )
+    .await?;
     let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "http" };
     let result = async {
         writer
@@ -500,92 +428,16 @@ pub(crate) async fn run_tcp_tunnel_probe(
     };
 
     let target_wire = target.to_wire_bytes()?;
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let lifetime = UpstreamTransportGuard::new("probe_tcp_tunnel", "tcp");
-    let (mut writer, mut reader): (TcpWriter, TcpReader) = {
-        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-        match uplink.transport {
-            UplinkTransport::Ws => {
-                let ws_stream = connect_websocket_with_source(cache,
-                    uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                    effective_tcp_mode,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_tcp_tunnel",
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!(
-                        "TCP-tunnel probe websocket for uplink {}",
-                        uplink.name
-                    ),
-                })?;
-                let shared_conn_info = ws_stream.shared_connection_info();
-                let (ws_sink, ws_stream) = ws_stream.split();
-                let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
-                    ws_sink,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
-                )
-                .await?;
-                let request_salt = writer.request_salt();
-                let diag = outline_transport::WsReadDiag {
-                    conn_id: shared_conn_info.map(|(id, _)| id),
-                    mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
-                    uplink: uplink.name.clone(),
-                    target: target.to_string(),
-                };
-                let reader = TcpShadowsocksReader::new(
-                    ws_stream,
-                    uplink.cipher,
-                    &master_key,
-                    lifetime,
-                    ctrl_tx,
-                )
-                .with_request_salt(request_salt)
-                .with_diag(diag);
-                (TcpWriter::Ws(writer), TcpReader::Ws(reader))
-            },
-            UplinkTransport::Shadowsocks => {
-                let stream = connect_shadowsocks_tcp_with_source(cache,
-                    uplink
-                        .tcp_addr
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_addr", uplink.name))?,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_tcp_tunnel",
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!(
-                        "TCP-tunnel probe shadowsocks socket for uplink {}",
-                        uplink.name
-                    ),
-                })?;
-                let (reader_half, writer_half) = stream.into_split();
-                let writer = TcpShadowsocksWriter::connect_socket(
-                    writer_half,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
-                )?;
-                let request_salt = writer.request_salt();
-                let reader = TcpShadowsocksReader::new_socket(
-                    reader_half,
-                    uplink.cipher,
-                    &master_key,
-                    lifetime,
-                )
-                .with_request_salt(request_salt);
-                (TcpWriter::Socket(writer), TcpReader::Socket(reader))
-            },
-        }
-    };
+    let (mut writer, mut reader) = connect_probe_tcp(
+        cache,
+        uplink,
+        &target,
+        "probe_tcp_tunnel",
+        "TCP-tunnel probe",
+        effective_tcp_mode,
+        dial_limit,
+    )
+    .await?;
 
     let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tcp" };
     let result = async {
