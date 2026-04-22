@@ -17,10 +17,11 @@ use crate::{
         decrypt_udp_packet, diagnose_stream_handshake, diagnose_udp_packet,
     },
     metrics::{Metrics, Protocol, Transport},
-    nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
     outbound::OutboundIpv6,
     protocol::{TargetAddr, parse_target_addr},
 };
+
+use super::nat::{NatKey, NatTable, ResponseSender, UdpResponseSender};
 
 use super::connect::{configure_tcp_stream, connect_tcp_target, resolve_udp_target};
 use super::constants::{

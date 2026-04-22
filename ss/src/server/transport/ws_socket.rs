@@ -17,7 +17,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     metrics::Protocol,
-    nat::{ResponseSender, UdpResponseSender},
+    server::nat::{ResponseSender, UdpResponseSender},
 };
 
 pub(super) enum WsFrame {

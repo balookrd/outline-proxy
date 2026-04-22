@@ -3,7 +3,6 @@ mod config;
 mod crypto;
 mod fwmark;
 mod metrics;
-mod nat;
 mod outbound;
 mod protocol;
 mod server;

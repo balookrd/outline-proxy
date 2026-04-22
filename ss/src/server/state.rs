@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use tokio::sync::Semaphore;
 
-use crate::{crypto::UserKey, metrics::Metrics, nat::NatTable, outbound::OutboundIpv6};
+use crate::{crypto::UserKey, metrics::Metrics, outbound::OutboundIpv6};
+
+use super::nat::NatTable;
 
 use super::dns_cache::DnsCache;
 
