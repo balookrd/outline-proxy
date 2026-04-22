@@ -54,6 +54,26 @@ pub(super) struct ConfigArgs {
     )]
     pub prefer_ipv4_upstream: Option<bool>,
 
+    /// Random-source IPv6 prefix, e.g. `2001:db8:dead::/64`. When set, each
+    /// outbound upstream IPv6 TCP/UDP socket binds to a random address from
+    /// this prefix. Requires the prefix to be routable back to this host
+    /// (typically via AnyIP `ip -6 route add local <prefix> dev lo` on Linux;
+    /// `IPV6_FREEBIND` is always set on the socket as a fallback).
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_PREFIX")]
+    pub outbound_ipv6_prefix: Option<String>,
+
+    /// Network interface whose currently-assigned IPv6 addresses form the
+    /// random source pool. Mutually exclusive with `--outbound-ipv6-prefix`.
+    /// Useful for DHCPv6/SLAAC where the prefix is not known up-front.
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_INTERFACE")]
+    pub outbound_ipv6_interface: Option<String>,
+
+    /// Interval in seconds between re-enumerations of the outbound
+    /// interface's IPv6 addresses. Ignored when `outbound_ipv6_interface`
+    /// is not set. Default: 30.
+    #[arg(long, env = "OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS")]
+    pub outbound_ipv6_refresh_secs: Option<u64>,
+
     #[arg(long = "ws-path-tcp", visible_alias = "ws-path", env = "OUTLINE_SS_WS_PATH_TCP")]
     pub ws_path_tcp: Option<String>,
 

@@ -22,6 +22,9 @@ pub(super) struct FileConfig {
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: Option<String>,
     pub prefer_ipv4_upstream: Option<bool>,
+    pub outbound_ipv6_prefix: Option<String>,
+    pub outbound_ipv6_interface: Option<String>,
+    pub outbound_ipv6_refresh_secs: Option<u64>,
     #[serde(default)]
     pub ws_path_tcp: Option<String>,
     #[serde(default)]

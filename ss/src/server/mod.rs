@@ -28,6 +28,7 @@ use crate::{
     config::Config,
     metrics::{Metrics, Transport},
     nat::NatTable,
+    outbound::{InterfaceSource, OutboundIpv6},
 };
 
 mod auth;
@@ -66,7 +67,23 @@ pub async fn run(config: Config) -> Result<()> {
     let users = build_users(&config)?;
     let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
     let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
-    let nat_table = NatTable::new(Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs));
+    let outbound_ipv6: Option<Arc<OutboundIpv6>> = if let Some(prefix) = config.outbound_ipv6_prefix {
+        Some(Arc::new(OutboundIpv6::Prefix(prefix)))
+    } else if let Some(iface) = config.outbound_ipv6_interface.clone() {
+        let source = InterfaceSource::bind(iface).with_context(|| {
+            format!(
+                "failed to enumerate IPv6 addresses on outbound interface {:?}",
+                config.outbound_ipv6_interface,
+            )
+        })?;
+        Some(Arc::new(OutboundIpv6::Interface(source)))
+    } else {
+        None
+    };
+    let nat_table = NatTable::with_outbound_ipv6(
+        Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
+        outbound_ipv6.clone(),
+    );
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let routes = Arc::new(RouteRegistry {
         tcp: Arc::clone(&tcp_routes),
@@ -84,6 +101,7 @@ pub async fn run(config: Config) -> Result<()> {
         nat_table: Arc::clone(&nat_table),
         dns_cache: Arc::clone(&dns_cache),
         prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+        outbound_ipv6: outbound_ipv6.clone(),
         udp_relay_semaphore,
     });
     let auth = Arc::new(AuthPolicy {
@@ -170,6 +188,26 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
 
+    // Periodic re-enumeration of the outbound IPv6 interface address pool.
+    // Only spawned when interface-mode source selection is configured.
+    if let Some(OutboundIpv6::Interface(source)) = outbound_ipv6.as_deref() {
+        let source = Arc::clone(source);
+        let period = Duration::from_secs(config.outbound_ipv6_refresh_secs);
+        let mut shutdown = shutdown_signal.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            interval.tick().await; // skip the immediate tick; initial pool came from bind()
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => break,
+                    _ = interval.tick() => source.refresh(),
+                }
+            }
+        });
+    }
+
     // Periodic sweep of DNS cache entries whose stale-fallback grace expired.
     {
         let dns_cache_cleanup = Arc::clone(&dns_cache);
@@ -214,6 +252,7 @@ pub async fn run(config: Config) -> Result<()> {
         users = users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,
         prefer_ipv4_upstream = config.prefer_ipv4_upstream,
+        outbound_ipv6 = ?outbound_ipv6.as_deref().map(|o| o.to_string()),
         "websocket shadowsocks server listening",
     );
 
@@ -244,6 +283,7 @@ pub async fn run(config: Config) -> Result<()> {
         let metrics = metrics.clone();
         let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
+        let outbound_ipv6 = outbound_ipv6.clone();
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_ss_tcp_listener(
@@ -252,6 +292,7 @@ pub async fn run(config: Config) -> Result<()> {
                 metrics,
                 dns_cache,
                 prefer_ipv4_upstream,
+                outbound_ipv6,
                 shutdown,
             )
             .await

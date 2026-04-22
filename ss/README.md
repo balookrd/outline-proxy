@@ -188,6 +188,9 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |
+| `outbound_ipv6_prefix` | Optional IPv6 CIDR (e.g. `2001:db8:dead::/64`). When set, each upstream IPv6 TCP connect and UDP NAT socket binds to a random address drawn from this prefix instead of the kernel-default interface source. Typical setup: `ip -6 addr add 2001:db8:dead::1/64 dev eth0` so the whole /64 is on-link — `IPV6_FREEBIND` (set automatically on Linux) then lets `bind()` pick any address from the prefix. As a fallback when FREEBIND is unavailable, add an AnyIP route: `ip -6 route add local 2001:db8:dead::/64 dev lo`. IPv4 upstreams are unaffected |
+| `outbound_ipv6_interface` | Alternative to `outbound_ipv6_prefix` for DHCPv6 / SLAAC deployments where the prefix is not known statically. Names a network interface (e.g. `eth0`); each global-unicast IPv6 address assigned to the interface is combined with its netmask to form a CIDR pool — random source addresses are then drawn **inside those prefixes**, the same way prefix-mode works (not just from the handful of addresses the kernel configured). Any contiguous prefix length is accepted (/48, /56, /60, /64, /96, /128…), derived from `getifaddrs(3)`. Only `2000::/3` addresses enter the pool — loopback, link-local, ULA (`fc00::/7`), multicast, IPv4-mapped, discard (`100::/64`) and other non-global ranges are filtered out. The pool is refreshed periodically so addresses added/removed by DHCPv6/SLAAC after startup take effect without a restart. Mutually exclusive with `outbound_ipv6_prefix`. If the pool is empty at bind time (interface has no global-unicast v6 yet), the socket falls back to the kernel-default wildcard bind and a `DEBUG` log entry is emitted — relay keeps working without random-source selection until the next refresh. Linux and macOS only |
+| `outbound_ipv6_refresh_secs` | Interval in seconds between re-enumerations of `outbound_ipv6_interface`'s prefix pool. Default: `30`. Ignored when `outbound_ipv6_interface` is not set |
 | `tuning_profile` | Named resource-limit preset: `small` / `medium` / `large` (default). Scales H2/H3 flow-control windows, stream caps, session/NAT timeouts and the global UDP relay task cap |
 | `[tuning]` | Per-field overrides on top of the selected profile. See `tuning.*` keys below |
 | `tuning.client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
@@ -237,6 +240,9 @@ When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth 
 - `OUTLINE_SS_METRICS_LISTEN`
 - `OUTLINE_SS_METRICS_PATH`
 - `OUTLINE_SS_PREFER_IPV4_UPSTREAM`
+- `OUTLINE_SS_OUTBOUND_IPV6_PREFIX`
+- `OUTLINE_SS_OUTBOUND_IPV6_INTERFACE`
+- `OUTLINE_SS_OUTBOUND_IPV6_REFRESH_SECS`
 - `OUTLINE_SS_UDP_NAT_IDLE_TIMEOUT_SECS`
 - `OUTLINE_SS_WS_PATH_TCP`
 - `OUTLINE_SS_WS_PATH_UDP`

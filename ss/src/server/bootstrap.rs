@@ -411,6 +411,7 @@ async fn handle_h3_request(
             Arc::clone(&route.candidate_users),
             Arc::clone(&services.dns_cache),
             services.prefer_ipv4_upstream,
+            services.outbound_ipv6.clone(),
         )
         .await;
         finish_ws_session(session, result, "tcp");

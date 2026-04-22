@@ -61,6 +61,7 @@ pub(super) async fn tcp_websocket_upgrade(
             Arc::clone(&route.candidate_users),
             Arc::clone(&state.services.dns_cache),
             state.services.prefer_ipv4_upstream,
+            state.services.outbound_ipv6.clone(),
         )
         .await;
         finish_ws_session(session, result, "tcp");

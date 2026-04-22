@@ -27,6 +27,18 @@ pub struct Config {
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,
+    /// If set, upstream IPv6 TCP/UDP sockets bind to a random address drawn
+    /// from this prefix (e.g. `2001:db8:dead::/64`) instead of using the
+    /// kernel default. See [`crate::outbound`] for details.
+    pub outbound_ipv6_prefix: Option<crate::outbound::Ipv6Prefix>,
+    /// Alternative to [`Self::outbound_ipv6_prefix`]: a network interface
+    /// name (e.g. `eth0`). At runtime the IPv6 addresses assigned to the
+    /// interface are enumerated (refreshed periodically) and upstream IPv6
+    /// sockets bind to a random one. Useful for DHCPv6/SLAAC deployments
+    /// where the prefix/addresses are not known statically.
+    pub outbound_ipv6_interface: Option<String>,
+    /// How often to re-enumerate the outbound interface's IPv6 addresses.
+    pub outbound_ipv6_refresh_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub http_root_auth: bool,
@@ -347,6 +359,25 @@ impl AppMode {
                 .prefer_ipv4_upstream
                 .or(file.prefer_ipv4_upstream)
                 .unwrap_or(false),
+            outbound_ipv6_prefix: match args
+                .outbound_ipv6_prefix
+                .as_deref()
+                .or(file.outbound_ipv6_prefix.as_deref())
+            {
+                Some(s) => Some(
+                    s.parse::<crate::outbound::Ipv6Prefix>()
+                        .map_err(|e| anyhow::anyhow!("invalid outbound_ipv6_prefix: {e}"))?,
+                ),
+                None => None,
+            },
+            outbound_ipv6_interface: args
+                .outbound_ipv6_interface
+                .clone()
+                .or_else(|| file.outbound_ipv6_interface.clone()),
+            outbound_ipv6_refresh_secs: args
+                .outbound_ipv6_refresh_secs
+                .or(file.outbound_ipv6_refresh_secs)
+                .unwrap_or(30),
             ws_path_tcp: args
                 .ws_path_tcp
                 .or(file.ws_path_tcp)
@@ -491,6 +522,18 @@ impl Config {
         }
         if self.http_root_realm.chars().any(char::is_control) {
             bail!("http_root_realm must not contain control characters");
+        }
+        if self.outbound_ipv6_prefix.is_some() && self.outbound_ipv6_interface.is_some() {
+            bail!(
+                "outbound_ipv6_prefix and outbound_ipv6_interface are mutually exclusive; \
+                 pick one"
+            );
+        }
+        if self.outbound_ipv6_interface.as_deref().is_some_and(str::is_empty) {
+            bail!("outbound_ipv6_interface must not be empty");
+        }
+        if self.outbound_ipv6_refresh_secs == 0 {
+            bail!("outbound_ipv6_refresh_secs must be > 0");
         }
         self.tuning.validate()?;
         Ok(())
@@ -649,6 +692,9 @@ mod tests {
             metrics_listen: None,
             metrics_path: "/metrics".into(),
             prefer_ipv4_upstream: false,
+            outbound_ipv6_prefix: None,
+            outbound_ipv6_interface: None,
+            outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
             http_root_auth: false,
