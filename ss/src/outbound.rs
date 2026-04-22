@@ -9,9 +9,13 @@
 //!
 //! - [`InterfaceSource`]: enumerate the IPv6 addresses currently assigned to a
 //!   named interface and pick one at random. Useful for DHCPv6/SLAAC
-//!   deployments where the exact addresses/prefix are not known up-front. The
-//!   cache refreshes periodically so freshly added addresses become available
-//!   without a restart.
+//!   deployments where the exact addresses/prefix are not known up-front, and
+//!   especially well suited to kernel privacy extensions
+//!   (`net.ipv6.conf.<iface>.use_tempaddr=2`): every rotated temporary address
+//!   appears on the interface and is picked up on the next refresh without a
+//!   restart. Only addresses actually assigned to the interface are used, so
+//!   inbound return traffic works under ordinary SLAAC (no AnyIP route, no
+//!   NDP proxy, no IPV6_FREEBIND needed).
 //!
 //! At the call site the two modes are unified behind [`OutboundIpv6`].
 
@@ -143,20 +147,20 @@ impl<'de> Deserialize<'de> for Ipv6Prefix {
 
 // ── Interface source ─────────────────────────────────────────────────────────
 
-/// Pool of IPv6 **prefixes** derived from a named network interface: for each
-/// assigned global address we combine the address with its netmask (from
-/// `getifaddrs(3)`) to get the on-link CIDR, and draw random source addresses
-/// from within those prefixes — the same way prefix-mode does. Refreshed
-/// asynchronously so prefixes added/removed by DHCPv6/SLAAC after startup
-/// eventually take effect without a reload.
+/// Pool of IPv6 **addresses** currently assigned to a named interface, as
+/// reported by `getifaddrs(3)`. Only global-unicast (2000::/3) addresses are
+/// kept. Each outbound socket binds to one randomly-picked address from the
+/// pool — which means inbound return traffic always lands on an address the
+/// host genuinely owns and the kernel answers NDP for, so this mode works
+/// under plain SLAAC / DHCPv6 without AnyIP routing or NDP proxying.
 ///
-/// Binding to arbitrary host bits inside the prefix requires `IPV6_FREEBIND`
-/// (set automatically on Linux); otherwise the kernel will only accept a bind
-/// to an address actually assigned to the interface, in which case only the
-/// exact assigned addresses end up being usable.
+/// Rotation semantics mirror whatever the kernel does on the interface: if
+/// privacy extensions are enabled (`net.ipv6.conf.<iface>.use_tempaddr=2`),
+/// each rotated temporary address is discovered on the next refresh cycle
+/// and starts (resp. stops) being used as a source.
 pub(crate) struct InterfaceSource {
     name: String,
-    cache: RwLock<Arc<[Ipv6Prefix]>>,
+    cache: RwLock<Arc<[Ipv6Addr]>>,
 }
 
 impl InterfaceSource {
@@ -165,15 +169,15 @@ impl InterfaceSource {
         if initial.is_empty() {
             tracing::warn!(
                 interface = %name,
-                "no usable global IPv6 prefixes found on interface at startup; \
+                "no usable global IPv6 addresses found on interface at startup; \
                  random outbound source selection will be a no-op until addresses appear"
             );
         } else {
             tracing::info!(
                 interface = %name,
-                prefixes = initial.len(),
+                addresses = initial.len(),
                 example = %initial[0],
-                "discovered IPv6 prefixes on outbound interface"
+                "discovered IPv6 addresses on outbound interface"
             );
         }
         Ok(Arc::new(Self {
@@ -186,40 +190,39 @@ impl InterfaceSource {
         &self.name
     }
 
-    pub(crate) fn snapshot(&self) -> Arc<[Ipv6Prefix]> {
+    pub(crate) fn snapshot(&self) -> Arc<[Ipv6Addr]> {
         Arc::clone(&self.cache.read())
     }
 
-    /// Re-enumerate the interface and atomically swap the cached prefix list.
+    /// Re-enumerate the interface and atomically swap the cached address list.
     /// Logs at INFO when the set changes.
     pub(crate) fn refresh(&self) {
-        let prefixes = match enumerate_ipv6_on_interface(&self.name) {
+        let addrs = match enumerate_ipv6_on_interface(&self.name) {
             Ok(v) => v,
             Err(error) => {
                 tracing::warn!(
                     interface = %self.name,
                     %error,
-                    "failed to enumerate IPv6 prefixes on outbound interface; \
+                    "failed to enumerate IPv6 addresses on outbound interface; \
                      keeping previous cached set",
                 );
                 return;
             },
         };
         let current = self.cache.read().clone();
-        if prefixes.as_slice() != &*current {
+        if addrs.as_slice() != &*current {
             tracing::info!(
                 interface = %self.name,
                 before = current.len(),
-                after = prefixes.len(),
-                "refreshed outbound IPv6 prefix pool",
+                after = addrs.len(),
+                "refreshed outbound IPv6 address pool",
             );
-            *self.cache.write() = Arc::from(prefixes.into_boxed_slice());
+            *self.cache.write() = Arc::from(addrs.into_boxed_slice());
         }
     }
 
-    /// Pick a random prefix from the cached pool and then a random address
-    /// within it. Returns `None` when the pool is empty (e.g. interface has
-    /// no global v6 prefixes yet).
+    /// Pick a random address from the cached pool. Returns `None` when the
+    /// pool is empty (e.g. interface has no global v6 addresses yet).
     pub(crate) fn random_addr(&self) -> std::io::Result<Option<Ipv6Addr>> {
         let snap = self.snapshot();
         if snap.is_empty() {
@@ -228,7 +231,7 @@ impl InterfaceSource {
         let mut b = [0_u8; 8];
         fill_random(&mut b)?;
         let idx = (u64::from_ne_bytes(b) as usize) % snap.len();
-        snap[idx].random_addr().map(Some)
+        Ok(Some(snap[idx]))
     }
 }
 
@@ -263,14 +266,13 @@ impl std::fmt::Display for OutboundIpv6 {
 
 // ── Interface enumeration ────────────────────────────────────────────────────
 
-/// Enumerate usable (non-loopback, non-link-local, non-unspecified) global
-/// IPv6 **prefixes** (address + netmask → CIDR) assigned to `iface` via
-/// `getifaddrs(3)`. Duplicate prefixes are collapsed, so a SLAAC link with a
-/// stable + temporary address in the same /64 yields a single entry.
+/// Enumerate global-unicast IPv6 **addresses** assigned to `iface` via
+/// `getifaddrs(3)`. Link-local, loopback, unique-local, multicast, IPv4-mapped
+/// and other non-global ranges are filtered out. Duplicates are collapsed.
 /// Available on Linux and macOS; other platforms return an error at bind
 /// time (no way to enumerate without a parallel netlink/route-socket impl).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Prefix>> {
+fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     use std::ffi::CStr;
 
     struct IfAddrsGuard(*mut libc::ifaddrs);
@@ -328,56 +330,15 @@ fn enumerate_ipv6_on_interface(iface: &str) -> std::io::Result<Vec<Ipv6Prefix>> 
             continue;
         }
 
-        // Derive the on-link prefix length from the netmask. If the netmask
-        // is missing or unparseable, fall back to a /128 host route — we
-        // still let the user bind to this exact address, we just can't
-        // randomise the host bits.
-        let prefix_len = if ifa.ifa_netmask.is_null() {
-            128
-        } else {
-            // SAFETY: ifa_netmask, when non-null for an AF_INET6 entry, points
-            // to a sockaddr_in6 whose sin6_addr holds the netmask bytes.
-            let mask_sa = unsafe { &*(ifa.ifa_netmask as *const libc::sockaddr_in6) };
-            netmask_to_prefix_len(mask_sa.sin6_addr.s6_addr).unwrap_or(128)
-        };
-
-        let prefix = match Ipv6Prefix::new(addr, prefix_len) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        if seen.insert((prefix.network(), prefix.prefix_len())) {
-            out.push(prefix);
+        if seen.insert(addr) {
+            out.push(addr);
         }
     }
     Ok(out)
 }
 
-/// Convert a contiguous-left-bits IPv6 netmask (16 raw bytes) into its CIDR
-/// prefix length. Returns `None` if the bits are non-contiguous (bogus mask).
-fn netmask_to_prefix_len(mask: [u8; 16]) -> Option<u8> {
-    let mut prefix = 0_u8;
-    let mut seen_zero = false;
-    for byte in mask {
-        match byte {
-            0xFF if !seen_zero => prefix += 8,
-            0x00 => seen_zero = true,
-            other if !seen_zero => {
-                // Must be 1…7 leading ones followed only by zeros.
-                let ones = other.leading_ones() as u8;
-                if other.wrapping_shl(ones as u32) != 0 {
-                    return None;
-                }
-                prefix += ones;
-                seen_zero = true;
-            },
-            _ => return None,
-        }
-    }
-    Some(prefix)
-}
-
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn enumerate_ipv6_on_interface(_iface: &str) -> std::io::Result<Vec<Ipv6Prefix>> {
+fn enumerate_ipv6_on_interface(_iface: &str) -> std::io::Result<Vec<Ipv6Addr>> {
     Err(std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         "interface-based outbound IPv6 selection is only supported on Linux and macOS",
@@ -456,51 +417,17 @@ mod tests {
 
     #[test]
     fn enumerate_returns_only_global_unicast() {
-        // The loopback interface never exposes a usable global v6 address,
-        // so this mostly exercises the syscall path and filters. The exact
-        // interface name is OS-dependent; we just assert it doesn't panic
-        // and that everything returned is in the 2000::/3 global-unicast
-        // block (not loopback, link-local, ULA, multicast, IPv4-mapped…).
         let names = ["lo", "lo0"];
         for name in names {
-            if let Ok(prefixes) = enumerate_ipv6_on_interface(name) {
-                for p in prefixes {
+            if let Ok(addrs) = enumerate_ipv6_on_interface(name) {
+                for a in addrs {
                     assert_eq!(
-                        p.network().segments()[0] & 0xe000,
+                        a.segments()[0] & 0xe000,
                         0x2000,
-                        "enumerate returned non-global prefix {p}",
+                        "enumerate returned non-global address {a}",
                     );
-                    assert!(p.prefix_len() <= 128);
                 }
             }
         }
-    }
-
-    #[test]
-    fn netmask_to_prefix_len_parses_common_masks() {
-        // /64
-        let mut m = [0_u8; 16];
-        for b in m.iter_mut().take(8) {
-            *b = 0xFF;
-        }
-        assert_eq!(super::netmask_to_prefix_len(m), Some(64));
-
-        // /0, /128
-        assert_eq!(super::netmask_to_prefix_len([0_u8; 16]), Some(0));
-        assert_eq!(super::netmask_to_prefix_len([0xFF_u8; 16]), Some(128));
-
-        // /60 (first 7 bytes 0xFF, then 0xF0)
-        let mut m = [0_u8; 16];
-        for b in m.iter_mut().take(7) {
-            *b = 0xFF;
-        }
-        m[7] = 0xF0;
-        assert_eq!(super::netmask_to_prefix_len(m), Some(60));
-
-        // Non-contiguous → None.
-        let mut bogus = [0xFF_u8; 16];
-        bogus[5] = 0xF0;
-        bogus[6] = 0xFF;
-        assert_eq!(super::netmask_to_prefix_len(bogus), None);
     }
 }

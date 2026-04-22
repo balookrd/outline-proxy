@@ -51,6 +51,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Fixed UDP NAT idle timer to only refresh on delivered responses, preventing stuck entries from extending their lifetime.
 - Fixed HTTP/3 to send WebSocket Close 1013 on upstream connect failure (parity with TCP path).
 - Fixed config validation so `h3_max_concurrent_uni_streams` must be non-zero.
+- Fixed `outbound_ipv6_interface` to bind to the addresses actually assigned to the interface instead of random hosts inside their /64, so inbound return traffic works under ordinary SLAAC/DHCPv6 without AnyIP routes or NDP proxying. Pairs with kernel privacy extensions (`use_tempaddr=2`) for per-connection source rotation.
 
 ## 1.0.2 - 2026-04-12
 
