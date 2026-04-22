@@ -119,28 +119,42 @@ pub(super) async fn run_accept_loop(
             .acquire_owned()
             .await
             .expect("semaphore closed");
+        // Clone the shutdown receiver into the task so long-lived connections
+        // can be cancelled on SIGTERM. Dropping the serve future closes the
+        // sockets, which lets the drain complete in milliseconds instead of
+        // waiting for idle flows (SSH, WebSocket) to terminate on their own.
+        let mut task_shutdown = shutdown.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = proxy::serve_socks5_client(stream, peer, config, registry).await {
-                if crate::disconnect::is_expected_client_disconnect(&error) {
-                    debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
-                } else if crate::disconnect::is_client_write_disconnect(&error) {
-                    warn!(
-                        %peer,
-                        error = %format!("{error:#}"),
-                        "client disconnected before proxy finished sending the response"
-                    );
-                } else {
-                    warn!(%peer, error = %format!("{error:#}"), "connection failed");
+            let serve = proxy::serve_socks5_client(stream, peer, config, registry);
+            tokio::select! {
+                res = serve => {
+                    if let Err(error) = res {
+                        if crate::disconnect::is_expected_client_disconnect(&error) {
+                            debug!(%peer, error = %format!("{error:#}"), "connection closed by client");
+                        } else if crate::disconnect::is_client_write_disconnect(&error) {
+                            warn!(
+                                %peer,
+                                error = %format!("{error:#}"),
+                                "client disconnected before proxy finished sending the response"
+                            );
+                        } else {
+                            warn!(%peer, error = %format!("{error:#}"), "connection failed");
+                        }
+                    }
+                }
+                _ = task_shutdown.wait_for(|&v| v) => {
+                    debug!(%peer, "connection cancelled by shutdown");
                 }
             }
         });
     }
 
-    // Drain: wait for every in-flight connection to release its semaphore
-    // permit.  The 60 s window keeps us well inside systemd's default
-    // TimeoutStopSec (90 s); the kernel will SIGKILL us if we overshoot.
-    const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+    // Drain: connection tasks observe the shutdown watch via tokio::select!
+    // and drop their serve futures immediately, so the permits come back in
+    // milliseconds. Keep a short safety window for tasks stuck inside a
+    // non-cancellable syscall path before we force exit.
+    const DRAIN_TIMEOUT: Duration = Duration::from_secs(3);
     let in_flight = MAX_CONCURRENT_CONNECTIONS.saturating_sub(conn_sem.available_permits());
     info!(in_flight, "draining connections before exit");
     if in_flight > 0 {
