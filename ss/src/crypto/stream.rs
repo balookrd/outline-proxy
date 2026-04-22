@@ -9,10 +9,11 @@ use ring::{
 use super::{
     error::CryptoError,
     primitives::{
-        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_CIPHERTEXT_LEN,
-        SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm,
-        current_unix_secs, derive_subkey, next_stream_nonce, nonce_zero,
-        parse_ss2022_request_header, validate_ss2022_request_fixed_header,
+        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN,
+        SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
+        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, current_unix_secs, derive_subkey,
+        next_stream_nonce, nonce_zero, parse_ss2022_request_header,
+        validate_ss2022_request_fixed_header,
     },
     user_key::UserKey,
 };
@@ -176,11 +177,16 @@ impl AeadStreamDecryptor {
                 encrypted_fixed.copy_from_slice(
                     &self.buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN],
                 );
-                let session_key =
-                    derive_subkey(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    &self.buffer[..salt_len],
+                    &mut subkey,
+                )?;
                 let algorithm = cipher_algorithm(user.cipher());
-                let key =
-                    UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+                let key = UnboundKey::new(algorithm, &subkey[..key_len])
+                    .map_err(|_| CryptoError::Cipher)?;
                 let less_safe = LessSafeKey::new(key);
                 if let Ok(header) =
                     less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut encrypted_fixed)
@@ -214,11 +220,16 @@ impl AeadStreamDecryptor {
                 // that fails AEAD verification.
                 let mut candidate = [0u8; 2 + TAG_LEN];
                 candidate.copy_from_slice(&self.buffer[salt_len..salt_len + 2 + TAG_LEN]);
-                let session_key =
-                    derive_subkey(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    &self.buffer[..salt_len],
+                    &mut subkey,
+                )?;
                 let algorithm = cipher_algorithm(user.cipher());
-                let key =
-                    UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+                let key = UnboundKey::new(algorithm, &subkey[..key_len])
+                    .map_err(|_| CryptoError::Cipher)?;
                 let less_safe = LessSafeKey::new(key);
                 if let Ok(plaintext_len) =
                     less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut candidate)
@@ -281,9 +292,10 @@ impl AeadStreamEncryptor {
     ) -> Result<Self, CryptoError> {
         let mut salt = vec![0_u8; user.cipher().salt_len()];
         SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
-        let session_key = derive_subkey(user.cipher(), user.master_key(), &salt)?;
+        let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+        let key_len = derive_subkey(user.cipher(), user.master_key(), &salt, &mut subkey)?;
         let algorithm = cipher_algorithm(user.cipher());
-        let key = UnboundKey::new(algorithm, &session_key).map_err(|_| CryptoError::Cipher)?;
+        let key = UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
         let key = LessSafeKey::new(key);
 
         let mode = if user.cipher().is_2022() {

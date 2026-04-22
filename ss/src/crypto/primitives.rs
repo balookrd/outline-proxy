@@ -27,29 +27,30 @@ pub(super) const SS2022_UDP_SEPARATE_HEADER_LEN: usize = 16;
 pub(super) const SS2022_MAX_PADDING_LEN: usize = 900;
 pub(super) const SS2022_MAX_TIME_DIFF_SECS: u64 = 30;
 
+pub(super) const MAX_SUBKEY_LEN: usize = 32;
+
 pub(super) fn derive_subkey(
     cipher: CipherKind,
     master_key: &[u8],
     salt: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
+    out: &mut [u8; MAX_SUBKEY_LEN],
+) -> Result<usize, CryptoError> {
+    let key_len = cipher.key_len();
     if cipher.is_2022() {
-        let mut material = Vec::with_capacity(master_key.len() + salt.len());
-        material.extend_from_slice(master_key);
-        material.extend_from_slice(salt);
-        Ok(
-            blake3::derive_key(SS2022_SUBKEY_CONTEXT, &material).as_slice()[..cipher.key_len()]
-                .to_vec(),
-        )
+        let mut hasher = blake3::Hasher::new_derive_key(SS2022_SUBKEY_CONTEXT);
+        hasher.update(master_key);
+        hasher.update(salt);
+        let mut reader = hasher.finalize_xof();
+        reader.fill(&mut out[..key_len]);
     } else {
         let salt = hkdf::Salt::new(hkdf::HKDF_SHA1_FOR_LEGACY_USE_ONLY, salt);
         let prk = salt.extract(master_key);
         let okm = prk
-            .expand(&[SS_SUBKEY_INFO], HkdfLen(cipher.key_len()))
+            .expand(&[SS_SUBKEY_INFO], HkdfLen(key_len))
             .map_err(|_| CryptoError::KeyDerivation)?;
-        let mut session_key = vec![0_u8; cipher.key_len()];
-        okm.fill(&mut session_key).map_err(|_| CryptoError::KeyDerivation)?;
-        Ok(session_key)
+        okm.fill(&mut out[..key_len]).map_err(|_| CryptoError::KeyDerivation)?;
     }
+    Ok(key_len)
 }
 
 #[inline]

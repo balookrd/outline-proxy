@@ -154,16 +154,18 @@ fn roundtrip_ss2022_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let session_key = super::primitives::derive_subkey(
+    let mut subkey = [0_u8; super::primitives::MAX_SUBKEY_LEN];
+    let key_len = super::primitives::derive_subkey(
         CipherKind::Aes128Gcm2022,
         users[0].master_key(),
         &request_salt,
+        &mut subkey,
     )
     .unwrap();
     let key = LessSafeKey::new(
         UnboundKey::new(
             super::primitives::cipher_algorithm(CipherKind::Aes128Gcm2022),
-            &session_key,
+            &subkey[..key_len],
         )
         .unwrap(),
     );
@@ -215,16 +217,18 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let session_key = super::primitives::derive_subkey(
+    let mut subkey = [0_u8; super::primitives::MAX_SUBKEY_LEN];
+    let key_len = super::primitives::derive_subkey(
         CipherKind::Chacha20Poly13052022,
         users[0].master_key(),
         &request_salt,
+        &mut subkey,
     )
     .unwrap();
     let key = LessSafeKey::new(
         UnboundKey::new(
             super::primitives::cipher_algorithm(CipherKind::Chacha20Poly13052022),
-            &session_key,
+            &subkey[..key_len],
         )
         .unwrap(),
     );
