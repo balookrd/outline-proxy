@@ -48,7 +48,11 @@ RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is required by glibc's getifaddrs(3), which the interface-based
+# outbound IPv6 selection (outbound_ipv6_interface) uses to enumerate prefixes.
+# Without it that path fails with EAFNOSUPPORT at startup. Harmless to leave
+# enabled when the feature is unused.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 # Read-only access to config and certificates.
 ReadOnlyPaths=/etc/outline-ss-rust
