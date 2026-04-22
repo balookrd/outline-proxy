@@ -265,7 +265,7 @@ impl UplinkManager {
         };
         // Emit warn! for H3 downgrades before acquiring the write lock.
         if !result.tcp_ok
-            && uplink.transport == UplinkTransport::Websocket
+            && uplink.transport == UplinkTransport::Ws
             && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
             && prev_tcp_h3.is_none_or(|t| t < now)
         {
@@ -277,7 +277,7 @@ impl UplinkManager {
         }
         if result.udp_applicable
             && !result.udp_ok
-            && uplink.transport == UplinkTransport::Websocket
+            && uplink.transport == UplinkTransport::Ws
             && uplink.udp_ws_mode == WsTransportMode::H3
             && prev_udp_h3.is_none_or(|t| t < now)
         {
@@ -313,7 +313,7 @@ impl UplinkManager {
                 // With H2 downgrade, recovery probing uses H2
                 // which is stable, and H3 is only retried after the
                 // downgrade timer expires.
-                if uplink.transport == UplinkTransport::Websocket
+                if uplink.transport == UplinkTransport::Ws
                     && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
                 {
                     status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
@@ -333,7 +333,7 @@ impl UplinkManager {
                 // not prove that H3 is healthy again.  Instead, schedule an H3
                 // recovery re-probe below to confirm H3 liveness explicitly.
                 if effective_tcp_mode == WsTransportMode::H2
-                    && uplink.transport == UplinkTransport::Websocket
+                    && uplink.transport == UplinkTransport::Ws
                     && uplink.tcp_ws_mode == WsTransportMode::H3
                     && status.tcp.h3_downgrade_until.is_some_and(|t| t > now)
                 {
@@ -349,7 +349,7 @@ impl UplinkManager {
                         add_penalty(&mut status.udp.penalty, now, &load_balancing);
                     }
                     // Mirror of the TCP H3 downgrade above for UDP.
-                    if uplink.transport == UplinkTransport::Websocket
+                    if uplink.transport == UplinkTransport::Ws
                         && uplink.udp_ws_mode == WsTransportMode::H3
                     {
                         status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);
@@ -364,7 +364,7 @@ impl UplinkManager {
                     // TCP path.  Successful H2 probe doesn't prove H3 is
                     // back, so verify it explicitly below.
                     if effective_udp_mode == WsTransportMode::H2
-                        && uplink.transport == UplinkTransport::Websocket
+                        && uplink.transport == UplinkTransport::Ws
                         && uplink.udp_ws_mode == WsTransportMode::H3
                         && status.udp.h3_downgrade_until.is_some_and(|t| t > now)
                     {
@@ -422,7 +422,7 @@ impl UplinkManager {
             (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
         };
         // Emit warn! before acquiring write lock.
-        if uplink.transport == UplinkTransport::Websocket
+        if uplink.transport == UplinkTransport::Ws
             && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
             && prev_tcp_h3.is_none_or(|t| t < now)
         {
@@ -434,7 +434,7 @@ impl UplinkManager {
             );
         }
         if uplink.supports_udp()
-            && uplink.transport == UplinkTransport::Websocket
+            && uplink.transport == UplinkTransport::Ws
             && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
             && prev_udp_h3.is_none_or(|t| t < now)
         {
@@ -469,7 +469,7 @@ impl UplinkManager {
             }
             // Probe connection itself failed (ws connect / timeout).
             // Same H3 downgrade logic as the tcp_ok=false case above.
-            if uplink.transport == UplinkTransport::Websocket
+            if uplink.transport == UplinkTransport::Ws
                 && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
             {
                 status.tcp.h3_downgrade_until = Some(now + h3_downgrade_duration);
@@ -478,7 +478,7 @@ impl UplinkManager {
             // a probe-level failure also forces UDP H2 fallback so the
             // failover loop on a broken H3 server doesn't spin.
             if uplink.supports_udp()
-                && uplink.transport == UplinkTransport::Websocket
+                && uplink.transport == UplinkTransport::Ws
                 && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
             {
                 status.udp.h3_downgrade_until = Some(now + h3_downgrade_duration);

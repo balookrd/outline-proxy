@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::{TransportOperation, WebSocketClosed};
+use crate::{TransportOperation, WsClosed};
 use outline_ss2022::Ss2022Error;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -155,7 +155,7 @@ impl UdpWsTransport {
                         }
                     }
                     Some(Ok(Message::Close(_))) => {
-                        let _ = downlink_tx.send(Err(anyhow::Error::from(WebSocketClosed))).await;
+                        let _ = downlink_tx.send(Err(anyhow::Error::from(WsClosed))).await;
                         return;
                     }
                     Some(Ok(Message::Ping(payload))) => {
@@ -301,7 +301,7 @@ impl UdpWsTransport {
             UdpTransport::Websocket { downlink_rx, .. } => {
                 let bytes = {
                     let mut rx = downlink_rx.lock().await;
-                    rx.recv().await.ok_or_else(|| anyhow::Error::from(WebSocketClosed))??
+                    rx.recv().await.ok_or_else(|| anyhow::Error::from(WsClosed))??
                 };
                 self.decrypt_udp_bytes(&bytes).await.map(Bytes::from)
             },

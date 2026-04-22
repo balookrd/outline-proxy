@@ -15,7 +15,8 @@ pub use socks5_proto::TargetAddr;
 #[serde(rename_all = "snake_case")]
 pub enum UplinkTransport {
     #[default]
-    Websocket,
+    #[serde(alias = "websocket")]
+    Ws,
     Shadowsocks,
 }
 
@@ -24,7 +25,7 @@ impl std::str::FromStr for UplinkTransport {
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "websocket" => Ok(Self::Websocket),
+            "ws" | "websocket" => Ok(Self::Ws),
             "shadowsocks" => Ok(Self::Shadowsocks),
             _ => anyhow::bail!("unsupported uplink transport: {s}"),
         }
@@ -34,7 +35,7 @@ impl std::str::FromStr for UplinkTransport {
 impl std::fmt::Display for UplinkTransport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Websocket => "websocket",
+            Self::Ws => "ws",
             Self::Shadowsocks => "shadowsocks",
         })
     }
@@ -73,7 +74,7 @@ pub struct UplinkConfig {
 impl UplinkConfig {
     pub fn supports_udp(&self) -> bool {
         match self.transport {
-            UplinkTransport::Websocket => self.udp_ws_url.is_some(),
+            UplinkTransport::Ws => self.udp_ws_url.is_some(),
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
         }
     }

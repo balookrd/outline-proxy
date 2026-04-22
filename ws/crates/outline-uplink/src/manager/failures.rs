@@ -49,7 +49,7 @@ impl UplinkManager {
         error: &anyhow::Error,
     ) {
         let uplink = &self.inner.uplinks[index];
-        if uplink.transport != UplinkTransport::Websocket {
+        if uplink.transport != UplinkTransport::Ws {
             return;
         }
         let now = tokio::time::Instant::now();

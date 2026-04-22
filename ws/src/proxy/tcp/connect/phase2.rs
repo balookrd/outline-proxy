@@ -230,7 +230,7 @@ pub(super) async fn run_relay(
             uplinks
                 .report_runtime_failure(active_index, TransportKind::Tcp, err)
                 .await;
-        } else if crate::disconnect::is_websocket_closed(err) {
+        } else if crate::disconnect::is_ws_closed(err) {
             // The upstream server closed the WebSocket connection
             // mid-stream (server-initiated close, not a client
             // disconnect).  We do not set a full runtime-failure

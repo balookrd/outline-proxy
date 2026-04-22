@@ -145,7 +145,7 @@ mod tests {
     async fn classify_decision_unknown_group_falls_back_to_default() {
         let uplink = UplinkConfig {
             name: "default-uplink".to_string(),
-            transport: UplinkTransport::Websocket,
+            transport: UplinkTransport::Ws,
             tcp_ws_url: Some(Url::parse("wss://127.0.0.1:1/tcp").unwrap()),
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url: None,

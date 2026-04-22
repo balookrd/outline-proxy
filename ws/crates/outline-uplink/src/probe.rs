@@ -62,7 +62,7 @@ pub(crate) async fn run_tcp_probe(
     if probe.ws.enabled {
         let probe_started = Instant::now();
         let result = match uplink.transport {
-            UplinkTransport::Websocket => {
+            UplinkTransport::Ws => {
                 run_ws_probe(
                     cache,
                     group,
@@ -159,7 +159,7 @@ pub(crate) async fn run_udp_probe(
     if probe.ws.enabled {
         let probe_started = Instant::now();
         let result = match uplink.transport {
-            UplinkTransport::Websocket => {
+            UplinkTransport::Ws => {
                 run_ws_probe(
                     cache,
                     group,
@@ -381,7 +381,7 @@ pub(crate) async fn run_http_probe(
     let (mut writer, mut reader): (TcpWriter, TcpReader) = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
-            UplinkTransport::Websocket => {
+            UplinkTransport::Ws => {
                 let ws_stream = connect_websocket_with_source(cache,
                     uplink
                         .tcp_ws_url
@@ -548,7 +548,7 @@ pub(crate) async fn run_tcp_tunnel_probe(
     let (mut writer, mut reader): (TcpWriter, TcpReader) = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
-            UplinkTransport::Websocket => {
+            UplinkTransport::Ws => {
                 let ws_stream = connect_websocket_with_source(cache,
                     uplink
                         .tcp_ws_url
@@ -699,7 +699,7 @@ pub(crate) async fn run_dns_probe(
     let transport = {
         let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
         match uplink.transport {
-            UplinkTransport::Websocket => {
+            UplinkTransport::Ws => {
                 let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
                     anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
                 })?;

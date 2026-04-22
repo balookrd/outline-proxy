@@ -123,7 +123,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name,
             transport,
             tcp_ws_url: match transport {
-                UplinkTransport::Websocket => Some(tcp_ws_url.ok_or_else(|| {
+                UplinkTransport::Ws => Some(tcp_ws_url.ok_or_else(|| {
                     anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
                 })?),
                 UplinkTransport::Shadowsocks => {
@@ -137,12 +137,12 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             },
             tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
             udp_ws_url: match transport {
-                UplinkTransport::Websocket => udp_ws_url,
+                UplinkTransport::Ws => udp_ws_url,
                 UplinkTransport::Shadowsocks => None,
             },
             udp_ws_mode: udp_ws_mode.unwrap_or_default(),
             tcp_addr: match transport {
-                UplinkTransport::Websocket => {
+                UplinkTransport::Ws => {
                     if tcp_addr.is_some() || udp_addr.is_some() {
                         bail!(
                             "socket uplink fields are not valid for transport=websocket; use tcp_ws_url/udp_ws_url"
@@ -155,7 +155,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                 })?),
             },
             udp_addr: match transport {
-                UplinkTransport::Websocket => None,
+                UplinkTransport::Ws => None,
                 UplinkTransport::Shadowsocks => udp_addr,
             },
             cipher,

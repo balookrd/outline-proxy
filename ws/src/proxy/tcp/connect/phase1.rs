@@ -227,7 +227,7 @@ pub(super) async fn try_uplinks(
                 // DirectSocket does not go through WebSocket.
                 if active.source == TcpUplinkSource::FreshDial
                     && rst_retries_on_current_uplink < CHUNK0_RST_MAX_RETRIES
-                    && crate::disconnect::is_websocket_closed(&phase1_error)
+                    && crate::disconnect::is_ws_closed(&phase1_error)
                 {
                     let attempt_num = rst_retries_on_current_uplink + 1;
                     debug!(
@@ -294,7 +294,7 @@ pub(super) async fn try_uplinks(
                                     &phase1_error,
                                 )
                                 .await;
-                        } else if crate::disconnect::is_websocket_closed(&phase1_error) {
+                        } else if crate::disconnect::is_ws_closed(&phase1_error) {
                             uplinks
                                 .report_upstream_close(active.index, TransportKind::Tcp)
                                 .await;

@@ -2,7 +2,7 @@ use anyhow::Error;
 use socks5_proto::Socks5Error;
 
 use crate::client_io::ClientIo;
-use outline_transport::{WebSocketClosed, contains_any, find_typed, is_transport_level_disconnect, lower_error};
+use outline_transport::{WsClosed, contains_any, find_typed, is_transport_level_disconnect, lower_error};
 
 /// Return true if the error originated from a client-side read operation.
 ///
@@ -30,7 +30,7 @@ fn is_client_write_failure(error: &Error) -> bool {
 
 /// External-library WebSocket close strings that cannot be replaced with a
 /// typed marker (they originate from tungstenite / rustls).
-const EXTERNAL_WEBSOCKET_CLOSE_STRINGS: &[&str] = &[
+const EXTERNAL_WS_CLOSE_STRINGS: &[&str] = &[
     "connection reset without closing handshake",
     "peer closed connection without sending tls close_notify",
 ];
@@ -43,16 +43,16 @@ pub(crate) fn is_client_write_disconnect(error: &Error) -> bool {
     is_client_write_failure(error) && is_transport_level_disconnect(error)
 }
 
-pub(crate) fn is_websocket_closed(error: &Error) -> bool {
+pub(crate) fn is_ws_closed(error: &Error) -> bool {
     // Prefer typed downcast; fall back to external-library strings.
-    find_typed::<WebSocketClosed>(error).is_some()
-        || contains_any(&lower_error(error), EXTERNAL_WEBSOCKET_CLOSE_STRINGS)
+    find_typed::<WsClosed>(error).is_some()
+        || contains_any(&lower_error(error), EXTERNAL_WS_CLOSE_STRINGS)
 }
 
 pub(crate) fn is_upstream_runtime_failure(error: &Error) -> bool {
     !is_client_read_failure(error)
         && !is_client_write_failure(error)
-        && !is_websocket_closed(error)
+        && !is_ws_closed(error)
 }
 
 
@@ -62,7 +62,7 @@ mod tests {
 
     use super::{
         is_client_write_disconnect, is_expected_client_disconnect, is_upstream_runtime_failure,
-        is_websocket_closed,
+        is_ws_closed,
     };
 
     #[test]
@@ -70,7 +70,7 @@ mod tests {
         let error = anyhow!(
             "websocket read failed: WebSocket protocol error: Connection reset without closing handshake"
         );
-        assert!(is_websocket_closed(&error));
+        assert!(is_ws_closed(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 
@@ -79,15 +79,15 @@ mod tests {
         let error = anyhow!(
             "websocket read failed: IO error: peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof"
         );
-        assert!(is_websocket_closed(&error));
+        assert!(is_ws_closed(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 
     #[test]
     fn typed_websocket_closed_is_detected() {
-        use outline_transport::WebSocketClosed;
-        let error = anyhow::Error::from(WebSocketClosed).context("websocket read failed");
-        assert!(is_websocket_closed(&error));
+        use outline_transport::WsClosed;
+        let error = anyhow::Error::from(WsClosed).context("websocket read failed");
+        assert!(is_ws_closed(&error));
         assert!(!is_upstream_runtime_failure(&error));
     }
 
@@ -163,11 +163,11 @@ mod tests {
     #[test]
     fn string_fallback_still_works_for_external_websocket_strings() {
         let error = anyhow!("websocket read failed: early eof");
-        // No ClientIo/WebSocketClosed in chain, but transport disconnect string matches
+        // No ClientIo/WsClosed in chain, but transport disconnect string matches
         // and there's no client-read marker → not an expected client disconnect
         assert!(!is_expected_client_disconnect(&error));
         // And not a websocket close either
-        assert!(!is_websocket_closed(&error));
+        assert!(!is_ws_closed(&error));
         // But IS a runtime failure (no typed markers filtering it out)
         assert!(is_upstream_runtime_failure(&error));
     }

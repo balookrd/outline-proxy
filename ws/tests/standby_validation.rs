@@ -71,7 +71,7 @@ async fn build_manager(
         "test",
         vec![UplinkConfig {
             name: "test".to_string(),
-            transport: UplinkTransport::Websocket,
+            transport: UplinkTransport::Ws,
             tcp_ws_url: Some(tcp_ws_url),
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url,

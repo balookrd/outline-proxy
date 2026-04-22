@@ -109,7 +109,7 @@ outline:
   uplinks:
     - name: primary
       group: main
-      transport: websocket
+      transport: ws
       tcp_ws_url: "wss://your-server.example.com/SECRET/tcp"
       tcp_ws_mode: h2
       udp_ws_url: "wss://your-server.example.com/SECRET/udp"
