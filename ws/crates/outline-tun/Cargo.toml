@@ -10,6 +10,7 @@ metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
 [dependencies]
 anyhow = "1.0"
 bytes = "1.10"
+dashmap = "6.1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 libc = "0.2"
 outline-metrics = { path = "../outline-metrics", default-features = false }
