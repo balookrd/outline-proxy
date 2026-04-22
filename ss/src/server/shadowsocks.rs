@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -399,8 +399,9 @@ pub(super) async fn serve_ss_udp_socket(
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    let mut buffer = vec![0_u8; 65_535];
+    let mut buffer = BytesMut::with_capacity(65_535);
     loop {
+        buffer.reserve(65_535);
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
@@ -408,7 +409,7 @@ pub(super) async fn serve_ss_udp_socket(
                 return Ok(());
             }
             Some(()) = in_flight.next(), if !in_flight.is_empty() => {}
-            recv = socket.recv_from(&mut buffer) => {
+            recv = socket.recv_buf_from(&mut buffer) => {
                 let (read, client_addr) = match recv {
                     Ok(v) => v,
                     Err(error) => {
@@ -428,9 +429,10 @@ pub(super) async fn serve_ss_udp_socket(
                         "concurrency_limit",
                     );
                     warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
+                    buffer.clear();
                     continue;
                 }
-                let data = Bytes::copy_from_slice(&buffer[..read]);
+                let data = buffer.split_to(read).freeze();
                 let users = users.clone();
                 let metrics = metrics.clone();
                 let nat_table = Arc::clone(&nat_table);
