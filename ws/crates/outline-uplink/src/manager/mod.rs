@@ -1,6 +1,6 @@
 mod candidates;
 mod failures;
-mod probe_loop;
+mod probe;
 mod reporting;
 mod snapshot;
 mod standby;
