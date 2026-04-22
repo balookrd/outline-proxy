@@ -10,7 +10,7 @@
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
 
-## [Unreleased] - изменения после `v1.1.0` (по состоянию на 2026-04-20)
+## [Unreleased] - изменения после `v1.1.0` (по состоянию на 2026-04-22)
 
 ### Добавлено
 
@@ -20,12 +20,16 @@
 - Добавлено ограничение числа соединений через `Semaphore`, чтобы защищать процесс при всплесках подключений.
 - Добавлено graceful shutdown для фоновых циклов управления аплинками.
 - Расширена диагностика: в `session_death` теперь попадает адрес цели, транспортные read-диагностики прокинуты в TUN и TCP probe paths, а HTTP-эндпоинты control/metrics получили счётчики запросов.
+- В userspace-стек TUN добавлены TCP keepalive-пробы, чтобы обнаруживать мёртвых пиров вместо зависших established-сессий.
+- WebSocket Close-код `1013` теперь считается retryable-сигналом, наравне с TCP RST.
 - Продолжено разделение на workspace-crates: вынесены отдельные crate'ы для transport, uplink management, TUN, routing, metrics, Shadowsocks crypto и SOCKS5 primitives.
 
 ### Изменено
 
 - Переработаны внутренности configuration, bootstrap, proxy, UDP, metrics и TUN под workspace-структуру и более мелкие сфокусированные модули.
-- Снижены накладные расходы hot path за счёт менее аллокационного DNS cache, boxed AEAD-вариантов, более точечных блокировок статусов аплинков, неблокирующего `AsyncFd` для TUN и меньшего heap churn в UDP/TCP путях.
+- Снижены накладные расходы hot path за счёт менее аллокационного DNS cache, boxed AEAD-вариантов, более точечных блокировок статусов аплинков, неблокирующего `AsyncFd` для TUN, меньшего heap churn в UDP/TCP путях, UDP send без мьютекса, SACK scoreboard без клонирования на каждый ACK, выноса sticky-route pruning с connect hot path, коалесинга `/metrics` scrape'ов и lock-free чтения standby-пула.
+- WebSocket read idle timeout поднят со 120s до 300s, чтобы длинные периоды без ответа (например, пока модель «думает») не выбивали здоровые сессии.
+- Ограничена конкурентность HTTP control/metrics-плоскостей и добавлены bounds на SOCKS5 handshake — чтобы уменьшить DoS surface.
 - Внутренние зависимости переведены на прямое использование workspace-crates вместо фасадов и алиасов корневого crate.
 
 ### Устарело
@@ -38,6 +42,8 @@
 - Валидация конфигурации теперь завершается ошибкой сразу, если настройки metrics или control используются без соответствующих Cargo-фич.
 - Предотвращён hijacking адреса SOCKS5 UDP-клиента, а кэшированные UDP route decisions теперь корректно реагируют на изменение здоровья аплинков.
 - Исправлены проблемы жизненного цикла вокруг сборки мусора shared H2/H3 connections, персистентности active-uplink state, «тихо» отвалившихся за NAT аплинков и feature-gated тестов.
+- TCP idle watcher теперь обновляется на keepalive-трафике, так что keepalive-only сессии больше не выселяются как idle.
+- Phase-1 выбор аплинка больше не штрафует аплинк, если недоступна сама цель.
 
 ## [1.1.0] - 2026-04-17
 

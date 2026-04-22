@@ -10,7 +10,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 *Russian version: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 
-## [Unreleased] - changes after `v1.1.0` (through 2026-04-20)
+## [Unreleased] - changes after `v1.1.0` (through 2026-04-22)
 
 ### Added
 
@@ -20,12 +20,16 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Added connection limiting with a semaphore to protect the process under connection floods.
 - Added graceful shutdown for background uplink loops.
 - Added richer diagnostics: target addresses in `session_death`, propagated transport read diagnostics for TUN and TCP probe paths, and request counters for control and metrics HTTP endpoints.
+- Added TCP keepalive probes to the userspace TUN stack so dead peers are detected instead of lingering in established state.
+- WebSocket Close code `1013` is now treated as a retryable signal, on par with TCP RST.
 - Continued the workspace split by extracting dedicated crates for transport, uplink management, TUN, routing, metrics, Shadowsocks crypto, and SOCKS5 protocol primitives.
 
 ### Changed
 
 - Reworked configuration, bootstrap, proxy, UDP, metrics, and TUN internals to fit the workspace layout and smaller focused modules.
-- Reduced hot-path overhead with lower-allocation DNS caching, boxed AEAD variants, finer-grained uplink status locking, non-blocking `AsyncFd` TUN I/O, and less heap churn in UDP/TCP paths.
+- Reduced hot-path overhead with lower-allocation DNS caching, boxed AEAD variants, finer-grained uplink status locking, non-blocking `AsyncFd` TUN I/O, less heap churn in UDP/TCP paths, a mutex-free UDP send path, SACK scoreboard without per-ACK cloning, sticky-route pruning moved off the connect hot path, coalesced `/metrics` scrapes, and lock-free standby-pool reads.
+- Raised the WebSocket read idle timeout from 120s to 300s so long idle periods (e.g. while an upstream model is thinking) no longer evict otherwise healthy sessions.
+- Capped concurrency on the HTTP control and metrics planes and bounded the SOCKS5 handshake to shrink the DoS surface.
 - Switched more internal paths to direct workspace crate usage instead of root-level facades and aliases.
 
 ### Deprecated
@@ -38,6 +42,8 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Made configuration validation fail fast when metrics or control settings are used without the matching Cargo features.
 - Prevented SOCKS5 UDP client-address hijacking and ensured cached UDP routing decisions react to uplink health changes.
 - Fixed lifecycle issues around shared H2/H3 connection garbage collection, active-uplink state persistence, silently dropped uplinks behind router NAT, and feature-gated tests.
+- The TCP idle watcher is now refreshed on keepalive traffic, so keepalive-only sessions are no longer evicted as idle.
+- Phase-1 uplink selection no longer penalises an uplink when the target itself is unreachable.
 
 ## [1.1.0] - 2026-04-17
 
