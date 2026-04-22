@@ -6,6 +6,7 @@
 //! access path.
 
 use std::convert::Infallible;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -15,9 +16,10 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::config::ControlConfig;
@@ -41,6 +43,17 @@ pub fn spawn_control_server(config: ControlConfig, uplinks: UplinkRegistry) {
     });
 }
 
+/// Cap concurrent in-flight control requests. The control plane is only
+/// used for rare manual switches, so a tight ceiling bounds slowloris
+/// impact without ever rate-limiting legitimate use.
+const MAX_CONCURRENT_CONTROL_CONNECTIONS: usize = 16;
+
+/// Hard cap on how long a client may take to send its request headers.
+/// Slowloris must not be able to pin control-plane sockets — especially
+/// because the bearer-token check happens *after* hyper has read the
+/// headers, so an unauthenticated peer can otherwise stall us.
+const CONTROL_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn run_control_server(
     listen: std::net::SocketAddr,
     state: Arc<ControlState>,
@@ -50,10 +63,18 @@ async fn run_control_server(
         .with_context(|| format!("failed to bind control listener {listen}"))?;
     info!(%listen, "control server started");
 
+    let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_CONTROL_CONNECTIONS));
+
     loop {
         let (stream, peer) = listener.accept().await.context("control accept failed")?;
         let state = Arc::clone(&state);
+        let permit = conn_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore closed");
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) = handle_connection(stream, state).await {
                 warn!(%peer, error = %format!("{error:#}"), "control request failed");
             }
@@ -64,6 +85,8 @@ async fn run_control_server(
 async fn handle_connection(stream: TcpStream, state: Arc<ControlState>) -> Result<()> {
     let io = TokioIo::new(stream);
     http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(CONTROL_HEADER_READ_TIMEOUT)
         .serve_connection(
             io,
             service_fn(move |request: Request<Incoming>| {

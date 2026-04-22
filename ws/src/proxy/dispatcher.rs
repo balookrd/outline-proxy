@@ -1,7 +1,8 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use tokio::net::TcpStream;
 use tracing::debug;
 
@@ -31,13 +32,24 @@ pub(crate) enum Route {
     },
 }
 
+/// Hard cap on how long a client may take to complete the SOCKS5 method
+/// negotiation + request header. `negotiate` uses `read_exact`, which
+/// blocks indefinitely on a silent peer; without this timeout a slow
+/// attacker can pin every permit in the accept-loop semaphore.
+const SOCKS5_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub async fn serve_socks5_client(
     mut client: TcpStream,
     peer: SocketAddr,
     config: Arc<ProxyConfig>,
     registry: UplinkRegistry,
 ) -> Result<()> {
-    let request = negotiate(&mut client, config.socks5_auth.as_ref()).await?;
+    let request = tokio::time::timeout(
+        SOCKS5_HANDSHAKE_TIMEOUT,
+        negotiate(&mut client, config.socks5_auth.as_ref()),
+    )
+    .await
+    .map_err(|_| anyhow!("SOCKS5 handshake timed out after {:?}", SOCKS5_HANDSHAKE_TIMEOUT))??;
     debug!(%peer, ?request, "accepted SOCKS5 request");
     metrics::record_request(match &request {
         SocksRequest::Connect(_) => "connect",
