@@ -52,8 +52,10 @@ fn update_sack_scoreboard(
     cumulative_ack: u32,
     sack_blocks: &[(u32, u32)],
 ) -> bool {
-    let before = scoreboard.clone();
-    let mut ranges = std::mem::take(scoreboard);
+    // Fast path: skip blocks that the existing scoreboard already fully covers
+    // (or that fall entirely below the cumulative ACK). If nothing new comes in,
+    // we return without touching the scoreboard at all.
+    let mut new_ranges: Vec<SequenceRange> = Vec::new();
     for (start, end) in sack_blocks {
         let mut range = SequenceRange { start: *start, end: *end };
         if !seq_gt(range.end, cumulative_ack) {
@@ -62,12 +64,20 @@ fn update_sack_scoreboard(
         if seq_lt(range.start, cumulative_ack) {
             range.start = cumulative_ack;
         }
-        if seq_gt(range.end, range.start) {
-            ranges.push(range);
+        if !seq_gt(range.end, range.start) {
+            continue;
+        }
+        if !range_fully_covered(scoreboard, range.start, range.end) {
+            new_ranges.push(range);
         }
     }
+    if new_ranges.is_empty() {
+        return false;
+    }
+    let mut ranges = std::mem::take(scoreboard);
+    ranges.append(&mut new_ranges);
     *scoreboard = merge_sequence_ranges(ranges, cumulative_ack);
-    *scoreboard != before
+    true
 }
 
 fn range_fully_covered(scoreboard: &[SequenceRange], start: u32, end: u32) -> bool {
