@@ -49,10 +49,12 @@ impl TunTcpEngine {
         // inspect each flow's Mutex individually — avoids holding the map
         // lock across per-flow locks. Mirrors the tun_udp cleanup loop.
         let expired: Vec<TcpFlowKey> = {
-            let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = {
-                let guard = self.inner.flows.read().await;
-                guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
-            };
+            let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = self
+                .inner
+                .flows
+                .iter()
+                .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
+                .collect();
             let mut expired = Vec::new();
             for (key, handle) in handles {
                 let state = handle.lock().await;
@@ -63,14 +65,14 @@ impl TunTcpEngine {
                 // TimeWait uses its own timeout handled by per-flow
                 // maintenance; only hit TimeWait here if it wildly overran.
                 if state.status == TcpFlowStatus::TimeWait {
-                    if now.saturating_duration_since(state.status_since)
+                    if now.saturating_duration_since(state.timestamps.status_since)
                         >= super::super::TCP_TIME_WAIT_TIMEOUT + idle_timeout
                     {
                         expired.push(key);
                     }
                     continue;
                 }
-                if now.saturating_duration_since(state.last_seen) >= idle_timeout {
+                if now.saturating_duration_since(state.timestamps.last_seen) >= idle_timeout {
                     expired.push(key);
                 }
             }
@@ -87,72 +89,83 @@ impl TunTcpEngine {
         debug!(count, "TUN TCP GC: reaped idle flows");
     }
 
-    /// Single engine-wide maintenance task that replaces the former
-    /// per-flow `spawn_flow_maintenance` tasks.  A shared `Arc<Notify>`
-    /// (stored in both `TunTcpEngineInner` and each `TcpFlowState`) wakes
-    /// this loop whenever any flow's state changes; the loop then scans
-    /// the flow table, running `plan_flow_maintenance` for every flow
-    /// whose deadline has arrived, and sleeps until the next one.
+    /// Single engine-wide maintenance task driven by `FlowScheduler`:
+    /// every state mutation (`sync_flow_metrics_and_wake`) pushes the
+    /// flow's next deadline onto a priority queue. This loop pops entries
+    /// in deadline order, runs `plan_flow_maintenance`, and sleeps until
+    /// the next one. Stale pushes are filtered by matching the popped
+    /// deadline against `state.next_scheduled_deadline`.
     ///
     /// Using `try_lock` keeps the scan non-blocking: a flow held by
-    /// another task is skipped and retried on the next wakeup, which
-    /// happens at most 1 ms later.
+    /// another task is rescheduled a millisecond later and retried on the
+    /// next wakeup.
     pub(super) fn spawn_maintenance_loop(&self) {
         let engine = self.clone();
         tokio::spawn(async move {
-            let notify = engine.inner.maintenance_notify.clone();
+            let scheduler = Arc::clone(&engine.inner.scheduler);
             loop {
                 let now = Instant::now();
-                let mut next_deadline: Option<Instant> = None;
+                let due = scheduler.drain_due(now);
 
-                let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = {
-                    let guard = engine.inner.flows.read().await;
-                    guard.iter().map(|(k, v)| (k.clone(), Arc::clone(v))).collect()
-                };
-
-                'flows: for (key, flow) in &handles {
+                'flows: for (scheduled_at, key) in due {
+                    let Some(flow) = engine.lookup_flow(&key).await else {
+                        continue;
+                    };
                     let mut state = match flow.try_lock() {
                         Ok(s) => s,
                         Err(_) => {
-                            // Retry after a short sleep rather than busy-polling.
-                            let retry = now + Duration::from_millis(1);
-                            next_deadline = Some(
-                                next_deadline.map_or(retry, |d: Instant| d.min(retry)),
+                            // Contention: retry shortly. Re-push directly
+                            // (bypasses the "earlier-only" gate so we do
+                            // come back to this flow).
+                            scheduler.schedule(
+                                key.clone(),
+                                Instant::now() + Duration::from_millis(1),
                             );
                             continue;
                         },
                     };
 
+                    // Filter stale heap entries: if the flow's canonical
+                    // deadline has moved (either re-scheduled earlier and
+                    // this is an orphan, or later and we're too early),
+                    // skip. The canonical entry will fire on its own.
+                    match state.next_scheduled_deadline {
+                        Some(d) if d == scheduled_at => {},
+                        Some(_) | None => continue 'flows,
+                    }
+
                     // Inner loop: keep processing this flow until it asks to Wait.
                     loop {
                         if state.status == TcpFlowStatus::Closed {
+                            state.next_scheduled_deadline = None;
                             break;
                         }
 
+                        let tcp_config = Arc::clone(&state.signals.tcp_config);
+                        let idle_timeout = state.signals.idle_timeout;
                         let plan = plan_flow_maintenance(
                             &mut state,
-                            &engine.inner.tcp,
-                            engine.inner.idle_timeout,
+                            &tcp_config,
+                            idle_timeout,
                             Instant::now(),
                         );
 
                         match plan {
                             Ok(FlowMaintenancePlan::Wait(deadline)) => {
+                                state.next_scheduled_deadline = deadline;
                                 if let Some(d) = deadline {
-                                    next_deadline = Some(
-                                        next_deadline.map_or(d, |nd: Instant| nd.min(d)),
-                                    );
+                                    scheduler.schedule(key.clone(), d);
                                 }
                                 break;
                             },
                             Ok(FlowMaintenancePlan::Abort(reason)) => {
                                 drop(state);
-                                engine.abort_flow_with_rst(key, reason).await;
+                                engine.abort_flow_with_rst(&key, reason).await;
                                 continue 'flows;
                             },
                             Ok(FlowMaintenancePlan::Close(reason)) => {
                                 drop(state);
-                                engine.close_flow(key, reason).await;
+                                engine.close_flow(&key, reason).await;
                                 continue 'flows;
                             },
                             Ok(FlowMaintenancePlan::SendPacket {
@@ -169,11 +182,11 @@ impl TunTcpEngine {
                                         error = %format!("{error:#}"),
                                         "failed to write maintenance TUN TCP packet"
                                     );
-                                    engine.close_flow(key, "write_tun_error").await;
+                                    engine.close_flow(&key, "write_tun_error").await;
                                     continue 'flows;
                                 }
                                 let (group_name, uplink_name) =
-                                    super::key_group_and_uplink(flow).await;
+                                    super::key_group_and_uplink(&flow).await;
                                 metrics::record_tun_tcp_event(
                                     &group_name,
                                     &uplink_name,
@@ -189,10 +202,9 @@ impl TunTcpEngine {
                                 state = match flow.try_lock() {
                                     Ok(s) => s,
                                     Err(_) => {
-                                        let retry = Instant::now();
-                                        next_deadline = Some(
-                                            next_deadline
-                                                .map_or(retry, |d| d.min(retry)),
+                                        scheduler.schedule(
+                                            key.clone(),
+                                            Instant::now() + Duration::from_millis(1),
                                         );
                                         continue 'flows;
                                     },
@@ -205,7 +217,7 @@ impl TunTcpEngine {
                                 );
                                 drop(state);
                                 engine
-                                    .abort_flow_with_rst(key, "retransmit_build_error")
+                                    .abort_flow_with_rst(&key, "retransmit_build_error")
                                     .await;
                                 continue 'flows;
                             },
@@ -213,15 +225,15 @@ impl TunTcpEngine {
                     }
                 }
 
-                match next_deadline {
+                match scheduler.peek_deadline() {
                     Some(d) if d > Instant::now() => {
                         tokio::select! {
-                            _ = notify.notified() => {}
+                            _ = scheduler.wait() => {}
                             _ = sleep_until(tokio::time::Instant::from_std(d)) => {}
                         }
                     },
                     Some(_) => tokio::task::yield_now().await,
-                    None => notify.notified().await,
+                    None => scheduler.wait().await,
                 }
             }
         });
@@ -252,7 +264,7 @@ impl TunTcpEngine {
             // Use the flow's bound manager and route — set by handle_new_flow.
             let (manager, route) = {
                 let state = flow.lock().await;
-                (state.manager.clone(), state.route.clone())
+                (state.routing.manager.clone(), state.routing.route.clone())
             };
 
             let is_direct = matches!(route, crate::TunRoute::Direct { .. });
@@ -322,8 +334,8 @@ impl TunTcpEngine {
                         return;
                     }
                     clear_flow_metrics(&mut state);
-                    state.uplink_name = Arc::from("direct");
-                    state.upstream_writer = Some(Arc::clone(&upstream_writer));
+                    state.routing.uplink_name = Arc::from("direct");
+                    state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
                     let pending = std::mem::take(&mut state.pending_client_data);
                     let should_close = client_fin_seen(state.status);
                     sync_flow_metrics_and_wake(&mut state);
@@ -406,9 +418,9 @@ impl TunTcpEngine {
                     return;
                 }
                 clear_flow_metrics(&mut state);
-                state.uplink_index = candidate.index;
-                state.uplink_name = Arc::from(candidate.uplink.name.as_str());
-                state.upstream_writer = Some(Arc::clone(&upstream_writer));
+                state.routing.uplink_index = candidate.index;
+                state.routing.uplink_name = Arc::from(candidate.uplink.name.as_str());
+                state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
                 let pending_payloads = std::mem::take(&mut state.pending_client_data);
                 let should_close_client_half = client_fin_seen(state.status);
                 sync_flow_metrics_and_wake(&mut state);
@@ -478,7 +490,7 @@ impl TunTcpEngine {
         let engine = self.clone();
         tokio::spawn(async move {
             loop {
-                let manager = { flow.lock().await.manager.clone() };
+                let manager = { flow.lock().await.routing.manager.clone() };
                 if manager.strict_active_uplink_for(TransportKind::Tcp) {
                     let active_uplink = manager
                         .active_uplink_index_for_transport(TransportKind::Tcp)
@@ -486,7 +498,7 @@ impl TunTcpEngine {
                     let should_abort = {
                         let state = flow.lock().await;
                         active_uplink.is_some_and(|active| {
-                            state.uplink_index != usize::MAX && state.uplink_index != active
+                            state.routing.uplink_index != usize::MAX && state.routing.uplink_index != active
                         })
                     };
                     if should_abort {
@@ -516,7 +528,7 @@ impl TunTcpEngine {
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
                             }
-                            state.last_seen = Instant::now();
+                            state.timestamps.last_seen = Instant::now();
                             state.pending_server_data.push_back(chunk.into());
                             let flush = flush_server_output(&mut state);
                             let backlog_pressure = assess_server_backlog_pressure(
@@ -526,14 +538,14 @@ impl TunTcpEngine {
                                 flush.as_ref().map(|flush| flush.window_stalled).unwrap_or(false),
                             );
                             sync_flow_metrics_and_wake(&mut state);
-                            (flush, backlog_pressure, state.uplink_name.clone())
+                            (flush, backlog_pressure, state.routing.uplink_name.clone())
                         };
 
                         if backlog_pressure.should_abort {
                             let uplink_name = key_uplink_name(&flow).await;
                             let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
-                                (state.uplink_index, state.manager.clone())
+                                (state.routing.uplink_index, state.routing.manager.clone())
                             };
                             let error = anyhow!("server backlog limit exceeded for TUN TCP flow");
                             engine
@@ -604,7 +616,7 @@ impl TunTcpEngine {
                         if !upstream_reader.closed_cleanly() {
                             let (uplink_index, flow_manager) = {
                                 let state = flow.lock().await;
-                                (state.uplink_index, state.manager.clone())
+                                (state.routing.uplink_index, state.routing.manager.clone())
                             };
                             if crate::error_text::is_ws_closed(&error) {
                                 flow_manager
@@ -733,7 +745,7 @@ impl TunTcpEngine {
                             if matches!(state.status, TcpFlowStatus::Closed) {
                                 return;
                             }
-                            state.last_seen = Instant::now();
+                            state.timestamps.last_seen = Instant::now();
                             state.pending_server_data.push_back(chunk);
                             let flush = flush_server_output(&mut state);
                             sync_flow_metrics_and_wake(&mut state);

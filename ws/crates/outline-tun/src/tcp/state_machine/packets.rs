@@ -217,7 +217,7 @@ fn append_timestamp_option(state: &TcpFlowState, options: &mut TcpOptions) {
 fn current_timestamp_value(state: &TcpFlowState) -> u32 {
     state
         .server_timestamp_offset
-        .wrapping_add(state.created_at.elapsed().as_millis() as u32)
+        .wrapping_add(state.timestamps.created_at.elapsed().as_millis() as u32)
 }
 
 fn pad_options(options: &mut TcpOptions) {

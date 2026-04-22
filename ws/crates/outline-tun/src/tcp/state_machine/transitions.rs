@@ -8,7 +8,7 @@ use super::types::{TcpFlowState, TcpFlowStatus};
 pub(in crate::tcp) fn set_flow_status(state: &mut TcpFlowState, status: TcpFlowStatus) {
     if state.status != status {
         state.status = status;
-        state.status_since = Instant::now();
+        state.timestamps.status_since = Instant::now();
     }
 }
 
@@ -110,7 +110,7 @@ pub(in crate::tcp) fn absorb_accepted_client_packet(
     packet: &ParsedTcpPacket,
 ) {
     note_recent_client_timestamp(state, packet.timestamp_value);
-    state.last_seen = Instant::now();
+    state.timestamps.last_seen = Instant::now();
     state.keepalive_probes_sent = 0;
     state.last_keepalive_probe_at = None;
     update_client_send_window(state, packet);

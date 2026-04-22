@@ -1,9 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use tokio::sync::{Mutex, Notify, RwLock};
+use dashmap::DashMap;
+use tokio::sync::Mutex;
 
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
@@ -19,6 +20,7 @@ use super::{TCP_FLAG_ACK, TCP_FLAG_RST, TcpFlowKey};
 mod connect;
 mod flow_ops;
 mod packet;
+pub(in crate::tcp) mod scheduler;
 mod tasks;
 #[cfg(test)]
 pub(in crate::tcp) mod tests;
@@ -31,17 +33,17 @@ pub struct TunTcpEngine {
 pub(super) struct TunTcpEngineInner {
     pub(super) writer: SharedTunWriter,
     pub(super) dispatch: TunRouting,
-    pub(super) flows: RwLock<HashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>>,
+    pub(super) flows: DashMap<TcpFlowKey, Arc<Mutex<TcpFlowState>>>,
     pub(super) pending_connects: Mutex<HashSet<TcpFlowKey>>,
     pub(super) next_flow_id: CounterU64,
     pub(super) max_flows: usize,
     pub(super) idle_timeout: Duration,
-    pub(super) tcp: TunTcpConfig,
+    pub(super) tcp: Arc<TunTcpConfig>,
     pub(super) dns_cache: Arc<outline_transport::DnsCache>,
-    /// Shared notifier for the central maintenance loop. All flows call
-    /// `notify_one()` on this when their state changes; the single
-    /// `spawn_maintenance_loop` task wakes and re-evaluates deadlines.
-    pub(super) maintenance_notify: Arc<Notify>,
+    /// Shared deadline priority queue for the central maintenance loop.
+    /// Flows push new deadlines here whenever their state changes; the
+    /// single `spawn_maintenance_loop` task consumes entries in time order.
+    pub(super) scheduler: Arc<scheduler::FlowScheduler>,
 }
 
 impl TunTcpEngine {
@@ -57,14 +59,14 @@ impl TunTcpEngine {
             inner: Arc::new(TunTcpEngineInner {
                 writer,
                 dispatch,
-                flows: RwLock::new(HashMap::new()),
+                flows: DashMap::new(),
                 pending_connects: Mutex::new(HashSet::new()),
                 next_flow_id: CounterU64::new(1),
                 max_flows,
                 idle_timeout,
-                tcp,
+                tcp: Arc::new(tcp),
                 dns_cache,
-                maintenance_notify: Arc::new(Notify::new()),
+                scheduler: Arc::new(scheduler::FlowScheduler::new()),
             }),
         };
         engine.spawn_cleanup_loop();
@@ -99,7 +101,7 @@ impl TunTcpEngine {
     }
 
     pub(super) async fn lookup_flow(&self, key: &TcpFlowKey) -> Option<Arc<Mutex<TcpFlowState>>> {
-        self.inner.flows.read().await.get(key).cloned()
+        self.inner.flows.get(key).map(|v| Arc::clone(v.value()))
     }
 
     pub(super) async fn write_tun_packet_or_close_flow(
@@ -275,14 +277,14 @@ pub(super) async fn close_upstream_writer(
 }
 
 pub(super) async fn key_uplink_name(flow: &Arc<Mutex<TcpFlowState>>) -> Arc<str> {
-    flow.lock().await.uplink_name.clone()
+    flow.lock().await.routing.uplink_name.clone()
 }
 
 /// Fetches `(group_name, uplink_name)` for a flow — used where both are
 /// needed for the `group`/`uplink` Prometheus labels.
 pub(super) async fn key_group_and_uplink(flow: &Arc<Mutex<TcpFlowState>>) -> (Arc<str>, Arc<str>) {
     let state = flow.lock().await;
-    (state.group_name.clone(), state.uplink_name.clone())
+    (state.routing.group_name.clone(), state.routing.uplink_name.clone())
 }
 
 pub(super) use crate::wire::{ip_family_from_version, ip_to_target};

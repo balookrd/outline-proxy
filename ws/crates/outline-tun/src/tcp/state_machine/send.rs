@@ -236,7 +236,7 @@ pub(in crate::tcp) fn next_keepalive_deadline(
     }
     Some(match state.last_keepalive_probe_at {
         Some(last) => last + keepalive_interval,
-        None => state.last_seen + idle,
+        None => state.timestamps.last_seen + idle,
     })
 }
 
@@ -353,8 +353,8 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
         .map(|duration| duration.as_micros() as u64)
         .unwrap_or(0);
 
-    let group = state.manager.group_name();
-    let uplink: &str = &state.uplink_name;
+    let group = state.routing.manager.group_name();
+    let uplink: &str = &state.routing.uplink_name;
     if !state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, 1);
         state.reported.active = true;
@@ -452,8 +452,8 @@ pub(in crate::tcp) fn sync_flow_metrics(state: &mut TcpFlowState) {
 }
 
 pub(in crate::tcp) fn clear_flow_metrics(state: &mut TcpFlowState) {
-    let group = state.manager.group_name();
-    let uplink: &str = &state.uplink_name;
+    let group = state.routing.manager.group_name();
+    let uplink: &str = &state.routing.uplink_name;
     if state.reported.active {
         metrics::add_tun_tcp_flows_active(group, uplink, -1);
         state.reported.active = false;

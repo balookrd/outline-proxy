@@ -27,7 +27,45 @@ pub(super) enum FlowMaintenancePlan {
 
 pub(super) fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
     sync_flow_metrics(state);
-    state.maintenance_notify.notify_one();
+    reschedule_flow(state);
+}
+
+/// Recompute the flow's next maintenance deadline and push it onto the
+/// scheduler.  Old heap entries are never removed — the loop re-validates
+/// popped entries against `next_scheduled_deadline` and discards stale
+/// ones.  To avoid unbounded heap growth we only push when the deadline
+/// moves earlier (or no entry exists); later deadlines just wake the loop
+/// so it can re-sleep against the updated horizon.
+fn reschedule_flow(state: &mut TcpFlowState) {
+    if state.status == TcpFlowStatus::Closed {
+        state.next_scheduled_deadline = None;
+        return;
+    }
+    let new_deadline = next_flow_deadline(
+        state,
+        &state.signals.tcp_config,
+        state.signals.idle_timeout,
+    );
+    match new_deadline {
+        Some(new_deadline) => {
+            let push = match state.next_scheduled_deadline {
+                None => true,
+                Some(current) => new_deadline < current,
+            };
+            state.next_scheduled_deadline = Some(new_deadline);
+            if push {
+                state
+                    .signals
+                    .scheduler
+                    .schedule(state.key.clone(), new_deadline);
+            } else {
+                state.signals.scheduler.wake();
+            }
+        },
+        None => {
+            state.next_scheduled_deadline = None;
+        },
+    }
 }
 
 fn next_zero_window_probe_deadline(state: &TcpFlowState) -> Option<Instant> {
@@ -41,7 +79,7 @@ fn next_zero_window_probe_deadline(state: &TcpFlowState) -> Option<Instant> {
     }
 }
 
-fn next_flow_deadline(
+pub(super) fn next_flow_deadline(
     state: &TcpFlowState,
     tcp: &TunTcpConfig,
     idle_timeout: Duration,
@@ -59,30 +97,30 @@ fn next_flow_deadline(
     if state.status == TcpFlowStatus::SynReceived {
         deadline = Some(
             deadline
-                .map(|current| current.min(state.status_since + tcp.handshake_timeout))
-                .unwrap_or(state.status_since + tcp.handshake_timeout),
+                .map(|current| current.min(state.timestamps.status_since + tcp.handshake_timeout))
+                .unwrap_or(state.timestamps.status_since + tcp.handshake_timeout),
         );
     }
 
     if is_half_closed_status(state.status) {
         deadline = Some(
             deadline
-                .map(|current| current.min(state.status_since + tcp.half_close_timeout))
-                .unwrap_or(state.status_since + tcp.half_close_timeout),
+                .map(|current| current.min(state.timestamps.status_since + tcp.half_close_timeout))
+                .unwrap_or(state.timestamps.status_since + tcp.half_close_timeout),
         );
     }
 
     if state.status == TcpFlowStatus::TimeWait {
         deadline = Some(
             deadline
-                .map(|current| current.min(state.status_since + TCP_TIME_WAIT_TIMEOUT))
-                .unwrap_or(state.status_since + TCP_TIME_WAIT_TIMEOUT),
+                .map(|current| current.min(state.timestamps.status_since + TCP_TIME_WAIT_TIMEOUT))
+                .unwrap_or(state.timestamps.status_since + TCP_TIME_WAIT_TIMEOUT),
         );
     } else {
         deadline = Some(
             deadline
-                .map(|current| current.min(state.last_seen + idle_timeout))
-                .unwrap_or(state.last_seen + idle_timeout),
+                .map(|current| current.min(state.timestamps.last_seen + idle_timeout))
+                .unwrap_or(state.timestamps.last_seen + idle_timeout),
         );
     }
 
@@ -95,19 +133,19 @@ pub(super) fn plan_flow_maintenance(
     idle_timeout: Duration,
     now: Instant,
 ) -> Result<FlowMaintenancePlan> {
-    if time_wait_expired(state.status, state.status_since, now) {
+    if time_wait_expired(state.status, state.timestamps.status_since, now) {
         return Ok(FlowMaintenancePlan::Close("time_wait_expired"));
     }
 
-    if handshake_timed_out(state.status, state.status_since, tcp.handshake_timeout, now) {
+    if handshake_timed_out(state.status, state.timestamps.status_since, tcp.handshake_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("handshake_timeout"));
     }
 
-    if half_close_timed_out(state.status, state.status_since, tcp.half_close_timeout, now) {
+    if half_close_timed_out(state.status, state.timestamps.status_since, tcp.half_close_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("half_close_timeout"));
     }
 
-    if idle_timed_out(state.status, state.last_seen, idle_timeout, now) {
+    if idle_timed_out(state.status, state.timestamps.last_seen, idle_timeout, now) {
         return Ok(FlowMaintenancePlan::Abort("idle_timeout"));
     }
 

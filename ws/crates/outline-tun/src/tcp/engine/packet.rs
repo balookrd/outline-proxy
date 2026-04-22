@@ -29,7 +29,7 @@ impl TunTcpEngine {
     ) -> Result<()> {
         let (uplink_index, manager, flow_key) = {
             let state = flow.lock().await;
-            (state.uplink_index, state.manager.clone(), state.key.clone())
+            (state.routing.uplink_index, state.routing.manager.clone(), state.key.clone())
         };
         if should_migrate_tcp_flow(&manager, uplink_index).await {
             self.abort_flow_with_rst(&flow_key, "global_switch").await;
@@ -43,8 +43,8 @@ impl TunTcpEngine {
             && is_duplicate_syn(&packet, state.client_next_seq)
         {
             metrics::record_tun_tcp_event(
-                &state.group_name,
-                &state.uplink_name,
+                &state.routing.group_name,
+                &state.routing.uplink_name,
                 "duplicate_syn",
             );
             return self.write_syn_ack_and_drop(state, ip_family).await;
@@ -64,8 +64,8 @@ impl TunTcpEngine {
             },
             PacketValidation::ChallengeAck(event) => {
                 let key = state.key.clone();
-                let group_name = state.group_name.clone();
-                let uplink_name = state.uplink_name.clone();
+                let group_name = state.routing.group_name.clone();
+                let uplink_name = state.routing.uplink_name.clone();
                 let ack = build_flow_ack_packet(
                     &state,
                     state.server_seq,
@@ -132,8 +132,8 @@ impl TunTcpEngine {
 
         if ack_effect.retransmit_now {
             metrics::record_tun_tcp_event(
-                &state.group_name,
-                &state.uplink_name,
+                &state.routing.group_name,
+                &state.routing.uplink_name,
                 "fast_retransmit",
             );
             if let Some(packet) = retransmit_oldest_unacked_packet(&mut state)? {
@@ -209,11 +209,11 @@ impl TunTcpEngine {
         sync_flow_metrics_and_wake(&mut state);
 
         let key = state.key.clone();
-        let uplink_index = state.uplink_index;
-        let uplink_name = state.uplink_name.clone();
-        let group_name = state.group_name.clone();
-        let flow_manager = state.manager.clone();
-        let upstream_writer = state.upstream_writer.clone();
+        let uplink_index = state.routing.uplink_index;
+        let uplink_name = state.routing.uplink_name.clone();
+        let group_name = state.routing.group_name.clone();
+        let flow_manager = state.routing.manager.clone();
+        let upstream_writer = state.routing.upstream_writer.clone();
 
         // If there is no upstream writer yet (connect still in flight),
         // queue the payload onto `pending_client_data` under the same
