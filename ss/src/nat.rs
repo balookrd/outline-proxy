@@ -187,8 +187,9 @@ impl NatTable {
             )
         };
 
-        // On error the cell stays uninitialised. evict_idle already removes
-        // cells whose get() is None, so no second lock is needed to clean up.
+        // On error the cell stays uninitialised; evict_idle drops such cells
+        // without counting them as evictions (they never incremented the
+        // active-entries metric), so no second lock is needed to clean up.
         let create_user = user.clone();
         let outbound = self.outbound_ipv6.clone();
         cell.get_or_try_init(|| async move {
@@ -264,12 +265,17 @@ impl NatTable {
     pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
         let threshold = current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
         let mut entries = self.entries.lock().await;
-        let before = entries.len();
-        entries.retain(|_, cell| {
-            cell.get()
-                .is_none_or(|entry| entry.last_active_secs.load(Ordering::Relaxed) >= threshold)
+        let mut evicted = 0usize;
+        entries.retain(|_, cell| match cell.get() {
+            Some(entry) => {
+                let keep = entry.last_active_secs.load(Ordering::Relaxed) >= threshold;
+                if !keep {
+                    evicted += 1;
+                }
+                keep
+            },
+            None => false,
         });
-        let evicted = before - entries.len();
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
             debug!(evicted, remaining = entries.len(), "evicted idle UDP NAT entries");
