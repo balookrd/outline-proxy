@@ -9,7 +9,7 @@ use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::sync::{Semaphore, mpsc};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
@@ -89,7 +89,7 @@ where
     );
 
     let resolved = resolve_udp_target(dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
-    info!(
+    debug!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
         path = %path,
