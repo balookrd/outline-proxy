@@ -1,5 +1,5 @@
 use std::{
-    sync::Arc,
+    sync::{atomic::Ordering, Arc},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -15,7 +15,7 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
         .client_last_seen
         .read()
         .iter()
-        .map(|(k, v)| (Arc::clone(k), *v))
+        .map(|(k, v)| (Arc::clone(k), v.load(Ordering::Relaxed)))
         .collect();
 
     with_local_recorder(&metrics.recorder, || {

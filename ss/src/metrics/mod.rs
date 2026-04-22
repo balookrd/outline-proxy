@@ -9,7 +9,14 @@ pub use guards::{TcpUpstreamGuard, WebSocketSessionGuard};
 pub use labels::{DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicI64, Ordering},
+        Arc,
+    },
+    time::Instant,
+};
 
 use metrics::{counter, gauge, histogram, with_local_recorder};
 use metrics_exporter_prometheus::{PrometheusHandle, PrometheusRecorder};
@@ -24,7 +31,7 @@ pub struct Metrics {
     h3_enabled: bool,
     pub(super) client_active_ttl_secs: u64,
     pub(super) process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
-    pub(super) client_last_seen: RwLock<HashMap<Arc<str>, i64>>,
+    pub(super) client_last_seen: RwLock<HashMap<Arc<str>, AtomicI64>>,
     pub(super) recorder: PrometheusRecorder,
     pub(super) handle: PrometheusHandle,
 }
@@ -172,7 +179,19 @@ impl Metrics {
     pub fn record_client_last_seen(&self, user: impl Into<Arc<str>>) {
         let user: Arc<str> = user.into();
         let ts = render::unix_timestamp_seconds();
-        *self.client_last_seen.write().entry(Arc::clone(&user)).or_insert(0) = ts;
+        {
+            let map = self.client_last_seen.read();
+            if let Some(cell) = map.get(&user) {
+                cell.store(ts, Ordering::Relaxed);
+            } else {
+                drop(map);
+                self.client_last_seen
+                    .write()
+                    .entry(Arc::clone(&user))
+                    .or_insert_with(|| AtomicI64::new(0))
+                    .store(ts, Ordering::Relaxed);
+            }
+        }
         with_local_recorder(&self.recorder, || {
             gauge!("outline_ss_client_last_seen_seconds", "user" => user).set(ts as f64);
         });
