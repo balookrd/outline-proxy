@@ -70,10 +70,12 @@ pub async fn run(config: Config) -> Result<()> {
     let outbound_ipv6: Option<Arc<OutboundIpv6>> = if let Some(prefix) = config.outbound_ipv6_prefix {
         Some(Arc::new(OutboundIpv6::Prefix(prefix)))
     } else if let Some(iface) = config.outbound_ipv6_interface.clone() {
+        let iface_for_err = iface.clone();
         let source = InterfaceSource::bind(iface).with_context(|| {
             format!(
-                "failed to enumerate IPv6 addresses on outbound interface {:?}",
-                config.outbound_ipv6_interface,
+                "failed to enumerate IPv6 addresses on outbound interface {iface_for_err:?} \
+                 (getifaddrs(3) uses AF_NETLINK on Linux — if running under systemd, \
+                 ensure RestrictAddressFamilies includes AF_NETLINK)"
             )
         })?;
         Some(Arc::new(OutboundIpv6::Interface(source)))
