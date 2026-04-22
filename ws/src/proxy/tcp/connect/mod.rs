@@ -1,6 +1,7 @@
 mod phase1;
 mod phase2;
 mod replay;
+mod retry;
 
 use std::collections::HashSet;
 use std::sync::Arc;
