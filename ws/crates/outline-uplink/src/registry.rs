@@ -17,14 +17,14 @@ use super::types::{TransportKind, UplinkManager, UplinkManagerSnapshot};
 
 /// A named [`UplinkManager`].
 #[derive(Clone, Debug)]
-pub struct UplinkGroup {
+pub struct UplinkGroupHandle {
     pub name: String,
     pub manager: UplinkManager,
 }
 
 #[derive(Clone, Debug)]
 pub struct UplinkRegistry {
-    groups: Vec<UplinkGroup>,
+    groups: Vec<UplinkGroupHandle>,
     by_name: HashMap<String, usize>,
 }
 
@@ -50,7 +50,7 @@ impl UplinkRegistry {
                 group.load_balancing,
                 Arc::clone(&dns_cache),
             )?;
-            managed.push(UplinkGroup { name: group.name, manager });
+            managed.push(UplinkGroupHandle { name: group.name, manager });
         }
         Ok(Self { groups: managed, by_name })
     }
@@ -93,7 +93,7 @@ impl UplinkRegistry {
                 init_tcp,
                 init_udp,
             )?;
-            managed.push(UplinkGroup { name: group.name, manager });
+            managed.push(UplinkGroupHandle { name: group.name, manager });
         }
         Ok(Self { groups: managed, by_name })
     }
@@ -112,7 +112,7 @@ impl UplinkRegistry {
         self.by_name.get(name).map(|&i| &self.groups[i].manager)
     }
 
-    pub fn groups(&self) -> &[UplinkGroup] {
+    pub fn groups(&self) -> &[UplinkGroupHandle] {
         &self.groups
     }
 
@@ -227,7 +227,7 @@ impl UplinkRegistry {
         let mut by_name = std::collections::HashMap::new();
         by_name.insert(name.clone(), 0);
         Self {
-            groups: vec![UplinkGroup { name, manager }],
+            groups: vec![UplinkGroupHandle { name, manager }],
             by_name,
         }
     }
