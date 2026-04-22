@@ -1,10 +1,26 @@
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
+use aes::{Aes128, Aes256, cipher::KeyInit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use chacha20poly1305::XChaCha20Poly1305;
 use md5::{Digest as _, Md5};
 
 use super::error::CryptoError;
 use crate::config::CipherKind;
+
+#[allow(clippy::large_enum_variant)]
+pub(super) enum AesHeaderCipher {
+    Aes128(Aes128),
+    Aes256(Aes256),
+}
+
+struct CachedCiphers {
+    xchacha: OnceLock<XChaCha20Poly1305>,
+    aes_header: OnceLock<AesHeaderCipher>,
+}
 
 #[derive(Clone)]
 pub struct UserKey {
@@ -15,6 +31,7 @@ pub struct UserKey {
     fwmark: Option<u32>,
     ws_path_tcp: Arc<str>,
     ws_path_udp: Arc<str>,
+    ciphers: Arc<CachedCiphers>,
 }
 
 impl fmt::Debug for UserKey {
@@ -43,7 +60,36 @@ impl UserKey {
             fwmark,
             ws_path_tcp: Arc::from(ws_path_tcp.into()),
             ws_path_udp: Arc::from(ws_path_udp.into()),
+            ciphers: Arc::new(CachedCiphers {
+                xchacha: OnceLock::new(),
+                aes_header: OnceLock::new(),
+            }),
         })
+    }
+
+    pub(super) fn xchacha_cipher(&self) -> Result<&XChaCha20Poly1305, CryptoError> {
+        if let Some(c) = self.ciphers.xchacha.get() {
+            return Ok(c);
+        }
+        let cipher = XChaCha20Poly1305::new_from_slice(self.master_key())
+            .map_err(|_| CryptoError::Cipher)?;
+        Ok(self.ciphers.xchacha.get_or_init(|| cipher))
+    }
+
+    pub(super) fn aes_header_cipher(&self) -> Result<&AesHeaderCipher, CryptoError> {
+        if let Some(c) = self.ciphers.aes_header.get() {
+            return Ok(c);
+        }
+        let cipher = match self.cipher {
+            CipherKind::Aes128Gcm2022 => AesHeaderCipher::Aes128(
+                Aes128::new_from_slice(self.master_key()).map_err(|_| CryptoError::Cipher)?,
+            ),
+            CipherKind::Aes256Gcm2022 => AesHeaderCipher::Aes256(
+                Aes256::new_from_slice(self.master_key()).map_err(|_| CryptoError::Cipher)?,
+            ),
+            _ => return Err(CryptoError::InvalidHeader),
+        };
+        Ok(self.ciphers.aes_header.get_or_init(|| cipher))
     }
 
     pub fn id(&self) -> &str {

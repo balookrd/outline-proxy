@@ -1,12 +1,12 @@
-use chacha20poly1305::{KeyInit as _, XChaCha20Poly1305, XNonce, aead::AeadInPlace as _};
+use chacha20poly1305::{XNonce, aead::AeadInPlace as _};
 use ring::aead::{Aad, LessSafeKey, UnboundKey};
 
 use super::{
     primitives::{
-        LEGACY_MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_UDP_SEPARATE_HEADER_LEN,
-        TAG_LEN, XNONCE_LEN, cipher_algorithm, derive_subkey, nonce_zero,
-        parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body, ss2022_udp_nonce,
-        validate_ss2022_request_fixed_header,
+        LEGACY_MAX_CHUNK_SIZE, MAX_SUBKEY_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
+        SS2022_UDP_SEPARATE_HEADER_LEN, TAG_LEN, XNONCE_LEN, cipher_algorithm, derive_subkey,
+        nonce_zero, parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body,
+        ss2022_udp_nonce, validate_ss2022_request_fixed_header,
     },
     udp::decrypt_ss2022_separate_header,
     user_key::UserKey,
@@ -31,8 +31,14 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                 }
                 let salt = &buffer[..salt_len];
                 let mut candidate = buffer[salt_len..salt_len + fixed_len].to_vec();
-                let session_key = match derive_subkey(user.cipher(), user.master_key(), salt) {
-                    Ok(key) => key,
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = match derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    salt,
+                    &mut subkey,
+                ) {
+                    Ok(n) => n,
                     Err(error) => {
                         return format!(
                             "{}:{} subkey_error({})",
@@ -43,7 +49,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                     },
                 };
                 let algorithm = cipher_algorithm(user.cipher());
-                let key = match UnboundKey::new(algorithm, &session_key) {
+                let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher().as_str());
@@ -98,8 +104,14 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
 
                 let salt = &buffer[..salt_len];
                 let encrypted_len = &buffer[salt_len..salt_len + 2 + TAG_LEN];
-                let session_key = match derive_subkey(user.cipher(), user.master_key(), salt) {
-                    Ok(key) => key,
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = match derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    salt,
+                    &mut subkey,
+                ) {
+                    Ok(n) => n,
                     Err(error) => {
                         return format!(
                             "{}:{} subkey_error({})",
@@ -110,7 +122,7 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                     },
                 };
                 let algorithm = cipher_algorithm(user.cipher());
-                let key = match UnboundKey::new(algorithm, &session_key) {
+                let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher().as_str());
@@ -166,7 +178,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     );
                 }
                 let (nonce, ciphertext) = packet.split_at(XNONCE_LEN);
-                let cipher = match XChaCha20Poly1305::new_from_slice(user.master_key()) {
+                let cipher = match user.xchacha_cipher() {
                     Ok(cipher) => cipher,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher().as_str());
@@ -212,20 +224,25 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                         );
                     },
                 };
-                let session_key =
-                    match derive_subkey(user.cipher(), user.master_key(), &separate_header[..8]) {
-                        Ok(key) => key,
-                        Err(error) => {
-                            return format!(
-                                "{}:{} subkey_error({})",
-                                user.id(),
-                                user.cipher().as_str(),
-                                error
-                            );
-                        },
-                    };
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = match derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    &separate_header[..8],
+                    &mut subkey,
+                ) {
+                    Ok(n) => n,
+                    Err(error) => {
+                        return format!(
+                            "{}:{} subkey_error({})",
+                            user.id(),
+                            user.cipher().as_str(),
+                            error
+                        );
+                    },
+                };
                 let algorithm = cipher_algorithm(user.cipher());
-                let key = match UnboundKey::new(algorithm, &session_key) {
+                let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher().as_str());
@@ -267,8 +284,14 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 }
 
                 let (salt, ciphertext) = packet.split_at(salt_len);
-                let session_key = match derive_subkey(user.cipher(), user.master_key(), salt) {
-                    Ok(key) => key,
+                let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+                let key_len = match derive_subkey(
+                    user.cipher(),
+                    user.master_key(),
+                    salt,
+                    &mut subkey,
+                ) {
+                    Ok(n) => n,
                     Err(error) => {
                         return format!(
                             "{}:{} subkey_error({})",
@@ -279,7 +302,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                     },
                 };
                 let algorithm = cipher_algorithm(user.cipher());
-                let key = match UnboundKey::new(algorithm, &session_key) {
+                let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
                     Err(_) => {
                         return format!("{}:{} key_init_failed", user.id(), user.cipher().as_str());
