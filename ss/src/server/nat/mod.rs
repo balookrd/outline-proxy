@@ -16,7 +16,6 @@
 //! cleanup task calls [`NatTable::evict_idle`] on a regular interval.
 
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     sync::{
         Arc,
@@ -27,6 +26,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use dashmap::DashMap;
 use futures_util::future::BoxFuture;
 use tokio::{
     net::UdpSocket,
@@ -146,7 +146,7 @@ impl NatEntry {
 
 /// Process-wide NAT table.  Shared via `Arc` in `AppState`.
 pub(crate) struct NatTable {
-    entries: Mutex<HashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>>,
+    entries: DashMap<NatKey, Arc<OnceCell<Arc<NatEntry>>>>,
     idle_timeout: Duration,
     outbound_ipv6: Option<Arc<OutboundIpv6>>,
 }
@@ -162,7 +162,7 @@ impl NatTable {
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Arc<Self> {
         Arc::new(Self {
-            entries: Mutex::new(HashMap::new()),
+            entries: DashMap::new(),
             idle_timeout,
             outbound_ipv6,
         })
@@ -178,14 +178,14 @@ impl NatTable {
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
-        let cell = {
-            let mut entries = self.entries.lock().await;
-            Arc::clone(
-                entries
-                    .entry(key.clone())
-                    .or_insert_with(|| Arc::new(OnceCell::new())),
-            )
-        };
+        // DashMap shard lock is held only for the insert/lookup, then dropped
+        // before any `.await` — the OnceCell deduplicates concurrent creation.
+        let cell = Arc::clone(
+            self.entries
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .value(),
+        );
 
         // On error the cell stays uninitialised; evict_idle drops such cells
         // without counting them as evictions (they never incremented the
@@ -253,20 +253,17 @@ impl NatTable {
     /// when the `Arc<NatEntry>` refcount reaches zero.
     /// Current number of active NAT entries (informational).
     #[cfg(test)]
-    pub(crate) async fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.entries
-            .lock()
-            .await
-            .values()
-            .filter(|cell| cell.get().is_some())
+            .iter()
+            .filter(|r| r.value().get().is_some())
             .count()
     }
 
-    pub(crate) async fn evict_idle(&self, metrics: &Metrics) {
+    pub(crate) fn evict_idle(&self, metrics: &Metrics) {
         let threshold = current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
-        let mut entries = self.entries.lock().await;
         let mut evicted = 0usize;
-        entries.retain(|_, cell| match cell.get() {
+        self.entries.retain(|_, cell| match cell.get() {
             Some(entry) => {
                 let keep = entry.last_active_secs.load(Ordering::Relaxed) >= threshold;
                 if !keep {
@@ -278,7 +275,11 @@ impl NatTable {
         });
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
-            debug!(evicted, remaining = entries.len(), "evicted idle UDP NAT entries");
+            debug!(
+                evicted,
+                remaining = self.entries.len(),
+                "evicted idle UDP NAT entries"
+            );
         }
     }
 }
@@ -681,7 +682,7 @@ mod tests {
             entries.push(task.await??);
         }
 
-        assert_eq!(nat_table.len().await, 1);
+        assert_eq!(nat_table.len(), 1);
         for entry in entries.iter().skip(1) {
             assert!(Arc::ptr_eq(&entries[0], entry));
         }

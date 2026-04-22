@@ -185,7 +185,7 @@ pub async fn run(config: Config) -> Result<()> {
                     biased;
                     _ = shutdown.cancelled() => break,
                     _ = interval.tick() => {
-                        nat_table_cleanup.evict_idle(&metrics_cleanup).await;
+                        nat_table_cleanup.evict_idle(&metrics_cleanup);
                     }
                 }
             }

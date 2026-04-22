@@ -12,6 +12,7 @@ blake3 = "1.8"
 bytes = "1.10"
 chacha20poly1305 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
+dashmap = "6"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 h3 = "0.0.8"
 h3-quinn = "0.0.10"
