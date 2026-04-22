@@ -10,18 +10,18 @@ use std::time::Duration;
 
 /// Typed marker placed in an `anyhow` error chain whenever a WebSocket
 /// connection closes cleanly (Close frame or EOF from the peer). Classifiers
-/// can match this via `error.chain().any(|e| e.downcast_ref::<WebSocketClosed>().is_some())`
+/// can match this via `error.chain().any(|e| e.downcast_ref::<WsClosed>().is_some())`
 /// instead of pattern-matching on the formatted string.
 #[derive(Debug)]
-pub struct WebSocketClosed;
+pub struct WsClosed;
 
-impl fmt::Display for WebSocketClosed {
+impl fmt::Display for WsClosed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "websocket closed")
+        write!(f, "ws closed")
     }
 }
 
-impl std::error::Error for WebSocketClosed {}
+impl std::error::Error for WsClosed {}
 
 /// Typed marker for the high-level operation that produced a transport error.
 /// Placed as an `anyhow` context layer at the failure site so classifiers can

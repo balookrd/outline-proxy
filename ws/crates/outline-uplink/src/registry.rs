@@ -272,7 +272,7 @@ mod tests {
     fn make_uplink(name: &str) -> UplinkConfig {
         UplinkConfig {
             name: name.to_string(),
-            transport: UplinkTransport::Websocket,
+            transport: UplinkTransport::Ws,
             tcp_ws_url: Some(Url::parse("wss://127.0.0.1:1/tcp").unwrap()),
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url: None,

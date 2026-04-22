@@ -28,7 +28,7 @@ impl UplinkManager {
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
-        if uplink.transport == UplinkTransport::Websocket
+        if uplink.transport == UplinkTransport::Ws
             && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
         {
             let status = self.inner.read_status(index);
@@ -49,7 +49,7 @@ impl UplinkManager {
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
-        if uplink.transport == UplinkTransport::Websocket
+        if uplink.transport == UplinkTransport::Ws
             && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
         {
             let status = self.inner.read_status(index);
@@ -80,7 +80,7 @@ impl UplinkManager {
     pub async fn try_take_tcp_standby(&self, candidate: &UplinkCandidate) -> Option<WsTransportStream> {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
-        if candidate.uplink.transport != UplinkTransport::Websocket {
+        if candidate.uplink.transport != UplinkTransport::Ws {
             return None;
         }
         loop {
@@ -138,7 +138,7 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<WsTransportStream> {
         let cache = self.inner.dns_cache.as_ref();
-        if candidate.uplink.transport != UplinkTransport::Websocket {
+        if candidate.uplink.transport != UplinkTransport::Ws {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
         metrics::record_warm_standby_acquire(
@@ -321,7 +321,7 @@ impl UplinkManager {
         }
 
         let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
-        if uplink.transport != UplinkTransport::Websocket {
+        if uplink.transport != UplinkTransport::Ws {
             return;
         }
 
@@ -420,7 +420,7 @@ impl UplinkManager {
         }
 
         let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
-        if uplink.transport != UplinkTransport::Websocket {
+        if uplink.transport != UplinkTransport::Ws {
             return;
         }
         let pool = &self.inner.standby_pools[index];
@@ -469,7 +469,7 @@ impl UplinkManager {
                     (result, is_http1)
                 },
                 TransportKind::Udp => {
-                    if uplink.transport != UplinkTransport::Websocket {
+                    if uplink.transport != UplinkTransport::Ws {
                         break;
                     }
                     let Some(url) = uplink.udp_ws_url.as_ref() else {

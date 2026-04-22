@@ -98,7 +98,7 @@ fn http_probe_formats_ipv6_host_header() {
 fn make_uplink(name: &str, url: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
-        transport: UplinkTransport::Websocket,
+        transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
         tcp_ws_mode: WsTransportMode::Http1,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),

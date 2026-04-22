@@ -606,7 +606,7 @@ impl TunTcpEngine {
                                 let state = flow.lock().await;
                                 (state.uplink_index, state.manager.clone())
                             };
-                            if crate::error_text::is_websocket_closed(&error) {
+                            if crate::error_text::is_ws_closed(&error) {
                                 flow_manager
                                     .report_upstream_close(uplink_index, TransportKind::Tcp)
                                     .await;

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow, bail};
-use crate::WebSocketClosed;
+use crate::WsClosed;
 use outline_ss2022::Ss2022Error;
 use futures_util::stream::SplitStream;
 use futures_util::StreamExt;
@@ -116,7 +116,7 @@ impl ReadTransport for WsReadTransport {
                         conn_id = ?self.diag.conn_id,
                         "reader: websocket stream returned None (EOF without Close frame)"
                     );
-                    return Err(anyhow::Error::from(WebSocketClosed));
+                    return Err(anyhow::Error::from(WsClosed));
                 },
                 Ok(Some(Ok(msg))) => msg,
                 Ok(Some(Err(e))) => {
@@ -161,7 +161,7 @@ impl ReadTransport for WsReadTransport {
                         frame = ?frame,
                         "reader: websocket received Close frame from upstream"
                     );
-                    return Err(anyhow::Error::from(WebSocketClosed));
+                    return Err(anyhow::Error::from(WsClosed));
                 },
                 Message::Ping(payload) => {
                     let _ = self.ctrl_tx.try_send(Message::Pong(payload));

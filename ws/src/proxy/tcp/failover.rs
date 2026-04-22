@@ -180,7 +180,7 @@ async fn do_tcp_ss_setup(
         uplink = %uplink.name,
         target = %target,
         target_wire_len = target_wire.len(),
-        transport = "websocket",
+        transport = "ws",
         ss2022 = uplink.cipher.is_ss2022(),
         "sent initial Shadowsocks target header to uplink"
     );

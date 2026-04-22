@@ -4,7 +4,7 @@ use std::io::ErrorKind;
 use anyhow::Error;
 use outline_ss2022::Ss2022Error;
 use outline_transport::{
-    TransportOperation, WebSocketClosed, contains_any, find_io_error_kind, find_typed,
+    TransportOperation, WsClosed, contains_any, find_io_error_kind, find_typed,
     is_transport_level_disconnect, lower_error,
 };
 use shadowsocks_crypto::CryptoError;
@@ -33,7 +33,7 @@ pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
         return true;
     }
     // Typed WebSocket close from outline-transport.
-    if find_typed::<WebSocketClosed>(error).is_some() {
+    if find_typed::<WsClosed>(error).is_some() {
         return true;
     }
     // Transport-level disconnect via io::ErrorKind (covers "timed out" on ping
@@ -51,7 +51,7 @@ pub(crate) fn is_expected_standby_probe_failure(error: &Error) -> bool {
 /// that originate from external libraries.
 pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
     // Typed: WebSocket close frame.
-    if find_typed::<WebSocketClosed>(error).is_some() {
+    if find_typed::<WsClosed>(error).is_some() {
         return "closed";
     }
     // Typed: transport-level disconnect via io::ErrorKind.
@@ -123,7 +123,7 @@ pub(crate) fn classify_runtime_failure_cause(error: &Error) -> &'static str {
 /// that originate from external libraries.
 pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str {
     // Typed: WebSocket closed cleanly.
-    if find_typed::<WebSocketClosed>(error).is_some() {
+    if find_typed::<WsClosed>(error).is_some() {
         return "ws_closed";
     }
     // Typed: transport-level disconnect.
