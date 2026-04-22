@@ -1,3 +1,4 @@
+mod attribution;
 mod failover_step;
 mod phase1;
 mod phase2;
