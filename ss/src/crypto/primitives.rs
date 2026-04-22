@@ -64,14 +64,23 @@ pub(super) fn cipher_algorithm(cipher: CipherKind) -> &'static aead::Algorithm {
     }
 }
 
+/// Per-key invocation limit for stream AEADs. Matches NIST SP 800-38D
+/// guidance for AES-GCM (<2^32 invocations per key); the same bound is
+/// applied uniformly to all supported ciphers to keep the session-rotation
+/// logic symmetric.
+pub(super) const MAX_NONCE_COUNTER: u64 = 1 << 32;
+
 #[inline]
-pub(super) fn next_stream_nonce(counter: &mut u64) -> Nonce {
+pub(super) fn next_stream_nonce(counter: &mut u64) -> Result<Nonce, CryptoError> {
     let current = *counter;
-    *counter = counter.wrapping_add(1);
+    if current >= MAX_NONCE_COUNTER {
+        return Err(CryptoError::NonceExhausted);
+    }
+    *counter = current + 1;
 
     let mut nonce = [0_u8; NONCE_LEN];
     nonce[..8].copy_from_slice(&current.to_le_bytes());
-    Nonce::assume_unique_for_key(nonce)
+    Ok(Nonce::assume_unique_for_key(nonce))
 }
 
 #[inline]

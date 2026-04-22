@@ -32,6 +32,8 @@ pub enum CryptoError {
     PacketTooShort,
     #[error("no configured key matched the incoming data")]
     UnknownUser,
+    #[error("AEAD nonce counter exhausted, session must be rotated")]
+    NonceExhausted,
 }
 
 impl From<ring::error::Unspecified> for CryptoError {
