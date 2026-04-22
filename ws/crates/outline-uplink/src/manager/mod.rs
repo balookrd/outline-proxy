@@ -100,7 +100,7 @@ impl UplinkManager {
         )
     }
 
-    /// Like [`new`] but also accepts a [`StateStore`] for persistence and
+    /// Like [`Self::new`] but also accepts a [`StateStore`] for persistence and
     /// optional initial active-uplink names to restore from a previous run.
     /// Names that no longer match any configured uplink are silently ignored.
     #[allow(clippy::too_many_arguments)]
