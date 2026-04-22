@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use tokio::io::AsyncWriteExt;
@@ -32,6 +33,15 @@ pub(super) struct Phase1Params<'a> {
     pub timeouts: &'a TcpTimeouts,
 }
 
+/// Records a phase-1 chunk-0 failure that has not yet been attributed,
+/// pending proof (via successful failover) that the uplink — not the
+/// remote target — was at fault.
+pub(super) struct DeferredFailure {
+    pub index: usize,
+    pub uplink: Arc<str>,
+    pub error: String,
+}
+
 /// Waits for the first upstream response chunk while forwarding client data,
 /// transparently failing over to alternative uplinks (and replaying buffered
 /// client bytes) when an uplink resets or stalls before responding.
@@ -56,7 +66,7 @@ pub(super) async fn try_uplinks(
         timeouts,
     } = *params;
     let mut client_half_closed = false;
-    let mut deferred_phase1_failures: Vec<(usize, String, String)> = Vec::new();
+    let mut deferred_phase1_failures: Vec<DeferredFailure> = Vec::new();
     // Counts transparent same-uplink retries after a chunk-0 WS reset.
     // Reset to 0 whenever we switch to a different uplink.
     let mut rst_retries_on_current_uplink: u8 = 0;
@@ -110,20 +120,16 @@ pub(super) async fn try_uplinks(
             Ok(chunk) => {
                 // Flush deferred failure records now that we have proof the
                 // session is alive via a different uplink.
-                for (failed_index, failed_uplink_name, failed_error) in
+                for DeferredFailure { index, uplink, error } in
                     deferred_phase1_failures.drain(..)
                 {
-                    let deferred_error = anyhow!(failed_error.clone());
+                    let deferred_error = anyhow!(error.clone());
                     uplinks
-                        .report_runtime_failure(
-                            failed_index,
-                            TransportKind::Tcp,
-                            &deferred_error,
-                        )
+                        .report_runtime_failure(index, TransportKind::Tcp, &deferred_error)
                         .await;
                     debug!(
-                        uplink = %failed_uplink_name,
-                        error = %failed_error,
+                        uplink = %uplink,
+                        error = %error,
                         recovered_via = %active.name,
                         "recorded deferred TCP chunk-0 runtime failure after successful failover"
                     );
@@ -218,7 +224,7 @@ pub(super) async fn try_uplinks(
 
                 let error_text = format!("{phase1_error:#}");
                 let attempted_uplinks = outline_uplink::deduplicate_attempted_uplink_names(
-                    deferred_phase1_failures.iter().map(|(_, name, _)| name.as_str()),
+                    deferred_phase1_failures.iter().map(|f| f.uplink.as_ref()),
                     &active.name,
                 );
                 warn!(
@@ -244,11 +250,11 @@ pub(super) async fn try_uplinks(
                 }
 
                 // ── Cross-uplink failover ─────────────────────────────────────
-                deferred_phase1_failures.push((
-                    active.index,
-                    active.name.to_string(),
-                    error_text,
-                ));
+                deferred_phase1_failures.push(DeferredFailure {
+                    index: active.index,
+                    uplink: Arc::clone(&active.name),
+                    error: error_text,
+                });
 
                 match failover_to_next_candidate(uplinks, active, target, tried_indexes).await? {
                     FailoverStep::NoCandidate => {
