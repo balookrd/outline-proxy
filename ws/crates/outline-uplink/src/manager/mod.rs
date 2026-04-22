@@ -1,8 +1,8 @@
-mod failure_classification;
-mod health_probing;
+mod candidates;
+mod failures;
+mod probe_loop;
 mod standby;
-mod sticky_routing;
-mod uplink_selection;
+mod sticky;
 
 use std::collections::HashMap;
 use std::sync::Arc;
