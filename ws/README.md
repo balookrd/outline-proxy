@@ -1181,6 +1181,14 @@ Use `debug` only during troubleshooting — connection lifecycle and transport-l
   management network, treat the bearer token as a credential (rotate, store
   out of band), and never re-use the metrics port for it. The control listener
   is the only path that can mutate active-uplink selection.
+- Listener hardening against slowloris / idle-connection DoS is built in:
+  the SOCKS5 accept loop caps in-flight connections at 4096 and enforces a
+  10 s handshake timeout on `negotiate`; the `/metrics` listener caps
+  concurrency at 64 with a 5 s header-read timeout; the control listener
+  caps concurrency at 16 with the same 5 s header-read timeout (the bearer
+  check runs only after headers are received, so the timeout is what keeps
+  unauthenticated peers from pinning sockets). These ceilings are compiled
+  in and not config-tunable.
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires `CAP_NET_ADMIN` or root.
 - TUN mode requires `/dev/net/tun` access on the host (`PrivateDevices=false`).

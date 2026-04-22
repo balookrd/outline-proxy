@@ -1,4 +1,6 @@
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -8,8 +10,9 @@ use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::config::MetricsConfig;
@@ -26,16 +29,34 @@ pub fn spawn_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) {
     });
 }
 
+/// Cap concurrent in-flight observability requests. Metrics is usually
+/// scraped by one or two Prometheus instances, so 64 leaves ample slack
+/// for overlapping scrapes without letting a slowloris hold sockets
+/// unbounded.
+const MAX_CONCURRENT_METRICS_CONNECTIONS: usize = 64;
+
+/// Hard cap on how long a client may take to send its request headers.
+/// Prevents slowloris-style idle holds against the observability plane.
+const METRICS_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
+
 async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> Result<()> {
     let listener = TcpListener::bind(config.listen)
         .await
         .with_context(|| format!("failed to bind metrics listener {}", config.listen))?;
     info!(listen = %config.listen, "metrics server started");
 
+    let conn_sem = Arc::new(Semaphore::new(MAX_CONCURRENT_METRICS_CONNECTIONS));
+
     loop {
         let (stream, peer) = listener.accept().await.context("metrics accept failed")?;
         let uplinks = uplinks.clone();
+        let permit = conn_sem
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("semaphore closed");
         tokio::spawn(async move {
+            let _permit = permit;
             if let Err(error) = handle_connection(stream, uplinks).await {
                 warn!(%peer, error = %format!("{error:#}"), "metrics request failed");
             }
@@ -46,6 +67,8 @@ async fn run_metrics_server(config: MetricsConfig, uplinks: UplinkRegistry) -> R
 async fn handle_connection(stream: TcpStream, uplinks: UplinkRegistry) -> Result<()> {
     let io = TokioIo::new(stream);
     http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(METRICS_HEADER_READ_TIMEOUT)
         .serve_connection(
             io,
             service_fn(move |request: Request<Incoming>| {
