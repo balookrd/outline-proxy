@@ -1,40 +1,16 @@
-use std::collections::{HashMap, VecDeque};
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
 #[cfg(target_os = "linux")]
 use std::fs;
-use std::hash::{BuildHasher, Hash};
 use tracing::debug;
 #[cfg(target_os = "linux")]
 use tracing::info;
-
-const SHRINK_MIN_CAPACITY: usize = 256;
 
 // Snapshot data types live in the `outline-metrics` crate (they cross the
 // producer/consumer boundary between the sampler here and the prometheus
 // renderer); re-exported so existing `crate::memory::Process*` imports keep
 // working.
 pub use outline_metrics::{ProcessFdSnapshot, ProcessMemorySnapshot, SocketStateCount};
-
-pub fn maybe_shrink_hash_map<K, V, S>(map: &mut HashMap<K, V, S>)
-where
-    K: Eq + Hash,
-    S: BuildHasher,
-{
-    if should_shrink(map.len(), map.capacity()) {
-        map.shrink_to_fit();
-    }
-}
-
-pub fn maybe_shrink_vecdeque<T>(deque: &mut VecDeque<T>) {
-    if should_shrink(deque.len(), deque.capacity()) {
-        deque.shrink_to_fit();
-    }
-}
-
-fn should_shrink(len: usize, capacity: usize) -> bool {
-    capacity >= SHRINK_MIN_CAPACITY && len.saturating_mul(4) <= capacity
-}
 
 pub fn sample_process_memory() -> ProcessMemorySnapshot {
     let fd_snapshot = sample_process_fd_snapshot();
