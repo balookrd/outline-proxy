@@ -256,6 +256,18 @@ fn validate_uplink_names(groups: &[UplinkGroupConfig]) -> Result<()> {
     Ok(())
 }
 
+pub fn log_registry_summary(registry: &UplinkRegistry) {
+    info!(
+        groups = registry.groups().len(),
+        total_uplinks = registry.total_uplinks(),
+        default_group = registry.default_group_name(),
+        "uplink registry initialized"
+    );
+    for group in registry.groups() {
+        super::manager::log_uplink_summary_named(&group.manager, &group.name);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -374,17 +386,5 @@ mod tests {
     fn registry_new_rejects_empty_group_list() {
         let err = UplinkRegistry::new_for_test(vec![]).unwrap_err();
         assert!(err.to_string().contains("no uplink groups"));
-    }
-}
-
-pub fn log_registry_summary(registry: &UplinkRegistry) {
-    info!(
-        groups = registry.groups().len(),
-        total_uplinks = registry.total_uplinks(),
-        default_group = registry.default_group_name(),
-        "uplink registry initialized"
-    );
-    for group in registry.groups() {
-        super::manager::log_uplink_summary_named(&group.manager, &group.name);
     }
 }
