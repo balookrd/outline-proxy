@@ -182,11 +182,13 @@ pub(super) fn parse_ss2022_udp_request_body(body: &[u8]) -> Result<Vec<u8>, Cryp
 
 pub(super) fn parse_ss2022_chacha_udp_request_body(
     body: &[u8],
-) -> Result<(Vec<u8>, [u8; 8]), CryptoError> {
+) -> Result<(Vec<u8>, [u8; 8], u64), CryptoError> {
     if body.len() < 8 + 8 + 1 + 8 + 2 {
         return Err(CryptoError::InvalidHeader);
     }
     let client_session_id = body[..8].try_into().map_err(|_| CryptoError::InvalidHeader)?;
+    let packet_id =
+        u64::from_be_bytes(body[8..16].try_into().map_err(|_| CryptoError::InvalidHeader)?);
     let body = &body[16..];
     if body[0] != SS2022_UDP_CLIENT_TYPE {
         return Err(CryptoError::InvalidHeader);
@@ -207,7 +209,7 @@ pub(super) fn parse_ss2022_chacha_udp_request_body(
     };
     let mut output = target.encode().map_err(|_| CryptoError::InvalidHeader)?;
     output.extend_from_slice(&body[consumed..]);
-    Ok((output, client_session_id))
+    Ok((output, client_session_id, packet_id))
 }
 
 pub(super) struct HkdfLen(pub(super) usize);

@@ -61,6 +61,7 @@ fn build_test_state(
     let services = Arc::new(Services {
         metrics,
         nat_table,
+        replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
         dns_cache,
         prefer_ipv4_upstream: false,
         outbound_ipv6: None,
@@ -1036,6 +1037,7 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
             users,
             metrics,
             nat_table,
+            super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
             dns_cache,
             false,
             ShutdownSignal::never(),
@@ -1103,6 +1105,7 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
             users,
             metrics,
             nat_table,
+            super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
             dns_cache,
             false,
             ShutdownSignal::never(),

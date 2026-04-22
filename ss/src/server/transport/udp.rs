@@ -12,10 +12,11 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
+    crypto::{CryptoError, UdpSession, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
     metrics::{Metrics, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{NatKey, NatTable, UdpResponseSender},
+    server::replay::ReplayStore,
 };
 
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -26,9 +27,25 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 
+/// For SS-2022 sessions, extract the (client_session_id, packet_id) pair used
+/// as the replay-filter key. Returns `None` for legacy sessions which have no
+/// per-packet counter.
+fn session_replay_key(
+    session: &UdpSession,
+    packet_id: Option<u64>,
+) -> Option<([u8; 8], u64)> {
+    let csid = match session {
+        UdpSession::Legacy => return None,
+        UdpSession::Aes2022 { client_session_id }
+        | UdpSession::Chacha2022 { client_session_id } => *client_session_id,
+    };
+    packet_id.map(|pid| (csid, pid))
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_udp_datagram_common<Msg>(
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     users: Arc<[UserKey]>,
     data: Bytes,
     outbound_tx: mpsc::Sender<Msg>,
@@ -71,6 +88,18 @@ where
     };
     cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
+    if let Some((csid, pid)) = session_replay_key(&packet.session, packet.packet_id)
+        && !replay_store.check_and_mark(csid, pid)
+    {
+        metrics.record_udp_replay_dropped(Arc::clone(&user_id), protocol);
+        warn!(
+            user = packet.user.id(),
+            path = %path,
+            packet_id = pid,
+            "dropping replayed ss-2022 udp datagram"
+        );
+        return Ok(());
+    }
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));
     };
@@ -167,6 +196,7 @@ async fn run_udp_relay<T: WsSocket>(
     path: Arc<str>,
     candidate_users: Arc<[Arc<str>]>,
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     global_relay_semaphore: Option<Arc<Semaphore>>,
@@ -237,10 +267,12 @@ async fn run_udp_relay<T: WsSocket>(
                         let udp_session_recorded = udp_session_recorded.clone();
                         let cached_user_index = Arc::clone(&cached_user_index);
                         let nat_table = Arc::clone(&nat_table);
+                        let replay_store = Arc::clone(&replay_store);
                         let dns_cache = Arc::clone(&dns_cache);
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
                                 nat_table,
+                                replay_store,
                                 users,
                                 data,
                                 tx,
@@ -304,6 +336,7 @@ pub(super) async fn handle_udp_connection(
     path: Arc<str>,
     candidate_users: Arc<[Arc<str>]>,
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     global_relay_semaphore: Option<Arc<Semaphore>>,
@@ -316,6 +349,7 @@ pub(super) async fn handle_udp_connection(
         path,
         candidate_users,
         nat_table,
+        replay_store,
         dns_cache,
         prefer_ipv4_upstream,
         global_relay_semaphore,
@@ -331,6 +365,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     path: Arc<str>,
     candidate_users: Arc<[Arc<str>]>,
     nat_table: Arc<NatTable>,
+    replay_store: Arc<ReplayStore>,
     dns_cache: Arc<DnsCache>,
     prefer_ipv4_upstream: bool,
     global_relay_semaphore: Option<Arc<Semaphore>>,
@@ -343,6 +378,7 @@ pub(in crate::server) async fn handle_udp_h3_connection(
         path,
         candidate_users,
         nat_table,
+        replay_store,
         dns_cache,
         prefer_ipv4_upstream,
         global_relay_semaphore,

@@ -187,7 +187,7 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
                 let mut candidate = ciphertext.to_vec();
                 match cipher.decrypt_in_place(XNonce::from_slice(nonce), b"", &mut candidate) {
                     Ok(()) => match parse_ss2022_chacha_udp_request_body(&candidate) {
-                        Ok((plaintext, _)) => format!(
+                        Ok((plaintext, _, _)) => format!(
                             "{}:{} packet_ok(payload_len={})",
                             user.id(),
                             user.cipher().as_str(),

@@ -37,6 +37,7 @@ mod constants;
 mod dns_cache;
 mod nat;
 mod relay;
+mod replay;
 mod setup;
 mod shadowsocks;
 mod shutdown;
@@ -44,6 +45,7 @@ mod state;
 mod transport;
 
 use self::nat::NatTable;
+use self::replay::ReplayStore;
 
 #[cfg(test)]
 mod tests;
@@ -88,6 +90,8 @@ pub async fn run(config: Config) -> Result<()> {
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         outbound_ipv6.clone(),
     );
+    let replay_store =
+        ReplayStore::new(Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs));
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
     let routes = Arc::new(RouteRegistry {
         tcp: Arc::clone(&tcp_routes),
@@ -103,6 +107,7 @@ pub async fn run(config: Config) -> Result<()> {
     let services = Arc::new(Services {
         metrics: metrics.clone(),
         nat_table: Arc::clone(&nat_table),
+        replay_store: Arc::clone(&replay_store),
         dns_cache: Arc::clone(&dns_cache),
         prefer_ipv4_upstream: config.prefer_ipv4_upstream,
         outbound_ipv6: outbound_ipv6.clone(),
@@ -174,6 +179,7 @@ pub async fn run(config: Config) -> Result<()> {
     // Periodic NAT entry eviction.
     {
         let nat_table_cleanup = Arc::clone(&nat_table);
+        let replay_cleanup = Arc::clone(&replay_store);
         let metrics_cleanup = Arc::clone(&metrics);
         let mut shutdown = shutdown_signal.clone();
         tokio::spawn(async move {
@@ -186,6 +192,10 @@ pub async fn run(config: Config) -> Result<()> {
                     _ = shutdown.cancelled() => break,
                     _ = interval.tick() => {
                         nat_table_cleanup.evict_idle(&metrics_cleanup);
+                        let purged = replay_cleanup.evict_idle();
+                        if purged > 0 {
+                            debug!(purged, "swept idle udp replay-filter sessions");
+                        }
                     }
                 }
             }
@@ -306,6 +316,7 @@ pub async fn run(config: Config) -> Result<()> {
         let users = users.clone();
         let metrics = metrics.clone();
         let nat_table = Arc::clone(&nat_table);
+        let replay_store = Arc::clone(&replay_store);
         let dns_cache = Arc::clone(&dns_cache);
         let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
         let shutdown = shutdown_signal.clone();
@@ -315,6 +326,7 @@ pub async fn run(config: Config) -> Result<()> {
                 users,
                 metrics,
                 nat_table,
+                replay_store,
                 dns_cache,
                 prefer_ipv4_upstream,
                 shutdown,
