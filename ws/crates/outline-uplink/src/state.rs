@@ -24,13 +24,13 @@ use tracing::{debug, warn};
 #[derive(Serialize, Deserialize, Default, Clone)]
 pub struct PersistedState {
     #[serde(default)]
-    pub groups: HashMap<String, GroupActiveState>,
+    pub groups: HashMap<String, PersistedGroupState>,
 }
 
 /// Per-group active uplink names.  Stored by name so that index shifts in
 /// config (adding/removing uplinks) do not silently reroute traffic.
 #[derive(Serialize, Deserialize, Default, Clone)]
-pub struct GroupActiveState {
+pub struct PersistedGroupState {
     /// Active uplink for `routing_scope = global`.
     pub global_active: Option<String>,
     /// Active TCP uplink for `routing_scope = per_uplink`.
@@ -70,7 +70,7 @@ impl StateStore {
 
     /// Return the persisted active state for `group`, or a blank default if
     /// there is no entry for that group yet.
-    pub async fn group_state(&self, group: &str) -> GroupActiveState {
+    pub async fn group_state(&self, group: &str) -> PersistedGroupState {
         self.state.lock().await.groups.get(group).cloned().unwrap_or_default()
     }
 
