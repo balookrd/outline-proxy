@@ -7,9 +7,12 @@
 //! sections.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
+use anyhow::Result;
 use tokio::sync::RwLock;
 
 /// Hostname-based identity of a cached shared connection.
@@ -60,19 +63,19 @@ pub(crate) trait CachedEntry {
 /// reuse the result.  Lock entries are never removed; they remain as empty
 /// `Mutex<()>` values (a few bytes each) — acceptable because the set of
 /// distinct server keys is small.
-pub(crate) struct ConnectLocks<K>(parking_lot::Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>);
+struct ConnectLocks<K>(parking_lot::Mutex<HashMap<K, Arc<tokio::sync::Mutex<()>>>>);
 
 impl<K: Eq + Hash + Clone> ConnectLocks<K> {
-    pub(crate) fn new() -> Self {
+    fn new() -> Self {
         Self(parking_lot::Mutex::new(HashMap::new()))
     }
 
-    pub(crate) fn get_lock(&self, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+    fn get_lock(&self, key: &K) -> Arc<tokio::sync::Mutex<()>> {
         self.0.lock().entry(key.clone()).or_default().clone()
     }
 }
 
-// ── Generic cache helpers ─────────────────────────────────────────────────────
+// ── should_reuse ──────────────────────────────────────────────────────────────
 
 /// Returns `true` if `source` should reuse a shared connection rather than
 /// opening a fresh one.  Probe sources always open fresh connections so their
@@ -81,110 +84,182 @@ pub(crate) fn should_reuse_connection(source: &'static str) -> bool {
     !source.starts_with("probe_")
 }
 
-/// Look up an open cached connection for `key`, evicting a stale entry if one
-/// is found.  Takes only a read-lock on the happy path.
-pub(crate) async fn cached_connection<K, V>(
-    lock: &RwLock<HashMap<K, Arc<V>>>,
-    key: &K,
-) -> Option<Arc<V>>
-where
-    K: Eq + Hash + Clone,
-    V: CachedEntry,
-{
-    let candidate = {
-        let map = lock.read().await;
-        map.get(key).cloned()
-    };
-    match candidate {
-        Some(conn) if conn.is_open() => Some(conn),
-        Some(stale) => {
-            // Slow path: take the write-lock only to evict the stale entry,
-            // and re-check under it — another waiter may have already replaced
-            // the entry with a fresh connection between our read/write locks.
-            let mut map = lock.write().await;
-            if map.get(key).is_some_and(|c| c.conn_id() == stale.conn_id()) {
-                map.remove(key);
-            }
-            None
-        },
-        None => None,
-    }
-}
+// ── SharedConnectionRegistry ──────────────────────────────────────────────────
 
-/// Insert `connection` under `key` unless a live connection already occupies
-/// the slot (a concurrent task may have raced ahead and cached one first).
-pub(crate) async fn cache_connection<K, V>(
-    lock: &RwLock<HashMap<K, Arc<V>>>,
-    key: K,
-    connection: Arc<V>,
-)
-where
-    K: Eq + Hash,
-    V: CachedEntry,
-{
-    let mut map = lock.write().await;
-    match map.get(&key) {
-        Some(existing) if existing.is_open() => {},
-        _ => {
-            map.insert(key, connection);
-        },
-    }
-}
-
-/// Remove the entry for `key` from `lock` only if it still matches `id`.
-/// A cheap read-lock pre-check avoids the write-lock on the common path
-/// (entry gone or already replaced by a fresh connection).
-pub(crate) async fn invalidate_if_current<K, V>(
-    lock: &RwLock<HashMap<K, Arc<V>>>,
-    key: &K,
-    id: u64,
-)
-where
-    K: Eq + Hash,
-    V: CachedEntry,
-{
-    let needs_evict = {
-        let map = lock.read().await;
-        map.get(key).is_some_and(|c| c.conn_id() == id)
-    };
-    if !needs_evict {
-        return;
-    }
-    let mut map = lock.write().await;
-    if map.get(key).is_some_and(|c| c.conn_id() == id) {
-        map.remove(key);
-    }
-}
-
-/// Remove every entry for which `is_open(&value)` returns `false`.
+/// Bundles the three pieces of state that every shared-connection cache needs:
+/// a `RwLock<HashMap>` of live entries, an `AtomicU64` connection-id counter,
+/// and a per-key `ConnectLocks` set that serialises reconnect attempts.
 ///
-/// Called from the warm-standby maintenance loop so dead entries do not
-/// linger indefinitely when no new request re-checks their key (e.g.
-/// after DNS rotation changes the resolved address for a server name).
-pub(crate) async fn gc_stale_entries<K, V, F>(
-    lock: &RwLock<HashMap<K, Arc<V>>>,
-    is_open: F,
-) where
+/// One instance per protocol lives behind a `OnceLock`; both H2 and H3 use this
+/// type so neither has to reimplement the read-lock/write-lock dance, the
+/// id-allocation pattern, or the connect-lock plumbing.
+pub(crate) struct SharedConnectionRegistry<K, V> {
+    map: RwLock<HashMap<K, Arc<V>>>,
+    locks: ConnectLocks<K>,
+    next_id: AtomicU64,
+}
+
+impl<K, V> SharedConnectionRegistry<K, V>
+where
     K: Eq + Hash + Clone,
-    F: Fn(&V) -> bool,
+    V: CachedEntry,
 {
-    // Fast path: scan under a read-lock. If nothing is stale we avoid the
-    // write-lock entirely, so a healthy GC tick does not interfere with
-    // concurrent lookups.
-    let stale_keys: Vec<K> = {
-        let map = lock.read().await;
-        map.iter()
-            .filter(|(_, conn)| !is_open(conn))
-            .map(|(k, _)| k.clone())
-            .collect()
-    };
-    if stale_keys.is_empty() {
-        return;
-    }
-    let mut map = lock.write().await;
-    for key in stale_keys {
-        if map.get(&key).is_some_and(|conn| !is_open(conn)) {
-            map.remove(&key);
+    pub(crate) fn new() -> Self {
+        Self {
+            map: RwLock::new(HashMap::new()),
+            locks: ConnectLocks::new(),
+            // Start at 1 so a zeroed id is recognisably "uninitialised" if it
+            // ever leaks into a log line.
+            next_id: AtomicU64::new(1),
         }
     }
+
+    /// Allocate the next unique connection id.  Used by the dial path when
+    /// constructing a `SharedH2Connection` / `SharedH3Connection`.
+    pub(crate) fn next_id(&self) -> u64 {
+        self.next_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Get (or create) the per-key reconnect mutex.
+    pub(crate) fn connect_lock(&self, key: &K) -> Arc<tokio::sync::Mutex<()>> {
+        self.locks.get_lock(key)
+    }
+
+    /// Look up an open cached connection for `key`, evicting a stale entry if
+    /// one is found.  Takes only a read-lock on the happy path.
+    pub(crate) async fn cached(&self, key: &K) -> Option<Arc<V>> {
+        let candidate = {
+            let map = self.map.read().await;
+            map.get(key).cloned()
+        };
+        match candidate {
+            Some(conn) if conn.is_open() => Some(conn),
+            Some(stale) => {
+                // Slow path: take the write-lock only to evict the stale entry,
+                // and re-check under it — another waiter may have already
+                // replaced the entry with a fresh connection between our
+                // read/write locks.
+                let mut map = self.map.write().await;
+                if map.get(key).is_some_and(|c| c.conn_id() == stale.conn_id()) {
+                    map.remove(key);
+                }
+                None
+            },
+            None => None,
+        }
+    }
+
+    /// Insert `connection` under `key` unless a live connection already
+    /// occupies the slot (a concurrent task may have raced ahead and cached
+    /// one first).
+    pub(crate) async fn insert(&self, key: K, connection: Arc<V>) {
+        let mut map = self.map.write().await;
+        match map.get(&key) {
+            Some(existing) if existing.is_open() => {},
+            _ => {
+                map.insert(key, connection);
+            },
+        }
+    }
+
+    /// Remove the entry for `key` only if it still matches `id`. A cheap
+    /// read-lock pre-check avoids the write-lock on the common path (entry
+    /// gone or already replaced by a fresh connection).
+    pub(crate) async fn invalidate_if_current(&self, key: &K, id: u64) {
+        let needs_evict = {
+            let map = self.map.read().await;
+            map.get(key).is_some_and(|c| c.conn_id() == id)
+        };
+        if !needs_evict {
+            return;
+        }
+        let mut map = self.map.write().await;
+        if map.get(key).is_some_and(|c| c.conn_id() == id) {
+            map.remove(key);
+        }
+    }
+
+    /// Remove every entry whose value reports `is_open() == false`.
+    ///
+    /// Called from the warm-standby maintenance loop so dead entries do not
+    /// linger indefinitely when no new request re-checks their key (e.g.
+    /// after DNS rotation changes the resolved address for a server name).
+    pub(crate) async fn gc(&self) {
+        // Fast path: scan under a read-lock. If nothing is stale we avoid the
+        // write-lock entirely, so a healthy GC tick does not interfere with
+        // concurrent lookups.
+        let stale_keys: Vec<K> = {
+            let map = self.map.read().await;
+            map.iter()
+                .filter(|(_, conn)| !conn.is_open())
+                .map(|(k, _)| k.clone())
+                .collect()
+        };
+        if stale_keys.is_empty() {
+            return;
+        }
+        let mut map = self.map.write().await;
+        for key in stale_keys {
+            if map.get(&key).is_some_and(|conn| !conn.is_open()) {
+                map.remove(&key);
+            }
+        }
+    }
+}
+
+// ── with_reuse ────────────────────────────────────────────────────────────────
+
+/// Skeleton for the "reuse-or-dial" connect path used by both H2 and H3.
+///
+/// The flow is identical for both transports:
+///   1. Fast path: look up a cached connection and try `open_existing` on it.
+///      Success returns immediately; failure invalidates the cache entry.
+///   2. Take the per-key connect lock so concurrent reconnect attempts share
+///      the result rather than each starting their own handshake.
+///   3. Re-check the cache under the lock — another waiter may have raced
+///      ahead and established a fresh connection.
+///   4. Call `dial` to do whatever transport-specific work is needed (DNS
+///      resolution, address-list iteration, TLS, h2/h3 handshake) and produce
+///      both the new shared connection and the first stream opened on it.
+///   5. Insert the new connection into the cache and return the stream.
+///
+/// `open_existing` is responsible for protocol-specific logging and metric
+/// emission; `dial` is responsible for the DNS / handshake / metric handling
+/// of the cold path.  Anything that returns `Err` from `open_existing` is
+/// treated as a sick connection — the entry is invalidated and we fall through
+/// to the dial path.
+pub(crate) async fn with_reuse<K, V, T, OFut, DFut>(
+    registry: &SharedConnectionRegistry<K, V>,
+    key: K,
+    open_existing: impl Fn(Arc<V>) -> OFut,
+    dial: impl FnOnce() -> DFut,
+) -> Result<T>
+where
+    K: Eq + Hash + Clone,
+    V: CachedEntry,
+    OFut: Future<Output = Result<T>>,
+    DFut: Future<Output = Result<(Arc<V>, T)>>,
+{
+    if let Some(shared) = registry.cached(&key).await {
+        let id = shared.conn_id();
+        match open_existing(shared).await {
+            Ok(stream) => return Ok(stream),
+            Err(_) => registry.invalidate_if_current(&key, id).await,
+        }
+    }
+
+    let connect_lock = registry.connect_lock(&key);
+    let _connect_guard = connect_lock.lock().await;
+
+    if let Some(shared) = registry.cached(&key).await {
+        let id = shared.conn_id();
+        match open_existing(shared).await {
+            Ok(stream) => return Ok(stream),
+            Err(_) => registry.invalidate_if_current(&key, id).await,
+        }
+    }
+
+    let (shared, stream) = dial().await?;
+    registry.insert(key, shared).await;
+    Ok(stream)
 }

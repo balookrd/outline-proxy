@@ -6,7 +6,6 @@
 // live in the parent module (`mod.rs`) because they are the public API
 // consumed by `ws_stream.rs`.
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -22,7 +21,7 @@ use sockudo_ws::{
     Config as SockudoConfig, Http3 as SockudoHttp3, Stream as SockudoTransportStream,
     WebSocketStream as SockudoWebSocketStream,
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::{debug, error, info};
 use url::Url;
@@ -32,6 +31,7 @@ use crate::{
     bind_addr_for, bind_udp_socket,
     DnsCache, resolve_host_with_preference,
 };
+use crate::shared_cache::SharedConnectionRegistry;
 
 use super::{H3ConnectionGuard, H3WsStream, websocket_h3_target_uri, websocket_path};
 
@@ -271,24 +271,16 @@ fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<qui
 
 // ── Shared-connection cache ───────────────────────────────────────────────────
 
-// Global shared-connection cache. `RwLock<HashMap<K, Arc<V>>>` mirrors the
-// flow-table pattern in `tun_tcp` / `tun_udp` (and `h2_shared`): hot-path
-// lookups take a brief read-lock, clone the `Arc`, and release before any
-// `.await` on the value. Only cache mutations (insert / evict / gc) take
-// the write-lock. Avoids serialising every QUIC open behind one Mutex.
-static H3_SHARED_CONNECTIONS: OnceCell<RwLock<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>>> =
-    OnceCell::new();
-static H3_SHARED_CONNECTION_IDS: AtomicU64 = AtomicU64::new(1);
+// Global registry holding the shared-connection map, the per-key reconnect
+// locks, and the connection-id counter. Mirrors the flow-table pattern in
+// `tun_tcp` / `tun_udp`: hot-path lookups take only a brief read-lock on the
+// inner map. The registry abstraction lives in `shared_cache` and is shared
+// with H2.
+static H3_REGISTRY: OnceLock<SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection>> =
+    OnceLock::new();
 
-static H3_CONNECT_LOCKS: OnceCell<crate::shared_cache::ConnectLocks<H3ConnectionKey>> =
-    OnceCell::new();
-
-fn get_h3_connect_lock(key: &H3ConnectionKey) -> Arc<tokio::sync::Mutex<()>> {
-    H3_CONNECT_LOCKS.get_or_init(crate::shared_cache::ConnectLocks::new).get_lock(key)
-}
-
-fn h3_shared_connections() -> &'static RwLock<HashMap<H3ConnectionKey, Arc<SharedH3Connection>>> {
-    H3_SHARED_CONNECTIONS.get_or_init(|| RwLock::new(HashMap::new()))
+fn h3_registry() -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection> {
+    H3_REGISTRY.get_or_init(SharedConnectionRegistry::new)
 }
 
 // ── Connect ───────────────────────────────────────────────────────────────────
@@ -334,8 +326,8 @@ pub(crate) async fn connect_websocket_h3(
 
     let mut last_error = None;
     for server_addr in server_addrs.iter().copied() {
-        match connect_h3_quic_new(server_addr, host, port, &path, fwmark, None, source).await {
-            Ok(ws) => return Ok(WsTransportStream::H3 { inner: ws }),
+        match dial_h3_with_websocket(server_addr, host, port, &path, fwmark, None, source).await {
+            Ok((_shared, ws)) => return Ok(WsTransportStream::H3 { inner: ws }),
             Err(error) => last_error = Some(format!("{server_addr}: {error}")),
         }
     }
@@ -359,102 +351,78 @@ async fn connect_h3_quic_reused(
 ) -> Result<H3WsStream> {
     let key = H3ConnectionKey::new(server_name, server_port, fwmark);
 
-    // Fast path: reuse an already-established shared connection without locking.
-    // DNS is NOT resolved here — the key is hostname-based so cache lookups are
-    // independent of which IP address the server currently resolves to.
-    if let Some(shared) = cached_shared_h3_connection(&key).await {
-        match shared.open_websocket(server_name, server_port, path).await {
-            Ok(ws) => {
-                outline_metrics::record_transport_connect(source, "h3", "reused");
-                return Ok(ws);
-            },
-            Err(error) => {
-                debug!(
+    crate::shared_cache::with_reuse(
+        h3_registry(),
+        key.clone(),
+        |shared| async move {
+            match shared.open_websocket(server_name, server_port, path).await {
+                Ok(ws) => {
+                    outline_metrics::record_transport_connect(source, "h3", "reused");
+                    Ok(ws)
+                },
+                Err(error) => {
+                    debug!(
+                        server_name,
+                        server_port,
+                        error = %format!("{error:#}"),
+                        "cached shared h3 connection failed to open websocket stream; reconnecting"
+                    );
+                    Err(error)
+                },
+            }
+        },
+        || async {
+            // Resolve DNS only now — we actually need a new QUIC connection.
+            // Deferring resolution to this point keeps the cache key
+            // hostname-based while still connecting to the *current* address.
+            let server_addrs = resolve_host_with_preference(
+                cache,
+                server_name,
+                server_port,
+                "failed to resolve h3 websocket host",
+                ipv6_first,
+            )
+            .await?;
+            if server_addrs.is_empty() {
+                return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
+                    host: format!("{server_name}:{server_port}"),
+                }));
+            }
+
+            let mut last_error = None;
+            for server_addr in server_addrs.iter().copied() {
+                match dial_h3_with_websocket(
+                    server_addr,
                     server_name,
                     server_port,
-                    error = %format!("{error:#}"),
-                    "cached shared h3 connection failed to open websocket stream; reconnecting"
-                );
-                invalidate_shared_h3_connection_if_current(&key, shared.id).await;
-            },
-        }
-    }
+                    path,
+                    fwmark,
+                    Some(key.clone()),
+                    source,
+                )
+                .await
+                {
+                    Ok(pair) => return Ok(pair),
+                    Err(error) => last_error = Some(format!("{server_addr}: {error}")),
+                }
+            }
 
-    // Slow path: need to establish a new QUIC connection.  Serialise per
-    // server key so that concurrent reconnect attempts (e.g. after the shared
-    // QUIC connection drops and N sessions all try to reconnect at once) share
-    // the single new connection rather than each starting their own QUIC
-    // handshake (thundering herd).
-    let connect_lock = get_h3_connect_lock(&key);
-    let _connect_guard = connect_lock.lock().await;
-
-    // Re-check the cache under the lock: another waiter may have established
-    // and cached a fresh connection while we were waiting.
-    if let Some(shared) = cached_shared_h3_connection(&key).await {
-        match shared.open_websocket(server_name, server_port, path).await {
-            Ok(ws) => {
-                outline_metrics::record_transport_connect(source, "h3", "reused");
-                return Ok(ws);
-            },
-            Err(error) => {
-                debug!(
-                    server_name,
-                    server_port,
-                    error = %format!("{error:#}"),
-                    "shared h3 connection (post-lock recheck) failed to open websocket stream; reconnecting"
-                );
-                invalidate_shared_h3_connection_if_current(&key, shared.id).await;
-            },
-        }
-    }
-
-    // Resolve DNS only now — we actually need a new QUIC connection.  By
-    // deferring resolution to this point we always connect to the *current*
-    // address while keeping the cache key hostname-based.
-    let server_addrs = resolve_host_with_preference(
-        cache,
-        server_name,
-        server_port,
-        "failed to resolve h3 websocket host",
-        ipv6_first,
+            Err(anyhow::Error::new(TransportOperation::Connect {
+                target: format!(
+                    "to any resolved h3 address for {server_name}:{server_port}: {}",
+                    last_error.unwrap_or_else(|| "unknown error".to_string())
+                ),
+            }))
+        },
     )
-    .await?;
-    if server_addrs.is_empty() {
-        return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-            host: format!("{server_name}:{server_port}"),
-        }));
-    }
-
-    let mut last_error = None;
-    for server_addr in server_addrs.iter().copied() {
-        match connect_h3_quic_new(
-            server_addr,
-            server_name,
-            server_port,
-            path,
-            fwmark,
-            Some(key.clone()),
-            source,
-        )
-        .await
-        {
-            Ok(ws) => return Ok(ws),
-            Err(error) => last_error = Some(format!("{server_addr}: {error}")),
-        }
-    }
-
-    Err(anyhow::Error::new(TransportOperation::Connect {
-        target: format!(
-            "to any resolved h3 address for {server_name}:{server_port}: {}",
-            last_error.unwrap_or_else(|| "unknown error".to_string())
-        ),
-    }))
+    .await
 }
 
-/// Establishes a brand-new QUIC + HTTP/3 connection to `server_addr`, opens
-/// one WebSocket stream on it, and — if `cache_key` is provided — inserts the
-/// connection into the shared cache for future reuse.
-async fn connect_h3_quic_new(
+/// Establishes a brand-new QUIC + HTTP/3 connection to `server_addr` and opens
+/// one WebSocket stream on it. When `cache_key` is `Some`, the driver task
+/// invalidates the cache entry on close; the actual cache *insert* is the
+/// caller's responsibility (the reused path delegates it to `with_reuse`).
+async fn dial_h3_with_websocket(
     server_addr: SocketAddr,
     server_name: &str,
     server_port: u16,
@@ -462,17 +430,13 @@ async fn connect_h3_quic_new(
     fwmark: Option<u32>,
     cache_key: Option<H3ConnectionKey>,
     source: &'static str,
-) -> Result<H3WsStream> {
+) -> Result<(Arc<SharedH3Connection>, H3WsStream)> {
     let mut transport_guard = TransportConnectGuard::new(source, "h3");
-    let shared = Arc::new(
-        connect_h3_connection(server_addr, server_name, fwmark, cache_key.clone()).await?,
-    );
+    let shared =
+        Arc::new(connect_h3_connection(server_addr, server_name, fwmark, cache_key).await?);
     let ws = shared.open_websocket(server_name, server_port, path).await?;
     transport_guard.finish("success");
-    if let Some(key) = cache_key {
-        cache_shared_h3_connection(key, Arc::clone(&shared)).await;
-    }
-    Ok(ws)
+    Ok((shared, ws))
 }
 
 async fn connect_h3_connection(
@@ -522,7 +486,7 @@ async fn connect_h3_connection(
         )
     })??;
 
-    let id = H3_SHARED_CONNECTION_IDS.fetch_add(1, Ordering::Relaxed);
+    let id = h3_registry().next_id();
     let streams_opened = Arc::new(AtomicU64::new(0));
     let streams_opened_driver = Arc::clone(&streams_opened);
     let opened_at = Instant::now();
@@ -535,7 +499,7 @@ async fn connect_h3_connection(
     let driver_task = AbortOnDrop(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         if let Some(cache_key) = cache_key {
-            invalidate_shared_h3_connection_if_current(&cache_key, id).await;
+            h3_registry().invalidate_if_current(&cache_key, id).await;
         }
         let err_text = err.to_string();
         let age_secs = opened_at.elapsed().as_secs();
@@ -607,24 +571,12 @@ fn classify_h3_close(err: &str) -> &'static str {
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
-async fn cached_shared_h3_connection(key: &H3ConnectionKey) -> Option<Arc<SharedH3Connection>> {
-    crate::shared_cache::cached_connection(h3_shared_connections(), key).await
-}
-
-async fn cache_shared_h3_connection(key: H3ConnectionKey, connection: Arc<SharedH3Connection>) {
-    crate::shared_cache::cache_connection(h3_shared_connections(), key, connection).await
-}
-
-async fn invalidate_shared_h3_connection_if_current(key: &H3ConnectionKey, id: u64) {
-    crate::shared_cache::invalidate_if_current(h3_shared_connections(), key, id).await
-}
-
 /// Remove all cache entries whose shared connection is no longer open.
 /// Called periodically from the warm-standby maintenance loop so dead entries
 /// do not linger indefinitely when no new request re-checks their key (e.g.
 /// after DNS rotation changes the resolved address for a server name).
 pub(crate) async fn gc_shared_h3_connections() {
-    crate::shared_cache::gc_stale_entries(h3_shared_connections(), |c| c.is_open()).await;
+    h3_registry().gc().await;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
