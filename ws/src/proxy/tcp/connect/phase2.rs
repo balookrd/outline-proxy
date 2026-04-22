@@ -356,7 +356,7 @@ mod tests {
         let active = ActiveTcpUplink {
             index: 0,
             name: Arc::from(uplink.name.as_str()),
-            candidate: UplinkCandidate { index: 0, uplink: Arc::new(uplink) },
+            candidate: UplinkCandidate { index: 0, uplink: uplink.into() },
             writer: TcpWriter::Socket(writer),
             reader: TcpReader::Socket(reader),
             source: TcpUplinkSource::DirectSocket,

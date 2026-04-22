@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -169,7 +168,7 @@ impl UplinkManager {
             })
             .map(|(index, uplink)| CandidateState {
                 index,
-                uplink: Arc::clone(uplink),
+                uplink: uplink.clone(),
                 healthy: selection_health(
                     &statuses[index],
                     transport,
@@ -255,7 +254,7 @@ impl UplinkManager {
             })
             .map(|(index, uplink)| CandidateState {
                 index,
-                uplink: Arc::clone(uplink),
+                uplink: uplink.clone(),
                 healthy: selection_health(
                     &statuses[index],
                     transport,
@@ -371,7 +370,7 @@ impl UplinkManager {
                         }
                         return vec![UplinkCandidate {
                             index: candidate.index,
-                            uplink: Arc::clone(&candidate.uplink),
+                            uplink: candidate.uplink.clone(),
                         }];
                     }
                     // auto_failback = true: if a higher-priority healthy candidate
@@ -449,7 +448,7 @@ impl UplinkManager {
                         }
                         return vec![UplinkCandidate {
                             index: candidate.index,
-                            uplink: Arc::clone(&candidate.uplink),
+                            uplink: candidate.uplink.clone(),
                         }];
                     }
                     // Current active is healthy but the best candidate is stable
@@ -517,7 +516,7 @@ impl UplinkManager {
             self.store_sticky_route(&key, selected).await;
             return vec![UplinkCandidate {
                 index: selected,
-                uplink: Arc::clone(&candidates[0].uplink),
+                uplink: candidates[0].uplink.clone(),
             }];
         }
 

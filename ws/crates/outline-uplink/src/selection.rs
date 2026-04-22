@@ -1,11 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::config::{LoadBalancingConfig, RoutingScope, UplinkConfig};
+use crate::config::{LoadBalancingConfig, RoutingScope};
 
-use super::types::{TransportKind, UplinkStatus};
+use super::types::{TransportKind, Uplink, UplinkStatus};
 use super::utils::current_penalty;
 
 pub(crate) fn effective_health(
@@ -17,7 +16,7 @@ pub(crate) fn effective_health(
 }
 
 pub(crate) fn supports_transport_for_scope(
-    uplink: &Arc<UplinkConfig>,
+    uplink: &Uplink,
     transport: TransportKind,
     scope: RoutingScope,
 ) -> bool {

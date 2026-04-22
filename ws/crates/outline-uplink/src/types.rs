@@ -14,6 +14,31 @@ use socks5_proto::TargetAddr;
 use super::state::StateStore;
 use super::utils::transport_key_prefix;
 
+/// Runtime handle for a configured uplink. Cheap to clone (shared `Arc`).
+/// Exists to distinguish a runtime-attached uplink reference from the raw
+/// [`UplinkConfig`] DTO at call sites. Field access goes through `Deref`.
+#[derive(Clone, Debug)]
+pub struct Uplink(Arc<UplinkConfig>);
+
+impl Uplink {
+    pub fn new(config: UplinkConfig) -> Self {
+        Self(Arc::new(config))
+    }
+}
+
+impl From<UplinkConfig> for Uplink {
+    fn from(config: UplinkConfig) -> Self {
+        Self::new(config)
+    }
+}
+
+impl std::ops::Deref for Uplink {
+    type Target = UplinkConfig;
+    fn deref(&self) -> &UplinkConfig {
+        &self.0
+    }
+}
+
 #[derive(Clone)]
 pub struct UplinkManager {
     pub(crate) inner: Arc<UplinkManagerInner>,
@@ -45,7 +70,7 @@ pub(crate) struct UplinkManagerInner {
     /// Name of the group this manager represents. Surfaced as the `group`
     /// Prometheus label on every uplink-scoped metric emitted from within.
     pub(crate) group_name: String,
-    pub(crate) uplinks: Vec<Arc<UplinkConfig>>,
+    pub(crate) uplinks: Vec<Uplink>,
     pub(crate) probe: ProbeConfig,
     pub(crate) load_balancing: LoadBalancingConfig,
     /// Per-uplink status guarded by an individual sync lock. Length is fixed
@@ -160,7 +185,7 @@ pub(crate) struct StickyRoute {
 #[derive(Clone, Debug)]
 pub struct UplinkCandidate {
     pub index: usize,
-    pub uplink: Arc<UplinkConfig>,
+    pub uplink: Uplink,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -235,7 +260,7 @@ pub(crate) struct ProbeOutcome {
 #[derive(Clone)]
 pub(crate) struct CandidateState {
     pub(crate) index: usize,
-    pub(crate) uplink: Arc<UplinkConfig>,
+    pub(crate) uplink: Uplink,
     pub(crate) healthy: bool,
     pub(crate) score: Option<Duration>,
 }

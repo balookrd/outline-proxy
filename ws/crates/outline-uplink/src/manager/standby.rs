@@ -320,7 +320,7 @@ impl UplinkManager {
             return;
         }
 
-        let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        let uplink = self.inner.uplinks[index].clone();
         if uplink.transport != UplinkTransport::Ws {
             return;
         }
@@ -419,7 +419,7 @@ impl UplinkManager {
             return;
         }
 
-        let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        let uplink = self.inner.uplinks[index].clone();
         if uplink.transport != UplinkTransport::Ws {
             return;
         }
@@ -560,7 +560,7 @@ impl UplinkManager {
             return;
         }
 
-        let uplink = std::sync::Arc::clone(&self.inner.uplinks[index]);
+        let uplink = self.inner.uplinks[index].clone();
         // Determine if this transport is explicitly configured as Http1.
         // Http1 connections that slipped in as H2/H3 fallbacks must be evicted;
         // those present because Http1 is the configured mode should be
