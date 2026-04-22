@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use anyhow::{Context, Result, anyhow};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_metrics as metrics;
@@ -11,7 +11,8 @@ use socks5_proto::TargetAddr;
 
 use outline_uplink::{TransportKind, UplinkManager};
 
-use super::super::failover::{ActiveTcpUplink, TcpUplinkSource, connect_tcp_uplink};
+use super::super::failover::{ActiveTcpUplink, TcpUplinkSource};
+use super::failover_step::{FailoverStep, failover_to_next_candidate, replay_after_failover};
 use super::replay::ReplayBufState;
 use super::retry::{
     CHUNK0_RST_MAX_RETRIES, CHUNK0_RST_RETRY_BACKOFF, redial_current_uplink_and_replay,
@@ -306,72 +307,17 @@ pub(super) async fn try_uplinks(
                     error_text,
                 ));
 
-                let candidates = uplinks
-                    .tcp_failover_candidates(target, active.index)
-                    .await;
-                let next = candidates
-                    .into_iter()
-                    .find(|c| !tried_indexes.contains(&c.index));
-                let Some(next_candidate) = next else {
-                    return Err(
-                        phase1_error
-                            .context("no alternative uplink available for chunk-0 failover"),
-                    );
-                };
-                tried_indexes.insert(next_candidate.index);
-
-                let reconnected =
-                    match connect_tcp_uplink(uplinks, &next_candidate, target).await {
-                        Ok(v) => v,
-                        Err(connect_err) => {
-                            uplinks
-                                .report_runtime_failure(
-                                    next_candidate.index,
-                                    TransportKind::Tcp,
-                                    &connect_err,
-                                )
-                                .await;
-                            return Err(connect_err.context("chunk-0 failover connect failed"));
-                        }
-                    };
-
-                uplinks
-                    .confirm_runtime_failover_uplink(
-                        TransportKind::Tcp,
-                        Some(target),
-                        next_candidate.index,
-                    )
-                    .await;
-                metrics::record_failover(
-                    "tcp",
-                    uplinks.group_name(),
-                    &active.name,
-                    &next_candidate.uplink.name,
-                );
-                metrics::record_uplink_selected(
-                    "tcp",
-                    uplinks.group_name(),
-                    &next_candidate.uplink.name,
-                );
-                info!(
-                    from = %active.name,
-                    to = %next_candidate.uplink.name,
-                    "TCP chunk-0 failover"
-                );
-
-                active.switch_to(next_candidate, reconnected);
-                rst_retries_on_current_uplink = 0;
-
-                replay
-                    .replay_to(&mut active.writer, "replay to failover uplink failed")
-                    .await?;
-                if client_half_closed {
-                    active.writer
-                        .close()
-                        .await
-                        .context("failover uplink half-close failed")?;
+                match failover_to_next_candidate(uplinks, active, target, tried_indexes).await? {
+                    FailoverStep::NoCandidate => {
+                        return Err(phase1_error
+                            .context("no alternative uplink available for chunk-0 failover"));
+                    },
+                    FailoverStep::Switched => {
+                        rst_retries_on_current_uplink = 0;
+                        replay_after_failover(active, replay, client_half_closed).await?;
+                        // Fall through → loop restarts with the new uplink.
+                    },
                 }
-                // Fall through → loop restarts with the new uplink.
             }
         }
     }
