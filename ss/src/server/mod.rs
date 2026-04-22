@@ -27,7 +27,6 @@ use tracing::{debug, info, warn};
 use crate::{
     config::Config,
     metrics::{Metrics, Transport},
-    nat::NatTable,
     outbound::{InterfaceSource, OutboundIpv6},
 };
 
@@ -36,12 +35,15 @@ mod bootstrap;
 mod connect;
 mod constants;
 mod dns_cache;
+mod nat;
 mod relay;
 mod setup;
 mod shadowsocks;
 mod shutdown;
 mod state;
 mod transport;
+
+use self::nat::NatTable;
 
 #[cfg(test)]
 mod tests;

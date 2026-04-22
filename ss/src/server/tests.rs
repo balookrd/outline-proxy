@@ -44,7 +44,7 @@ use crate::crypto::{
     AeadStreamDecryptor, AeadStreamEncryptor, UserKey, decrypt_udp_packet, encrypt_udp_packet,
 };
 use crate::metrics::{Metrics, Transport};
-use crate::nat::NatTable;
+use super::nat::NatTable;
 use crate::protocol::TargetAddr;
 
 fn build_test_state(

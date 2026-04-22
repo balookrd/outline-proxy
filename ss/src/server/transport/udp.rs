@@ -14,8 +14,8 @@ use tracing::{debug, warn};
 use crate::{
     crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
     metrics::{Metrics, Protocol, Transport},
-    nat::{NatKey, NatTable, UdpResponseSender},
     protocol::parse_target_addr,
+    server::nat::{NatKey, NatTable, UdpResponseSender},
 };
 
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
