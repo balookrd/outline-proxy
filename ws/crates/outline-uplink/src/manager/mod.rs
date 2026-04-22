@@ -18,7 +18,7 @@ use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use super::selection::{effective_latency, selection_score};
 use super::state::StateStore;
 use super::types::{
-    ActiveUplinks, StandbyPool, StickyRouteSnapshot, TransportKind, UplinkManager,
+    ActiveUplinks, StandbyPool, StickyRouteSnapshot, TransportKind, Uplink, UplinkManager,
     UplinkManagerInner, UplinkManagerSnapshot, UplinkSnapshot, UplinkStatus,
 };
 use super::utils::{
@@ -125,7 +125,7 @@ impl UplinkManager {
         let count = uplinks.len();
         let probe_max_concurrent = probe.max_concurrent;
         let probe_max_dials = probe.max_dials;
-        let uplinks: Vec<Arc<UplinkConfig>> = uplinks.into_iter().map(Arc::new).collect();
+        let uplinks: Vec<Uplink> = uplinks.into_iter().map(Uplink::new).collect();
         let (shutdown_tx, _) = watch::channel(false);
 
         // Resolve persisted names to indices.  Unknown names are ignored so
@@ -284,7 +284,7 @@ impl UplinkManager {
         self.inner.read_status(index).tcp.healthy
     }
 
-    pub fn uplinks(&self) -> &[Arc<UplinkConfig>] {
+    pub fn uplinks(&self) -> &[Uplink] {
         &self.inner.uplinks
     }
 

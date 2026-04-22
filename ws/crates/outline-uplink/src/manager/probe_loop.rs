@@ -11,7 +11,7 @@ use crate::config::{UplinkTransport, WsTransportMode};
 
 use super::super::probe::probe_uplink;
 use super::super::selection::cooldown_active;
-use super::super::types::{ProbeOutcome, TransportKind, UplinkManager, UplinkStatus};
+use super::super::types::{ProbeOutcome, TransportKind, Uplink, UplinkManager, UplinkStatus};
 use super::super::utils::{add_penalty, update_rtt_ewma};
 
 fn should_skip_probe_cycle_for_recent_activity(
@@ -32,7 +32,7 @@ fn should_skip_probe_cycle_for_recent_activity(
 async fn run_probe_attempt_with_timeout(
     dns_cache: Arc<outline_transport::DnsCache>,
     group: String,
-    uplink: Arc<crate::config::UplinkConfig>,
+    uplink: Uplink,
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::config::WsTransportMode,
@@ -133,7 +133,7 @@ impl UplinkManager {
                 }
             }
 
-            let uplink = Arc::clone(uplink);
+            let uplink = uplink.clone();
             let probe = self.inner.probe.clone();
             let execution_limit = Arc::clone(&self.inner.probe_execution_limit);
             let dial_limit = Arc::clone(&self.inner.probe_dial_limit);
@@ -165,7 +165,7 @@ impl UplinkManager {
                     outcome = run_probe_attempt_with_timeout(
                         Arc::clone(&dns_cache),
                         group_name.clone(),
-                        Arc::clone(&uplink),
+                        uplink.clone(),
                         probe.clone(),
                         Arc::clone(&dial_limit),
                         effective_tcp_mode,
@@ -183,9 +183,9 @@ impl UplinkManager {
             });
         }
 
-        let mut h3_tcp_recovery_needed: Vec<(usize, Arc<crate::config::UplinkConfig>)> =
+        let mut h3_tcp_recovery_needed: Vec<(usize, Uplink)> =
             Vec::new();
-        let mut h3_udp_recovery_needed: Vec<(usize, Arc<crate::config::UplinkConfig>)> =
+        let mut h3_udp_recovery_needed: Vec<(usize, Uplink)> =
             Vec::new();
 
         while let Some(joined) = tasks.join_next().await {
@@ -245,12 +245,12 @@ impl UplinkManager {
     fn process_probe_ok(
         &self,
         index: usize,
-        uplink: &Arc<crate::config::UplinkConfig>,
+        uplink: &Uplink,
         result: ProbeOutcome,
         effective_tcp_mode: WsTransportMode,
         effective_udp_mode: WsTransportMode,
-        h3_tcp_recovery: &mut Vec<(usize, Arc<crate::config::UplinkConfig>)>,
-        h3_udp_recovery: &mut Vec<(usize, Arc<crate::config::UplinkConfig>)>,
+        h3_tcp_recovery: &mut Vec<(usize, Uplink)>,
+        h3_udp_recovery: &mut Vec<(usize, Uplink)>,
     ) -> (bool, bool) {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures;
@@ -377,10 +377,10 @@ impl UplinkManager {
             }
         });
         if needs_h3_tcp_recovery {
-            h3_tcp_recovery.push((index, Arc::clone(uplink)));
+            h3_tcp_recovery.push((index, uplink.clone()));
         }
         if needs_h3_udp_recovery {
-            h3_udp_recovery.push((index, Arc::clone(uplink)));
+            h3_udp_recovery.push((index, uplink.clone()));
         }
         let (tcp_rtt_ewma_ms, udp_rtt_ewma_ms) = {
             let s = self.inner.read_status(index);
@@ -409,7 +409,7 @@ impl UplinkManager {
     fn process_probe_err(
         &self,
         index: usize,
-        uplink: &Arc<crate::config::UplinkConfig>,
+        uplink: &Uplink,
         error: anyhow::Error,
     ) {
         let now = Instant::now();
@@ -490,7 +490,7 @@ impl UplinkManager {
 
     async fn run_h3_recovery_probes(
         &self,
-        needed: Vec<(usize, Arc<crate::config::UplinkConfig>)>,
+        needed: Vec<(usize, Uplink)>,
         which: TransportKind,
     ) {
         if needed.is_empty() {
@@ -518,7 +518,7 @@ impl UplinkManager {
                 let outcome = run_probe_attempt_with_timeout(
                     Arc::clone(&dns_cache),
                     group_name,
-                    Arc::clone(&uplink),
+                    uplink.clone(),
                     probe,
                     dial_limit,
                     eff_tcp,
