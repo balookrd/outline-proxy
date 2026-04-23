@@ -919,6 +919,9 @@ curl http://[::1]:9090/metrics
 При включённой секции `[control]` процесс поднимает **отдельный** TCP-listener
 для мутирующих эндпоинтов, защищённый обязательным bearer-токеном:
 
+- `GET /control/topology` — топология instance/group/uplink для дашборда
+- `GET /control/summary` — компактные счётчики для stat-карточек
+- `POST /control/activate` — JSON API активации для click action
 - `POST /switch` — ручное переключение активного аплинка
 
 Анонимного доступа нет: запросы без корректного заголовка
@@ -976,6 +979,44 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 здоров; если проба позже отметит его нездоровым, сработает обычный failover.
 При `auto_failback = true` цикл проб может позже вернуться на более
 приоритетный аплинк, как только тот стабилизируется.
+
+### Control API для дашбордов
+
+`GET /control/topology` возвращает JSON с группами и аплинками, включая
+флаги `active_global`, `active_tcp`, `active_udp` для каждого аплинка —
+удобно для table/tree-панелей Grafana.
+
+`GET /control/summary` возвращает компактные счётчики:
+`groups_total`, `uplinks_total`, healthy/unhealthy по TCP/UDP и счётчики
+активных выборов.
+
+`POST /control/activate` принимает JSON и использует ту же внутреннюю логику
+переключения, что и `/switch`:
+
+```json
+{
+  "group": "core",
+  "uplink": "uplink-02",
+  "transport": "tcp"
+}
+```
+
+Примеры:
+
+```bash
+TOKEN="long-random-secret"
+
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/control/topology'
+
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/control/summary'
+
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"group":"core","uplink":"uplink-02","transport":"tcp"}' \
+  'http://127.0.0.1:9091/control/activate'
+```
 
 Пример конфигурации Prometheus:
 
