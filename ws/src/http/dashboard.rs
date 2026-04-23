@@ -265,7 +265,14 @@ async fn activate_instance(
 
 fn instance_url(base: &Url, path: &str) -> Result<Url> {
     let mut url = base.clone();
-    url.set_path(path);
+    let base_path = base.path().trim_end_matches('/');
+    let suffix = path.strip_prefix('/').unwrap_or(path);
+    let full_path = if base_path.is_empty() {
+        format!("/{suffix}")
+    } else {
+        format!("{base_path}/{suffix}")
+    };
+    url.set_path(&full_path);
     url.set_query(None);
     url.set_fragment(None);
     Ok(url)
@@ -464,16 +471,22 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
 .chips {{ display: flex; flex-wrap: wrap; gap: 9px; }}
 .chip {{ border: 1px solid #dde5dd; background: #eff6f1; border-radius: 7px; padding: 6px 11px; font-size: 13px; color: #1f2937; }}
 .instances-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 18px; }}
+.catalog-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 18px; }}
 .instance-card {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }}
+.catalog-card {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }}
 .instance-head {{ display: flex; align-items: center; gap: 12px; }}
 .instance-name {{ font-size: 19px; font-weight: 700; }}
 .instance-sub {{ color: var(--muted); font-size: 14px; }}
 .instance-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+.catalog-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
 .metric {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fbfcfe; }}
 .metric-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
 .metric-value {{ font-size: 22px; font-weight: 700; }}
 .instance-groups {{ display: grid; gap: 10px; }}
 .instance-group {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fff; }}
+.catalog-list {{ display: grid; gap: 10px; }}
+.catalog-row {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fff; }}
+.catalog-row-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-name {{ font-weight: 700; }}
 .tiny-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
@@ -487,7 +500,9 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
   main {{ padding: 24px 16px; }}
   .cards {{ grid-template-columns: 1fr; }}
   .instances-grid {{ grid-template-columns: 1fr; }}
+  .catalog-grid {{ grid-template-columns: 1fr; }}
   .instance-meta {{ grid-template-columns: 1fr; }}
+  .catalog-meta {{ grid-template-columns: 1fr; }}
   .group-head {{ flex-wrap: wrap; padding: 16px; }}
   .group-meta {{ margin-left: 0; width: 100%; justify-content: space-between; gap: 12px; }}
 }}
@@ -500,8 +515,8 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
     <nav class="menu">
       <button class="item active" data-view="dashboard" type="button">⌂ <span>Дашборд</span></button>
       <button class="item" data-view="instances" type="button">▣ <span>Инстансы</span></button>
-      <div class="item">↗ <span>Аплинки</span></div>
-      <div class="item">◎ <span>Группы</span></div>
+      <button class="item" data-view="uplinks" type="button">↗ <span>Аплинки</span></button>
+      <button class="item" data-view="groups" type="button">◎ <span>Группы</span></button>
       <div class="item">▤ <span>Логи</span></div>
       <div class="item">⚙ <span>Настройки</span></div>
     </nav>
@@ -525,6 +540,12 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
     <section class="view" id="instancesView">
       <section class="instances-grid" id="instancesGrid"></section>
     </section>
+    <section class="view" id="uplinksView">
+      <section class="catalog-grid" id="uplinksGrid"></section>
+    </section>
+    <section class="view" id="groupsView">
+      <section class="catalog-grid" id="groupsGrid"></section>
+    </section>
   </main>
 </div>
 <script>
@@ -532,7 +553,7 @@ const refreshMs = {refresh_ms};
 let timer = null;
 let autoRefreshEnabled = true;
 let currentView = "dashboard";
-const state = {{ groups: new Map(), instances: [], errors: [] }};
+const state = {{ groups: new Map(), instances: [], uplinks: new Map(), errors: [] }};
 
 function groupKey(group, uplink) {{ return group + "\u0000" + uplink; }}
 function healthy(entry) {{
@@ -545,6 +566,7 @@ function active(entry) {{
 function rebuild(raw) {{
   state.groups = new Map();
   state.instances = [];
+  state.uplinks = new Map();
   state.errors = [];
   for (const inst of raw.instances) {{
     if (!inst.ok) {{
@@ -560,7 +582,10 @@ function rebuild(raw) {{
       for (const uplink of group.uplinks || []) {{
         const key = uplink.name;
         if (!byUplink.has(key)) byUplink.set(key, []);
-        byUplink.get(key).push({{ instance: inst.name, group: group.name, uplink }});
+        const entry = {{ instance: inst.name, group: group.name, uplink }};
+        byUplink.get(key).push(entry);
+        if (!state.uplinks.has(key)) state.uplinks.set(key, []);
+        state.uplinks.get(key).push(entry);
       }}
     }}
   }}
@@ -575,7 +600,12 @@ function renderNav() {{
   }});
   document.getElementById("dashboardView").classList.toggle("active", currentView === "dashboard");
   document.getElementById("instancesView").classList.toggle("active", currentView === "instances");
-  document.getElementById("viewTitle").textContent = currentView === "dashboard" ? "Дашборд" : "Инстансы";
+  document.getElementById("uplinksView").classList.toggle("active", currentView === "uplinks");
+  document.getElementById("groupsView").classList.toggle("active", currentView === "groups");
+  document.getElementById("viewTitle").textContent =
+    currentView === "dashboard" ? "Дашборд" :
+    currentView === "instances" ? "Инстансы" :
+    currentView === "uplinks" ? "Аплинки" : "Группы";
 }}
 function render() {{
   renderErrors();
@@ -624,6 +654,8 @@ function render() {{
   document.getElementById("activeTotal").textContent = activeTotal;
   document.getElementById("updatedAt").textContent = new Date().toLocaleTimeString();
   renderInstances();
+  renderUplinks();
+  renderGroups();
   renderNav();
   renderRefreshButton();
 }}
@@ -675,6 +707,90 @@ function renderInstances() {{
       groupsEl.appendChild(groupEl);
     }}
     card.appendChild(groupsEl);
+    root.appendChild(card);
+  }}
+}}
+function renderUplinks() {{
+  const root = document.getElementById("uplinksGrid");
+  root.innerHTML = "";
+  for (const [uplinkName, entries] of state.uplinks.entries()) {{
+    const healthyCount = entries.filter(healthy).length;
+    const activeCount = entries.filter(active).length;
+    const instances = [...new Set(entries.map(e => e.instance))];
+    const groups = [...new Set(entries.map(e => e.group))];
+    const card = document.createElement("article");
+    card.className = "catalog-card";
+    card.innerHTML = `
+      <div class="instance-head">
+        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
+        <div>
+          <div class="instance-name">${{escapeHtml(uplinkName)}}</div>
+          <div class="instance-sub">${{instances.length}} инстансов, ${{groups.length}} групп</div>
+        </div>
+      </div>
+      <div class="catalog-meta">
+        <div class="metric"><div class="metric-label">Инстансы</div><div class="metric-value">${{instances.length}}</div></div>
+        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
+        <div class="metric"><div class="metric-label">Доступные</div><div class="metric-value">${{healthyCount}}</div></div>
+      </div>`;
+    const list = document.createElement("div");
+    list.className = "catalog-list";
+    for (const entry of entries) {{
+      const row = document.createElement("div");
+      row.className = "catalog-row";
+      row.innerHTML = `
+        <div class="catalog-row-top">
+          <span class="instance-group-name">${{escapeHtml(entry.instance)}}</span>
+          <span class="badge">${{active(entry) ? "Активный" : (healthy(entry) ? "Доступен" : "Неактивный")}}</span>
+        </div>
+        <div class="tiny-chips">
+          <span class="tiny-chip">Группа: ${{escapeHtml(entry.group)}}</span>
+          <span class="tiny-chip">TCP: ${{entry.uplink.tcp_healthy === false ? "down" : "ok"}}</span>
+          <span class="tiny-chip">UDP: ${{entry.uplink.udp_healthy === false ? "down" : "ok"}}</span>
+        </div>`;
+      list.appendChild(row);
+    }}
+    card.appendChild(list);
+    root.appendChild(card);
+  }}
+}}
+function renderGroups() {{
+  const root = document.getElementById("groupsGrid");
+  root.innerHTML = "";
+  for (const [groupName, uplinks] of state.groups.entries()) {{
+    const entries = [...uplinks.values()].flat();
+    const instances = [...new Set(entries.map(e => e.instance))];
+    const healthyCount = entries.filter(healthy).length;
+    const activeCount = entries.filter(active).length;
+    const card = document.createElement("article");
+    card.className = "catalog-card";
+    card.innerHTML = `
+      <div class="instance-head">
+        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
+        <div>
+          <div class="instance-name">${{escapeHtml(groupName)}}</div>
+          <div class="instance-sub">${{instances.length}} инстансов, ${{uplinks.size}} аплинков</div>
+        </div>
+      </div>
+      <div class="catalog-meta">
+        <div class="metric"><div class="metric-label">Инстансы</div><div class="metric-value">${{instances.length}}</div></div>
+        <div class="metric"><div class="metric-label">Аплинки</div><div class="metric-value">${{uplinks.size}}</div></div>
+        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
+      </div>`;
+    const list = document.createElement("div");
+    list.className = "catalog-list";
+    for (const [uplinkName, uplinkEntries] of uplinks.entries()) {{
+      const row = document.createElement("div");
+      row.className = "catalog-row";
+      row.innerHTML = `
+        <div class="catalog-row-top">
+          <span class="instance-group-name">${{escapeHtml(uplinkName)}}</span>
+          <span class="badge">${{uplinkEntries.some(active) ? "Активный" : (uplinkEntries.some(healthy) ? "Доступен" : "Неактивный")}}</span>
+        </div>
+        <div class="tiny-chips">${{uplinkEntries.map(entry => `<span class="tiny-chip">${{escapeHtml(entry.instance)}}</span>`).join("")}}</div>`;
+      list.appendChild(row);
+    }}
+    card.appendChild(list);
     root.appendChild(card);
   }}
 }}
@@ -745,5 +861,15 @@ mod tests {
             parse_http_response(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}").unwrap();
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body, b"{}");
+    }
+
+    #[test]
+    fn instance_url_preserves_base_path_prefix() {
+        let base = Url::parse("https://cloud1.beerloga.su/rust-ws-exporter").unwrap();
+        let url = instance_url(&base, "/control/summary").unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://cloud1.beerloga.su/rust-ws-exporter/control/summary"
+        );
     }
 }
