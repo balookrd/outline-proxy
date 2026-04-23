@@ -340,6 +340,65 @@ where
         stream.write_all(body).await?;
     }
     let mut response = Vec::new();
+    let mut header_end = None;
+    while header_end.is_none() {
+        let mut buf = [0u8; 4096];
+        let n = stream.read(&mut buf).await?;
+        if n == 0 {
+            bail!("invalid HTTP response");
+        }
+        response.extend_from_slice(&buf[..n]);
+        header_end = response.windows(4).position(|window| window == b"\r\n\r\n");
+    }
+
+    let header_end = header_end.expect("header_end just checked");
+    let head = std::str::from_utf8(&response[..header_end]).context("invalid response headers")?;
+    let mut content_length = None;
+    let mut chunked = false;
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim();
+        if name.eq_ignore_ascii_case("Content-Length") {
+            content_length = value.parse::<usize>().ok();
+        } else if name.eq_ignore_ascii_case("Transfer-Encoding")
+            && value.to_ascii_lowercase().contains("chunked")
+        {
+            chunked = true;
+        }
+    }
+
+    let body_start = header_end + 4;
+    if let Some(content_length) = content_length {
+        while response.len() < body_start + content_length {
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await?;
+            if n == 0 {
+                bail!("truncated HTTP response body");
+            }
+            response.extend_from_slice(&buf[..n]);
+        }
+        response.truncate(body_start + content_length);
+        return Ok(response);
+    }
+
+    if chunked {
+        while !has_complete_chunked_body(&response[body_start..])? {
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).await?;
+            if n == 0 {
+                bail!("truncated chunked HTTP response body");
+            }
+            response.extend_from_slice(&buf[..n]);
+        }
+        let decoded = decode_chunked_body(&response[body_start..])?;
+        let mut out = response[..body_start].to_vec();
+        out.extend_from_slice(&decoded);
+        return Ok(out);
+    }
+
     stream.read_to_end(&mut response).await?;
     Ok(response)
 }
@@ -358,6 +417,54 @@ fn parse_http_response(response: &[u8]) -> Result<(StatusCode, Vec<u8>)> {
         .and_then(|code| StatusCode::from_u16(code).ok())
         .ok_or_else(|| anyhow::anyhow!("invalid HTTP status"))?;
     Ok((status, response[split_at + 4..].to_vec()))
+}
+
+fn has_complete_chunked_body(body: &[u8]) -> Result<bool> {
+    let mut offset = 0usize;
+    loop {
+        let Some(line_end_rel) = body[offset..].windows(2).position(|window| window == b"\r\n")
+        else {
+            return Ok(false);
+        };
+        let line_end = offset + line_end_rel;
+        let size_line = std::str::from_utf8(&body[offset..line_end]).context("invalid chunk size")?;
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16).context("invalid chunk size")?;
+        offset = line_end + 2;
+        if body.len() < offset + size + 2 {
+            return Ok(false);
+        }
+        offset += size;
+        if &body[offset..offset + 2] != b"\r\n" {
+            bail!("invalid chunk terminator");
+        }
+        offset += 2;
+        if size == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn decode_chunked_body(body: &[u8]) -> Result<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    loop {
+        let line_end_rel = body[offset..]
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .ok_or_else(|| anyhow::anyhow!("invalid chunked body"))?;
+        let line_end = offset + line_end_rel;
+        let size_line = std::str::from_utf8(&body[offset..line_end]).context("invalid chunk size")?;
+        let size_hex = size_line.split(';').next().unwrap_or("").trim();
+        let size = usize::from_str_radix(size_hex, 16).context("invalid chunk size")?;
+        offset = line_end + 2;
+        if size == 0 {
+            break;
+        }
+        out.extend_from_slice(&body[offset..offset + size]);
+        offset += size + 2;
+    }
+    Ok(out)
 }
 
 fn redirect_response(location: &'static str) -> DashboardResponse {
@@ -453,10 +560,13 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
 .view {{ display: none; }}
 .view.active {{ display: block; }}
 .group {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }}
+.group.collapsed .cards {{ display: none; }}
 .group-head {{ min-height: 64px; display: flex; align-items: center; gap: 16px; padding: 0 28px; border-bottom: 1px solid #e9edf3; }}
 .group-title {{ font-size: 17px; display: flex; align-items: center; gap: 10px; }}
 .group-title b {{ font-weight: 700; }}
 .group-meta {{ margin-left: auto; display: flex; gap: 34px; color: #536079; }}
+.group-toggle {{ border: 0; background: transparent; color: #536079; font-size: 18px; line-height: 1; padding: 0; cursor: pointer; }}
+.group.collapsed .group-toggle {{ transform: rotate(180deg); }}
 .cards {{ padding: 16px; display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 14px; }}
 .card {{ min-height: 98px; border: 1px solid var(--line); border-radius: 8px; padding: 15px; display: grid; align-content: start; gap: 14px; background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }}
 .card.active {{ border-color: #79c893; background: #f8fffa; }}
@@ -553,7 +663,7 @@ const refreshMs = {refresh_ms};
 let timer = null;
 let autoRefreshEnabled = true;
 let currentView = "dashboard";
-const state = {{ groups: new Map(), instances: [], uplinks: new Map(), errors: [] }};
+const state = {{ groups: new Map(), instances: [], uplinks: new Map(), collapsedGroups: new Set(), errors: [] }};
 
 function groupKey(group, uplink) {{ return group + "\u0000" + uplink; }}
 function healthy(entry) {{
@@ -615,7 +725,8 @@ function render() {{
   for (const [group, uplinks] of state.groups.entries()) {{
     let instanceCount = 0;
     const groupEl = document.createElement("article");
-    groupEl.className = "group";
+    const collapsed = state.collapsedGroups.has(group);
+    groupEl.className = "group" + (collapsed ? " collapsed" : "");
     const cards = document.createElement("div");
     cards.className = "cards";
     for (const [uplinkName, entries] of uplinks.entries()) {{
@@ -644,8 +755,9 @@ function render() {{
     groupEl.innerHTML = `
       <header class="group-head">
         <div class="group-title"><span style="color: var(--blue)">♙</span><span>Группа: <b>${{escapeHtml(group)}}</b></span></div>
-        <div class="group-meta"><span>Инстансов: <b>${{instanceCount}}</b></span><span>Аплинков: <b>${{uplinks.size}}</b></span><span>⌃</span></div>
+        <div class="group-meta"><span>Инстансов: <b>${{instanceCount}}</b></span><span>Аплинков: <b>${{uplinks.size}}</b></span><button class="group-toggle" type="button" aria-label="Свернуть группу" aria-expanded="${{String(!collapsed)}}">⌃</button></div>
       </header>`;
+    groupEl.querySelector(".group-toggle").addEventListener("click", () => toggleGroup(group));
     groupEl.appendChild(cards);
     root.appendChild(groupEl);
   }}
@@ -817,6 +929,14 @@ function toggleAutoRefresh() {{
   renderRefreshButton();
   startAutoRefresh();
 }}
+function toggleGroup(group) {{
+  if (state.collapsedGroups.has(group)) {{
+    state.collapsedGroups.delete(group);
+  }} else {{
+    state.collapsedGroups.add(group);
+  }}
+  render();
+}}
 function setView(view) {{
   currentView = view;
   renderNav();
@@ -871,5 +991,17 @@ mod tests {
             url.as_str(),
             "https://cloud1.beerloga.su/rust-ws-exporter/control/summary"
         );
+    }
+
+    #[test]
+    fn detects_complete_chunked_body() {
+        assert!(has_complete_chunked_body(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap());
+        assert!(!has_complete_chunked_body(b"4\r\nWiki\r\n5\r\nped").unwrap());
+    }
+
+    #[test]
+    fn decodes_chunked_body() {
+        let decoded = decode_chunked_body(b"4\r\nWiki\r\n5\r\npedia\r\n0\r\n\r\n").unwrap();
+        assert_eq!(decoded, b"Wikipedia");
     }
 }
