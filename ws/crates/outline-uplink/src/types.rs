@@ -312,4 +312,5 @@ pub(crate) struct CandidateState {
     pub(crate) uplink: Uplink,
     pub(crate) healthy: bool,
     pub(crate) score: Option<Duration>,
+    pub(crate) status: UplinkStatus,
 }
