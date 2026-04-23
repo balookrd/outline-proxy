@@ -23,13 +23,13 @@ use super::super::engine::scheduler::FlowScheduler;
 /// each arm of `send_chunk` / `close` dispatches directly into a
 /// monomorphized, branch-free implementation rather than going through a
 /// second runtime check inside the writer.
-pub enum TunTcpUpstreamWriter {
+pub enum UpstreamWriter {
     TunneledWs(WsTcpWriter),
     TunneledSocket(SocketTcpWriter),
     Direct(OwnedWriteHalf),
 }
 
-impl TunTcpUpstreamWriter {
+impl UpstreamWriter {
     pub(in crate::tcp) async fn send_chunk(&mut self, data: &[u8]) -> Result<()> {
         match self {
             Self::TunneledWs(w) => w.send_chunk(data).await,
@@ -75,7 +75,7 @@ pub(in crate::tcp) struct FlowRouting {
     /// The route this flow was created for — `Group` for tunneled flows,
     /// `Direct` for local-socket direct route.
     pub(in crate::tcp) route: TunRoute,
-    pub(in crate::tcp) upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
+    pub(in crate::tcp) upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>,
 }
 
 /// External notification channels a flow exposes — the close broadcaster

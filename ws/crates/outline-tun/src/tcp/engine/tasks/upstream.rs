@@ -110,7 +110,7 @@ impl TunTcpEngine {
                 };
                 let (read_half, write_half) = stream.into_split();
                 let upstream_writer = Arc::new(Mutex::new(
-                    super::super::super::state_machine::TunTcpUpstreamWriter::Direct(write_half),
+                    super::super::super::state_machine::UpstreamWriter::Direct(write_half),
                 ));
                 {
                     let mut state = flow.lock().await;
@@ -190,8 +190,8 @@ impl TunTcpEngine {
 
             let upstream_writer = Arc::new(Mutex::new(
                 match upstream_writer {
-                    TcpWriter::Ws(w) => super::super::super::state_machine::TunTcpUpstreamWriter::TunneledWs(w),
-                    TcpWriter::Socket(w) => super::super::super::state_machine::TunTcpUpstreamWriter::TunneledSocket(w),
+                    TcpWriter::Ws(w) => super::super::super::state_machine::UpstreamWriter::TunneledWs(w),
+                    TcpWriter::Socket(w) => super::super::super::state_machine::UpstreamWriter::TunneledSocket(w),
                 },
             ));
             let (pending_payloads, should_close_client_half) = {

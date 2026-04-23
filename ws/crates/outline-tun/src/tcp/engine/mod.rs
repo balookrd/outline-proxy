@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use crate::atomic_counter::CounterU64;
 use crate::config::TunTcpConfig;
 use outline_metrics as metrics;
-use super::state_machine::{ServerFlush, TunTcpUpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet};
+use super::state_machine::{ServerFlush, UpstreamWriter, build_flow_ack_packet, build_flow_syn_ack_packet};
 use crate::{SharedTunWriter, TunRouting};
 use outline_uplink::{TransportKind, UplinkManager};
 
@@ -267,7 +267,7 @@ impl TunTcpEngine {
 }
 
 pub(super) async fn close_upstream_writer(
-    upstream_writer: Option<Arc<Mutex<TunTcpUpstreamWriter>>>,
+    upstream_writer: Option<Arc<Mutex<UpstreamWriter>>>,
 ) {
     let Some(upstream_writer) = upstream_writer else {
         return;

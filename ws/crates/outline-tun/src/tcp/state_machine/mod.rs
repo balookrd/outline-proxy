@@ -58,4 +58,4 @@ pub(super) use types::{
     FlowTimestamps, ReportedFlowMetrics, SequenceRange, ServerBacklogPressure, ServerFlush,
     ServerSegment, TcpFlowState, TcpFlowStatus,
 };
-pub(crate) use types::TunTcpUpstreamWriter;
+pub(crate) use types::UpstreamWriter;
