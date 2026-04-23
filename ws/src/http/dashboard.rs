@@ -522,19 +522,31 @@ fn dashboard_html(refresh_interval_secs: u64) -> String {
 <style>
 :root {{
   color-scheme: light;
-  --nav: #101a2b;
-  --nav-2: #16233a;
-  --text: #172033;
+  --nav: #111827;
+  --nav-2: #1b2435;
+  --nav-3: #2a3752;
+  --text: #101828;
   --muted: #667085;
-  --line: #d9dee7;
-  --soft: #f6f8fb;
-  --green: #31a852;
-  --green-soft: #e8f7ed;
-  --blue: #3b82f6;
+  --line: #d9e0ea;
+  --line-strong: #c6d0dd;
+  --soft: #f3f6fa;
+  --soft-2: #f8fafc;
+  --panel: #ffffff;
+  --panel-tint: #f7f9fc;
+  --green: #22c55e;
+  --green-strong: #15803d;
+  --green-soft: #eaf8ef;
+  --amber: #f59e0b;
+  --amber-soft: #fff7e8;
+  --gray-soft: #eef2f6;
+  --blue: #4f46e5;
+  --blue-soft: #eef0ff;
   --red: #d92d20;
+  --red-soft: #fff2f1;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: #f8fafc; }}
+body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: #fff; }}
 .shell {{ min-height: 100vh; display: grid; grid-template-columns: 244px 1fr; }}
 .nav {{ background: var(--nav); color: #d7deeb; display: flex; flex-direction: column; min-height: 100vh; }}
 .brand {{ height: 88px; display: flex; gap: 12px; align-items: center; padding: 0 24px; font-weight: 700; color: #fff; }}
@@ -542,80 +554,114 @@ body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, 
 .logo:before,.logo:after {{ content: ""; position: absolute; border: 2px solid #60a5fa; border-radius: 7px; width: 13px; height: 8px; top: 7px; background: var(--nav); }}
 .logo:before {{ left: -8px; }} .logo:after {{ right: -8px; }}
 .menu {{ padding: 12px 14px; display: grid; gap: 8px; }}
-.item {{ height: 44px; width: 100%; border: 0; border-radius: 6px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: #c8d1df; background: transparent; text-align: left; }}
-.item.active {{ background: #22314d; color: #60a5fa; }}
+.item {{ height: 44px; width: 100%; border: 0; border-radius: 10px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: #c8d1df; background: transparent; text-align: left; font-size: 14px; }}
+.item.active {{ background: var(--nav-3); color: #7ea6ff; }}
 .spacer {{ flex: 1; }}
-.stats {{ margin: 16px; border: 1px solid #263650; border-radius: 8px; padding: 16px; display: grid; gap: 10px; }}
-.stats b {{ display: block; font-size: 25px; color: #fff; }}
-.stats .good {{ color: #65d783; }}
-.stamp {{ height: 76px; border-top: 1px solid #22314d; padding: 22px 24px; color: #8e9bb0; font-size: 13px; }}
-main {{ padding: 30px 34px 18px; min-width: 0; }}
-.topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 26px; }}
-h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
-.refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; color: #344054; box-shadow: 0 1px 2px #1018280d; }}
-.refresh.off {{ color: #667085; background: #f8fafc; }}
+.nav-section {{ margin: 16px; border: 1px solid #24324a; border-radius: 12px; padding: 16px; display: grid; gap: 10px; background: rgba(255,255,255,0.02); }}
+.nav-section-title {{ color: #98a2b3; font-size: 13px; }}
+.nav-section-value {{ display: block; font-size: 28px; font-weight: 700; color: #fff; }}
+.nav-section-good {{ color: #65d783; }}
+.stamp {{ border-top: 1px solid #22314d; padding: 22px 24px; color: #8e9bb0; font-size: 13px; display: grid; gap: 14px; }}
+.stamp-card {{ border: 1px solid #24324a; border-radius: 12px; padding: 14px; display: grid; gap: 6px; }}
+.stamp-good {{ color: #65d783; }}
+main {{ padding: 28px 28px 24px; min-width: 0; background: #fff; }}
+.topbar {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }}
+.topbar-copy {{ display: grid; gap: 8px; }}
+h1 {{ margin: 0; font-size: 40px; line-height: 1; letter-spacing: 0; }}
+.subtitle {{ color: var(--muted); font-size: 16px; }}
+.toolbar {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
+.updated-inline {{ color: var(--muted); font-size: 14px; }}
+.refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; color: #344054; box-shadow: var(--shadow); }}
+.refresh.off {{ color: #667085; background: var(--soft-2); }}
 .dot {{ width: 10px; height: 10px; border-radius: 99px; background: var(--green); display: inline-block; }}
 .refresh.off .dot {{ background: #c7ced8; }}
-.groups {{ display: grid; gap: 20px; }}
+.summary-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }}
+.summary-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); display: grid; gap: 16px; min-height: 104px; }}
+.summary-top {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }}
+.summary-label {{ color: var(--muted); font-size: 14px; }}
+.summary-value {{ font-size: 38px; font-weight: 700; line-height: 1; }}
+.summary-value.good {{ color: var(--green); }}
+.summary-icon {{ width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--soft); color: var(--blue); font-size: 18px; }}
+.summary-icon.good {{ background: var(--green-soft); color: var(--green-strong); }}
+.summary-icon.warn {{ background: var(--blue-soft); color: var(--blue); }}
 .view {{ display: none; }}
 .view.active {{ display: block; }}
-.group {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }}
-.group.collapsed .cards {{ display: none; }}
-.group-head {{ min-height: 64px; display: flex; align-items: center; gap: 16px; padding: 0 28px; border-bottom: 1px solid #e9edf3; }}
-.group-title {{ font-size: 17px; display: flex; align-items: center; gap: 10px; }}
-.group-title b {{ font-weight: 700; }}
-.group-meta {{ margin-left: auto; display: flex; gap: 34px; color: #536079; }}
-.group-toggle {{ border: 0; background: transparent; color: #536079; font-size: 18px; line-height: 1; padding: 0; cursor: pointer; }}
-.group.collapsed .group-toggle {{ transform: rotate(180deg); }}
-.cards {{ padding: 16px; display: grid; grid-template-columns: repeat(3, minmax(220px, 1fr)); gap: 14px; }}
-.card {{ min-height: 98px; border: 1px solid var(--line); border-radius: 8px; padding: 15px; display: grid; align-content: start; gap: 14px; background: #fff; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }}
-.card.active {{ border-color: #79c893; background: #f8fffa; }}
-.card:hover {{ transform: translateY(-1px); }}
-.card[aria-disabled="true"] {{ cursor: default; transform: none; opacity: .82; }}
-.card-row {{ display: flex; align-items: center; gap: 10px; min-width: 0; }}
-.status {{ width: 12px; height: 12px; border-radius: 99px; background: #aeb4bd; flex: 0 0 auto; }}
-.active .status {{ background: var(--green); }}
-.uplink {{ font-weight: 700; font-size: 17px; overflow-wrap: anywhere; }}
-.badge {{ margin-left: auto; border-radius: 999px; padding: 5px 12px; background: #eef0f4; color: #6b7280; font-size: 13px; white-space: nowrap; }}
-.active .badge {{ background: var(--green-soft); color: #269444; }}
-.chips {{ display: flex; flex-wrap: wrap; gap: 9px; }}
-.chip {{ border: 1px solid #dde5dd; background: #eff6f1; border-radius: 7px; padding: 6px 11px; font-size: 13px; color: #1f2937; }}
-.instances-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 18px; }}
-.catalog-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 18px; }}
-.instance-card {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }}
-.catalog-card {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }}
+.stack {{ display: grid; gap: 14px; }}
+.instance-panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }}
+.instance-panel.collapsed .instance-panel-body {{ display: none; }}
+.instance-panel-header {{ min-height: 68px; display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--line); }}
+.instance-panel.collapsed .instance-panel-header {{ border-bottom: 0; }}
+.panel-title-wrap {{ display: grid; gap: 6px; min-width: 0; }}
+.panel-title {{ display: flex; align-items: center; gap: 12px; min-width: 0; }}
+.panel-title strong {{ font-size: 24px; font-weight: 700; overflow-wrap: anywhere; }}
+.panel-subtitle {{ color: var(--muted); font-size: 14px; }}
+.panel-meta {{ margin-left: auto; display: flex; align-items: center; gap: 18px; color: #475467; font-size: 14px; flex-wrap: wrap; justify-content: flex-end; }}
+.collapse-btn {{ width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: #475467; cursor: pointer; }}
+.instance-panel.collapsed .collapse-btn {{ transform: rotate(180deg); }}
+.instance-panel-body {{ padding: 18px 20px 20px; display: grid; gap: 14px; background: var(--panel); }}
+.section-title {{ font-size: 15px; font-weight: 700; color: #344054; }}
+.group-table {{ border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }}
+.group-table-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: var(--panel-tint); border-bottom: 1px solid var(--line); }}
+.group-table-title {{ display: flex; align-items: center; gap: 10px; font-weight: 700; }}
+.group-count {{ padding: 4px 10px; border-radius: 999px; background: var(--gray-soft); color: #475467; font-size: 12px; }}
+.group-table-meta {{ display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; flex-wrap: wrap; justify-content: flex-end; }}
+.config-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+.tiny-chip,.config-chip {{ border-radius: 999px; padding: 5px 10px; background: var(--gray-soft); color: #344054; font-size: 12px; }}
+.config-chip {{ background: #eef4ff; color: #344054; }}
+.rows {{ width: 100%; }}
+.rows-head,.row {{ display: grid; grid-template-columns: minmax(140px, 1.4fr) minmax(110px, .9fr) minmax(100px, .8fr) minmax(100px, .8fr) minmax(160px, 1.1fr) 116px; gap: 14px; align-items: center; padding: 12px 16px; }}
+.rows-head {{ background: var(--soft-2); color: #667085; font-size: 12px; text-transform: uppercase; border-bottom: 1px solid var(--line); }}
+.row {{ border-bottom: 1px solid #edf1f6; font-size: 14px; }}
+.row:last-child {{ border-bottom: 0; }}
+.uplink-cell {{ display: flex; align-items: center; gap: 10px; font-weight: 600; }}
+.status-pill {{ display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 5px 10px; font-size: 12px; background: var(--gray-soft); color: #475467; }}
+.status-pill.good {{ background: var(--green-soft); color: var(--green-strong); }}
+.status-pill.warn {{ background: var(--amber-soft); color: #b54708; }}
+.status-pill.bad {{ background: #f2f4f7; color: #475467; }}
+.status-dot {{ width: 12px; height: 12px; border-radius: 99px; background: #98a2b3; flex: 0 0 auto; }}
+.status {{ width: 12px; height: 12px; border-radius: 99px; background: #98a2b3; flex: 0 0 auto; }}
+.status-dot.good {{ background: var(--green); }}
+.status-dot.warn {{ background: var(--amber); }}
+.status-dot.bad {{ background: #98a2b3; }}
+.badge {{ margin-left: auto; border-radius: 999px; padding: 5px 12px; background: var(--gray-soft); color: #6b7280; font-size: 13px; white-space: nowrap; }}
+.action-btn {{ height: 36px; border-radius: 10px; border: 1px solid var(--line-strong); background: #fff; color: #344054; font-weight: 600; }}
+.action-btn.primary {{ background: var(--blue); border-color: var(--blue); color: #fff; }}
+.action-btn:disabled {{ opacity: .5; cursor: default; }}
+.view {{ display: none; }}
+.view.active {{ display: block; }}
+.catalog-grid {{ display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 18px; }}
+.instance-card,.catalog-card {{ background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; box-shadow: var(--shadow); }}
 .instance-head {{ display: flex; align-items: center; gap: 12px; }}
 .instance-name {{ font-size: 19px; font-weight: 700; }}
 .instance-sub {{ color: var(--muted); font-size: 14px; }}
-.instance-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
-.catalog-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
-.metric {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fbfcfe; }}
+.instance-meta,.catalog-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+.metric {{ border: 1px solid #e8ecf3; border-radius: 12px; padding: 12px; background: #fbfcfe; }}
 .metric-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
 .metric-value {{ font-size: 22px; font-weight: 700; }}
-.instance-groups {{ display: grid; gap: 10px; }}
-.instance-group {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fff; }}
+.instance-groups,.catalog-list {{ display: grid; gap: 10px; }}
+.instance-group,.catalog-row {{ border: 1px solid #e8ecf3; border-radius: 12px; padding: 12px; background: #fff; }}
 .catalog-list {{ display: grid; gap: 10px; }}
-.catalog-row {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fff; }}
 .catalog-row-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-name {{ font-weight: 700; }}
-.config-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
 .tiny-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-.tiny-chip {{ border-radius: 999px; padding: 5px 10px; background: #f2f4f7; color: #344054; font-size: 12px; }}
 .error {{ border: 1px solid #f6c4be; background: #fff5f3; color: #9f1f14; border-radius: 8px; padding: 14px 16px; }}
-.hint {{ text-align: center; color: #8a94a6; margin-top: 18px; font-size: 14px; }}
 @media (max-width: 980px) {{
   .shell {{ grid-template-columns: 1fr; }}
   .nav {{ min-height: auto; }}
-  .menu,.stats,.stamp {{ display: none; }}
+  .menu,.nav-section,.stamp {{ display: none; }}
   main {{ padding: 24px 16px; }}
-  .cards {{ grid-template-columns: 1fr; }}
-  .instances-grid {{ grid-template-columns: 1fr; }}
+  .summary-grid {{ grid-template-columns: 1fr; }}
   .catalog-grid {{ grid-template-columns: 1fr; }}
+  .rows-head {{ display: none; }}
+  .row {{ grid-template-columns: 1fr; gap: 8px; }}
+  .row > div:last-child {{ padding-top: 4px; }}
   .instance-meta {{ grid-template-columns: 1fr; }}
   .catalog-meta {{ grid-template-columns: 1fr; }}
-  .group-head {{ flex-wrap: wrap; padding: 16px; }}
-  .group-meta {{ margin-left: 0; width: 100%; justify-content: space-between; gap: 12px; }}
+  .topbar {{ flex-direction: column; }}
+  .instance-panel-header {{ flex-wrap: wrap; }}
+  .panel-meta {{ margin-left: 0; width: 100%; justify-content: space-between; }}
+  .group-table-head {{ flex-direction: column; align-items: flex-start; }}
 }}
 </style>
 </head>
@@ -632,24 +678,38 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
       <div class="item">⚙ <span>Настройки</span></div>
     </nav>
     <div class="spacer"></div>
-    <div class="stats">
-      <span>Всего инстансов</span><b id="instancesTotal">0</b>
-      <span>Активных аплинков</span><b><span class="good" id="activeTotal">0</span> / <span id="uplinksTotal">0</span></b>
+    <div class="nav-section">
+      <div class="nav-section-title">Всего инстансов</div>
+      <span class="nav-section-value" id="instancesTotal">0</span>
+      <div class="nav-section-title">Активные аплинки</div>
+      <span class="nav-section-value"><span class="nav-section-good" id="activeTotal">0</span> / <span id="uplinksTotal">0</span></span>
     </div>
-    <div class="stamp">Обновлено: <span id="updatedAt">-</span></div>
+    <div class="stamp">
+      <div>Обновлено: <span id="updatedAt">-</span></div>
+      <div class="stamp-card">
+        <div class="nav-section-title">Состояние системы</div>
+        <div class="stamp-good" id="systemStatus">Нет ошибок</div>
+      </div>
+    </div>
   </aside>
   <main>
     <div class="topbar">
-      <h1 id="viewTitle">Дашборд</h1>
-      <button class="refresh" id="refreshBtn" type="button">↻ <span id="refreshLabel">Автообновление</span> <span class="dot"></span></button>
+      <div class="topbar-copy">
+        <h1 id="viewTitle">Дашборд</h1>
+        <div class="subtitle" id="viewSubtitle">Обзор всех инстансов, групп и аплинков</div>
+      </div>
+      <div class="toolbar">
+        <div class="updated-inline">Last updated: <span id="updatedAtInline">-</span></div>
+        <button class="refresh" id="refreshBtn" type="button">↻ <span id="refreshLabel">Автообновление</span> <span class="dot"></span></button>
+      </div>
     </div>
+    <section class="summary-grid" id="summaryGrid"></section>
     <div id="errors"></div>
     <section class="view active" id="dashboardView">
-      <section class="groups" id="groups"></section>
-      <div class="hint">Нажмите на неактивный аплинк для его активации через /control/activate</div>
+      <section class="stack" id="groups"></section>
     </section>
     <section class="view" id="instancesView">
-      <section class="instances-grid" id="instancesGrid"></section>
+      <section class="catalog-grid" id="instancesGrid"></section>
     </section>
     <section class="view" id="uplinksView">
       <section class="catalog-grid" id="uplinksGrid"></section>
@@ -664,7 +724,7 @@ const refreshMs = {refresh_ms};
 let timer = null;
 let autoRefreshEnabled = true;
 let currentView = "dashboard";
-const state = {{ groups: new Map(), instances: [], uplinks: new Map(), collapsedGroups: new Set(), errors: [] }};
+const state = {{ groups: new Map(), instances: [], uplinks: new Map(), collapsedGroups: new Set(), collapsedInstances: new Set(), errors: [] }};
 
 function groupKey(group, uplink) {{ return group + "\u0000" + uplink; }}
 function healthy(entry) {{
@@ -676,9 +736,89 @@ function active(entry) {{
 }}
 function groupConfigChips(group) {{
   return `
-    <span class="tiny-chip">mode = "${{escapeHtml(group.load_balancing_mode)}}"</span>
-    <span class="tiny-chip">routing_scope = "${{escapeHtml(group.routing_scope)}}"</span>
-    <span class="tiny-chip">auto_failback = ${{group.auto_failback ? "true" : "false"}}</span>`;
+    <span class="config-chip">mode = "${{escapeHtml(group.load_balancing_mode)}}"</span>
+    <span class="config-chip">routing_scope = "${{escapeHtml(group.routing_scope)}}"</span>
+    <span class="config-chip">auto_failback = ${{group.auto_failback ? "true" : "false"}}</span>`;
+}}
+function viewMeta(view) {{
+  return view === "dashboard"
+    ? {{ title: "Дашборд", subtitle: "Обзор всех инстансов, групп и аплинков" }}
+    : view === "instances"
+    ? {{ title: "Инстансы", subtitle: "Сводка по каждому instance и его группам" }}
+    : view === "uplinks"
+    ? {{ title: "Аплинки", subtitle: "Состояние аплинков по всем instances" }}
+    : {{ title: "Группы", subtitle: "Маршрутизация и состав uplink groups" }};
+}}
+function computeStats() {{
+  const healthyInstances = state.instances.filter(instance => instance.ok).length;
+  const totalInstances = state.instances.length;
+  let totalGroups = 0;
+  let activeUplinks = 0;
+  let inactiveUplinks = 0;
+  for (const instance of state.instances) {{
+    for (const group of instance.groups || []) {{
+      totalGroups += 1;
+      for (const uplink of group.uplinks || []) {{
+        if (uplink.active_global || uplink.active_tcp || uplink.active_udp) {{
+          activeUplinks += 1;
+        }} else {{
+          inactiveUplinks += 1;
+        }}
+      }}
+    }}
+  }}
+  return {{ totalInstances, healthyInstances, totalGroups, activeUplinks, inactiveUplinks }};
+}}
+function statusTone(ok, groups) {{
+  if (!ok) return "bad";
+  const uplinks = groups.flatMap(group => group.uplinks || []);
+  if (uplinks.length === 0) return "warn";
+  const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
+  const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
+  if (healthyCount === uplinks.length && activeCount > 0) return "good";
+  if (healthyCount > 0) return "warn";
+  return "bad";
+}}
+function statusLabel(tone) {{
+  return tone === "good" ? "Healthy" : tone === "warn" ? "Degraded" : "Offline";
+}}
+function transportState(value) {{
+  return value === false ? "down" : "ok";
+}}
+function uplinkStatus(entries) {{
+  const isActive = entries.some(active);
+  const isHealthy = entries.some(healthy);
+  if (isActive) return {{ label: "Active", tone: "good" }};
+  if (isHealthy) return {{ label: "Ready", tone: "warn" }};
+  return {{ label: "Inactive", tone: "bad" }};
+}}
+function uplinkRole(entry) {{
+  const parts = [];
+  if (entry.uplink.active_global) parts.push("global");
+  if (entry.uplink.active_tcp) parts.push("tcp");
+  if (entry.uplink.active_udp) parts.push("udp");
+  return parts.length ? parts.join(", ") : "standby";
+}}
+function summaryCards(stats) {{
+  return [
+    {{ label: "Total Instances", value: stats.totalInstances, icon: "▣", tone: "" }},
+    {{ label: "Healthy Instances", value: stats.healthyInstances, icon: "◌", tone: "good" }},
+    {{ label: "Total Uplink Groups", value: stats.totalGroups, icon: "◎", tone: "warn" }},
+    {{ label: "Active Uplinks", value: stats.activeUplinks + " / " + (stats.activeUplinks + stats.inactiveUplinks), icon: "↗", tone: "good" }},
+  ];
+}}
+function renderSummary(stats) {{
+  const root = document.getElementById("summaryGrid");
+  root.innerHTML = summaryCards(stats).map(card => `
+    <article class="summary-card">
+      <div class="summary-top">
+        <div>
+          <div class="summary-label">${{card.label}}</div>
+          <div class="summary-value ${{card.tone === "good" ? "good" : ""}}">${{card.value}}</div>
+        </div>
+        <div class="summary-icon ${{card.tone}}">${{card.icon}}</div>
+      </div>
+    </article>`).join("");
 }}
 function rebuild(raw) {{
   state.groups = new Map();
@@ -719,67 +859,111 @@ function renderNav() {{
   document.getElementById("instancesView").classList.toggle("active", currentView === "instances");
   document.getElementById("uplinksView").classList.toggle("active", currentView === "uplinks");
   document.getElementById("groupsView").classList.toggle("active", currentView === "groups");
-  document.getElementById("viewTitle").textContent =
-    currentView === "dashboard" ? "Дашборд" :
-    currentView === "instances" ? "Инстансы" :
-    currentView === "uplinks" ? "Аплинки" : "Группы";
+  const meta = viewMeta(currentView);
+  document.getElementById("viewTitle").textContent = meta.title;
+  document.getElementById("viewSubtitle").textContent = meta.subtitle;
 }}
 function render() {{
   renderErrors();
+  const stats = computeStats();
+  renderSummary(stats);
   const root = document.getElementById("groups");
   root.innerHTML = "";
-  let instances = new Set(), uplinksTotal = 0, activeTotal = 0;
-  for (const [group, uplinks] of state.groups.entries()) {{
-    let instanceCount = 0;
-    const groupEl = document.createElement("article");
-    const collapsed = state.collapsedGroups.has(group);
-    groupEl.className = "group" + (collapsed ? " collapsed" : "");
-    const cards = document.createElement("div");
-    cards.className = "cards";
-    for (const [uplinkName, entries] of uplinks.entries()) {{
-      uplinksTotal += entries.length;
-      instanceCount += entries.length;
-      entries.forEach(e => instances.add(e.instance));
-      const isActive = entries.some(active);
-      if (isActive) activeTotal += entries.length;
-      const isHealthy = entries.some(healthy);
-      const card = document.createElement("button");
-      card.className = "card" + (isActive ? " active" : "");
-      card.type = "button";
-      card.setAttribute("aria-disabled", String(isActive));
-      card.innerHTML = `
-        <div class="card-row">
-          <span class="status"></span>
-          <span class="uplink">${{escapeHtml(uplinkName)}}</span>
-          <span class="badge">${{isActive ? "Активный" : (isHealthy ? "Доступен" : "Неактивный")}}</span>
+  for (const instance of state.instances) {{
+    const panel = document.createElement("article");
+    const collapsed = state.collapsedInstances.has(instance.name);
+    panel.className = "instance-panel" + (collapsed ? " collapsed" : "");
+    const groups = instance.groups || [];
+    const uplinks = groups.flatMap(group => group.uplinks || []);
+    const tone = statusTone(instance.ok, groups);
+    const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
+    const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
+    panel.innerHTML = `
+      <header class="instance-panel-header">
+        <div class="status-dot ${{tone}}"></div>
+        <div class="panel-title-wrap">
+          <div class="panel-title">
+            <strong>${{escapeHtml(instance.name)}}</strong>
+            <span class="status-pill ${{tone}}">${{statusLabel(tone)}}</span>
+          </div>
+          <div class="panel-subtitle">${{instance.ok ? `${{groups.length}} groups, ${{uplinks.length}} uplinks` : "Инстанс недоступен"}}</div>
         </div>
-        <div class="chips">${{entries.map(e => `<span class="chip">${{escapeHtml(e.instance)}}</span>`).join("")}}</div>`;
-      if (!isActive) {{
-        card.addEventListener("click", () => activateEntries(entries));
-      }}
-      cards.appendChild(card);
-    }}
-    groupEl.innerHTML = `
-      <header class="group-head">
-        <div class="group-title"><span style="color: var(--blue)">♙</span><span>Группа: <b>${{escapeHtml(group)}}</b></span></div>
-        <div class="group-meta"><span>Инстансов: <b>${{instanceCount}}</b></span><span>Аплинков: <b>${{uplinks.size}}</b></span><button class="group-toggle" type="button" aria-label="Свернуть группу" aria-expanded="${{String(!collapsed)}}">⌃</button></div>
+        <div class="panel-meta">
+          <span>Healthy: <b>${{healthyCount}}</b></span>
+          <span>Active: <b>${{activeCount}}</b></span>
+          <span>Groups: <b>${{groups.length}}</b></span>
+          <button class="collapse-btn" type="button" aria-label="Свернуть инстанс">⌃</button>
+        </div>
       </header>`;
-    const groupSample = entriesForGroup(uplinks)[0]?.groupObj;
-    if (groupSample) {{
-      const chips = document.createElement("div");
-      chips.className = "config-chips";
-      chips.style.padding = "0 16px 16px";
-      chips.innerHTML = groupConfigChips(groupSample);
-      groupEl.appendChild(chips);
+    const collapseBtn = panel.querySelector(".collapse-btn");
+    collapseBtn.addEventListener("click", () => toggleInstance(instance.name));
+    if (!instance.ok) {{
+      const body = document.createElement("div");
+      body.className = "instance-panel-body";
+      body.innerHTML = `<div class="error">${{escapeHtml(instance.error || "instance недоступен")}}</div>`;
+      panel.appendChild(body);
+      root.appendChild(panel);
+      continue;
     }}
-    groupEl.querySelector(".group-toggle").addEventListener("click", () => toggleGroup(group));
-    groupEl.appendChild(cards);
-    root.appendChild(groupEl);
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="section-title">Uplink Groups</div>`;
+    for (const group of groups) {{
+      const groupEl = document.createElement("section");
+      const activeInGroup = (group.uplinks || []).filter(u => u.active_global || u.active_tcp || u.active_udp).length;
+      groupEl.className = "group-table";
+      groupEl.innerHTML = `
+        <div class="group-table-head">
+          <div class="group-table-title">
+            <span>${{escapeHtml(group.name)}}</span>
+            <span class="group-count">${{(group.uplinks || []).length}} uplinks</span>
+          </div>
+          <div class="group-table-meta">
+            <span>${{activeInGroup}} active</span>
+            <div class="config-chips">${{groupConfigChips(group)}}</div>
+          </div>
+        </div>
+        <div class="rows">
+          <div class="rows-head">
+            <div>Uplink</div>
+            <div>Status</div>
+            <div>TCP</div>
+            <div>UDP</div>
+            <div>Role</div>
+            <div>Action</div>
+          </div>
+        </div>`;
+      const rows = groupEl.querySelector(".rows");
+      for (const uplink of group.uplinks || []) {{
+        const entry = {{ instance: instance.name, group: group.name, uplink, groupObj: group }};
+        const tone = uplink.active_global || uplink.active_tcp || uplink.active_udp ? "good" : (healthy(entry) ? "warn" : "bad");
+        const row = document.createElement("div");
+        row.className = "row";
+        row.innerHTML = `
+          <div class="uplink-cell"><span class="status-dot ${{tone}}"></span><span>${{escapeHtml(uplink.name)}}</span></div>
+          <div><span class="status-pill ${{tone}}">${{tone === "good" ? "Active" : tone === "warn" ? "Ready" : "Inactive"}}</span></div>
+          <div>${{transportState(uplink.tcp_healthy)}}</div>
+          <div>${{transportState(uplink.udp_healthy)}}</div>
+          <div>${{escapeHtml(uplinkRole(entry))}}</div>
+          <div><button class="action-btn ${{tone === "good" ? "" : "primary"}}" type="button" ${{tone === "good" ? "disabled" : ""}}>${{tone === "good" ? "Active" : "Activate"}}</button></div>`;
+        const button = row.querySelector("button");
+        if (tone !== "good") {{
+          button.addEventListener("click", () => activateEntries([entry]));
+        }}
+        rows.appendChild(row);
+      }}
+      body.appendChild(groupEl);
+    }}
+    panel.appendChild(body);
+    root.appendChild(panel);
   }}
-  document.getElementById("instancesTotal").textContent = instances.size;
-  document.getElementById("uplinksTotal").textContent = uplinksTotal;
-  document.getElementById("activeTotal").textContent = activeTotal;
-  document.getElementById("updatedAt").textContent = new Date().toLocaleTimeString();
+  document.getElementById("instancesTotal").textContent = stats.totalInstances;
+  document.getElementById("uplinksTotal").textContent = stats.activeUplinks + stats.inactiveUplinks;
+  document.getElementById("activeTotal").textContent = stats.activeUplinks;
+  const now = new Date().toLocaleTimeString();
+  document.getElementById("updatedAt").textContent = now;
+  document.getElementById("updatedAtInline").textContent = now;
+  document.getElementById("systemStatus").textContent = state.errors.length ? "Есть ошибки подключения" : "All systems operational";
   renderInstances();
   renderUplinks();
   renderGroups();
@@ -956,6 +1140,14 @@ function toggleGroup(group) {{
     state.collapsedGroups.delete(group);
   }} else {{
     state.collapsedGroups.add(group);
+  }}
+  render();
+}}
+function toggleInstance(instance) {{
+  if (state.collapsedInstances.has(instance)) {{
+    state.collapsedInstances.delete(instance);
+  }} else {{
+    state.collapsedInstances.add(instance);
   }}
   render();
 }}
