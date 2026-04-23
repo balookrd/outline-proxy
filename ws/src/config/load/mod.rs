@@ -153,6 +153,7 @@ async fn load_dashboard_config(
         .listen
         .ok_or_else(|| anyhow::anyhow!("dashboard enabled but [dashboard].listen is not set"))?;
     let refresh_interval_secs = section.refresh_interval_secs.unwrap_or(5).max(1);
+    let request_timeout_secs = section.request_timeout_secs.unwrap_or(15).max(1);
     let instances = section
         .instances
         .as_ref()
@@ -205,6 +206,7 @@ async fn load_dashboard_config(
     Ok(Some(DashboardConfig {
         listen,
         refresh_interval_secs,
+        request_timeout_secs,
         instances: loaded,
     }))
 }

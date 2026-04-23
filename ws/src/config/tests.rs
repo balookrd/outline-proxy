@@ -1093,6 +1093,7 @@ async fn load_config_reads_dashboard_instances() {
         [dashboard]
         listen = "127.0.0.1:9092"
         refresh_interval_secs = 3
+        request_timeout_secs = 17
 
         [[dashboard.instances]]
         name = "inst-a"
@@ -1106,6 +1107,7 @@ async fn load_config_reads_dashboard_instances() {
     let config = load_config(&path, &args).await.unwrap();
     let dashboard = config.dashboard.unwrap();
     assert_eq!(dashboard.refresh_interval_secs, 3);
+    assert_eq!(dashboard.request_timeout_secs, 17);
     assert_eq!(dashboard.instances[0].name, "inst-a");
     assert_eq!(dashboard.instances[0].token, "dash-token");
 

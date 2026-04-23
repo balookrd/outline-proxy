@@ -110,6 +110,7 @@ pub(super) struct DashboardSection {
     pub(super) enabled: Option<bool>,
     pub(super) listen: Option<SocketAddr>,
     pub(super) refresh_interval_secs: Option<u64>,
+    pub(super) request_timeout_secs: Option<u64>,
     pub(super) instances: Option<Vec<DashboardInstanceSection>>,
 }
 

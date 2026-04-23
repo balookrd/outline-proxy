@@ -35,6 +35,7 @@ type DashboardResponse = Response<Full<Bytes>>;
 #[derive(Clone)]
 struct DashboardState {
     refresh_interval_secs: u64,
+    request_timeout_secs: u64,
     instances: Vec<DashboardInstanceConfig>,
 }
 
@@ -42,6 +43,7 @@ pub fn spawn_dashboard_server(config: DashboardConfig) {
     let listen = config.listen;
     let state = DashboardState {
         refresh_interval_secs: config.refresh_interval_secs,
+        request_timeout_secs: config.request_timeout_secs,
         instances: config.instances,
     };
     tokio::spawn(async move {
@@ -116,7 +118,7 @@ struct DashboardInstanceView {
 async fn handle_topology(state: DashboardState) -> DashboardResponse {
     let mut instances = Vec::with_capacity(state.instances.len());
     for instance in &state.instances {
-        let view = match fetch_instance_topology(instance).await {
+        let view = match fetch_instance_topology(instance, state.request_timeout_secs).await {
             Ok(topology) => DashboardInstanceView {
                 name: instance.name.clone(),
                 ok: true,
@@ -202,7 +204,14 @@ async fn handle_activate(request: Request<Incoming>, state: DashboardState) -> D
             .find(|instance| instance.name == target.instance);
         let result = match instance {
             Some(instance) => {
-                match activate_instance(instance, &target, payload.transport.as_deref()).await {
+                match activate_instance(
+                    instance,
+                    &target,
+                    payload.transport.as_deref(),
+                    state.request_timeout_secs,
+                )
+                .await
+                {
                     Ok((status, body)) => DashboardActivateResult {
                         target,
                         ok: status.is_success(),
@@ -233,9 +242,13 @@ async fn handle_activate(request: Request<Incoming>, state: DashboardState) -> D
     json_response(StatusCode::OK, &DashboardActivateResponse { results })
 }
 
-async fn fetch_instance_topology(instance: &DashboardInstanceConfig) -> Result<Value> {
+async fn fetch_instance_topology(
+    instance: &DashboardInstanceConfig,
+    request_timeout_secs: u64,
+) -> Result<Value> {
     let url = instance_url(&instance.control_url, "/control/topology")?;
-    let (status, body) = send_instance_request(instance, Method::GET, url, None).await?;
+    let (status, body) =
+        send_instance_request(instance, Method::GET, url, None, request_timeout_secs).await?;
     if !status.is_success() {
         bail!("{} returned HTTP {status}", instance.name);
     }
@@ -246,6 +259,7 @@ async fn activate_instance(
     instance: &DashboardInstanceConfig,
     target: &DashboardActivateTarget,
     transport: Option<&str>,
+    request_timeout_secs: u64,
 ) -> Result<(StatusCode, Value)> {
     let url = instance_url(&instance.control_url, "/control/activate")?;
     let mut payload = serde_json::json!({
@@ -256,8 +270,14 @@ async fn activate_instance(
         payload["transport"] = Value::String(transport.to_string());
     }
     let body = serde_json::to_vec(&payload)?;
-    let (status, response_body) =
-        send_instance_request(instance, Method::POST, url, Some(body)).await?;
+    let (status, response_body) = send_instance_request(
+        instance,
+        Method::POST,
+        url,
+        Some(body),
+        request_timeout_secs,
+    )
+    .await?;
     let parsed = serde_json::from_slice(&response_body)
         .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&response_body) }));
     Ok((status, parsed))
@@ -283,6 +303,7 @@ async fn send_instance_request(
     method: Method,
     url: Url,
     body: Option<Vec<u8>>,
+    request_timeout_secs: u64,
 ) -> Result<(StatusCode, Vec<u8>)> {
     if !matches!(url.scheme(), "http" | "https") {
         bail!("only http:// and https:// control URLs are supported");
@@ -302,7 +323,7 @@ async fn send_instance_request(
         body.len()
     );
 
-    let response = timeout(Duration::from_secs(5), async {
+    let response = timeout(Duration::from_secs(request_timeout_secs), async {
         let stream = TcpStream::connect((host, port)).await?;
         if url.scheme() == "https" {
             let tls = dashboard_tls_connector();
