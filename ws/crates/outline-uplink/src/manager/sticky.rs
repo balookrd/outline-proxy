@@ -7,7 +7,7 @@ use crate::utils::maybe_shrink_hash_map;
 
 use super::super::selection::score_latency;
 use super::super::types::{
-    CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager, UplinkStatus,
+    CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager,
 };
 
 /// Lower bound for the background sticky-route prune cadence. Keeps the sweep
@@ -34,7 +34,6 @@ impl UplinkManager {
         routing_key: &RoutingKey,
         transport: TransportKind,
         candidates: &[CandidateState],
-        statuses: &[UplinkStatus],
     ) -> Option<usize> {
         let sticky_index = {
             let sticky = self.inner.sticky_routes.read().await;
@@ -64,14 +63,14 @@ impl UplinkManager {
         // would cause oscillation: primary fails → switch to backup → cooldown expires →
         // primary wins back on base latency alone before the penalty has decayed.
         let sticky_score = score_latency(
-            &statuses[sticky.index],
+            &sticky.status,
             self.inner.uplinks[sticky.index].weight,
             transport,
             now,
             &self.inner.load_balancing,
         );
         let fastest_score = score_latency(
-            &statuses[fastest.index],
+            &fastest.status,
             self.inner.uplinks[fastest.index].weight,
             transport,
             now,

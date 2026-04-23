@@ -11,7 +11,7 @@ use super::super::selection::{
     cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
     strict_gate_transport, supports_transport_for_scope,
 };
-use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager, UplinkStatus};
+use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager};
 use super::super::utils::{rightless_bool, routing_key, strict_route_key};
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
@@ -116,7 +116,6 @@ impl UplinkManager {
     /// not in cooldown). Unlike [`Self::tcp_candidates`] / [`Self::udp_candidates`], this
     /// method does not touch sticky routes or active-uplink state.
     pub async fn has_any_healthy(&self, transport: TransportKind) -> bool {
-        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let scope = self.inner.load_balancing.routing_scope;
         self.inner
@@ -124,7 +123,9 @@ impl UplinkManager {
             .iter()
             .enumerate()
             .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
-            .any(|(index, _)| selection_health(&statuses[index], transport, now, scope))
+            .any(|(index, _)| {
+                selection_health(&self.inner.read_status(index), transport, now, scope)
+            })
     }
 
     pub async fn active_uplink_index_for_transport(
@@ -147,7 +148,6 @@ impl UplinkManager {
     fn build_candidate_states(
         &self,
         transport: TransportKind,
-        statuses: &[UplinkStatus],
         now: Instant,
     ) -> Vec<CandidateState> {
         let scope = self.inner.load_balancing.routing_scope;
@@ -156,18 +156,22 @@ impl UplinkManager {
             .iter()
             .enumerate()
             .filter(|(_, uplink)| supports_transport_for_scope(uplink, transport, scope))
-            .map(|(index, uplink)| CandidateState {
-                index,
-                uplink: uplink.clone(),
-                healthy: selection_health(&statuses[index], transport, now, scope),
-                score: selection_score(
-                    &statuses[index],
-                    uplink.weight,
-                    transport,
-                    now,
-                    &self.inner.load_balancing,
-                    scope,
-                ),
+            .map(|(index, uplink)| {
+                let status = self.inner.read_status(index);
+                CandidateState {
+                    index,
+                    uplink: uplink.clone(),
+                    healthy: selection_health(&status, transport, now, scope),
+                    score: selection_score(
+                        &status,
+                        uplink.weight,
+                        transport,
+                        now,
+                        &self.inner.load_balancing,
+                        scope,
+                    ),
+                    status,
+                }
             })
             .collect()
     }
@@ -178,10 +182,9 @@ impl UplinkManager {
         target: Option<&TargetAddr>,
     ) -> Vec<UplinkCandidate> {
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
 
-        let mut candidates = self.build_candidate_states(transport, &statuses, now);
+        let mut candidates = self.build_candidate_states(transport, now);
 
         if candidates.is_empty() {
             return Vec::new();
@@ -206,7 +209,7 @@ impl UplinkManager {
         });
 
         let preferred_index = self
-            .preferred_sticky_index(&routing_key, transport, &candidates, &statuses)
+            .preferred_sticky_index(&routing_key, transport, &candidates)
             .await;
         if let Some(index) = preferred_index {
             if let Some(pos) = candidates.iter().position(|candidate| candidate.index == index) {
@@ -233,10 +236,9 @@ impl UplinkManager {
         failed_active_index: Option<usize>,
         commit_selection: bool,
     ) -> Vec<UplinkCandidate> {
-        let statuses = self.inner.snapshot_statuses();
         let now = Instant::now();
         let current_active = self.active_uplink_index_for_transport(transport).await;
-        let mut candidates = self.build_candidate_states(transport, &statuses, now);
+        let mut candidates = self.build_candidate_states(transport, now);
 
         if candidates.is_empty() {
             return Vec::new();
@@ -301,10 +303,10 @@ impl UplinkManager {
                 let probe_healthy = if self.inner.probe.enabled() {
                     match gate_transport {
                         TransportKind::Tcp => {
-                            statuses[active_index].tcp.healthy != Some(false)
+                            candidate.status.tcp.healthy != Some(false)
                         },
                         TransportKind::Udp => {
-                            statuses[active_index].udp.healthy != Some(false)
+                            candidate.status.udp.healthy != Some(false)
                         },
                     }
                 } else {
@@ -321,7 +323,7 @@ impl UplinkManager {
                 {
                     probe_healthy
                 } else {
-                    probe_healthy && !cooldown_active(&statuses[active_index], gate_transport, now)
+                    probe_healthy && !cooldown_active(&candidate.status, gate_transport, now)
                 };
                 if should_keep && !active_failed {
                     // When auto_failback is disabled (default), never switch away
@@ -377,10 +379,10 @@ impl UplinkManager {
                             higher_priority
                                 && match gate_transport {
                                     TransportKind::Tcp => {
-                                        statuses[b.index].tcp.healthy == Some(true)
+                                        b.status.tcp.healthy == Some(true)
                                     },
                                     TransportKind::Udp => {
-                                        statuses[b.index].udp.healthy == Some(true)
+                                        b.status.udp.healthy == Some(true)
                                     },
                                 }
                         })
@@ -396,10 +398,10 @@ impl UplinkManager {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
                             TransportKind::Tcp => {
-                                statuses[b.index].tcp.consecutive_successes
+                                b.status.tcp.consecutive_successes
                             },
                             TransportKind::Udp => {
-                                statuses[b.index].udp.consecutive_successes
+                                b.status.udp.consecutive_successes
                             },
                         };
                         consecutive >= min
@@ -439,18 +441,18 @@ impl UplinkManager {
         // selection is EWMA-driven.
         if switching_from_cooldown {
             candidates.sort_by(|left, right| {
-                let left_remaining = cooldown_remaining(&statuses[left.index], gate_transport, now);
+                let left_remaining = cooldown_remaining(&left.status, gate_transport, now);
                 let right_remaining =
-                    cooldown_remaining(&statuses[right.index], gate_transport, now);
+                    cooldown_remaining(&right.status, gate_transport, now);
                 let left_score = score_latency(
-                    &statuses[left.index],
+                    &left.status,
                     self.inner.uplinks[left.index].weight,
                     gate_transport,
                     now,
                     &self.inner.load_balancing,
                 );
                 let right_score = score_latency(
-                    &statuses[right.index],
+                    &right.status,
                     self.inner.uplinks[right.index].weight,
                     gate_transport,
                     now,

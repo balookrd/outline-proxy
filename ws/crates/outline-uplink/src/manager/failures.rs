@@ -127,13 +127,12 @@ impl UplinkManager {
 
     pub async fn tcp_cooldown_debug_summary(&self) -> Vec<String> {
         let now = Instant::now();
-        let statuses = self.inner.snapshot_statuses();
         self.inner
             .uplinks
             .iter()
             .enumerate()
             .map(|(index, uplink)| {
-                let status = &statuses[index];
+                let status = self.inner.read_status(index);
                 let cooldown_ms = status
                     .tcp
                     .cooldown_until
