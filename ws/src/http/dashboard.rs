@@ -541,8 +541,47 @@ fn dashboard_html(refresh_interval_secs: u64) -> String {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Network Dashboard</title>
 <style>
-:root {{
+:root, [data-theme="dark"] {{
+  color-scheme: dark;
+  --bg: #0a0f1c;
+  --nav: #0f1626;
+  --nav-2: #1a2238;
+  --nav-3: #243049;
+  --nav-text: #cbd5e1;
+  --nav-muted: #8ea0bd;
+  --text: #e2e8f0;
+  --muted: #8ea0bd;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --soft: #151c2e;
+  --soft-2: #111828;
+  --panel: #131b2c;
+  --panel-tint: #0f1626;
+  --green: #22c55e;
+  --green-strong: #86efac;
+  --green-soft: rgba(34, 197, 94, 0.15);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.15);
+  --gray-soft: rgba(148, 163, 184, 0.12);
+  --blue: #6366f1;
+  --blue-soft: rgba(99, 102, 241, 0.18);
+  --red: #f87171;
+  --red-soft: rgba(248, 113, 113, 0.15);
+  --dot-idle: #475569;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --chip-mode-text: #c7d2fe;
+  --chip-mode-border: rgba(99, 102, 241, 0.3);
+  --chip-scope-bg: rgba(34, 211, 238, 0.12);
+  --chip-scope-text: #a5f3fc;
+  --chip-scope-border: rgba(34, 211, 238, 0.28);
+  --chip-fb-border: rgba(34, 197, 94, 0.3);
+  --error-bg: rgba(248, 113, 113, 0.15);
+  --error-text: #fca5a5;
+  --error-border: rgba(248, 113, 113, 0.35);
+}}
+[data-theme="light"] {{
   color-scheme: light;
+  --bg: #ffffff;
   --nav: #0f172a;
   --nav-2: #1e293b;
   --nav-3: #273449;
@@ -566,10 +605,20 @@ fn dashboard_html(refresh_interval_secs: u64) -> String {
   --blue-soft: #eef2ff;
   --red: #dc2626;
   --red-soft: #fee2e2;
+  --dot-idle: #cbd5e1;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --chip-mode-text: #3730a3;
+  --chip-mode-border: #e0e7ff;
+  --chip-scope-bg: #ecfeff;
+  --chip-scope-text: #155e75;
+  --chip-scope-border: #cffafe;
+  --chip-fb-border: #bbf7d0;
+  --error-bg: #fef2f2;
+  --error-text: #991b1b;
+  --error-border: #fecaca;
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: #fff; font-size: 14px; }}
+body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); font-size: 14px; }}
 .shell {{ min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }}
 .nav {{ background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; }}
 .brand {{ height: 64px; display: flex; gap: 10px; align-items: center; padding: 0 18px; font-weight: 600; color: #fff; font-size: 15px; }}
@@ -585,17 +634,19 @@ body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, 
 .nav-card-title {{ color: var(--nav-muted); font-size: 11.5px; }}
 .nav-card-value {{ display: flex; align-items: center; gap: 8px; color: #fff; font-size: 12.5px; }}
 .nav-card-value .dot {{ width: 7px; height: 7px; border-radius: 99px; background: var(--green); }}
-main {{ padding: 22px 28px; min-width: 0; background: #fff; }}
+main {{ padding: 22px 28px; min-width: 0; background: var(--bg); }}
 .topbar {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }}
 .topbar-copy {{ display: grid; gap: 4px; }}
 h1 {{ margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }}
 .subtitle {{ color: var(--muted); font-size: 13px; }}
 .toolbar {{ display: flex; align-items: center; gap: 10px; }}
 .updated-inline {{ color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }}
-.refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 6px 10px; display: flex; align-items: center; gap: 6px; color: #334155; font-size: 12.5px; cursor: pointer; }}
+.refresh {{ border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 6px 10px; display: flex; align-items: center; gap: 6px; color: var(--text); font-size: 12.5px; cursor: pointer; }}
 .refresh.off {{ color: var(--muted); background: var(--soft-2); }}
 .dot {{ width: 8px; height: 8px; border-radius: 99px; background: var(--green); display: inline-block; }}
-.refresh.off .dot {{ background: #cbd5e1; }}
+.refresh.off .dot {{ background: var(--dot-idle); }}
+.theme-toggle {{ border: 1px solid var(--line); background: var(--panel); border-radius: 8px; width: 32px; height: 32px; display: grid; place-items: center; color: var(--text); font-size: 14px; cursor: pointer; }}
+.theme-toggle:hover {{ background: var(--soft); }}
 .summary-grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
 .summary-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
 .summary-copy {{ display: grid; gap: 6px; min-width: 0; }}
@@ -625,11 +676,11 @@ h1 {{ margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }}
 .group-count {{ padding: 2px 8px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11.5px; font-weight: 500; }}
 .group-table-meta {{ display: flex; align-items: center; gap: 10px; color: var(--green-strong); font-size: 12px; flex-wrap: wrap; justify-content: flex-end; }}
 .cfg-chips {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
-.cfg-chip {{ display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 3px 8px; font-size: 11.5px; font-weight: 500; background: var(--soft); color: #334155; border: 1px solid var(--line); }}
+.cfg-chip {{ display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 3px 8px; font-size: 11.5px; font-weight: 500; background: var(--soft); color: var(--text); border: 1px solid var(--line); }}
 .cfg-chip .cfg-key {{ color: var(--muted); font-weight: 500; }}
-.cfg-chip.mode {{ background: var(--blue-soft); color: #3730a3; border-color: #e0e7ff; }}
-.cfg-chip.scope {{ background: #ecfeff; color: #155e75; border-color: #cffafe; }}
-.cfg-chip.fb-on {{ background: var(--green-soft); color: var(--green-strong); border-color: #bbf7d0; }}
+.cfg-chip.mode {{ background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }}
+.cfg-chip.scope {{ background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }}
+.cfg-chip.fb-on {{ background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }}
 .cfg-chip.fb-off {{ background: var(--gray-soft); color: var(--muted); border-color: var(--line); }}
 .cfg-active {{ color: var(--green-strong); font-weight: 600; white-space: nowrap; }}
 .rows {{ width: 100%; }}
@@ -642,16 +693,16 @@ h1 {{ margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }}
 .status-pill.good {{ background: var(--green-soft); color: var(--green-strong); }}
 .status-pill.warn {{ background: var(--amber-soft); color: #b45309; }}
 .status-pill.bad {{ background: var(--gray-soft); color: var(--muted); }}
-.status-dot {{ width: 8px; height: 8px; border-radius: 99px; background: #cbd5e1; flex: 0 0 auto; }}
+.status-dot {{ width: 8px; height: 8px; border-radius: 99px; background: var(--dot-idle); flex: 0 0 auto; }}
 .status-dot.good {{ background: var(--green); }}
 .status-dot.warn {{ background: var(--amber); }}
-.status-dot.bad {{ background: #cbd5e1; }}
+.status-dot.bad {{ background: var(--dot-idle); }}
 .muted-cell {{ color: var(--muted); }}
-.action-btn {{ height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line-strong); background: #fff; color: #334155; font-weight: 500; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }}
+.action-btn {{ height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--soft); color: var(--text); font-weight: 500; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }}
 .action-btn.primary {{ background: var(--blue); border-color: var(--blue); color: #fff; }}
 .action-btn.primary:hover {{ background: #4f46e5; }}
 .action-btn:disabled {{ opacity: .5; cursor: default; }}
-.error {{ border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 8px; padding: 10px 14px; font-size: 13px; }}
+.error {{ border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); border-radius: 8px; padding: 10px 14px; font-size: 13px; }}
 @media (max-width: 1100px) {{
   .summary-grid {{ grid-template-columns: repeat(3, 1fr); }}
 }}
@@ -698,6 +749,7 @@ h1 {{ margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }}
       <div class="toolbar">
         <div class="updated-inline">↻ Last updated: <span id="updatedAtInline">-</span></div>
         <button class="refresh" id="refreshBtn" type="button"><span class="dot"></span><span id="refreshLabel">Auto</span></button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme"><span id="themeIcon">☀</span></button>
       </div>
     </div>
     <section class="summary-grid" id="summaryGrid"></section>
@@ -945,6 +997,22 @@ async function activateEntries(entries) {{
 function escapeHtml(value) {{
   return String(value).replace(/[&<>"']/g, c => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }}[c]));
 }}
+function applyTheme(theme) {{
+  document.documentElement.setAttribute("data-theme", theme);
+  const icon = document.getElementById("themeIcon");
+  if (icon) icon.textContent = theme === "dark" ? "☀" : "☾";
+  try {{ localStorage.setItem("dashboard-theme", theme); }} catch (_) {{}}
+}}
+(function initTheme() {{
+  let saved = null;
+  try {{ saved = localStorage.getItem("dashboard-theme"); }} catch (_) {{}}
+  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(saved || (prefersLight ? "light" : "dark"));
+}})();
+document.getElementById("themeToggle").addEventListener("click", () => {{
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "dark" ? "light" : "dark");
+}});
 document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
 renderRefreshButton();
 load().catch(err => {{ state.errors = [String(err)]; render(); }});
