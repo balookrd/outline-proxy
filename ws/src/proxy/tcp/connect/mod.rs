@@ -15,7 +15,7 @@ use tracing::{debug, info};
 
 use outline_metrics as metrics;
 use socks5_proto::{
-    SOCKS_STATUS_NOT_ALLOWED, SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target,
+    SOCKS_REP_NOT_ALLOWED, SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target,
 };
 
 use outline_uplink::TransportKind;
@@ -112,7 +112,7 @@ pub async fn serve_tcp_connect(
         );
 
         let bound_addr = socket_addr_to_target(client.local_addr()?);
-        send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
+        send_reply(&mut client, SOCKS_REP_SUCCESS, &bound_addr).await?;
 
         let (mut client_read, mut client_write) = client.into_split();
         let mut replay = ReplayBufState::new();
@@ -166,7 +166,7 @@ pub async fn serve_tcp_connect(
 /// close the client connection. Used when a matched route has `via = "drop"`.
 async fn reject_tcp_connection(mut client: TcpStream, target: &TargetAddr) -> Result<()> {
     let bound_addr = socket_addr_to_target(client.local_addr()?);
-    send_reply(&mut client, SOCKS_STATUS_NOT_ALLOWED, &bound_addr).await?;
+    send_reply(&mut client, SOCKS_REP_NOT_ALLOWED, &bound_addr).await?;
     debug!(target = %target, "TCP route: drop reply sent");
     Ok(())
 }
@@ -196,7 +196,7 @@ mod tests {
         let mut reply = [0u8; 10];
         client_side.read_exact(&mut reply).await.unwrap();
         assert_eq!(reply[0], 5, "VER must be 5");
-        assert_eq!(reply[1], SOCKS_STATUS_NOT_ALLOWED, "REP must be 0x02 (not allowed)");
+        assert_eq!(reply[1], SOCKS_REP_NOT_ALLOWED, "REP must be 0x02 (not allowed)");
         assert_eq!(reply[2], 0, "RSV must be 0");
         assert_eq!(reply[3], 1, "ATYP must be 1 (IPv4)");
     }

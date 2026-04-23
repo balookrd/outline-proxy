@@ -8,7 +8,7 @@ use tracing::info;
 
 use shadowsocks_crypto::SHADOWSOCKS_MAX_PAYLOAD;
 use outline_metrics as metrics;
-use socks5_proto::{SOCKS_STATUS_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
+use socks5_proto::{SOCKS_REP_SUCCESS, TargetAddr, send_reply, socket_addr_to_target};
 use crate::proxy::TcpTimeouts;
 
 // Direct TCP sessions (bypass-routed) are held open as long as both sides
@@ -51,7 +51,7 @@ pub(super) async fn relay_tcp_direct(
         .with_context(|| format!("direct TCP connect to {target} failed"))?;
 
     let bound_addr = socket_addr_to_target(client.local_addr()?);
-    send_reply(&mut client, SOCKS_STATUS_SUCCESS, &bound_addr).await?;
+    send_reply(&mut client, SOCKS_REP_SUCCESS, &bound_addr).await?;
 
     let (mut client_read, mut client_write) = client.into_split();
     let (mut upstream_read, mut upstream_write) = upstream.into_split();
@@ -235,7 +235,7 @@ mod tests {
 
     use tokio::io::AsyncReadExt;
 
-    use socks5_proto::SOCKS_STATUS_SUCCESS;
+    use socks5_proto::SOCKS_REP_SUCCESS;
 
     use super::*;
 
@@ -274,7 +274,7 @@ mod tests {
         // Drain the 10-byte SOCKS5 SUCCESS reply so the client buffer stays clear.
         let mut socks_reply = [0u8; 10];
         client_side.read_exact(&mut socks_reply).await.unwrap();
-        assert_eq!(socks_reply[1], SOCKS_STATUS_SUCCESS, "expected SUCCESS reply");
+        assert_eq!(socks_reply[1], SOCKS_REP_SUCCESS, "expected SUCCESS reply");
 
         // Advance mock time past the idle timeout and yield to let tasks run.
         tokio::time::advance(timeouts.direct_idle + Duration::from_secs(1)).await;

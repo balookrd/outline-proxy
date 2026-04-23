@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 use socks5_proto::{
-    SOCKS_STATUS_SUCCESS, TargetAddr, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
+    SOCKS_REP_SUCCESS, TargetAddr, UdpFragmentReassembler, build_udp_packet, parse_udp_request,
     send_reply, socket_addr_to_target,
 };
 use outline_uplink::UplinkRegistry;
@@ -60,7 +60,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let groups = AssocGroupMap::new();
         let (responses_tx, mut responses_rx) = mpsc::channel::<UdpResponse>(64);
 
-        send_reply(&mut client, SOCKS_STATUS_SUCCESS, &socket_addr_to_target(relay_addr)).await?;
+        send_reply(&mut client, SOCKS_REP_SUCCESS, &socket_addr_to_target(relay_addr)).await?;
 
         let client_udp_addr_uplink = Arc::clone(&client_udp_addr);
         let socket_uplink = Arc::clone(&udp_socket);
