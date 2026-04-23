@@ -925,6 +925,9 @@ active uplink.
 If `[control]` is configured the process serves mutating endpoints on a
 **separate** TCP listener, gated by a mandatory bearer token:
 
+- `GET /control/topology` - instance/group/uplink topology for dashboards
+- `GET /control/summary` - compact group/uplink health counters
+- `POST /control/activate` - JSON activation API for UI click actions
 - `POST /switch` - manual active-uplink override
 
 There is no anonymous access path. Requests without a matching
@@ -980,6 +983,44 @@ incorrect, and `405` for non-POST methods. The override holds while the
 chosen uplink is healthy; if the probe loop later marks it unhealthy, normal
 failover takes over. With `auto_failback = true`, the loop may flip back to a
 higher-priority uplink once it stabilises.
+
+### Dashboard-oriented control APIs
+
+`GET /control/topology` returns JSON with groups and uplinks (including
+`active_global`, `active_tcp`, `active_udp` booleans per uplink) for rendering
+table/tree panels in Grafana.
+
+`GET /control/summary` returns compact counters:
+`groups_total`, `uplinks_total`, healthy/unhealthy TCP/UDP counts, and active
+selection counters.
+
+`POST /control/activate` accepts JSON and reuses the same internal switching
+logic as `/switch`:
+
+```json
+{
+  "group": "core",
+  "uplink": "uplink-02",
+  "transport": "tcp"
+}
+```
+
+Examples:
+
+```bash
+TOKEN="long-random-secret"
+
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/control/topology'
+
+curl -H "Authorization: Bearer $TOKEN" \
+  'http://127.0.0.1:9091/control/summary'
+
+curl -XPOST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"group":"core","uplink":"uplink-02","transport":"tcp"}' \
+  'http://127.0.0.1:9091/control/activate'
+```
 
 Prometheus example:
 
