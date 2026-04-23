@@ -173,10 +173,10 @@ async fn load_dashboard_config(
             .clone()
             .ok_or_else(|| anyhow::anyhow!("dashboard instance {name:?} has no control_url"))?;
         match control_url.scheme() {
-            "http" => {},
+            "http" | "https" => {},
             other => bail!(
                 "dashboard instance {name:?} uses unsupported control_url scheme {other:?}; \
-                 only http:// control listeners are supported"
+                 only http:// and https:// control listeners are supported"
             ),
         }
         let inline_token = instance.token.clone().filter(|token| !token.is_empty());

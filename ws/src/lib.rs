@@ -10,7 +10,7 @@ pub(crate) mod client_io;
 pub(crate) mod error_class;
 pub mod memory;
 pub mod metrics;
-#[cfg(any(feature = "metrics", feature = "control"))]
+#[cfg(any(feature = "metrics", feature = "control", feature = "dashboard"))]
 pub mod http;
 pub mod proxy;
 

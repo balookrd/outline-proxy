@@ -16,13 +16,17 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, RootCertStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
+use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 use url::Url;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
@@ -273,13 +277,13 @@ async fn send_instance_request(
     url: Url,
     body: Option<Vec<u8>>,
 ) -> Result<(StatusCode, Vec<u8>)> {
-    if url.scheme() != "http" {
-        bail!("only http:// control URLs are supported");
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("only http:// and https:// control URLs are supported");
     }
     let host = url
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("control_url has no host"))?;
-    let port = url.port_or_known_default().unwrap_or(80);
+    let port = url.port_or_known_default().unwrap_or(if url.scheme() == "https" { 443 } else { 80 });
     let path = match url.query() {
         Some(query) => format!("{}?{query}", url.path()),
         None => url.path().to_string(),
@@ -292,19 +296,45 @@ async fn send_instance_request(
     );
 
     let response = timeout(Duration::from_secs(5), async {
-        let mut stream = TcpStream::connect((host, port)).await?;
-        stream.write_all(request.as_bytes()).await?;
-        if !body.is_empty() {
-            stream.write_all(&body).await?;
+        let stream = TcpStream::connect((host, port)).await?;
+        if url.scheme() == "https" {
+            let tls = dashboard_tls_connector();
+            let server_name = ServerName::try_from(host.to_string())
+                .context("invalid TLS server name")?;
+            let tls_stream = tls.connect(server_name, stream).await?;
+            send_raw_http_request(tls_stream, request.as_bytes(), &body).await
+        } else {
+            send_raw_http_request(stream, request.as_bytes(), &body).await
         }
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await?;
-        Result::<Vec<u8>>::Ok(response)
-    })
-    .await
-    .context("instance request timed out")??;
+    }).await.context("instance request timed out")??;
 
     parse_http_response(&response)
+}
+
+fn dashboard_tls_connector() -> TlsConnector {
+    let mut roots = RootCertStore::empty();
+    roots.extend(TLS_SERVER_ROOTS.iter().cloned());
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    TlsConnector::from(std::sync::Arc::new(config))
+}
+
+async fn send_raw_http_request<T>(
+    mut stream: T,
+    head: &[u8],
+    body: &[u8],
+) -> Result<Vec<u8>>
+where
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    stream.write_all(head).await?;
+    if !body.is_empty() {
+        stream.write_all(body).await?;
+    }
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await?;
+    Ok(response)
 }
 
 fn parse_http_response(response: &[u8]) -> Result<(StatusCode, Vec<u8>)> {
@@ -369,7 +399,7 @@ fn plain_response(
 
 fn dashboard_html(refresh_interval_secs: u64) -> String {
     format!(
-        r#"<!doctype html>
+        r##"<!doctype html>
 <html lang="ru">
 <head>
 <meta charset="utf-8">
@@ -398,7 +428,7 @@ body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, 
 .logo:before,.logo:after {{ content: ""; position: absolute; border: 2px solid #60a5fa; border-radius: 7px; width: 13px; height: 8px; top: 7px; background: var(--nav); }}
 .logo:before {{ left: -8px; }} .logo:after {{ right: -8px; }}
 .menu {{ padding: 12px 14px; display: grid; gap: 8px; }}
-.item {{ height: 44px; border-radius: 6px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: #c8d1df; }}
+.item {{ height: 44px; width: 100%; border: 0; border-radius: 6px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: #c8d1df; background: transparent; text-align: left; }}
 .item.active {{ background: #22314d; color: #60a5fa; }}
 .spacer {{ flex: 1; }}
 .stats {{ margin: 16px; border: 1px solid #263650; border-radius: 8px; padding: 16px; display: grid; gap: 10px; }}
@@ -409,8 +439,12 @@ main {{ padding: 30px 34px 18px; min-width: 0; }}
 .topbar {{ display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 26px; }}
 h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
 .refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; color: #344054; box-shadow: 0 1px 2px #1018280d; }}
+.refresh.off {{ color: #667085; background: #f8fafc; }}
 .dot {{ width: 10px; height: 10px; border-radius: 99px; background: var(--green); display: inline-block; }}
+.refresh.off .dot {{ background: #c7ced8; }}
 .groups {{ display: grid; gap: 20px; }}
+.view {{ display: none; }}
+.view.active {{ display: block; }}
 .group {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }}
 .group-head {{ min-height: 64px; display: flex; align-items: center; gap: 16px; padding: 0 28px; border-bottom: 1px solid #e9edf3; }}
 .group-title {{ font-size: 17px; display: flex; align-items: center; gap: 10px; }}
@@ -429,6 +463,21 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
 .active .badge {{ background: var(--green-soft); color: #269444; }}
 .chips {{ display: flex; flex-wrap: wrap; gap: 9px; }}
 .chip {{ border: 1px solid #dde5dd; background: #eff6f1; border-radius: 7px; padding: 6px 11px; font-size: 13px; color: #1f2937; }}
+.instances-grid {{ display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr)); gap: 18px; }}
+.instance-card {{ background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 18px; display: grid; gap: 14px; }}
+.instance-head {{ display: flex; align-items: center; gap: 12px; }}
+.instance-name {{ font-size: 19px; font-weight: 700; }}
+.instance-sub {{ color: var(--muted); font-size: 14px; }}
+.instance-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+.metric {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fbfcfe; }}
+.metric-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
+.metric-value {{ font-size: 22px; font-weight: 700; }}
+.instance-groups {{ display: grid; gap: 10px; }}
+.instance-group {{ border: 1px solid #e8ecf3; border-radius: 8px; padding: 12px; background: #fff; }}
+.instance-group-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
+.instance-group-name {{ font-weight: 700; }}
+.tiny-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
+.tiny-chip {{ border-radius: 999px; padding: 5px 10px; background: #f2f4f7; color: #344054; font-size: 12px; }}
 .error {{ border: 1px solid #f6c4be; background: #fff5f3; color: #9f1f14; border-radius: 8px; padding: 14px 16px; }}
 .hint {{ text-align: center; color: #8a94a6; margin-top: 18px; font-size: 14px; }}
 @media (max-width: 980px) {{
@@ -437,6 +486,8 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
   .menu,.stats,.stamp {{ display: none; }}
   main {{ padding: 24px 16px; }}
   .cards {{ grid-template-columns: 1fr; }}
+  .instances-grid {{ grid-template-columns: 1fr; }}
+  .instance-meta {{ grid-template-columns: 1fr; }}
   .group-head {{ flex-wrap: wrap; padding: 16px; }}
   .group-meta {{ margin-left: 0; width: 100%; justify-content: space-between; gap: 12px; }}
 }}
@@ -447,8 +498,8 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
   <aside class="nav">
     <div class="brand"><span class="logo"></span><span>Uplink Monitor</span></div>
     <nav class="menu">
-      <div class="item active">⌂ <span>Дашборд</span></div>
-      <div class="item">▣ <span>Инстансы</span></div>
+      <button class="item active" data-view="dashboard" type="button">⌂ <span>Дашборд</span></button>
+      <button class="item" data-view="instances" type="button">▣ <span>Инстансы</span></button>
       <div class="item">↗ <span>Аплинки</span></div>
       <div class="item">◎ <span>Группы</span></div>
       <div class="item">▤ <span>Логи</span></div>
@@ -463,18 +514,25 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
   </aside>
   <main>
     <div class="topbar">
-      <h1>Дашборд</h1>
-      <button class="refresh" id="refreshBtn" type="button">↻ Автообновление <span class="dot"></span></button>
+      <h1 id="viewTitle">Дашборд</h1>
+      <button class="refresh" id="refreshBtn" type="button">↻ <span id="refreshLabel">Автообновление</span> <span class="dot"></span></button>
     </div>
     <div id="errors"></div>
-    <section class="groups" id="groups"></section>
-    <div class="hint">Нажмите на неактивный аплинк для его активации через /control/activate</div>
+    <section class="view active" id="dashboardView">
+      <section class="groups" id="groups"></section>
+      <div class="hint">Нажмите на неактивный аплинк для его активации через /control/activate</div>
+    </section>
+    <section class="view" id="instancesView">
+      <section class="instances-grid" id="instancesGrid"></section>
+    </section>
   </main>
 </div>
 <script>
 const refreshMs = {refresh_ms};
 let timer = null;
-const state = {{ groups: new Map(), errors: [] }};
+let autoRefreshEnabled = true;
+let currentView = "dashboard";
+const state = {{ groups: new Map(), instances: [], errors: [] }};
 
 function groupKey(group, uplink) {{ return group + "\u0000" + uplink; }}
 function healthy(entry) {{
@@ -486,10 +544,16 @@ function active(entry) {{
 }}
 function rebuild(raw) {{
   state.groups = new Map();
+  state.instances = [];
   state.errors = [];
   for (const inst of raw.instances) {{
-    if (!inst.ok) {{ state.errors.push(inst.name + ": " + inst.error); continue; }}
+    if (!inst.ok) {{
+      state.errors.push(inst.name + ": " + inst.error);
+      state.instances.push({{ name: inst.name, ok: false, error: inst.error, groups: [] }});
+      continue;
+    }}
     const groups = inst.topology?.instance?.groups || [];
+    state.instances.push({{ name: inst.name, ok: true, error: null, groups }});
     for (const group of groups) {{
       if (!state.groups.has(group.name)) state.groups.set(group.name, new Map());
       const byUplink = state.groups.get(group.name);
@@ -504,6 +568,14 @@ function rebuild(raw) {{
 function renderErrors() {{
   const box = document.getElementById("errors");
   box.innerHTML = state.errors.map(e => `<div class="error">${{escapeHtml(e)}}</div>`).join("");
+}}
+function renderNav() {{
+  document.querySelectorAll("[data-view]").forEach(el => {{
+    el.classList.toggle("active", el.dataset.view === currentView);
+  }});
+  document.getElementById("dashboardView").classList.toggle("active", currentView === "dashboard");
+  document.getElementById("instancesView").classList.toggle("active", currentView === "instances");
+  document.getElementById("viewTitle").textContent = currentView === "dashboard" ? "Дашборд" : "Инстансы";
 }}
 function render() {{
   renderErrors();
@@ -551,6 +623,87 @@ function render() {{
   document.getElementById("uplinksTotal").textContent = uplinksTotal;
   document.getElementById("activeTotal").textContent = activeTotal;
   document.getElementById("updatedAt").textContent = new Date().toLocaleTimeString();
+  renderInstances();
+  renderNav();
+  renderRefreshButton();
+}}
+function renderInstances() {{
+  const root = document.getElementById("instancesGrid");
+  root.innerHTML = "";
+  for (const instance of state.instances) {{
+    const groups = instance.groups || [];
+    const uplinks = groups.flatMap(g => g.uplinks || []);
+    const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
+    const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
+    const card = document.createElement("article");
+    card.className = "instance-card";
+    if (!instance.ok) {{
+      card.innerHTML = `
+        <div class="instance-head">
+          <span class="status"></span>
+          <div><div class="instance-name">${{escapeHtml(instance.name)}}</div><div class="instance-sub">Недоступен</div></div>
+        </div>
+        <div class="error">${{escapeHtml(instance.error || "instance недоступен")}}</div>`;
+      root.appendChild(card);
+      continue;
+    }}
+    card.innerHTML = `
+      <div class="instance-head">
+        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
+        <div>
+          <div class="instance-name">${{escapeHtml(instance.name)}}</div>
+          <div class="instance-sub">${{groups.length}} групп, ${{uplinks.length}} аплинков</div>
+        </div>
+      </div>
+      <div class="instance-meta">
+        <div class="metric"><div class="metric-label">Группы</div><div class="metric-value">${{groups.length}}</div></div>
+        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
+        <div class="metric"><div class="metric-label">Доступные</div><div class="metric-value">${{healthyCount}}</div></div>
+      </div>`;
+    const groupsEl = document.createElement("div");
+    groupsEl.className = "instance-groups";
+    for (const group of groups) {{
+      const uplinkNames = (group.uplinks || []).map(u => `<span class="tiny-chip">${{escapeHtml(u.name)}}</span>`).join("");
+      const groupEl = document.createElement("div");
+      groupEl.className = "instance-group";
+      groupEl.innerHTML = `
+        <div class="instance-group-top">
+          <span class="instance-group-name">${{escapeHtml(group.name)}}</span>
+          <span class="instance-sub">${{(group.uplinks || []).length}} аплинков</span>
+        </div>
+        <div class="tiny-chips">${{uplinkNames}}</div>`;
+      groupsEl.appendChild(groupEl);
+    }}
+    card.appendChild(groupsEl);
+    root.appendChild(card);
+  }}
+}}
+function renderRefreshButton() {{
+  const btn = document.getElementById("refreshBtn");
+  const label = document.getElementById("refreshLabel");
+  btn.classList.toggle("off", !autoRefreshEnabled);
+  btn.setAttribute("aria-pressed", String(autoRefreshEnabled));
+  label.textContent = autoRefreshEnabled ? "Автообновление" : "Автообновление выкл";
+}}
+function stopAutoRefresh() {{
+  if (timer !== null) {{
+    clearInterval(timer);
+    timer = null;
+  }}
+}}
+function startAutoRefresh() {{
+  stopAutoRefresh();
+  if (!autoRefreshEnabled) return;
+  timer = setInterval(() => load().catch(err => {{ state.errors = [String(err)]; render(); }}), refreshMs);
+}}
+function toggleAutoRefresh() {{
+  autoRefreshEnabled = !autoRefreshEnabled;
+  renderRefreshButton();
+  startAutoRefresh();
+}}
+function setView(view) {{
+  currentView = view;
+  renderNav();
 }}
 async function load() {{
   const res = await fetch("/dashboard/api/topology", {{ cache: "no-store" }});
@@ -570,12 +723,14 @@ async function activateEntries(entries) {{
 function escapeHtml(value) {{
   return String(value).replace(/[&<>"']/g, c => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }}[c]));
 }}
-document.getElementById("refreshBtn").addEventListener("click", load);
+document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
+document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => setView(el.dataset.view)));
+renderRefreshButton();
 load().catch(err => {{ state.errors = [String(err)]; render(); }});
-timer = setInterval(() => load().catch(err => {{ state.errors = [String(err)]; render(); }}), refreshMs);
+startAutoRefresh();
 </script>
 </body>
-</html>"#,
+</html>"##,
         refresh_ms = refresh_interval_secs.saturating_mul(1000)
     )
 }
