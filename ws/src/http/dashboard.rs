@@ -539,252 +539,189 @@ fn dashboard_html(refresh_interval_secs: u64) -> String {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Uplink Monitor</title>
+<title>Network Dashboard</title>
 <style>
 :root {{
   color-scheme: light;
-  --nav: #111827;
-  --nav-2: #1b2435;
-  --nav-3: #2a3752;
-  --text: #101828;
-  --muted: #667085;
-  --line: #d9e0ea;
-  --line-strong: #c6d0dd;
-  --soft: #f3f6fa;
+  --nav: #0f172a;
+  --nav-2: #1e293b;
+  --nav-3: #273449;
+  --nav-text: #cbd5e1;
+  --nav-muted: #94a3b8;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --soft: #f1f5f9;
   --soft-2: #f8fafc;
   --panel: #ffffff;
-  --panel-tint: #f7f9fc;
+  --panel-tint: #f8fafc;
   --green: #22c55e;
   --green-strong: #15803d;
-  --green-soft: #eaf8ef;
+  --green-soft: #dcfce7;
   --amber: #f59e0b;
-  --amber-soft: #fff7e8;
-  --gray-soft: #eef2f6;
-  --blue: #4f46e5;
-  --blue-soft: #eef0ff;
-  --red: #d92d20;
-  --red-soft: #fff2f1;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --amber-soft: #fef3c7;
+  --gray-soft: #f1f5f9;
+  --blue: #6366f1;
+  --blue-soft: #eef2ff;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
 }}
 * {{ box-sizing: border-box; }}
-body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: #fff; }}
-.shell {{ min-height: 100vh; display: grid; grid-template-columns: 244px 1fr; }}
-.nav {{ background: var(--nav); color: #d7deeb; display: flex; flex-direction: column; min-height: 100vh; }}
-.brand {{ height: 88px; display: flex; gap: 12px; align-items: center; padding: 0 24px; font-weight: 700; color: #fff; }}
-.logo {{ width: 28px; height: 28px; border-radius: 7px; border: 2px solid #60a5fa; position: relative; transform: rotate(-30deg); }}
-.logo:before,.logo:after {{ content: ""; position: absolute; border: 2px solid #60a5fa; border-radius: 7px; width: 13px; height: 8px; top: 7px; background: var(--nav); }}
-.logo:before {{ left: -8px; }} .logo:after {{ right: -8px; }}
-.menu {{ padding: 12px 14px; display: grid; gap: 8px; }}
-.item {{ height: 44px; width: 100%; border: 0; border-radius: 10px; display: flex; align-items: center; gap: 12px; padding: 0 14px; color: #c8d1df; background: transparent; text-align: left; font-size: 14px; }}
-.item.active {{ background: var(--nav-3); color: #7ea6ff; }}
+body {{ margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: #fff; font-size: 14px; }}
+.shell {{ min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }}
+.nav {{ background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; }}
+.brand {{ height: 64px; display: flex; gap: 10px; align-items: center; padding: 0 18px; font-weight: 600; color: #fff; font-size: 15px; }}
+.logo {{ width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #4f46e5); display: grid; place-items: center; color: #fff; font-size: 14px; font-weight: 700; }}
+.menu {{ padding: 8px 10px; display: grid; gap: 2px; }}
+.item {{ height: 38px; width: 100%; border: 0; border-radius: 8px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--nav-text); background: transparent; text-align: left; font-size: 13.5px; cursor: pointer; }}
+.item:hover {{ background: rgba(255,255,255,0.04); }}
+.item.active {{ background: var(--blue); color: #fff; }}
+.item-icon {{ width: 16px; display: inline-grid; place-items: center; font-size: 14px; opacity: .85; }}
 .spacer {{ flex: 1; }}
-.nav-section {{ margin: 16px; border: 1px solid #24324a; border-radius: 12px; padding: 16px; display: grid; gap: 10px; background: rgba(255,255,255,0.02); }}
-.nav-section-title {{ color: #98a2b3; font-size: 13px; }}
-.nav-section-value {{ display: block; font-size: 28px; font-weight: 700; color: #fff; }}
-.nav-section-good {{ color: #65d783; }}
-.stamp {{ border-top: 1px solid #22314d; padding: 22px 24px; color: #8e9bb0; font-size: 13px; display: grid; gap: 14px; }}
-.stamp-card {{ border: 1px solid #24324a; border-radius: 12px; padding: 14px; display: grid; gap: 6px; }}
-.stamp-good {{ color: #65d783; }}
-main {{ padding: 28px 28px 24px; min-width: 0; background: #fff; }}
-.topbar {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }}
-.topbar-copy {{ display: grid; gap: 8px; }}
-h1 {{ margin: 0; font-size: 40px; line-height: 1; letter-spacing: 0; }}
-.subtitle {{ color: var(--muted); font-size: 16px; }}
-.toolbar {{ display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }}
-.updated-inline {{ color: var(--muted); font-size: 14px; }}
-.refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 10px; color: #344054; box-shadow: var(--shadow); }}
-.refresh.off {{ color: #667085; background: var(--soft-2); }}
-.dot {{ width: 10px; height: 10px; border-radius: 99px; background: var(--green); display: inline-block; }}
-.refresh.off .dot {{ background: #c7ced8; }}
-.summary-grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }}
-.summary-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; box-shadow: var(--shadow); display: grid; gap: 16px; min-height: 104px; }}
-.summary-top {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }}
-.summary-label {{ color: var(--muted); font-size: 14px; }}
-.summary-value {{ font-size: 38px; font-weight: 700; line-height: 1; }}
+.nav-footer {{ padding: 10px; display: grid; gap: 8px; }}
+.nav-card {{ border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 10px 12px; display: grid; gap: 4px; background: rgba(255,255,255,0.02); }}
+.nav-card-title {{ color: var(--nav-muted); font-size: 11.5px; }}
+.nav-card-value {{ display: flex; align-items: center; gap: 8px; color: #fff; font-size: 12.5px; }}
+.nav-card-value .dot {{ width: 7px; height: 7px; border-radius: 99px; background: var(--green); }}
+main {{ padding: 22px 28px; min-width: 0; background: #fff; }}
+.topbar {{ display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }}
+.topbar-copy {{ display: grid; gap: 4px; }}
+h1 {{ margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }}
+.subtitle {{ color: var(--muted); font-size: 13px; }}
+.toolbar {{ display: flex; align-items: center; gap: 10px; }}
+.updated-inline {{ color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }}
+.refresh {{ border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 6px 10px; display: flex; align-items: center; gap: 6px; color: #334155; font-size: 12.5px; cursor: pointer; }}
+.refresh.off {{ color: var(--muted); background: var(--soft-2); }}
+.dot {{ width: 8px; height: 8px; border-radius: 99px; background: var(--green); display: inline-block; }}
+.refresh.off .dot {{ background: #cbd5e1; }}
+.summary-grid {{ display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-bottom: 18px; }}
+.summary-card {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }}
+.summary-copy {{ display: grid; gap: 6px; min-width: 0; }}
+.summary-label {{ color: var(--muted); font-size: 12px; font-weight: 500; }}
+.summary-value {{ font-size: 26px; font-weight: 700; line-height: 1; }}
 .summary-value.good {{ color: var(--green); }}
-.summary-icon {{ width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center; background: var(--soft); color: var(--blue); font-size: 18px; }}
+.summary-icon {{ width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; background: var(--soft); color: var(--blue); font-size: 15px; flex: 0 0 auto; }}
 .summary-icon.good {{ background: var(--green-soft); color: var(--green-strong); }}
 .summary-icon.warn {{ background: var(--blue-soft); color: var(--blue); }}
-.view {{ display: none; }}
-.view.active {{ display: block; }}
-.stack {{ display: grid; gap: 14px; }}
-.instance-panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); }}
+.summary-icon.muted {{ background: var(--gray-soft); color: var(--muted); }}
+.stack {{ display: grid; gap: 10px; }}
+.instance-panel {{ background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; box-shadow: var(--shadow); }}
 .instance-panel.collapsed .instance-panel-body {{ display: none; }}
-.instance-panel-header {{ min-height: 68px; display: flex; align-items: center; gap: 14px; padding: 18px 20px; border-bottom: 1px solid var(--line); }}
-.instance-panel.collapsed .instance-panel-header {{ border-bottom: 0; }}
-.panel-title-wrap {{ display: grid; gap: 6px; min-width: 0; }}
-.panel-title {{ display: flex; align-items: center; gap: 12px; min-width: 0; }}
-.panel-title strong {{ font-size: 24px; font-weight: 700; overflow-wrap: anywhere; }}
-.panel-subtitle {{ color: var(--muted); font-size: 14px; }}
-.panel-meta {{ margin-left: auto; display: flex; align-items: center; gap: 18px; color: #475467; font-size: 14px; flex-wrap: wrap; justify-content: flex-end; }}
-.collapse-btn {{ width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 10px; background: #fff; color: #475467; cursor: pointer; }}
-.instance-panel.collapsed .collapse-btn {{ transform: rotate(180deg); }}
-.instance-panel-body {{ padding: 18px 20px 20px; display: grid; gap: 14px; background: var(--panel); }}
-.section-title {{ font-size: 15px; font-weight: 700; color: #344054; }}
-.group-table {{ border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: var(--panel); }}
-.group-table-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 16px; background: var(--panel-tint); border-bottom: 1px solid var(--line); }}
-.group-table-title {{ display: flex; align-items: center; gap: 10px; font-weight: 700; }}
-.group-count {{ padding: 4px 10px; border-radius: 999px; background: var(--gray-soft); color: #475467; font-size: 12px; }}
-.group-table-meta {{ display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 13px; flex-wrap: wrap; justify-content: flex-end; }}
-.config-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-.tiny-chip,.config-chip {{ border-radius: 999px; padding: 5px 10px; background: var(--gray-soft); color: #344054; font-size: 12px; }}
-.config-chip {{ background: #eef4ff; color: #344054; }}
+.instance-panel-header {{ min-height: 54px; display: flex; align-items: center; gap: 12px; padding: 14px 18px; cursor: pointer; user-select: none; }}
+.instance-panel:not(.collapsed) .instance-panel-header {{ border-bottom: 1px solid var(--line); }}
+.panel-title {{ display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1; }}
+.panel-title strong {{ font-size: 15px; font-weight: 600; }}
+.collapse-chev {{ color: var(--muted); font-size: 14px; transition: transform .15s; }}
+.instance-panel.collapsed .collapse-chev {{ transform: rotate(180deg); }}
+.instance-panel-body {{ padding: 14px 18px 18px; display: grid; gap: 12px; background: var(--panel); }}
+.section-title {{ font-size: 13px; font-weight: 600; color: #334155; }}
+.group-table {{ border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }}
+.group-table-head {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: var(--panel-tint); border-bottom: 1px solid var(--line); cursor: pointer; user-select: none; }}
+.group-table.collapsed .rows {{ display: none; }}
+.group-table.collapsed .group-table-head {{ border-bottom: 0; }}
+.group-table-title {{ display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13.5px; }}
+.group-count {{ padding: 2px 8px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11.5px; font-weight: 500; }}
+.group-table-meta {{ display: flex; align-items: center; gap: 10px; color: var(--green-strong); font-size: 12px; flex-wrap: wrap; justify-content: flex-end; }}
+.cfg-chips {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
+.cfg-chip {{ display: inline-flex; align-items: center; gap: 5px; border-radius: 6px; padding: 3px 8px; font-size: 11.5px; font-weight: 500; background: var(--soft); color: #334155; border: 1px solid var(--line); }}
+.cfg-chip .cfg-key {{ color: var(--muted); font-weight: 500; }}
+.cfg-chip.mode {{ background: var(--blue-soft); color: #3730a3; border-color: #e0e7ff; }}
+.cfg-chip.scope {{ background: #ecfeff; color: #155e75; border-color: #cffafe; }}
+.cfg-chip.fb-on {{ background: var(--green-soft); color: var(--green-strong); border-color: #bbf7d0; }}
+.cfg-chip.fb-off {{ background: var(--gray-soft); color: var(--muted); border-color: var(--line); }}
+.cfg-active {{ color: var(--green-strong); font-weight: 600; white-space: nowrap; }}
 .rows {{ width: 100%; }}
-.rows-head,.row {{ display: grid; grid-template-columns: minmax(140px, 1.4fr) minmax(110px, .9fr) minmax(100px, .8fr) minmax(100px, .8fr) minmax(160px, 1.1fr) 116px; gap: 14px; align-items: center; padding: 12px 16px; }}
-.rows-head {{ background: var(--soft-2); color: #667085; font-size: 12px; text-transform: uppercase; border-bottom: 1px solid var(--line); }}
-.row {{ border-bottom: 1px solid #edf1f6; font-size: 14px; }}
+.rows-head,.row {{ display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(90px, .8fr) minmax(90px, .8fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 10px 14px; }}
+.rows-head {{ color: var(--muted); font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--line); }}
+.row {{ border-bottom: 1px solid var(--line); font-size: 13px; }}
 .row:last-child {{ border-bottom: 0; }}
-.uplink-cell {{ display: flex; align-items: center; gap: 10px; font-weight: 600; }}
-.status-pill {{ display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 5px 10px; font-size: 12px; background: var(--gray-soft); color: #475467; }}
+.uplink-cell {{ display: flex; align-items: center; gap: 8px; font-weight: 500; }}
+.status-pill {{ display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 2px 8px; font-size: 11.5px; font-weight: 500; background: var(--gray-soft); color: var(--muted); }}
 .status-pill.good {{ background: var(--green-soft); color: var(--green-strong); }}
-.status-pill.warn {{ background: var(--amber-soft); color: #b54708; }}
-.status-pill.bad {{ background: #f2f4f7; color: #475467; }}
-.status-dot {{ width: 12px; height: 12px; border-radius: 99px; background: #98a2b3; flex: 0 0 auto; }}
-.status {{ width: 12px; height: 12px; border-radius: 99px; background: #98a2b3; flex: 0 0 auto; }}
+.status-pill.warn {{ background: var(--amber-soft); color: #b45309; }}
+.status-pill.bad {{ background: var(--gray-soft); color: var(--muted); }}
+.status-dot {{ width: 8px; height: 8px; border-radius: 99px; background: #cbd5e1; flex: 0 0 auto; }}
 .status-dot.good {{ background: var(--green); }}
 .status-dot.warn {{ background: var(--amber); }}
-.status-dot.bad {{ background: #98a2b3; }}
-.badge {{ margin-left: auto; border-radius: 999px; padding: 5px 12px; background: var(--gray-soft); color: #6b7280; font-size: 13px; white-space: nowrap; }}
-.action-btn {{ height: 36px; border-radius: 10px; border: 1px solid var(--line-strong); background: #fff; color: #344054; font-weight: 600; }}
+.status-dot.bad {{ background: #cbd5e1; }}
+.muted-cell {{ color: var(--muted); }}
+.action-btn {{ height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--line-strong); background: #fff; color: #334155; font-weight: 500; font-size: 12px; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }}
 .action-btn.primary {{ background: var(--blue); border-color: var(--blue); color: #fff; }}
+.action-btn.primary:hover {{ background: #4f46e5; }}
 .action-btn:disabled {{ opacity: .5; cursor: default; }}
-.view {{ display: none; }}
-.view.active {{ display: block; }}
-.catalog-grid {{ display: grid; grid-template-columns: repeat(2, minmax(320px, 1fr)); gap: 18px; }}
-.instance-card,.catalog-card {{ background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 18px; display: grid; gap: 14px; box-shadow: var(--shadow); }}
-.instance-head {{ display: flex; align-items: center; gap: 12px; }}
-.instance-name {{ font-size: 19px; font-weight: 700; }}
-.instance-sub {{ color: var(--muted); font-size: 14px; }}
-.instance-meta,.catalog-meta {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
-.metric {{ border: 1px solid #e8ecf3; border-radius: 12px; padding: 12px; background: #fbfcfe; }}
-.metric-label {{ color: var(--muted); font-size: 12px; margin-bottom: 6px; }}
-.metric-value {{ font-size: 22px; font-weight: 700; }}
-.instance-groups,.catalog-list {{ display: grid; gap: 10px; }}
-.instance-group,.catalog-row {{ border: 1px solid #e8ecf3; border-radius: 12px; padding: 12px; background: #fff; }}
-.catalog-list {{ display: grid; gap: 10px; }}
-.catalog-row-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
-.instance-group-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
-.instance-group-name {{ font-weight: 700; }}
-.tiny-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
-.error {{ border: 1px solid #f6c4be; background: #fff5f3; color: #9f1f14; border-radius: 8px; padding: 14px 16px; }}
-@media (max-width: 980px) {{
+.error {{ border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; border-radius: 8px; padding: 10px 14px; font-size: 13px; }}
+@media (max-width: 1100px) {{
+  .summary-grid {{ grid-template-columns: repeat(3, 1fr); }}
+}}
+@media (max-width: 900px) {{
   .shell {{ grid-template-columns: 1fr; }}
   .nav {{ min-height: auto; }}
-  .menu,.nav-section,.stamp {{ display: none; }}
-  main {{ padding: 24px 16px; }}
-  .summary-grid {{ grid-template-columns: 1fr; }}
-  .catalog-grid {{ grid-template-columns: 1fr; }}
+  .menu,.nav-footer {{ display: none; }}
+  main {{ padding: 18px 14px; }}
+  .summary-grid {{ grid-template-columns: 1fr 1fr; }}
   .rows-head {{ display: none; }}
-  .row {{ grid-template-columns: 1fr; gap: 8px; }}
-  .row > div:last-child {{ padding-top: 4px; }}
-  .instance-meta {{ grid-template-columns: 1fr; }}
-  .catalog-meta {{ grid-template-columns: 1fr; }}
-  .topbar {{ flex-direction: column; }}
-  .instance-panel-header {{ flex-wrap: wrap; }}
-  .panel-meta {{ margin-left: 0; width: 100%; justify-content: space-between; }}
-  .group-table-head {{ flex-direction: column; align-items: flex-start; }}
+  .row {{ grid-template-columns: 1fr; gap: 6px; }}
+  .topbar {{ flex-direction: column; align-items: stretch; }}
 }}
 </style>
 </head>
 <body>
 <div class="shell">
   <aside class="nav">
-    <div class="brand"><span class="logo"></span><span>Uplink Monitor</span></div>
+    <div class="brand"><span class="logo">◆</span><span>Network Dashboard</span></div>
     <nav class="menu">
-      <button class="item active" data-view="dashboard" type="button">⌂ <span>Дашборд</span></button>
-      <button class="item" data-view="instances" type="button">▣ <span>Инстансы</span></button>
-      <button class="item" data-view="uplinks" type="button">↗ <span>Аплинки</span></button>
-      <button class="item" data-view="groups" type="button">◎ <span>Группы</span></button>
-      <div class="item">▤ <span>Логи</span></div>
-      <div class="item">⚙ <span>Настройки</span></div>
+      <button class="item active" type="button"><span class="item-icon">▣</span><span>Instances</span></button>
+      <button class="item" type="button"><span class="item-icon">◉</span><span>Alerts</span></button>
+      <button class="item" type="button"><span class="item-icon">▤</span><span>Logs</span></button>
+      <button class="item" type="button"><span class="item-icon">⚙</span><span>Settings</span></button>
     </nav>
     <div class="spacer"></div>
-    <div class="nav-section">
-      <div class="nav-section-title">Всего инстансов</div>
-      <span class="nav-section-value" id="instancesTotal">0</span>
-      <div class="nav-section-title">Активные аплинки</div>
-      <span class="nav-section-value"><span class="nav-section-good" id="activeTotal">0</span> / <span id="uplinksTotal">0</span></span>
-    </div>
-    <div class="stamp">
-      <div>Обновлено: <span id="updatedAt">-</span></div>
-      <div class="stamp-card">
-        <div class="nav-section-title">Состояние системы</div>
-        <div class="stamp-good" id="systemStatus">Нет ошибок</div>
+    <div class="nav-footer">
+      <div class="nav-card">
+        <div class="nav-card-title">System status</div>
+        <div class="nav-card-value"><span class="dot" id="systemDot"></span><span id="systemStatus">All systems operational</span></div>
+      </div>
+      <div class="nav-card">
+        <div class="nav-card-title">Control Service</div>
+        <div class="nav-card-value" style="color: var(--blue); font-weight: 600;">/control</div>
       </div>
     </div>
   </aside>
   <main>
     <div class="topbar">
       <div class="topbar-copy">
-        <h1 id="viewTitle">Дашборд</h1>
-        <div class="subtitle" id="viewSubtitle">Обзор всех инстансов, групп и аплинков</div>
+        <h1>Instances</h1>
+        <div class="subtitle">Overview of all instances, uplink groups and uplinks</div>
       </div>
       <div class="toolbar">
-        <div class="updated-inline">Last updated: <span id="updatedAtInline">-</span></div>
-        <button class="refresh" id="refreshBtn" type="button">↻ <span id="refreshLabel">Автообновление</span> <span class="dot"></span></button>
+        <div class="updated-inline">↻ Last updated: <span id="updatedAtInline">-</span></div>
+        <button class="refresh" id="refreshBtn" type="button"><span class="dot"></span><span id="refreshLabel">Auto</span></button>
       </div>
     </div>
     <section class="summary-grid" id="summaryGrid"></section>
     <div id="errors"></div>
-    <section class="view active" id="dashboardView">
-      <section class="stack" id="groups"></section>
-    </section>
-    <section class="view" id="instancesView">
-      <section class="catalog-grid" id="instancesGrid"></section>
-    </section>
-    <section class="view" id="uplinksView">
-      <section class="catalog-grid" id="uplinksGrid"></section>
-    </section>
-    <section class="view" id="groupsView">
-      <section class="catalog-grid" id="groupsGrid"></section>
-    </section>
+    <section class="stack" id="groups"></section>
   </main>
 </div>
 <script>
 const refreshMs = {refresh_ms};
 let timer = null;
 let autoRefreshEnabled = true;
-let currentView = "dashboard";
-const state = {{ groups: new Map(), instances: [], uplinks: new Map(), collapsedGroups: new Set(), collapsedInstances: new Set(), errors: [] }};
+const state = {{ instances: [], collapsedInstances: new Set(), collapsedGroups: new Set(), errors: [] }};
 
-function groupKey(group, uplink) {{ return group + "\u0000" + uplink; }}
-function healthy(entry) {{
-  return entry.uplink.tcp_healthy !== false && entry.uplink.udp_healthy !== false;
-}}
-function active(entry) {{
-  const u = entry.uplink;
-  return Boolean(u.active_global || u.active_tcp || u.active_udp);
-}}
-function groupConfigChips(group) {{
-  return `
-    <span class="config-chip">mode = "${{escapeHtml(group.load_balancing_mode)}}"</span>
-    <span class="config-chip">routing_scope = "${{escapeHtml(group.routing_scope)}}"</span>
-    <span class="config-chip">auto_failback = ${{group.auto_failback ? "true" : "false"}}</span>`;
-}}
-function viewMeta(view) {{
-  return view === "dashboard"
-    ? {{ title: "Дашборд", subtitle: "Обзор всех инстансов, групп и аплинков" }}
-    : view === "instances"
-    ? {{ title: "Инстансы", subtitle: "Сводка по каждому instance и его группам" }}
-    : view === "uplinks"
-    ? {{ title: "Аплинки", subtitle: "Состояние аплинков по всем instances" }}
-    : {{ title: "Группы", subtitle: "Маршрутизация и состав uplink groups" }};
-}}
+function healthy(u) {{ return u.tcp_healthy !== false && u.udp_healthy !== false; }}
+function isActive(u) {{ return Boolean(u.active_global || u.active_tcp || u.active_udp); }}
 function computeStats() {{
-  const healthyInstances = state.instances.filter(instance => instance.ok).length;
+  const healthyInstances = state.instances.filter(i => i.ok).length;
   const totalInstances = state.instances.length;
-  let totalGroups = 0;
-  let activeUplinks = 0;
-  let inactiveUplinks = 0;
-  for (const instance of state.instances) {{
-    for (const group of instance.groups || []) {{
+  let totalGroups = 0, activeUplinks = 0, inactiveUplinks = 0;
+  for (const inst of state.instances) {{
+    for (const g of inst.groups || []) {{
       totalGroups += 1;
-      for (const uplink of group.uplinks || []) {{
-        if (uplink.active_global || uplink.active_tcp || uplink.active_udp) {{
-          activeUplinks += 1;
-        }} else {{
-          inactiveUplinks += 1;
-        }}
+      for (const u of g.uplinks || []) {{
+        if (isActive(u)) activeUplinks += 1; else inactiveUplinks += 1;
       }}
     }}
   }}
@@ -792,59 +729,71 @@ function computeStats() {{
 }}
 function statusTone(ok, groups) {{
   if (!ok) return "bad";
-  const uplinks = groups.flatMap(group => group.uplinks || []);
+  const uplinks = groups.flatMap(g => g.uplinks || []);
   if (uplinks.length === 0) return "warn";
-  const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
-  const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
+  const healthyCount = uplinks.filter(healthy).length;
+  const activeCount = uplinks.filter(isActive).length;
   if (healthyCount === uplinks.length && activeCount > 0) return "good";
   if (healthyCount > 0) return "warn";
   return "bad";
 }}
-function statusLabel(tone) {{
-  return tone === "good" ? "Healthy" : tone === "warn" ? "Degraded" : "Offline";
+function statusLabel(tone) {{ return tone === "good" ? "Healthy" : tone === "warn" ? "Degraded" : "Offline"; }}
+function prettyMode(value) {{
+  const v = String(value || "").toLowerCase();
+  if (v === "active_passive") return "Active / Passive";
+  if (v === "active_active") return "Active / Active";
+  if (v === "round_robin") return "Round-robin";
+  if (v === "weighted") return "Weighted";
+  return value || "—";
 }}
-function transportState(value) {{
-  return value === false ? "down" : "ok";
+function prettyScope(value) {{
+  const v = String(value || "").toLowerCase();
+  if (v === "global") return "Global";
+  if (v === "tcp") return "TCP only";
+  if (v === "udp") return "UDP only";
+  if (v === "per_transport") return "Per transport";
+  return value || "—";
 }}
-function uplinkStatus(entries) {{
-  const isActive = entries.some(active);
-  const isHealthy = entries.some(healthy);
-  if (isActive) return {{ label: "Active", tone: "good" }};
-  if (isHealthy) return {{ label: "Ready", tone: "warn" }};
-  return {{ label: "Inactive", tone: "bad" }};
+function groupConfigChips(group) {{
+  const mode = prettyMode(group.load_balancing_mode);
+  const scope = prettyScope(group.routing_scope);
+  const failback = group.auto_failback;
+  const fbCls = failback ? "fb-on" : "fb-off";
+  const fbLabel = failback ? "On" : "Off";
+  return `
+    <span class="cfg-chip mode" title="load_balancing_mode"><span>⚖</span><span class="cfg-key">Mode:</span><span>${{escapeHtml(mode)}}</span></span>
+    <span class="cfg-chip scope" title="routing_scope"><span>⌘</span><span class="cfg-key">Scope:</span><span>${{escapeHtml(scope)}}</span></span>
+    <span class="cfg-chip ${{fbCls}}" title="auto_failback"><span>↺</span><span class="cfg-key">Auto-failback:</span><span>${{fbLabel}}</span></span>`;
 }}
-function uplinkRole(entry) {{
+function uplinkRole(u) {{
   const parts = [];
-  if (entry.uplink.active_global) parts.push("global");
-  if (entry.uplink.active_tcp) parts.push("tcp");
-  if (entry.uplink.active_udp) parts.push("udp");
+  if (u.active_global) parts.push("global");
+  if (u.active_tcp) parts.push("tcp");
+  if (u.active_udp) parts.push("udp");
   return parts.length ? parts.join(", ") : "standby";
 }}
 function summaryCards(stats) {{
   return [
     {{ label: "Total Instances", value: stats.totalInstances, icon: "▣", tone: "" }},
-    {{ label: "Healthy Instances", value: stats.healthyInstances, icon: "◌", tone: "good" }},
+    {{ label: "Healthy Instances", value: stats.healthyInstances, icon: "♥", tone: "good" }},
     {{ label: "Total Uplink Groups", value: stats.totalGroups, icon: "◎", tone: "warn" }},
-    {{ label: "Active Uplinks", value: stats.activeUplinks + " / " + (stats.activeUplinks + stats.inactiveUplinks), icon: "↗", tone: "good" }},
+    {{ label: "Active Uplinks", value: stats.activeUplinks, icon: "↗", tone: "good", good: true }},
+    {{ label: "Inactive Uplinks", value: stats.inactiveUplinks, icon: "⊘", tone: "muted" }},
   ];
 }}
 function renderSummary(stats) {{
   const root = document.getElementById("summaryGrid");
-  root.innerHTML = summaryCards(stats).map(card => `
+  root.innerHTML = summaryCards(stats).map(c => `
     <article class="summary-card">
-      <div class="summary-top">
-        <div>
-          <div class="summary-label">${{card.label}}</div>
-          <div class="summary-value ${{card.tone === "good" ? "good" : ""}}">${{card.value}}</div>
-        </div>
-        <div class="summary-icon ${{card.tone}}">${{card.icon}}</div>
+      <div class="summary-copy">
+        <div class="summary-label">${{c.label}}</div>
+        <div class="summary-value ${{c.good ? "good" : ""}}">${{c.value}}</div>
       </div>
+      <div class="summary-icon ${{c.tone}}">${{c.icon}}</div>
     </article>`).join("");
 }}
 function rebuild(raw) {{
-  state.groups = new Map();
   state.instances = [];
-  state.uplinks = new Map();
   state.errors = [];
   for (const inst of raw.instances) {{
     if (!inst.ok) {{
@@ -854,35 +803,11 @@ function rebuild(raw) {{
     }}
     const groups = inst.topology?.instance?.groups || [];
     state.instances.push({{ name: inst.name, ok: true, error: null, groups }});
-    for (const group of groups) {{
-      if (!state.groups.has(group.name)) state.groups.set(group.name, new Map());
-      const byUplink = state.groups.get(group.name);
-      for (const uplink of group.uplinks || []) {{
-        const key = uplink.name;
-        if (!byUplink.has(key)) byUplink.set(key, []);
-        const entry = {{ instance: inst.name, group: group.name, uplink, groupObj: group }};
-        byUplink.get(key).push(entry);
-        if (!state.uplinks.has(key)) state.uplinks.set(key, []);
-        state.uplinks.get(key).push(entry);
-      }}
-    }}
   }}
 }}
 function renderErrors() {{
   const box = document.getElementById("errors");
   box.innerHTML = state.errors.map(e => `<div class="error">${{escapeHtml(e)}}</div>`).join("");
-}}
-function renderNav() {{
-  document.querySelectorAll("[data-view]").forEach(el => {{
-    el.classList.toggle("active", el.dataset.view === currentView);
-  }});
-  document.getElementById("dashboardView").classList.toggle("active", currentView === "dashboard");
-  document.getElementById("instancesView").classList.toggle("active", currentView === "instances");
-  document.getElementById("uplinksView").classList.toggle("active", currentView === "uplinks");
-  document.getElementById("groupsView").classList.toggle("active", currentView === "groups");
-  const meta = viewMeta(currentView);
-  document.getElementById("viewTitle").textContent = meta.title;
-  document.getElementById("viewSubtitle").textContent = meta.subtitle;
 }}
 function render() {{
   renderErrors();
@@ -895,29 +820,17 @@ function render() {{
     const collapsed = state.collapsedInstances.has(instance.name);
     panel.className = "instance-panel" + (collapsed ? " collapsed" : "");
     const groups = instance.groups || [];
-    const uplinks = groups.flatMap(group => group.uplinks || []);
     const tone = statusTone(instance.ok, groups);
-    const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
-    const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
     panel.innerHTML = `
       <header class="instance-panel-header">
         <div class="status-dot ${{tone}}"></div>
-        <div class="panel-title-wrap">
-          <div class="panel-title">
-            <strong>${{escapeHtml(instance.name)}}</strong>
-            <span class="status-pill ${{tone}}">${{statusLabel(tone)}}</span>
-          </div>
-          <div class="panel-subtitle">${{instance.ok ? `${{groups.length}} groups, ${{uplinks.length}} uplinks` : "Инстанс недоступен"}}</div>
+        <div class="panel-title">
+          <strong>${{escapeHtml(instance.name)}}</strong>
+          <span class="status-pill ${{tone}}">${{statusLabel(tone)}}</span>
         </div>
-        <div class="panel-meta">
-          <span>Healthy: <b>${{healthyCount}}</b></span>
-          <span>Active: <b>${{activeCount}}</b></span>
-          <span>Groups: <b>${{groups.length}}</b></span>
-          <button class="collapse-btn" type="button" aria-label="Свернуть инстанс">⌃</button>
-        </div>
+        <span class="collapse-chev">⌃</span>
       </header>`;
-    const collapseBtn = panel.querySelector(".collapse-btn");
-    collapseBtn.addEventListener("click", () => toggleInstance(instance.name));
+    panel.querySelector(".instance-panel-header").addEventListener("click", () => toggleInstance(instance.name));
     if (!instance.ok) {{
       const body = document.createElement("div");
       body.className = "instance-panel-body";
@@ -931,8 +844,10 @@ function render() {{
     body.innerHTML = `<div class="section-title">Uplink Groups</div>`;
     for (const group of groups) {{
       const groupEl = document.createElement("section");
-      const activeInGroup = (group.uplinks || []).filter(u => u.active_global || u.active_tcp || u.active_udp).length;
-      groupEl.className = "group-table";
+      const groupKey = instance.name + "\u0000" + group.name;
+      const groupCollapsed = state.collapsedGroups.has(groupKey);
+      const activeInGroup = (group.uplinks || []).filter(isActive).length;
+      groupEl.className = "group-table" + (groupCollapsed ? " collapsed" : "");
       groupEl.innerHTML = `
         <div class="group-table-head">
           <div class="group-table-title">
@@ -940,8 +855,9 @@ function render() {{
             <span class="group-count">${{(group.uplinks || []).length}} uplinks</span>
           </div>
           <div class="group-table-meta">
-            <span>${{activeInGroup}} active</span>
-            <div class="config-chips">${{groupConfigChips(group)}}</div>
+            <div class="cfg-chips">${{groupConfigChips(group)}}</div>
+            <span class="cfg-active">${{activeInGroup}} active</span>
+            <span class="collapse-chev">⌃</span>
           </div>
         </div>
         <div class="rows">
@@ -954,22 +870,23 @@ function render() {{
             <div>Action</div>
           </div>
         </div>`;
+      groupEl.querySelector(".group-table-head").addEventListener("click", () => toggleGroup(groupKey));
       const rows = groupEl.querySelector(".rows");
       for (const uplink of group.uplinks || []) {{
-        const entry = {{ instance: instance.name, group: group.name, uplink, groupObj: group }};
-        const tone = uplink.active_global || uplink.active_tcp || uplink.active_udp ? "good" : (healthy(entry) ? "warn" : "bad");
+        const entry = {{ instance: instance.name, group: group.name, uplink }};
+        const rowTone = isActive(uplink) ? "good" : (healthy(uplink) ? "warn" : "bad");
+        const label = rowTone === "good" ? "Active" : rowTone === "warn" ? "Ready" : "Inactive";
         const row = document.createElement("div");
         row.className = "row";
         row.innerHTML = `
-          <div class="uplink-cell"><span class="status-dot ${{tone}}"></span><span>${{escapeHtml(uplink.name)}}</span></div>
-          <div><span class="status-pill ${{tone}}">${{tone === "good" ? "Active" : tone === "warn" ? "Ready" : "Inactive"}}</span></div>
-          <div>${{transportState(uplink.tcp_healthy)}}</div>
-          <div>${{transportState(uplink.udp_healthy)}}</div>
-          <div>${{escapeHtml(uplinkRole(entry))}}</div>
-          <div><button class="action-btn ${{tone === "good" ? "" : "primary"}}" type="button" ${{tone === "good" ? "disabled" : ""}}>${{tone === "good" ? "Active" : "Activate"}}</button></div>`;
-        const button = row.querySelector("button");
-        if (tone !== "good") {{
-          button.addEventListener("click", () => activateEntries([entry]));
+          <div class="uplink-cell"><span class="status-dot ${{rowTone}}"></span><span>${{escapeHtml(uplink.name)}}</span></div>
+          <div><span class="status-pill ${{rowTone}}">${{label}}</span></div>
+          <div class="${{uplink.tcp_healthy === false ? "muted-cell" : ""}}">${{uplink.tcp_healthy === false ? "down" : "ok"}}</div>
+          <div class="${{uplink.udp_healthy === false ? "muted-cell" : ""}}">${{uplink.udp_healthy === false ? "down" : "ok"}}</div>
+          <div class="muted-cell">${{escapeHtml(uplinkRole(uplink))}}</div>
+          <div>${{rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}}</div>`;
+        if (rowTone !== "good") {{
+          row.querySelector("button").addEventListener("click", ev => {{ ev.stopPropagation(); activateEntries([entry]); }});
         }}
         rows.appendChild(row);
       }}
@@ -978,174 +895,21 @@ function render() {{
     panel.appendChild(body);
     root.appendChild(panel);
   }}
-  document.getElementById("instancesTotal").textContent = stats.totalInstances;
-  document.getElementById("uplinksTotal").textContent = stats.activeUplinks + stats.inactiveUplinks;
-  document.getElementById("activeTotal").textContent = stats.activeUplinks;
   const now = new Date().toLocaleTimeString();
-  document.getElementById("updatedAt").textContent = now;
   document.getElementById("updatedAtInline").textContent = now;
-  document.getElementById("systemStatus").textContent = state.errors.length ? "Есть ошибки подключения" : "All systems operational";
-  renderInstances();
-  renderUplinks();
-  renderGroups();
-  renderNav();
+  const hasErrors = state.errors.length > 0;
+  document.getElementById("systemStatus").textContent = hasErrors ? "Connection issues" : "All systems operational";
+  document.getElementById("systemDot").style.background = hasErrors ? "var(--amber)" : "var(--green)";
   renderRefreshButton();
-}}
-function renderInstances() {{
-  const root = document.getElementById("instancesGrid");
-  root.innerHTML = "";
-  for (const instance of state.instances) {{
-    const groups = instance.groups || [];
-    const uplinks = groups.flatMap(g => g.uplinks || []);
-    const activeCount = uplinks.filter(u => u.active_global || u.active_tcp || u.active_udp).length;
-    const healthyCount = uplinks.filter(u => u.tcp_healthy !== false && u.udp_healthy !== false).length;
-    const card = document.createElement("article");
-    card.className = "instance-card";
-    if (!instance.ok) {{
-      card.innerHTML = `
-        <div class="instance-head">
-          <span class="status"></span>
-          <div><div class="instance-name">${{escapeHtml(instance.name)}}</div><div class="instance-sub">Недоступен</div></div>
-        </div>
-        <div class="error">${{escapeHtml(instance.error || "instance недоступен")}}</div>`;
-      root.appendChild(card);
-      continue;
-    }}
-    card.innerHTML = `
-      <div class="instance-head">
-        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
-        <div>
-          <div class="instance-name">${{escapeHtml(instance.name)}}</div>
-          <div class="instance-sub">${{groups.length}} групп, ${{uplinks.length}} аплинков</div>
-        </div>
-      </div>
-      <div class="instance-meta">
-        <div class="metric"><div class="metric-label">Группы</div><div class="metric-value">${{groups.length}}</div></div>
-        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
-        <div class="metric"><div class="metric-label">Доступные</div><div class="metric-value">${{healthyCount}}</div></div>
-      </div>`;
-    const groupsEl = document.createElement("div");
-    groupsEl.className = "instance-groups";
-    for (const group of groups) {{
-      const uplinkNames = (group.uplinks || []).map(u => `<span class="tiny-chip">${{escapeHtml(u.name)}}</span>`).join("");
-      const groupEl = document.createElement("div");
-      groupEl.className = "instance-group";
-      groupEl.innerHTML = `
-        <div class="instance-group-top">
-          <span class="instance-group-name">${{escapeHtml(group.name)}}</span>
-          <span class="instance-sub">${{(group.uplinks || []).length}} аплинков</span>
-        </div>
-        <div class="tiny-chips">${{uplinkNames}}</div>`;
-      groupsEl.appendChild(groupEl);
-    }}
-    card.appendChild(groupsEl);
-    root.appendChild(card);
-  }}
-}}
-function renderUplinks() {{
-  const root = document.getElementById("uplinksGrid");
-  root.innerHTML = "";
-  for (const [uplinkName, entries] of state.uplinks.entries()) {{
-    const healthyCount = entries.filter(healthy).length;
-    const activeCount = entries.filter(active).length;
-    const instances = [...new Set(entries.map(e => e.instance))];
-    const groups = [...new Set(entries.map(e => e.group))];
-    const card = document.createElement("article");
-    card.className = "catalog-card";
-    card.innerHTML = `
-      <div class="instance-head">
-        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
-        <div>
-          <div class="instance-name">${{escapeHtml(uplinkName)}}</div>
-          <div class="instance-sub">${{instances.length}} инстансов, ${{groups.length}} групп</div>
-        </div>
-      </div>
-      <div class="catalog-meta">
-        <div class="metric"><div class="metric-label">Инстансы</div><div class="metric-value">${{instances.length}}</div></div>
-        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
-        <div class="metric"><div class="metric-label">Доступные</div><div class="metric-value">${{healthyCount}}</div></div>
-      </div>`;
-    const list = document.createElement("div");
-    list.className = "catalog-list";
-    for (const entry of entries) {{
-      const row = document.createElement("div");
-      row.className = "catalog-row";
-      row.innerHTML = `
-        <div class="catalog-row-top">
-          <span class="instance-group-name">${{escapeHtml(entry.instance)}}</span>
-          <span class="badge">${{active(entry) ? "Активный" : (healthy(entry) ? "Доступен" : "Неактивный")}}</span>
-        </div>
-        <div class="tiny-chips">
-          <span class="tiny-chip">Группа: ${{escapeHtml(entry.group)}}</span>
-          <span class="tiny-chip">TCP: ${{entry.uplink.tcp_healthy === false ? "down" : "ok"}}</span>
-          <span class="tiny-chip">UDP: ${{entry.uplink.udp_healthy === false ? "down" : "ok"}}</span>
-        </div>`;
-      list.appendChild(row);
-    }}
-    card.appendChild(list);
-    root.appendChild(card);
-  }}
-}}
-function renderGroups() {{
-  const root = document.getElementById("groupsGrid");
-  root.innerHTML = "";
-  for (const [groupName, uplinks] of state.groups.entries()) {{
-    const entries = [...uplinks.values()].flat();
-    const groupSample = entries[0]?.groupObj;
-    const instances = [...new Set(entries.map(e => e.instance))];
-    const healthyCount = entries.filter(healthy).length;
-    const activeCount = entries.filter(active).length;
-    const card = document.createElement("article");
-    card.className = "catalog-card";
-    card.innerHTML = `
-      <div class="instance-head">
-        <span class="status" style="background:${{healthyCount > 0 ? "var(--green)" : "#aeb4bd"}}"></span>
-        <div>
-          <div class="instance-name">${{escapeHtml(groupName)}}</div>
-          <div class="instance-sub">${{instances.length}} инстансов, ${{uplinks.size}} аплинков</div>
-        </div>
-      </div>
-      <div class="catalog-meta">
-        <div class="metric"><div class="metric-label">Инстансы</div><div class="metric-value">${{instances.length}}</div></div>
-        <div class="metric"><div class="metric-label">Аплинки</div><div class="metric-value">${{uplinks.size}}</div></div>
-        <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
-      </div>`;
-    if (groupSample) {{
-      const chips = document.createElement("div");
-      chips.className = "config-chips";
-      chips.innerHTML = groupConfigChips(groupSample);
-      card.appendChild(chips);
-    }}
-    const list = document.createElement("div");
-    list.className = "catalog-list";
-    for (const [uplinkName, uplinkEntries] of uplinks.entries()) {{
-      const row = document.createElement("div");
-      row.className = "catalog-row";
-      row.innerHTML = `
-        <div class="catalog-row-top">
-          <span class="instance-group-name">${{escapeHtml(uplinkName)}}</span>
-          <span class="badge">${{uplinkEntries.some(active) ? "Активный" : (uplinkEntries.some(healthy) ? "Доступен" : "Неактивный")}}</span>
-        </div>
-        <div class="tiny-chips">${{uplinkEntries.map(entry => `<span class="tiny-chip">${{escapeHtml(entry.instance)}}</span>`).join("")}}</div>`;
-      list.appendChild(row);
-    }}
-    card.appendChild(list);
-    root.appendChild(card);
-  }}
 }}
 function renderRefreshButton() {{
   const btn = document.getElementById("refreshBtn");
   const label = document.getElementById("refreshLabel");
   btn.classList.toggle("off", !autoRefreshEnabled);
   btn.setAttribute("aria-pressed", String(autoRefreshEnabled));
-  label.textContent = autoRefreshEnabled ? "Автообновление" : "Автообновление выкл";
+  label.textContent = autoRefreshEnabled ? "Auto" : "Paused";
 }}
-function stopAutoRefresh() {{
-  if (timer !== null) {{
-    clearInterval(timer);
-    timer = null;
-  }}
-}}
+function stopAutoRefresh() {{ if (timer !== null) {{ clearInterval(timer); timer = null; }} }}
 function startAutoRefresh() {{
   stopAutoRefresh();
   if (!autoRefreshEnabled) return;
@@ -1156,25 +920,15 @@ function toggleAutoRefresh() {{
   renderRefreshButton();
   startAutoRefresh();
 }}
-function toggleGroup(group) {{
-  if (state.collapsedGroups.has(group)) {{
-    state.collapsedGroups.delete(group);
-  }} else {{
-    state.collapsedGroups.add(group);
-  }}
+function toggleInstance(name) {{
+  if (state.collapsedInstances.has(name)) state.collapsedInstances.delete(name);
+  else state.collapsedInstances.add(name);
   render();
 }}
-function toggleInstance(instance) {{
-  if (state.collapsedInstances.has(instance)) {{
-    state.collapsedInstances.delete(instance);
-  }} else {{
-    state.collapsedInstances.add(instance);
-  }}
+function toggleGroup(key) {{
+  if (state.collapsedGroups.has(key)) state.collapsedGroups.delete(key);
+  else state.collapsedGroups.add(key);
   render();
-}}
-function setView(view) {{
-  currentView = view;
-  renderNav();
 }}
 async function load() {{
   const res = await fetch("/dashboard/api/topology", {{ cache: "no-store" }});
@@ -1194,11 +948,7 @@ async function activateEntries(entries) {{
 function escapeHtml(value) {{
   return String(value).replace(/[&<>"']/g, c => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }}[c]));
 }}
-function entriesForGroup(uplinks) {{
-  return [...uplinks.values()].flat();
-}}
 document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
-document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => setView(el.dataset.view)));
 renderRefreshButton();
 load().catch(err => {{ state.errors = [String(err)]; render(); }});
 startAutoRefresh();
