@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
-use tokio::time::Instant;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use crate::config::WsTransportMode;
 
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
+use super::super::h3_downgrade::H3DowngradeTrigger;
 use super::scheduler::run_probe_attempt_with_timeout;
 
 impl UplinkManager {
@@ -57,8 +57,6 @@ impl UplinkManager {
                     continue;
                 },
             };
-            let now = Instant::now();
-            let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
             let recovered = match which {
                 TransportKind::Tcp => matches!(&outcome, Ok(r) if r.tcp_ok),
                 TransportKind::Udp => matches!(&outcome, Ok(r) if r.udp_applicable && r.udp_ok),
@@ -69,31 +67,9 @@ impl UplinkManager {
                     kind = ?which,
                     "H3 recovery confirmed by re-probe, clearing downgrade window early"
                 );
-                self.inner.with_status_mut(index, |status| match which {
-                    TransportKind::Tcp => status.tcp.h3_downgrade_until = None,
-                    TransportKind::Udp => status.udp.h3_downgrade_until = None,
-                });
+                self.clear_h3_downgrade(index, which);
             } else {
-                let new_until = now + h3_downgrade_duration;
-                let current = {
-                    let s = self.inner.read_status(index);
-                    match which {
-                        TransportKind::Tcp => s.tcp.h3_downgrade_until,
-                        TransportKind::Udp => s.udp.h3_downgrade_until,
-                    }
-                };
-                if current.is_none_or(|t| t < new_until) {
-                    debug!(
-                        uplink = %uplink.name,
-                        kind = ?which,
-                        downgrade_secs = h3_downgrade_duration.as_secs(),
-                        "H3 still unreachable after recovery probe, extending downgrade window"
-                    );
-                    self.inner.with_status_mut(index, |status| match which {
-                        TransportKind::Tcp => status.tcp.h3_downgrade_until = Some(new_until),
-                        TransportKind::Udp => status.udp.h3_downgrade_until = Some(new_until),
-                    });
-                }
+                self.extend_h3_downgrade(index, which, H3DowngradeTrigger::RecoveryReprobeFail);
             }
         }
     }
