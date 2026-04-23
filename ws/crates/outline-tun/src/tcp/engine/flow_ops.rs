@@ -90,7 +90,7 @@ impl TunTcpEngine {
                 idle_timeout,
             },
             status: TcpFlowStatus::SynReceived,
-            client_next_seq: packet.sequence_number.wrapping_add(1),
+            rcv_nxt: packet.sequence_number.wrapping_add(1),
             client_window_scale: packet.window_scale.unwrap_or(0),
             client_sack_permitted: packet.sack_permitted,
             client_max_segment_size: packet.max_segment_size,
@@ -207,7 +207,7 @@ impl TunTcpEngine {
                 build_flow_packet(
                     &state,
                     state.server_seq,
-                    state.client_next_seq,
+                    state.rcv_nxt,
                     TCP_FLAG_RST | TCP_FLAG_ACK,
                     &[],
                 )

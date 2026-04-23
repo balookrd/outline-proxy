@@ -20,7 +20,7 @@ pub(in crate::tcp) fn classify_inbound_segment(
     state: &TcpFlowState,
     packet: &ParsedTcpPacket,
 ) -> InboundSegmentDisposition {
-    if seq_gt(packet.sequence_number, state.client_next_seq) {
+    if seq_gt(packet.sequence_number, state.rcv_nxt) {
         return InboundSegmentDisposition::BeyondExpectedSequence;
     }
     match trim_packet_to_receive_window(state, packet) {
@@ -35,11 +35,11 @@ pub(in crate::tcp) fn segment_requires_ack(
     sequence_number: u32,
     flags: u8,
     payload_len: usize,
-    client_next_seq: u32,
+    rcv_nxt: u32,
 ) -> bool {
     payload_len != 0
         || (flags & TCP_FLAG_FIN) != 0
-        || seq_lt(sequence_number, client_next_seq)
+        || seq_lt(sequence_number, rcv_nxt)
 }
 
 // Final ACK of the three-way handshake: client ACKs our SYN+ACK exactly

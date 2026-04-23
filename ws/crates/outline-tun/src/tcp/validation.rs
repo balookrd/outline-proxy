@@ -41,7 +41,7 @@ pub(super) fn validate_existing_packet(
     packet: &ParsedTcpPacket,
 ) -> PacketValidation {
     if (packet.flags & TCP_FLAG_RST) != 0 {
-        if packet.sequence_number == state.client_next_seq {
+        if packet.sequence_number == state.rcv_nxt {
             return PacketValidation::CloseFlow("client_rst");
         }
         return if packet_overlaps_receive_window(state, packet) {

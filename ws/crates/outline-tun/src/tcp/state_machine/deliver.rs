@@ -30,15 +30,15 @@ pub(in crate::tcp) fn apply_inbound_and_flush(
         trimmed.sequence_number,
         trimmed.flags,
         trimmed.payload.len(),
-        state.client_next_seq,
+        state.rcv_nxt,
     );
-    let segment = normalize_trimmed_segment(trimmed, state.client_next_seq);
+    let segment = normalize_trimmed_segment(trimmed, state.rcv_nxt);
     let mut pending_payload = Vec::with_capacity(trimmed.payload.len());
     let mut should_close_client_half = false;
 
     if !segment.payload.is_empty() || segment.fin {
         apply_client_segment(
-            &mut state.client_next_seq,
+            &mut state.rcv_nxt,
             segment,
             &mut pending_payload,
             &mut should_close_client_half,
@@ -50,11 +50,11 @@ pub(in crate::tcp) fn apply_inbound_and_flush(
     }
 
     let server_seq = state.server_seq;
-    let client_next_seq = state.client_next_seq;
+    let rcv_nxt = state.rcv_nxt;
     let server_flush = flush_server_output(state)?;
 
     let pending_ack = if should_send_ack {
-        Some(build_flow_ack_packet(state, server_seq, client_next_seq, TCP_FLAG_ACK)?)
+        Some(build_flow_ack_packet(state, server_seq, rcv_nxt, TCP_FLAG_ACK)?)
     } else {
         None
     };

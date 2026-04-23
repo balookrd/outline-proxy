@@ -107,7 +107,7 @@ pub(in crate::tcp) struct TcpFlowState {
     pub(in crate::tcp) routing: FlowRouting,
     pub(in crate::tcp) signals: FlowControlSignals,
     pub(in crate::tcp) status: TcpFlowStatus,
-    pub(in crate::tcp) client_next_seq: u32,
+    pub(in crate::tcp) rcv_nxt: u32,
     pub(in crate::tcp) client_window_scale: u8,
     pub(in crate::tcp) client_sack_permitted: bool,
     pub(in crate::tcp) client_max_segment_size: Option<u16>,

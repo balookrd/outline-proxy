@@ -792,7 +792,7 @@ async fn build_flow_ack_packet_advertises_sack_blocks_for_buffered_segments() {
         },
     ]);
     let packet =
-        super::build_flow_ack_packet(&state, state.server_seq, state.client_next_seq, TCP_FLAG_ACK)
+        super::build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)
             .unwrap();
     let parsed = super::parse_tcp_packet(&packet).unwrap();
     assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124)]);
@@ -828,7 +828,7 @@ async fn build_flow_ack_packet_limits_sack_blocks_when_timestamps_are_enabled() 
     ]);
 
     let packet =
-        super::build_flow_ack_packet(&state, state.server_seq, state.client_next_seq, TCP_FLAG_ACK)
+        super::build_flow_ack_packet(&state, state.server_seq, state.rcv_nxt, TCP_FLAG_ACK)
             .unwrap();
     let parsed = super::parse_tcp_packet(&packet).unwrap();
     assert_eq!(parsed.sack_blocks, vec![(112, 116), (120, 124), (128, 132)]);
@@ -838,7 +838,7 @@ async fn build_flow_ack_packet_limits_sack_blocks_when_timestamps_are_enabled() 
 #[tokio::test]
 async fn retransmit_prefers_unsacked_hole_before_sacked_tail() {
     let mut state = tcp_flow_state_for_tests().await;
-    state.client_next_seq = 500;
+    state.rcv_nxt = 500;
     state.sack_scoreboard = vec![SequenceRange { start: 1004, end: 1008 }];
     state.unacked_server_segments = VecDeque::from([
         super::ServerSegment {
@@ -1230,7 +1230,7 @@ fn queue_future_segment_reassembles_across_isn_wraparound() {
 
 #[test]
 fn is_duplicate_syn_recognised_when_expected_seq_just_wrapped() {
-    // Scenario: server ISN was u32::MAX, client_next_seq wrapped to 0.
+    // Scenario: server ISN was u32::MAX, rcv_nxt wrapped to 0.
     // A retransmitted SYN with seq == u32::MAX must still be a dup.
     let packet = ParsedTcpPacket {
         version: super::IpVersion::V4,
@@ -1376,7 +1376,7 @@ async fn validate_existing_packet_accepts_when_timestamps_disabled() {
     let mut state = tcp_flow_state_for_tests().await;
     state.timestamps_enabled = false;
     state.recent_client_timestamp = None;
-    let packet = paws_packet(state.client_next_seq, None, TCP_FLAG_ACK, b"abc");
+    let packet = paws_packet(state.rcv_nxt, None, TCP_FLAG_ACK, b"abc");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
     assert!(matches!(validation, crate::tcp::validation::PacketValidation::Accept));
@@ -1387,7 +1387,7 @@ async fn validate_existing_packet_paws_rejects_stale_timestamp_within_window() {
     let mut state = tcp_flow_state_for_tests().await;
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(100);
-    let packet = paws_packet(state.client_next_seq, Some(50), TCP_FLAG_ACK, b"abc");
+    let packet = paws_packet(state.rcv_nxt, Some(50), TCP_FLAG_ACK, b"abc");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
     assert!(matches_challenge_ack(validation, "paws_reject"));
@@ -1403,7 +1403,7 @@ async fn validate_existing_packet_paws_ignores_stale_timestamp_outside_window() 
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(100);
     // Place the segment far outside the receive window.
-    let far_seq = state.client_next_seq.wrapping_add(1 << 30);
+    let far_seq = state.rcv_nxt.wrapping_add(1 << 30);
     let packet = paws_packet(far_seq, Some(50), TCP_FLAG_ACK, b"abc");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
@@ -1419,7 +1419,7 @@ async fn validate_existing_packet_challenges_missing_timestamp_within_window() {
     let mut state = tcp_flow_state_for_tests().await;
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(100);
-    let packet = paws_packet(state.client_next_seq, None, TCP_FLAG_ACK, b"abc");
+    let packet = paws_packet(state.rcv_nxt, None, TCP_FLAG_ACK, b"abc");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
     assert!(matches_challenge_ack(validation, "missing_timestamp"));
@@ -1434,8 +1434,8 @@ async fn validate_existing_packet_accepts_equal_or_newer_timestamp() {
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(100);
 
-    let equal = paws_packet(state.client_next_seq, Some(100), TCP_FLAG_ACK, b"abc");
-    let newer = paws_packet(state.client_next_seq, Some(101), TCP_FLAG_ACK, b"abc");
+    let equal = paws_packet(state.rcv_nxt, Some(100), TCP_FLAG_ACK, b"abc");
+    let newer = paws_packet(state.rcv_nxt, Some(101), TCP_FLAG_ACK, b"abc");
 
     assert!(matches!(
         crate::tcp::validation::validate_existing_packet(&state, &equal),
@@ -1455,7 +1455,7 @@ async fn validate_existing_packet_paws_accepts_timestamp_across_wrap() {
     let mut state = tcp_flow_state_for_tests().await;
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(u32::MAX - 10);
-    let newer_wrapped = paws_packet(state.client_next_seq, Some(5), TCP_FLAG_ACK, b"abc");
+    let newer_wrapped = paws_packet(state.rcv_nxt, Some(5), TCP_FLAG_ACK, b"abc");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &newer_wrapped);
     assert!(matches!(validation, crate::tcp::validation::PacketValidation::Accept));
@@ -1468,7 +1468,7 @@ async fn validate_existing_packet_rst_bypasses_paws_check() {
     let mut state = tcp_flow_state_for_tests().await;
     state.timestamps_enabled = true;
     state.recent_client_timestamp = Some(100);
-    let packet = paws_packet(state.client_next_seq, Some(1), TCP_FLAG_RST, b"");
+    let packet = paws_packet(state.rcv_nxt, Some(1), TCP_FLAG_RST, b"");
 
     let validation = crate::tcp::validation::validate_existing_packet(&state, &packet);
     assert!(matches!(
@@ -1716,7 +1716,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
             idle_timeout: std::time::Duration::from_secs(60),
         },
         status: super::TcpFlowStatus::Established,
-        client_next_seq: 100,
+        rcv_nxt: 100,
         client_window_scale: 0,
         client_sack_permitted: false,
         client_max_segment_size: None,
