@@ -742,16 +742,13 @@ function prettyMode(value) {{
   const v = String(value || "").toLowerCase();
   if (v === "active_passive") return "Active / Passive";
   if (v === "active_active") return "Active / Active";
-  if (v === "round_robin") return "Round-robin";
-  if (v === "weighted") return "Weighted";
   return value || "—";
 }}
 function prettyScope(value) {{
   const v = String(value || "").toLowerCase();
   if (v === "global") return "Global";
-  if (v === "tcp") return "TCP only";
-  if (v === "udp") return "UDP only";
-  if (v === "per_transport") return "Per transport";
+  if (v === "per_uplink") return "Per uplink";
+  if (v === "per_flow") return "Per flow";
   return value || "—";
 }}
 function groupConfigChips(group) {{
