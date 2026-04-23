@@ -13,7 +13,6 @@ use outline_uplink::{TransportKind, UplinkManager};
 pub(super) struct ActiveUdpTransport {
     pub(super) index: usize,
     pub(super) uplink_name: Arc<str>,
-    pub(super) uplink_weight: f64,
     pub(super) transport: Arc<UdpWsTransport>,
 }
 
@@ -38,7 +37,6 @@ pub(super) async fn select_udp_transport(
                 return Ok(ActiveUdpTransport {
                     index: candidate.index,
                     uplink_name: Arc::from(candidate.uplink.name.as_str()),
-                    uplink_weight: candidate.uplink.weight,
                     transport: Arc::new(transport),
                 });
             },
@@ -224,7 +222,6 @@ mod tests {
         let active_transport = ArcSwap::from_pointee(ActiveUdpTransport {
             index: 1,
             uplink_name: Arc::from("old"),
-            uplink_weight: 1.0,
             transport: Arc::clone(&old_transport),
         });
 
@@ -237,7 +234,6 @@ mod tests {
             ActiveUdpTransport {
                 index: 2,
                 uplink_name: Arc::from("new"),
-                uplink_weight: 1.0,
                 transport: Arc::clone(&new_transport),
             },
         )

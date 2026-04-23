@@ -1474,11 +1474,13 @@ dependencies = [
  "socks5-proto",
  "tempfile",
  "tokio",
+ "tokio-rustls",
  "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
  "url",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
