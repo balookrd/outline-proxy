@@ -9,7 +9,7 @@ use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 use socks5_proto::{
-    SOCKS_STATUS_SUCCESS, TargetAddr, read_udp_tcp_packet, send_reply, socket_addr_to_target,
+    SOCKS_REP_SUCCESS, TargetAddr, read_udp_tcp_packet, send_reply, socket_addr_to_target,
 };
 use outline_uplink::UplinkRegistry;
 
@@ -45,7 +45,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
             None
         };
 
-        send_reply(&mut client, SOCKS_STATUS_SUCCESS, &client_hint).await?;
+        send_reply(&mut client, SOCKS_REP_SUCCESS, &client_hint).await?;
 
         let (mut client_read, mut client_write) = client.into_split();
 
