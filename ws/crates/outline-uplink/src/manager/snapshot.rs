@@ -146,6 +146,7 @@ impl UplinkManager {
             load_balancing_mode: load_balancing_mode_name(self.inner.load_balancing.mode)
                 .to_string(),
             routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
+            auto_failback: self.inner.load_balancing.auto_failback,
             global_active_uplink,
             tcp_active_uplink,
             udp_active_uplink,
