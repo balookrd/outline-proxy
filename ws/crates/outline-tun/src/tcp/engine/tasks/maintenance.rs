@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use tokio::time::sleep_until;
 use tracing::warn;
@@ -18,9 +18,9 @@ impl TunTcpEngine {
     /// the next one. Stale pushes are filtered by matching the popped
     /// deadline against `state.next_scheduled_deadline`.
     ///
-    /// Using `try_lock` keeps the scan non-blocking: a flow held by
-    /// another task is rescheduled a millisecond later and retried on the
-    /// next wakeup.
+    /// Lock contention is rare and brief (holders don't await inside the
+    /// critical section), so `.lock().await` is preferred over `try_lock`
+    /// + retry — it avoids busy-looping a contended flow at 1ms cadence.
     pub(in crate::tcp::engine) fn spawn_maintenance_loop(&self) {
         let engine = self.clone();
         tokio::spawn(async move {
@@ -33,19 +33,7 @@ impl TunTcpEngine {
                     let Some(flow) = engine.lookup_flow(&key).await else {
                         continue;
                     };
-                    let mut state = match flow.try_lock() {
-                        Ok(s) => s,
-                        Err(_) => {
-                            // Contention: retry shortly. Re-push directly
-                            // (bypasses the "earlier-only" gate so we do
-                            // come back to this flow).
-                            scheduler.schedule(
-                                key.clone(),
-                                Instant::now() + Duration::from_millis(1),
-                            );
-                            continue;
-                        },
-                    };
+                    let mut state = flow.lock().await;
 
                     // Filter stale heap entries: if the flow's canonical
                     // deadline has moved (either re-scheduled earlier and
@@ -120,16 +108,7 @@ impl TunTcpEngine {
                                 );
                                 // Re-acquire lock to process the next action for
                                 // this flow (e.g., back-to-back retransmissions).
-                                state = match flow.try_lock() {
-                                    Ok(s) => s,
-                                    Err(_) => {
-                                        scheduler.schedule(
-                                            key.clone(),
-                                            Instant::now() + Duration::from_millis(1),
-                                        );
-                                        continue 'flows;
-                                    },
-                                };
+                                state = flow.lock().await;
                             },
                             Err(error) => {
                                 warn!(
