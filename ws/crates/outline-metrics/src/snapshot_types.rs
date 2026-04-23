@@ -19,6 +19,7 @@ pub struct UplinkManagerSnapshot {
     pub generated_at_unix_ms: u128,
     pub load_balancing_mode: String,
     pub routing_scope: String,
+    pub auto_failback: bool,
     pub global_active_uplink: Option<String>,
     /// Active uplink for TCP in per_uplink routing scope.
     pub tcp_active_uplink: Option<String>,

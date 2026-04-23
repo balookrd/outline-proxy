@@ -599,6 +599,7 @@ h1 {{ margin: 0; font-size: 34px; line-height: 1; letter-spacing: 0; }}
 .catalog-row-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-top {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }}
 .instance-group-name {{ font-weight: 700; }}
+.config-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
 .tiny-chips {{ display: flex; flex-wrap: wrap; gap: 8px; }}
 .tiny-chip {{ border-radius: 999px; padding: 5px 10px; background: #f2f4f7; color: #344054; font-size: 12px; }}
 .error {{ border: 1px solid #f6c4be; background: #fff5f3; color: #9f1f14; border-radius: 8px; padding: 14px 16px; }}
@@ -673,6 +674,12 @@ function active(entry) {{
   const u = entry.uplink;
   return Boolean(u.active_global || u.active_tcp || u.active_udp);
 }}
+function groupConfigChips(group) {{
+  return `
+    <span class="tiny-chip">mode = "${{escapeHtml(group.load_balancing_mode)}}"</span>
+    <span class="tiny-chip">routing_scope = "${{escapeHtml(group.routing_scope)}}"</span>
+    <span class="tiny-chip">auto_failback = ${{group.auto_failback ? "true" : "false"}}</span>`;
+}}
 function rebuild(raw) {{
   state.groups = new Map();
   state.instances = [];
@@ -692,7 +699,7 @@ function rebuild(raw) {{
       for (const uplink of group.uplinks || []) {{
         const key = uplink.name;
         if (!byUplink.has(key)) byUplink.set(key, []);
-        const entry = {{ instance: inst.name, group: group.name, uplink }};
+        const entry = {{ instance: inst.name, group: group.name, uplink, groupObj: group }};
         byUplink.get(key).push(entry);
         if (!state.uplinks.has(key)) state.uplinks.set(key, []);
         state.uplinks.get(key).push(entry);
@@ -757,6 +764,14 @@ function render() {{
         <div class="group-title"><span style="color: var(--blue)">♙</span><span>Группа: <b>${{escapeHtml(group)}}</b></span></div>
         <div class="group-meta"><span>Инстансов: <b>${{instanceCount}}</b></span><span>Аплинков: <b>${{uplinks.size}}</b></span><button class="group-toggle" type="button" aria-label="Свернуть группу" aria-expanded="${{String(!collapsed)}}">⌃</button></div>
       </header>`;
+    const groupSample = entriesForGroup(uplinks)[0]?.groupObj;
+    if (groupSample) {{
+      const chips = document.createElement("div");
+      chips.className = "config-chips";
+      chips.style.padding = "0 16px 16px";
+      chips.innerHTML = groupConfigChips(groupSample);
+      groupEl.appendChild(chips);
+    }}
     groupEl.querySelector(".group-toggle").addEventListener("click", () => toggleGroup(group));
     groupEl.appendChild(cards);
     root.appendChild(groupEl);
@@ -871,6 +886,7 @@ function renderGroups() {{
   root.innerHTML = "";
   for (const [groupName, uplinks] of state.groups.entries()) {{
     const entries = [...uplinks.values()].flat();
+    const groupSample = entries[0]?.groupObj;
     const instances = [...new Set(entries.map(e => e.instance))];
     const healthyCount = entries.filter(healthy).length;
     const activeCount = entries.filter(active).length;
@@ -889,6 +905,12 @@ function renderGroups() {{
         <div class="metric"><div class="metric-label">Аплинки</div><div class="metric-value">${{uplinks.size}}</div></div>
         <div class="metric"><div class="metric-label">Активные</div><div class="metric-value">${{activeCount}}</div></div>
       </div>`;
+    if (groupSample) {{
+      const chips = document.createElement("div");
+      chips.className = "config-chips";
+      chips.innerHTML = groupConfigChips(groupSample);
+      card.appendChild(chips);
+    }}
     const list = document.createElement("div");
     list.className = "catalog-list";
     for (const [uplinkName, uplinkEntries] of uplinks.entries()) {{
@@ -958,6 +980,9 @@ async function activateEntries(entries) {{
 }}
 function escapeHtml(value) {{
   return String(value).replace(/[&<>"']/g, c => ({{ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }}[c]));
+}}
+function entriesForGroup(uplinks) {{
+  return [...uplinks.values()].flat();
 }}
 document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
 document.querySelectorAll("[data-view]").forEach(el => el.addEventListener("click", () => setView(el.dataset.view)));
