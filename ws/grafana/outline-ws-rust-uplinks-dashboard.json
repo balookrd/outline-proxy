@@ -39,7 +39,7 @@
       },
       "pluginVersion": "12.0.0",
       "title": "Instances & Uplinks",
-      "type": "volkovlabs-dynamictext-panel"
+      "type": "marcusolsson-dynamictext-panel"
     },
     {
       "collapsed": true,

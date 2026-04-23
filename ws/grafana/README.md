@@ -2,7 +2,7 @@
 
 Файл дашборда:
 
-- `dashboard/outline-ws-uplinks.json`
+- `outline-ws-rust-uplinks-dashboard.json`
 
 Этот вариант сделан под UI как на скрине: большие summary-карточки сверху, раскрывающиеся instance/group блоки и карточки uplink, где неактивный uplink кликабелен для `POST /control/activate`.
 
@@ -10,7 +10,7 @@
 
 ### 1) Обязательно для «богатого» UI
 
-- **Business Text / Dynamic Text panel** от Volkov Labs (`volkovlabs-dynamictext-panel`)
+- **Business Text / Dynamic Text panel** от Volkov Labs (`marcusolsson-dynamictext-panel`)
 
 Именно этот плагин рендерит кастомный HTML/CSS/JS внутри панели и позволяет:
 
@@ -45,7 +45,7 @@ Authorization: Bearer <token>
 
 ## Как работает рендер
 
-Главная панель (`volkovlabs-dynamictext-panel`) внутри JS:
+Главная панель (`marcusolsson-dynamictext-panel`) внутри JS:
 
 1. Делает `GET /control/summary`.
 2. Делает `GET /control/topology`.
