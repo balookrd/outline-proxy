@@ -1713,7 +1713,6 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
         signals: super::state_machine::FlowControlSignals {
             close_signal,
             scheduler: Arc::new(super::engine::scheduler::FlowScheduler::new()),
-            tcp_config: Arc::new(test_tun_tcp_config()),
             idle_timeout: std::time::Duration::from_secs(60),
         },
         status: super::TcpFlowStatus::Established,

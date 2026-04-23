@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 
 use outline_metrics as metrics;
 
-use super::super::maintenance::sync_flow_metrics_and_wake;
+use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
     InboundSegmentDisposition, QueueFutureSegmentOutcome, TcpFlowState, TcpFlowStatus,
     absorb_accepted_client_packet, ack_covers_server_fin, ack_is_stale_server_fin_retry,
@@ -87,7 +87,7 @@ impl TunTcpEngine {
         }
 
         absorb_accepted_client_packet(&mut state, &packet);
-        sync_flow_metrics_and_wake(&mut state);
+        commit_flow_changes(&mut state, &self.inner.tcp);
 
         if state.status == TcpFlowStatus::SynReceived {
             if completes_syn_received_handshake(
@@ -98,7 +98,7 @@ impl TunTcpEngine {
                 state.client_next_seq,
             ) {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
-                sync_flow_metrics_and_wake(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
             } else {
                 return self.write_syn_ack_and_drop(state, ip_family).await;
             }
@@ -115,7 +115,7 @@ impl TunTcpEngine {
                 rtt_sample,
                 ack_effect.grow_congestion_window,
             );
-            sync_flow_metrics_and_wake(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
         }
 
         if server_fin_awaiting_ack(state.status)
@@ -127,7 +127,7 @@ impl TunTcpEngine {
                 self.close_flow(&key, "last_ack_acked").await;
                 return Ok(());
             }
-            sync_flow_metrics_and_wake(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
         }
 
         if ack_effect.retransmit_now {
@@ -143,7 +143,7 @@ impl TunTcpEngine {
                     self.abort_flow_with_rst(&key, "retransmit_budget_exhausted").await;
                     return Ok(());
                 }
-                sync_flow_metrics_and_wake(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 let key = state.key.clone();
                 drop(state);
                 self.write_tun_packet_or_close_flow(&key, &packet).await?;
@@ -196,7 +196,7 @@ impl TunTcpEngine {
                     QueueFutureSegmentOutcome::OutsideWindow
                     | QueueFutureSegmentOutcome::Queued => {},
                 }
-                sync_flow_metrics_and_wake(&mut state);
+                commit_flow_changes(&mut state, &self.inner.tcp);
                 return self.write_pure_ack_and_drop(state, ip_family).await;
             },
             InboundSegmentDisposition::OutsideReceiveWindow => {
@@ -206,7 +206,7 @@ impl TunTcpEngine {
         };
 
         let mut outcome = apply_inbound_and_flush(&mut state, &trimmed)?;
-        sync_flow_metrics_and_wake(&mut state);
+        commit_flow_changes(&mut state, &self.inner.tcp);
 
         let key = state.key.clone();
         let uplink_index = state.routing.uplink_index;
@@ -228,7 +228,7 @@ impl TunTcpEngine {
                     .push_back(std::mem::take(&mut outcome.pending_payload).into());
                 let over_limit = exceeds_client_reassembly_limits(&state, &self.inner.tcp);
                 if !over_limit {
-                    sync_flow_metrics_and_wake(&mut state);
+                    commit_flow_changes(&mut state, &self.inner.tcp);
                 }
                 over_limit
             } else {
@@ -241,7 +241,7 @@ impl TunTcpEngine {
         // the drop point.
         if outcome.should_close_client_half {
             transition_on_client_fin(&mut state);
-            sync_flow_metrics_and_wake(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
         }
 
         drop(state);

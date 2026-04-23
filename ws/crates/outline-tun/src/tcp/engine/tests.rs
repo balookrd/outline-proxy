@@ -472,7 +472,7 @@ async fn tun_tcp_timeout_retransmit_is_driven_by_flow_timer() {
     {
         let mut state = flow.lock().await;
         state.retransmission_timeout = Duration::from_millis(200);
-        super::super::maintenance::sync_flow_metrics_and_wake(&mut state);
+        super::super::maintenance::commit_flow_changes(&mut state, &engine.inner.tcp);
     }
 
     let retransmitted = parse_tcp_packet(&capture.next_packet().await).unwrap();
@@ -1073,7 +1073,7 @@ async fn tun_tcp_server_fin_transitions_through_time_wait() {
         // is in the past — scheduler's "earlier-only" push gate would
         // otherwise no-op on a later deadline.
         state.next_scheduled_deadline = None;
-        super::super::maintenance::sync_flow_metrics_and_wake(&mut state);
+        super::super::maintenance::commit_flow_changes(&mut state, &engine.inner.tcp);
     }
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!engine.inner.flows.contains_key(&time_wait_key));

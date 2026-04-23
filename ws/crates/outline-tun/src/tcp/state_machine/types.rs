@@ -11,7 +11,6 @@ use tokio::net::tcp::OwnedWriteHalf;
 
 use outline_transport::{WsTcpWriter, SocketTcpWriter};
 use crate::TunRoute;
-use crate::config::TunTcpConfig;
 use outline_uplink::UplinkManager;
 
 use super::super::TcpFlowKey;
@@ -83,13 +82,12 @@ pub(in crate::tcp) struct FlowRouting {
 /// used by per-flow tasks to observe abort, and the shared deadline
 /// scheduler that drives the central maintenance loop.
 ///
-/// `tcp_config` and `idle_timeout` are carried here (rather than looked up
-/// via the engine) so deadline recomputation on state change does not need
-/// an extra engine-pointer parameter threaded through all mutation sites.
+/// `idle_timeout` is carried here because it is per-flow policy; the shared
+/// `TunTcpConfig` is owned by the engine and passed in explicitly to
+/// maintenance calls to avoid an Arc per flow.
 pub(in crate::tcp) struct FlowControlSignals {
     pub(in crate::tcp) close_signal: watch::Sender<bool>,
     pub(in crate::tcp) scheduler: Arc<FlowScheduler>,
-    pub(in crate::tcp) tcp_config: Arc<TunTcpConfig>,
     pub(in crate::tcp) idle_timeout: Duration,
 }
 

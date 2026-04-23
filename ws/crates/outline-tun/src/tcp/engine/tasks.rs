@@ -16,7 +16,7 @@ use outline_uplink::TransportKind;
 
 use super::super::TcpFlowKey;
 use super::super::maintenance::{
-    FlowMaintenancePlan, plan_flow_maintenance, sync_flow_metrics_and_wake,
+    FlowMaintenancePlan, plan_flow_maintenance, commit_flow_changes,
 };
 use super::super::state_machine::{
     ServerFlush, TcpFlowState, TcpFlowStatus, assess_server_backlog_pressure, clear_flow_metrics,
@@ -85,7 +85,7 @@ impl TunTcpEngine {
     }
 
     /// Single engine-wide maintenance task driven by `FlowScheduler`:
-    /// every state mutation (`sync_flow_metrics_and_wake`) pushes the
+    /// every state mutation (`commit_flow_changes`) pushes the
     /// flow's next deadline onto a priority queue. This loop pops entries
     /// in deadline order, runs `plan_flow_maintenance`, and sleeps until
     /// the next one. Stale pushes are filtered by matching the popped
@@ -136,11 +136,10 @@ impl TunTcpEngine {
                             break;
                         }
 
-                        let tcp_config = Arc::clone(&state.signals.tcp_config);
                         let idle_timeout = state.signals.idle_timeout;
                         let plan = plan_flow_maintenance(
                             &mut state,
-                            &tcp_config,
+                            &engine.inner.tcp,
                             idle_timeout,
                             Instant::now(),
                         );
@@ -333,7 +332,7 @@ impl TunTcpEngine {
                     state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
                     let pending = std::mem::take(&mut state.pending_client_data);
                     let should_close = client_fin_seen(state.status);
-                    sync_flow_metrics_and_wake(&mut state);
+                    commit_flow_changes(&mut state, &engine.inner.tcp);
                     // Send pending data.
                     for payload in pending {
                         let mut w = upstream_writer.lock().await;
@@ -418,7 +417,7 @@ impl TunTcpEngine {
                 state.routing.upstream_writer = Some(Arc::clone(&upstream_writer));
                 let pending_payloads = std::mem::take(&mut state.pending_client_data);
                 let should_close_client_half = client_fin_seen(state.status);
-                sync_flow_metrics_and_wake(&mut state);
+                commit_flow_changes(&mut state, &engine.inner.tcp);
                 (pending_payloads, should_close_client_half)
             };
             metrics::record_tun_tcp_async_connect("connected");
@@ -532,7 +531,7 @@ impl TunTcpEngine {
                                 Instant::now(),
                                 flush.as_ref().map(|flush| flush.window_stalled).unwrap_or(false),
                             );
-                            sync_flow_metrics_and_wake(&mut state);
+                            commit_flow_changes(&mut state, &engine.inner.tcp);
                             (flush, backlog_pressure, state.routing.uplink_name.clone())
                         };
 
@@ -637,7 +636,7 @@ impl TunTcpEngine {
                             } else {
                                 state.server_fin_pending = true;
                                 let flush = flush_server_output(&mut state);
-                                sync_flow_metrics_and_wake(&mut state);
+                                commit_flow_changes(&mut state, &engine.inner.tcp);
                                 flush
                             }
                         };
@@ -709,7 +708,7 @@ impl TunTcpEngine {
                             }
                             state.server_fin_pending = true;
                             let flush = flush_server_output(&mut state);
-                            sync_flow_metrics_and_wake(&mut state);
+                            commit_flow_changes(&mut state, &engine.inner.tcp);
                             flush
                         };
                         match flush {
@@ -743,7 +742,7 @@ impl TunTcpEngine {
                             state.timestamps.last_seen = Instant::now();
                             state.pending_server_data.push_back(chunk);
                             let flush = flush_server_output(&mut state);
-                            sync_flow_metrics_and_wake(&mut state);
+                            commit_flow_changes(&mut state, &engine.inner.tcp);
                             flush
                         };
                         match flush {

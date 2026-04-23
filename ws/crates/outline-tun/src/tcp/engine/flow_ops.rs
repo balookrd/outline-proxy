@@ -9,7 +9,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 
-use super::super::maintenance::sync_flow_metrics_and_wake;
+use super::super::maintenance::commit_flow_changes;
 use super::super::state_machine::{
     FlowControlSignals, FlowRouting, FlowTimestamps, TcpFlowState, TcpFlowStatus, build_flow_packet,
     build_flow_syn_ack_packet, clear_flow_metrics, decode_client_window, set_flow_status,
@@ -72,7 +72,6 @@ impl TunTcpEngine {
         let now = Instant::now();
         let (close_signal, close_rx) = watch::channel(false);
         let scheduler = Arc::clone(&self.inner.scheduler);
-        let tcp_config = Arc::clone(&self.inner.tcp);
         let idle_timeout = self.inner.idle_timeout;
         let state = Arc::new(Mutex::new(TcpFlowState {
             id: flow_id,
@@ -88,7 +87,6 @@ impl TunTcpEngine {
             signals: FlowControlSignals {
                 close_signal,
                 scheduler,
-                tcp_config,
                 idle_timeout,
             },
             status: TcpFlowStatus::SynReceived,
@@ -144,7 +142,7 @@ impl TunTcpEngine {
 
         let syn_ack = {
             let mut state = state.lock().await;
-            sync_flow_metrics_and_wake(&mut state);
+            commit_flow_changes(&mut state, &self.inner.tcp);
             build_flow_syn_ack_packet(&state, server_isn, packet.sequence_number.wrapping_add(1))?
         };
         self.write_tun_packet_or_close_flow(&key, &syn_ack).await?;
