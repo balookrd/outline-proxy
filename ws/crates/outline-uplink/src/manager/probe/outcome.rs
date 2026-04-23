@@ -1,14 +1,13 @@
-use std::time::Duration;
-
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use crate::config::{LoadBalancingConfig, UplinkTransport, WsTransportMode};
 
 use super::super::super::types::{
-    PerTransportStatus, ProbeOutcome, Uplink, UplinkManager,
+    PerTransportStatus, ProbeOutcome, TransportKind, Uplink, UplinkManager,
 };
 use super::super::super::utils::{add_penalty, update_rtt_ewma};
+use super::super::h3_downgrade::H3DowngradeTrigger;
 
 fn record_transport_failure(
     status: &mut PerTransportStatus,
@@ -32,18 +31,6 @@ fn record_transport_success(status: &mut PerTransportStatus) {
     // healthy. Clearing unconditionally would make a recently-failed uplink
     // immediately eligible again, causing oscillation under load.
     status.cooldown_until = None;
-}
-
-fn apply_h3_downgrade_if_h3(
-    status: &mut PerTransportStatus,
-    uplink_transport: UplinkTransport,
-    uplink_ws_mode: WsTransportMode,
-    now: Instant,
-    h3_downgrade_duration: Duration,
-) {
-    if uplink_transport == UplinkTransport::Ws && uplink_ws_mode == WsTransportMode::H3 {
-        status.h3_downgrade_until = Some(now + h3_downgrade_duration);
-    }
 }
 
 fn needs_h3_recovery(
@@ -74,38 +61,7 @@ impl UplinkManager {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures as u32;
         let rtt_ewma_alpha = self.inner.load_balancing.rtt_ewma_alpha;
-        let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
         let load_balancing = self.inner.load_balancing.clone();
-        // Read current h3_downgrade_until values before mutating so
-        // we can emit warn! without holding the write lock.
-        let (prev_tcp_h3, prev_udp_h3) = {
-            let s = self.inner.read_status(index);
-            (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
-        };
-        // Emit warn! for H3 downgrades before acquiring the write lock.
-        if !result.tcp_ok
-            && uplink.transport == UplinkTransport::Ws
-            && uplink.tcp_ws_mode == WsTransportMode::H3
-            && prev_tcp_h3.is_none_or(|t| t < now)
-        {
-            warn!(
-                uplink = %uplink.name,
-                downgrade_secs = h3_downgrade_duration.as_secs(),
-                "H3 TCP probe failed, downgrading to H2 for next probe cycle"
-            );
-        }
-        if result.udp_applicable
-            && !result.udp_ok
-            && uplink.transport == UplinkTransport::Ws
-            && uplink.udp_ws_mode == WsTransportMode::H3
-            && prev_udp_h3.is_none_or(|t| t < now)
-        {
-            warn!(
-                uplink = %uplink.name,
-                downgrade_secs = h3_downgrade_duration.as_secs(),
-                "H3 UDP probe failed, downgrading to H2 for next probe cycle"
-            );
-        }
         let mut needs_h3_tcp_recovery = false;
         let mut needs_h3_udp_recovery = false;
         self.inner.with_status_mut(index, |status| {
@@ -116,21 +72,6 @@ impl UplinkManager {
             update_rtt_ewma(&mut status.udp.rtt_ewma, result.udp_latency, rtt_ewma_alpha);
             if !result.tcp_ok {
                 record_transport_failure(&mut status.tcp, now, min_failures, &load_balancing);
-                // If this uplink is configured for H3 and the TCP probe
-                // failed, downgrade to H2 for the next probe cycle.  Without
-                // this, intermittent H3 probe failures cause probe-driven
-                // flapping in active-passive / global scope: the probe
-                // alternates pass (H3) / fail (H3) → switch to backup /
-                // switch back to primary on every cycle.  With H2 downgrade,
-                // recovery probing uses H2 which is stable, and H3 is only
-                // retried after the downgrade timer expires.
-                apply_h3_downgrade_if_h3(
-                    &mut status.tcp,
-                    uplink.transport,
-                    uplink.tcp_ws_mode,
-                    now,
-                    h3_downgrade_duration,
-                );
             } else {
                 record_transport_success(&mut status.tcp);
                 // Do NOT clear h3_tcp_downgrade_until here.  The probe uses the
@@ -149,14 +90,6 @@ impl UplinkManager {
             if result.udp_applicable {
                 if !result.udp_ok {
                     record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
-                    // Mirror of the TCP H3 downgrade above for UDP.
-                    apply_h3_downgrade_if_h3(
-                        &mut status.udp,
-                        uplink.transport,
-                        uplink.udp_ws_mode,
-                        now,
-                        h3_downgrade_duration,
-                    );
                 } else {
                     record_transport_success(&mut status.udp);
                     // Schedule UDP H3 recovery re-probe — mirror of the TCP
@@ -175,6 +108,26 @@ impl UplinkManager {
                 status.last_error = None;
             }
         });
+        // Route transport-level probe failures through the unified H3 downgrade
+        // helper (no-op for non-WS / non-H3 uplinks).  This prevents flapping:
+        // without downgrade, intermittent H3 probe failures alternate pass/fail
+        // and churn active-passive selection every cycle; with H2 downgrade, the
+        // next probe uses the stable H2 path and H3 is only retried after the
+        // window expires or a recovery re-probe confirms liveness.
+        if !result.tcp_ok {
+            self.extend_h3_downgrade(
+                index,
+                TransportKind::Tcp,
+                H3DowngradeTrigger::ProbeTransportFailure,
+            );
+        }
+        if result.udp_applicable && !result.udp_ok {
+            self.extend_h3_downgrade(
+                index,
+                TransportKind::Udp,
+                H3DowngradeTrigger::ProbeTransportFailure,
+            );
+        }
         if needs_h3_tcp_recovery {
             h3_tcp_recovery.push((index, uplink.clone()));
         }
@@ -213,37 +166,7 @@ impl UplinkManager {
     ) {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures as u32;
-        let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
         let load_balancing = self.inner.load_balancing.clone();
-        // Read h3_downgrade_until before mutating for warn! emission.
-        let (prev_tcp_h3, prev_udp_h3) = {
-            let s = self.inner.read_status(index);
-            (s.tcp.h3_downgrade_until, s.udp.h3_downgrade_until)
-        };
-        // Emit warn! before acquiring write lock.
-        if uplink.transport == UplinkTransport::Ws
-            && uplink.tcp_ws_mode == WsTransportMode::H3
-            && prev_tcp_h3.is_none_or(|t| t < now)
-        {
-            warn!(
-                uplink = %uplink.name,
-                error = %format!("{error:#}"),
-                downgrade_secs = h3_downgrade_duration.as_secs(),
-                "H3 probe connection failed, downgrading TCP to H2"
-            );
-        }
-        if uplink.supports_udp()
-            && uplink.transport == UplinkTransport::Ws
-            && uplink.udp_ws_mode == WsTransportMode::H3
-            && prev_udp_h3.is_none_or(|t| t < now)
-        {
-            warn!(
-                uplink = %uplink.name,
-                error = %format!("{error:#}"),
-                downgrade_secs = h3_downgrade_duration.as_secs(),
-                "H3 probe connection failed, downgrading UDP to H2"
-            );
-        }
         let error_text = format!("{error:#}");
         self.inner.with_status_mut(index, |status| {
             status.last_checked = Some(now);
@@ -255,29 +178,22 @@ impl UplinkManager {
             if uplink.supports_udp() {
                 record_transport_failure(&mut status.udp, now, min_failures, &load_balancing);
             }
-            // Probe connection itself failed (ws connect / timeout).  Same H3
-            // downgrade logic as the tcp_ok=false case above.
-            apply_h3_downgrade_if_h3(
-                &mut status.tcp,
-                uplink.transport,
-                uplink.tcp_ws_mode,
-                now,
-                h3_downgrade_duration,
-            );
-            // Same for UDP — when the uplink supports UDP and is on H3, a
-            // probe-level failure also forces UDP H2 fallback so the failover
-            // loop on a broken H3 server doesn't spin.
-            if uplink.supports_udp() {
-                apply_h3_downgrade_if_h3(
-                    &mut status.udp,
-                    uplink.transport,
-                    uplink.udp_ws_mode,
-                    now,
-                    h3_downgrade_duration,
-                );
-            }
             status.last_error = Some(error_text.clone());
         });
+        // Probe-level failure (ws connect / timeout).  Same H3 downgrade logic
+        // as the tcp_ok=false case above; helper is a no-op for non-WS/non-H3.
+        self.extend_h3_downgrade(
+            index,
+            TransportKind::Tcp,
+            H3DowngradeTrigger::ProbeConnectFailure(&error),
+        );
+        if uplink.supports_udp() {
+            self.extend_h3_downgrade(
+                index,
+                TransportKind::Udp,
+                H3DowngradeTrigger::ProbeConnectFailure(&error),
+            );
+        }
         warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");
     }
 }

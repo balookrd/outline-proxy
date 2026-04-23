@@ -4,13 +4,13 @@ use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use crate::config::UplinkTransport;
 
 use super::super::types::{TransportKind, UplinkManager};
 use super::super::utils::{
     add_penalty, classify_runtime_failure_cause, classify_runtime_failure_signature,
     current_penalty, mark_probe_wakeup, normalize_other_runtime_failure_detail, update_rtt_ewma,
 };
+use super::h3_downgrade::H3DowngradeTrigger;
 
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -40,60 +40,6 @@ fn emit_runtime_failure_metrics(
 }
 
 impl UplinkManager {
-    /// Apply the H3 → H2 downgrade timer for runtime TCP or UDP failures.
-    /// Emits a warn! only when the downgrade window is newly set (not already active).
-    fn apply_h3_downgrade_on_runtime_failure(
-        &self,
-        index: usize,
-        transport: TransportKind,
-        error: &anyhow::Error,
-    ) {
-        let uplink = &self.inner.uplinks[index];
-        if uplink.transport != UplinkTransport::Ws {
-            return;
-        }
-        let now = tokio::time::Instant::now();
-        let h3_downgrade_duration = self.inner.load_balancing.h3_downgrade_duration;
-        match transport {
-            TransportKind::Tcp => {
-                if uplink.tcp_ws_mode != crate::config::WsTransportMode::H3 {
-                    return;
-                }
-                let prev = self.inner.read_status(index).tcp.h3_downgrade_until;
-                if prev.is_none_or(|t| t < now) {
-                    warn!(
-                        uplink = %uplink.name,
-                        error = %format!("{error:#}"),
-                        downgrade_secs = h3_downgrade_duration.as_secs(),
-                        "H3 TCP runtime error detected, downgrading TCP transport to H2"
-                    );
-                }
-                let downgrade_until = now + h3_downgrade_duration;
-                self.inner.with_status_mut(index, |status| {
-                    status.tcp.h3_downgrade_until = Some(downgrade_until);
-                });
-            },
-            TransportKind::Udp => {
-                if uplink.udp_ws_mode != crate::config::WsTransportMode::H3 {
-                    return;
-                }
-                let prev = self.inner.read_status(index).udp.h3_downgrade_until;
-                if prev.is_none_or(|t| t < now) {
-                    warn!(
-                        uplink = %uplink.name,
-                        error = %format!("{error:#}"),
-                        downgrade_secs = h3_downgrade_duration.as_secs(),
-                        "H3 UDP runtime error detected, downgrading UDP transport to H2"
-                    );
-                }
-                let downgrade_until = now + h3_downgrade_duration;
-                self.inner.with_status_mut(index, |status| {
-                    status.udp.h3_downgrade_until = Some(downgrade_until);
-                });
-            },
-        }
-    }
-
     pub async fn runtime_failure_debug_state(
         &self,
         index: usize,
@@ -328,7 +274,7 @@ impl UplinkManager {
         }
 
         // Apply H3 → H2 downgrade for this transport kind.
-        self.apply_h3_downgrade_on_runtime_failure(index, transport, error);
+        self.extend_h3_downgrade(index, transport, H3DowngradeTrigger::RuntimeFailure(error));
 
         self.clear_standby(index, transport).await;
     }

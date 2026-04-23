@@ -1,5 +1,6 @@
 mod candidates;
 mod failures;
+mod h3_downgrade;
 mod probe;
 mod reporting;
 mod snapshot;
