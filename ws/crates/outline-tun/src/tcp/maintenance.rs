@@ -25,9 +25,9 @@ pub(super) enum FlowMaintenancePlan {
     Close(&'static str),
 }
 
-pub(super) fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
+pub(super) fn commit_flow_changes(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
     sync_flow_metrics(state);
-    reschedule_flow(state);
+    reschedule_flow(state, tcp);
 }
 
 /// Recompute the flow's next maintenance deadline and push it onto the
@@ -36,16 +36,12 @@ pub(super) fn sync_flow_metrics_and_wake(state: &mut TcpFlowState) {
 /// ones.  To avoid unbounded heap growth we only push when the deadline
 /// moves earlier (or no entry exists); later deadlines just wake the loop
 /// so it can re-sleep against the updated horizon.
-fn reschedule_flow(state: &mut TcpFlowState) {
+fn reschedule_flow(state: &mut TcpFlowState, tcp: &TunTcpConfig) {
     if state.status == TcpFlowStatus::Closed {
         state.next_scheduled_deadline = None;
         return;
     }
-    let new_deadline = next_flow_deadline(
-        state,
-        &state.signals.tcp_config,
-        state.signals.idle_timeout,
-    );
+    let new_deadline = next_flow_deadline(state, tcp, state.signals.idle_timeout);
     match new_deadline {
         Some(new_deadline) => {
             let push = match state.next_scheduled_deadline {
@@ -156,7 +152,7 @@ pub(super) fn plan_flow_maintenance(
         if retransmit_budget_exhausted(state, tcp) {
             return Ok(FlowMaintenancePlan::Abort("retransmit_budget_exhausted"));
         }
-        sync_flow_metrics_and_wake(state);
+        commit_flow_changes(state, tcp);
         return Ok(FlowMaintenancePlan::SendPacket {
             packet,
             packet_metric: "tcp_retransmit",
@@ -167,7 +163,7 @@ pub(super) fn plan_flow_maintenance(
     if zero_window_probe_is_due(state, now)
         && let Some(packet) = maybe_emit_zero_window_probe(state)?
     {
-        sync_flow_metrics_and_wake(state);
+        commit_flow_changes(state, tcp);
         return Ok(FlowMaintenancePlan::SendPacket {
             packet,
             packet_metric: "tcp_window_probe",
@@ -192,7 +188,7 @@ pub(super) fn plan_flow_maintenance(
         && let Some(packet) =
             maybe_emit_keepalive_probe(state, tcp.keepalive_idle, tcp.keepalive_interval)?
     {
-        sync_flow_metrics_and_wake(state);
+        commit_flow_changes(state, tcp);
         return Ok(FlowMaintenancePlan::SendPacket {
             packet,
             packet_metric: "tcp_keepalive_probe",

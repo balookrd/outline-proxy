@@ -102,7 +102,7 @@ pub(in crate::tcp) fn note_recent_client_timestamp(state: &mut TcpFlowState, tim
 /// receive window, and if the window is non-zero, reset the zero-window
 /// persist backoff.
 ///
-/// Does *not* call `sync_flow_metrics_and_wake` — the caller decides when to
+/// Does *not* call `commit_flow_changes` — the caller decides when to
 /// wake the maintenance loop, since more mutations may follow in the same
 /// critical section before it's worth notifying.
 pub(in crate::tcp) fn absorb_accepted_client_packet(
