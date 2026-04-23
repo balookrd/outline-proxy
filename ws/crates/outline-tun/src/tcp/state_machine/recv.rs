@@ -238,7 +238,7 @@ pub(in crate::tcp) fn queue_future_segment_with_recv_window(
         return QueueFutureSegmentOutcome::WouldExceedLimits;
     }
 
-    queue_future_segment(&mut state.pending_client_segments, &trimmed, state.client_next_seq);
+    queue_future_segment(&mut state.pending_client_segments, &trimmed, state.rcv_nxt);
     QueueFutureSegmentOutcome::Queued
 }
 
@@ -289,7 +289,7 @@ pub(in crate::tcp) fn drain_ready_buffered_segments_from_state(
     pending_payload: &mut Vec<u8>,
 ) -> bool {
     drain_ready_buffered_segments(
-        &mut state.client_next_seq,
+        &mut state.rcv_nxt,
         &mut state.pending_client_segments,
         pending_payload,
     )

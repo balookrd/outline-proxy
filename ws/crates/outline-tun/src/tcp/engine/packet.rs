@@ -40,7 +40,7 @@ impl TunTcpEngine {
         let mut state = flow.lock().await;
 
         if state.status == TcpFlowStatus::SynReceived
-            && is_duplicate_syn(&packet, state.client_next_seq)
+            && is_duplicate_syn(&packet, state.rcv_nxt)
         {
             metrics::record_tun_tcp_event(
                 &state.routing.group_name,
@@ -69,7 +69,7 @@ impl TunTcpEngine {
                 let ack = build_flow_ack_packet(
                     &state,
                     state.server_seq,
-                    state.client_next_seq,
+                    state.rcv_nxt,
                     TCP_FLAG_ACK,
                 )?;
                 drop(state);
@@ -95,7 +95,7 @@ impl TunTcpEngine {
                 packet.acknowledgement_number,
                 packet.sequence_number,
                 state.server_seq,
-                state.client_next_seq,
+                state.rcv_nxt,
             ) {
                 set_flow_status(&mut state, TcpFlowStatus::Established);
                 commit_flow_changes(&mut state, &self.inner.tcp);
@@ -162,7 +162,7 @@ impl TunTcpEngine {
             let fin_ack = build_flow_packet(
                 &state,
                 state.server_seq.wrapping_sub(1),
-                state.client_next_seq,
+                state.rcv_nxt,
                 TCP_FLAG_FIN | TCP_FLAG_ACK,
                 &[],
             )?;
@@ -178,7 +178,7 @@ impl TunTcpEngine {
                 packet.sequence_number,
                 packet.flags,
                 packet.payload.len(),
-                state.client_next_seq,
+                state.rcv_nxt,
             )
         {
             return self.write_pure_ack_and_drop(state, ip_family).await;

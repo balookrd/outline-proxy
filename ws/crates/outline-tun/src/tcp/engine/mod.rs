@@ -183,7 +183,7 @@ impl TunTcpEngine {
     }
 
     /// Build a pure-ACK packet from the current state (server_seq /
-    /// client_next_seq), drop the passed-in state guard so the TUN write
+    /// rcv_nxt), drop the passed-in state guard so the TUN write
     /// doesn't run under the per-flow lock, then write the packet and
     /// record the `tcp_ack` metric.
     pub(super) async fn write_pure_ack_and_drop(
@@ -194,7 +194,7 @@ impl TunTcpEngine {
         let ack = build_flow_ack_packet(
             &state,
             state.server_seq,
-            state.client_next_seq,
+            state.rcv_nxt,
             TCP_FLAG_ACK,
         )?;
         let key = state.key.clone();
@@ -215,7 +215,7 @@ impl TunTcpEngine {
         let syn_ack = build_flow_syn_ack_packet(
             &state,
             state.server_seq.wrapping_sub(1),
-            state.client_next_seq,
+            state.rcv_nxt,
         )?;
         let key = state.key.clone();
         drop(state);

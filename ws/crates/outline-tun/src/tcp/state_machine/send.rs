@@ -92,7 +92,7 @@ fn flush_server_data(state: &mut TcpFlowState) -> Result<Vec<Vec<u8>>> {
         }
 
         let sequence_number = state.server_seq;
-        let acknowledgement_number = state.client_next_seq;
+        let acknowledgement_number = state.rcv_nxt;
         let packet = build_flow_packet(
             state,
             sequence_number,
@@ -147,7 +147,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     let packet = build_flow_packet(
         state,
         state.server_seq,
-        state.client_next_seq,
+        state.rcv_nxt,
         TCP_FLAG_FIN | TCP_FLAG_ACK,
         &[],
     )?;
@@ -168,7 +168,7 @@ fn maybe_emit_server_fin(state: &mut TcpFlowState) -> Result<Option<Vec<u8>>> {
     }
     state.unacked_server_segments.push_back(ServerSegment {
         sequence_number,
-        acknowledgement_number: state.client_next_seq,
+        acknowledgement_number: state.rcv_nxt,
         flags: TCP_FLAG_FIN | TCP_FLAG_ACK,
         payload: Bytes::new(),
         last_sent: Instant::now(),
@@ -204,7 +204,7 @@ pub(in crate::tcp) fn maybe_emit_zero_window_probe(state: &mut TcpFlowState) -> 
     let packet = build_flow_packet(
         state,
         state.server_seq,
-        state.client_next_seq,
+        state.rcv_nxt,
         TCP_FLAG_ACK | TCP_FLAG_PSH,
         &[probe_byte],
     )?;
@@ -258,7 +258,7 @@ pub(in crate::tcp) fn maybe_emit_keepalive_probe(
         return Ok(None);
     }
     let probe_seq = state.server_seq.wrapping_sub(1);
-    let packet = build_flow_ack_packet(state, probe_seq, state.client_next_seq, TCP_FLAG_ACK)?;
+    let packet = build_flow_ack_packet(state, probe_seq, state.rcv_nxt, TCP_FLAG_ACK)?;
     state.keepalive_probes_sent = state.keepalive_probes_sent.saturating_add(1);
     state.last_keepalive_probe_at = Some(now);
     Ok(Some(packet))
@@ -285,7 +285,7 @@ pub(in crate::tcp) fn retransmit_oldest_unacked_packet(
     Ok(Some(build_flow_packet(
         state,
         sequence_number,
-        state.client_next_seq.max(acknowledgement_number),
+        state.rcv_nxt.max(acknowledgement_number),
         flags,
         &payload,
     )?))
@@ -320,7 +320,7 @@ pub(in crate::tcp) fn retransmit_due_segment(state: &mut TcpFlowState) -> Result
     Ok(Some(build_flow_packet(
         state,
         sequence_number,
-        state.client_next_seq.max(acknowledgement_number),
+        state.rcv_nxt.max(acknowledgement_number),
         flags,
         &payload,
     )?))

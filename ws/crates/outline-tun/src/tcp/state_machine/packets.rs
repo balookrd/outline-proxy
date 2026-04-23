@@ -155,7 +155,7 @@ fn ack_options(state: &TcpFlowState) -> TcpOptions {
         .pending_client_segments
         .iter()
         .filter_map(|segment| {
-            if !seq_gt(segment.sequence_number, state.client_next_seq) {
+            if !seq_gt(segment.sequence_number, state.rcv_nxt) {
                 return None;
             }
             Some((
@@ -284,7 +284,7 @@ pub(in crate::tcp) fn buffered_client_bytes(state: &TcpFlowState) -> usize {
 }
 
 pub(in crate::tcp) fn receive_window_end(state: &TcpFlowState) -> u32 {
-    state.client_next_seq.wrapping_add(
+    state.rcv_nxt.wrapping_add(
         state
             .receive_window_capacity
             .saturating_sub(buffered_client_bytes(state)) as u32,
@@ -295,7 +295,7 @@ pub(in crate::tcp) fn packet_overlaps_receive_window(
     state: &TcpFlowState,
     packet: &ParsedTcpPacket,
 ) -> bool {
-    let rcv_nxt = state.client_next_seq;
+    let rcv_nxt = state.rcv_nxt;
     let rcv_wnd = receive_window_end(state).wrapping_sub(rcv_nxt);
     let seg_len = packet_sequence_len(packet);
     if rcv_wnd == 0 {
