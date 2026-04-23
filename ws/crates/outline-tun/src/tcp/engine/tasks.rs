@@ -45,39 +45,34 @@ impl TunTcpEngine {
         let now = Instant::now();
         let idle_timeout = self.inner.idle_timeout;
 
-        // Snapshot keys + Arc<Mutex> handles under a short read-lock, then
-        // inspect each flow's Mutex individually — avoids holding the map
-        // lock across per-flow locks. Mirrors the tun_udp cleanup loop.
-        let expired: Vec<TcpFlowKey> = {
-            let handles: Vec<(TcpFlowKey, Arc<Mutex<TcpFlowState>>)> = self
-                .inner
-                .flows
-                .iter()
-                .map(|entry| (entry.key().clone(), Arc::clone(entry.value())))
-                .collect();
-            let mut expired = Vec::new();
-            for (key, handle) in handles {
-                let state = handle.lock().await;
-                if matches!(state.status, TcpFlowStatus::Closed) {
-                    expired.push(key);
-                    continue;
-                }
-                // TimeWait uses its own timeout handled by per-flow
-                // maintenance; only hit TimeWait here if it wildly overran.
-                if state.status == TcpFlowStatus::TimeWait {
-                    if now.saturating_duration_since(state.timestamps.status_since)
-                        >= super::super::TCP_TIME_WAIT_TIMEOUT + idle_timeout
-                    {
-                        expired.push(key);
-                    }
-                    continue;
-                }
-                if now.saturating_duration_since(state.timestamps.last_seen) >= idle_timeout {
-                    expired.push(key);
-                }
+        // Iterate the map directly and inspect each flow under `try_lock`:
+        // avoids the O(flows) snapshot allocation and never holds an async
+        // lock across a DashMap shard guard. A flow currently held by
+        // another task is skipped — the GC is a safety net, so we'll
+        // revisit it on the next tick.
+        let mut expired: Vec<TcpFlowKey> = Vec::new();
+        for entry in self.inner.flows.iter() {
+            let Ok(state) = entry.value().try_lock() else {
+                continue;
+            };
+            if matches!(state.status, TcpFlowStatus::Closed) {
+                expired.push(entry.key().clone());
+                continue;
             }
-            expired
-        };
+            // TimeWait uses its own timeout handled by per-flow
+            // maintenance; only hit TimeWait here if it wildly overran.
+            if state.status == TcpFlowStatus::TimeWait {
+                if now.saturating_duration_since(state.timestamps.status_since)
+                    >= super::super::TCP_TIME_WAIT_TIMEOUT + idle_timeout
+                {
+                    expired.push(entry.key().clone());
+                }
+                continue;
+            }
+            if now.saturating_duration_since(state.timestamps.last_seen) >= idle_timeout {
+                expired.push(entry.key().clone());
+            }
+        }
 
         if expired.is_empty() {
             return;
