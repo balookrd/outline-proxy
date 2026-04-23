@@ -28,6 +28,7 @@ pub(crate) struct ConfigFile {
     pub(super) outline: Option<OutlineSection>,
     pub(super) metrics: Option<MetricsSection>,
     pub(super) control: Option<ControlSection>,
+    pub(super) dashboard: Option<DashboardSection>,
     #[cfg(feature = "tun")]
     pub(super) tun: Option<TunSection>,
     pub(super) h2: Option<H2Section>,
@@ -98,6 +99,24 @@ pub(super) struct MetricsSection {
 #[derive(Debug, Deserialize)]
 pub(super) struct ControlSection {
     pub(super) listen: Option<SocketAddr>,
+    pub(super) token: Option<String>,
+    pub(super) token_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DashboardSection {
+    /// Presence of [dashboard] enables the dashboard by default. Set
+    /// `enabled = false` to keep the config block around without binding.
+    pub(super) enabled: Option<bool>,
+    pub(super) listen: Option<SocketAddr>,
+    pub(super) refresh_interval_secs: Option<u64>,
+    pub(super) instances: Option<Vec<DashboardInstanceSection>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct DashboardInstanceSection {
+    pub(super) name: Option<String>,
+    pub(super) control_url: Option<Url>,
     pub(super) token: Option<String>,
     pub(super) token_file: Option<PathBuf>,
 }
@@ -271,4 +290,3 @@ pub(super) struct LoadBalancingSection {
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
 }
-

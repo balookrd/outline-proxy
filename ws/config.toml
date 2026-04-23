@@ -48,6 +48,31 @@ listen = "[::]:1080"
 [metrics]
 listen = "[::1]:9090"
 
+# ── Control plane ───────────────────────────────────────────────────────────
+# Required on each instance that should be visible and switchable from the
+# built-in dashboard.
+# [control]
+# listen = "127.0.0.1:9091"
+# token_file = "/etc/outline-ws/control.token"
+
+# ── Built-in dashboard ──────────────────────────────────────────────────────
+# Optional multi-instance UI. Open http://LISTEN/dashboard in a browser.
+# The dashboard stores per-instance control tokens server-side and proxies
+# /control/topology + /control/activate to each configured instance.
+# [dashboard]
+# listen = "127.0.0.1:9092"
+# refresh_interval_secs = 5
+#
+# [[dashboard.instances]]
+# name = "inst-01"
+# control_url = "http://127.0.0.1:9091"
+# token_file = "/etc/outline-ws/inst-01.control.token"
+#
+# [[dashboard.instances]]
+# name = "inst-02"
+# control_url = "http://10.0.0.12:9091"
+# token = "long-random-secret"
+
 [tun]
 # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
 # Linux example:

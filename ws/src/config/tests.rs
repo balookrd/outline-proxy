@@ -1072,3 +1072,42 @@ async fn load_config_reads_control_token_from_file() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[cfg(feature = "control")]
+#[tokio::test]
+async fn load_config_reads_dashboard_instances() {
+    let dir = std::env::temp_dir().join("outline-ws-rust-dashboard-config");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("inst-a.token"), "  dash-token\n").unwrap();
+    let path = dir.join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [dashboard]
+        listen = "127.0.0.1:9092"
+        refresh_interval_secs = 3
+
+        [[dashboard.instances]]
+        name = "inst-a"
+        control_url = "http://127.0.0.1:9091"
+        token_file = "inst-a.token"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let dashboard = config.dashboard.unwrap();
+    assert_eq!(dashboard.refresh_interval_secs, 3);
+    assert_eq!(dashboard.instances[0].name, "inst-a");
+    assert_eq!(dashboard.instances[0].token, "dash-token");
+
+    let _ = std::fs::remove_dir_all(dir);
+}

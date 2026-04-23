@@ -9,6 +9,8 @@ use crate::config::AppConfig;
 use crate::proxy::ProxyConfig;
 #[cfg(feature = "control")]
 use crate::http::control::spawn_control_server;
+#[cfg(feature = "control")]
+use crate::http::dashboard::spawn_dashboard_server;
 #[cfg(feature = "metrics")]
 use crate::http::metrics::spawn_metrics_server;
 use outline_uplink::{UplinkRegistry, log_registry_summary};
@@ -116,6 +118,10 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     #[cfg(feature = "control")]
     if let Some(control) = config.control.clone() {
         spawn_control_server(control, registry.clone());
+    }
+    #[cfg(feature = "control")]
+    if let Some(dashboard) = config.dashboard.clone() {
+        spawn_dashboard_server(dashboard);
     }
 
     // Build the thin proxy-layer config slice from the fully-resolved AppConfig.
