@@ -1,0 +1,147 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana",
+        "uid": "-- Grafana --"
+      },
+      "gridPos": {
+        "h": 22,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "content": "<div id='owr-uplink-root' style='padding:8px'>Loading...</div>\n<script>\nconst root = document.getElementById('owr-uplink-root');\nconst controlUrl = '${control_url}'.replace(/\/$/, '');\nconst token = '${control_token}';\nconst defaultTransport = '${activate_transport}';\n\nconst css = `\n<style>\n.owr-wrap{font-family:Inter,system-ui,sans-serif;color:#dce3ef}\n.owr-title{font-size:38px;font-weight:700;margin:0 0 4px 0}\n.owr-sub{font-size:14px;color:#8ea0b8;margin:0 0 12px 0}\n.owr-stats{display:grid;grid-template-columns:repeat(5,minmax(130px,1fr));gap:10px;margin-bottom:12px}\n.owr-stat{background:#121a27;border:1px solid #283447;border-radius:10px;padding:10px;text-align:center}\n.owr-stat .k{font-size:13px;color:#9caec5}.owr-stat .v{font-size:40px;font-weight:700;margin-top:6px}\n.owr-green{color:#63d471}.owr-red{color:#ff6464}.owr-yellow{color:#f7c34a}\n.owr-instance{background:#0f1723;border:1px solid #233046;border-radius:10px;margin:8px 0;padding:8px}\n.owr-inst-head{display:flex;justify-content:space-between;align-items:center;font-size:30px;font-weight:600;padding:4px 2px}\n.owr-pill{font-size:12px;border-radius:999px;padding:2px 8px;border:1px solid}\n.owr-pill.health{color:#63d471;border-color:#2f6a3f;background:#163023}\n.owr-pill.degraded{color:#f7c34a;border-color:#6d5728;background:#302710}\n.owr-pill.down{color:#ff6464;border-color:#7a2f2f;background:#341919}\n.owr-group{border:1px solid #1e2b3f;border-radius:8px;margin:8px 0;padding:8px}\n.owr-group-title{font-size:24px;font-weight:500;margin-bottom:6px}\n.owr-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:8px}\n.owr-card{border:1px solid #34455f;border-radius:10px;padding:10px;background:#121a26;cursor:default}\n.owr-card.active{border-color:#2e6f45;background:linear-gradient(180deg,#13231a,#121a26)}\n.owr-card.inactive{border-color:#7a2f2f;background:linear-gradient(180deg,#27181d,#121a26);cursor:pointer}\n.owr-card-top{display:flex;justify-content:space-between;align-items:center;font-weight:600;font-size:20px}\n.owr-card-sub{font-size:12px;color:#9caec5;margin-top:4px}\n.owr-badge{font-size:11px;border:1px solid;border-radius:999px;padding:2px 8px}\n.owr-badge.active{color:#63d471;border-color:#2f6a3f;background:#163023}\n.owr-badge.inactive{color:#ff6464;border-color:#7a2f2f;background:#341919}\n.owr-hint{font-size:11px;color:#a7b6ca;margin-top:4px}\n</style>`;\n\nfunction healthPill(groups){\n  const hasUnhealthy = groups.some(g => g.uplinks.some(u => u.tcp_healthy === false || u.udp_healthy === false));\n  const hasUnknown = groups.some(g => g.uplinks.some(u => u.tcp_healthy == null || u.udp_healthy == null));\n  if (hasUnhealthy) return ['Down','down'];\n  if (hasUnknown) return ['Degraded','degraded'];\n  return ['Healthy','health'];\n}\n\nfunction uplinkActive(u){ return !!(u.active_global || u.active_tcp || u.active_udp); }\n\nasync function call(url, method='GET', body=null){\n  const resp = await fetch(url, {\n    method,\n    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },\n    body: body ? JSON.stringify(body) : undefined\n  });\n  if(!resp.ok){ throw new Error(await resp.text()); }\n  return await resp.json();\n}\n\nasync function activate(group, uplink){\n  await call(`${controlUrl}/control/activate`, 'POST', { group, uplink, transport: defaultTransport });\n  await render();\n}\n\nfunction renderDashboard(summary, topology){\n  const groups = topology.instance?.groups || [];\n  const instances = [ { name: '${instance_name}', groups } ];\n  const active = summary.active_tcp + summary.active_udp;\n  const inactive = Math.max(0, summary.uplinks_total - active);\n\n  let html = `<div class='owr-wrap'>\n    <h1 class='owr-title'>Instances & Uplinks</h1>\n    <p class='owr-sub'>Мониторинг инстанса, групп аплинков и их статуса. Нажмите на неактивный аплинк для активации.</p>\n    <div class='owr-stats'>\n      <div class='owr-stat'><div class='k'>Instances</div><div class='v'>1</div></div>\n      <div class='owr-stat'><div class='k'>Uplink Groups</div><div class='v'>${summary.groups_total}</div></div>\n      <div class='owr-stat'><div class='k'>Uplinks</div><div class='v'>${summary.uplinks_total}</div></div>\n      <div class='owr-stat'><div class='k'>Active Uplinks</div><div class='v owr-green'>${active}</div></div>\n      <div class='owr-stat'><div class='k'>Inactive Uplinks</div><div class='v owr-red'>${inactive}</div></div>\n    </div>`;\n\n  for (const instance of instances){\n    const [healthText, healthClass] = healthPill(instance.groups);\n    html += `<details class='owr-instance' open>\n      <summary class='owr-inst-head'>\n        <span>● ${instance.name}</span>\n        <span class='owr-pill ${healthClass}'>${healthText}</span>\n      </summary>`;\n\n    for (const g of instance.groups){\n      html += `<details class='owr-group' open>\n        <summary class='owr-group-title'>group: ${g.name}</summary>\n        <div class='owr-cards'>`;\n      for (const u of g.uplinks){\n        const active = uplinkActive(u);\n        html += `<div class='owr-card ${active ? 'active' : 'inactive'}' data-group='${g.name}' data-uplink='${u.name}'>\n          <div class='owr-card-top'>\n            <span>${u.name}</span>\n            <span class='owr-badge ${active ? 'active' : 'inactive'}'>${active ? 'Active' : 'Inactive'}</span>\n          </div>\n          <div class='owr-card-sub'>weight: ${u.weight}</div>\n          ${u.last_error ? `<div class='owr-hint'>${u.last_error}</div>` : ''}\n          ${active ? '' : `<div class='owr-hint'>🖱 Нажмите для активации</div>`}\n        </div>`;\n      }\n      html += `</div></details>`;\n    }\n\n    html += `</details>`;\n  }\n\n  html += `</div>`;\n  root.innerHTML = css + html;\n\n  for (const card of root.querySelectorAll('.owr-card.inactive')){\n    card.addEventListener('click', async () => {\n      const group = card.getAttribute('data-group');\n      const uplink = card.getAttribute('data-uplink');\n      card.style.opacity = '0.6';\n      try {\n        await activate(group, uplink);\n      } catch (e) {\n        alert('Activation failed: ' + e.message);\n        card.style.opacity = '1';\n      }\n    });\n  }\n}\n\nasync function render(){\n  root.innerHTML = 'Loading...';\n  try {\n    const [summary, topology] = await Promise.all([\n      call(`${controlUrl}/control/summary`),\n      call(`${controlUrl}/control/topology`)\n    ]);\n    renderDashboard(summary, topology);\n  } catch (e){\n    root.innerHTML = `<pre style='color:#ff7f7f'>${e.message}</pre>`;\n  }\n}\n\nrender();\n</script>",
+        "mode": "html"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Instances & Uplinks",
+      "type": "volkovlabs-dynamictext-panel"
+    },
+    {
+      "collapsed": true,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 2,
+      "panels": [
+        {
+          "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+          "fieldConfig": { "defaults": {}, "overrides": [] },
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 23 },
+          "id": 3,
+          "options": { "showHeader": true },
+          "targets": [
+            {
+              "columns": [
+                { "selector": "group", "text": "group", "type": "string" },
+                { "selector": "name", "text": "uplink", "type": "string" },
+                { "selector": "active_global", "text": "active_global", "type": "number" },
+                { "selector": "active_tcp", "text": "active_tcp", "type": "number" },
+                { "selector": "active_udp", "text": "active_udp", "type": "number" }
+              ],
+              "format": "table",
+              "parser": "backend",
+              "refId": "A",
+              "root_selector": "$.instance.groups[*].uplinks[*]",
+              "source": "url",
+              "type": "json",
+              "url": "${control_url}/control/topology",
+              "url_options": {
+                "method": "GET",
+                "headers": [
+                  { "key": "Authorization", "value": "Bearer ${control_token}" }
+                ]
+              }
+            }
+          ],
+          "title": "Fallback table",
+          "type": "table"
+        }
+      ],
+      "title": "Fallback (no Business Text plugin)",
+      "type": "row"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "style": "dark",
+  "tags": ["outline", "uplink", "control"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "http://127.0.0.1:9091", "value": "http://127.0.0.1:9091" },
+        "hide": 0,
+        "label": "Control URL",
+        "name": "control_url",
+        "options": [],
+        "query": "http://127.0.0.1:9091",
+        "type": "textbox"
+      },
+      {
+        "current": { "selected": false, "text": "main-instance", "value": "main-instance" },
+        "hide": 0,
+        "label": "Instance name",
+        "name": "instance_name",
+        "options": [],
+        "query": "main-instance",
+        "type": "textbox"
+      },
+      {
+        "current": { "selected": false, "text": "tcp", "value": "tcp" },
+        "hide": 0,
+        "label": "Activate transport",
+        "name": "activate_transport",
+        "options": [
+          { "selected": true, "text": "tcp", "value": "tcp" },
+          { "selected": false, "text": "udp", "value": "udp" },
+          { "selected": false, "text": "both", "value": "both" }
+        ],
+        "query": "tcp,udp,both",
+        "type": "custom"
+      },
+      {
+        "current": { "selected": false, "text": "REPLACE_ME", "value": "REPLACE_ME" },
+        "hide": 2,
+        "label": "Control token",
+        "name": "control_token",
+        "options": [],
+        "query": "REPLACE_ME",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Instances & Uplinks",
+  "uid": "outline-ws-uplinks",
+  "version": 2,
+  "weekStart": ""
+}
