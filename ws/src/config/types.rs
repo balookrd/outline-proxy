@@ -74,6 +74,7 @@ pub struct ControlConfig {
 pub struct DashboardConfig {
     pub listen: SocketAddr,
     pub refresh_interval_secs: u64,
+    pub request_timeout_secs: u64,
     pub instances: Vec<DashboardInstanceConfig>,
 }
 
