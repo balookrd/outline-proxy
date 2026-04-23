@@ -1,4 +1,5 @@
-use prometheus::{Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
+use super::macros::{register_histogram, register_labeled, register_scalar};
+use prometheus::{Gauge, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) struct CoreFields {
@@ -13,97 +14,61 @@ pub(super) struct CoreFields {
 }
 
 pub(super) fn build(registry: &Registry) -> CoreFields {
-    let build_info = IntGaugeVec::new(
-        Opts::new("outline_ws_rust_build_info", "Build info for outline-ws-rust."),
-        &["version"],
-    )
-    .expect("build_info metric");
-
-    let start_time_seconds = Gauge::with_opts(Opts::new(
+    let build_info = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_build_info",
+        "Build info for outline-ws-rust.",
+        ["version"]
+    );
+    let start_time_seconds = register_scalar!(
+        registry,
+        Gauge,
         "outline_ws_rust_start_time_seconds",
-        "Process start time in unix seconds.",
-    ))
-    .expect("start_time_seconds metric");
-
-    let socks_requests_total = IntCounterVec::new(
-        Opts::new(
-            "outline_ws_rust_requests_total",
-            "Total SOCKS5 requests accepted by command.",
-        ),
-        &["command"],
-    )
-    .expect("requests_total metric");
-
-    let sessions_active = IntGaugeVec::new(
-        Opts::new(
-            "outline_ws_rust_sessions_active",
-            "Currently active proxy sessions by protocol.",
-        ),
-        &["protocol"],
-    )
-    .expect("sessions_active metric");
-
-    let session_duration_seconds = HistogramVec::new(
-        HistogramOpts::new(
-            "outline_ws_rust_session_duration_seconds",
-            "Proxy session duration by protocol and result.",
-        )
-        .buckets(vec![0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0, 60.0, 300.0, 900.0]),
-        &["protocol", "result"],
-    )
-    .expect("session_duration_seconds metric");
-
-    let bytes_total = IntCounterVec::new(
-        Opts::new(
-            "outline_ws_rust_bytes_total",
-            "Application payload bytes transferred by protocol, direction, group and uplink.",
-        ),
-        &["protocol", "direction", "group", "uplink"],
-    )
-    .expect("bytes_total metric");
-
-    let udp_datagrams_total = IntCounterVec::new(
-        Opts::new(
-            "outline_ws_rust_udp_datagrams_total",
-            "UDP datagrams forwarded by direction, group and uplink.",
-        ),
-        &["direction", "group", "uplink"],
-    )
-    .expect("udp_datagrams_total metric");
-
-    let udp_oversized_dropped_total = IntCounterVec::new(
-        Opts::new(
-            "outline_ws_rust_udp_oversized_dropped_total",
-            "Oversized UDP packets dropped before forwarding.",
-        ),
-        &["direction"],
-    )
-    .expect("udp_oversized_dropped_total metric");
-
-    registry
-        .register(Box::new(build_info.clone()))
-        .expect("register build_info");
-    registry
-        .register(Box::new(start_time_seconds.clone()))
-        .expect("register start_time_seconds");
-    registry
-        .register(Box::new(socks_requests_total.clone()))
-        .expect("register requests_total");
-    registry
-        .register(Box::new(sessions_active.clone()))
-        .expect("register sessions_active");
-    registry
-        .register(Box::new(session_duration_seconds.clone()))
-        .expect("register session_duration_seconds");
-    registry
-        .register(Box::new(bytes_total.clone()))
-        .expect("register bytes_total");
-    registry
-        .register(Box::new(udp_datagrams_total.clone()))
-        .expect("register udp_datagrams_total");
-    registry
-        .register(Box::new(udp_oversized_dropped_total.clone()))
-        .expect("register udp_oversized_dropped_total");
+        "Process start time in unix seconds."
+    );
+    let socks_requests_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_requests_total",
+        "Total SOCKS5 requests accepted by command.",
+        ["command"]
+    );
+    let sessions_active = register_labeled!(
+        registry,
+        IntGaugeVec,
+        "outline_ws_rust_sessions_active",
+        "Currently active proxy sessions by protocol.",
+        ["protocol"]
+    );
+    let session_duration_seconds = register_histogram!(
+        registry,
+        "outline_ws_rust_session_duration_seconds",
+        "Proxy session duration by protocol and result.",
+        [0.05, 0.1, 0.25, 0.5, 1.0, 3.0, 10.0, 30.0, 60.0, 300.0, 900.0],
+        ["protocol", "result"]
+    );
+    let bytes_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_bytes_total",
+        "Application payload bytes transferred by protocol, direction, group and uplink.",
+        ["protocol", "direction", "group", "uplink"]
+    );
+    let udp_datagrams_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_udp_datagrams_total",
+        "UDP datagrams forwarded by direction, group and uplink.",
+        ["direction", "group", "uplink"]
+    );
+    let udp_oversized_dropped_total = register_labeled!(
+        registry,
+        IntCounterVec,
+        "outline_ws_rust_udp_oversized_dropped_total",
+        "Oversized UDP packets dropped before forwarding.",
+        ["direction"]
+    );
 
     build_info.with_label_values(&[env!("CARGO_PKG_VERSION")]).set(1);
     start_time_seconds.set(
