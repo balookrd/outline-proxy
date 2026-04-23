@@ -1073,7 +1073,7 @@ async fn load_config_reads_control_token_from_file() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-#[cfg(feature = "control")]
+#[cfg(feature = "dashboard")]
 #[tokio::test]
 async fn load_config_reads_dashboard_instances() {
     let dir = std::env::temp_dir().join("outline-ws-rust-dashboard-config");

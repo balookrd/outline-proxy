@@ -297,7 +297,6 @@ async fn send_instance_request(
         if !body.is_empty() {
             stream.write_all(&body).await?;
         }
-        stream.shutdown().await?;
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await?;
         Result::<Vec<u8>>::Ok(response)

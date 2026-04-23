@@ -77,10 +77,17 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let control = load_control_config(control_section, args, config_dir).await?;
     let dashboard = load_dashboard_config(dashboard_section, config_dir).await?;
     #[cfg(not(feature = "control"))]
-    if control.is_some() || dashboard.is_some() {
+    if control.is_some() {
         bail!(
-            "control/dashboard listener requested but this build has the `control` feature \
-             disabled; rebuild with --features control"
+            "control listener requested (via [control], --control-listen, or CONTROL_LISTEN) \
+             but this build has the `control` feature disabled; rebuild with --features control"
+        );
+    }
+    #[cfg(not(feature = "dashboard"))]
+    if dashboard.is_some() {
+        bail!(
+            "dashboard listener requested (via [dashboard]) but this build has the `dashboard` \
+             feature disabled; rebuild with --features dashboard"
         );
     }
     #[cfg(feature = "tun")]
