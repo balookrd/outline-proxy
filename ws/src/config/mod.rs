@@ -6,7 +6,9 @@ mod types;
 
 pub use args::Args;
 pub use load::load_config;
-pub use types::{AppConfig, ControlConfig, H2Config, MetricsConfig};
+pub use types::{
+    AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, H2Config, MetricsConfig,
+};
 
 #[cfg(test)]
 pub(crate) use compat::normalize_outline_section;

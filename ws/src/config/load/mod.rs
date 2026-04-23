@@ -1,12 +1,14 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use tokio::fs;
 
 use super::args::Args;
 use super::compat::normalize_outline_section;
-use super::schema::{ConfigFile, ControlSection};
-use super::types::{AppConfig, ControlConfig, MetricsConfig};
+use super::schema::{ConfigFile, ControlSection, DashboardSection};
+use super::types::{
+    AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
+};
 
 mod auth;
 mod balancing;
@@ -46,6 +48,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     let outline = file.as_ref().and_then(normalize_outline_section);
     let metrics_section = file.as_ref().and_then(|f| f.metrics.as_ref());
     let control_section = file.as_ref().and_then(|f| f.control.as_ref());
+    let dashboard_section = file.as_ref().and_then(|f| f.dashboard.as_ref());
     #[cfg(feature = "tun")]
     let tun_section = file.as_ref().and_then(|f| f.tun.as_ref());
     let h2_section = file.as_ref().and_then(|f| f.h2.as_ref());
@@ -72,11 +75,12 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         );
     }
     let control = load_control_config(control_section, args, config_dir).await?;
+    let dashboard = load_dashboard_config(dashboard_section, config_dir).await?;
     #[cfg(not(feature = "control"))]
-    if control.is_some() {
+    if control.is_some() || dashboard.is_some() {
         bail!(
-            "control listener requested (via [control], --control-listen, or CONTROL_LISTEN) \
-             but this build has the `control` feature disabled; rebuild with --features control"
+            "control/dashboard listener requested but this build has the `control` feature \
+             disabled; rebuild with --features control"
         );
     }
     #[cfg(feature = "tun")]
@@ -115,6 +119,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         routing,
         metrics,
         control,
+        dashboard,
         #[cfg(feature = "tun")]
         tun,
         h2,
@@ -126,6 +131,77 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     })
 }
 
+async fn load_dashboard_config(
+    section: Option<&DashboardSection>,
+    config_dir: &Path,
+) -> Result<Option<DashboardConfig>> {
+    let Some(section) = section else {
+        return Ok(None);
+    };
+    if section.enabled == Some(false) {
+        return Ok(None);
+    }
+
+    let listen = section
+        .listen
+        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but [dashboard].listen is not set"))?;
+    let refresh_interval_secs = section.refresh_interval_secs.unwrap_or(5).max(1);
+    let instances = section
+        .instances
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but [dashboard].instances is empty"))?;
+    if instances.is_empty() {
+        bail!("dashboard enabled but [dashboard].instances is empty");
+    }
+
+    let mut loaded = Vec::with_capacity(instances.len());
+    for (idx, instance) in instances.iter().enumerate() {
+        let name = instance
+            .name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("dashboard instance #{idx} has no name"))?;
+        let control_url = instance
+            .control_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("dashboard instance {name:?} has no control_url"))?;
+        match control_url.scheme() {
+            "http" => {},
+            other => bail!(
+                "dashboard instance {name:?} uses unsupported control_url scheme {other:?}; \
+                 only http:// control listeners are supported"
+            ),
+        }
+        let inline_token = instance.token.clone().filter(|token| !token.is_empty());
+        let file_token = match instance.token_file.as_ref() {
+            Some(path) => {
+                let resolved = routing::resolve_config_path(path, config_dir)
+                    .context("invalid [dashboard.instances].token_file")?;
+                let raw = fs::read_to_string(&resolved).await.with_context(|| {
+                    format!("failed to read dashboard token from {}", resolved.display())
+                })?;
+                let trimmed = raw.trim().to_owned();
+                if trimmed.is_empty() {
+                    bail!("dashboard token file {} is empty", resolved.display());
+                }
+                Some(trimmed)
+            },
+            None => None,
+        };
+        let token = inline_token
+            .or(file_token)
+            .ok_or_else(|| anyhow::anyhow!("dashboard instance {name:?} has no token"))?;
+
+        loaded.push(DashboardInstanceConfig { name, control_url, token });
+    }
+
+    Ok(Some(DashboardConfig {
+        listen,
+        refresh_interval_secs,
+        instances: loaded,
+    }))
+}
+
 async fn load_control_config(
     section: Option<&ControlSection>,
     args: &Args,
@@ -133,9 +209,7 @@ async fn load_control_config(
 ) -> Result<Option<ControlConfig>> {
     let listen = args.control_listen.or_else(|| section.and_then(|s| s.listen));
     let cli_token = args.control_token.clone().filter(|t| !t.is_empty());
-    let inline_token = section
-        .and_then(|s| s.token.clone())
-        .filter(|t| !t.is_empty());
+    let inline_token = section.and_then(|s| s.token.clone()).filter(|t| !t.is_empty());
     let file_token = match section.and_then(|s| s.token_file.as_ref()) {
         Some(path) => {
             let resolved = routing::resolve_config_path(path, config_dir)

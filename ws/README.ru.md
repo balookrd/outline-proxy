@@ -8,7 +8,7 @@
 - SOCKS5 `UDP ASSOCIATE` и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - failover и балансировку нагрузки между несколькими аплинками
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
-- метрики Prometheus и готовые дашборды Grafana
+- метрики Prometheus, встроенный multi-instance дашборд и готовые дашборды Grafana
 - интеграцию с существующим TUN-устройством для `tun2udp`
 - stateful `tun2tcp`-реле с production-ориентированными ограничениями
 
@@ -71,11 +71,13 @@ tun2udp + tun2tcp"]
 
     subgraph Observability["Observability"]
         PR["Prometheus"]
+        DASH["Встроенный дашборд"]
         GD["Grafana dashboards"]
         AL["Alert rules"]
     end
 
     M --> PR
+    P --> DASH
     PR --> GD
     PR --> AL
 ```
@@ -154,8 +156,8 @@ tun2udp + tun2tcp"]
 ### Операционная поддержка
 
 - метрики Prometheus
+- встроенный multi-instance дашборд
 - готовые дашборды Grafana
-- готовые alert rules Prometheus
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-совместимые слушатели, upstream'ы, пробы и SOCKS5-цели
@@ -178,7 +180,6 @@ tun2udp + tun2tcp"]
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) — дашборд `tun2tcp`
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) — диагностика стартового и переключательного burst в native Shadowsocks
-- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) — alert rules Prometheus
 - [`src/proxy/`](src/proxy) — обработчики TCP/UDP ingress для SOCKS5
 - [`crates/outline-uplink/`](crates/outline-uplink) — выбор аплинка, пробы, failover и standby-логика
 - [`crates/outline-transport/`](crates/outline-transport) — реализации WebSocket и прямых Shadowsocks transport'ов
@@ -480,6 +481,23 @@ listen = "[::1]:9090"
 # # Либо читать токен из соседнего файла (путь — относительно конфига).
 # # Используйте, когда секрет нельзя хранить в самом конфиге.
 # # token_file = "/etc/outline-ws/control.token"
+
+# Встроенный multi-instance дашборд. Откройте http://LISTEN/dashboard.
+# Секреты хранятся только в конфиге процесса с дашбордом; браузеру они не
+# отдаются. Каждая instance должна иметь включённый [control].
+# [dashboard]
+# listen = "127.0.0.1:9092"
+# refresh_interval_secs = 5
+#
+# [[dashboard.instances]]
+# name = "inst-01"
+# control_url = "http://127.0.0.1:9091"
+# token_file = "/etc/outline-ws/inst-01.control.token"
+#
+# [[dashboard.instances]]
+# name = "inst-02"
+# control_url = "http://10.0.0.12:9091"
+# token = "long-random-secret"
 
 [tun]
 # Путь к существующему TUN-устройству. Создание, IP-адреса и маршруты — вне приложения.
@@ -984,7 +1002,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" \
 
 `GET /control/topology` возвращает JSON с группами и аплинками, включая
 флаги `active_global`, `active_tcp`, `active_udp` для каждого аплинка —
-удобно для table/tree-панелей Grafana.
+для встроенного дашборда или внешних control-клиентов.
 
 `GET /control/summary` возвращает компактные счётчики:
 `groups_total`, `uplinks_total`, healthy/unhealthy по TCP/UDP и счётчики
@@ -1060,48 +1078,24 @@ scrape_configs:
 - `process fd snapshot`
 
 Snapshot дескрипторов включает общее количество открытых FD и разбивку на сокеты, pipes, anon inodes, обычные файлы и прочее.
-Основной дашборд содержит секцию `Memory & Allocator` с панелями `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode` и `Process Memory`.
 
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` питают stat-панели `Selection Mode`, `Routing Scope`, `Active Uplink` и `Global Sticky Routes`.
+`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}` и `outline_ws_rust_sticky_routes_total` экспортируют конфигурацию селектора и состояние активного uplink.
 
-При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` и панель `UDP Forward Errors` разбивают их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
-Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}` и показывается в панели `Oversized UDP Drops`.
+При ошибке UDP-forwarding в TUN метрика `outline_ws_rust_tun_udp_forward_errors_total{reason}` разбивает их по: `all_uplinks_failed`, `transport_error`, `connect_failed`, `other`.
+Дроп oversized SOCKS5 UDP-пакетов до отправки в uplink и oversized UDP-ответов до отправки клиенту экспортируется как `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}`.
 
 Для прямых UDP uplink'ов с `transport = "shadowsocks"` действуют те же проверки на границах локального relay:
 
 - `incoming`: relay дропает пакет, если `target + payload` превышает лимит Shadowsocks AEAD payload ещё до шифрования и отправки в uplink
 - `outgoing`: relay дропает пакет, если декодированный ответ от upstream после сборки становится слишком большим для безопасной SOCKS5 UDP datagram перед отправкой клиенту
 
-Дашборды:
+Дашборды Grafana:
 
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
 
-Основной дашборд сгруппирован по секциям:
-
-- Overview
-- Routing Policy
-- Traffic
-- Latency
-- Health & Routing
-- Memory & Allocator
-- FD, Threads & Transport Pressure
-- Probes & Standby
-- TUN
-
-Дашборд `tun2tcp` сгруппирован по секциям:
-
-- Overview
-- Recovery & Loss
-- Backlog & Flow State
-- Timing & Window Control
-
-Оба дашборда используют общий цветовой язык: синий — трафик и базовое время, янтарный — нагрузка или деградация latency, красный — сбои и потери, зелёный — здоровая ёмкость или успешное standby-поведение.
-
-Alert rules:
-
-- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
+Экспериментальный Grafana-дешборд для uplinks/control-plane намеренно не поставляется; для multi-instance активации аплинков используйте встроенный UI `/dashboard`.
 
 ## Production-эксплуатация
 

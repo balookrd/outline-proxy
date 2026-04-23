@@ -7,5 +7,7 @@
 
 #[cfg(feature = "control")]
 pub mod control;
+#[cfg(feature = "control")]
+pub mod dashboard;
 #[cfg(feature = "metrics")]
 pub mod metrics;

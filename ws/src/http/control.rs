@@ -550,7 +550,8 @@ mod tests {
     use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
     use outline_uplink::{
         CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr,
-        UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, WsTransportMode,
+        UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, WsProbeConfig,
+        WsTransportMode,
     };
     use serde_json::Value;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -713,25 +714,37 @@ mod tests {
         LoadBalancingConfig {
             mode: LoadBalancingMode::ActivePassive,
             routing_scope: RoutingScope::Global,
-            probe_interval: Duration::from_secs(10),
-            failover_threshold: 2,
-            cooldown: Duration::from_secs(5),
-            tcp_check_timeout: Duration::from_millis(200),
-            udp_check_timeout: Duration::from_millis(200),
+            sticky_ttl: Duration::from_secs(0),
+            hysteresis: Duration::from_millis(0),
+            failure_cooldown: Duration::from_secs(5),
+            tcp_chunk0_failover_timeout: Duration::from_secs(10),
             auto_failback: false,
             warm_standby_tcp: 0,
             warm_standby_udp: 0,
-            standby_keepalive_tcp: Duration::from_secs(0),
-            standby_keepalive_udp: Duration::from_secs(0),
-            standby_keepalive_probe: false,
-            sticky_duration: Duration::from_secs(0),
-            h3_downgrade_cooldown: Duration::from_secs(60),
-            strict_active_uplink: false,
+            rtt_ewma_alpha: 0.3,
+            failure_penalty: Duration::from_millis(500),
+            failure_penalty_max: Duration::from_secs(30),
+            failure_penalty_halflife: Duration::from_secs(60),
+            h3_downgrade_duration: Duration::from_secs(60),
+            udp_ws_keepalive_interval: None,
+            tcp_ws_standby_keepalive_interval: None,
+            tcp_active_keepalive_interval: None,
         }
     }
 
     fn probe_disabled() -> ProbeConfig {
-        ProbeConfig::Disabled
+        ProbeConfig {
+            interval: Duration::from_secs(10),
+            timeout: Duration::from_millis(200),
+            max_concurrent: 1,
+            max_dials: 1,
+            min_failures: 1,
+            attempts: 1,
+            ws: WsProbeConfig { enabled: false },
+            http: None,
+            dns: None,
+            tcp: None,
+        }
     }
 
     #[test]
@@ -854,7 +867,6 @@ mod tests {
 
         let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
         client.write_all(raw_request.as_bytes()).await.unwrap();
-        client.shutdown().await.unwrap();
 
         let mut response = Vec::new();
         client.read_to_end(&mut response).await.unwrap();

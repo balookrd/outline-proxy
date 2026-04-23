@@ -8,7 +8,7 @@ It supports:
 - SOCKS5 `UDP ASSOCIATE` and `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - multi-uplink failover and load balancing
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
-- Prometheus metrics and packaged Grafana dashboards
+- Prometheus metrics, built-in multi-instance dashboard, and packaged Grafana dashboards
 - existing TUN device integration for `tun2udp`
 - stateful `tun2tcp` relay with production-oriented guardrails
 
@@ -71,11 +71,13 @@ tun2udp + tun2tcp"]
 
     subgraph Observability["Observability"]
         PR["Prometheus"]
+        DASH["Built-in dashboard"]
         GD["Grafana dashboards"]
         AL["Alert rules"]
     end
 
     M --> PR
+    P --> DASH
     PR --> GD
     PR --> AL
 ```
@@ -154,8 +156,8 @@ tun2udp + tun2tcp"]
 ### Operations
 
 - Prometheus metrics
+- built-in multi-instance dashboard
 - packaged Grafana dashboards
-- packaged Prometheus alert rules
 - hardened systemd unit
 - Linux `fwmark` / `SO_MARK`
 - IPv6-capable listeners, upstreams, probes, and SOCKS5 targets
@@ -178,7 +180,6 @@ The project is intentionally practical, but there are still boundaries:
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json) - startup and traffic-switch burst diagnostics for native Shadowsocks mode
-- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml) - Prometheus alert rules
 - [`src/bootstrap/`](src/bootstrap) - startup sequence: listener binding and persistent state store
 - [`src/config/`](src/config) - configuration loading, schema, and validated types
 - [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
@@ -486,6 +487,23 @@ listen = "[::1]:9090"
 # # Or read the token from a sidecar file (path resolved relative to this
 # # config). Use this when secrets must not live in the config itself.
 # # token_file = "/etc/outline-ws/control.token"
+
+# Built-in multi-instance dashboard. Open http://LISTEN/dashboard.
+# Secrets stay in the dashboard process config and are never sent to the
+# browser. Each instance must expose its own [control] listener.
+# [dashboard]
+# listen = "127.0.0.1:9092"
+# refresh_interval_secs = 5
+#
+# [[dashboard.instances]]
+# name = "inst-01"
+# control_url = "http://127.0.0.1:9091"
+# token_file = "/etc/outline-ws/inst-01.control.token"
+#
+# [[dashboard.instances]]
+# name = "inst-02"
+# control_url = "http://10.0.0.12:9091"
+# token = "long-random-secret"
 
 [tun]
 # Existing TUN device path. Creation, IP addresses and routes stay outside the app.
@@ -987,8 +1005,8 @@ higher-priority uplink once it stabilises.
 ### Dashboard-oriented control APIs
 
 `GET /control/topology` returns JSON with groups and uplinks (including
-`active_global`, `active_tcp`, `active_udp` booleans per uplink) for rendering
-table/tree panels in Grafana.
+`active_global`, `active_tcp`, `active_udp` booleans per uplink) for the
+built-in dashboard or external control clients.
 
 `GET /control/summary` returns compact counters:
 `groups_total`, `uplinks_total`, healthy/unhealthy TCP/UDP counts, and active
@@ -1064,52 +1082,24 @@ On Linux, the process also emits a periodic descriptor inventory log:
 - `process fd snapshot`
 
 The descriptor snapshot includes total open FDs plus a breakdown for sockets, pipes, anon inodes, regular files, and other descriptor types.
-The main dashboard now has a dedicated `Memory & Allocator` section with `Current RSS`, `Current Virtual`, `Heap Allocated`, `Allocator Heap Mode`, and `Process Memory`. FD, thread, and transport pressure remain in a separate section so allocator behavior is visible without mixing it with descriptor churn.
 
-`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` feed the `Selection Mode`, `Routing Scope`, `Active Uplink`, and `Global Sticky Routes` stat panels so you can confirm how the selector is configured and, in `global` scope, whether a sticky active uplink is currently pinned.
-When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` and the `UDP Forward Errors` panel break that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
-Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}` and visualized in the `Oversized UDP Drops` panel.
-Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}` and visualized in the `Local ICMP Replies` panel.
-The `Active UDP Flows` panel shows current TUN UDP flow count alongside configured capacity, `UDP Flow Pressure Ratio` is a quick stat+spline indicator of how close the current UDP flow table is to its limit, and `UDP Flow Lifecycle` shows whether active flow growth comes from normal creation outpacing closure (`created > closed`) or from cleanup not keeping up with the current traffic mix.
+`outline_ws_rust_selection_mode_info{mode}`, `outline_ws_rust_routing_scope_info{scope}`, `outline_ws_rust_global_active_uplink_info{uplink}`, and `outline_ws_rust_sticky_routes_total` expose selector configuration and active-uplink state.
+When TUN UDP forwarding fails before a packet can be delivered upstream, `outline_ws_rust_tun_udp_forward_errors_total{reason}` breaks that down into `all_uplinks_failed`, `transport_error`, `connect_failed`, and `other`.
+Oversized SOCKS5 UDP packets dropped before uplink forwarding, and oversized UDP responses dropped before client delivery, are exported as `outline_ws_rust_udp_oversized_dropped_total{direction="incoming|outgoing"}`.
+Local ICMP echo handling is exported separately via `outline_ws_rust_tun_icmp_local_replies_total{ip_family}`.
 
 For direct `transport = "shadowsocks"` UDP uplinks, the same oversized checks still apply on the local relay boundaries:
 
 - incoming: the relay drops the packet if `target + payload` exceeds the Shadowsocks AEAD payload limit before encrypting and sending it to the uplink
 - outgoing: the relay drops the packet if the decoded upstream response becomes larger than a safe SOCKS5 UDP datagram before sending it back to the client
 
-Dashboards:
+Grafana dashboards:
 
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json)
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json)
 - [`grafana/outline-ws-rust-native-burst-dashboard.json`](grafana/outline-ws-rust-native-burst-dashboard.json)
 
-The main dashboard is grouped into:
-
-- Overview
-- Routing Policy
-- Traffic
-- Latency
-- Health & Routing
-- Memory & Allocator
-- FD, Threads & Transport Pressure
-- Probes & Standby
-- TUN
-
-Traffic panels on the main dashboard now break payload throughput down by `uplink`, so active traffic split between `nuxt` and `senko` is visible directly in `Payload by Uplink (Selected Range)` and `Protocol Throughput`.
-
-The `tun2tcp` dashboard is grouped into:
-
-- Overview
-- Recovery & Loss
-- Backlog & Flow State
-- Timing & Window Control
-
-Both dashboards use a shared color language: blue for traffic and baseline timing, amber for pressure or degraded latency, red for failures and loss, and green for healthy capacity or successful standby behavior.
-Legends also use a shared ordering convention: `instance`, then `uplink` when present, then the metric or event name. The `instance` label is shortened to the part before the first dot to keep legends compact.
-
-Alert rules:
-
-- [`prometheus/outline-ws-rust-alerts.yml`](prometheus/outline-ws-rust-alerts.yml)
+The experimental uplinks/control-plane Grafana dashboard is intentionally not packaged; use the built-in `/dashboard` UI for multi-instance uplink activation.
 
 ## Production Operations
 
