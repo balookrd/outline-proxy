@@ -2,6 +2,7 @@ use super::Metrics;
 use prometheus::Registry;
 
 mod core;
+mod macros;
 mod probe;
 mod process;
 mod transport;
