@@ -10,20 +10,22 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use http::header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue};
+use http::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use http::{Method, Request, Response, StatusCode};
+use http_body_util::BodyExt;
 use http_body_util::Full;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Semaphore;
 use tracing::{info, warn};
 
 use crate::config::ControlConfig;
-use outline_metrics::record_metrics_http_request;
+use outline_metrics::{record_metrics_http_request, UplinkManagerSnapshot, UplinkSnapshot};
 use outline_uplink::{TransportKind, UplinkRegistry};
 
 type ControlResponse = Response<Full<Bytes>>;
@@ -54,10 +56,7 @@ const MAX_CONCURRENT_CONTROL_CONNECTIONS: usize = 16;
 /// headers, so an unauthenticated peer can otherwise stall us.
 const CONTROL_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-async fn run_control_server(
-    listen: std::net::SocketAddr,
-    state: Arc<ControlState>,
-) -> Result<()> {
+async fn run_control_server(listen: std::net::SocketAddr, state: Arc<ControlState>) -> Result<()> {
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("failed to bind control listener {listen}"))?;
@@ -68,11 +67,7 @@ async fn run_control_server(
     loop {
         let (stream, peer) = listener.accept().await.context("control accept failed")?;
         let state = Arc::clone(&state);
-        let permit = conn_sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("semaphore closed");
+        let permit = conn_sem.clone().acquire_owned().await.expect("semaphore closed");
         tokio::spawn(async move {
             let _permit = permit;
             if let Err(error) = handle_connection(stream, state).await {
@@ -102,6 +97,9 @@ async fn handle_connection(stream: TcpStream, state: Arc<ControlState>) -> Resul
 async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) -> ControlResponse {
     let label_path: &'static str = match request.uri().path() {
         "/switch" => "/switch",
+        "/control/topology" => "/control/topology",
+        "/control/summary" => "/control/summary",
+        "/control/activate" => "/control/activate",
         _ => "other",
     };
 
@@ -114,6 +112,21 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/switch" => {
             let response = handle_switch(&request, state.uplinks.clone()).await;
             record_metrics_http_request("/switch", response.status().as_u16());
+            response
+        },
+        "/control/topology" => {
+            let response = handle_topology(&request, state.uplinks.clone()).await;
+            record_metrics_http_request("/control/topology", response.status().as_u16());
+            response
+        },
+        "/control/summary" => {
+            let response = handle_summary(&request, state.uplinks.clone()).await;
+            record_metrics_http_request("/control/summary", response.status().as_u16());
+            response
+        },
+        "/control/activate" => {
+            let response = handle_activate(request, state.uplinks.clone()).await;
+            record_metrics_http_request("/control/activate", response.status().as_u16());
             response
         },
         _ => {
@@ -163,10 +176,94 @@ fn unauthorized_response() -> ControlResponse {
     response
 }
 
-async fn handle_switch(
-    request: &Request<Incoming>,
-    uplinks: UplinkRegistry,
-) -> ControlResponse {
+#[derive(Debug, Clone, Serialize)]
+struct ControlTopologyResponse {
+    instance: ControlInstanceTopology,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ControlInstanceTopology {
+    groups: Vec<ControlGroupTopology>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ControlGroupTopology {
+    name: String,
+    generated_at_unix_ms: u128,
+    load_balancing_mode: String,
+    routing_scope: String,
+    global_active_uplink: Option<String>,
+    tcp_active_uplink: Option<String>,
+    udp_active_uplink: Option<String>,
+    uplinks: Vec<ControlUplinkTopology>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ControlUplinkTopology {
+    index: usize,
+    name: String,
+    weight: f64,
+    tcp_healthy: Option<bool>,
+    udp_healthy: Option<bool>,
+    last_error: Option<String>,
+    active_global: bool,
+    active_tcp: bool,
+    active_udp: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct ControlSummaryResponse {
+    groups_total: usize,
+    uplinks_total: usize,
+    tcp_healthy: usize,
+    tcp_unhealthy: usize,
+    udp_healthy: usize,
+    udp_unhealthy: usize,
+    active_global: usize,
+    active_tcp: usize,
+    active_udp: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ActivateRequest {
+    group: String,
+    uplink: String,
+    #[serde(default)]
+    transport: Option<ActivateTransport>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ActivateTransport {
+    Tcp,
+    Udp,
+    Both,
+}
+
+impl ActivateTransport {
+    fn into_registry_transport(self) -> Option<TransportKind> {
+        match self {
+            Self::Tcp => Some(TransportKind::Tcp),
+            Self::Udp => Some(TransportKind::Udp),
+            Self::Both => None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ActivateResponse {
+    group: String,
+    uplink: String,
+    index: usize,
+    transport: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResponse<'a> {
+    error: &'a str,
+}
+
+async fn handle_switch(request: &Request<Incoming>, uplinks: UplinkRegistry) -> ControlResponse {
     if request.method() != Method::POST {
         return plain_response(
             StatusCode::METHOD_NOT_ALLOWED,
@@ -229,6 +326,214 @@ async fn handle_switch(
     }
 }
 
+async fn handle_topology(request: &Request<Incoming>, uplinks: UplinkRegistry) -> ControlResponse {
+    if let Some(response) = require_method(request.method(), Method::GET, "GET") {
+        return response;
+    }
+    let snapshots = uplinks.snapshots().await;
+    json_response(
+        StatusCode::OK,
+        &ControlTopologyResponse {
+            instance: build_instance_topology(&snapshots),
+        },
+    )
+}
+
+async fn handle_summary(request: &Request<Incoming>, uplinks: UplinkRegistry) -> ControlResponse {
+    if let Some(response) = require_method(request.method(), Method::GET, "GET") {
+        return response;
+    }
+    let snapshots = uplinks.snapshots().await;
+    json_response(StatusCode::OK, &build_summary(&snapshots))
+}
+
+async fn handle_activate(request: Request<Incoming>, uplinks: UplinkRegistry) -> ControlResponse {
+    if let Some(response) = require_method(request.method(), Method::POST, "POST") {
+        return response;
+    }
+
+    let body = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "failed to read /control/activate body");
+            return json_error(StatusCode::BAD_REQUEST, "invalid request body");
+        },
+    };
+
+    activate_from_json(&body, uplinks).await
+}
+
+async fn activate_from_json(body: &[u8], uplinks: UplinkRegistry) -> ControlResponse {
+    let payload: ActivateRequest = match serde_json::from_slice(body) {
+        Ok(payload) => payload,
+        Err(error) => {
+            let msg = format!("invalid JSON: {error}");
+            return json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }));
+        },
+    };
+    if payload.group.trim().is_empty() || payload.uplink.trim().is_empty() {
+        return json_error(StatusCode::BAD_REQUEST, "\"group\" and \"uplink\" are required");
+    }
+    let transport = payload
+        .transport
+        .map(ActivateTransport::into_registry_transport)
+        .flatten();
+    match uplinks
+        .set_active_uplink_by_name(Some(payload.group.trim()), payload.uplink.trim(), transport)
+        .await
+    {
+        Ok((group, index)) => {
+            info!(
+                group = %group,
+                uplink = %payload.uplink,
+                index,
+                ?transport,
+                "manual uplink activation via /control/activate"
+            );
+            json_response(
+                StatusCode::OK,
+                &ActivateResponse {
+                    group,
+                    uplink: payload.uplink.trim().to_string(),
+                    index,
+                    transport: match payload.transport.unwrap_or(ActivateTransport::Both) {
+                        ActivateTransport::Tcp => "tcp",
+                        ActivateTransport::Udp => "udp",
+                        ActivateTransport::Both => "both",
+                    },
+                },
+            )
+        },
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "manual /control/activate failed");
+            let msg = format!("{error}");
+            json_response(StatusCode::BAD_REQUEST, &serde_json::json!({ "error": msg }))
+        },
+    }
+}
+
+fn build_instance_topology(snapshots: &[UplinkManagerSnapshot]) -> ControlInstanceTopology {
+    ControlInstanceTopology {
+        groups: snapshots.iter().map(build_group_topology).collect(),
+    }
+}
+
+fn build_group_topology(snapshot: &UplinkManagerSnapshot) -> ControlGroupTopology {
+    ControlGroupTopology {
+        name: snapshot.group.clone(),
+        generated_at_unix_ms: snapshot.generated_at_unix_ms,
+        load_balancing_mode: snapshot.load_balancing_mode.clone(),
+        routing_scope: snapshot.routing_scope.clone(),
+        global_active_uplink: snapshot.global_active_uplink.clone(),
+        tcp_active_uplink: snapshot.tcp_active_uplink.clone(),
+        udp_active_uplink: snapshot.udp_active_uplink.clone(),
+        uplinks: snapshot
+            .uplinks
+            .iter()
+            .map(|uplink| build_uplink_topology(snapshot, uplink))
+            .collect(),
+    }
+}
+
+fn build_uplink_topology(
+    snapshot: &UplinkManagerSnapshot,
+    uplink: &UplinkSnapshot,
+) -> ControlUplinkTopology {
+    ControlUplinkTopology {
+        index: uplink.index,
+        name: uplink.name.clone(),
+        weight: uplink.weight,
+        tcp_healthy: uplink.tcp_healthy,
+        udp_healthy: uplink.udp_healthy,
+        last_error: uplink.last_error.clone(),
+        active_global: snapshot.global_active_uplink.as_deref() == Some(uplink.name.as_str()),
+        active_tcp: snapshot.tcp_active_uplink.as_deref() == Some(uplink.name.as_str()),
+        active_udp: snapshot.udp_active_uplink.as_deref() == Some(uplink.name.as_str()),
+    }
+}
+
+fn build_summary(snapshots: &[UplinkManagerSnapshot]) -> ControlSummaryResponse {
+    let mut summary = ControlSummaryResponse {
+        groups_total: snapshots.len(),
+        uplinks_total: 0,
+        tcp_healthy: 0,
+        tcp_unhealthy: 0,
+        udp_healthy: 0,
+        udp_unhealthy: 0,
+        active_global: 0,
+        active_tcp: 0,
+        active_udp: 0,
+    };
+
+    for group in snapshots {
+        summary.uplinks_total += group.uplinks.len();
+        if group.global_active_uplink.is_some() {
+            summary.active_global += 1;
+        }
+        if group.tcp_active_uplink.is_some() {
+            summary.active_tcp += 1;
+        }
+        if group.udp_active_uplink.is_some() {
+            summary.active_udp += 1;
+        }
+        for uplink in &group.uplinks {
+            match uplink.tcp_healthy {
+                Some(true) => summary.tcp_healthy += 1,
+                Some(false) => summary.tcp_unhealthy += 1,
+                None => {},
+            }
+            match uplink.udp_healthy {
+                Some(true) => summary.udp_healthy += 1,
+                Some(false) => summary.udp_unhealthy += 1,
+                None => {},
+            }
+        }
+    }
+    summary
+}
+
+fn json_response<T: Serialize>(status: StatusCode, payload: &T) -> ControlResponse {
+    match serde_json::to_vec(payload) {
+        Ok(body) => plain_response(status, "application/json; charset=utf-8", Bytes::from(body)),
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "failed to serialize control JSON response");
+            plain_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "application/json; charset=utf-8",
+                Bytes::from_static(br#"{"error":"internal server error"}"#),
+            )
+        },
+    }
+}
+
+fn require_method(
+    method: &Method,
+    expected: Method,
+    expected_label: &'static str,
+) -> Option<ControlResponse> {
+    if *method == expected {
+        return None;
+    }
+    Some(plain_response(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "application/json; charset=utf-8",
+        Bytes::from(
+            serde_json::to_vec(&ErrorResponse {
+                error: match expected_label {
+                    "GET" => "use GET",
+                    "POST" => "use POST",
+                    _ => "bad method",
+                },
+            })
+            .unwrap_or_else(|_| br#"{"error":"bad method"}"#.to_vec()),
+        ),
+    ))
+}
+
+fn json_error(status: StatusCode, message: &'static str) -> ControlResponse {
+    json_response(status, &ErrorResponse { error: message })
+}
+
 fn plain_response(status: StatusCode, content_type: &'static str, body: Bytes) -> ControlResponse {
     let mut response = Response::new(Full::new(body));
     *response.status_mut() = status;
@@ -242,6 +547,15 @@ fn plain_response(status: StatusCode, content_type: &'static str, body: Bytes) -
 mod tests {
     use super::*;
     use http::HeaderMap;
+    use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
+    use outline_uplink::{
+        CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr,
+        UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, WsTransportMode,
+    };
+    use serde_json::Value;
+    use std::net::{Ipv4Addr, SocketAddr};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// Mirror of the predicate inside `is_authorized`. Kept in sync via the
     /// shared `constant_time_eq` and the same parsing rule (`Bearer ` prefix,
@@ -295,5 +609,267 @@ mod tests {
         assert!(!header_authorized(&headers_with(Some("Bearer wrong")), "secret"));
         assert!(!header_authorized(&headers_with(Some("Bearer secre")), "secret"));
         assert!(!header_authorized(&headers_with(Some("Bearer secrett")), "secret"));
+    }
+
+    fn snapshot_fixture() -> Vec<UplinkManagerSnapshot> {
+        vec![UplinkManagerSnapshot {
+            group: "core".to_string(),
+            generated_at_unix_ms: 42,
+            load_balancing_mode: "active_passive".to_string(),
+            routing_scope: "per_uplink".to_string(),
+            global_active_uplink: Some("uplink-01".to_string()),
+            tcp_active_uplink: Some("uplink-02".to_string()),
+            udp_active_uplink: Some("uplink-01".to_string()),
+            uplinks: vec![
+                UplinkSnapshot {
+                    index: 0,
+                    name: "uplink-01".to_string(),
+                    group: "core".to_string(),
+                    weight: 1.0,
+                    tcp_healthy: Some(true),
+                    udp_healthy: Some(false),
+                    tcp_latency_ms: None,
+                    udp_latency_ms: None,
+                    tcp_rtt_ewma_ms: None,
+                    udp_rtt_ewma_ms: None,
+                    tcp_penalty_ms: None,
+                    udp_penalty_ms: None,
+                    tcp_effective_latency_ms: None,
+                    udp_effective_latency_ms: None,
+                    tcp_score_ms: None,
+                    udp_score_ms: None,
+                    cooldown_tcp_ms: None,
+                    cooldown_udp_ms: None,
+                    last_checked_ago_ms: None,
+                    last_error: None,
+                    standby_tcp_ready: 0,
+                    standby_udp_ready: 0,
+                    tcp_consecutive_failures: 0,
+                    udp_consecutive_failures: 1,
+                    h3_tcp_downgrade_until_ms: None,
+                    h3_udp_downgrade_until_ms: None,
+                    last_active_tcp_ago_ms: None,
+                    last_active_udp_ago_ms: None,
+                },
+                UplinkSnapshot {
+                    index: 1,
+                    name: "uplink-02".to_string(),
+                    group: "core".to_string(),
+                    weight: 1.0,
+                    tcp_healthy: Some(false),
+                    udp_healthy: Some(true),
+                    tcp_latency_ms: None,
+                    udp_latency_ms: None,
+                    tcp_rtt_ewma_ms: None,
+                    udp_rtt_ewma_ms: None,
+                    tcp_penalty_ms: None,
+                    udp_penalty_ms: None,
+                    tcp_effective_latency_ms: None,
+                    udp_effective_latency_ms: None,
+                    tcp_score_ms: None,
+                    udp_score_ms: None,
+                    cooldown_tcp_ms: None,
+                    cooldown_udp_ms: None,
+                    last_checked_ago_ms: None,
+                    last_error: Some("tcp failed".to_string()),
+                    standby_tcp_ready: 0,
+                    standby_udp_ready: 0,
+                    tcp_consecutive_failures: 1,
+                    udp_consecutive_failures: 0,
+                    h3_tcp_downgrade_until_ms: None,
+                    h3_udp_downgrade_until_ms: None,
+                    last_active_tcp_ago_ms: None,
+                    last_active_udp_ago_ms: None,
+                },
+            ],
+            sticky_routes: vec![StickyRouteSnapshot {
+                key: "example".to_string(),
+                uplink_index: 0,
+                uplink_name: "uplink-01".to_string(),
+                expires_in_ms: 500,
+            }],
+        }]
+    }
+
+    fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
+        UplinkConfig {
+            name: name.to_string(),
+            transport: UplinkTransport::Shadowsocks,
+            tcp_ws_url: None,
+            tcp_ws_mode: WsTransportMode::Http1,
+            udp_ws_url: None,
+            udp_ws_mode: WsTransportMode::Http1,
+            tcp_addr: Some(addr.to_string().parse::<ServerAddr>().unwrap()),
+            udp_addr: None,
+            cipher: CipherKind::Chacha20IetfPoly1305,
+            password: "secret".to_string(),
+            weight: 1.0,
+            fwmark: None,
+            ipv6_first: false,
+        }
+    }
+
+    fn lb() -> LoadBalancingConfig {
+        LoadBalancingConfig {
+            mode: LoadBalancingMode::ActivePassive,
+            routing_scope: RoutingScope::Global,
+            probe_interval: Duration::from_secs(10),
+            failover_threshold: 2,
+            cooldown: Duration::from_secs(5),
+            tcp_check_timeout: Duration::from_millis(200),
+            udp_check_timeout: Duration::from_millis(200),
+            auto_failback: false,
+            warm_standby_tcp: 0,
+            warm_standby_udp: 0,
+            standby_keepalive_tcp: Duration::from_secs(0),
+            standby_keepalive_udp: Duration::from_secs(0),
+            standby_keepalive_probe: false,
+            sticky_duration: Duration::from_secs(0),
+            h3_downgrade_cooldown: Duration::from_secs(60),
+            strict_active_uplink: false,
+        }
+    }
+
+    fn probe_disabled() -> ProbeConfig {
+        ProbeConfig::Disabled
+    }
+
+    #[test]
+    fn topology_serialization_shape_has_active_flags() {
+        let topology = ControlTopologyResponse {
+            instance: build_instance_topology(&snapshot_fixture()),
+        };
+        let json: Value = serde_json::to_value(topology).unwrap();
+        assert_eq!(json["instance"]["groups"][0]["name"], "core");
+        assert_eq!(json["instance"]["groups"][0]["uplinks"][0]["active_global"], true);
+        assert_eq!(json["instance"]["groups"][0]["uplinks"][0]["active_tcp"], false);
+        assert_eq!(json["instance"]["groups"][0]["uplinks"][1]["active_tcp"], true);
+        assert_eq!(json["instance"]["groups"][0]["uplinks"][1]["last_error"], "tcp failed");
+    }
+
+    #[test]
+    fn summary_counts_match_fixture() {
+        let summary = build_summary(&snapshot_fixture());
+        assert_eq!(
+            summary,
+            ControlSummaryResponse {
+                groups_total: 1,
+                uplinks_total: 2,
+                tcp_healthy: 1,
+                tcp_unhealthy: 1,
+                udp_healthy: 1,
+                udp_unhealthy: 1,
+                active_global: 1,
+                active_tcp: 1,
+                active_udp: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_bad_method_for_activate() {
+        let response = require_method(&Method::GET, Method::POST, "POST").unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn activate_rejects_bad_input() {
+        let response = activate_from_json(br#"{"group":"core"}"#, test_registry()).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn activate_succeeds_for_existing_uplink() {
+        let response = activate_from_json(
+            br#"{"group":"core","uplink":"uplink-02","transport":"tcp"}"#,
+            test_registry(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn endpoint_requires_auth() {
+        let (status, _body) = send_raw_http(
+            "GET /control/topology HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            test_registry(),
+            "token",
+        )
+        .await;
+        assert_eq!(status, 401);
+    }
+
+    #[tokio::test]
+    async fn endpoint_rejects_bad_method() {
+        let (status, body) = send_raw_http(
+            "PUT /control/summary HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n",
+            test_registry(),
+            "token",
+        )
+        .await;
+        assert_eq!(status, 405);
+        assert!(body.contains("use GET"));
+    }
+
+    #[tokio::test]
+    async fn endpoint_serializes_topology() {
+        let (status, body) = send_raw_http(
+            "GET /control/topology HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer token\r\nConnection: close\r\n\r\n",
+            test_registry(),
+            "token",
+        )
+        .await;
+        assert_eq!(status, 200);
+        let json: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["instance"]["groups"][0]["name"], "core");
+        assert!(json["instance"]["groups"][0]["uplinks"][0]
+            .get("active_global")
+            .is_some());
+    }
+
+    fn test_registry() -> UplinkRegistry {
+        let addr: SocketAddr = (Ipv4Addr::LOCALHOST, 8388).into();
+        let manager = UplinkManager::new_for_test(
+            "core",
+            vec![test_uplink("uplink-01", addr), test_uplink("uplink-02", addr)],
+            probe_disabled(),
+            lb(),
+        )
+        .unwrap();
+        UplinkRegistry::from_single_manager(manager)
+    }
+
+    async fn send_raw_http(
+        raw_request: &str,
+        uplinks: UplinkRegistry,
+        token: &str,
+    ) -> (u16, String) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(ControlState { token: token.to_string(), uplinks });
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            handle_connection(stream, state).await.unwrap();
+        });
+
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(raw_request.as_bytes()).await.unwrap();
+        client.shutdown().await.unwrap();
+
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server_task.await.unwrap();
+
+        let response = String::from_utf8(response).unwrap();
+        let mut parts = response.splitn(2, "\r\n\r\n");
+        let head = parts.next().unwrap_or_default();
+        let body = parts.next().unwrap_or_default().to_string();
+        let status = head
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        (status, body)
     }
 }

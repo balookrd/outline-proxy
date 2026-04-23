@@ -1,0 +1,416 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "panels": [],
+      "title": "Control summary",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null } ] }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "id": 10,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "instances", "values": false },
+        "textMode": "value"
+      },
+      "pluginVersion": "12.0.0",
+      "targets": [
+        {
+          "columns": [
+            { "selector": "1", "text": "instances", "type": "number" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/summary",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Instances",
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "instances",
+            "binary": { "left": "groups_total", "operator": "/", "right": "groups_total" },
+            "mode": "binary",
+            "reduce": { "reducer": "sum" },
+            "replaceFields": false
+          }
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "id": 11,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "groups_total", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "groups_total", "text": "groups_total", "type": "number" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/summary",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Uplink Groups",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "palette-classic" } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "id": 12,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "uplinks_total", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "uplinks_total", "text": "uplinks_total", "type": "number" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/summary",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Uplinks",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "orange", "value": null }, { "color": "green", "value": 1 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "id": 13,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "active_uplinks", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "active_global", "text": "active_global", "type": "number" },
+            { "selector": "active_tcp", "text": "active_tcp", "type": "number" },
+            { "selector": "active_udp", "text": "active_udp", "type": "number" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/summary",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Active Uplinks",
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "active_uplinks",
+            "binary": { "left": "active_tcp", "operator": "+", "right": "active_udp" },
+            "mode": "binary",
+            "reduce": { "reducer": "sum" },
+            "replaceFields": false
+          }
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "id": 14,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "inactive_uplinks", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "uplinks_total", "text": "uplinks_total", "type": "number" },
+            { "selector": "active_tcp", "text": "active_tcp", "type": "number" },
+            { "selector": "active_udp", "text": "active_udp", "type": "number" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/summary",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Inactive Uplinks",
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "active_sum",
+            "binary": { "left": "active_tcp", "operator": "+", "right": "active_udp" },
+            "mode": "binary",
+            "reduce": { "reducer": "sum" },
+            "replaceFields": false
+          }
+        },
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "inactive_uplinks",
+            "binary": { "left": "uplinks_total", "operator": "-", "right": "active_sum" },
+            "mode": "binary",
+            "reduce": { "reducer": "sum" },
+            "replaceFields": false
+          }
+        }
+      ],
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "id": 2,
+      "panels": [],
+      "title": "Instance / Group / Uplink topology",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "${DS_CONTROL}" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": { "type": "auto" },
+            "inspect": false
+          }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "active_any" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "0": { "color": "red", "index": 0, "text": "inactive" },
+                      "1": { "color": "green", "index": 1, "text": "active" }
+                    },
+                    "type": "value"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "uplink" },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Activate selected uplink (requires panel action/plugin)",
+                    "url": "${control_url}/control/activate",
+                    "targetBlank": true
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 11, "w": 16, "x": 0, "y": 6 },
+      "id": 20,
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true,
+        "sortBy": [ { "desc": false, "displayName": "instance" }, { "desc": false, "displayName": "group" } ]
+      },
+      "targets": [
+        {
+          "columns": [
+            { "selector": "instance.name", "text": "instance", "type": "string" },
+            { "selector": "group", "text": "group", "type": "string" },
+            { "selector": "name", "text": "uplink", "type": "string" },
+            { "selector": "tcp_healthy", "text": "tcp_healthy", "type": "string" },
+            { "selector": "udp_healthy", "text": "udp_healthy", "type": "string" },
+            { "selector": "active_global", "text": "active_global", "type": "number" },
+            { "selector": "active_tcp", "text": "active_tcp", "type": "number" },
+            { "selector": "active_udp", "text": "active_udp", "type": "number" },
+            { "selector": "last_error", "text": "last_error", "type": "string" }
+          ],
+          "format": "table",
+          "parser": "backend",
+          "refId": "A",
+          "root_selector": "$.instance.groups[*].uplinks[*]",
+          "source": "url",
+          "type": "json",
+          "url": "${control_url}/control/topology",
+          "url_options": {
+            "method": "GET",
+            "headers": [
+              { "key": "Authorization", "value": "Bearer ${control_token}" }
+            ]
+          }
+        }
+      ],
+      "title": "Uplinks topology table",
+      "transformations": [
+        {
+          "id": "calculateField",
+          "options": {
+            "alias": "active_any",
+            "binary": { "left": "active_global", "operator": "+", "right": "active_tcp" },
+            "mode": "binary",
+            "reduce": { "reducer": "sum" },
+            "replaceFields": false
+          }
+        }
+      ],
+      "type": "table"
+    },
+    {
+      "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+      "gridPos": { "h": 11, "w": 8, "x": 16, "y": 6 },
+      "id": 21,
+      "options": {
+        "code": {
+          "language": "markdown",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        },
+        "content": "### Activate uplink\n\nFor clickable POST actions, use one of:\n\n1. **Volkov Labs Business Forms** panel (recommended)\n2. **Data Manipulation** panel\n\nPOST URL: `${control_url}/control/activate`\n\nBody:\n```json\n{\n  \"group\": \"$group\",\n  \"uplink\": \"$uplink\",\n  \"transport\": \"tcp\"\n}\n```\n\nHeaders:\n\n- `Authorization: Bearer ${control_token}`\n- `Content-Type: application/json`\n\nThen refresh this dashboard after action.",
+        "mode": "markdown"
+      },
+      "pluginVersion": "12.0.0",
+      "title": "Activation action",
+      "type": "text"
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 41,
+  "style": "dark",
+  "tags": ["outline", "uplink", "control-plane"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "http://127.0.0.1:9091", "value": "http://127.0.0.1:9091" },
+        "hide": 0,
+        "label": "Control base URL",
+        "name": "control_url",
+        "options": [],
+        "query": "http://127.0.0.1:9091",
+        "type": "textbox"
+      },
+      {
+        "current": { "selected": false, "text": "REPLACE_ME", "value": "REPLACE_ME" },
+        "hide": 2,
+        "label": "Control token",
+        "name": "control_token",
+        "options": [],
+        "query": "REPLACE_ME",
+        "type": "textbox"
+      }
+    ]
+  },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Outline WS Rust - Control Uplinks",
+  "uid": "outline-ws-uplinks",
+  "version": 1,
+  "weekStart": ""
+}

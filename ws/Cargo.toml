@@ -19,7 +19,7 @@ h3 = ["outline-transport/h3"]
 metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.
-control = ["hyper/server"]
+control = ["hyper/server", "dep:serde_json"]
 # env-filter: dynamic log level via RUST_LOG (pulls in regex, ~300 KB on MIPS).
 # Disabled in router builds — log level is hardcoded to WARN instead.
 env-filter = ["tracing-subscriber/env-filter"]
