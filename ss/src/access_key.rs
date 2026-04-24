@@ -392,8 +392,6 @@ mod tests {
             vless_ws_path: Some("/vless path".into()),
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
-            password: None,
-            fwmark: None,
             users: vec![
                 UserEntry {
                     id: "alice".into(),

@@ -301,8 +301,6 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         vless_ws_path: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
-        password: None,
-        fwmark: None,
         users,
         method: CipherKind::Chacha20IetfPoly1305,
         access_key: Default::default(),
