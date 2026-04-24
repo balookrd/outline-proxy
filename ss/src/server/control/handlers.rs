@@ -145,14 +145,14 @@ fn error_response(status: StatusCode, msg: impl Into<String>) -> axum::response:
 }
 
 pub(super) async fn list_users(State(state): State<ControlState>) -> axum::response::Response {
-    ok_json(ListResponse { users: state.manager.list() })
+    ok_json(ListResponse { users: state.manager.list().await })
 }
 
 pub(super) async fn get_user(
     State(state): State<ControlState>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    match state.manager.get(&id) {
+    match state.manager.get(&id).await {
         Some(view) => ok_json(view),
         None => error_response(StatusCode::NOT_FOUND, format!("user {id:?} not found")),
     }
@@ -162,7 +162,7 @@ pub(super) async fn get_user_access_urls(
     State(state): State<ControlState>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    match state.manager.access_urls(&id) {
+    match state.manager.access_urls(&id).await {
         Ok(view) => ok_json(view),
         Err(error) => {
             let msg = format!("{error:#}");
@@ -181,7 +181,7 @@ pub(super) async fn create_user(
     State(state): State<ControlState>,
     Json(req): Json<CreateRequest>,
 ) -> axum::response::Response {
-    match state.manager.create(req.into()) {
+    match state.manager.create(req.into()).await {
         Ok(view) => (StatusCode::CREATED, Json(view)).into_response(),
         Err(error) => {
             warn!(error = %format!("{error:#}"), "control create_user rejected");
@@ -195,7 +195,7 @@ pub(super) async fn update_user(
     Path(id): Path<String>,
     Json(req): Json<UpdateRequest>,
 ) -> axum::response::Response {
-    match state.manager.update(&id, req.into()) {
+    match state.manager.update(&id, req.into()).await {
         Ok(view) => ok_json(view),
         Err(error) => {
             let msg = format!("{error:#}");
@@ -214,7 +214,7 @@ pub(super) async fn delete_user(
     State(state): State<ControlState>,
     Path(id): Path<String>,
 ) -> axum::response::Response {
-    match state.manager.delete(&id) {
+    match state.manager.delete(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => {
             warn!(error = %format!("{error:#}"), "control delete_user failed");
@@ -243,7 +243,7 @@ pub(super) async fn unblock_user(
 }
 
 async fn set_enabled(state: ControlState, id: String, enabled: bool) -> axum::response::Response {
-    match state.manager.set_enabled(&id, enabled) {
+    match state.manager.set_enabled(&id, enabled).await {
         Ok(view) => ok_json(view),
         Err(error) => {
             let msg = format!("{error:#}");

@@ -8,8 +8,8 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use arc_swap::ArcSwap;
-use parking_lot::Mutex;
 use serde::Serialize;
+use tokio::sync::Mutex;
 
 use crate::{
     access_key::build_access_key_artifacts_for_user,
@@ -129,23 +129,25 @@ impl UserManager {
         }
     }
 
-    pub(super) fn list(&self) -> Vec<UserView> {
-        self.inner.lock().users.iter().map(UserView::from).collect()
+    pub(super) async fn list(&self) -> Vec<UserView> {
+        self.inner.lock().await.users.iter().map(UserView::from).collect()
     }
 
-    pub(super) fn get(&self, id: &str) -> Option<UserView> {
+    pub(super) async fn get(&self, id: &str) -> Option<UserView> {
         self.inner
             .lock()
+            .await
             .users
             .iter()
             .find(|u| u.id == id)
             .map(UserView::from)
     }
 
-    pub(super) fn access_urls(&self, id: &str) -> Result<AccessUrlsView> {
+    pub(super) async fn access_urls(&self, id: &str) -> Result<AccessUrlsView> {
         let user = self
             .inner
             .lock()
+            .await
             .users
             .iter()
             .find(|u| u.id == id)
@@ -175,19 +177,19 @@ impl UserManager {
         Ok(view)
     }
 
-    pub(super) fn create(&self, entry: UserEntry) -> Result<UserView> {
+    pub(super) async fn create(&self, entry: UserEntry) -> Result<UserView> {
         self.validate_new(&entry)?;
-        let mut guard = self.inner.lock();
+        let mut guard = self.inner.lock().await;
         if guard.users.iter().any(|u| u.id == entry.id) {
             bail!("user id {:?} already exists", entry.id);
         }
         guard.users.push(entry);
-        self.publish_and_persist(&guard.users)?;
+        self.publish_and_persist(&guard.users).await?;
         Ok(UserView::from(guard.users.last().expect("just pushed")))
     }
 
-    pub(super) fn update(&self, id: &str, patch: UserPatch) -> Result<UserView> {
-        let mut guard = self.inner.lock();
+    pub(super) async fn update(&self, id: &str, patch: UserPatch) -> Result<UserView> {
+        let mut guard = self.inner.lock().await;
         let index = guard
             .users
             .iter()
@@ -198,22 +200,22 @@ impl UserManager {
         patch.apply_to(&mut updated);
         self.validate_new(&updated)?;
         guard.users[index] = updated;
-        self.publish_and_persist(&guard.users)?;
+        self.publish_and_persist(&guard.users).await?;
         Ok(UserView::from(&guard.users[index]))
     }
 
-    pub(super) fn delete(&self, id: &str) -> Result<()> {
-        let mut guard = self.inner.lock();
+    pub(super) async fn delete(&self, id: &str) -> Result<()> {
+        let mut guard = self.inner.lock().await;
         let before = guard.users.len();
         guard.users.retain(|u| u.id != id);
         if guard.users.len() == before {
             bail!("user {id:?} not found");
         }
-        self.publish_and_persist(&guard.users)
+        self.publish_and_persist(&guard.users).await
     }
 
-    pub(super) fn set_enabled(&self, id: &str, enabled: bool) -> Result<UserView> {
-        let mut guard = self.inner.lock();
+    pub(super) async fn set_enabled(&self, id: &str, enabled: bool) -> Result<UserView> {
+        let mut guard = self.inner.lock().await;
         let user = guard
             .users
             .iter_mut()
@@ -221,7 +223,7 @@ impl UserManager {
             .ok_or_else(|| anyhow!("user {id:?} not found"))?;
         user.enabled = Some(enabled);
         let view = UserView::from(&*user);
-        self.publish_and_persist(&guard.users)?;
+        self.publish_and_persist(&guard.users).await?;
         Ok(view)
     }
 
@@ -289,14 +291,20 @@ impl UserManager {
         Ok(())
     }
 
-    fn publish_and_persist(&self, users: &[UserEntry]) -> Result<()> {
+    async fn publish_and_persist(&self, users: &[UserEntry]) -> Result<()> {
         let (routes, auth_keys) = self.rebuild_snapshots(users)?;
         self.routes.store(Arc::new(routes));
         self.auth_users.store(Arc::new(UserKeySlice(auth_keys)));
 
         if let Some(path) = &self.config_path {
-            persist_users(path, users)
-                .with_context(|| format!("failed to persist users to {}", path.display()))?;
+            let path = path.clone();
+            let users = users.to_vec();
+            tokio::task::spawn_blocking(move || {
+                persist_users(&path, &users)
+                    .with_context(|| format!("failed to persist users to {}", path.display()))
+            })
+            .await
+            .context("persist task panicked")??;
         }
         Ok(())
     }
