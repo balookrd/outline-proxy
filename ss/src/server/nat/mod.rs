@@ -40,7 +40,7 @@ mod tests {
     use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
     use crate::{
         config::{CipherKind, Config},
-        crypto::{UdpSession, UserKey},
+        crypto::{UdpCipherMode, UserKey},
         metrics::{Metrics, Protocol},
     };
 
@@ -219,7 +219,7 @@ mod tests {
             let key = key.clone();
             let metrics = Arc::clone(&metrics);
             tasks.push(tokio::spawn(async move {
-                nat_table.get_or_create(key, &user, UdpSession::Legacy, metrics).await
+                nat_table.get_or_create(key, &user, UdpCipherMode::Legacy, metrics).await
             }));
         }
 

@@ -9,22 +9,28 @@ use std::time::Duration;
 use tokio::{io::AsyncWriteExt, sync::mpsc};
 use tracing::{debug, info, warn};
 
-/// Typed marker attached to errors that originate from a failed upstream TCP
-/// connect inside [`handle_tcp_binary_frame`].  [`run_tcp_relay`] checks for
-/// this marker to decide whether to send the client a "try again" close frame
-/// (RFC 6455 code 1013) rather than a plain close or a silent drop, so the
-/// proxy can retry on the same or a different uplink instead of surfacing the
-/// failure to the SOCKS client.
-#[derive(Debug)]
-struct UpstreamConnectFailed;
+/// Failure modes returned by [`handle_tcp_binary_frame`]. [`run_tcp_relay`]
+/// matches on this to decide whether to send the client a "try again" close
+/// frame (RFC 6455 code 1013) — so the client can retry on the same or a
+/// different uplink — or a plain close for terminal errors (auth, protocol).
+enum FrameError {
+    UpstreamConnectFailed(anyhow::Error),
+    Fatal(anyhow::Error),
+}
 
-impl std::fmt::Display for UpstreamConnectFailed {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("upstream tcp connect failed")
+impl FrameError {
+    fn into_inner(self) -> anyhow::Error {
+        match self {
+            Self::UpstreamConnectFailed(e) | Self::Fatal(e) => e,
+        }
     }
 }
 
-impl std::error::Error for UpstreamConnectFailed {}
+impl From<anyhow::Error> for FrameError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Fatal(e)
+    }
+}
 
 use crate::{
     crypto::{
@@ -45,7 +51,7 @@ use super::super::constants::{
 use super::super::dns_cache::DnsCache;
 
 /// Process-wide services shared by every TCP relay session.
-pub(in crate::server) struct TcpServerCtx {
+pub(in crate::server) struct WsTcpServerCtx {
     pub(in crate::server) metrics: Arc<Metrics>,
     pub(in crate::server) dns_cache: Arc<DnsCache>,
     pub(in crate::server) prefer_ipv4_upstream: bool,
@@ -53,21 +59,21 @@ pub(in crate::server) struct TcpServerCtx {
 }
 
 /// Per-path state for a single TCP WebSocket session.
-pub(in crate::server) struct TcpRouteCtx {
+pub(in crate::server) struct WsTcpRouteCtx {
     pub(in crate::server) users: Arc<[UserKey]>,
     pub(in crate::server) protocol: Protocol,
     pub(in crate::server) path: Arc<str>,
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
 }
 
-struct TcpRelayState {
+struct WsTcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
     authenticated_user: Option<UserKey>,
     upstream_guard: Option<TcpUpstreamGuard>,
 }
 
-impl TcpRelayState {
+impl WsTcpRelayState {
     fn new() -> Self {
         Self {
             upstream_writer: None,
@@ -99,8 +105,8 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
 
 async fn run_tcp_relay<T: WsSocket>(
     socket: T,
-    server: &TcpServerCtx,
-    route: &TcpRouteCtx,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
@@ -116,7 +122,7 @@ async fn run_tcp_relay<T: WsSocket>(
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
-    let mut state = TcpRelayState::new();
+    let mut state = WsTcpRelayState::new();
     let mut client_closed = false;
 
     // Periodic WebSocket Ping sent from server to client.
@@ -146,7 +152,7 @@ async fn run_tcp_relay<T: WsSocket>(
                 };
                 match T::classify(msg) {
                     WsFrame::Binary(data) => {
-                        if let Err(err) = handle_tcp_binary_frame(
+                        if let Err(frame_err) = handle_tcp_binary_frame(
                             &mut state,
                             &mut decryptor,
                             &mut plaintext_buffer,
@@ -165,19 +171,15 @@ async fn run_tcp_relay<T: WsSocket>(
                             // send code 1013 "Try Again Later".  Any other error
                             // (auth failure, protocol error) is terminal — send a
                             // generic close so the client can fail fast.
-                            let is_upstream_connect_failure = err
-                                .chain()
-                                .any(|e| e.downcast_ref::<UpstreamConnectFailed>().is_some());
-                            let close_msg = if is_upstream_connect_failure {
-                                T::close_try_again_msg()
-                            } else {
-                                T::close_msg()
+                            let close_msg = match &frame_err {
+                                FrameError::UpstreamConnectFailed(_) => T::close_try_again_msg(),
+                                FrameError::Fatal(_) => T::close_msg(),
                             };
                             let _ = outbound_ctrl_tx.send(close_msg).await;
                             drop(outbound_ctrl_tx);
                             drop(outbound_data_tx);
                             let _ = writer_task.await;
-                            return Err(err);
+                            return Err(frame_err.into_inner());
                         }
                     },
                     WsFrame::Close => {
@@ -234,16 +236,16 @@ async fn run_tcp_relay<T: WsSocket>(
 }
 
 async fn handle_tcp_binary_frame<Msg>(
-    state: &mut TcpRelayState,
+    state: &mut WsTcpRelayState,
     decryptor: &mut AeadStreamDecryptor,
     plaintext_buffer: &mut Vec<u8>,
     data: Bytes,
     outbound_data_tx: &mpsc::Sender<Msg>,
-    server: &TcpServerCtx,
-    route: &TcpRouteCtx,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
-) -> Result<()>
+) -> Result<(), FrameError>
 where
     Msg: Send + 'static,
 {
@@ -259,17 +261,19 @@ where
                 attempts = ?diagnose_stream_handshake(route.users.as_ref(), decryptor.buffered_data()),
                 "tcp authentication failed for all path candidates"
             );
-            return Err(anyhow!(
+            return Err(FrameError::Fatal(anyhow!(
                 "no configured key matched the incoming data on tcp path {} candidates={:?}",
                 route.path,
                 route.candidate_users,
-            ));
+            )));
         },
-        Err(error) => return Err(anyhow!(error)),
+        Err(error) => return Err(FrameError::Fatal(anyhow!(error))),
     }
 
     if state.upstream_writer.is_none() {
-        let Some((target, consumed)) = parse_target_addr(plaintext_buffer)? else {
+        let Some((target, consumed)) = parse_target_addr(plaintext_buffer)
+            .map_err(|e| FrameError::Fatal(anyhow!(e)))?
+        else {
             return Ok(());
         };
         let Some(user) = decryptor.user().cloned() else {
@@ -317,9 +321,10 @@ where
                     error = %error,
                     "websocket tcp upstream connect failed; sending try-again close to client"
                 );
-                return Err(anyhow!(UpstreamConnectFailed))
-                    .with_context(|| format!("failed to connect to {target_display}"))
-                    .with_context(|| format!("{error:#}"));
+                let connect_err = anyhow::Error::msg(format!("{error:#}"))
+                    .context(format!("failed to connect to {target_display}"))
+                    .context("upstream tcp connect failed");
+                return Err(FrameError::UpstreamConnectFailed(connect_err));
             },
         };
         info!(
@@ -331,7 +336,8 @@ where
         );
 
         let (upstream_reader, writer) = stream.into_split();
-        let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())?;
+        let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
+            .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
         let tx = outbound_data_tx.clone();
         let relay_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
@@ -377,16 +383,16 @@ where
 
 pub(super) async fn handle_tcp_connection(
     socket: WebSocket,
-    server: TcpServerCtx,
-    route: TcpRouteCtx,
+    server: WsTcpServerCtx,
+    route: WsTcpRouteCtx,
 ) -> Result<()> {
     run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route).await
 }
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    server: TcpServerCtx,
-    route: TcpRouteCtx,
+    server: WsTcpServerCtx,
+    route: WsTcpRouteCtx,
 ) -> Result<()> {
     run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route).await
 }

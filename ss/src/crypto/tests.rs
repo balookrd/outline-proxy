@@ -7,7 +7,7 @@ use bytes::BytesMut;
 use ring::aead::{Aad, LessSafeKey, UnboundKey};
 
 use super::{
-    AeadStreamDecryptor, AeadStreamEncryptor, UdpSession, UserKey, decrypt_udp_packet,
+    AeadStreamDecryptor, AeadStreamEncryptor, UdpCipherMode, UserKey, decrypt_udp_packet,
     decrypt_udp_packet_with_hint, encrypt_udp_packet, encrypt_udp_packet_for_response,
 };
 use crate::{config::CipherKind, protocol::TargetAddr};
@@ -120,7 +120,7 @@ fn roundtrip_udp_packet() {
 
     assert_eq!(packet.user.id(), "bob");
     assert_eq!(packet.payload, b"udp payload");
-    assert_eq!(packet.session, UdpSession::Legacy);
+    assert_eq!(packet.session, UdpCipherMode::Legacy);
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn hinted_udp_packet_decrypt_falls_back_to_matching_user() {
     assert_eq!(user_index, 1);
     assert_eq!(packet.user.id(), "bob");
     assert_eq!(packet.payload, b"udp payload");
-    assert_eq!(packet.session, UdpSession::Legacy);
+    assert_eq!(packet.session, UdpCipherMode::Legacy);
 }
 
 #[test]
@@ -312,7 +312,7 @@ fn encrypts_ss2022_udp_response() {
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
         b"dns",
-        &UdpSession::Aes2022 { client_session_id: [1; 8] },
+        &UdpCipherMode::Aes2022 { client_session_id: [1; 8] },
         Some([2; 8]),
         0,
     )
@@ -330,7 +330,7 @@ fn encrypts_ss2022_chacha_udp_response() {
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
         b"mdns",
-        &UdpSession::Chacha2022 { client_session_id: [3; 8] },
+        &UdpCipherMode::Chacha2022 { client_session_id: [3; 8] },
         Some([4; 8]),
         0,
     )

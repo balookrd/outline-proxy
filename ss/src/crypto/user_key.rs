@@ -25,7 +25,7 @@ struct CachedCiphers {
 #[derive(Clone)]
 pub struct UserKey {
     id: Arc<str>,
-    candidate_label: Arc<str>,
+    log_label: Arc<str>,
     cipher: CipherKind,
     master_key: Arc<[u8]>,
     fwmark: Option<u32>,
@@ -50,11 +50,11 @@ impl UserKey {
         ws_path_udp: impl Into<String>,
     ) -> Result<Self, CryptoError> {
         let id: Arc<str> = Arc::from(id.into());
-        let candidate_label: Arc<str> =
+        let log_label: Arc<str> =
             Arc::from(format!("{}:{}", &id, cipher.as_str()).as_str());
         Ok(Self {
             id,
-            candidate_label,
+            log_label,
             cipher,
             master_key: Arc::from(password_to_master_key(password, cipher)?),
             fwmark,
@@ -100,8 +100,8 @@ impl UserKey {
         Arc::clone(&self.id)
     }
 
-    pub fn candidate_label(&self) -> Arc<str> {
-        Arc::clone(&self.candidate_label)
+    pub fn log_label(&self) -> Arc<str> {
+        Arc::clone(&self.log_label)
     }
 
     pub fn fwmark(&self) -> Option<u32> {

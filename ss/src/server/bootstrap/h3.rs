@@ -30,7 +30,7 @@ use super::super::{
     },
     state::{AuthPolicy, RouteRegistry, Services, empty_transport_route},
     transport::{
-        TcpRouteCtx, TcpServerCtx, UdpRouteCtx, UdpServerCtx,
+        WsTcpRouteCtx, WsTcpServerCtx, UdpRouteCtx, UdpServerCtx,
         finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
     },
 };
@@ -334,13 +334,13 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = ctx.services.metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
-        let server = TcpServerCtx {
+        let server = WsTcpServerCtx {
             metrics: ctx.services.metrics.clone(),
             dns_cache: Arc::clone(&ctx.services.dns_cache),
             prefer_ipv4_upstream: ctx.services.prefer_ipv4_upstream,
             outbound_ipv6: ctx.services.outbound_ipv6.clone(),
         };
-        let route_ctx = TcpRouteCtx {
+        let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),

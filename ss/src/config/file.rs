@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
-use super::{CipherKind, TuningOverrides, TuningProfileKind, UserEntry};
+use super::{CipherKind, TuningOverrides, TuningPreset, UserEntry};
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -41,7 +41,7 @@ pub(super) struct FileConfig {
     pub fwmark: Option<u32>,
     pub users: Option<Vec<UserEntry>>,
     pub method: Option<CipherKind>,
-    pub tuning_profile: Option<TuningProfileKind>,
+    pub tuning_profile: Option<TuningPreset>,
     #[serde(default)]
     pub tuning: Option<TuningOverrides>,
 }
@@ -115,7 +115,7 @@ h3_max_concurrent_bidi_streams = 128
 
         assert_eq!(
             config.tuning_profile,
-            Some(super::TuningProfileKind::Medium),
+            Some(super::TuningPreset::Medium),
         );
         let tuning = config.tuning.unwrap();
         assert_eq!(tuning.h3_udp_socket_buffer_bytes, Some(2_097_152));
