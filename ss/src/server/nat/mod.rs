@@ -21,6 +21,7 @@ mod socket;
 mod table;
 
 pub(crate) use entry::{NatKey, ResponseSender, UdpResponseSender};
+pub(crate) use socket::bind_nat_udp_socket;
 pub(crate) use table::NatTable;
 
 #[cfg(test)]
