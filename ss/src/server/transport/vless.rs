@@ -27,6 +27,7 @@ use super::{
         dns_cache::DnsCache,
         nat::bind_nat_udp_socket,
     },
+    vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState},
     ws_socket::{AxumWs, WsFrame, WsSocket},
     ws_writer,
 };
@@ -52,6 +53,7 @@ enum UpstreamSession {
     None,
     Tcp(tokio::net::tcp::OwnedWriteHalf),
     Udp(Arc<UdpSocket>),
+    Mux(MuxState),
 }
 
 struct VlessRelayState {
@@ -161,9 +163,12 @@ async fn run_vless_relay<T: WsSocket>(
         }
     }
 
-    match state.upstream {
-        UpstreamSession::Tcp(mut upstream) => {
+    match &mut state.upstream {
+        UpstreamSession::Tcp(upstream) => {
             upstream.shutdown().await.ok();
+        },
+        UpstreamSession::Mux(mux) => {
+            mux.shutdown().await;
         },
         UpstreamSession::Udp(_) | UpstreamSession::None => {},
     }
@@ -227,6 +232,27 @@ where
             )
             .await;
         },
+        UpstreamSession::Mux(mux) => {
+            let mux_server = MuxServerCtx {
+                dns_cache: Arc::clone(&server.dns_cache),
+                prefer_ipv4_upstream: server.prefer_ipv4_upstream,
+                outbound_ipv6: server.outbound_ipv6.clone(),
+                metrics: Arc::clone(&server.metrics),
+            };
+            let mux_route = MuxRouteCtx {
+                protocol: route.protocol,
+                path: Arc::clone(&route.path),
+            };
+            return vless_mux::handle_client_bytes(
+                mux,
+                &data,
+                &mux_server,
+                &mux_route,
+                outbound.data_tx,
+                outbound.make_binary,
+            )
+            .await;
+        },
         UpstreamSession::None => {},
     }
 
@@ -280,7 +306,60 @@ where
         VlessCommand::Udp => {
             establish_vless_udp_upstream(state, request, user, server, route, outbound).await
         },
+        VlessCommand::Mux => {
+            establish_vless_mux_upstream(state, request, user, server, route, outbound).await
+        },
     }
+}
+
+async fn establish_vless_mux_upstream<Msg>(
+    state: &mut VlessRelayState,
+    request: vless::VlessRequest,
+    user: VlessUser,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+    outbound: VlessWsOutbound<'_, Msg>,
+) -> Result<()>
+where
+    Msg: Send + 'static,
+{
+    info!(user = user.label(), path = %route.path, "vless mux session (xudp)");
+
+    outbound
+        .data_tx
+        .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+        .await
+        .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
+
+    let mut mux = MuxState::new(user.clone());
+    state.authenticated_user = Some(user);
+
+    let leftover = state.header_buffer.split_off(request.consumed);
+    state.header_buffer.clear();
+    if !leftover.is_empty() {
+        let mux_server = MuxServerCtx {
+            dns_cache: Arc::clone(&server.dns_cache),
+            prefer_ipv4_upstream: server.prefer_ipv4_upstream,
+            outbound_ipv6: server.outbound_ipv6.clone(),
+            metrics: Arc::clone(&server.metrics),
+        };
+        let mux_route = MuxRouteCtx {
+            protocol: route.protocol,
+            path: Arc::clone(&route.path),
+        };
+        vless_mux::handle_client_bytes(
+            &mut mux,
+            &leftover,
+            &mux_server,
+            &mux_route,
+            outbound.data_tx,
+            outbound.make_binary,
+        )
+        .await?;
+    }
+
+    state.upstream = UpstreamSession::Mux(mux);
+    Ok(())
 }
 
 async fn establish_vless_tcp_upstream<Msg>(

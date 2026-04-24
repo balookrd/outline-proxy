@@ -3,6 +3,7 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use thiserror::Error;
 
 pub mod vless;
+pub mod vless_mux;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetAddr {
