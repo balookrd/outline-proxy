@@ -66,6 +66,7 @@ pub(super) struct DashboardFileConfig {
     pub enabled: Option<bool>,
     pub listen: Option<SocketAddr>,
     pub request_timeout_secs: Option<u64>,
+    pub refresh_interval_secs: Option<u64>,
     #[serde(default)]
     pub instances: Option<Vec<DashboardInstanceFileConfig>>,
 }

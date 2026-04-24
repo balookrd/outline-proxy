@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -456,11 +456,6 @@
       text-transform:uppercase;
       background:var(--panel);
     }
-    th:first-child,
-    td:first-child {
-      width:24%;
-      min-width:180px;
-    }
     td {
       padding:13px 18px;
       border-top:1px solid var(--line);
@@ -525,13 +520,13 @@
     }
 
     .row-actions button {
-      min-height:34px;
-      padding:0 12px;
-      border-radius:11px;
+      min-height:26px;
+      padding:0 9px;
+      border-radius:8px;
       border:1px solid var(--line);
       background:var(--panel);
       color:var(--muted);
-      font-size:13px;
+      font-size:11px;
       font-weight:700;
     }
     .row-actions button:hover {
@@ -705,15 +700,15 @@
           <div class="brand-subtitle">outline-ss-rust control</div>
         </div>
       </div>
-      <nav class="nav" aria-label="Навигация">
+      <nav class="nav" aria-label="Navigation">
         <button class="nav-item active" type="button"><span class="nav-icon">□</span><span>Instances</span></button>
         <button class="nav-item" type="button"><span class="nav-icon">◉</span><span>Alerts</span></button>
         <button class="nav-item" type="button"><span class="nav-icon">▤</span><span>Logs</span></button>
         <button class="nav-item" type="button"><span class="nav-icon">⚙</span><span>Settings</span></button>
       </nav>
       <div class="sidebar-foot">
-        <div class="sidebar-foot-title">Секреты остаются на сервере</div>
-        <div class="sidebar-foot-copy">Dashboard работает через server-side proxy. Bearer-токены control API не попадают в браузерный JS.</div>
+        <div class="sidebar-foot-title">Secrets stay on the server</div>
+        <div class="sidebar-foot-copy">Dashboard talks through a server-side proxy. Control API bearer tokens never reach browser JS.</div>
       </div>
     </aside>
 
@@ -721,12 +716,12 @@
       <section class="topbar">
         <div class="headline">
           <h1>Instances</h1>
-          <p>Управление runtime users, access URL и состоянием инстансов через `/control`.</p>
+          <p>Manage runtime users, access URLs, and instance state through `/control`.</p>
         </div>
         <div class="toolbar">
           <div class="updated">◌ Last updated: <strong id="updatedAt">--:--:--</strong></div>
           <button class="toggle-chip" id="refreshButton" type="button"><span class="dot"></span><span>Auto</span></button>
-          <button class="theme-btn" id="themeToggle" type="button" aria-label="Переключить день и ночь">☾</button>
+          <button class="theme-btn" id="themeToggle" type="button" aria-label="Toggle day and night">☾</button>
         </div>
       </section>
 
@@ -762,21 +757,21 @@
       </section>
 
       <section class="control-bar">
-        <select class="select" id="instanceSelect" aria-label="Сервер"></select>
+        <select class="select" id="instanceSelect" aria-label="Server"></select>
         <div class="status" id="statusText"></div>
-        <button class="btn secondary" id="loadButton" type="button">Обновить</button>
-        <button class="btn" id="openCreateButton" type="button">+ Новый пользователь</button>
+        <button class="btn secondary" id="loadButton" type="button">Refresh</button>
+        <button class="btn" id="openCreateButton" type="button">+ New user</button>
       </section>
 
       <section class="filters">
-        <input class="input" id="searchInput" type="search" placeholder="Поиск по id, пути или методу">
+        <input class="input" id="searchInput" type="search" placeholder="Search by id, path, or method">
         <select class="select" id="statusFilter">
-          <option value="all">Все статусы</option>
-          <option value="enabled">Активные</option>
-          <option value="blocked">Заблокированные</option>
+          <option value="all">All statuses</option>
+          <option value="enabled">Active</option>
+          <option value="blocked">Blocked</option>
         </select>
         <select class="select" id="transportFilter">
-          <option value="all">Все транспорты</option>
+          <option value="all">All transports</option>
           <option value="ss">Shadowsocks</option>
           <option value="vless">VLESS</option>
         </select>
@@ -787,7 +782,7 @@
           <div class="table-title">
             <span class="table-dot" aria-hidden="true"></span>
             <strong id="instanceLabel">users</strong>
-            <span id="instanceMeta">Пользователи выбранного сервера</span>
+            <span id="instanceMeta">Users of the selected server</span>
           </div>
           <div class="table-head-actions">
             <span class="badge soft">Mode: Active / Passive</span>
@@ -799,15 +794,15 @@
           <thead>
             <tr>
               <th>ID</th>
-              <th>Статус</th>
-              <th>Метод</th>
-              <th>Пути</th>
-              <th>Действия</th>
+              <th>Status</th>
+              <th>Method</th>
+              <th>Paths</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody id="usersTable"></tbody>
         </table>
-        <div class="empty" id="emptyState">Загрузите пользователей выбранного сервера.</div>
+        <div class="empty" id="emptyState">Load users for the selected server.</div>
       </section>
     </main>
   </div>
@@ -815,8 +810,8 @@
   <div class="drawer-backdrop" id="drawerBackdrop">
     <aside class="drawer">
       <div class="drawer-head">
-        <div class="drawer-title" id="drawerTitle">Новый пользователь</div>
-        <button class="icon-btn" id="closeDrawerButton" type="button" aria-label="Закрыть">×</button>
+        <div class="drawer-title" id="drawerTitle">New user</div>
+        <button class="icon-btn" id="closeDrawerButton" type="button" aria-label="Close">×</button>
       </div>
       <form class="form" id="createForm">
         <label class="field">
@@ -826,7 +821,7 @@
         <div class="two">
           <label class="field">
             <span class="label">Password</span>
-            <input class="input" name="password" type="password" autocomplete="new-password" placeholder="для Shadowsocks">
+            <input class="input" name="password" type="password" autocomplete="new-password" placeholder="for Shadowsocks">
           </label>
           <label class="field">
             <span class="label">VLESS UUID</span>
@@ -834,7 +829,7 @@
           </label>
         </div>
         <label class="field">
-          <span class="label">Метод</span>
+          <span class="label">Method</span>
           <select class="select" name="method">
             <option value="">default</option>
             <option value="aes-128-gcm">aes-128-gcm</option>
@@ -866,10 +861,10 @@
           </label>
           <label class="check"><input name="enabled" type="checkbox" checked>enabled</label>
         </div>
-        <div class="help" id="formHelp">Нужен password или vless_id. Новые пути должны уже быть зарегистрированы при старте целевого сервера.</div>
+        <div class="help" id="formHelp">password or vless_id is required. New paths must already be registered when the target server starts.</div>
         <div class="drawer-actions">
-          <button class="btn secondary" id="cancelCreateButton" type="button">Отмена</button>
-          <button class="btn" id="submitUserButton" type="submit">Создать</button>
+          <button class="btn secondary" id="cancelCreateButton" type="button">Cancel</button>
+          <button class="btn" id="submitUserButton" type="submit">Create</button>
         </div>
       </form>
     </aside>
@@ -879,7 +874,7 @@
 
   <script>
     const THEME_KEY = "outline-ss-dashboard-theme";
-    const state = { users: [], busy: false, instances: [], editingId: null, autoRefresh: true };
+    const state = { users: [], busy: false, instances: [], editingId: null, autoRefresh: true, refreshIntervalSecs: 10, refreshTimer: null };
     const el = Object.fromEntries(["instanceSelect","loadButton","refreshButton","openCreateButton","closeDrawerButton","cancelCreateButton","drawerBackdrop","drawerTitle","formHelp","submitUserButton","createForm","usersTable","emptyState","searchInput","statusFilter","transportFilter","statusText","totalCount","activeCount","transportCount","lastAction","instanceLabel","instanceMeta","tableHealth","updatedAt","themeToggle","toast"].map(id => [id, document.getElementById(id)]));
 
     function selectedInstance(){ return el.instanceSelect.value; }
@@ -893,7 +888,7 @@
     function applyTheme(theme){
       document.body.dataset.theme = theme;
       el.themeToggle.textContent = theme === "dark" ? "☀" : "☾";
-      el.themeToggle.title = theme === "dark" ? "Переключить на дневную тему" : "Переключить на ночную тему";
+      el.themeToggle.title = theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
       localStorage.setItem(THEME_KEY, theme);
     }
 
@@ -903,7 +898,7 @@
 
     function markUpdated(){
       const now = new Date();
-      el.updatedAt.textContent = now.toLocaleTimeString("ru-RU", { hour12:false });
+      el.updatedAt.textContent = now.toLocaleTimeString("en-GB", { hour12:false });
     }
 
     function setBusy(busy){
@@ -1006,16 +1001,16 @@
           <td>${paths.length ? paths.map(path => `<div class="mono">${esc(path)}</div>`).join("") : '<span class="subtle">default paths</span>'}</td>
           <td>
             <div class="row-actions">
-              ${actionButton("Редактировать", "edit", user.id)}
-              ${actionButton(user.enabled ? "Блок" : "Разблок", action, user.id, user.enabled ? "" : "primary")}
-              ${actionButton("Удалить", "delete", user.id, "danger")}
+              ${actionButton("Edit", "edit", user.id)}
+              ${actionButton(user.enabled ? "Block" : "Unblock", action, user.id, user.enabled ? "" : "primary")}
+              ${actionButton("Delete", "delete", user.id, "danger")}
             </div>
           </td>
         </tr>`;
       }).join("");
       el.emptyState.style.display = rows.length ? "none" : "block";
-      el.emptyState.textContent = state.users.length ? "Под текущие фильтры никто не попал." : "Пользователей пока нет.";
-      el.instanceMeta.textContent = selectedInstance() ? "Пользователи выбранного сервера" : "Выберите сервер для загрузки";
+      el.emptyState.textContent = state.users.length ? "No users match the current filters." : "No users yet.";
+      el.instanceMeta.textContent = selectedInstance() ? "Users of the selected server" : "Select a server to load";
     }
 
     function statusChip(enabled){
@@ -1025,14 +1020,18 @@
     async function loadInstances(){
       const data = await fetch("/dashboard/api/instances").then(res => res.json());
       state.instances = data.instances || [];
+      if(Number.isFinite(data.refresh_interval_secs) && data.refresh_interval_secs > 0){
+        state.refreshIntervalSecs = data.refresh_interval_secs;
+      }
       el.instanceSelect.innerHTML = state.instances.map(server => `<option value="${esc(server.name)}">${esc(server.name)} · ${esc(server.control_url)}</option>`).join("");
       el.instanceLabel.textContent = state.instances[0] ? state.instances[0].name : "users";
-      if(!state.instances.length) setStatus("В dashboard.instances нет инстансов.", "error");
+      if(!state.instances.length) setStatus("No instances in dashboard.instances.", "error");
+      scheduleAutoRefresh();
     }
 
     async function loadUsers(){
       if(!selectedInstance()){
-        setStatus("Выберите сервер.", "error");
+        setStatus("Select a server.", "error");
         return;
       }
       setBusy(true);
@@ -1040,7 +1039,7 @@
         const data = await api("/dashboard/api/users");
         state.users = Array.isArray(data.users) ? data.users : [];
         el.instanceLabel.textContent = selectedInstance();
-        setStatus("Загружено: " + state.users.length + ".", "ok");
+        setStatus("Loaded: " + state.users.length + ".", "ok");
         markUpdated();
         renderUsers();
       } catch (error) {
@@ -1075,7 +1074,7 @@
       const editing = Boolean(state.editingId);
       const data = payload(event.currentTarget, editing);
       if(!editing && !data.password && !data.vless_id){
-        showToast("Нужен password или vless_id.");
+        showToast("password or vless_id is required.");
         return;
       }
       setBusy(true);
@@ -1085,7 +1084,7 @@
         el.lastAction.textContent = user.id + (editing ? " updated" : " created");
         closeDrawer();
         await loadUsers();
-        showToast(editing ? "Пользователь обновлён." : "Пользователь создан.");
+        showToast(editing ? "User updated." : "User created.");
       } catch (error) {
         setStatus(error.message, "error");
         showToast(error.message);
@@ -1095,7 +1094,7 @@
     }
 
     async function copyText(text){
-      if(!text) throw new Error("URL не настроен.");
+      if(!text) throw new Error("URL is not configured.");
       if(navigator.clipboard && window.isSecureContext){
         await navigator.clipboard.writeText(text);
         return;
@@ -1109,7 +1108,7 @@
       area.select();
       const ok = document.execCommand("copy");
       area.remove();
-      if(!ok) throw new Error("Не удалось скопировать URL.");
+      if(!ok) throw new Error("Failed to copy the URL.");
     }
 
     async function copyAccessUrl(id, action){
@@ -1120,7 +1119,7 @@
         const urls = await api("/dashboard/api/users/" + encodeURIComponent(id) + "/access-urls");
         await copyText(urls && urls[field]);
         el.lastAction.textContent = label;
-        showToast(label + " скопирован.");
+        showToast(label + " copied.");
       } catch (error) {
         setStatus(error.message, "error");
         showToast(error.message);
@@ -1130,7 +1129,7 @@
     }
 
     async function mutate(id, action){
-      if(action === "delete" && !confirm("Удалить пользователя " + id + "?")) return;
+      if(action === "delete" && !confirm("Delete user " + id + "?")) return;
       setBusy(true);
       try {
         if(action === "delete"){
@@ -1151,9 +1150,9 @@
 
     function openDrawer(){
       state.editingId = null;
-      el.drawerTitle.textContent = "Новый пользователь";
-      el.submitUserButton.textContent = "Создать";
-      el.formHelp.textContent = "Нужен password или vless_id. Новые пути должны уже быть зарегистрированы при старте целевого сервера.";
+      el.drawerTitle.textContent = "New user";
+      el.submitUserButton.textContent = "Create";
+      el.formHelp.textContent = "password or vless_id is required. New paths must already be registered when the target server starts.";
       el.createForm.reset();
       el.createForm.elements.id.disabled = false;
       el.createForm.elements.enabled.checked = true;
@@ -1165,14 +1164,14 @@
       const user = state.users.find(item => item.id === id);
       if(!user) return;
       state.editingId = id;
-      el.drawerTitle.textContent = "Редактировать пользователя";
-      el.submitUserButton.textContent = "Сохранить";
-      el.formHelp.textContent = "Password и VLESS UUID оставьте пустыми, если их не нужно менять. Пустые method, fwmark и path вернут default.";
+      el.drawerTitle.textContent = "Edit user";
+      el.submitUserButton.textContent = "Save";
+      el.formHelp.textContent = "Leave Password and VLESS UUID empty to keep them unchanged. Empty method, fwmark, and path reset to default.";
       el.createForm.reset();
       el.createForm.elements.id.value = user.id;
       el.createForm.elements.id.disabled = true;
-      el.createForm.elements.password.placeholder = user.has_password ? "оставить текущий пароль" : "добавить Shadowsocks password";
-      el.createForm.elements.vless_id.placeholder = user.has_vless_id ? "оставить текущий UUID" : "добавить VLESS UUID";
+      el.createForm.elements.password.placeholder = user.has_password ? "keep current password" : "add Shadowsocks password";
+      el.createForm.elements.vless_id.placeholder = user.has_vless_id ? "keep current UUID" : "add VLESS UUID";
       el.createForm.elements.method.value = user.method || "";
       el.createForm.elements.ws_path_tcp.value = user.ws_path_tcp || "";
       el.createForm.elements.ws_path_udp.value = user.ws_path_udp || "";
@@ -1193,6 +1192,20 @@
       state.autoRefresh = !state.autoRefresh;
       el.refreshButton.querySelector("span:last-child").textContent = state.autoRefresh ? "Auto" : "Manual";
       el.refreshButton.querySelector(".dot").style.background = state.autoRefresh ? "var(--ok)" : "var(--warn)";
+      scheduleAutoRefresh();
+    }
+
+    function scheduleAutoRefresh(){
+      if(state.refreshTimer){
+        clearInterval(state.refreshTimer);
+        state.refreshTimer = null;
+      }
+      if(!state.autoRefresh || !state.instances.length) return;
+      state.refreshTimer = setInterval(() => {
+        if(state.busy || document.hidden || el.drawerBackdrop.classList.contains("open")) return;
+        if(!selectedInstance()) return;
+        loadUsers();
+      }, Math.max(1, state.refreshIntervalSecs) * 1000);
     }
 
     applyTheme(getPreferredTheme());

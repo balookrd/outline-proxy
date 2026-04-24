@@ -34,6 +34,7 @@ metrics_path = "/metrics"
 # [dashboard]
 # listen = "127.0.0.1:7002"
 # request_timeout_secs = 15
+# refresh_interval_secs = 10
 #
 # [[dashboard.instances]]
 # name = "local"

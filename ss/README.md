@@ -224,6 +224,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control instances without exposing tokens to the browser |
 | `dashboard.listen` | Socket address for the dashboard listener, e.g. `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
+| `dashboard.refresh_interval_secs` | Auto-refresh interval for the dashboard UI, in seconds. Default: `10` |
 | `dashboard.instances[].name` | Display name for a managed instance |
 | `dashboard.instances[].control_url` | Base `http://` or `https://` URL of that instance's control listener |
 | `dashboard.instances[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
@@ -289,6 +290,7 @@ The same feature can also serve a browser dashboard on a separate listener. The 
 [dashboard]
 listen = "127.0.0.1:7002"
 request_timeout_secs = 15
+refresh_interval_secs = 10
 
 [[dashboard.instances]]
 name = "local"
