@@ -61,6 +61,9 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         outbound_ipv6.clone(),
     );
+    // Replay TTL is intentionally tied to NAT idle timeout: both bound the window of
+    // a single client session's activity, so a replayed handshake is rejected for at
+    // least as long as its NAT entry could still be live. Keep these two in sync.
     let replay_store =
         ReplayStore::new(Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs));
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
