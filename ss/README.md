@@ -345,9 +345,9 @@ h3_key_path = "/etc/outline-ss-rust/tls/privkey.pem"
 
 HTTP/3 always requires TLS and UDP reachability on the selected port.
 
-## Outline Client Access Keys
+## Client Config Generation
 
-Outline WebSocket clients use dynamic access keys that point to a YAML configuration document rather than a simple `ss://` URI.
+Shadowsocks WebSocket clients use dynamic access keys that point to a YAML configuration document rather than a simple `ss://` URI. VLESS users get importable `vless://` client links.
 
 Generate them with:
 
@@ -357,7 +357,7 @@ cargo run -- \
   --config ./config.toml
 ```
 
-Or write one YAML file per user into a directory:
+Or write one config file per generated protocol/user pair into a directory:
 
 ```bash
 cargo run -- \
@@ -365,23 +365,36 @@ cargo run -- \
   --config ./config.toml
 ```
 
-For each user the server prints:
+For each Shadowsocks user the server prints:
 
 - a YAML transport config
 - a suggested filename such as `alice.yaml`
 - a `config_url`
 - an `ssconf://` access key URL
 
-When `write_access_keys_dir` is set, the server writes the YAML files to that directory and prints the absolute file path for each generated client config.
+For each VLESS user the server prints:
+
+- a `vless://` URI suitable for Happ, v2rayNG, and Hiddify
+- a suggested filename such as `alice-vless.yaml`
+- an optional `config_url` when `access_key_url_base` is set
+
+When `write_access_keys_dir` is set, the server writes the config files to that directory and prints the absolute file path for each generated client config. A user with both `password` and `vless_id` produces two files.
 
 The generated filename extension defaults to `.yaml`, but can be changed with `access_key_file_extension`, for example `.txt` or `.conf`.
 
-The generated YAML automatically reflects:
+The generated Shadowsocks YAML automatically reflects:
 
 - the effective user cipher
 - the effective TCP path
 - the effective UDP path
 - the global public host and scheme
+
+The generated VLESS URI automatically reflects:
+
+- `vless_id`
+- `vless_ws_path`
+- the global public host and scheme
+- `security=tls` for `public_scheme = "wss"` and `security=none` for `ws`
 
 ## Observability
 

@@ -181,7 +181,7 @@ impl AppMode {
 }
 
 impl Config {
-    pub fn user_entries(&self) -> Result<Vec<UserEntry>, ConfigError> {
+    pub fn effective_users(&self) -> Result<Vec<UserEntry>, ConfigError> {
         let mut users = self.users.clone();
         if let Some(password) = &self.password {
             users.push(UserEntry {
@@ -209,7 +209,15 @@ impl Config {
             }
         }
 
-        Ok(users.into_iter().filter(|user| user.password.is_some()).collect())
+        Ok(users)
+    }
+
+    pub fn user_entries(&self) -> Result<Vec<UserEntry>, ConfigError> {
+        Ok(self
+            .effective_users()?
+            .into_iter()
+            .filter(|user| user.password.is_some())
+            .collect())
     }
 
     pub fn h3_enabled(&self) -> bool {
