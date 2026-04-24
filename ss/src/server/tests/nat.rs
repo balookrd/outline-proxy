@@ -27,8 +27,8 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::{
-    DnsCache, SsUdpCtx, build_app, build_user_routes, build_users, serve_h3_server,
-    serve_ss_udp_socket,
+    DnsCache, Services, SsUdpCtx, UdpServices, build_app, build_user_routes, build_users,
+    serve_h3_server, serve_ss_udp_socket,
 };
 use super::{
     build_test_state, recv_decrypted_udp_response, sample_config, send_encrypted_udp_request,
@@ -65,14 +65,20 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
     let users = build_users(&config)?;
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
-    let ctx = SsUdpCtx {
-        users,
+    let services = Arc::new(Services {
         metrics,
-        nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-        replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
         prefer_ipv4_upstream: false,
-    };
+        outbound_ipv6: None,
+        udp: UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(
+                300,
+            )),
+            relay_semaphore: None,
+        },
+    });
+    let ctx = SsUdpCtx { users, services };
     let server =
         tokio::spawn(
             async move { serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await },

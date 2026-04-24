@@ -11,25 +11,21 @@ use tracing::{debug, info, warn};
 
 use crate::{
     crypto::{AeadStreamEncryptor, UserKey},
-    metrics::{Metrics, Protocol},
-    outbound::OutboundIpv6,
+    metrics::Protocol,
 };
 
 use super::super::{
     connect::{configure_tcp_stream, connect_tcp_target},
     constants::SS_MAX_CONCURRENT_TCP_CONNECTIONS,
-    dns_cache::DnsCache,
     shutdown::ShutdownSignal,
+    state::Services,
     transport::is_expected_ws_close,
 };
 use super::handshake::ss_tcp_handshake;
 
 pub(in super::super) struct SsTcpCtx {
     pub(in super::super) users: Arc<[UserKey]>,
-    pub(in super::super) metrics: Arc<Metrics>,
-    pub(in super::super) dns_cache: Arc<DnsCache>,
-    pub(in super::super) prefer_ipv4_upstream: bool,
-    pub(in super::super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    pub(in super::super) services: Arc<Services>,
 }
 
 pub(in super::super) async fn serve_ss_tcp_listener(
@@ -100,16 +96,16 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         "socket tcp starting upstream connect"
     );
     let upstream_stream = match connect_tcp_target(
-        ctx.dns_cache.as_ref(),
+        ctx.services.dns_cache.as_ref(),
         &handshake.target,
         handshake.user.fwmark(),
-        ctx.prefer_ipv4_upstream,
-        ctx.outbound_ipv6.as_deref(),
+        ctx.services.prefer_ipv4_upstream,
+        ctx.services.outbound_ipv6.as_deref(),
     )
     .await
     {
         Ok(stream) => {
-            ctx.metrics.record_tcp_connect(
+            ctx.services.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "success",
@@ -118,7 +114,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             stream
         },
         Err(error) => {
-            ctx.metrics.record_tcp_connect(
+            ctx.services.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "error",
@@ -156,7 +152,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         peer_addr,
         target: target_display,
     };
-    let relay_metrics = ctx.metrics.clone();
+    let relay_metrics = ctx.services.metrics.clone();
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = tokio::spawn(async move {
         super::super::relay::relay_upstream_to_client(
@@ -169,9 +165,11 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         )
         .await
     });
-    ctx.metrics
+    ctx.services
+        .metrics
         .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
     let upstream_guard = ctx
+        .services
         .metrics
         .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
 
@@ -180,7 +178,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         handshake.decryptor,
         handshake.initial_payload,
         upstream_writer,
-        ctx.metrics.clone(),
+        ctx.services.metrics.clone(),
         Protocol::Socket,
         user_id,
     )

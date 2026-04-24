@@ -130,7 +130,7 @@ pub async fn run(config: Config) -> Result<()> {
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,
         prefer_ipv4_upstream = config.prefer_ipv4_upstream,
-        outbound_ipv6 = ?built.outbound_ipv6.as_deref().map(|o| o.to_string()),
+        outbound_ipv6 = ?built.services.outbound_ipv6.as_deref().map(|o| o.to_string()),
         "websocket shadowsocks server listening",
     );
 
@@ -150,7 +150,8 @@ pub async fn run(config: Config) -> Result<()> {
         );
     }
     if let Some(metrics_listener) = bound.metrics_listener {
-        let metrics_app = build_metrics_app(built.metrics.clone(), config.metrics_path.clone());
+        let metrics_app =
+            build_metrics_app(built.services.metrics.clone(), config.metrics_path.clone());
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await
@@ -159,10 +160,7 @@ pub async fn run(config: Config) -> Result<()> {
     if let Some(listener) = bound.ss_tcp_listener {
         let ctx = SsTcpCtx {
             users: built.users.clone(),
-            metrics: built.metrics.clone(),
-            dns_cache: Arc::clone(&built.dns_cache),
-            prefer_ipv4_upstream: config.prefer_ipv4_upstream,
-            outbound_ipv6: built.outbound_ipv6.clone(),
+            services: Arc::clone(&built.services),
         };
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move { serve_ss_tcp_listener(listener, ctx, shutdown).await });
@@ -170,11 +168,7 @@ pub async fn run(config: Config) -> Result<()> {
     if let Some(socket) = bound.ss_udp_socket {
         let ctx = SsUdpCtx {
             users: built.users.clone(),
-            metrics: built.metrics.clone(),
-            nat_table: Arc::clone(&built.nat_table),
-            replay_store: Arc::clone(&built.replay_store),
-            dns_cache: Arc::clone(&built.dns_cache),
-            prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+            services: Arc::clone(&built.services),
         };
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move { serve_ss_udp_socket(socket, ctx, shutdown).await });
