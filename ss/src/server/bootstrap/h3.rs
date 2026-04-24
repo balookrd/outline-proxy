@@ -1,85 +1,39 @@
-use super::auth::{
-    ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response, build_root_http_auth_challenge_response,
-    build_root_http_auth_forbidden_response, build_root_http_auth_success_response,
-    parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
-};
-use super::connect::configure_tcp_stream;
-use super::shutdown::ShutdownSignal;
-use super::transport::{
-    finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
-    metrics_handler, not_found_handler, root_http_auth_handler,
-};
-use std::{collections::BTreeSet, fs, path::Path, sync::{Arc, OnceLock}};
+use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
-use axum::{
-    Router,
-    http::{self, Method, StatusCode},
-    routing::any,
-    serve::ListenerExt,
-};
+use axum::http::{self, Method, StatusCode};
 use bytes::Bytes;
 use h3::server::Connection as H3Connection;
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo, TokioTimer},
-    server::conn::auto::Builder as HyperBuilder,
-    service::TowerToHyperService,
-};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sockudo_ws::{
     Config as H3WebSocketConfig, ExtendedConnectRequest as H3ExtendedConnectRequest,
     Http3 as H3Transport, Role as H3Role, Stream as H3Stream,
     WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
     build_extended_connect_error, build_extended_connect_response,
 };
-use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet, time::Duration};
-use tokio_rustls::TlsAcceptor;
+use tokio::time::Duration;
 use tracing::{debug, warn};
 
 use crate::{
     config::{Config, TuningProfile},
     crypto::UserKey,
-    metrics::{Metrics, Protocol, Transport},
+    metrics::{Protocol, Transport},
 };
 
-use super::constants::{
-    H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, H3_MAX_UDP_PAYLOAD_SIZE,
-    H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS, TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
-    TLS_MAX_CONCURRENT_CONNECTIONS,
+use super::super::{
+    auth::{
+        ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response, build_root_http_auth_challenge_response,
+        build_root_http_auth_forbidden_response, build_root_http_auth_success_response,
+        parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
+    },
+    constants::{
+        H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+    },
+    state::{AuthPolicy, RouteRegistry, Services, empty_transport_route},
+    transport::{finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown},
 };
-use super::state::{AppState, AuthPolicy, RouteRegistry, Services, empty_transport_route};
-use super::transport::{tcp_websocket_upgrade, udp_websocket_upgrade};
+use super::tls::load_h3_tls_config;
 
-pub(super) fn build_app(
-    routes: Arc<RouteRegistry>,
-    services: Arc<Services>,
-    auth: Arc<AuthPolicy>,
-) -> Router {
-    let mut router = Router::new();
-
-    if auth.http_root_auth {
-        router = router.route("/", any(root_http_auth_handler));
-    }
-
-    for path in routes.tcp.keys() {
-        router = router.route(path, any(tcp_websocket_upgrade));
-    }
-
-    for path in routes.udp.keys() {
-        router = router.route(path, any(udp_websocket_upgrade));
-    }
-
-    let state = AppState { routes, services, auth };
-    router.fallback(any(not_found_handler)).with_state(state)
-}
-
-pub(super) fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {
-    Router::new()
-        .route(&metrics_path, any(metrics_handler))
-        .with_state(metrics)
-}
-
-pub(super) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transport>> {
+pub(in crate::server) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transport>> {
     let listen = config
         .effective_h3_listen()
         .ok_or_else(|| anyhow!("h3 server requested without tls configuration"))?;
@@ -203,26 +157,12 @@ fn bind_h3_udp_socket(
     Ok(socket)
 }
 
-pub(super) async fn serve_tcp_listener(
-    listener: TcpListener,
-    app: Router,
-    config: Arc<Config>,
-    shutdown: ShutdownSignal,
-) -> Result<()> {
-    if config.tcp_tls_enabled() {
-        let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(listener, app, acceptor, config.tuning, shutdown).await
-    } else {
-        serve_listener(listener, app, shutdown).await
-    }
-}
-
-pub(super) async fn serve_h3_server(
+pub(in crate::server) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
     routes: Arc<RouteRegistry>,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
-    mut shutdown: ShutdownSignal,
+    mut shutdown: super::super::shutdown::ShutdownSignal,
 ) -> Result<()> {
     let tcp_paths: Arc<BTreeSet<String>> =
         Arc::new(routes.tcp.keys().cloned().collect::<BTreeSet<_>>());
@@ -472,263 +412,5 @@ fn h3_http_response(
             }
         },
         None => build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ()),
-    }
-}
-
-fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
-    let cert_path = config
-        .h3_cert_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("missing h3_cert_path"))?;
-    let key_path = config
-        .h3_key_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("missing h3_key_path"))?;
-
-    load_server_tls_config(cert_path, key_path, &[b"h3".as_slice()])
-        .context("failed to build HTTP/3 TLS config")
-}
-
-fn build_tcp_tls_acceptor(config: &Config) -> Result<TlsAcceptor> {
-    let cert_path = config
-        .tls_cert_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("missing tls_cert_path"))?;
-    let key_path = config
-        .tls_key_path
-        .as_deref()
-        .ok_or_else(|| anyhow!("missing tls_key_path"))?;
-
-    let tls_config =
-        load_server_tls_config(cert_path, key_path, &[b"h2".as_slice(), b"http/1.1".as_slice()])
-            .context("failed to build TCP TLS config")?;
-
-    Ok(TlsAcceptor::from(Arc::new(tls_config)))
-}
-
-fn load_server_tls_config(
-    cert_path: &Path,
-    key_path: &Path,
-    alpn_protocols: &[&[u8]],
-) -> Result<rustls::ServerConfig> {
-    ensure_rustls_provider_installed();
-    let certs = load_cert_chain(cert_path)?;
-    let key = load_private_key(key_path)?;
-
-    let mut tls_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)?;
-    tls_config.alpn_protocols = alpn_protocols.iter().map(|alpn| alpn.to_vec()).collect();
-    Ok(tls_config)
-}
-
-pub(super) fn ensure_rustls_provider_installed() {
-    static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
-    RUSTLS_PROVIDER.get_or_init(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
-}
-
-fn load_cert_chain(path: &Path) -> Result<Vec<CertificateDer<'static>>> {
-    let pem = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("der")) {
-        return Ok(vec![CertificateDer::from(pem)]);
-    }
-
-    rustls_pemfile::certs(&mut pem.as_slice())
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| format!("failed to parse certificate chain {}", path.display()))
-}
-
-fn load_private_key(path: &Path) -> Result<PrivateKeyDer<'static>> {
-    let key = fs::read(path).with_context(|| format!("failed to read {}", path.display()))?;
-    if path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("der")) {
-        return PrivateKeyDer::try_from(key)
-            .map_err(|error| anyhow!(error))
-            .with_context(|| format!("failed to parse private key {}", path.display()));
-    }
-
-    rustls_pemfile::private_key(&mut key.as_slice())
-        .with_context(|| format!("failed to parse private key {}", path.display()))?
-        .ok_or_else(|| anyhow!("no private key found in {}", path.display()))
-}
-
-pub(super) async fn serve_listener(
-    listener: TcpListener,
-    app: Router,
-    mut shutdown: ShutdownSignal,
-) -> Result<()> {
-    let listener = listener.tap_io(|stream| {
-        if let Err(error) = configure_tcp_stream(stream) {
-            warn!(?error, "failed to configure accepted http connection");
-        }
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("server exited unexpectedly")
-}
-
-pub(super) async fn serve_metrics_listener(
-    listener: TcpListener,
-    app: Router,
-    mut shutdown: ShutdownSignal,
-) -> Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("metrics server exited unexpectedly")
-}
-
-async fn serve_tls_listener(
-    listener: TcpListener,
-    app: Router,
-    acceptor: TlsAcceptor,
-    profile: TuningProfile,
-    mut shutdown: ShutdownSignal,
-) -> Result<()> {
-    let connection_limit = Arc::new(Semaphore::new(TLS_MAX_CONCURRENT_CONNECTIONS));
-    let mut tasks: JoinSet<()> = JoinSet::new();
-
-    loop {
-        // Reap already-finished tasks so JoinSet storage stays bounded under
-        // long-lived listeners with high connection churn.
-        while tasks.try_join_next().is_some() {}
-
-        let permit = tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("TLS listener stopping on shutdown signal");
-                break;
-            }
-            permit = connection_limit.clone().acquire_owned() => {
-                // The semaphore is never closed while the listener is running.
-                permit.expect("TLS connection semaphore unexpectedly closed")
-            }
-        };
-
-        let (stream, peer_addr) = tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                debug!("TLS listener stopping on shutdown signal");
-                break;
-            }
-            res = listener.accept() => match res {
-                Ok(v) => v,
-                Err(error) => {
-                    warn!(?error, "failed to accept TLS tcp connection");
-                    continue;
-                },
-            },
-        };
-        if let Err(error) = configure_tcp_stream(&stream) {
-            warn!(%peer_addr, ?error, "failed to configure TLS tcp connection");
-            continue;
-        }
-        let acceptor = acceptor.clone();
-        let app = app.clone();
-        let mut task_shutdown = shutdown.clone();
-
-        tasks.spawn(async move {
-            let _permit = permit;
-            let tls_stream = tokio::select! {
-                biased;
-                _ = task_shutdown.cancelled() => {
-                    debug!(%peer_addr, "aborting TLS handshake on shutdown");
-                    return;
-                }
-                res = acceptor.accept(stream) => match res {
-                    Ok(s) => s,
-                    Err(error) => {
-                        if is_benign_tls_handshake_error(&error) {
-                            debug!(?error, %peer_addr, "tls handshake closed before completion");
-                        } else {
-                            warn!(?error, %peer_addr, "tls handshake failed");
-                        }
-                        return;
-                    },
-                },
-            };
-
-            let io = TokioIo::new(tls_stream);
-            let service = TowerToHyperService::new(app);
-            let builder = build_http_server_builder(&profile);
-            let conn = builder.serve_connection_with_upgrades(io, service);
-            tokio::pin!(conn);
-
-            let result = tokio::select! {
-                biased;
-                res = conn.as_mut() => res,
-                _ = task_shutdown.cancelled() => {
-                    conn.as_mut().graceful_shutdown();
-                    conn.as_mut().await
-                }
-            };
-            if let Err(error) = result
-                && !is_benign_http_serve_error(error.as_ref())
-            {
-                warn!(?error, %peer_addr, "tls http server connection terminated with error");
-            }
-        });
-    }
-
-    let drain_timeout = Duration::from_secs(TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-    let drain = tokio::time::timeout(drain_timeout, async {
-        while tasks.join_next().await.is_some() {}
-    })
-    .await;
-    if drain.is_err() {
-        warn!(
-            remaining = tasks.len(),
-            timeout_secs = TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
-            "TLS connections did not drain within shutdown timeout; aborting"
-        );
-        tasks.shutdown().await;
-    } else {
-        debug!("TLS listener drained all connections");
-    }
-    Ok(())
-}
-
-fn build_http_server_builder(profile: &TuningProfile) -> HyperBuilder<TokioExecutor> {
-    let mut builder = HyperBuilder::new(TokioExecutor::new());
-    builder
-        .http2()
-        .timer(TokioTimer::new())
-        .enable_connect_protocol()
-        .initial_stream_window_size(Some(profile.h2_stream_window_bytes))
-        .initial_connection_window_size(Some(profile.h2_connection_window_bytes))
-        .max_send_buf_size(profile.h2_max_send_buf_size)
-        .keep_alive_interval(Some(Duration::from_secs(H2_KEEPALIVE_INTERVAL_SECS)))
-        .keep_alive_timeout(Duration::from_secs(H2_KEEPALIVE_TIMEOUT_SECS));
-    builder
-}
-
-fn is_benign_http_serve_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
-    let message = error.to_string();
-    message.contains("connection closed")
-        || message.contains("closed before message completed")
-        || message.contains("canceled")
-}
-
-fn is_benign_tls_handshake_error(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::UnexpectedEof
-        || error.to_string().contains("tls handshake eof")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_benign_tls_handshake_error;
-
-    #[test]
-    fn tls_handshake_unexpected_eof_is_benign() {
-        let error = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "tls handshake eof");
-        assert!(is_benign_tls_handshake_error(&error));
-    }
-
-    #[test]
-    fn tls_handshake_protocol_failure_is_not_benign() {
-        let error = std::io::Error::other("received corrupt message");
-        assert!(!is_benign_tls_handshake_error(&error));
     }
 }
