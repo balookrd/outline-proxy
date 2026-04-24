@@ -13,7 +13,7 @@ pub use error::CryptoError;
 pub use primitives::MAX_CHUNK_SIZE;
 pub use stream::{AeadStreamDecryptor, AeadStreamEncryptor};
 pub use udp::{
-    UdpSession, decrypt_udp_packet, decrypt_udp_packet_with_hint, encrypt_udp_packet_for_response,
+    UdpCipherMode, decrypt_udp_packet, decrypt_udp_packet_with_hint, encrypt_udp_packet_for_response,
 };
 
 #[cfg(test)]

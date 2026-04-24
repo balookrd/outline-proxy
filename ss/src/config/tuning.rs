@@ -5,7 +5,7 @@ use serde::Deserialize;
 /// profile that still saturates your expected bandwidth×RTT — larger
 /// profiles scale memory per connection linearly.
 #[derive(Copy, Clone, Debug, Default, Eq, PartialEq, clap::ValueEnum, Deserialize)]
-pub enum TuningProfileKind {
+pub enum TuningPreset {
     #[value(name = "small")]
     #[serde(rename = "small")]
     Small,
@@ -18,7 +18,7 @@ pub enum TuningProfileKind {
     Large,
 }
 
-impl TuningProfileKind {
+impl TuningPreset {
     pub fn preset(self) -> TuningProfile {
         match self {
             Self::Small => TuningProfile::SMALL,
@@ -247,11 +247,11 @@ pub struct TuningOverrides {
 
 #[cfg(test)]
 mod tests {
-    use super::{TuningOverrides, TuningProfile, TuningProfileKind};
+    use super::{TuningOverrides, TuningProfile, TuningPreset};
 
     #[test]
     fn overrides_apply_on_top_of_preset() {
-        let mut tuning = TuningProfileKind::Medium.preset();
+        let mut tuning = TuningPreset::Medium.preset();
         tuning.apply_overrides(&TuningOverrides {
             h3_udp_socket_buffer_bytes: Some(2 * 1024 * 1024),
             h3_max_concurrent_bidi_streams: Some(128),

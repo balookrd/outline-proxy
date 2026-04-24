@@ -11,7 +11,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use tokio::{net::UdpSocket, sync::Mutex};
 
-use crate::{clock, crypto::UdpSession, metrics::Protocol};
+use crate::{clock, crypto::UdpCipherMode, metrics::Protocol};
 
 /// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
 /// resolved upstream address) triple.
@@ -60,7 +60,7 @@ impl UdpResponseSender {
 
 pub(crate) struct ActiveSession {
     pub(crate) sender: UdpResponseSender,
-    pub(crate) session: UdpSession,
+    pub(crate) session: UdpCipherMode,
 }
 
 struct AbortOnDrop(tokio::task::JoinHandle<()>);
@@ -74,7 +74,7 @@ impl Drop for AbortOnDrop {
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
     /// The currently active client session: where to deliver upstream responses
-    /// and which `UdpSession` (carrying the live `client_session_id` for SS-2022)
+    /// and which `UdpCipherMode` (carrying the live `client_session_id` for SS-2022)
     /// to use when encrypting them. Replaced atomically on every reconnect so
     /// the NAT socket — and therefore the source port and server_session_id —
     /// survives client session changes.
@@ -101,12 +101,12 @@ impl NatEntry {
     }
 
     /// Set the active client session that should receive upstream responses,
-    /// along with the `UdpSession` used to encrypt them. The previous session
+    /// along with the `UdpCipherMode` used to encrypt them. The previous session
     /// (if any) is replaced; its channel may be closed.
     pub(crate) async fn register_session(
         &self,
         sender: UdpResponseSender,
-        session: UdpSession,
+        session: UdpCipherMode,
     ) {
         *self.active.lock().await = Some(ActiveSession { sender, session });
     }

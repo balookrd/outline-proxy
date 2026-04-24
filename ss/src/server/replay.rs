@@ -24,19 +24,19 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use crate::clock;
-use crate::crypto::UdpSession;
+use crate::crypto::UdpCipherMode;
 
 /// For SS-2022 sessions, extract the `(client_session_id, packet_id)` pair used
 /// as the replay-filter key. Returns `None` for legacy sessions which have no
 /// per-packet counter.
 pub(crate) fn replay_key(
-    session: &UdpSession,
+    session: &UdpCipherMode,
     packet_id: Option<u64>,
 ) -> Option<([u8; 8], u64)> {
     let csid = match session {
-        UdpSession::Legacy => return None,
-        UdpSession::Aes2022 { client_session_id }
-        | UdpSession::Chacha2022 { client_session_id } => *client_session_id,
+        UdpCipherMode::Legacy => return None,
+        UdpCipherMode::Aes2022 { client_session_id }
+        | UdpCipherMode::Chacha2022 { client_session_id } => *client_session_id,
     };
     packet_id.map(|pid| (csid, pid))
 }

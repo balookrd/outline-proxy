@@ -35,7 +35,7 @@ where
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum UdpSession {
+pub enum UdpCipherMode {
     Legacy,
     Aes2022 { client_session_id: [u8; 8] },
     Chacha2022 { client_session_id: [u8; 8] },
@@ -44,7 +44,7 @@ pub enum UdpSession {
 pub struct UdpPacket {
     pub user: UserKey,
     pub payload: Vec<u8>,
-    pub session: UdpSession,
+    pub session: UdpCipherMode,
     /// SS-2022 per-session monotonic packet counter; `None` for legacy cipher.
     /// Used by the replay filter to reject duplicates within a sliding window.
     pub packet_id: Option<u64>,
@@ -105,7 +105,7 @@ fn try_decrypt_udp_packet_for_user(
             return Ok(Some(UdpPacket {
                 user: user.clone(),
                 payload,
-                session: UdpSession::Chacha2022 { client_session_id },
+                session: UdpCipherMode::Chacha2022 { client_session_id },
                 packet_id: Some(packet_id),
             }));
         }
@@ -144,7 +144,7 @@ fn try_decrypt_udp_packet_for_user(
             return Ok(Some(UdpPacket {
                 user: user.clone(),
                 payload,
-                session: UdpSession::Aes2022 { client_session_id },
+                session: UdpCipherMode::Aes2022 { client_session_id },
                 packet_id: Some(packet_id),
             }));
         }
@@ -172,7 +172,7 @@ fn try_decrypt_udp_packet_for_user(
         return Ok(Some(UdpPacket {
             user: user.clone(),
             payload: plaintext,
-            session: UdpSession::Legacy,
+            session: UdpCipherMode::Legacy,
             packet_id: None,
         }));
     }
@@ -204,12 +204,12 @@ pub fn encrypt_udp_packet_for_response(
     user: &UserKey,
     source: &TargetAddr,
     payload: &[u8],
-    session: &UdpSession,
+    session: &UdpCipherMode,
     server_session_id: Option<[u8; 8]>,
     packet_id: u64,
 ) -> Result<Vec<u8>, CryptoError> {
     match session {
-        UdpSession::Legacy => {
+        UdpCipherMode::Legacy => {
             let header = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
             let salt_len = user.cipher().salt_len();
             let plaintext_len = header.len() + payload.len();
@@ -238,7 +238,7 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(tag.as_ref());
             Ok(packet)
         },
-        UdpSession::Aes2022 { client_session_id } => {
+        UdpCipherMode::Aes2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
             let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
             let body_len = 1 + 8 + 8 + 2 + target.len() + payload.len();
@@ -276,7 +276,7 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(tag.as_ref());
             Ok(packet)
         },
-        UdpSession::Chacha2022 { client_session_id } => {
+        UdpCipherMode::Chacha2022 { client_session_id } => {
             let server_session_id = server_session_id.ok_or(CryptoError::InvalidHeader)?;
             let target = source.encode().map_err(|_| CryptoError::InvalidHeader)?;
             let body_len = 8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len();

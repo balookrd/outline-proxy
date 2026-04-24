@@ -13,7 +13,7 @@ use tracing::debug;
 
 use crate::{
     clock,
-    crypto::{UdpSession, UserKey},
+    crypto::{UdpCipherMode, UserKey},
     fwmark::apply_fwmark_if_needed,
     metrics::Metrics,
     outbound::OutboundIpv6,
@@ -56,7 +56,7 @@ impl NatTable {
         &self,
         key: NatKey,
         user: &UserKey,
-        udp_session: UdpSession,
+        udp_session: UdpCipherMode,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
         // Fast path: read-lock the shard for an existing entry — the hot case
@@ -89,7 +89,7 @@ impl NatTable {
     async fn create_entry(
         key: &NatKey,
         user: UserKey,
-        udp_session: UdpSession,
+        udp_session: UdpCipherMode,
         metrics: Arc<Metrics>,
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
     ) -> Result<Arc<NatEntry>> {
@@ -103,8 +103,8 @@ impl NatTable {
         let last_active_secs = Arc::new(AtomicU64::new(clock::current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
         let server_session_id = match udp_session {
-            UdpSession::Legacy => None,
-            UdpSession::Aes2022 { .. } | UdpSession::Chacha2022 { .. } => {
+            UdpCipherMode::Legacy => None,
+            UdpCipherMode::Aes2022 { .. } | UdpCipherMode::Chacha2022 { .. } => {
                 Some(random_session_id()?)
             },
         };

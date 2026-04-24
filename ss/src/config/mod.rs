@@ -12,7 +12,7 @@ use clap::Parser;
 use cli::ConfigArgs;
 use file::{FileConfig, default_config_path_if_exists, load_file_config};
 
-pub use tuning::{TuningOverrides, TuningProfile, TuningProfileKind};
+pub use tuning::{TuningOverrides, TuningProfile, TuningPreset};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
 
 #[derive(Debug, Clone)]

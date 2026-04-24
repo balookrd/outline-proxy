@@ -5,7 +5,7 @@ use std::{
 
 use clap::{ArgAction, Parser};
 
-use super::{CipherKind, TuningProfileKind, UserEntry};
+use super::{CipherKind, TuningPreset, UserEntry};
 
 #[derive(Debug, Clone, Parser)]
 #[command(
@@ -140,7 +140,7 @@ pub(super) struct ConfigArgs {
     pub method: Option<CipherKind>,
 
     #[arg(long, env = "OUTLINE_SS_TUNING_PROFILE", value_enum)]
-    pub tuning_profile: Option<TuningProfileKind>,
+    pub tuning_profile: Option<TuningPreset>,
 }
 
 pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {

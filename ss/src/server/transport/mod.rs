@@ -27,7 +27,7 @@ mod udp;
 mod ws_socket;
 mod ws_writer;
 
-pub(in crate::server) use tcp::{TcpRouteCtx, TcpServerCtx, handle_tcp_h3_connection};
+pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 
 pub(super) async fn tcp_websocket_upgrade(
@@ -52,13 +52,13 @@ pub(super) async fn tcp_websocket_upgrade(
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state.services.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
-        let server = TcpServerCtx {
+        let server = WsTcpServerCtx {
             metrics: state.services.metrics.clone(),
             dns_cache: Arc::clone(&state.services.dns_cache),
             prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
             outbound_ipv6: state.services.outbound_ipv6.clone(),
         };
-        let route_ctx = TcpRouteCtx {
+        let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
