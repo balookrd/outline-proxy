@@ -1,6 +1,7 @@
 mod args;
 mod compat;
 mod load;
+mod migrate;
 mod schema;
 mod types;
 
@@ -16,9 +17,9 @@ pub(crate) use compat::normalize_outline_section;
 pub(crate) use schema::ConfigFile;
 
 #[cfg(feature = "control")]
-pub(crate) use schema::UplinkSection;
-#[cfg(feature = "control")]
 pub(crate) use load::validate_uplink_section;
+#[cfg(feature = "control")]
+pub(crate) use schema::UplinkSection;
 
 #[cfg(test)]
 mod tests;
