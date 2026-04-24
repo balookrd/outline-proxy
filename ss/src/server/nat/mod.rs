@@ -96,8 +96,6 @@ mod tests {
             "secret-b",
             None,
             CipherKind::Chacha20IetfPoly1305,
-            "/tcp",
-            "/udp",
         )?;
         let sender = test_sender(Protocol::Socket);
 
@@ -148,8 +146,6 @@ mod tests {
             "secret-b",
             None,
             CipherKind::Chacha20IetfPoly1305,
-            "/tcp",
-            "/udp",
         )?;
         let ws_sender = test_sender(Protocol::Http2);
 
@@ -203,8 +199,6 @@ mod tests {
             "secret-b",
             None,
             CipherKind::Chacha20IetfPoly1305,
-            "/tcp",
-            "/udp",
         )?;
         let key = NatKey {
             user_id: user.id_arc(),

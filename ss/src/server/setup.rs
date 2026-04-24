@@ -13,6 +13,18 @@ use crate::{
 
 use super::state::TransportRoute;
 
+/// A user along with the WebSocket paths it is reachable on.
+///
+/// Routing is a server-side concern, separate from the crypto identity in
+/// [`UserKey`]; keeping the paths beside the key (and out of it) preserves
+/// that separation.
+#[derive(Clone)]
+pub(super) struct UserRoute {
+    pub user: UserKey,
+    pub ws_path_tcp: Arc<str>,
+    pub ws_path_udp: Arc<str>,
+}
+
 pub(super) fn protocol_from_http_version(version: Version) -> Protocol {
     match version {
         Version::HTTP_2 => Protocol::Http2,
@@ -21,16 +33,19 @@ pub(super) fn protocol_from_http_version(version: Version) -> Protocol {
 }
 
 pub(super) fn build_transport_route_map(
-    users: &[UserKey],
+    routes: &[UserRoute],
     transport: Transport,
 ) -> BTreeMap<String, Arc<TransportRoute>> {
     let mut grouped = BTreeMap::<String, Vec<UserKey>>::new();
-    for user in users {
-        let path = match transport {
-            Transport::Tcp => user.ws_path_tcp(),
-            Transport::Udp => user.ws_path_udp(),
+    for route in routes {
+        let path: &str = match transport {
+            Transport::Tcp => &route.ws_path_tcp,
+            Transport::Udp => &route.ws_path_udp,
         };
-        grouped.entry(path.to_owned()).or_default().push(user.clone());
+        grouped
+            .entry(path.to_owned())
+            .or_default()
+            .push(route.user.clone());
     }
 
     grouped
@@ -51,40 +66,56 @@ pub(super) fn build_transport_route_map(
         .collect()
 }
 
-pub(super) fn describe_user_routes(users: &[UserKey]) -> Vec<String> {
-    users
+pub(super) fn describe_user_routes(routes: &[UserRoute]) -> Vec<String> {
+    routes
         .iter()
-        .map(|user| {
+        .map(|route| {
             format!(
                 "{}:{} tcp={} udp={}",
-                user.id(),
-                user.cipher().as_str(),
-                user.ws_path_tcp(),
-                user.ws_path_udp()
+                route.user.id(),
+                route.user.cipher().as_str(),
+                route.ws_path_tcp,
+                route.ws_path_udp,
             )
         })
         .collect()
 }
 
-pub(super) fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
+pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     Ok(Arc::from(
         config
             .user_entries()?
             .into_iter()
             .map(|entry| {
                 let method = entry.effective_method(config.method);
-                let ws_path_tcp = entry.effective_ws_path_tcp(&config.ws_path_tcp).to_owned();
-                let ws_path_udp = entry.effective_ws_path_udp(&config.ws_path_udp).to_owned();
-                UserKey::new(
-                    entry.id,
-                    &entry.password,
-                    entry.fwmark,
-                    method,
-                    ws_path_tcp,
-                    ws_path_udp,
-                )
+                let ws_path_tcp: Arc<str> =
+                    Arc::from(entry.effective_ws_path_tcp(&config.ws_path_tcp));
+                let ws_path_udp: Arc<str> =
+                    Arc::from(entry.effective_ws_path_udp(&config.ws_path_udp));
+                UserKey::new(entry.id, &entry.password, entry.fwmark, method).map(|user| {
+                    UserRoute {
+                        user,
+                        ws_path_tcp,
+                        ws_path_udp,
+                    }
+                })
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),
     ))
+}
+
+#[cfg(test)]
+pub(super) fn build_users(config: &Config) -> Result<Arc<[UserKey]>> {
+    Ok(user_keys(build_user_routes(config)?.as_ref()))
+}
+
+pub(super) fn user_keys(routes: &[UserRoute]) -> Arc<[UserKey]> {
+    Arc::from(
+        routes
+            .iter()
+            .map(|route| route.user.clone())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    )
 }

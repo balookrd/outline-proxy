@@ -47,7 +47,7 @@ mod tests;
 #[cfg(test)]
 use self::{
     dns_cache::DnsCache,
-    setup::{build_transport_route_map, build_users},
+    setup::{build_transport_route_map, build_user_routes, build_users, user_keys},
     state::{AuthPolicy, RouteRegistry, Services, UdpServices},
 };
 
@@ -93,7 +93,7 @@ pub async fn run(config: Config) -> Result<()> {
 
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
-    let user_routes = describe_user_routes(built.users.as_ref());
+    let user_routes = describe_user_routes(built.user_routes.as_ref());
     info!(
         listen = ?config.listen,
         ss_listen = ?config.ss_listen,

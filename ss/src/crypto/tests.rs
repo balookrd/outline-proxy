@@ -35,8 +35,8 @@ fn next_stream_nonce_rejects_after_threshold() {
 fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey]> {
     Arc::from(
         vec![
-            UserKey::new("alice", password_a, Some(1001), cipher, "/tcp", "/udp").unwrap(),
-            UserKey::new("bob", password_b, Some(1002), cipher, "/tcp", "/udp").unwrap(),
+            UserKey::new("alice", password_a, Some(1001), cipher).unwrap(),
+            UserKey::new("bob", password_b, Some(1002), cipher).unwrap(),
         ]
         .into_boxed_slice(),
     )
@@ -140,24 +140,8 @@ fn hinted_udp_packet_decrypt_falls_back_to_matching_user() {
 fn decryptor_matches_user_with_different_cipher() {
     let users: Arc<[UserKey]> = Arc::from(
         vec![
-            UserKey::new(
-                "alice",
-                "secret-a",
-                Some(1001),
-                CipherKind::Aes256Gcm,
-                "/alice",
-                "/alice-udp",
-            )
-            .unwrap(),
-            UserKey::new(
-                "bob",
-                "secret-b",
-                Some(1002),
-                CipherKind::Chacha20IetfPoly1305,
-                "/bob",
-                "/bob-udp",
-            )
-            .unwrap(),
+            UserKey::new("alice", "secret-a", Some(1001), CipherKind::Aes256Gcm).unwrap(),
+            UserKey::new("bob", "secret-b", Some(1002), CipherKind::Chacha20IetfPoly1305).unwrap(),
         ]
         .into_boxed_slice(),
     );
@@ -307,7 +291,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
 fn encrypts_ss2022_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
     let user =
-        UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022, "/tcp", "/udp").unwrap();
+        UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
@@ -324,8 +308,7 @@ fn encrypts_ss2022_udp_response() {
 fn encrypts_ss2022_chacha_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
     let user =
-        UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022, "/tcp", "/udp")
-            .unwrap();
+        UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
@@ -341,8 +324,7 @@ fn encrypts_ss2022_chacha_udp_response() {
 #[test]
 fn rejects_bad_ss2022_psk_length() {
     let error =
-        UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022, "/tcp", "/udp")
-            .unwrap_err();
+        UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022).unwrap_err();
     assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
 }
 

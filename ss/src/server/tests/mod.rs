@@ -13,10 +13,14 @@ use tokio::{
 };
 
 use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
-use super::{AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map};
+use super::{
+    AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
+    user_keys,
+};
 use super::nat::NatTable;
+use super::setup::UserRoute;
 use crate::config::{CipherKind, Config, UserEntry};
-use crate::crypto::{UserKey, decrypt_udp_packet, encrypt_udp_packet};
+use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::TargetAddr;
 
@@ -27,15 +31,16 @@ mod shadowsocks;
 mod websocket;
 
 fn build_test_state(
-    users: Arc<[UserKey]>,
+    user_routes: Arc<[UserRoute]>,
     metrics: Arc<Metrics>,
     nat_table: Arc<NatTable>,
     dns_cache: Arc<DnsCache>,
     http_root_auth: bool,
     http_root_realm: impl Into<Arc<str>>,
 ) -> (Arc<RouteRegistry>, Arc<Services>, Arc<AuthPolicy>) {
-    let tcp = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
-    let udp = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+    let users = user_keys(user_routes.as_ref());
+    let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
+    let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let routes = Arc::new(RouteRegistry { tcp, udp });
     let services = Arc::new(Services {
         metrics,

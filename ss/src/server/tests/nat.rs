@@ -20,7 +20,10 @@ use tokio_tungstenite::{
     tungstenite::{Message as WsMessage, protocol},
 };
 
-use super::super::{DnsCache, SsUdpCtx, build_app, build_users, serve_h3_server, serve_ss_udp_socket};
+use super::super::{
+    DnsCache, SsUdpCtx, build_app, build_user_routes, build_users, serve_h3_server,
+    serve_ss_udp_socket,
+};
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
@@ -111,12 +114,12 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let addr = listener.local_addr()?;
     let config = sample_config(addr);
-    let users = build_users(&config)?;
-    let user = users[0].clone();
+    let user_routes = build_user_routes(&config)?;
+    let user = user_routes[0].user.clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes,
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -205,13 +208,13 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
     let addr = server.local_addr()?;
 
     let config = sample_config(addr);
-    let users = build_users(&config)?;
-    let user = users[0].clone();
+    let user_routes = build_user_routes(&config)?;
+    let user = user_routes[0].user.clone();
     let metrics = Metrics::new(&config);
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users,
+        user_routes,
         metrics,
         nat_table,
         dns_cache,
