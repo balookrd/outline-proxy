@@ -47,6 +47,8 @@
 | Метрики Prometheus | Поддерживается | Отдельный слушатель, метки с низкой кардинальностью |
 | Дашборд Grafana | Поддерживается | Готовый JSON-дашборд в репозитории |
 | Outline динамические ключи | Поддерживается | `ssconf://` + генерируемый YAML |
+| VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing (совместимо с xray/happ/hiddify), до 8 под-соединений одновременно |
+| VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | Outline management API | Не поддерживается | Только data plane |
 | SIP003 plugin negotiation | Не поддерживается | Вне области применения |
 
@@ -201,6 +203,7 @@ cargo release-musl-armv7
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
+| `vless_ws_path` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
@@ -212,6 +215,9 @@ cargo release-musl-armv7
 | `method` | Глобальный шифр Shadowsocks по умолчанию |
 | `password` | Пароль в режиме одного пользователя или base64 PSK для `2022-*` |
 | `fwmark` | `fwmark` в режиме одного пользователя |
+| `users[].password` | Опциональный пароль Shadowsocks на пользователя |
+| `users[].vless_id` | Опциональный VLESS UUID на пользователя |
+| `users[].vless_ws_path` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `vless_ws_path` |
 
 ### Параметры пользователя
 
@@ -223,9 +229,38 @@ fwmark = 1001
 method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+vless_ws_path = "/alice/vless"
 ```
 
 Для `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305` параметр `password` должен содержать base64-кодированный сырой PSK длиной ровно 16, 32 и 32 байта соответственно, например `openssl rand -base64 32`.
+
+### VLESS поверх WebSocket/TLS
+
+VLESS inbound принимает VLESS поверх WebSocket на основном HTTP/1.1 или HTTP/2 слушателе. Для публичных деплойментов используйте TLS (`tls_cert_path` / `tls_key_path`); сам VLESS-слой — это stateless UUID-аутентификация и шифрования не добавляет. Поддерживаемые команды: TCP CONNECT, UDP (длина-префиксированные датаграммы) и mux.cool с XUDP per-packet адресацией (xray-совместимое мультиплексирование, до 8 одновременных под-соединений на сессию; XUDP `GlobalID` парсится, но переиспользование между реконнектами пока не реализовано). REALITY, XTLS, Vision, flow, fallback и sniffing сознательно не реализованы.
+
+```toml
+listen = "0.0.0.0:443"
+tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
+vless_ws_path = "/vless"
+
+[[users]]
+id = "alice"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+vless_ws_path = "/alice-vless"
+```
+
+Пример клиентского URI для Happ, v2rayNG или Hiddify:
+
+```text
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#outline-ss-rust-vless
+```
+
+VLESS- и Shadowsocks-WebSocket-пути должны не пересекаться. Запись `[[users]]` может одновременно содержать `password` для Shadowsocks и `vless_id` для VLESS, либо только `vless_id` для VLESS-only-пользователя. `users[].vless_ws_path` перекрывает верхнеуровневый `vless_ws_path`.
 
 Если `http_root_auth = true`, обычный `GET /` получает HTTP Basic challenge. Имя пользователя игнорируется, а пароль проверяется по настроенным Shadowsocks-пользователям. Параметр `http_root_realm` задаёт текст этого запроса пароля. После трёх неудачных попыток пароля в рамках одной браузерной сессии сервер начинает отвечать `403 Forbidden`. Обычные HTTP-запросы к любым не-корневым путям по-прежнему получают `404 Not Found`.
 

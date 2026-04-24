@@ -20,6 +20,7 @@ flowchart TD
         ROUTER["Path Router"]
         FILTER["Per-path User Filter"]
         CRYPTO["Shadowsocks AEAD Decrypt / Encrypt"]
+        VLESS["VLESS UUID Auth + mux.cool/XUDP"]
         TCPR["TCP Relay"]
         UDPR["UDP Relay"]
         METRICS["Prometheus Metrics"]
@@ -41,8 +42,11 @@ flowchart TD
 
     ROUTER --> FILTER
     FILTER --> CRYPTO
+    ROUTER --> VLESS
     CRYPTO --> TCPR
     CRYPTO --> UDPR
+    VLESS --> TCPR
+    VLESS --> UDPR
 
     TCPR --> DNS
     TCPR --> TCPU
@@ -51,6 +55,7 @@ flowchart TD
 
     ROUTER --> METRICS
     CRYPTO --> METRICS
+    VLESS --> METRICS
     TCPR --> METRICS
     UDPR --> METRICS
 ```
@@ -140,6 +145,48 @@ Important behaviors:
 - each upstream UDP response becomes its own encrypted WebSocket binary frame
 - per-user `fwmark` is applied to the outbound UDP socket when configured
 - Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session `client_session_id`; duplicate `packet_id`s are dropped before the relay step, and idle sessions are reaped on the same cadence as NAT-entry eviction
+
+## VLESS Data Path
+
+A separate WebSocket path (`vless_ws_path`, optionally per-user) accepts VLESS streams on the main HTTP/1.1 or HTTP/2 listener. VLESS authentication is stateless UUID matching against the per-path user set; the protocol layer itself adds no encryption, so TLS on the main listener is required for public deployments.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    participant U as Upstream
+
+    C->>S: WebSocket connect on VLESS path
+    C->>S: VLESS header (version, UUID, command, target)
+    S->>S: Match UUID against per-path users
+    alt command == TCP CONNECT
+        S->>U: TCP connect to target
+        C->>S: Raw bytes
+        S->>U: Raw bytes
+        U->>S: Raw bytes
+        S->>C: Raw bytes
+    else command == UDP
+        C->>S: [u16 len][datagram] frames
+        S->>U: sendto(target)
+        U->>S: recvfrom()
+        S->>C: [u16 len][datagram] frames
+    else command == Mux (0x03, mux.cool / XUDP)
+        C->>S: Frame[New, sub-id, TCP|UDP target]
+        S->>S: Open sub-connection (up to 8/session)
+        C->>S: Frame[Keep, sub-id, data, optional per-packet addr]
+        S->>U: TCP write or UDP send_to
+        U->>S: TCP bytes or UDP datagram
+        S->>C: Frame[Keep, sub-id, data, source addr for XUDP]
+    end
+```
+
+Important behaviors:
+
+- UUID lookup is linear over the per-path candidate set; the request is rejected and logged when the UUID is unknown
+- for `COMMAND_UDP`, each client frame is length-prefixed (`u16` BE); each upstream response is re-framed the same way
+- for `COMMAND_MUX` (mux.cool / XUDP), a single VLESS stream multiplexes up to 8 concurrent sub-connections, each with its own session id; sub-connections can be TCP or UDP, and UDP Keep frames carry a per-packet destination (XUDP), with replies tagged by the upstream source address
+- the XUDP `GlobalID` on New frames is parsed and logged, but UDP sessions are not yet reused across WebSocket reconnects
+- per-user `fwmark` is applied to both TCP connects and UDP sockets opened for a VLESS session
 
 ## Transport Support
 
