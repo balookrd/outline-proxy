@@ -27,6 +27,31 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 
+/// Process-wide singletons shared by every UDP relay task.
+pub(in crate::server) struct UdpServerCtx {
+    pub(in crate::server) metrics: Arc<Metrics>,
+    pub(in crate::server) nat_table: Arc<NatTable>,
+    pub(in crate::server) replay_store: Arc<ReplayStore>,
+    pub(in crate::server) dns_cache: Arc<DnsCache>,
+    pub(in crate::server) prefer_ipv4_upstream: bool,
+    pub(in crate::server) relay_semaphore: Option<Arc<Semaphore>>,
+}
+
+/// Per-path state for a single UDP WebSocket session.
+pub(in crate::server) struct UdpRouteCtx {
+    pub(in crate::server) users: Arc<[UserKey]>,
+    pub(in crate::server) protocol: Protocol,
+    pub(in crate::server) path: Arc<str>,
+    pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
+}
+
+/// Per-session mutable state shared across concurrent datagram tasks.
+#[derive(Clone)]
+struct UdpSessionState {
+    session_recorded: Arc<AtomicBool>,
+    cached_user_index: Arc<AtomicUsize>,
+}
+
 /// For SS-2022 sessions, extract the (client_session_id, packet_id) pair used
 /// as the replay-filter key. Returns `None` for legacy sessions which have no
 /// per-packet counter.
@@ -42,59 +67,52 @@ fn session_replay_key(
     packet_id.map(|pid| (csid, pid))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_udp_datagram_common<Msg>(
-    nat_table: Arc<NatTable>,
-    replay_store: Arc<ReplayStore>,
-    users: Arc<[UserKey]>,
+    server: &UdpServerCtx,
+    route: &UdpRouteCtx,
+    session: &UdpSessionState,
     data: Bytes,
     outbound_tx: mpsc::Sender<Msg>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    udp_session_recorded: Arc<AtomicBool>,
-    cached_user_index: Arc<AtomicUsize>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
     make_response_sender: fn(mpsc::Sender<Msg>, Protocol) -> UdpResponseSender,
 ) -> Result<()>
 where
     Msg: Send + 'static,
 {
     let started_at = std::time::Instant::now();
-    let preferred_user_index = match cached_user_index.load(Ordering::Relaxed) {
+    let preferred_user_index = match session.cached_user_index.load(Ordering::Relaxed) {
         UDP_CACHED_USER_INDEX_EMPTY => None,
         index => Some(index),
     };
     let (packet, user_index) = match decrypt_udp_packet_with_hint(
-        users.as_ref(),
+        route.users.as_ref(),
         &data,
         preferred_user_index,
     ) {
         Ok(result) => result,
         Err(CryptoError::UnknownUser) => {
             debug!(
-                path = %path,
-                candidates = ?candidate_users,
-                attempts = ?diagnose_udp_packet(users.as_ref(), &data),
+                path = %route.path,
+                candidates = ?route.candidate_users,
+                attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
                 "udp authentication failed for all path candidates"
             );
             return Err(anyhow!(
-                "no configured key matched the incoming udp data on path {path} candidates={candidate_users:?}",
+                "no configured key matched the incoming udp data on path {} candidates={:?}",
+                route.path,
+                route.candidate_users,
             ));
         },
         Err(error) => return Err(anyhow!(error)),
     };
-    cached_user_index.store(user_index, Ordering::Relaxed);
+    session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
     if let Some((csid, pid)) = session_replay_key(&packet.session, packet.packet_id)
-        && !replay_store.check_and_mark(csid, pid)
+        && !server.replay_store.check_and_mark(csid, pid)
     {
-        metrics.record_udp_replay_dropped(Arc::clone(&user_id), protocol);
+        server.metrics.record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);
         warn!(
             user = packet.user.id(),
-            path = %path,
+            path = %route.path,
             packet_id = pid,
             "dropping replayed ss-2022 udp datagram"
         );
@@ -105,23 +123,23 @@ where
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
-    if udp_session_recorded.swap(true, Ordering::Relaxed) {
-        metrics.record_client_last_seen(Arc::clone(&user_id));
+    if session.session_recorded.swap(true, Ordering::Relaxed) {
+        server.metrics.record_client_last_seen(Arc::clone(&user_id));
     } else {
-        metrics.record_client_session(Arc::clone(&user_id), protocol, Transport::Udp);
+        server.metrics.record_client_session(Arc::clone(&user_id), route.protocol, Transport::Udp);
     }
     debug!(
         user = packet.user.id(),
         cipher = packet.user.cipher().as_str(),
-        path = %path,
+        path = %route.path,
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_udp_target(dns_cache.as_ref(), &target, prefer_ipv4_upstream).await?;
+    let resolved = resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
     debug!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
-        path = %path,
+        path = %route.path,
         target = %target_display,
         resolved = %resolved,
         "udp datagram relay"
@@ -132,88 +150,81 @@ where
         fwmark: packet.user.fwmark(),
         target: resolved,
     };
-    let entry = nat_table
-        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&metrics))
+    let entry = server.nat_table
+        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&server.metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
         .register_session(
-            make_response_sender(outbound_tx, protocol),
+            make_response_sender(outbound_tx, route.protocol),
             packet.session.clone(),
         )
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        metrics.record_udp_oversized_datagram_dropped(
+        server.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
-            protocol,
+            route.protocol,
             "client_to_target",
         );
         warn!(
             user = packet.user.id(),
-            path = %path,
+            path = %route.path,
             target = %resolved,
             plaintext_bytes = payload.len(),
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
             "dropping oversized udp datagram before upstream send"
         );
-        metrics.record_udp_request(
+        server.metrics.record_udp_request(
             Arc::clone(&user_id),
-            protocol,
+            route.protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
         return Ok(());
     }
-    metrics.record_udp_payload_bytes(
+    server.metrics.record_udp_payload_bytes(
         Arc::clone(&user_id),
-        protocol,
+        route.protocol,
         "client_to_target",
         payload.len(),
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        metrics.record_udp_request(
+        server.metrics.record_udp_request(
             Arc::clone(&user_id),
-            protocol,
+            route.protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    metrics.record_udp_request(user_id, protocol, "success", started_at.elapsed().as_secs_f64());
+    server.metrics.record_udp_request(user_id, route.protocol, "success", started_at.elapsed().as_secs_f64());
 
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_udp_relay<T: WsSocket>(
     socket: T,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    nat_table: Arc<NatTable>,
-    replay_store: Arc<ReplayStore>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    global_relay_semaphore: Option<Arc<Semaphore>>,
+    server: Arc<UdpServerCtx>,
+    route: Arc<UdpRouteCtx>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(8);
-    let udp_session_recorded = Arc::new(AtomicBool::new(false));
-    let cached_user_index = Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY));
+    let session = UdpSessionState {
+        session_recorded: Arc::new(AtomicBool::new(false)),
+        cached_user_index: Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY)),
+    };
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,
         outbound_data_rx,
-        metrics.clone(),
+        server.metrics.clone(),
         Transport::Udp,
-        protocol,
+        route.protocol,
     ));
 
     let mut loop_result = Ok(());
@@ -231,9 +242,9 @@ async fn run_udp_relay<T: WsSocket>(
                 };
                 match T::classify(frame) {
                     WsFrame::Binary(data) => {
-                        metrics.record_websocket_binary_frame(Transport::Udp, protocol, "in", data.len());
+                        server.metrics.record_websocket_binary_frame(Transport::Udp, route.protocol, "in", data.len());
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                            metrics.record_udp_relay_drop(Transport::Udp, protocol, "concurrency_limit");
+                            server.metrics.record_udp_relay_drop(Transport::Udp, route.protocol, "concurrency_limit");
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -241,15 +252,15 @@ async fn run_udp_relay<T: WsSocket>(
                         // fan-out across WebSocket sessions cannot blow up the
                         // total in-flight task count. Drop the datagram with a
                         // distinct label when the global ceiling is reached.
-                        let global_permit = match global_relay_semaphore
+                        let global_permit = match server.relay_semaphore
                             .as_ref()
                             .map(|sem| Arc::clone(sem).try_acquire_owned())
                         {
                             Some(Ok(permit)) => Some(permit),
                             Some(Err(_)) => {
-                                metrics.record_udp_relay_drop(
+                                server.metrics.record_udp_relay_drop(
                                     Transport::Udp,
-                                    protocol,
+                                    route.protocol,
                                     "global_concurrency_limit",
                                 );
                                 warn!(
@@ -260,30 +271,16 @@ async fn run_udp_relay<T: WsSocket>(
                             None => None,
                         };
                         let tx = outbound_data_tx.clone();
-                        let users = users.clone();
-                        let metrics = metrics.clone();
-                        let path = path.clone();
-                        let candidate_users = candidate_users.clone();
-                        let udp_session_recorded = udp_session_recorded.clone();
-                        let cached_user_index = Arc::clone(&cached_user_index);
-                        let nat_table = Arc::clone(&nat_table);
-                        let replay_store = Arc::clone(&replay_store);
-                        let dns_cache = Arc::clone(&dns_cache);
+                        let server = Arc::clone(&server);
+                        let route = Arc::clone(&route);
+                        let session = session.clone();
                         in_flight.push(async move {
                             if let Err(error) = handle_udp_datagram_common(
-                                nat_table,
-                                replay_store,
-                                users,
+                                &server,
+                                &route,
+                                &session,
                                 data,
                                 tx,
-                                metrics,
-                                protocol,
-                                path,
-                                candidate_users,
-                                udp_session_recorded,
-                                cached_user_index,
-                                dns_cache,
-                                prefer_ipv4_upstream,
                                 T::make_udp_response_sender,
                             )
                             .await
@@ -327,61 +324,18 @@ async fn run_udp_relay<T: WsSocket>(
     loop_result
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_udp_connection(
     socket: WebSocket,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    nat_table: Arc<NatTable>,
-    replay_store: Arc<ReplayStore>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    global_relay_semaphore: Option<Arc<Semaphore>>,
+    server: Arc<UdpServerCtx>,
+    route: Arc<UdpRouteCtx>,
 ) -> Result<()> {
-    run_udp_relay::<AxumWs>(
-        AxumWs(socket),
-        users,
-        metrics,
-        protocol,
-        path,
-        candidate_users,
-        nat_table,
-        replay_store,
-        dns_cache,
-        prefer_ipv4_upstream,
-        global_relay_semaphore,
-    )
-    .await
+    run_udp_relay::<AxumWs>(AxumWs(socket), server, route).await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn handle_udp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    nat_table: Arc<NatTable>,
-    replay_store: Arc<ReplayStore>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    global_relay_semaphore: Option<Arc<Semaphore>>,
+    server: Arc<UdpServerCtx>,
+    route: Arc<UdpRouteCtx>,
 ) -> Result<()> {
-    run_udp_relay::<H3Ws>(
-        H3Ws(socket),
-        users,
-        metrics,
-        Protocol::Http3,
-        path,
-        candidate_users,
-        nat_table,
-        replay_store,
-        dns_cache,
-        prefer_ipv4_upstream,
-        global_relay_semaphore,
-    )
-    .await
+    run_udp_relay::<H3Ws>(H3Ws(socket), server, route).await
 }

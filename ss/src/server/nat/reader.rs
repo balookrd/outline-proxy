@@ -21,17 +21,29 @@ use super::entry::{ActiveSession, UdpResponseSender, current_unix_secs};
 // RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP)
 pub(crate) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn nat_reader_task(
-    socket: Arc<UdpSocket>,
-    active: Arc<Mutex<Option<ActiveSession>>>,
-    user: UserKey,
-    target: SocketAddr,
-    server_session_id: Option<[u8; 8]>,
-    metrics: Arc<Metrics>,
-    last_active: Arc<AtomicU64>,
-    next_packet_id: Arc<AtomicU64>,
-) {
+pub(super) struct NatReaderCtx {
+    pub(super) socket: Arc<UdpSocket>,
+    pub(super) active: Arc<Mutex<Option<ActiveSession>>>,
+    pub(super) user: UserKey,
+    pub(super) target: SocketAddr,
+    pub(super) server_session_id: Option<[u8; 8]>,
+    pub(super) metrics: Arc<Metrics>,
+    pub(super) last_active: Arc<AtomicU64>,
+    pub(super) next_packet_id: Arc<AtomicU64>,
+}
+
+pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
+    let NatReaderCtx {
+        socket,
+        active,
+        user,
+        target,
+        server_session_id,
+        metrics,
+        last_active,
+        next_packet_id,
+    } = ctx;
+
     let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
         let (n, source) = match socket.recv_from(&mut buf).await {

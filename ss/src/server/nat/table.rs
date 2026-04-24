@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     entry::{NatEntry, NatKey, current_unix_secs, random_session_id},
-    reader::nat_reader_task,
+    reader::{NatReaderCtx, nat_reader_task},
     socket::bind_nat_udp_socket,
 };
 
@@ -102,16 +102,16 @@ impl NatTable {
             },
         };
 
-        let reader_task = tokio::spawn(nat_reader_task(
-            Arc::clone(&socket),
-            Arc::clone(&active),
-            user.clone(),
-            key.target,
+        let reader_task = tokio::spawn(nat_reader_task(NatReaderCtx {
+            socket: Arc::clone(&socket),
+            active: Arc::clone(&active),
+            user: user.clone(),
+            target: key.target,
             server_session_id,
-            Arc::clone(&metrics),
-            Arc::clone(&last_active_secs),
-            Arc::clone(&next_packet_id),
-        ));
+            metrics: Arc::clone(&metrics),
+            last_active: Arc::clone(&last_active_secs),
+            next_packet_id: Arc::clone(&next_packet_id),
+        }));
 
         let entry = NatEntry::new(socket, active, last_active_secs, reader_task);
         debug!(
