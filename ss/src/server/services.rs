@@ -18,7 +18,7 @@ use super::{
     nat::NatTable,
     replay::ReplayStore,
     setup::{build_transport_route_map, build_users},
-    state::{AuthPolicy, RouteRegistry, Services, TransportRoute},
+    state::{AuthPolicy, RouteRegistry, Services, TransportRoute, UdpServices},
 };
 
 pub(super) struct Built {
@@ -77,12 +77,14 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     };
     let services = Arc::new(Services {
         metrics: metrics.clone(),
-        nat_table: Arc::clone(&nat_table),
-        replay_store: Arc::clone(&replay_store),
         dns_cache: Arc::clone(&dns_cache),
         prefer_ipv4_upstream: config.prefer_ipv4_upstream,
         outbound_ipv6: outbound_ipv6.clone(),
-        udp_relay_semaphore,
+        udp: UdpServices {
+            nat_table: Arc::clone(&nat_table),
+            replay_store: Arc::clone(&replay_store),
+            relay_semaphore: udp_relay_semaphore,
+        },
     });
     let auth = Arc::new(AuthPolicy {
         users: users.clone(),

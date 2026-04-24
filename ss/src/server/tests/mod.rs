@@ -13,7 +13,7 @@ use tokio::{
 };
 
 use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
-use super::{AuthPolicy, DnsCache, RouteRegistry, Services, build_transport_route_map};
+use super::{AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map};
 use super::nat::NatTable;
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{UserKey, decrypt_udp_packet, encrypt_udp_packet};
@@ -39,12 +39,14 @@ fn build_test_state(
     let routes = Arc::new(RouteRegistry { tcp, udp });
     let services = Arc::new(Services {
         metrics,
-        nat_table,
-        replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
         dns_cache,
         prefer_ipv4_upstream: false,
         outbound_ipv6: None,
-        udp_relay_semaphore: None,
+        udp: UdpServices {
+            nat_table,
+            replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
+            relay_semaphore: None,
+        },
     });
     let auth = Arc::new(AuthPolicy {
         users,

@@ -358,11 +358,11 @@ async fn handle_h3_request(
         let session = ctx.services.metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
         let server = Arc::new(UdpServerCtx {
             metrics: ctx.services.metrics.clone(),
-            nat_table: Arc::clone(&ctx.services.nat_table),
-            replay_store: Arc::clone(&ctx.services.replay_store),
+            nat_table: Arc::clone(&ctx.services.udp.nat_table),
+            replay_store: Arc::clone(&ctx.services.udp.replay_store),
             dns_cache: Arc::clone(&ctx.services.dns_cache),
             prefer_ipv4_upstream: ctx.services.prefer_ipv4_upstream,
-            relay_semaphore: ctx.services.udp_relay_semaphore.clone(),
+            relay_semaphore: ctx.services.udp.relay_semaphore.clone(),
         });
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
