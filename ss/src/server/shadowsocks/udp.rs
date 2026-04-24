@@ -14,7 +14,7 @@ use crate::{
 
 use super::super::{
     connect::resolve_udp_target,
-    constants::{MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
+    constants::{MAX_UDP_DATAGRAM_SIZE, MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
     dns_cache::DnsCache,
     nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
     replay::ReplayStore,
@@ -60,9 +60,9 @@ pub(in super::super) async fn serve_ss_udp_socket(
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
-    let mut buffer = BytesMut::with_capacity(65_535);
+    let mut buffer = BytesMut::with_capacity(MAX_UDP_DATAGRAM_SIZE);
     loop {
-        buffer.reserve(65_535);
+        buffer.reserve(MAX_UDP_DATAGRAM_SIZE);
         tokio::select! {
             biased;
             _ = shutdown.cancelled() => {

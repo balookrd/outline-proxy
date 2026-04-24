@@ -17,10 +17,8 @@ use crate::{
     protocol::TargetAddr,
 };
 
+use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
 use super::entry::{ActiveSession, UdpResponseSender};
-
-// RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP)
-pub(crate) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 
 pub(super) struct NatReaderCtx {
     pub(super) socket: Arc<UdpSocket>,

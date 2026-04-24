@@ -36,7 +36,8 @@ mod tests {
     use futures_util::future::BoxFuture;
 
     use super::{NatKey, NatTable, ResponseSender, UdpResponseSender};
-    use super::reader::{MAX_UDP_PAYLOAD_SIZE, record_oversized_socket_response_drop};
+    use super::reader::record_oversized_socket_response_drop;
+    use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
     use crate::{
         config::{CipherKind, Config},
         crypto::{UdpSession, UserKey},

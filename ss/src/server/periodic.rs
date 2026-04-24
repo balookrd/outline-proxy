@@ -8,7 +8,9 @@ use tracing::debug;
 use crate::{clock, config::Config, outbound::OutboundIpv6};
 
 use super::{
-    constants::{DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS},
+    constants::{
+        DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS, NAT_EVICTION_INTERVAL_SECS,
+    },
     services::Built,
     shutdown::ShutdownSignal,
 };
@@ -37,7 +39,8 @@ pub(super) fn spawn_maintenance(built: &Built, config: &Config, mut shutdown: Sh
         let metrics = Arc::clone(&built.metrics);
         let mut sd = shutdown.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            let mut interval =
+                tokio::time::interval(Duration::from_secs(NAT_EVICTION_INTERVAL_SECS));
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             interval.tick().await;
             loop {

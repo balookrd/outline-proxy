@@ -37,5 +37,18 @@ pub(super) const UDP_DNS_CACHE_TTL_SECS: u64 = 30;
 pub(super) const DNS_CACHE_STALE_GRACE_SECS: u64 = 3_600;
 // How often the background task sweeps entries that exceeded the stale grace.
 pub(super) const DNS_CACHE_SWEEP_INTERVAL_SECS: u64 = 300;
+// Theoretical upper bound of a UDP datagram including headers (2^16 − 1).
+// Used to size the receive buffer where the kernel may hand us the full
+// datagram before we trim to the header-less payload.
+pub(super) const MAX_UDP_DATAGRAM_SIZE: usize = 65_535;
+// RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP).
 pub(super) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 pub(super) const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
+
+// Bounded mpsc capacities for the per-session WebSocket writer fan-in.
+pub(super) const WS_DATA_CHANNEL_CAPACITY: usize = 64;
+pub(super) const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
+
+// Period at which the background task sweeps idle NAT entries and stale
+// replay-filter sessions.
+pub(super) const NAT_EVICTION_INTERVAL_SECS: u64 = 60;
