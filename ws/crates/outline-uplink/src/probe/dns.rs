@@ -53,6 +53,11 @@ pub(super) async fn run_dns_probe(
                     target: format!("DNS probe websocket for uplink {}", uplink.name),
                 })?
             },
+            UplinkTransport::Vless => {
+                bail!(
+                    "DNS probe is not supported for VLESS uplinks yet (iteration 1: rely on WS probe)"
+                );
+            },
             UplinkTransport::Shadowsocks => {
                 let socket = connect_shadowsocks_udp_with_source(
                     cache,

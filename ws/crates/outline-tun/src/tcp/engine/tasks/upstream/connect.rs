@@ -182,6 +182,7 @@ impl TunTcpEngine {
             let upstream_writer = Arc::new(Mutex::new(match upstream_writer {
                 TcpWriter::Ws(w) => UpstreamWriter::TunneledWs(w),
                 TcpWriter::Socket(w) => UpstreamWriter::TunneledSocket(w),
+                TcpWriter::Vless(w) => UpstreamWriter::TunneledVless(w),
             }));
             let (pending_payloads, should_close_client_half) = {
                 let mut state = flow.lock().await;

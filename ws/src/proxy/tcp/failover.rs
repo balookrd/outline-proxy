@@ -7,6 +7,7 @@ use tracing::debug;
 use outline_transport::{
     TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
+    VlessTcpReader, VlessTcpWriter,
     connect_shadowsocks_tcp_with_source,
 };
 use socks5_proto::TargetAddr;
@@ -155,18 +156,37 @@ async fn do_tcp_ss_setup(
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let (ws_sink, ws_stream) = ws_stream.split();
-    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
-    let (mut writer, ctrl_tx) =
-        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
-            .await?;
-    let request_salt = writer.request_salt();
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
         mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
         uplink: uplink.name.clone(),
         target: target.to_string(),
     };
+
+    if uplink.transport == UplinkTransport::Vless {
+        let uuid = uplink
+            .vless_uuid
+            .as_ref()
+            .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+        let (writer, ctrl_tx) =
+            VlessTcpWriter::connect(ws_sink, uuid, target, Arc::clone(&lifetime));
+        let reader = VlessTcpReader::new(ws_stream, ctrl_tx, lifetime).with_diag(diag);
+        debug!(
+            uplink = %uplink.name,
+            target = %target,
+            transport = "ws",
+            protocol = "vless",
+            "opened VLESS uplink"
+        );
+        return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
+    }
+
+    let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+    let (mut writer, ctrl_tx) =
+        TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
+            .await?;
+    let request_salt = writer.request_salt();
     let reader =
         TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
             .with_request_salt(request_salt)

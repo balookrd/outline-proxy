@@ -21,6 +21,7 @@ fn empty_snapshot() -> UplinkManagerSnapshot {
         udp_active_uplink: None,
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
+        auto_failback: false,
     }
 }
 
@@ -241,6 +242,7 @@ fn render_prometheus_exports_routing_selection_info() {
         udp_active_uplink: None,
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
+        auto_failback: false,
     }])
     .expect("render metrics");
 
@@ -272,6 +274,7 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         udp_active_uplink: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
+        auto_failback: false,
     }])
     .expect("render first metrics");
 
@@ -285,6 +288,7 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         udp_active_uplink: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
+        auto_failback: false,
     }])
     .expect("render second metrics");
 

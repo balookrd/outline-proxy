@@ -23,6 +23,7 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
+    pub(super) uuid: Option<String>,
 }
 
 impl ResolvedUplinkInput {
@@ -65,6 +66,7 @@ impl ResolvedUplinkInput {
             ipv6_first: args
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),
+            uuid: None,
         }
     }
 
@@ -83,6 +85,7 @@ impl ResolvedUplinkInput {
             weight: uplink.weight,
             fwmark: uplink.fwmark,
             ipv6_first: uplink.ipv6_first,
+            uuid: uplink.uuid.clone(),
         }
     }
 
@@ -106,24 +109,48 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first,
+            uuid,
         } = input;
 
         let weight = weight.unwrap_or(1.0);
         if !weight.is_finite() || weight <= 0.0 {
             bail!("uplink weight must be a finite positive number");
         }
+        let is_vless = transport == UplinkTransport::Vless;
         let cipher = cipher.unwrap_or(CipherKind::Chacha20IetfPoly1305);
-        let password = password
-            .ok_or_else(|| anyhow!("missing password: set it in config.toml or pass --password"))?;
-        cipher
-            .derive_master_key(&password)
-            .with_context(|| format!("invalid password/PSK for cipher {cipher}"))?;
+        let password = if is_vless {
+            // VLESS has no shared secret; keep an empty placeholder so the
+            // shared `UplinkConfig` struct stays uniform.
+            password.unwrap_or_default()
+        } else {
+            let pw = password.ok_or_else(|| {
+                anyhow!("missing password: set it in config.toml or pass --password")
+            })?;
+            cipher
+                .derive_master_key(&pw)
+                .with_context(|| format!("invalid password/PSK for cipher {cipher}"))?;
+            pw
+        };
+
+        let vless_uuid = if is_vless {
+            let raw = uuid.ok_or_else(|| {
+                anyhow!("uplink {name}: transport=vless requires `uuid = \"…\"`")
+            })?;
+            Some(outline_transport::vless::parse_uuid(&raw).with_context(|| {
+                format!("uplink {name}: invalid vless uuid")
+            })?)
+        } else {
+            if uuid.is_some() {
+                bail!("uplink {name}: `uuid` is only valid for transport=vless");
+            }
+            None
+        };
 
         Ok(UplinkConfig {
             name,
             transport,
             tcp_ws_url: match transport {
-                UplinkTransport::Ws => Some(tcp_ws_url.ok_or_else(|| {
+                UplinkTransport::Ws | UplinkTransport::Vless => Some(tcp_ws_url.ok_or_else(|| {
                     anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
                 })?),
                 UplinkTransport::Shadowsocks => {
@@ -137,15 +164,15 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             },
             tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
             udp_ws_url: match transport {
-                UplinkTransport::Ws => udp_ws_url,
+                UplinkTransport::Ws | UplinkTransport::Vless => udp_ws_url,
                 UplinkTransport::Shadowsocks => None,
             },
             udp_ws_mode: udp_ws_mode.unwrap_or_default(),
             tcp_addr: match transport {
-                UplinkTransport::Ws => {
+                UplinkTransport::Ws | UplinkTransport::Vless => {
                     if tcp_addr.is_some() || udp_addr.is_some() {
                         bail!(
-                            "socket uplink fields are not valid for transport=websocket; use tcp_ws_url/udp_ws_url"
+                            "socket uplink fields are not valid for transport=websocket/vless; use tcp_ws_url/udp_ws_url"
                         );
                     }
                     None
@@ -155,7 +182,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                 })?),
             },
             udp_addr: match transport {
-                UplinkTransport::Ws => None,
+                UplinkTransport::Ws | UplinkTransport::Vless => None,
                 UplinkTransport::Shadowsocks => udp_addr,
             },
             cipher,
@@ -163,6 +190,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first: ipv6_first.unwrap_or(false),
+            vless_uuid,
         })
     }
 }

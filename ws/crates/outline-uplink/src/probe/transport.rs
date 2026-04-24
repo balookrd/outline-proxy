@@ -87,6 +87,44 @@ pub(super) async fn connect_probe_tcp(
             .with_diag(diag);
             Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
         },
+        UplinkTransport::Vless => {
+            let ws_stream = connect_websocket_with_source(
+                cache,
+                uplink
+                    .tcp_ws_url
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                effective_tcp_mode,
+                uplink.fwmark,
+                uplink.ipv6_first,
+                source,
+            )
+            .await
+            .with_context(|| TransportOperation::Connect {
+                target: format!("{probe_label} vless websocket for uplink {}", uplink.name),
+            })?;
+            let shared_conn_info = ws_stream.shared_connection_info();
+            let (ws_sink, ws_stream) = ws_stream.split();
+            let uuid = uplink
+                .vless_uuid
+                .as_ref()
+                .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+            let (writer, ctrl_tx) = outline_transport::VlessTcpWriter::connect(
+                ws_sink,
+                uuid,
+                target,
+                Arc::clone(&lifetime),
+            );
+            let diag = outline_transport::WsReadDiag {
+                conn_id: shared_conn_info.map(|(id, _)| id),
+                mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
+                uplink: uplink.name.clone(),
+                target: target.to_string(),
+            };
+            let reader = outline_transport::VlessTcpReader::new(ws_stream, ctrl_tx, lifetime)
+                .with_diag(diag);
+            Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)))
+        },
         UplinkTransport::Shadowsocks => {
             let stream = connect_shadowsocks_tcp_with_source(
                 cache,

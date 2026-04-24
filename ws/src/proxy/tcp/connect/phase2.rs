@@ -314,7 +314,7 @@ mod tests {
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
-        }
+            vless_uuid: None,        }
     }
 
     #[tokio::test(start_paused = true)]

@@ -1145,6 +1145,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
+            vless_uuid: None,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

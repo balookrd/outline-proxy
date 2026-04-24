@@ -4,6 +4,8 @@ mod writer;
 pub use reader::{SocketTcpReader, TcpShadowsocksReader, WsReadDiag, WsTcpReader};
 pub use writer::{SocketTcpWriter, TcpShadowsocksWriter, WsTcpWriter};
 
+use crate::vless::{VlessTcpReader, VlessTcpWriter};
+
 use anyhow::Result;
 
 // ---------------------------------------------------------------------------
@@ -16,6 +18,7 @@ use anyhow::Result;
 pub enum TcpWriter {
     Ws(WsTcpWriter),
     Socket(SocketTcpWriter),
+    Vless(VlessTcpWriter),
 }
 
 impl TcpWriter {
@@ -23,6 +26,7 @@ impl TcpWriter {
         match self {
             Self::Ws(w) => w.request_salt(),
             Self::Socket(w) => w.request_salt(),
+            Self::Vless(_) => None,
         }
     }
 
@@ -30,6 +34,7 @@ impl TcpWriter {
         match self {
             Self::Ws(w) => w.supports_half_close(),
             Self::Socket(w) => w.supports_half_close(),
+            Self::Vless(w) => w.supports_half_close(),
         }
     }
 
@@ -37,6 +42,7 @@ impl TcpWriter {
         match self {
             Self::Ws(w) => w.send_chunk(payload).await,
             Self::Socket(w) => w.send_chunk(payload).await,
+            Self::Vless(w) => w.send_chunk(payload).await,
         }
     }
 
@@ -44,6 +50,7 @@ impl TcpWriter {
         match self {
             Self::Ws(w) => w.send_keepalive().await,
             Self::Socket(w) => w.send_keepalive().await,
+            Self::Vless(w) => w.send_keepalive().await,
         }
     }
 
@@ -51,6 +58,7 @@ impl TcpWriter {
         match self {
             Self::Ws(w) => w.close().await,
             Self::Socket(w) => w.close().await,
+            Self::Vless(w) => w.close().await,
         }
     }
 }
@@ -59,6 +67,7 @@ impl TcpWriter {
 pub enum TcpReader {
     Ws(WsTcpReader),
     Socket(SocketTcpReader),
+    Vless(VlessTcpReader),
 }
 
 impl TcpReader {
@@ -66,6 +75,7 @@ impl TcpReader {
         match self {
             Self::Ws(r) => Self::Ws(r.with_request_salt(salt)),
             Self::Socket(r) => Self::Socket(r.with_request_salt(salt)),
+            Self::Vless(r) => Self::Vless(r),
         }
     }
 
@@ -73,6 +83,7 @@ impl TcpReader {
     pub fn with_diag(self, diag: WsReadDiag) -> Self {
         match self {
             Self::Ws(r) => Self::Ws(r.with_diag(diag)),
+            Self::Vless(r) => Self::Vless(r.with_diag(diag)),
             other => other,
         }
     }
@@ -81,6 +92,7 @@ impl TcpReader {
         match self {
             Self::Ws(r) => r.closed_cleanly,
             Self::Socket(r) => r.closed_cleanly,
+            Self::Vless(r) => r.closed_cleanly,
         }
     }
 
@@ -88,6 +100,7 @@ impl TcpReader {
         match self {
             Self::Ws(r) => r.read_chunk().await,
             Self::Socket(r) => r.read_chunk().await,
+            Self::Vless(r) => r.read_chunk().await,
         }
     }
 }

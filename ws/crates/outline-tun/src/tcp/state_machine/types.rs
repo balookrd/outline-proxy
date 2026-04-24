@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 
-use outline_transport::{WsTcpWriter, SocketTcpWriter};
+use outline_transport::{SocketTcpWriter, VlessTcpWriter, WsTcpWriter};
 use crate::TunRoute;
 use outline_uplink::UplinkManager;
 
@@ -26,6 +26,7 @@ use super::super::engine::scheduler::FlowScheduler;
 pub enum UpstreamWriter {
     TunneledWs(WsTcpWriter),
     TunneledSocket(SocketTcpWriter),
+    TunneledVless(VlessTcpWriter),
     Direct(OwnedWriteHalf),
 }
 
@@ -34,6 +35,7 @@ impl UpstreamWriter {
         match self {
             Self::TunneledWs(w) => w.send_chunk(data).await,
             Self::TunneledSocket(w) => w.send_chunk(data).await,
+            Self::TunneledVless(w) => w.send_chunk(data).await,
             Self::Direct(w) => w.write_all(data).await.context("direct TCP write failed"),
         }
     }
@@ -42,6 +44,7 @@ impl UpstreamWriter {
         match self {
             Self::TunneledWs(w) => w.close().await,
             Self::TunneledSocket(w) => w.close().await,
+            Self::TunneledVless(w) => w.close().await,
             Self::Direct(w) => w.shutdown().await.context("direct TCP shutdown failed"),
         }
     }

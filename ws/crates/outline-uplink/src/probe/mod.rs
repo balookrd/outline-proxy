@@ -79,7 +79,7 @@ async fn run_tcp_probe(
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
-                UplinkTransport::Ws => {
+                UplinkTransport::Ws | UplinkTransport::Vless => {
                     run_ws_probe(
                         cache,
                         group,
@@ -161,7 +161,7 @@ async fn run_udp_probe(
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
-                UplinkTransport::Ws => {
+                UplinkTransport::Ws | UplinkTransport::Vless => {
                     run_ws_probe(
                         cache,
                         group,
