@@ -1,6 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use bytes::BytesMut;
 use ring::{
     aead::{self, Nonce},
     hkdf,
@@ -220,12 +219,3 @@ impl hkdf::KeyType for HkdfLen {
     }
 }
 
-pub(super) trait BytesMutAdvance {
-    fn advance(&mut self, count: usize);
-}
-
-impl BytesMutAdvance for BytesMut {
-    fn advance(&mut self, count: usize) {
-        let _ = self.split_to(count);
-    }
-}

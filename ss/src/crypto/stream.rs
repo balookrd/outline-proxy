@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use bytes::BytesMut;
+use bytes::{Buf, BytesMut};
 use ring::{
     aead::{Aad, LessSafeKey, UnboundKey},
     rand::{SecureRandom, SystemRandom},
@@ -9,7 +9,7 @@ use ring::{
 use super::{
     error::CryptoError,
     primitives::{
-        BytesMutAdvance as _, LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN,
+        LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN,
         SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
         SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, current_unix_secs, derive_subkey,
         next_stream_nonce, nonce_zero, parse_ss2022_request_header,
