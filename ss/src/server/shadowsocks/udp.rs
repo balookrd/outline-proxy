@@ -8,26 +8,22 @@ use tracing::{debug, warn};
 
 use crate::{
     crypto::{CryptoError, UserKey, decrypt_udp_packet, diagnose_udp_packet},
-    metrics::{Metrics, Protocol, Transport},
+    metrics::{Protocol, Transport},
     protocol::parse_target_addr,
 };
 
 use super::super::{
     connect::resolve_udp_target,
     constants::{MAX_UDP_DATAGRAM_SIZE, MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
-    dns_cache::DnsCache,
-    nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
-    replay::{self, ReplayStore},
+    nat::{NatKey, ResponseSender, UdpResponseSender},
+    replay,
     shutdown::ShutdownSignal,
+    state::Services,
 };
 
 pub(in super::super) struct SsUdpCtx {
     pub(in super::super) users: Arc<[UserKey]>,
-    pub(in super::super) metrics: Arc<Metrics>,
-    pub(in super::super) nat_table: Arc<NatTable>,
-    pub(in super::super) replay_store: Arc<ReplayStore>,
-    pub(in super::super) dns_cache: Arc<DnsCache>,
-    pub(in super::super) prefer_ipv4_upstream: bool,
+    pub(in super::super) services: Arc<Services>,
 }
 
 struct DatagramResponseSender {
@@ -76,7 +72,7 @@ pub(in super::super) async fn serve_ss_udp_socket(
                     "socket udp received encrypted datagram"
                 );
                 if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                    ctx.metrics.record_udp_relay_drop(
+                    ctx.services.metrics.record_udp_relay_drop(
                         Transport::Udp,
                         Protocol::Socket,
                         "concurrency_limit",
@@ -120,9 +116,10 @@ async fn handle_ss_udp_datagram(
     };
     let user_id = packet.user.id_arc();
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
-        && !ctx.replay_store.check_and_mark(csid, pid)
+        && !ctx.services.udp.replay_store.check_and_mark(csid, pid)
     {
-        ctx.metrics
+        ctx.services
+            .metrics
             .record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
         warn!(
             user = packet.user.id(),
@@ -137,7 +134,9 @@ async fn handle_ss_udp_datagram(
     };
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
-    ctx.metrics.record_client_last_seen(Arc::clone(&user_id));
+    ctx.services
+        .metrics
+        .record_client_last_seen(Arc::clone(&user_id));
     debug!(
         user = packet.user.id(),
         cipher = packet.user.cipher().as_str(),
@@ -146,8 +145,12 @@ async fn handle_ss_udp_datagram(
         "socket udp shadowsocks user authenticated"
     );
 
-    let resolved =
-        resolve_udp_target(ctx.dns_cache.as_ref(), &target, ctx.prefer_ipv4_upstream).await?;
+    let resolved = resolve_udp_target(
+        ctx.services.dns_cache.as_ref(),
+        &target,
+        ctx.services.prefer_ipv4_upstream,
+    )
+    .await?;
     debug!(
         user = packet.user.id(),
         client_addr = %client_addr,
@@ -171,8 +174,15 @@ async fn handle_ss_udp_datagram(
         target: resolved,
     };
     let entry = ctx
+        .services
+        .udp
         .nat_table
-        .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&ctx.metrics))
+        .get_or_create(
+            nat_key,
+            &packet.user,
+            packet.session.clone(),
+            Arc::clone(&ctx.services.metrics),
+        )
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
@@ -187,7 +197,7 @@ async fn handle_ss_udp_datagram(
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        ctx.metrics.record_udp_oversized_datagram_dropped(
+        ctx.services.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
             Protocol::Socket,
             "client_to_target",
@@ -200,7 +210,7 @@ async fn handle_ss_udp_datagram(
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
             "dropping oversized socket udp datagram before upstream send"
         );
-        ctx.metrics.record_udp_request(
+        ctx.services.metrics.record_udp_request(
             Arc::clone(&user_id),
             Protocol::Socket,
             "error",
@@ -208,7 +218,7 @@ async fn handle_ss_udp_datagram(
         );
         return Ok(());
     }
-    ctx.metrics.record_udp_payload_bytes(
+    ctx.services.metrics.record_udp_payload_bytes(
         Arc::clone(&user_id),
         Protocol::Socket,
         "client_to_target",
@@ -222,7 +232,7 @@ async fn handle_ss_udp_datagram(
         "socket udp relaying datagram to upstream"
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        ctx.metrics.record_udp_request(
+        ctx.services.metrics.record_udp_request(
             Arc::clone(&user_id),
             Protocol::Socket,
             "error",
@@ -231,7 +241,7 @@ async fn handle_ss_udp_datagram(
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    ctx.metrics.record_udp_request(
+    ctx.services.metrics.record_udp_request(
         user_id,
         Protocol::Socket,
         "success",

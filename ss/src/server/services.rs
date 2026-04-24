@@ -29,7 +29,6 @@ use super::{
 use arc_swap::ArcSwap;
 
 pub(super) struct Built {
-    pub(super) metrics: Arc<Metrics>,
     pub(super) users: Arc<[UserKey]>,
     pub(super) user_routes: Arc<[UserRoute]>,
     pub(super) vless_user_routes: Arc<[VlessUserRoute]>,
@@ -41,10 +40,6 @@ pub(super) struct Built {
     pub(super) auth_users: AuthUsersSnapshot,
     pub(super) services: Arc<Services>,
     pub(super) auth: Arc<AuthPolicy>,
-    pub(super) nat_table: Arc<NatTable>,
-    pub(super) replay_store: Arc<ReplayStore>,
-    pub(super) dns_cache: Arc<DnsCache>,
-    pub(super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
 }
 
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
@@ -95,13 +90,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         Some(Arc::new(Semaphore::new(config.tuning.udp_max_concurrent_relay_tasks)))
     };
     let services = Arc::new(Services {
-        metrics: metrics.clone(),
-        dns_cache: Arc::clone(&dns_cache),
+        metrics,
+        dns_cache,
         prefer_ipv4_upstream: config.prefer_ipv4_upstream,
-        outbound_ipv6: outbound_ipv6.clone(),
+        outbound_ipv6,
         udp: UdpServices {
-            nat_table: Arc::clone(&nat_table),
-            replay_store: Arc::clone(&replay_store),
+            nat_table,
+            replay_store,
             relay_semaphore: udp_relay_semaphore,
         },
     });
@@ -111,7 +106,6 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         http_root_realm: Arc::from(config.http_root_realm.clone()),
     });
     Ok(Built {
-        metrics,
         users,
         user_routes,
         vless_user_routes,
@@ -122,9 +116,5 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         auth_users,
         services,
         auth,
-        nat_table,
-        replay_store,
-        dns_cache,
-        outbound_ipv6,
     })
 }
