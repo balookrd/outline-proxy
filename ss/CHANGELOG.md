@@ -59,6 +59,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Fixed HTTP/3 to send WebSocket Close 1013 on upstream connect failure (parity with TCP path).
 - Fixed config validation so `h3_max_concurrent_uni_streams` must be non-zero.
 - Fixed `outbound_ipv6_interface` to bind to the addresses actually assigned to the interface instead of random hosts inside their /64, so inbound return traffic works under ordinary SLAAC/DHCPv6 without AnyIP routes or NDP proxying. Pairs with kernel privacy extensions (`use_tempaddr=2`) for per-connection source rotation.
+- Fixed VLESS over HTTP/3: the H3 router never inspected the VLESS path set, so Extended CONNECT requests to any configured `vless_ws_path` were answered with 404. VLESS is now routed on H3 with parity to Axum (TCP, UDP, mux.cool/XUDP).
 
 ## 1.0.2 - 2026-04-12
 
