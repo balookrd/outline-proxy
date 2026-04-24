@@ -488,15 +488,18 @@ listen = "[::1]:9090"
 # [dashboard]
 # listen = "127.0.0.1:9092"
 # refresh_interval_secs = 5
+# # Таймаут HTTP-запроса к control каждой instance (по умолчанию 5s).
+# request_timeout_secs = 5
 #
 # [[dashboard.instances]]
 # name = "inst-01"
+# # http:// или https:// — TLS-эндпоинты control поддерживаются.
 # control_url = "http://127.0.0.1:9091"
 # token_file = "/etc/outline-ws/inst-01.control.token"
 #
 # [[dashboard.instances]]
 # name = "inst-02"
-# control_url = "http://10.0.0.12:9091"
+# control_url = "https://10.0.0.12:9091"
 # token = "long-random-secret"
 
 [tun]
