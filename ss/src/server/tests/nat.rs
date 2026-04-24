@@ -59,14 +59,14 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
     let users = build_users(&config)?;
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
-    let ctx = Arc::new(SsUdpCtx {
+    let ctx = SsUdpCtx {
         users,
         metrics,
         nat_table: NatTable::new(std::time::Duration::from_secs(300)),
         replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
         prefer_ipv4_upstream: false,
-    });
+    };
     let server = tokio::spawn(async move {
         serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await
     });

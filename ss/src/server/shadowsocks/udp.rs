@@ -47,9 +47,10 @@ impl ResponseSender for DatagramResponseSender {
 
 pub(in super::super) async fn serve_ss_udp_socket(
     socket: Arc<UdpSocket>,
-    ctx: Arc<SsUdpCtx>,
+    ctx: SsUdpCtx,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
+    let ctx = Arc::new(ctx);
     let mut in_flight: FuturesUnordered<BoxFuture<'static, ()>> = FuturesUnordered::new();
     let mut buffer = BytesMut::with_capacity(MAX_UDP_DATAGRAM_SIZE);
     loop {

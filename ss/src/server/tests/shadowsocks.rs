@@ -34,13 +34,13 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let ctx = Arc::new(SsTcpCtx {
+    let ctx = SsTcpCtx {
         users,
         metrics,
         dns_cache,
         prefer_ipv4_upstream: false,
         outbound_ipv6: None,
-    });
+    };
     let server = tokio::spawn(async move {
         serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await
     });
@@ -88,14 +88,14 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
     let users = build_users(&config)?;
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
-    let ctx = Arc::new(SsUdpCtx {
+    let ctx = SsUdpCtx {
         users,
         metrics,
         nat_table: NatTable::new(std::time::Duration::from_secs(300)),
         replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
         prefer_ipv4_upstream: false,
-    });
+    };
     let server = tokio::spawn(async move {
         serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await
     });

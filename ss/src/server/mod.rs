@@ -137,25 +137,25 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
     if let Some(listener) = bound.ss_tcp_listener {
-        let ctx = Arc::new(SsTcpCtx {
+        let ctx = SsTcpCtx {
             users: built.users.clone(),
             metrics: built.metrics.clone(),
             dns_cache: Arc::clone(&built.dns_cache),
             prefer_ipv4_upstream: config.prefer_ipv4_upstream,
             outbound_ipv6: built.outbound_ipv6.clone(),
-        });
+        };
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move { serve_ss_tcp_listener(listener, ctx, shutdown).await });
     }
     if let Some(socket) = bound.ss_udp_socket {
-        let ctx = Arc::new(SsUdpCtx {
+        let ctx = SsUdpCtx {
             users: built.users.clone(),
             metrics: built.metrics.clone(),
             nat_table: Arc::clone(&built.nat_table),
             replay_store: Arc::clone(&built.replay_store),
             dns_cache: Arc::clone(&built.dns_cache),
             prefer_ipv4_upstream: config.prefer_ipv4_upstream,
-        });
+        };
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move { serve_ss_udp_socket(socket, ctx, shutdown).await });
     }
