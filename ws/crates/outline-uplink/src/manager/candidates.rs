@@ -145,6 +145,87 @@ impl UplinkManager {
         None
     }
 
+    fn primary_order(&self, left: &CandidateState, right: &CandidateState) -> Ordering {
+        rightless_bool(left.healthy)
+            .cmp(&rightless_bool(right.healthy))
+            .reverse()
+            .then_with(|| {
+                left.score
+                    .unwrap_or(Duration::MAX)
+                    .cmp(&right.score.unwrap_or(Duration::MAX))
+            })
+            .then_with(|| {
+                higher_weight_first(
+                    self.inner.uplinks[left.index].weight,
+                    self.inner.uplinks[right.index].weight,
+                )
+            })
+            .then_with(|| left.index.cmp(&right.index))
+    }
+
+    // Initial strict-mode selection (no previous active): weight before score
+    // so that the configured priority signal dominates before any EWMA data.
+    fn initial_strict_order(&self, left: &CandidateState, right: &CandidateState) -> Ordering {
+        rightless_bool(left.healthy)
+            .cmp(&rightless_bool(right.healthy))
+            .reverse()
+            .then_with(|| {
+                higher_weight_first(
+                    self.inner.uplinks[left.index].weight,
+                    self.inner.uplinks[right.index].weight,
+                )
+            })
+            .then_with(|| {
+                left.score
+                    .unwrap_or(Duration::MAX)
+                    .cmp(&right.score.unwrap_or(Duration::MAX))
+            })
+            .then_with(|| left.index.cmp(&right.index))
+    }
+
+    // Re-sort after a failed active uplink: prefer candidates whose cooldown
+    // expires soonest, break ties with penalty-aware latency score.
+    fn failover_order(
+        &self,
+        left: &CandidateState,
+        right: &CandidateState,
+        gate_transport: TransportKind,
+        now: Instant,
+    ) -> Ordering {
+        let left_remaining = cooldown_remaining(&left.status, gate_transport, now);
+        let right_remaining = cooldown_remaining(&right.status, gate_transport, now);
+        let left_score = score_latency(
+            &left.status,
+            self.inner.uplinks[left.index].weight,
+            gate_transport,
+            now,
+            &self.inner.load_balancing,
+        );
+        let right_score = score_latency(
+            &right.status,
+            self.inner.uplinks[right.index].weight,
+            gate_transport,
+            now,
+            &self.inner.load_balancing,
+        );
+        rightless_bool(left.healthy)
+            .cmp(&rightless_bool(right.healthy))
+            .reverse()
+            .then_with(|| left_remaining.cmp(&right_remaining))
+            .then_with(|| {
+                left_score
+                    .unwrap_or(Duration::MAX)
+                    .cmp(&right_score.unwrap_or(Duration::MAX))
+            })
+            .then_with(|| {
+                higher_weight_first(
+                    self.inner.uplinks[left.index].weight,
+                    self.inner.uplinks[right.index].weight,
+                )
+            })
+            .then_with(|| left.index.cmp(&right.index))
+    }
+
     fn build_candidate_states(
         &self,
         transport: TransportKind,
@@ -190,23 +271,7 @@ impl UplinkManager {
             return Vec::new();
         }
 
-        candidates.sort_by(|left, right| {
-            rightless_bool(left.healthy)
-                .cmp(&rightless_bool(right.healthy))
-                .reverse()
-                .then_with(|| {
-                    left.score
-                        .unwrap_or(Duration::MAX)
-                        .cmp(&right.score.unwrap_or(Duration::MAX))
-                })
-                .then_with(|| {
-                    higher_weight_first(
-                        self.inner.uplinks[left.index].weight,
-                        self.inner.uplinks[right.index].weight,
-                    )
-                })
-                .then_with(|| left.index.cmp(&right.index))
-        });
+        candidates.sort_by(|left, right| self.primary_order(left, right));
 
         let preferred_index = self
             .preferred_sticky_index(&routing_key, transport, &candidates)
@@ -245,41 +310,9 @@ impl UplinkManager {
         }
 
         if current_active.is_none() {
-            candidates.sort_by(|left, right| {
-                rightless_bool(left.healthy)
-                    .cmp(&rightless_bool(right.healthy))
-                    .reverse()
-                    .then_with(|| {
-                        higher_weight_first(
-                            self.inner.uplinks[left.index].weight,
-                            self.inner.uplinks[right.index].weight,
-                        )
-                    })
-                    .then_with(|| {
-                        left.score
-                            .unwrap_or(Duration::MAX)
-                            .cmp(&right.score.unwrap_or(Duration::MAX))
-                    })
-                    .then_with(|| left.index.cmp(&right.index))
-            });
+            candidates.sort_by(|left, right| self.initial_strict_order(left, right));
         } else {
-            candidates.sort_by(|left, right| {
-                rightless_bool(left.healthy)
-                    .cmp(&rightless_bool(right.healthy))
-                    .reverse()
-                    .then_with(|| {
-                        left.score
-                            .unwrap_or(Duration::MAX)
-                            .cmp(&right.score.unwrap_or(Duration::MAX))
-                    })
-                    .then_with(|| {
-                        higher_weight_first(
-                            self.inner.uplinks[left.index].weight,
-                            self.inner.uplinks[right.index].weight,
-                        )
-                    })
-                    .then_with(|| left.index.cmp(&right.index))
-            });
+            candidates.sort_by(|left, right| self.primary_order(left, right));
         }
 
         let gate_transport =
@@ -440,41 +473,8 @@ impl UplinkManager {
         // penalties are ignored to preserve the intent that strict-mode
         // selection is EWMA-driven.
         if switching_from_cooldown {
-            candidates.sort_by(|left, right| {
-                let left_remaining = cooldown_remaining(&left.status, gate_transport, now);
-                let right_remaining =
-                    cooldown_remaining(&right.status, gate_transport, now);
-                let left_score = score_latency(
-                    &left.status,
-                    self.inner.uplinks[left.index].weight,
-                    gate_transport,
-                    now,
-                    &self.inner.load_balancing,
-                );
-                let right_score = score_latency(
-                    &right.status,
-                    self.inner.uplinks[right.index].weight,
-                    gate_transport,
-                    now,
-                    &self.inner.load_balancing,
-                );
-                rightless_bool(left.healthy)
-                    .cmp(&rightless_bool(right.healthy))
-                    .reverse()
-                    .then_with(|| left_remaining.cmp(&right_remaining))
-                    .then_with(|| {
-                        left_score
-                            .unwrap_or(Duration::MAX)
-                            .cmp(&right_score.unwrap_or(Duration::MAX))
-                    })
-                    .then_with(|| {
-                        higher_weight_first(
-                            self.inner.uplinks[left.index].weight,
-                            self.inner.uplinks[right.index].weight,
-                        )
-                    })
-                    .then_with(|| left.index.cmp(&right.index))
-            });
+            candidates
+                .sort_by(|left, right| self.failover_order(left, right, gate_transport, now));
         }
 
         if commit_selection {
