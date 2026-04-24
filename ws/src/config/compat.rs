@@ -122,6 +122,7 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         weight: Some(1.0),
         fwmark: outline.fwmark,
         ipv6_first: outline.ipv6_first,
+        uuid: None,
         group: None,
     }]);
     outline

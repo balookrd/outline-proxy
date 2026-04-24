@@ -18,6 +18,9 @@ pub enum UplinkTransport {
     #[serde(alias = "websocket")]
     Ws,
     Shadowsocks,
+    /// VLESS over WebSocket (iteration 1: TCP + UDP, no Mux, no flow/xtls,
+    /// TLS supplied by the WS URL scheme `wss://` going through rustls).
+    Vless,
 }
 
 impl std::str::FromStr for UplinkTransport {
@@ -27,6 +30,7 @@ impl std::str::FromStr for UplinkTransport {
         match s {
             "ws" | "websocket" => Ok(Self::Ws),
             "shadowsocks" => Ok(Self::Shadowsocks),
+            "vless" => Ok(Self::Vless),
             _ => anyhow::bail!("unsupported uplink transport: {s}"),
         }
     }
@@ -37,6 +41,7 @@ impl std::fmt::Display for UplinkTransport {
         f.write_str(match self {
             Self::Ws => "ws",
             Self::Shadowsocks => "shadowsocks",
+            Self::Vless => "vless",
         })
     }
 }
@@ -69,6 +74,9 @@ pub struct UplinkConfig {
     pub weight: f64,
     pub fwmark: Option<u32>,
     pub ipv6_first: bool,
+    /// Present when `transport = "vless"`. Raw 16-byte user id; parsed from
+    /// the config string via `outline_transport::vless::parse_uuid`.
+    pub vless_uuid: Option<[u8; 16]>,
 }
 
 impl UplinkConfig {
@@ -76,6 +84,11 @@ impl UplinkConfig {
         match self.transport {
             UplinkTransport::Ws => self.udp_ws_url.is_some(),
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
+            // VLESS UDP is session-per-destination (target in request header),
+            // unlike SS UDP which multiplexes via atyp in every datagram.
+            // Iteration 1 ships TCP only; UDP requires a per-target session
+            // manager that is tracked as follow-up work.
+            UplinkTransport::Vless => false,
         }
     }
 }

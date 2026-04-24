@@ -106,6 +106,7 @@ mod udp_transport;
 mod shared_cache;
 mod shared_dial;
 mod tls;
+pub mod vless;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod url_utils;
 mod ws_stream;
@@ -147,6 +148,7 @@ pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
 pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
+pub use vless::{VlessTcpReader, VlessTcpWriter, VlessUdpWsTransport};
 pub use ws_stream::WsTransportStream;
 
 // TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums
