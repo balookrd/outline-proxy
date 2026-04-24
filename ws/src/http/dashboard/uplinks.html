@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" id="themeColorMeta" content="#0f1626">
+<title>Uplinks · Network Dashboard</title>
+<style>
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0a0f1c;
+  --nav: #0f1626;
+  --nav-2: #1a2238;
+  --nav-text: #cbd5e1;
+  --nav-muted: #8ea0bd;
+  --nav-brand: #ffffff;
+  --nav-hover: rgba(255, 255, 255, 0.04);
+  --nav-card-bg: rgba(255, 255, 255, 0.02);
+  --nav-card-border: rgba(255, 255, 255, 0.06);
+  --nav-card-text: #ffffff;
+  --text: #e2e8f0;
+  --muted: #8ea0bd;
+  --line: #1e293b;
+  --line-strong: #334155;
+  --soft: #151c2e;
+  --soft-2: #111828;
+  --panel: #131b2c;
+  --panel-tint: #0f1626;
+  --green: #22c55e;
+  --green-strong: #86efac;
+  --green-soft: rgba(34, 197, 94, 0.15);
+  --amber: #f59e0b;
+  --amber-soft: rgba(245, 158, 11, 0.15);
+  --gray-soft: rgba(148, 163, 184, 0.12);
+  --blue: #6366f1;
+  --blue-soft: rgba(99, 102, 241, 0.18);
+  --red: #f87171;
+  --red-soft: rgba(248, 113, 113, 0.15);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --error-bg: rgba(248, 113, 113, 0.15);
+  --error-text: #fca5a5;
+  --error-border: rgba(248, 113, 113, 0.35);
+  --input-bg: #0f1626;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8fafc;
+  --nav: #ffffff;
+  --nav-2: #f1f5f9;
+  --nav-text: #334155;
+  --nav-muted: #64748b;
+  --nav-brand: #0f172a;
+  --nav-hover: rgba(15, 23, 42, 0.05);
+  --nav-card-bg: #f8fafc;
+  --nav-card-border: #e2e8f0;
+  --nav-card-text: #0f172a;
+  --text: #0f172a;
+  --muted: #64748b;
+  --line: #e2e8f0;
+  --line-strong: #cbd5e1;
+  --soft: #f1f5f9;
+  --soft-2: #f8fafc;
+  --panel: #ffffff;
+  --panel-tint: #f8fafc;
+  --green: #22c55e;
+  --green-strong: #15803d;
+  --green-soft: #dcfce7;
+  --amber: #f59e0b;
+  --amber-soft: #fef3c7;
+  --gray-soft: #f1f5f9;
+  --blue: #6366f1;
+  --blue-soft: #eef2ff;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --error-bg: #fef2f2;
+  --error-text: #991b1b;
+  --error-border: #fecaca;
+  --input-bg: #ffffff;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: var(--text); background: var(--bg); font-size: 14px; }
+.shell { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
+.nav { background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--nav-card-border); }
+.brand { height: 64px; display: flex; gap: 10px; align-items: center; padding: 0 18px; font-weight: 600; color: var(--nav-brand); font-size: 15px; }
+.logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #4f46e5); display: grid; place-items: center; color: #fff; font-size: 14px; font-weight: 700; }
+.menu { padding: 8px 10px; display: grid; gap: 2px; }
+.item { height: 38px; width: 100%; border: 0; border-radius: 8px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--nav-text); background: transparent; text-align: left; font-size: 13.5px; cursor: pointer; text-decoration: none; }
+.item:hover { background: var(--nav-hover); }
+.item.active { background: var(--blue); color: #fff; }
+.item-icon { width: 16px; display: inline-grid; place-items: center; font-size: 14px; opacity: .85; }
+.spacer { flex: 1; }
+main { padding: 22px 28px; min-width: 0; background: var(--bg); }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+.topbar-copy { display: grid; gap: 4px; }
+h1 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 600; }
+.subtitle { color: var(--muted); font-size: 13px; }
+.toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+select, input { font: inherit; color: var(--text); background: var(--input-bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; }
+select:focus, input:focus { outline: 1px solid var(--blue); border-color: var(--blue); }
+.btn { height: 32px; padding: 0 14px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--soft); color: var(--text); font-weight: 500; font-size: 13px; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; }
+.btn:hover:not(:disabled) { background: var(--nav-hover); }
+.btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+.btn.primary:hover:not(:disabled) { background: #4f46e5; }
+.btn.danger { color: var(--red); border-color: var(--red); background: transparent; }
+.btn:disabled { opacity: .45; cursor: default; }
+.theme-toggle { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; width: 32px; height: 32px; display: grid; place-items: center; color: var(--text); font-size: 14px; cursor: pointer; }
+.dirty-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--amber); background: var(--amber-soft); border: 1px solid var(--amber); border-radius: 999px; padding: 3px 10px; }
+.dirty-pill.clean { color: var(--muted); background: var(--gray-soft); border-color: var(--line); }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); padding: 16px 18px; margin-bottom: 14px; }
+.group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.group-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+.group-count { padding: 2px 8px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.uplink-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.uplink-row:first-child { border-top: 0; }
+.uplink-name { font-weight: 500; }
+.uplink-actions { display: flex; gap: 6px; }
+.form-box { margin-top: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--soft-2); display: grid; gap: 8px; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
+.form-field { display: grid; gap: 3px; }
+.form-field label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.form-field input, .form-field select { width: 100%; }
+.form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.error { border: 1px solid var(--error-border); background: var(--error-bg); color: var(--error-text); border-radius: 8px; padding: 10px 14px; font-size: 13px; margin-bottom: 12px; }
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 14px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); font-size: 13px; }
+.toast.ok { border-color: var(--green); color: var(--green-strong); }
+.toast.err { border-color: var(--red); color: var(--red); }
+.empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+@media (max-width: 900px) {
+  .shell { grid-template-columns: 1fr; }
+  .nav { min-height: auto; }
+  .menu { display: none; }
+  main { padding: 18px 14px; }
+}
+</style>
+</head>
+<body>
+<div class="shell">
+  <aside class="nav">
+    <div class="brand"><span class="logo">◆</span><span>Network Dashboard</span></div>
+    <nav class="menu">
+      <a class="item" href="/dashboard"><span class="item-icon">▣</span><span>Instances</span></a>
+      <a class="item active" href="/dashboard/uplinks"><span class="item-icon">⚒</span><span>Uplinks</span></a>
+    </nav>
+    <div class="spacer"></div>
+  </aside>
+  <main>
+    <div class="topbar">
+      <div class="topbar-copy">
+        <h1>Uplinks configuration</h1>
+        <div class="subtitle">Edit per-instance uplinks and hot-apply via /control/apply</div>
+      </div>
+      <div class="toolbar">
+        <label for="instanceSelect" style="color: var(--muted); font-size: 12.5px;">Instance</label>
+        <select id="instanceSelect"></select>
+        <span class="dirty-pill clean" id="dirtyPill">● no changes</span>
+        <button class="btn primary" id="applyBtn" type="button" disabled>Apply</button>
+        <button class="btn" id="reloadBtn" type="button" title="Reload from server">↻</button>
+        <button class="theme-toggle" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme"><span id="themeIcon">☀</span></button>
+      </div>
+    </div>
+    <div id="errors"></div>
+    <section id="groups"></section>
+  </main>
+</div>
+<div id="toast" style="display: none;"></div>
+<script>
+const state = {
+  instances: [],
+  currentInstance: null,
+  groups: [],
+  dirtyInstances: new Set(),
+  openForm: null, // { kind: 'create'|'edit', group, name? }
+  errors: [],
+};
+
+const TRANSPORTS = ["shadowsocks", "vless"];
+const WS_MODES = ["", "http1", "http2", "http3"];
+
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+}
+
+function showToast(message, tone) {
+  const el = document.getElementById("toast");
+  el.className = "toast " + (tone || "");
+  el.textContent = message;
+  el.style.display = "block";
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => { el.style.display = "none"; }, 3500);
+}
+
+function renderErrors() {
+  const box = document.getElementById("errors");
+  box.innerHTML = state.errors.map(e => `<div class="error">${escapeHtml(e)}</div>`).join("");
+}
+
+function renderDirty() {
+  const pill = document.getElementById("dirtyPill");
+  const dirty = state.currentInstance && state.dirtyInstances.has(state.currentInstance);
+  pill.className = "dirty-pill" + (dirty ? "" : " clean");
+  pill.textContent = dirty ? "● pending changes" : "● no changes";
+  document.getElementById("applyBtn").disabled = !dirty;
+}
+
+function renderInstanceSelect() {
+  const select = document.getElementById("instanceSelect");
+  select.innerHTML = state.instances.map(i => {
+    const label = i.name + (state.dirtyInstances.has(i.name) ? " •" : "");
+    return `<option value="${escapeHtml(i.name)}" ${i.name === state.currentInstance ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  }).join("");
+}
+
+function renderGroups() {
+  const root = document.getElementById("groups");
+  if (!state.currentInstance) {
+    root.innerHTML = `<div class="empty">No instance selected.</div>`;
+    return;
+  }
+  if (!state.groups.length) {
+    root.innerHTML = `<div class="empty">Instance has no groups.</div>`;
+    return;
+  }
+  root.innerHTML = "";
+  for (const group of state.groups) {
+    const panel = document.createElement("section");
+    panel.className = "panel";
+    const uplinks = group.uplinks || [];
+    panel.innerHTML = `
+      <div class="group-head">
+        <div class="group-title">
+          <span>${escapeHtml(group.name)}</span>
+          <span class="group-count">${uplinks.length} uplinks</span>
+        </div>
+        <button class="btn" type="button" data-add="${escapeHtml(group.name)}">+ Add uplink</button>
+      </div>
+      <div class="uplinks"></div>`;
+    const list = panel.querySelector(".uplinks");
+    for (const u of uplinks) {
+      const row = document.createElement("div");
+      row.className = "uplink-row";
+      row.innerHTML = `
+        <div class="uplink-name">${escapeHtml(u.name)}</div>
+        <div class="uplink-actions">
+          <button class="btn" type="button" data-edit-group="${escapeHtml(group.name)}" data-edit-name="${escapeHtml(u.name)}">Edit</button>
+          <button class="btn danger" type="button" data-del-group="${escapeHtml(group.name)}" data-del-name="${escapeHtml(u.name)}">Delete</button>
+        </div>`;
+      list.appendChild(row);
+    }
+    if (state.openForm && state.openForm.group === group.name) {
+      panel.appendChild(renderForm(state.openForm));
+    }
+    root.appendChild(panel);
+  }
+  root.querySelectorAll("button[data-add]").forEach(btn => {
+    btn.addEventListener("click", () => openForm({ kind: "create", group: btn.dataset.add }));
+  });
+  root.querySelectorAll("button[data-edit-group]").forEach(btn => {
+    btn.addEventListener("click", () => openForm({
+      kind: "edit",
+      group: btn.dataset.editGroup,
+      name: btn.dataset.editName,
+    }));
+  });
+  root.querySelectorAll("button[data-del-group]").forEach(btn => {
+    btn.addEventListener("click", () => deleteUplink(btn.dataset.delGroup, btn.dataset.delName));
+  });
+}
+
+const FIELDS = [
+  { key: "name",        label: "Name (required for create)" },
+  { key: "transport",   label: "Transport", type: "select", options: TRANSPORTS },
+  { key: "tcp_addr",    label: "TCP addr" },
+  { key: "udp_addr",    label: "UDP addr" },
+  { key: "method",      label: "Cipher" },
+  { key: "password",    label: "Password" },
+  { key: "uuid",        label: "UUID (vless)" },
+  { key: "tcp_ws_url",  label: "TCP WS URL" },
+  { key: "tcp_ws_mode", label: "TCP WS mode", type: "select", options: WS_MODES },
+  { key: "udp_ws_url",  label: "UDP WS URL" },
+  { key: "udp_ws_mode", label: "UDP WS mode", type: "select", options: WS_MODES },
+  { key: "weight",      label: "Weight", type: "number" },
+  { key: "fwmark",      label: "fwmark", type: "number" },
+  { key: "ipv6_first",  label: "IPv6 first", type: "select", options: ["", "true", "false"] },
+];
+
+function renderForm(form) {
+  const box = document.createElement("div");
+  box.className = "form-box";
+  const title = form.kind === "create"
+    ? `Add uplink to "${form.group}"`
+    : `Edit "${form.name}" in "${form.group}" (blank = unchanged)`;
+  const fields = FIELDS.map(f => {
+    if (form.kind === "edit" && f.key === "name") return "";
+    if (f.type === "select") {
+      const opts = f.options.map(v => `<option value="${escapeHtml(v)}">${v === "" ? "—" : escapeHtml(v)}</option>`).join("");
+      return `<div class="form-field"><label>${escapeHtml(f.label)}</label><select data-field="${f.key}">${opts}</select></div>`;
+    }
+    const type = f.type === "number" ? "number" : "text";
+    const step = f.type === "number" && f.key === "weight" ? ` step="0.1"` : "";
+    return `<div class="form-field"><label>${escapeHtml(f.label)}</label><input type="${type}" data-field="${f.key}"${step}></div>`;
+  }).join("");
+  box.innerHTML = `
+    <div style="font-weight:600;">${escapeHtml(title)}</div>
+    <div class="form-grid">${fields}</div>
+    <div class="form-actions">
+      <button class="btn" type="button" data-cancel="1">Cancel</button>
+      <button class="btn primary" type="button" data-submit="1">${form.kind === "create" ? "Create" : "Update"}</button>
+    </div>`;
+  box.querySelector("button[data-cancel]").addEventListener("click", () => { state.openForm = null; renderGroups(); });
+  box.querySelector("button[data-submit]").addEventListener("click", () => submitForm(box, form));
+  return box;
+}
+
+function collectForm(box) {
+  const payload = {};
+  box.querySelectorAll("[data-field]").forEach(el => {
+    const key = el.dataset.field;
+    const raw = el.value;
+    if (raw === "" || raw == null) return;
+    if (key === "weight") payload[key] = parseFloat(raw);
+    else if (key === "fwmark") payload[key] = parseInt(raw, 10);
+    else if (key === "ipv6_first") payload[key] = raw === "true";
+    else payload[key] = raw;
+  });
+  return payload;
+}
+
+async function submitForm(box, form) {
+  const payload = collectForm(box);
+  const instance = state.currentInstance;
+  try {
+    if (form.kind === "create") {
+      if (!payload.name) { showToast("name is required", "err"); return; }
+      await callProxy("POST", { instance, body: { group: form.group, uplink: payload } });
+    } else {
+      await callProxy("PATCH", { instance, body: { group: form.group, name: form.name, patch: payload } });
+    }
+    state.dirtyInstances.add(instance);
+    state.openForm = null;
+    showToast("Saved to config (not yet applied)", "ok");
+    await loadInstance(instance);
+  } catch (err) {
+    showToast(String(err.message || err), "err");
+  }
+}
+
+async function deleteUplink(group, name) {
+  if (!confirm(`Delete uplink "${name}" from "${group}"?`)) return;
+  const instance = state.currentInstance;
+  try {
+    await callProxy("DELETE", { instance, body: { group, name } });
+    state.dirtyInstances.add(instance);
+    showToast("Deleted from config (not yet applied)", "ok");
+    await loadInstance(instance);
+  } catch (err) {
+    showToast(String(err.message || err), "err");
+  }
+}
+
+async function applyChanges() {
+  const instance = state.currentInstance;
+  try {
+    const res = await fetch("/dashboard/api/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instance }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    state.dirtyInstances.delete(instance);
+    renderInstanceSelect();
+    renderDirty();
+    showToast(`Applied: ${data.groups || "?"} groups, ${data.total_uplinks || "?"} uplinks`, "ok");
+  } catch (err) {
+    showToast("Apply failed: " + String(err.message || err), "err");
+  }
+}
+
+async function callProxy(method, envelope) {
+  const res = await fetch("/dashboard/api/uplinks", {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(envelope),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function openForm(form) {
+  state.openForm = form;
+  renderGroups();
+}
+
+async function loadInstances() {
+  state.errors = [];
+  try {
+    const res = await fetch("/dashboard/api/topology", { cache: "no-store" });
+    const data = await res.json();
+    state.instances = (data.instances || []).map(i => ({ name: i.name, ok: i.ok, groups: i.topology?.instance?.groups || [] }));
+    for (const inst of data.instances || []) {
+      if (!inst.ok) state.errors.push(`${inst.name}: ${inst.error}`);
+    }
+    if (!state.currentInstance && state.instances.length) {
+      state.currentInstance = state.instances[0].name;
+    }
+    const cur = state.instances.find(i => i.name === state.currentInstance);
+    state.groups = cur ? cur.groups : [];
+  } catch (err) {
+    state.errors.push(String(err));
+  }
+  renderErrors();
+  renderInstanceSelect();
+  renderDirty();
+  renderGroups();
+}
+
+async function loadInstance(name) {
+  // Re-fetch topology — simpler and keeps all instances fresh.
+  state.currentInstance = name;
+  await loadInstances();
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  const icon = document.getElementById("themeIcon");
+  if (icon) icon.textContent = theme === "dark" ? "☀" : "☾";
+  const meta = document.getElementById("themeColorMeta");
+  if (meta) {
+    const navColor = getComputedStyle(document.documentElement).getPropertyValue("--nav").trim();
+    if (navColor) meta.setAttribute("content", navColor);
+  }
+  try { localStorage.setItem("dashboard-theme", theme); } catch (_) {}
+}
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("dashboard-theme"); } catch (_) {}
+  const prefersLight = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches;
+  applyTheme(saved || (prefersLight ? "light" : "dark"));
+})();
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const cur = document.documentElement.getAttribute("data-theme") || "dark";
+  applyTheme(cur === "dark" ? "light" : "dark");
+});
+document.getElementById("instanceSelect").addEventListener("change", e => {
+  state.currentInstance = e.target.value;
+  state.openForm = null;
+  const cur = state.instances.find(i => i.name === state.currentInstance);
+  state.groups = cur ? cur.groups : [];
+  renderDirty();
+  renderGroups();
+});
+document.getElementById("applyBtn").addEventListener("click", applyChanges);
+document.getElementById("reloadBtn").addEventListener("click", () => loadInstances());
+loadInstances();
+</script>
+</body>
+</html>

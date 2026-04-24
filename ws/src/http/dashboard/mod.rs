@@ -88,8 +88,15 @@ async fn handle_request(request: Request<Incoming>, state: DashboardState) -> Da
         (&Method::GET, "/dashboard") => {
             html_response(ui::dashboard_html(state.refresh_interval_secs))
         },
+        (&Method::GET, "/dashboard/uplinks") => html_response(ui::uplinks_html()),
         (&Method::GET, "/dashboard/api/topology") => api::handle_topology(state).await,
         (&Method::POST, "/dashboard/api/activate") => api::handle_activate(request, state).await,
+        (&Method::POST, "/dashboard/api/uplinks")
+        | (&Method::PATCH, "/dashboard/api/uplinks")
+        | (&Method::DELETE, "/dashboard/api/uplinks") => {
+            api::handle_uplinks_proxy(request, state).await
+        },
+        (&Method::POST, "/dashboard/api/apply") => api::handle_apply_proxy(request, state).await,
         _ => plain_response(
             StatusCode::NOT_FOUND,
             "text/plain; charset=utf-8",
