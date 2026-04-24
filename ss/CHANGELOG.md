@@ -12,6 +12,7 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Added
 
+- Added VLESS mux.cool / XUDP support over WebSocket: TCP and UDP sub-connections share a single VLESS stream (xray/happ/hiddify-compatible), with per-packet destination addressing on Keep frames and up to 8 concurrent sub-connections per session. The XUDP `GlobalID` is parsed but cross-connection session reuse is not yet wired.
 - Added configurable H2/H3 resource tuning profiles (`small`, `medium`, `large`) with optional per-field `[tuning]` overrides.
 - Added process-wide `udp_max_concurrent_relay_tasks` semaphore for capping concurrent UDP relay tasks.
 - Added Grafana panel for UDP relay drops broken down by transport, protocol, and drop reason.

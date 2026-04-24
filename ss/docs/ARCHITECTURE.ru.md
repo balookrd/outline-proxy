@@ -20,6 +20,7 @@ flowchart TD
         ROUTER["Маршрутизатор путей"]
         FILTER["Фильтр пользователей по пути"]
         CRYPTO["Shadowsocks AEAD расшифровка / шифрование"]
+        VLESS["VLESS UUID-аутентификация + mux.cool/XUDP"]
         TCPR["TCP relay"]
         UDPR["UDP relay"]
         METRICS["Метрики Prometheus"]
@@ -41,8 +42,11 @@ flowchart TD
 
     ROUTER --> FILTER
     FILTER --> CRYPTO
+    ROUTER --> VLESS
     CRYPTO --> TCPR
     CRYPTO --> UDPR
+    VLESS --> TCPR
+    VLESS --> UDPR
 
     TCPR --> DNS
     TCPR --> TCPU
@@ -51,6 +55,7 @@ flowchart TD
 
     ROUTER --> METRICS
     CRYPTO --> METRICS
+    VLESS --> METRICS
     TCPR --> METRICS
     UDPR --> METRICS
 ```
@@ -140,6 +145,48 @@ sequenceDiagram
 - Каждый ответ upstream UDP становится отдельным зашифрованным WebSocket binary frame
 - Пользовательский `fwmark` применяется к исходящему UDP-сокету, если настроен
 - UDP-трафик Shadowsocks-2022 защищён скользящим anti-replay фильтром по `client_session_id`: дубликаты `packet_id` отбрасываются до шага relay, а простаивающие сессии вычищаются с той же частотой, что и эвикция NAT-записей
+
+## Путь данных VLESS
+
+Отдельный WebSocket-путь (`vless_ws_path`, опционально на пользователя) принимает VLESS-потоки на основном HTTP/1.1 или HTTP/2 слушателе. Аутентификация VLESS — это stateless-сопоставление UUID с per-path набором пользователей; сам протокольный слой шифрования не добавляет, поэтому для публичных деплойментов обязателен TLS на основном слушателе.
+
+```mermaid
+sequenceDiagram
+    participant C as Клиент
+    participant S as Сервер
+    participant U as Upstream
+
+    C->>S: WebSocket-подключение к VLESS-пути
+    C->>S: VLESS-заголовок (версия, UUID, команда, target)
+    S->>S: Сопоставление UUID с per-path пользователями
+    alt команда == TCP CONNECT
+        S->>U: TCP connect к target
+        C->>S: Сырые байты
+        S->>U: Сырые байты
+        U->>S: Сырые байты
+        S->>C: Сырые байты
+    else команда == UDP
+        C->>S: Фреймы [u16 len][datagram]
+        S->>U: sendto(target)
+        U->>S: recvfrom()
+        S->>C: Фреймы [u16 len][datagram]
+    else команда == Mux (0x03, mux.cool / XUDP)
+        C->>S: Frame[New, sub-id, TCP|UDP target]
+        S->>S: Открыть под-соединение (до 8 на сессию)
+        C->>S: Frame[Keep, sub-id, данные, опциональный per-packet addr]
+        S->>U: TCP write или UDP send_to
+        U->>S: TCP-байты или UDP-датаграмма
+        S->>C: Frame[Keep, sub-id, данные, source addr для XUDP]
+    end
+```
+
+Важные особенности поведения:
+
+- Поиск UUID — линейный по per-path набору кандидатов; неизвестный UUID отклоняется и логируется
+- Для `COMMAND_UDP` каждый клиентский фрейм длина-префиксируется (`u16` BE); ответы upstream упаковываются в тот же формат
+- Для `COMMAND_MUX` (mux.cool / XUDP) один VLESS-стрим мультиплексирует до 8 одновременных под-соединений с собственными session id; под-соединения могут быть TCP или UDP, UDP Keep-фреймы несут per-packet адрес получателя (XUDP), ответы помечаются адресом источника
+- XUDP `GlobalID` на New-фреймах парсится и логируется, но переиспользование UDP-сессий между реконнектами WebSocket пока не реализовано
+- Пользовательский `fwmark` применяется к TCP-подключениям и UDP-сокетам, открываемым в рамках VLESS-сессии
 
 ## Поддержка транспортов
 
