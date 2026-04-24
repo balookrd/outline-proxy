@@ -15,7 +15,7 @@ use super::{
     shutdown::ShutdownSignal,
 };
 
-pub(super) fn spawn_maintenance(built: &Built, config: &Config, mut shutdown: ShutdownSignal) {
+pub(super) fn spawn_maintenance(built: &Built, config: &Config, shutdown: ShutdownSignal) {
     // Wall-clock cache: one Relaxed store per second instead of a syscall on every hot-path read.
     {
         let mut sd = shutdown.clone();
@@ -81,6 +81,7 @@ pub(super) fn spawn_maintenance(built: &Built, config: &Config, mut shutdown: Sh
     // DNS cache stale-grace sweep.
     {
         let dns_cache = Arc::clone(&built.dns_cache);
+        let mut sd = shutdown.clone();
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(Duration::from_secs(DNS_CACHE_SWEEP_INTERVAL_SECS));
@@ -89,7 +90,7 @@ pub(super) fn spawn_maintenance(built: &Built, config: &Config, mut shutdown: Sh
             loop {
                 tokio::select! {
                     biased;
-                    _ = shutdown.cancelled() => break,
+                    _ = sd.cancelled() => break,
                     _ = interval.tick() => {
                         let purged = dns_cache
                             .sweep_expired(Duration::from_secs(DNS_CACHE_STALE_GRACE_SECS));
