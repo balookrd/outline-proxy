@@ -424,6 +424,7 @@ scrape_configs:
 - Активные исходящие TCP-соединения
 - Пропускная способность TCP payload по направлениям и пользователям
 - Успешные/таймаут/ошибочные UDP-события по пользователям
+- UDP replay drops по пользователям (anti-replay для Shadowsocks-2022)
 - Задержка UDP relay по пользователям
 - Пропускная способность UDP payload по пользователям
 - Агрегированная пропускная способность на клиента по TCP и UDP
@@ -449,6 +450,7 @@ scrape_configs:
 - TCP connect p95 latency
 - TCP и UDP throughput по пользователям
 - скорость UDP-запросов и ответных датаграмм
+- UDP replay drops по пользователям и протоколу
 
 ## Production-эксплуатация
 
@@ -559,6 +561,8 @@ RUST_LOG=outline_ss_rust=info,tower_http=info
 - HTTP/3 требует публичной доступности UDP на выбранном порту.
 - `fwmark` работает только на Linux и требует достаточных привилегий — обычно `CAP_NET_ADMIN` или root.
 - TCP и UDP WebSocket-пути должны быть различными. Сервер проверяет это при запуске.
+- UDP-трафик Shadowsocks-2022 защищён скользящим anti-replay фильтром по per-session ID; дубликаты `packet_id` отбрасываются и считаются в `outline_ss_udp_replay_dropped_total`.
+- HTTP-аутентификация на корневом пути сравнивает пароли в constant-time.
 
 ## Замечания о совместимости
 

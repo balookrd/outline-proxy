@@ -139,6 +139,7 @@ sequenceDiagram
 - Ожидается, что каждый WebSocket binary frame содержит ровно один Shadowsocks UDP-пакет
 - Каждый ответ upstream UDP становится отдельным зашифрованным WebSocket binary frame
 - Пользовательский `fwmark` применяется к исходящему UDP-сокету, если настроен
+- UDP-трафик Shadowsocks-2022 защищён скользящим anti-replay фильтром по `client_session_id`: дубликаты `packet_id` отбрасываются до шага relay, а простаивающие сессии вычищаются с той же частотой, что и эвикция NAT-записей
 
 ## Поддержка транспортов
 
