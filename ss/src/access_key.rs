@@ -379,6 +379,7 @@ mod tests {
                     ws_path_udp: Some("/alice/udp".into()),
                     vless_id: None,
                     vless_ws_path: None,
+            enabled: None,
                 },
                 UserEntry {
                     id: "bob".into(),
@@ -389,6 +390,7 @@ mod tests {
                     ws_path_udp: None,
                     vless_id: None,
                     vless_ws_path: None,
+            enabled: None,
                 },
                 UserEntry {
                     id: "carol vless".into(),
@@ -399,10 +401,13 @@ mod tests {
                     ws_path_udp: None,
                     vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                     vless_ws_path: Some("/carol/vless path".into()),
+                    enabled: None,
                 },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
+            config_path: None,
+            control: None,
         }
     }
 

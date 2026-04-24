@@ -19,6 +19,8 @@ use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
     user_keys,
 };
+use super::state::{RoutesSnapshot, UserKeySlice};
+use arc_swap::ArcSwap;
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
@@ -38,12 +40,13 @@ fn build_test_state(
     dns_cache: Arc<DnsCache>,
     http_root_auth: bool,
     http_root_realm: impl Into<Arc<str>>,
-) -> (Arc<RouteRegistry>, Arc<Services>, Arc<AuthPolicy>) {
+) -> (RoutesSnapshot, Arc<Services>, Arc<AuthPolicy>) {
     let users = user_keys(user_routes.as_ref());
     let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
-    let routes = Arc::new(RouteRegistry { tcp, udp, vless });
+    let routes: RoutesSnapshot =
+        Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless }));
     let services = Arc::new(Services {
         metrics,
         dns_cache,
@@ -56,7 +59,7 @@ fn build_test_state(
         },
     });
     let auth = Arc::new(AuthPolicy {
-        users,
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
         http_root_auth,
         http_root_realm: http_root_realm.into(),
     });
@@ -274,6 +277,7 @@ fn sample_config(listen: SocketAddr) -> Config {
             ws_path_udp: None,
             vless_id: None,
             vless_ws_path: None,
+            enabled: None,
         }],
     )
 }
@@ -303,6 +307,8 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         users,
         method: CipherKind::Chacha20IetfPoly1305,
         tuning: Default::default(),
+            config_path: None,
+            control: None,
     }
 }
 

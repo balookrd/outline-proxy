@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use arc_swap::ArcSwap;
 use tokio::sync::Semaphore;
 
 use crate::{
@@ -19,6 +20,21 @@ pub(super) struct RouteRegistry {
     pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
 }
+
+/// Snapshot of live routing state that control-plane mutations swap atomically.
+///
+/// Handlers do `state.routes.load_full()` once per request to obtain an
+/// `Arc<RouteRegistry>`, then look up the path inside. Updates publish a new
+/// `RouteRegistry` via `store`, so in-flight requests keep seeing the prior
+/// snapshot — no reader ever sees a torn view.
+pub(super) type RoutesSnapshot = Arc<ArcSwap<RouteRegistry>>;
+
+/// Snapshot of the HTTP Basic Auth user set. Same atomic-swap pattern as
+/// [`RoutesSnapshot`]; mutations rebuild the slice and publish it.
+pub(super) type AuthUsersSnapshot = Arc<ArcSwap<UserKeySlice>>;
+
+/// Newtype wrapper so `ArcSwap` can hold what logically is `Arc<[UserKey]>`.
+pub(super) struct UserKeySlice(pub Arc<[UserKey]>);
 
 /// UDP-only services. Not touched by the TCP path.
 pub(super) struct UdpServices {
@@ -40,14 +56,14 @@ pub(super) struct Services {
 
 /// Credentials and HTTP front-door auth policy.
 pub(super) struct AuthPolicy {
-    pub(super) users: Arc<[UserKey]>,
+    pub(super) users: AuthUsersSnapshot,
     pub(super) http_root_auth: bool,
     pub(super) http_root_realm: Arc<str>,
 }
 
 #[derive(Clone)]
 pub(super) struct AppState {
-    pub(super) routes: Arc<RouteRegistry>,
+    pub(super) routes: RoutesSnapshot,
     pub(super) services: Arc<Services>,
     pub(super) auth: Arc<AuthPolicy>,
 }

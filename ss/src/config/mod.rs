@@ -16,7 +16,21 @@ pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
+pub struct ControlConfig {
+    pub listen: SocketAddr,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
+    /// Path of the config file this `Config` was loaded from, if any.
+    /// Preserved so the control plane can persist runtime user mutations
+    /// back to the same file that seeded them.
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    pub config_path: Option<PathBuf>,
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    pub control: Option<ControlConfig>,
     pub listen: Option<SocketAddr>,
     pub ss_listen: Option<SocketAddr>,
     pub tls_cert_path: Option<PathBuf>,
@@ -92,7 +106,11 @@ impl AppMode {
             tuning.apply_overrides(overrides);
         }
 
+        let control = resolve_control_config(&args, &file)?;
+
         let config = Config {
+            config_path: config_path.clone(),
+            control,
             listen: args.listen.or(file.listen),
             ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
@@ -193,6 +211,7 @@ impl Config {
                 ws_path_udp: None,
                 vless_id: None,
                 vless_ws_path: None,
+                enabled: None,
             });
         }
 
@@ -210,7 +229,7 @@ impl Config {
             }
         }
 
-        Ok(users)
+        Ok(users.into_iter().filter(UserEntry::is_enabled).collect())
     }
 
     pub fn user_entries(&self) -> Result<Vec<UserEntry>, ConfigError> {
@@ -253,4 +272,47 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 
 pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
+}
+
+fn resolve_control_config(args: &ConfigArgs, file: &FileConfig) -> Result<Option<ControlConfig>> {
+    let file_control = file.control.as_ref();
+    let listen = args.control_listen.or_else(|| file_control.and_then(|c| c.listen));
+    let token_literal = args
+        .control_token
+        .clone()
+        .or_else(|| file_control.and_then(|c| c.token.clone()));
+    let token_file = args
+        .control_token_file
+        .clone()
+        .or_else(|| file_control.and_then(|c| c.token_file.clone()));
+
+    let token = match (token_literal, token_file) {
+        (Some(t), None) => Some(t),
+        (None, Some(path)) => {
+            let contents = std::fs::read_to_string(&path).map_err(|error| {
+                anyhow::anyhow!(
+                    "failed to read control token file {}: {error}",
+                    path.display()
+                )
+            })?;
+            let trimmed = contents.trim().to_owned();
+            if trimmed.is_empty() {
+                anyhow::bail!("control token file {} is empty", path.display());
+            }
+            Some(trimmed)
+        },
+        (Some(_), Some(_)) => {
+            anyhow::bail!("specify either control.token or control.token_file, not both")
+        },
+        (None, None) => None,
+    };
+
+    match (listen, token) {
+        (Some(listen), Some(token)) => Ok(Some(ControlConfig { listen, token })),
+        (None, None) => Ok(None),
+        (Some(_), None) => {
+            anyhow::bail!("control.listen requires control.token or control.token_file")
+        },
+        (None, Some(_)) => anyhow::bail!("control.token requires control.listen"),
+    }
 }

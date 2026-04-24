@@ -149,6 +149,8 @@ mod tests {
 
     fn base_config() -> Config {
         Config {
+            config_path: None,
+            control: None,
             listen: Some("127.0.0.1:3000".parse().unwrap()),
             ss_listen: None,
             tls_cert_path: None,
@@ -244,6 +246,7 @@ mod tests {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 vless_ws_path: None,
+            enabled: None,
             }],
             ..base_config()
         }
@@ -264,6 +267,7 @@ mod tests {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 vless_ws_path: None,
+            enabled: None,
             }],
             ..base_config()
         }
@@ -288,6 +292,7 @@ mod tests {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 vless_ws_path: Some("/alice-vless".into()),
+                enabled: None,
             }],
             ..base_config()
         }
@@ -309,6 +314,7 @@ mod tests {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 vless_ws_path: None,
+            enabled: None,
             }],
             ..base_config()
         }

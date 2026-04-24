@@ -216,6 +216,11 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `users[].password` | Optional per-user Shadowsocks password |
 | `users[].vless_id` | Optional per-user VLESS UUID |
 | `users[].vless_ws_path` | Optional per-user VLESS WebSocket path; falls back to top-level `vless_ws_path` |
+| `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
+| `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
+| `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
+| `control.token` | Bearer token required on every request. Prefer `control.token_file` for secrets management |
+| `control.token_file` | Path to a file containing the bearer token; mutually exclusive with `control.token` |
 
 ### Per-User Settings
 
@@ -260,6 +265,40 @@ vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tl
 
 Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].vless_ws_path` overrides the top-level `vless_ws_path`.
 
+### Control Plane
+
+The optional `control` feature (enabled by default) exposes a small HTTP API for managing `[[users]]` at runtime. Mutations are applied atomically to the live WebSocket data plane (via `ArcSwap`) and persisted back to the config file the server was loaded from, so they survive restart.
+
+```toml
+[control]
+listen = "127.0.0.1:7001"
+token_file = "/etc/outline-ss-rust/control.token"
+```
+
+Every request must carry `Authorization: Bearer <token>` — bind the listener to loopback or a management network only. Equivalent CLI flags exist: `--control-listen`, `--control-token`, `--control-token-file` (and `OUTLINE_SS_CONTROL_*` env vars). Build with `--no-default-features` to drop the control module entirely.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/control/users` | List users (metadata only — no secrets in the response) |
+| `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "vless_ws_path": "/...", "enabled": true }` — at least one of `password`/`vless_id` is required |
+| `GET` | `/control/users/{id}` | Get a single user's metadata |
+| `DELETE` | `/control/users/{id}` | Remove the user |
+| `POST` | `/control/users/{id}/block` | Disable a user (`enabled = false`) without deleting |
+| `POST` | `/control/users/{id}/unblock` | Re-enable a blocked user |
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users
+curl -XPOST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"id":"carol","password":"s3cret"}' http://127.0.0.1:7001/control/users
+curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/users/carol/block
+```
+
+Limitations (v1):
+
+- Per-user `ws_path_tcp` / `ws_path_udp` / `vless_ws_path` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.
+- The plain Shadowsocks listener (`ss_listen`) uses a startup snapshot of user keys and is not updated at runtime. WebSocket transports (TCP/UDP/VLESS) are.
+- The implicit user synthesized from the top-level `password` field is not manageable here; add an explicit `[[users]]` entry instead.
+
 When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
 
 ### Environment Variables
@@ -291,6 +330,9 @@ When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth 
 - `OUTLINE_SS_PASSWORD`
 - `OUTLINE_SS_FWMARK`
 - `OUTLINE_SS_USERS`
+- `OUTLINE_SS_CONTROL_LISTEN`
+- `OUTLINE_SS_CONTROL_TOKEN`
+- `OUTLINE_SS_CONTROL_TOKEN_FILE`
 
 `OUTLINE_SS_USERS` uses `id=password` entries separated by commas:
 
