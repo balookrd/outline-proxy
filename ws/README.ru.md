@@ -567,6 +567,10 @@ failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 h3_downgrade_secs = 60
 # auto_failback = false
+# Границы VLESS UDP session-mux (используются только аплинками transport = "vless").
+# vless_udp_max_sessions = 256              # LRU-вытеснение свыше этого числа целей
+# vless_udp_session_idle_secs = 60          # 0 отключает idle-эвикцию
+# vless_udp_janitor_interval_secs = 15
 
 # Аплинки живут под [outline]. Каждая запись [[outline.uplinks]] должна
 # содержать `group = "..."`, совпадающее с [[uplink_group]].name выше.
@@ -596,6 +600,20 @@ udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
+# VLESS-over-WebSocket аплинк. Использует тот же WSS-путь дозвона, что и
+# transport = "websocket"; `uuid` заменяет Shadowsocks-овые cipher/password.
+# UDP передаётся как сессия-на-назначение внутри того же WSS-эндпоинта.
+[[outline.uplinks]]
+name = "vless-edge"
+group = "main"
+transport = "vless"
+tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
+udp_ws_url = "wss://vless.example.com/SECRET/udp"
+tcp_ws_mode = "h2"
+udp_ws_mode = "h2"
+uuid = "11111111-2222-3333-4444-555555555555"
+weight = 0.5
+
 # Опциональный policy-routing: first-match-wins по CIDR назначения.
 # `via` принимает имя группы или зарезервированные `direct` / `drop`.
 # Если [[route]] отсутствует — весь трафик идёт через первую группу.
@@ -610,7 +628,7 @@ via = "main"
 
 ### Ключевые параметры конфигурации
 
-- `transport` принимает `websocket` (по умолчанию) или `shadowsocks`.
+- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `uuid` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3` и используются только с `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
