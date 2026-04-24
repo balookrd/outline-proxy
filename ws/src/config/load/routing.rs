@@ -28,9 +28,9 @@ pub(super) fn load_routing_config(
         return Ok(None);
     };
     // An explicit but empty `[[route]]` array is almost certainly a config
-    // mistake (e.g. `route = []` in YAML, or all entries commented out) —
-    // silently dropping it would leave the proxy routing everything through
-    // the default group with no visible diagnostic. Fail loudly instead.
+    // mistake (e.g. `route = []`, or all entries commented out) — silently
+    // dropping it would leave the proxy routing everything through the
+    // default group with no visible diagnostic. Fail loudly instead.
     if route_sections.is_empty() {
         bail!(
             "`[[route]]` section is present but empty; remove it entirely to \
