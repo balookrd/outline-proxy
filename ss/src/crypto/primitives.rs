@@ -51,6 +51,38 @@ pub(super) fn derive_subkey(
     Ok(key_len)
 }
 
+pub(super) fn build_session_key(
+    cipher: CipherKind,
+    master_key: &[u8],
+    salt: &[u8],
+) -> Result<aead::LessSafeKey, CryptoError> {
+    let mut subkey = [0_u8; MAX_SUBKEY_LEN];
+    let key_len = derive_subkey(cipher, master_key, salt, &mut subkey)?;
+    let algorithm = cipher_algorithm(cipher);
+    let unbound =
+        aead::UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
+    Ok(aead::LessSafeKey::new(unbound))
+}
+
+/// AEAD-open a fixed-length header and require the plaintext length to match
+/// `expected_plaintext_len`. Returns `Err(CryptoError::Cipher)` on auth failure
+/// and `Err(CryptoError::InvalidHeader)` on length mismatch — diagnostic
+/// callers distinguish these, production callers collapse both into "try next".
+pub(super) fn try_open_fixed_header<'a>(
+    key: &aead::LessSafeKey,
+    nonce: aead::Nonce,
+    ciphertext: &'a mut [u8],
+    expected_plaintext_len: usize,
+) -> Result<&'a [u8], CryptoError> {
+    let plaintext = key
+        .open_in_place(nonce, aead::Aad::empty(), ciphertext)
+        .map_err(|_| CryptoError::Cipher)?;
+    if plaintext.len() != expected_plaintext_len {
+        return Err(CryptoError::InvalidHeader);
+    }
+    Ok(plaintext)
+}
+
 #[inline]
 pub(super) fn cipher_algorithm(cipher: CipherKind) -> &'static aead::Algorithm {
     match cipher {
