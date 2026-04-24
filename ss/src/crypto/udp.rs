@@ -11,12 +11,12 @@ use super::{
     error::CryptoError,
     primitives::{
         MAX_SUBKEY_LEN, SS2022_UDP_SEPARATE_HEADER_LEN, SS2022_UDP_SERVER_TYPE, TAG_LEN,
-        XNONCE_LEN, cipher_algorithm, current_unix_secs, derive_subkey, nonce_zero,
+        XNONCE_LEN, cipher_algorithm, derive_subkey, nonce_zero,
         parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body, ss2022_udp_nonce,
     },
     user_key::{AesHeaderCipher, UserKey},
 };
-use crate::{config::CipherKind, protocol::TargetAddr};
+use crate::{clock, config::CipherKind, protocol::TargetAddr};
 
 thread_local! {
     static DECRYPT_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
@@ -253,7 +253,7 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(&encrypted_header);
             let body_start = packet.len();
             packet.push(SS2022_UDP_SERVER_TYPE);
-            packet.extend_from_slice(&current_unix_secs().to_be_bytes());
+            packet.extend_from_slice(&clock::current_unix_secs().to_be_bytes());
             packet.extend_from_slice(client_session_id);
             packet.extend_from_slice(&0_u16.to_be_bytes());
             packet.extend_from_slice(&target);
@@ -290,7 +290,7 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(&server_session_id);
             packet.extend_from_slice(&packet_id.to_be_bytes());
             packet.push(SS2022_UDP_SERVER_TYPE);
-            packet.extend_from_slice(&current_unix_secs().to_be_bytes());
+            packet.extend_from_slice(&clock::current_unix_secs().to_be_bytes());
             packet.extend_from_slice(client_session_id);
             packet.extend_from_slice(&0_u16.to_be_bytes());
             packet.extend_from_slice(&target);

@@ -1,12 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use ring::{
     aead::{self, Nonce},
     hkdf,
 };
 
 use super::error::CryptoError;
-use crate::{config::CipherKind, protocol::parse_target_addr};
+use crate::{clock, config::CipherKind, protocol::parse_target_addr};
 
 pub(super) const TAG_LEN: usize = 16;
 pub(super) const NONCE_LEN: usize = 12;
@@ -97,15 +95,8 @@ pub(super) fn ss2022_udp_nonce(separate_header: &[u8]) -> Result<Nonce, CryptoEr
     Ok(Nonce::assume_unique_for_key(nonce))
 }
 
-pub(super) fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
 pub(super) fn validate_timestamp(timestamp: u64) -> Result<(), CryptoError> {
-    let now = current_unix_secs();
+    let now = clock::current_unix_secs();
     if now.abs_diff(timestamp) > SS2022_MAX_TIME_DIFF_SECS {
         return Err(CryptoError::InvalidTimestamp);
     }

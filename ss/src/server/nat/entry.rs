@@ -4,7 +4,6 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -12,7 +11,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use tokio::{net::UdpSocket, sync::Mutex};
 
-use crate::{crypto::UdpSession, metrics::Protocol};
+use crate::{clock, crypto::UdpSession, metrics::Protocol};
 
 /// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
 /// resolved upstream address) triple.
@@ -114,7 +113,7 @@ impl NatEntry {
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.
     pub(crate) fn touch(&self) {
-        self.last_active_secs.store(current_unix_secs(), Ordering::Relaxed);
+        self.last_active_secs.store(clock::current_unix_secs(), Ordering::Relaxed);
     }
 
     pub(crate) fn socket(&self) -> &UdpSocket {
@@ -127,13 +126,6 @@ impl NatEntry {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-pub(crate) fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
 
 pub(crate) fn random_session_id() -> Result<[u8; 8]> {
     use ring::rand::{SecureRandom, SystemRandom};

@@ -11,12 +11,13 @@ use tokio::{net::UdpSocket, sync::Mutex};
 use tracing::{debug, warn};
 
 use crate::{
+    clock,
     crypto::{UserKey, encrypt_udp_packet_for_response},
     metrics::{Metrics, Protocol},
     protocol::TargetAddr,
 };
 
-use super::entry::{ActiveSession, UdpResponseSender, current_unix_secs};
+use super::entry::{ActiveSession, UdpResponseSender};
 
 // RFC 768: max UDP payload over IPv4 = 65 535 − 20 (IP) − 8 (UDP)
 pub(crate) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
@@ -102,7 +103,7 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
             // Only a delivered response resets the idle timer. Otherwise a
             // chatty upstream pointed at a dead client would hold the NAT
             // entry (and its socket + reader task) alive indefinitely.
-            last_active.store(current_unix_secs(), Ordering::Relaxed);
+            last_active.store(clock::current_unix_secs(), Ordering::Relaxed);
         } else {
             debug!(%target, "NAT response dropped: client session disconnected");
         }
