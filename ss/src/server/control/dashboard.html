@@ -66,7 +66,7 @@
         radial-gradient(circle at top right, rgba(34,197,94,.08), transparent 24%),
         linear-gradient(180deg, var(--bg-accent), var(--bg));
       color:var(--ink);
-      font:14px/1.42 "SF Pro Display","Segoe UI",system-ui,-apple-system,sans-serif;
+      font:13px/1.34 "SF Pro Display","Segoe UI",system-ui,-apple-system,sans-serif;
       transition:background .25s ease,color .25s ease;
     }
 
@@ -81,12 +81,12 @@
 
     .shell {
       display:grid;
-      grid-template-columns:300px minmax(0,1fr);
+      grid-template-columns:214px minmax(0,1fr);
       min-height:100vh;
     }
 
     .sidebar {
-      padding:18px 14px;
+      padding:12px 8px;
       border-right:1px solid var(--line);
       background:rgba(255,255,255,.58);
       backdrop-filter:blur(14px);
@@ -96,12 +96,12 @@
     .brand-row {
       display:flex;
       align-items:center;
-      gap:14px;
-      padding:8px 10px 18px;
+      gap:8px;
+      padding:4px 6px 10px;
     }
     .brand-mark {
-      width:40px;
-      height:40px;
+      width:34px;
+      height:34px;
       border-radius:12px;
       background:linear-gradient(135deg, var(--brand), var(--brand-strong));
       box-shadow:var(--shadow-soft);
@@ -122,29 +122,29 @@
       min-width:0;
     }
     .brand-title {
-      font-size:16px;
+      font-size:14px;
       font-weight:760;
       letter-spacing:-.02em;
     }
     .brand-subtitle {
       color:var(--muted);
-      font-size:12px;
+      font-size:10px;
     }
 
     .nav {
       display:grid;
-      gap:6px;
-      margin-top:6px;
+      gap:4px;
+      margin-top:4px;
     }
     .nav-item {
       display:flex;
       align-items:center;
-      gap:12px;
-      min-height:50px;
-      padding:0 16px;
-      border-radius:13px;
+      gap:9px;
+      min-height:38px;
+      padding:0 10px;
+      border-radius:11px;
       color:var(--muted);
-      font-size:15px;
+      font-size:13px;
       font-weight:640;
       transition:background .18s ease,color .18s ease,transform .18s ease;
     }
@@ -165,26 +165,26 @@
     }
 
     .sidebar-foot {
-      margin-top:24px;
-      padding:16px;
+      margin-top:12px;
+      padding:10px;
       border:1px solid var(--line);
-      border-radius:16px;
+      border-radius:14px;
       background:var(--panel);
       box-shadow:var(--shadow-soft);
     }
     .sidebar-foot-title {
-      font-size:12px;
+      font-size:11px;
       font-weight:740;
       color:var(--ink);
       margin-bottom:6px;
     }
     .sidebar-foot-copy {
       color:var(--muted);
-      font-size:12px;
+      font-size:11px;
     }
 
     .content {
-      padding:18px 28px 28px;
+      padding:12px 16px 16px;
       min-width:0;
     }
 
@@ -192,35 +192,35 @@
       display:flex;
       align-items:flex-start;
       justify-content:space-between;
-      gap:14px;
-      margin-bottom:18px;
+      gap:10px;
+      margin-bottom:12px;
     }
     .headline h1 {
       margin:0 0 4px;
-      font-size:22px;
+      font-size:18px;
       line-height:1.15;
       letter-spacing:-.03em;
     }
     .headline p {
       margin:0;
       color:var(--muted);
-      font-size:13px;
+      font-size:11px;
     }
     .toolbar {
       display:flex;
       align-items:center;
-      gap:10px;
+      gap:8px;
       flex-wrap:wrap;
       justify-content:flex-end;
     }
     .updated {
       display:inline-flex;
       align-items:center;
-      gap:7px;
-      min-height:38px;
-      padding:0 12px;
+      gap:6px;
+      min-height:32px;
+      padding:0 10px;
       border:1px solid var(--line);
-      border-radius:13px;
+      border-radius:11px;
       background:var(--panel);
       color:var(--muted);
       box-shadow:var(--shadow-soft);
@@ -232,10 +232,10 @@
     }
     .toggle-chip,
     .theme-btn {
-      min-height:38px;
-      padding:0 12px;
+      min-height:32px;
+      padding:0 10px;
       border:1px solid var(--line-strong);
-      border-radius:12px;
+      border-radius:10px;
       background:var(--panel);
       box-shadow:var(--shadow-soft);
       transition:border-color .18s ease,background .18s ease,color .18s ease;
@@ -243,7 +243,7 @@
     .toggle-chip {
       display:inline-flex;
       align-items:center;
-      gap:8px;
+      gap:6px;
       color:var(--ink);
       font-weight:650;
     }
@@ -255,12 +255,12 @@
       box-shadow:0 0 0 5px rgba(34,197,94,.12);
     }
     .theme-btn {
-      width:40px;
+      width:34px;
       padding:0;
       display:inline-grid;
       place-items:center;
       color:var(--brand-strong);
-      font-size:17px;
+      font-size:15px;
       font-weight:700;
       border-width:2px;
     }
@@ -269,19 +269,19 @@
 
     .stats {
       display:grid;
-      grid-template-columns:repeat(4,minmax(160px,1fr));
-      gap:14px;
-      margin-bottom:20px;
+      grid-template-columns:repeat(4,minmax(128px,1fr));
+      gap:8px;
+      margin-bottom:12px;
     }
     .stat-card {
-      padding:16px 18px;
+      padding:10px 12px;
       border:1px solid var(--line);
-      border-radius:16px;
+      border-radius:13px;
       background:var(--panel);
       box-shadow:var(--shadow-soft);
       display:grid;
       grid-template-columns:minmax(0,1fr) auto;
-      gap:12px;
+      gap:8px;
       align-items:center;
     }
     .stat-copy {
@@ -289,23 +289,23 @@
     }
     .stat-label {
       color:var(--muted);
-      font-size:12px;
+      font-size:10px;
       font-weight:700;
-      margin-bottom:6px;
+      margin-bottom:4px;
     }
     .stat-value {
-      font-size:20px;
+      font-size:16px;
       line-height:1;
       font-weight:800;
       letter-spacing:-.03em;
     }
     .stat-icon {
-      width:40px;
-      height:40px;
-      border-radius:12px;
+      width:30px;
+      height:30px;
+      border-radius:10px;
       display:grid;
       place-items:center;
-      font-size:18px;
+      font-size:14px;
       color:var(--brand);
       background:var(--brand-soft);
     }
@@ -456,6 +456,11 @@
       text-transform:uppercase;
       background:var(--panel);
     }
+    th:first-child,
+    td:first-child {
+      width:24%;
+      min-width:180px;
+    }
     td {
       padding:13px 18px;
       border-top:1px solid var(--line);
@@ -470,6 +475,7 @@
       display:flex;
       align-items:center;
       gap:10px;
+      white-space:nowrap;
     }
     .subtle {
       color:var(--muted);
@@ -501,6 +507,22 @@
     }
     .chip.ok { background:var(--ok-soft); color:var(--ok); border-color:transparent; }
     .chip.warn { background:var(--warn-soft); color:var(--warn); border-color:transparent; }
+    button.chip {
+      cursor:pointer;
+      transition:border-color .18s ease,background .18s ease,color .18s ease,transform .18s ease;
+    }
+    button.chip:hover {
+      border-color:var(--brand);
+      color:var(--brand);
+      transform:translateY(-1px);
+    }
+    button.chip.ok:hover {
+      color:var(--ok);
+      border-color:rgba(34,197,94,.35);
+    }
+    .chip.action {
+      background:var(--panel);
+    }
 
     .row-actions button {
       min-height:34px;
@@ -954,31 +976,36 @@
       return `<button class="${extraClass}" type="button" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
     }
 
+    function chipButton(label, action, id, tone=""){
+      return `<button class="chip action ${tone}" type="button" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
+    }
+
     function renderUsers(){
       renderStats();
       const rows = filtered();
       el.usersTable.innerHTML = rows.map(user => {
-        const transports = (user.has_password ? '<span class="chip">SS</span>' : "") + (user.has_vless_id ? '<span class="chip">VLESS</span>' : "");
+        const transportButtons = [
+          statusChip(user.enabled),
+          user.has_password ? chipButton("Outline", "outline-url", user.id) : "",
+          user.has_password ? chipButton("SS", "ss-access-key-url", user.id) : "",
+          user.has_vless_id ? chipButton("VLESS", "vless-url", user.id) : ""
+        ].join("");
         const paths = [
           user.ws_path_tcp && "tcp " + user.ws_path_tcp,
           user.ws_path_udp && "udp " + user.ws_path_udp,
           user.vless_ws_path && "vless " + user.vless_ws_path
         ].filter(Boolean);
         const action = user.enabled ? "block" : "unblock";
-        const statusChip = `<span class="chip ${user.enabled ? "ok" : "warn"}">${user.enabled ? "active" : "blocked"}</span>`;
         return `<tr>
           <td>
             <div class="user-id"><span class="table-dot" style="width:10px;height:10px;box-shadow:none;background:${user.enabled ? "var(--ok)" : "var(--warn)"}"></span>${esc(user.id)}</div>
             <div class="subtle">${user.fwmark == null ? "default fwmark" : "fwmark " + esc(user.fwmark)}</div>
           </td>
-          <td><div class="chips">${statusChip}${transports}</div></td>
+          <td><div class="chips">${transportButtons}</div></td>
           <td><span class="mono">${user.method ? esc(user.method) : '<span class="subtle">default</span>'}</span></td>
           <td>${paths.length ? paths.map(path => `<div class="mono">${esc(path)}</div>`).join("") : '<span class="subtle">default paths</span>'}</td>
           <td>
             <div class="row-actions">
-              ${user.has_password ? actionButton("Outline config", "ss-config-url", user.id) : ""}
-              ${user.has_password ? actionButton("SS URL", "ss-access-key-url", user.id) : ""}
-              ${user.has_vless_id ? actionButton("VLESS URL", "vless-url", user.id) : ""}
               ${actionButton("Редактировать", "edit", user.id)}
               ${actionButton(user.enabled ? "Блок" : "Разблок", action, user.id, user.enabled ? "" : "primary")}
               ${actionButton("Удалить", "delete", user.id, "danger")}
@@ -989,6 +1016,10 @@
       el.emptyState.style.display = rows.length ? "none" : "block";
       el.emptyState.textContent = state.users.length ? "Под текущие фильтры никто не попал." : "Пользователей пока нет.";
       el.instanceMeta.textContent = selectedInstance() ? "Пользователи выбранного сервера" : "Выберите сервер для загрузки";
+    }
+
+    function statusChip(enabled){
+      return `<span class="chip ${enabled ? "ok" : "warn"}">${enabled ? "active" : "blocked"}</span>`;
     }
 
     async function loadInstances(){
@@ -1082,8 +1113,8 @@
     }
 
     async function copyAccessUrl(id, action){
-      const field = { "ss-config-url":"ss_config_url", "ss-access-key-url":"ss_access_key_url", "vless-url":"vless_url" }[action];
-      const label = { "ss-config-url":"Outline config URL", "ss-access-key-url":"SS URL", "vless-url":"VLESS URL" }[action];
+      const field = { "outline-url":"ss_config_url", "ss-access-key-url":"ss_access_key_url", "vless-url":"vless_url" }[action];
+      const label = { "outline-url":"Outline config URL", "ss-access-key-url":"SS URL", "vless-url":"VLESS URL" }[action];
       setBusy(true);
       try {
         const urls = await api("/dashboard/api/users/" + encodeURIComponent(id) + "/access-urls");
