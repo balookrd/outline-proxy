@@ -5,6 +5,7 @@ use tokio::fs;
 
 use super::args::Args;
 use super::compat::normalize_outline_section;
+use super::migrate::migrate_legacy_config_if_needed;
 use super::schema::{ConfigFile, ControlSection, DashboardSection};
 use super::types::{
     AppConfig, ControlConfig, DashboardConfig, DashboardInstanceConfig, MetricsConfig,
@@ -36,6 +37,10 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         let raw = fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to read {}", path.display()))?;
+        let raw = match migrate_legacy_config_if_needed(path, &raw).await? {
+            Some(migrated) => migrated,
+            None => raw,
+        };
         Some(
             toml::from_str::<ConfigFile>(&raw)
                 .with_context(|| format!("failed to parse {}", path.display()))?,
