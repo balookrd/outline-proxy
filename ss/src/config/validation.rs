@@ -187,9 +187,17 @@ mod tests {
             vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: default_http_root_realm(),
-            password: Some("secret".into()),
-            fwmark: None,
-            users: vec![],
+            users: vec![super::super::UserEntry {
+                id: "default".into(),
+                password: Some("secret".into()),
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: None,
+                vless_ws_path: None,
+                enabled: None,
+            }],
             method: CipherKind::Chacha20IetfPoly1305,
             access_key: Default::default(),
             tuning: super::super::TuningProfile::LARGE,
@@ -254,7 +262,6 @@ mod tests {
     #[test]
     fn allows_vless_only_users() {
         Config {
-            password: None,
             vless_ws_path: Some("/vless".into()),
             users: vec![super::super::UserEntry {
                 id: "550e8400-e29b-41d4-a716-446655440000".into(),
@@ -277,17 +284,30 @@ mod tests {
     fn rejects_vless_path_conflict_with_tcp_path() {
         let error = Config {
             vless_ws_path: Some("/tcp".into()),
-            users: vec![super::super::UserEntry {
-                id: "550e8400-e29b-41d4-a716-446655440000".into(),
-                password: None,
-                fwmark: None,
-                method: None,
-                ws_path_tcp: None,
-                ws_path_udp: None,
-                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                vless_ws_path: None,
-                enabled: None,
-            }],
+            users: vec![
+                super::super::UserEntry {
+                    id: "alice".into(),
+                    password: Some("secret".into()),
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: None,
+                    ws_path_udp: None,
+                    vless_id: None,
+                    vless_ws_path: None,
+                    enabled: None,
+                },
+                super::super::UserEntry {
+                    id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                    password: None,
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: None,
+                    ws_path_udp: None,
+                    vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                    vless_ws_path: None,
+                    enabled: None,
+                },
+            ],
             ..base_config()
         }
         .validate()
@@ -300,7 +320,6 @@ mod tests {
     #[test]
     fn allows_per_user_vless_path_without_global_default() {
         Config {
-            password: None,
             vless_ws_path: None,
             users: vec![super::super::UserEntry {
                 id: "alice".into(),
@@ -322,7 +341,6 @@ mod tests {
     #[test]
     fn rejects_vless_id_without_any_path() {
         let error = Config {
-            password: None,
             vless_ws_path: None,
             users: vec![super::super::UserEntry {
                 id: "alice".into(),

@@ -14,6 +14,12 @@ pub(super) struct ConfigArgs {
     #[arg(long, env = "OUTLINE_SS_CONFIG")]
     pub config: Option<PathBuf>,
 
+    /// Migrate a legacy flat-key config file to the sectioned layout in-place
+    /// (writes a `.bak` alongside) and exit. Temporary flag; will be removed
+    /// once all deployments are on the new layout.
+    #[arg(long, value_name = "PATH")]
+    pub migrate_config: Option<PathBuf>,
+
     #[arg(long, env = "OUTLINE_SS_LISTEN")]
     pub listen: Option<SocketAddr>,
 
@@ -118,12 +124,6 @@ pub(super) struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_WRITE_ACCESS_KEYS_DIR")]
     pub write_access_keys_dir: Option<PathBuf>,
-
-    #[arg(long, env = "OUTLINE_SS_PASSWORD")]
-    pub password: Option<String>,
-
-    #[arg(long, env = "OUTLINE_SS_FWMARK")]
-    pub fwmark: Option<u32>,
 
     #[arg(
         long = "user",

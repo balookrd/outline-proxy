@@ -15,7 +15,7 @@ use crate::access_key::{
     build_access_key_artifacts, render_access_key_report, render_written_access_key_report,
     write_access_key_artifacts,
 };
-use crate::config::AppMode;
+use crate::config::{AppMode, migrate_config_in_place};
 
 #[cfg(target_os = "linux")]
 const DEFAULT_RUNTIME_THREAD_STACK_SIZE_BYTES: usize = 2 * 1024 * 1024;
@@ -44,6 +44,15 @@ async fn async_main() -> Result<()> {
         AppMode::Serve(config) => {
             init_tracing();
             server::run(config).await
+        },
+        AppMode::MigrateConfig { path } => {
+            let changed = migrate_config_in_place(&path)?;
+            if changed {
+                println!("migrated {} (backup written alongside)", path.display());
+            } else {
+                println!("{} already uses the new layout; nothing to do", path.display());
+            }
+            Ok(())
         },
         AppMode::GenerateKeys { config, access_key, print, write_dir } => {
             let artifacts = build_access_key_artifacts(&config, &access_key)?;
