@@ -357,7 +357,6 @@ pub(crate) fn set_ipv6_freebind<T>(socket: &T) -> std::io::Result<()>
 where
     T: std::os::fd::AsRawFd,
 {
-    use std::os::fd::AsRawFd;
     let value: libc::c_int = 1;
     let rc = unsafe {
         libc::setsockopt(
