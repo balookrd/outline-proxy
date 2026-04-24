@@ -16,7 +16,7 @@ use super::super::{
     connect::resolve_udp_target,
     constants::{MAX_UDP_DATAGRAM_SIZE, MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
     nat::{NatKey, ResponseSender, UdpResponseSender},
-    replay,
+    replay::{self, ReplayCheck},
     shutdown::ShutdownSignal,
     state::Services,
 };
@@ -115,19 +115,34 @@ async fn handle_ss_udp_datagram(
         Err(error) => return Err(anyhow!(error)),
     };
     let user_id = packet.user.id_arc();
-    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
-        && !ctx.services.udp.replay_store.check_and_mark(csid, pid)
-    {
-        ctx.services
-            .metrics
-            .record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
-        warn!(
-            user = packet.user.id(),
-            client_addr = %client_addr,
-            packet_id = pid,
-            "dropping replayed ss-2022 udp datagram"
-        );
-        return Ok(());
+    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
+        match ctx.services.udp.replay_store.check_and_mark(csid, pid) {
+            ReplayCheck::Fresh => {},
+            ReplayCheck::Replay => {
+                ctx.services
+                    .metrics
+                    .record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
+                warn!(
+                    user = packet.user.id(),
+                    client_addr = %client_addr,
+                    packet_id = pid,
+                    "dropping replayed ss-2022 udp datagram"
+                );
+                return Ok(());
+            },
+            ReplayCheck::StoreFull => {
+                ctx.services
+                    .metrics
+                    .record_udp_replay_store_full_dropped(Arc::clone(&user_id), Protocol::Socket);
+                warn!(
+                    user = packet.user.id(),
+                    client_addr = %client_addr,
+                    packet_id = pid,
+                    "dropping ss-2022 udp datagram: replay store at capacity"
+                );
+                return Ok(());
+            },
+        }
     }
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));

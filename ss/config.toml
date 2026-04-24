@@ -146,5 +146,6 @@ ws_path_udp = "/dave/udp"
 # client_active_ttl_secs = 300           # used by client_active / client_up metrics
 # udp_nat_idle_timeout_secs = 300        # NAT entry idle timeout (seconds)
 # udp_max_concurrent_relay_tasks = 4096  # process-wide cap; 0 disables
+# udp_replay_max_sessions = 262144       # SS-2022 anti-replay session cap; 0 disables
 # h3_udp_socket_buffer_bytes = 33554432
 # h3_max_concurrent_bidi_streams = 4096

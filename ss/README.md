@@ -198,6 +198,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.client_active_ttl_secs` | TTL in seconds used to compute `client_active` / `client_up` |
 | `tuning.udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram (default depends on profile; `300` on `large`) |
 | `tuning.udp_max_concurrent_relay_tasks` | Process-wide cap on in-flight UDP relay tasks across all WebSocket sessions. `0` disables the global cap |
+| `tuning.udp_replay_max_sessions` | Maximum concurrent SS-2022 anti-replay session windows (default depends on profile; `262144` on `large`). Packets bearing a new `client_session_id` are dropped once the cap is reached, bounding memory against a client that rotates session IDs to inflate the store. `0` disables the cap |
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
@@ -692,7 +693,7 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires sufficient privileges, typically `CAP_NET_ADMIN` or root.
 - Keep TCP and UDP WebSocket paths distinct. The server validates this at startup.
-- Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session ID; duplicate `packet_id`s are dropped and counted in `outline_ss_udp_replay_dropped_total`.
+- Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session ID; duplicate `packet_id`s are dropped and counted in `outline_ss_udp_replay_dropped_total`. The store holds at most `tuning.udp_replay_max_sessions` distinct sessions — packets with new session IDs beyond that cap are dropped and counted in `outline_ss_udp_replay_store_full_dropped_total`, bounding memory against a client that rotates session IDs to inflate the store.
 - Root HTTP authentication compares passwords in constant time.
 
 ## Compatibility Notes

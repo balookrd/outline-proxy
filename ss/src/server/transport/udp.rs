@@ -16,7 +16,7 @@ use crate::{
     metrics::{Metrics, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{NatKey, NatTable, UdpResponseSender},
-    server::replay::{self, ReplayStore},
+    server::replay::{self, ReplayCheck, ReplayStore},
 };
 
 use super::super::connect::resolve_udp_target;
@@ -89,19 +89,34 @@ where
         };
     session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
-    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
-        && !server.replay_store.check_and_mark(csid, pid)
-    {
-        server
-            .metrics
-            .record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);
-        warn!(
-            user = packet.user.id(),
-            path = %route.path,
-            packet_id = pid,
-            "dropping replayed ss-2022 udp datagram"
-        );
-        return Ok(());
+    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
+        match server.replay_store.check_and_mark(csid, pid) {
+            ReplayCheck::Fresh => {},
+            ReplayCheck::Replay => {
+                server
+                    .metrics
+                    .record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);
+                warn!(
+                    user = packet.user.id(),
+                    path = %route.path,
+                    packet_id = pid,
+                    "dropping replayed ss-2022 udp datagram"
+                );
+                return Ok(());
+            },
+            ReplayCheck::StoreFull => {
+                server
+                    .metrics
+                    .record_udp_replay_store_full_dropped(Arc::clone(&user_id), route.protocol);
+                warn!(
+                    user = packet.user.id(),
+                    path = %route.path,
+                    packet_id = pid,
+                    "dropping ss-2022 udp datagram: replay store at capacity"
+                );
+                return Ok(());
+            },
+        }
     }
     let Some((target, consumed)) = parse_target_addr(&packet.payload)? else {
         return Err(anyhow!("udp packet is missing a complete target address"));

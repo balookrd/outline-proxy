@@ -32,6 +32,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Hardened root HTTP authentication with a constant-time password compare and removed a redundant derivation step on the auth hot path.
 - Capped the Shadowsocks stream AEAD nonce counter at 2^32 invocations per direction to stay within AEAD safety limits.
 - Bounded the HTTP/3 listener with two semaphores to prevent DoS via unbounded task fan-out: connection accepts are capped at 4096 (matching the TLS/shadowsocks listeners), and per-stream WebSocket handlers are capped globally at 65536 across all QUIC connections. Previously a client could open many QUIC connections and multiply per-connection stream limits into unbounded `tokio::spawn` fan-out.
+- Capped the SS-2022 anti-replay session store via `tuning.udp_replay_max_sessions` (profile defaults 16k/64k/256k; `0` disables). Previously a client with a valid key could rotate `client_session_id` on every packet and inflate the store unbounded until the next idle sweep. Drops at the cap are exposed as `outline_ss_udp_replay_store_full_dropped_total{user,protocol}`.
 - Moved config file persistence on control-plane mutations off the tokio worker: the user list mutex is now a `tokio::sync::Mutex` and `persist_users` runs via `spawn_blocking`, so a slow-disk write (NFS, USB) no longer stalls the runtime while the lock is held.
 
 ### Changed

@@ -53,7 +53,7 @@ fn build_test_state(
         outbound_ipv6: None,
         udp: UdpServices {
             nat_table,
-            replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300)),
+            replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300), 0),
             relay_semaphore: None,
         },
     });
