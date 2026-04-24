@@ -408,6 +408,7 @@ mod tests {
             tuning: Default::default(),
             config_path: None,
             control: None,
+            dashboard: None,
         }
     }
 

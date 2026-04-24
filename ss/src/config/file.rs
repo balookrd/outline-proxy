@@ -48,12 +48,33 @@ pub(super) struct FileConfig {
     pub tuning: Option<TuningOverrides>,
     #[serde(default)]
     pub control: Option<ControlFileConfig>,
+    #[serde(default)]
+    pub dashboard: Option<DashboardFileConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ControlFileConfig {
     pub listen: Option<SocketAddr>,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DashboardFileConfig {
+    pub enabled: Option<bool>,
+    pub listen: Option<SocketAddr>,
+    pub request_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub servers: Option<Vec<DashboardServerFileConfig>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DashboardServerFileConfig {
+    pub name: Option<String>,
+    pub control_url: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
 }
@@ -154,6 +175,30 @@ h3_max_concurrent_bidi_streams = 128
         assert_eq!(tuning.h3_udp_socket_buffer_bytes, Some(2_097_152));
         assert_eq!(tuning.h3_max_concurrent_bidi_streams, Some(128));
         assert_eq!(tuning.h3_connection_window_bytes, None);
+    }
+
+    #[test]
+    fn parses_dashboard_servers() {
+        let config: FileConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:3000"
+
+[dashboard]
+listen = "127.0.0.1:7002"
+
+[[dashboard.servers]]
+name = "local"
+control_url = "http://127.0.0.1:7001"
+token_file = "./control.token"
+"#,
+        )
+        .unwrap();
+
+        let dashboard = config.dashboard.unwrap();
+        assert_eq!(dashboard.listen.unwrap().to_string(), "127.0.0.1:7002");
+        let servers = dashboard.servers.unwrap();
+        assert_eq!(servers[0].name.as_deref(), Some("local"));
+        assert_eq!(servers[0].control_url.as_deref(), Some("http://127.0.0.1:7001"));
     }
 
     #[test]
