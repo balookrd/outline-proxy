@@ -9,6 +9,7 @@ metrics = ["outline-metrics/prometheus"]
 
 [dependencies]
 anyhow = "1.0"
+arc-swap = "1.7"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 outline-metrics = { path = "../outline-metrics", default-features = false }
 outline-ss2022 = { path = "../outline-ss2022" }

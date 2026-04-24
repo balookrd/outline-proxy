@@ -68,6 +68,11 @@ pub struct MetricsConfig {
 pub struct ControlConfig {
     pub listen: SocketAddr,
     pub token: String,
+    /// Path to the TOML config file on disk. Used by `/control/uplinks` CRUD
+    /// endpoints to edit `[[uplink_group.uplinks]]` in place. `None` when the
+    /// binary was launched without a config file (e.g. pure CLI overrides),
+    /// in which case CRUD endpoints return 409 Conflict.
+    pub config_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

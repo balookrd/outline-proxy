@@ -162,25 +162,25 @@ pub(super) struct TunTcpSection {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-pub(super) struct UplinkSection {
-    pub(super) name: Option<String>,
-    pub(super) transport: Option<UplinkTransport>,
-    pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<WsTransportMode>,
-    pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<WsTransportMode>,
-    pub(super) tcp_addr: Option<ServerAddr>,
-    pub(super) udp_addr: Option<ServerAddr>,
-    pub(super) method: Option<CipherKind>,
-    pub(super) password: Option<String>,
-    pub(super) weight: Option<f64>,
-    pub(super) fwmark: Option<u32>,
-    pub(super) ipv6_first: Option<bool>,
+pub(crate) struct UplinkSection {
+    pub(crate) name: Option<String>,
+    pub(crate) transport: Option<UplinkTransport>,
+    pub(crate) tcp_ws_url: Option<Url>,
+    pub(crate) tcp_ws_mode: Option<WsTransportMode>,
+    pub(crate) udp_ws_url: Option<Url>,
+    pub(crate) udp_ws_mode: Option<WsTransportMode>,
+    pub(crate) tcp_addr: Option<ServerAddr>,
+    pub(crate) udp_addr: Option<ServerAddr>,
+    pub(crate) method: Option<CipherKind>,
+    pub(crate) password: Option<String>,
+    pub(crate) weight: Option<f64>,
+    pub(crate) fwmark: Option<u32>,
+    pub(crate) ipv6_first: Option<bool>,
     /// VLESS user id (hex/dashed), required when `transport = "vless"`.
-    pub(super) uuid: Option<String>,
+    pub(crate) uuid: Option<String>,
     /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
     /// declared; optional in legacy config (all uplinks land in `default`).
-    pub(super) group: Option<String>,
+    pub(crate) group: Option<String>,
 }
 
 /// New: explicit uplink group with its own LB config and probe override.

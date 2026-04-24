@@ -42,5 +42,5 @@ pub async fn run(args: Args) -> Result<()> {
         config.h2.initial_connection_window_size,
     );
     outline_net::init_udp_socket_bufs(config.udp_recv_buf_bytes, config.udp_send_buf_bytes);
-    run_with_config(config).await
+    run_with_config(config, args).await
 }

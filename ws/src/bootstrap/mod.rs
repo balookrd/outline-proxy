@@ -5,10 +5,10 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 use tracing::{info, warn};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, Args};
 use crate::proxy::ProxyConfig;
 #[cfg(feature = "control")]
-use crate::http::control::spawn_control_server;
+use crate::http::control::{ApplyHandle, spawn_control_server};
 #[cfg(feature = "dashboard")]
 use crate::http::dashboard::spawn_dashboard_server;
 #[cfg(feature = "metrics")]
@@ -18,7 +18,7 @@ use outline_uplink::{UplinkRegistry, log_registry_summary};
 mod listener;
 mod state_store;
 
-pub async fn run_with_config(config: AppConfig) -> Result<()> {
+pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
     let state_store = state_store::init(config.state_path.clone()).await;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -48,6 +48,10 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
         outline_transport::DEFAULT_DNS_CACHE_TTL,
     ));
 
+    // Hold a clone so `/control/apply` can rebuild the registry against
+    // the same on-disk persistence layer.
+    #[cfg(feature = "control")]
+    let state_store_for_apply = state_store.clone();
     let registry =
         UplinkRegistry::new_with_state(config.groups.clone(), state_store, dns_cache.clone())
             .await?;
@@ -117,8 +121,20 @@ pub async fn run_with_config(config: AppConfig) -> Result<()> {
     }
     #[cfg(feature = "control")]
     if let Some(control) = config.control.clone() {
-        spawn_control_server(control, registry.clone());
+        let apply = control.config_path.clone().map(|path| {
+            Arc::new(ApplyHandle {
+                config_path: path,
+                args: args.clone(),
+                dns_cache: Arc::clone(&dns_cache),
+                state_store: state_store_for_apply.clone(),
+                registry: registry.clone(),
+                lock: tokio::sync::Mutex::new(()),
+            })
+        });
+        spawn_control_server(control, registry.clone(), apply);
     }
+    #[cfg(not(feature = "control"))]
+    let _ = args; // suppress unused-when-feature-disabled warning
     #[cfg(feature = "dashboard")]
     if let Some(dashboard) = config.dashboard.clone() {
         spawn_dashboard_server(dashboard);

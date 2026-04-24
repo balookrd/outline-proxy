@@ -224,6 +224,17 @@ pub(super) fn load_uplinks(
         .collect()
 }
 
+/// Validate a single `[[uplink_group.uplinks]]` entry the same way the
+/// startup loader would. Used by `/control/uplinks` CRUD endpoints to
+/// reject invalid payloads before writing them to the config file.
+#[cfg(feature = "control")]
+pub(crate) fn validate_uplink_section(
+    section: &UplinkSection,
+    index: usize,
+) -> Result<UplinkConfig> {
+    ResolvedUplinkInput::from_section(index, section).try_into()
+}
+
 fn cli_uplink_override_requested(args: &Args) -> bool {
     args.tcp_ws_url.is_some()
         || args.transport.is_some()

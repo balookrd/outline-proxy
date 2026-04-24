@@ -1,4 +1,5 @@
 use std::convert::Infallible;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,12 +17,25 @@ use outline_metrics::record_metrics_http_request;
 use outline_uplink::UplinkRegistry;
 
 use crate::config::ControlConfig;
+use super::apply::{ApplyHandle, handle_apply};
 use super::handlers::{handle_activate, handle_summary, handle_switch, handle_topology};
+use super::uplinks_crud::handle_uplinks;
 use super::{ControlResponse, is_authorized, plain_response, unauthorized_response};
 
 pub(crate) struct ControlState {
     pub(crate) token: String,
     pub(crate) uplinks: UplinkRegistry,
+    /// Path to the TOML config file. Populated when the binary was launched
+    /// with an on-disk config; `None` for pure-CLI / test invocations. CRUD
+    /// endpoints return 409 Conflict when this is absent.
+    pub(crate) config_path: Option<PathBuf>,
+    /// Serialises writes to `config_path` so concurrent CRUD requests cannot
+    /// interleave reads and renames of the same file.
+    pub(crate) config_write_lock: tokio::sync::Mutex<()>,
+    /// Hot-apply handle — rebuilds the live `UplinkRegistry` from the
+    /// on-disk config without process restart. `None` for test-only
+    /// ControlStates (built inside mod tests without a real config file).
+    pub(crate) apply: Option<Arc<ApplyHandle>>,
 }
 
 /// Cap concurrent in-flight control requests. The control plane is only
@@ -35,8 +49,18 @@ const MAX_CONCURRENT_CONTROL_CONNECTIONS: usize = 16;
 /// headers, so an unauthenticated peer can otherwise stall us.
 const CONTROL_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub fn spawn_control_server(config: ControlConfig, uplinks: UplinkRegistry) {
-    let state = Arc::new(ControlState { token: config.token, uplinks });
+pub fn spawn_control_server(
+    config: ControlConfig,
+    uplinks: UplinkRegistry,
+    apply: Option<Arc<ApplyHandle>>,
+) {
+    let state = Arc::new(ControlState {
+        token: config.token,
+        uplinks,
+        config_path: config.config_path,
+        config_write_lock: tokio::sync::Mutex::new(()),
+        apply,
+    });
     let listen = config.listen;
     tokio::spawn(async move {
         if let Err(error) = run_control_server(listen, state).await {
@@ -89,6 +113,8 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/topology" => "/control/topology",
         "/control/summary" => "/control/summary",
         "/control/activate" => "/control/activate",
+        "/control/uplinks" => "/control/uplinks",
+        "/control/apply" => "/control/apply",
         _ => "other",
     };
 
@@ -116,6 +142,25 @@ async fn handle_request(request: Request<Incoming>, state: Arc<ControlState>) ->
         "/control/activate" => {
             let response = handle_activate(request, state.uplinks.clone()).await;
             record_metrics_http_request("/control/activate", response.status().as_u16());
+            response
+        },
+        "/control/uplinks" => {
+            let response = handle_uplinks(request, Arc::clone(&state)).await;
+            record_metrics_http_request("/control/uplinks", response.status().as_u16());
+            response
+        },
+        "/control/apply" => {
+            let response = match state.apply.as_ref() {
+                Some(handle) => handle_apply(request, Arc::clone(handle)).await,
+                None => plain_response(
+                    http::StatusCode::CONFLICT,
+                    "application/json; charset=utf-8",
+                    bytes::Bytes::from_static(
+                        br#"{"error":"apply handle not configured; restart required to activate config changes"}"#,
+                    ),
+                ),
+            };
+            record_metrics_http_request("/control/apply", response.status().as_u16());
             response
         },
         _ => {
