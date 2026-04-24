@@ -17,17 +17,22 @@ pub(super) struct RouteRegistry {
     pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
 }
 
+/// UDP-only services. Not touched by the TCP path.
+pub(super) struct UdpServices {
+    pub(super) nat_table: Arc<NatTable>,
+    pub(super) replay_store: Arc<ReplayStore>,
+    /// Process-wide semaphore limiting concurrent UDP relay tasks across all
+    /// WebSocket sessions. `None` means no global cap is enforced.
+    pub(super) relay_semaphore: Option<Arc<Semaphore>>,
+}
+
 /// Process-wide services shared by every transport handler.
 pub(super) struct Services {
     pub(super) metrics: Arc<Metrics>,
-    pub(super) nat_table: Arc<NatTable>,
-    pub(super) replay_store: Arc<ReplayStore>,
     pub(super) dns_cache: Arc<DnsCache>,
     pub(super) prefer_ipv4_upstream: bool,
     pub(super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
-    /// Process-wide semaphore limiting concurrent UDP relay tasks across all
-    /// WebSocket sessions. `None` means no global cap is enforced.
-    pub(super) udp_relay_semaphore: Option<Arc<Semaphore>>,
+    pub(super) udp: UdpServices,
 }
 
 /// Credentials and HTTP front-door auth policy.

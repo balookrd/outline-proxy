@@ -144,11 +144,11 @@ pub(super) async fn udp_websocket_upgrade(
     ws.on_upgrade(move |socket| async move {
         let server = Arc::new(UdpServerCtx {
             metrics: state.services.metrics.clone(),
-            nat_table: Arc::clone(&state.services.nat_table),
-            replay_store: Arc::clone(&state.services.replay_store),
+            nat_table: Arc::clone(&state.services.udp.nat_table),
+            replay_store: Arc::clone(&state.services.udp.replay_store),
             dns_cache: Arc::clone(&state.services.dns_cache),
             prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
-            relay_semaphore: state.services.udp_relay_semaphore.clone(),
+            relay_semaphore: state.services.udp.relay_semaphore.clone(),
         });
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),

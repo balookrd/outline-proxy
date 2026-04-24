@@ -48,7 +48,7 @@ mod tests;
 use self::{
     dns_cache::DnsCache,
     setup::{build_transport_route_map, build_users},
-    state::{AuthPolicy, RouteRegistry, Services},
+    state::{AuthPolicy, RouteRegistry, Services, UdpServices},
 };
 
 use self::{
