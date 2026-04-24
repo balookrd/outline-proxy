@@ -151,16 +151,21 @@ impl ReplayStore {
         client_session_id: [u8; 8],
         packet_id: u64,
     ) -> bool {
-        let entry = self
-            .entries
-            .entry(client_session_id)
-            .or_insert_with(|| {
-                Arc::new(ReplayEntry {
-                    window: Mutex::new(ReplayWindow::new()),
-                    last_seen_secs: AtomicU64::new(current_unix_secs()),
-                })
-            })
-            .clone();
+        let entry = if let Some(e) = self.entries.get(&client_session_id) {
+            Arc::clone(e.value())
+        } else {
+            Arc::clone(
+                self.entries
+                    .entry(client_session_id)
+                    .or_insert_with(|| {
+                        Arc::new(ReplayEntry {
+                            window: Mutex::new(ReplayWindow::new()),
+                            last_seen_secs: AtomicU64::new(current_unix_secs()),
+                        })
+                    })
+                    .value(),
+            )
+        };
         entry
             .last_seen_secs
             .store(current_unix_secs(), Ordering::Relaxed);
