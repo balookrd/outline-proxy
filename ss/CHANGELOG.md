@@ -24,6 +24,13 @@ Changes after `v1.0.2` (2026-04-12):
 - Added bounded TLS listener with graceful drain on shutdown.
 - Added periodic WebSocket Ping (every 60s) over TCP to keep client `WS_READ_IDLE_TIMEOUT` alive.
 - Added DNS singleflight to coalesce concurrent misses on the same host/port, with test coverage for coalescing and error recovery.
+- Added a Grafana panel for UDP replay drops by user and protocol.
+
+### Security
+
+- Added Shadowsocks-2022 UDP anti-replay: duplicate `packet_id`s within the session window are rejected by a per-session 1024-bit sliding bitmap keyed by client session ID (so replays to a different target cannot bypass the filter). Drops are exposed as `outline_ss_udp_replay_dropped_total{user,protocol}`.
+- Hardened root HTTP authentication with a constant-time password compare and removed a redundant derivation step on the auth hot path.
+- Capped the Shadowsocks stream AEAD nonce counter at 2^32 invocations per direction to stay within AEAD safety limits.
 
 ### Changed
 
@@ -33,7 +40,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Split large server, transport, crypto, and config modules into smaller submodules for maintainability.
 - Migrated the metrics stack to `metrics` and `metrics-exporter-prometheus`.
 - Decoupled UDP NAT internals from transport-specific response handling.
-- Continued hot-path optimization work across DNS cache, crypto, route maps, and metrics labels to reduce allocations and lock contention.
+- Continued hot-path optimization work across DNS cache, crypto, route maps, and metrics labels to reduce allocations and lock contention, including a cached monotonic clock (shared atomic) and read-locked fast paths for NAT entry lookup and replay-window checks.
 - Unified parts of server logging and general internal naming for clarity.
 - Reduced TCP upstream connect timeout from 10s to 5s.
 - Relaxed systemd sandbox to allow `AF_NETLINK` so `getifaddrs` works for outbound IPv6 interface selection.

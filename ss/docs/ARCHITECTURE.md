@@ -139,6 +139,7 @@ Important behaviors:
 - each WebSocket binary frame is expected to contain exactly one Shadowsocks UDP packet
 - each upstream UDP response becomes its own encrypted WebSocket binary frame
 - per-user `fwmark` is applied to the outbound UDP socket when configured
+- Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session `client_session_id`; duplicate `packet_id`s are dropped before the relay step, and idle sessions are reaped on the same cadence as NAT-entry eviction
 
 ## Transport Support
 

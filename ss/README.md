@@ -391,6 +391,7 @@ The metrics set includes:
 - Active outbound TCP connections
 - Per-user TCP payload throughput in both directions
 - Per-user UDP success, timeout, and error counts
+- Per-user UDP replay drops (Shadowsocks-2022 anti-replay)
 - Per-user UDP relay latency
 - Per-user UDP payload throughput
 - Aggregate per-client payload throughput across TCP and UDP
@@ -419,6 +420,7 @@ The dashboard covers:
 - TCP connect p95 latency
 - TCP and UDP throughput by user
 - UDP request rate and response datagram rate
+- UDP replay drops by user and protocol
 
 ## HTTP/3 Performance Tuning
 
@@ -572,6 +574,8 @@ Use `debug` only during troubleshooting because WebSocket connection lifecycle l
 - HTTP/3 requires public UDP reachability on the selected port.
 - `fwmark` works only on Linux and requires sufficient privileges, typically `CAP_NET_ADMIN` or root.
 - Keep TCP and UDP WebSocket paths distinct. The server validates this at startup.
+- Shadowsocks-2022 UDP traffic is protected by a sliding-window anti-replay filter keyed on the per-session ID; duplicate `packet_id`s are dropped and counted in `outline_ss_udp_replay_dropped_total`.
+- Root HTTP authentication compares passwords in constant time.
 
 ## Compatibility Notes
 
