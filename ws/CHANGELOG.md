@@ -10,7 +10,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 *Russian version: [CHANGELOG.ru.md](CHANGELOG.ru.md)*
 
-## [Unreleased] - changes after `v1.1.0` (through 2026-04-22)
+## [Unreleased] - changes after `v1.1.0` (through 2026-04-24)
 
 ### Added
 
@@ -22,7 +22,10 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Added richer diagnostics: target addresses in `session_death`, propagated transport read diagnostics for TUN and TCP probe paths, and request counters for control and metrics HTTP endpoints.
 - Added TCP keepalive probes to the userspace TUN stack so dead peers are detected instead of lingering in established state.
 - WebSocket Close code `1013` is now treated as a retryable signal, on par with TCP RST.
-- Continued the workspace split by extracting dedicated crates for transport, uplink management, TUN, routing, metrics, Shadowsocks crypto, and SOCKS5 protocol primitives.
+- Continued the workspace split by extracting dedicated crates for transport, uplink management, TUN, routing, metrics, Shadowsocks crypto, and SOCKS5 protocol primitives. Split `outline-transport` further into `outline-net` + `outline-ss2022`.
+- Added a built-in multi-instance dashboard at `/dashboard`, gated behind the `dashboard` Cargo feature. The dashboard process holds per-instance control tokens server-side and proxies `/control/topology` and `/control/activate` to each configured instance. Supports both `http://` and `https://` control endpoints, preserves URL prefixes for instances behind a reverse proxy, and exposes a configurable `dashboard.request_timeout_secs`.
+- Dashboard UI: instance-centric layout, per-group balancing settings panel, themed sidebar with a dark default palette and runtime light/dark toggle (browser `theme-color` follows the active theme).
+- Added a packaged Grafana control-plane dashboard (`grafana/dashboard/outline-ws-uplinks.json`) with an integration guide in `grafana/README.md`.
 
 ### Changed
 
@@ -44,6 +47,8 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Fixed lifecycle issues around shared H2/H3 connection garbage collection, active-uplink state persistence, silently dropped uplinks behind router NAT, and feature-gated tests.
 - The TCP idle watcher is now refreshed on keepalive traffic, so keepalive-only sessions are no longer evicted as idle.
 - Phase-1 uplink selection no longer penalises an uplink when the target itself is unreachable.
+- Fixed dashboard load-balancing chip labels so they match the real load-balancing enum variants.
+- Fixed SOCKS idle-timeout keepalive accounting so keepalive traffic correctly defers SOCKS-side idle eviction.
 
 ## [1.1.0] - 2026-04-17
 

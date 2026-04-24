@@ -10,7 +10,7 @@
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
 
-## [Unreleased] - изменения после `v1.1.0` (по состоянию на 2026-04-22)
+## [Unreleased] - изменения после `v1.1.0` (по состоянию на 2026-04-24)
 
 ### Добавлено
 
@@ -22,7 +22,10 @@
 - Расширена диагностика: в `session_death` теперь попадает адрес цели, транспортные read-диагностики прокинуты в TUN и TCP probe paths, а HTTP-эндпоинты control/metrics получили счётчики запросов.
 - В userspace-стек TUN добавлены TCP keepalive-пробы, чтобы обнаруживать мёртвых пиров вместо зависших established-сессий.
 - WebSocket Close-код `1013` теперь считается retryable-сигналом, наравне с TCP RST.
-- Продолжено разделение на workspace-crates: вынесены отдельные crate'ы для transport, uplink management, TUN, routing, metrics, Shadowsocks crypto и SOCKS5 primitives.
+- Продолжено разделение на workspace-crates: вынесены отдельные crate'ы для transport, uplink management, TUN, routing, metrics, Shadowsocks crypto и SOCKS5 primitives. `outline-transport` дополнительно разнесён на `outline-net` + `outline-ss2022`.
+- Добавлен встроенный multi-instance дашборд по адресу `/dashboard` под Cargo-фичей `dashboard`. Процесс дашборда хранит per-instance control-токены на серверной стороне и проксирует `/control/topology` и `/control/activate` к каждой instance. Поддерживаются `http://` и `https://` control endpoints, сохраняется URL-префикс для инстансов за reverse proxy, добавлен настраиваемый `dashboard.request_timeout_secs`.
+- UI дашборда: instance-centric раскладка, панель настроек балансировки по группам, тематизированный sidebar с тёмной палитрой по умолчанию и рантайм-переключателем light/dark (браузерный `theme-color` следует за активной темой).
+- Добавлен packaged Grafana-дашборд control plane (`grafana/dashboard/outline-ws-uplinks.json`) и integration guide в `grafana/README.md`.
 
 ### Изменено
 
@@ -44,6 +47,8 @@
 - Исправлены проблемы жизненного цикла вокруг сборки мусора shared H2/H3 connections, персистентности active-uplink state, «тихо» отвалившихся за NAT аплинков и feature-gated тестов.
 - TCP idle watcher теперь обновляется на keepalive-трафике, так что keepalive-only сессии больше не выселяются как idle.
 - Phase-1 выбор аплинка больше не штрафует аплинк, если недоступна сама цель.
+- Исправлены подписи чипов load-balancing в дашборде — теперь они соответствуют реальным вариантам enum'а балансировки.
+- Исправлен учёт keepalive в SOCKS idle-таймауте: keepalive-трафик корректно отодвигает выселение сессии по idle на стороне SOCKS.
 
 ## [1.1.0] - 2026-04-17
 
