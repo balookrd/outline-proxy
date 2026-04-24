@@ -46,8 +46,7 @@ impl UserKey {
         cipher: CipherKind,
     ) -> Result<Self, CryptoError> {
         let id: Arc<str> = Arc::from(id.into());
-        let log_label: Arc<str> =
-            Arc::from(format!("{}:{}", &id, cipher.as_str()).as_str());
+        let log_label: Arc<str> = Arc::from(format!("{}:{}", &id, cipher.as_str()).as_str());
         Ok(Self {
             id,
             log_label,

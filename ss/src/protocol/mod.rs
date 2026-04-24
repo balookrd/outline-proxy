@@ -2,6 +2,8 @@ use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use thiserror::Error;
 
+pub mod vless;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetAddr {
     Socket(SocketAddr),

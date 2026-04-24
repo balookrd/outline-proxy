@@ -56,8 +56,7 @@ pub(crate) fn bind_nat_udp_socket(
     let source = source.expect("checked above");
     let socket = Socket::new(Domain::IPV6, Type::DGRAM, Some(socket2::Protocol::UDP))
         .context("failed to create NAT UDP socket")?;
-    set_ipv6_freebind(&socket)
-        .context("failed to set IPV6_FREEBIND on NAT UDP socket")?;
+    set_ipv6_freebind(&socket).context("failed to set IPV6_FREEBIND on NAT UDP socket")?;
     let bind_addr = SocketAddr::V6(std::net::SocketAddrV6::new(source, 0, 0, 0));
     socket
         .bind(&SockAddr::from(bind_addr))

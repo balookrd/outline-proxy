@@ -1,7 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
-use metrics::{counter, gauge, histogram};
 use metrics::with_local_recorder;
+use metrics::{counter, gauge, histogram};
 
 use super::{DisconnectReason, Metrics, Protocol, Transport};
 

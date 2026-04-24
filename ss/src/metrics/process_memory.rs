@@ -48,8 +48,12 @@ pub fn append_to_prometheus_output(out: &mut String, snapshot: &ProcessMemorySna
         "Resident set size of the outline-ss-rust process.",
     );
     write_type(out, "outline_ss_process_resident_memory_bytes", "gauge");
-    writeln!(out, "outline_ss_process_resident_memory_bytes {}", snapshot.resident_memory_bytes)
-        .ok();
+    writeln!(
+        out,
+        "outline_ss_process_resident_memory_bytes {}",
+        snapshot.resident_memory_bytes
+    )
+    .ok();
 
     write_help(
         out,
@@ -287,8 +291,11 @@ fn procfs_virtual_memory_diagnostics() -> VirtualMemoryDiagnostics {
     }
 
     finalize_mapping(&mut diag, current_mapping, current_size_kib, current_rss_kib);
-    diag.top_mappings
-        .sort_by(|l, r| r.size_bytes.cmp(&l.size_bytes).then_with(|| r.rss_bytes.cmp(&l.rss_bytes)));
+    diag.top_mappings.sort_by(|l, r| {
+        r.size_bytes
+            .cmp(&l.size_bytes)
+            .then_with(|| r.rss_bytes.cmp(&l.rss_bytes))
+    });
     diag.top_mappings.truncate(8);
     diag
 }
@@ -338,14 +345,26 @@ impl SmapsMappingHeader<'_> {
             Some("[heap]") => MappingKind::Heap,
             Some(p) if p.starts_with("[stack") => MappingKind::Stack,
             Some(p) if p.starts_with("[anon") => {
-                if shared { MappingKind::AnonShared } else { MappingKind::AnonPrivate }
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
             },
             Some(p) if p.starts_with('[') => MappingKind::Special,
             Some(_) => {
-                if shared { MappingKind::FileShared } else { MappingKind::FilePrivate }
+                if shared {
+                    MappingKind::FileShared
+                } else {
+                    MappingKind::FilePrivate
+                }
             },
             None => {
-                if shared { MappingKind::AnonShared } else { MappingKind::AnonPrivate }
+                if shared {
+                    MappingKind::AnonShared
+                } else {
+                    MappingKind::AnonPrivate
+                }
             },
         }
     }
@@ -380,7 +399,11 @@ fn parse_smaps_mapping_header(line: &str) -> Option<SmapsMappingHeader<'_>> {
     fields.next()?;
     let pathname = fields.next();
     let shared = perms.contains('s');
-    Some(SmapsMappingHeader { kind: SmapsMappingHeader::classify(shared, pathname), perms, pathname })
+    Some(SmapsMappingHeader {
+        kind: SmapsMappingHeader::classify(shared, pathname),
+        perms,
+        pathname,
+    })
 }
 
 #[cfg(target_os = "linux")]

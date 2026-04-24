@@ -122,7 +122,8 @@ async fn handle_ss_udp_datagram(
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
         && !ctx.replay_store.check_and_mark(csid, pid)
     {
-        ctx.metrics.record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
+        ctx.metrics
+            .record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
         warn!(
             user = packet.user.id(),
             client_addr = %client_addr,
@@ -169,7 +170,8 @@ async fn handle_ss_udp_datagram(
         fwmark: packet.user.fwmark(),
         target: resolved,
     };
-    let entry = ctx.nat_table
+    let entry = ctx
+        .nat_table
         .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&ctx.metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;

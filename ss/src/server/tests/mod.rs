@@ -13,12 +13,12 @@ use tokio::{
 };
 
 use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
+use super::nat::NatTable;
+use super::setup::{UserRoute, build_vless_transport_route_map};
 use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
     user_keys,
 };
-use super::nat::NatTable;
-use super::setup::UserRoute;
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
@@ -28,6 +28,7 @@ mod auth;
 mod h3;
 mod nat;
 mod shadowsocks;
+mod vless;
 mod websocket;
 
 fn build_test_state(
@@ -41,7 +42,8 @@ fn build_test_state(
     let users = user_keys(user_routes.as_ref());
     let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
-    let routes = Arc::new(RouteRegistry { tcp, udp });
+    let vless = Arc::new(build_vless_transport_route_map(&[]));
+    let routes = Arc::new(RouteRegistry { tcp, udp, vless });
     let services = Arc::new(Services {
         metrics,
         dns_cache,
@@ -175,9 +177,12 @@ async fn dns_cache_singleflight_coalesces_concurrent_misses() {
 async fn dns_cache_singleflight_propagates_errors() {
     let cache = DnsCache::new(std::time::Duration::from_secs(30));
     let err = cache
-        .resolve_or_join("fail.example", 443, false, |_| async move {
-            Err(anyhow::anyhow!("boom"))
-        })
+        .resolve_or_join(
+            "fail.example",
+            443,
+            false,
+            |_| async move { Err(anyhow::anyhow!("boom")) },
+        )
         .await
         .unwrap_err();
     assert!(format!("{err:#}").contains("boom"));
@@ -262,11 +267,12 @@ fn sample_config(listen: SocketAddr) -> Config {
         listen,
         vec![UserEntry {
             id: "bob".into(),
-            password: "secret-b".into(),
+            password: Some("secret-b".into()),
             fwmark: None,
             method: None,
             ws_path_tcp: None,
             ws_path_udp: None,
+            vless_id: None,
         }],
     )
 }
@@ -283,11 +289,12 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         metrics_listen: None,
         metrics_path: "/metrics".into(),
         prefer_ipv4_upstream: false,
-            outbound_ipv6_prefix: None,
-            outbound_ipv6_interface: None,
-            outbound_ipv6_refresh_secs: 30,
+        outbound_ipv6_prefix: None,
+        outbound_ipv6_interface: None,
+        outbound_ipv6_refresh_secs: 30,
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
+        vless_ws_path: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         password: None,

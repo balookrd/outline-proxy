@@ -44,7 +44,7 @@ async fn async_main() -> Result<()> {
         AppMode::Serve(config) => {
             init_tracing();
             server::run(config).await
-        }
+        },
         AppMode::GenerateKeys { config, access_key, print, write_dir } => {
             let artifacts = build_access_key_artifacts(&config, &access_key)?;
             if print {
@@ -58,7 +58,7 @@ async fn async_main() -> Result<()> {
                 print!("{}", render_written_access_key_report(&written));
             }
             Ok(())
-        }
+        },
     }
 }
 

@@ -20,15 +20,17 @@ use tracing::{debug, warn};
 use crate::metrics::{DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::setup::protocol_from_http_version;
-use super::state::{AppState, empty_transport_route};
+use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
 mod tcp;
 mod udp;
+mod vless;
 mod ws_socket;
 mod ws_writer;
 
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
+pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx};
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -50,7 +52,10 @@ pub(super) async fn tcp_websocket_upgrade(
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-    let session = state.services.metrics.open_websocket_session(Transport::Tcp, protocol);
+    let session = state
+        .services
+        .metrics
+        .open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
         let server = WsTcpServerCtx {
             metrics: state.services.metrics.clone(),
@@ -66,6 +71,48 @@ pub(super) async fn tcp_websocket_upgrade(
         };
         let result = tcp::handle_tcp_connection(socket, server, route_ctx).await;
         finish_ws_session(session, result, "tcp");
+    })
+}
+
+pub(super) async fn vless_websocket_upgrade(
+    ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
+    version: Version,
+) -> Response {
+    let ws: WebSocketUpgrade = match ws {
+        Ok(ws) => ws,
+        Err(_) => return build_not_found_response(Body::empty()),
+    };
+    let protocol = protocol_from_http_version(version);
+    let path: Arc<str> = Arc::from(uri.path());
+    let route = state
+        .routes
+        .vless
+        .get(&*path)
+        .cloned()
+        .unwrap_or_else(empty_vless_transport_route);
+    debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
+    let session = state
+        .services
+        .metrics
+        .open_websocket_session(Transport::Tcp, protocol);
+    ws.on_upgrade(move |socket| async move {
+        let server = VlessWsServerCtx {
+            metrics: state.services.metrics.clone(),
+            dns_cache: Arc::clone(&state.services.dns_cache),
+            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
+            outbound_ipv6: state.services.outbound_ipv6.clone(),
+        };
+        let route_ctx = VlessWsRouteCtx {
+            users: Arc::clone(&route.users),
+            protocol,
+            path,
+            candidate_users: Arc::clone(&route.candidate_users),
+        };
+        let result = vless::handle_vless_connection(socket, server, route_ctx).await;
+        finish_ws_session(session, result, "vless");
     })
 }
 
@@ -140,7 +187,10 @@ pub(super) async fn udp_websocket_upgrade(
         .cloned()
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-    let session = state.services.metrics.open_websocket_session(Transport::Udp, protocol);
+    let session = state
+        .services
+        .metrics
+        .open_websocket_session(Transport::Udp, protocol);
     ws.on_upgrade(move |socket| async move {
         let server = Arc::new(UdpServerCtx {
             metrics: state.services.metrics.clone(),

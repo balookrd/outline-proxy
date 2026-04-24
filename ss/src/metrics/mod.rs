@@ -12,8 +12,8 @@ pub use process_memory::ProcessMemorySnapshot;
 use std::{
     collections::HashMap,
     sync::{
-        atomic::{AtomicI64, Ordering},
         Arc,
+        atomic::{AtomicI64, Ordering},
     },
     time::Instant,
 };
@@ -110,7 +110,12 @@ impl Metrics {
             )
             .increment(1.0);
         });
-        TcpUpstreamGuard { metrics: self.clone(), user_id, protocol, finished: false }
+        TcpUpstreamGuard {
+            metrics: self.clone(),
+            user_id,
+            protocol,
+            finished: false,
+        }
     }
 
     // ── Recording methods ──────────────────────────────────────────────────────
@@ -423,6 +428,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".to_owned(),
             password: Some("secret".to_owned()),

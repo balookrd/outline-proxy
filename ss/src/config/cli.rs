@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    path::PathBuf,
-};
+use std::{net::SocketAddr, path::PathBuf};
 
 use clap::{ArgAction, Parser};
 
@@ -159,10 +156,11 @@ pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
 
     Ok(UserEntry {
         id: id.to_owned(),
-        password: password.to_owned(),
+        password: Some(password.to_owned()),
         fwmark: None,
         method: None,
         ws_path_tcp: None,
         ws_path_udp: None,
+        vless_id: None,
     })
 }

@@ -1,4 +1,8 @@
-use std::{fs, path::Path, sync::{Arc, OnceLock}};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
 
 use anyhow::{Context, Result, anyhow};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};

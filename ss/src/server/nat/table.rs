@@ -133,10 +133,7 @@ impl NatTable {
     /// Current number of active NAT entries (informational).
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.entries
-            .iter()
-            .filter(|r| r.value().get().is_some())
-            .count()
+        self.entries.iter().filter(|r| r.value().get().is_some()).count()
     }
 
     /// Remove entries that have had no outbound traffic for longer than
@@ -157,11 +154,7 @@ impl NatTable {
         });
         if evicted > 0 {
             metrics.record_udp_nat_entries_evicted(evicted);
-            debug!(
-                evicted,
-                remaining = self.entries.len(),
-                "evicted idle UDP NAT entries"
-            );
+            debug!(evicted, remaining = self.entries.len(), "evicted idle UDP NAT entries");
         }
     }
 }

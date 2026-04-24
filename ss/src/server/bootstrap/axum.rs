@@ -11,14 +11,23 @@ use tokio::{net::TcpListener, sync::Semaphore, task::JoinSet, time::Duration};
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
 
-use crate::{config::{Config, TuningProfile}, metrics::Metrics};
+use crate::{
+    config::{Config, TuningProfile},
+    metrics::Metrics,
+};
 
 use super::super::{
     connect::configure_tcp_stream,
-    constants::{H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS},
+    constants::{
+        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+        TLS_MAX_CONCURRENT_CONNECTIONS,
+    },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RouteRegistry, Services},
-    transport::{metrics_handler, not_found_handler, root_http_auth_handler, tcp_websocket_upgrade, udp_websocket_upgrade},
+    transport::{
+        metrics_handler, not_found_handler, root_http_auth_handler, tcp_websocket_upgrade,
+        udp_websocket_upgrade, vless_websocket_upgrade,
+    },
 };
 use super::tls::build_tcp_tls_acceptor;
 
@@ -39,6 +48,10 @@ pub(in crate::server) fn build_app(
 
     for path in routes.udp.keys() {
         router = router.route(path, any(udp_websocket_upgrade));
+    }
+
+    for path in routes.vless.keys() {
+        router = router.route(path, any(vless_websocket_upgrade));
     }
 
     let state = AppState { routes, services, auth };
@@ -185,10 +198,9 @@ async fn serve_tls_listener(
     }
 
     let drain_timeout = Duration::from_secs(TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-    let drain = tokio::time::timeout(drain_timeout, async {
-        while tasks.join_next().await.is_some() {}
-    })
-    .await;
+    let drain =
+        tokio::time::timeout(drain_timeout, async { while tasks.join_next().await.is_some() {} })
+            .await;
     if drain.is_err() {
         warn!(
             remaining = tasks.len(),

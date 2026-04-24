@@ -94,17 +94,35 @@ impl WsSocket for AxumWs {
         }
     }
 
-    fn binary_msg(data: Bytes) -> Message { Message::Binary(data) }
-    fn close_msg() -> Message { Message::Close(None) }
+    fn binary_msg(data: Bytes) -> Message {
+        Message::Binary(data)
+    }
+    fn close_msg() -> Message {
+        Message::Close(None)
+    }
     fn close_try_again_msg() -> Message {
-        Message::Close(Some(CloseFrame { code: close_code::AGAIN, reason: "".into() }))
+        Message::Close(Some(CloseFrame {
+            code: close_code::AGAIN,
+            reason: "".into(),
+        }))
     }
-    fn ping_msg() -> Message { Message::Ping(Bytes::new()) }
-    fn pong_msg(p: Bytes) -> Message { Message::Pong(p) }
+    fn ping_msg() -> Message {
+        Message::Ping(Bytes::new())
+    }
+    fn pong_msg(p: Bytes) -> Message {
+        Message::Pong(p)
+    }
     fn binary_len(m: &Message) -> Option<usize> {
-        if let Message::Binary(b) = m { Some(b.len()) } else { None }
+        if let Message::Binary(b) = m {
+            Some(b.len())
+        } else {
+            None
+        }
     }
-    fn make_udp_response_sender(tx: mpsc::Sender<Message>, protocol: Protocol) -> UdpResponseSender {
+    fn make_udp_response_sender(
+        tx: mpsc::Sender<Message>,
+        protocol: Protocol,
+    ) -> UdpResponseSender {
         UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol }))
     }
 }
@@ -146,13 +164,27 @@ impl WsSocket for H3Ws {
         }
     }
 
-    fn binary_msg(data: Bytes) -> H3Message { H3Message::Binary(data) }
-    fn close_msg() -> H3Message { H3Message::Close(None) }
-    fn close_try_again_msg() -> H3Message { H3Message::Close(Some(CloseReason::new(1013, ""))) }
-    fn ping_msg() -> H3Message { H3Message::Ping(Bytes::new()) }
-    fn pong_msg(p: Bytes) -> H3Message { H3Message::Pong(p) }
+    fn binary_msg(data: Bytes) -> H3Message {
+        H3Message::Binary(data)
+    }
+    fn close_msg() -> H3Message {
+        H3Message::Close(None)
+    }
+    fn close_try_again_msg() -> H3Message {
+        H3Message::Close(Some(CloseReason::new(1013, "")))
+    }
+    fn ping_msg() -> H3Message {
+        H3Message::Ping(Bytes::new())
+    }
+    fn pong_msg(p: Bytes) -> H3Message {
+        H3Message::Pong(p)
+    }
     fn binary_len(m: &H3Message) -> Option<usize> {
-        if let H3Message::Binary(b) = m { Some(b.len()) } else { None }
+        if let H3Message::Binary(b) = m {
+            Some(b.len())
+        } else {
+            None
+        }
     }
     fn make_udp_response_sender(
         tx: mpsc::Sender<H3Message>,

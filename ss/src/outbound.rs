@@ -19,12 +19,7 @@
 //!
 //! At the call site the two modes are unified behind [`OutboundIpv6`].
 
-use std::{
-    net::Ipv6Addr,
-    num::ParseIntError,
-    str::FromStr,
-    sync::Arc,
-};
+use std::{net::Ipv6Addr, num::ParseIntError, str::FromStr, sync::Arc};
 
 use parking_lot::RwLock;
 use serde::{Deserialize, Deserializer};

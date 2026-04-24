@@ -162,16 +162,10 @@ impl TuningProfile {
         // `quinn` encodes QUIC flow-control windows as VarInt from u32, so
         // anything wider would panic at runtime.
         if self.h3_stream_window_bytes > u32::MAX as u64 {
-            bail!(
-                "tuning.h3_stream_window_bytes must fit in u32 (max {})",
-                u32::MAX
-            );
+            bail!("tuning.h3_stream_window_bytes must fit in u32 (max {})", u32::MAX);
         }
         if self.h3_connection_window_bytes > u32::MAX as u64 {
-            bail!(
-                "tuning.h3_connection_window_bytes must fit in u32 (max {})",
-                u32::MAX
-            );
+            bail!("tuning.h3_connection_window_bytes must fit in u32 (max {})", u32::MAX);
         }
 
         // UDP receive buffer must hold at least one max-size datagram.
@@ -196,22 +190,42 @@ impl TuningProfile {
     }
 
     pub(super) fn apply_overrides(&mut self, o: &TuningOverrides) {
-        if let Some(v) = o.h2_stream_window_bytes { self.h2_stream_window_bytes = v; }
-        if let Some(v) = o.h2_connection_window_bytes { self.h2_connection_window_bytes = v; }
-        if let Some(v) = o.h2_max_send_buf_size { self.h2_max_send_buf_size = v; }
-        if let Some(v) = o.h3_stream_window_bytes { self.h3_stream_window_bytes = v; }
-        if let Some(v) = o.h3_connection_window_bytes { self.h3_connection_window_bytes = v; }
+        if let Some(v) = o.h2_stream_window_bytes {
+            self.h2_stream_window_bytes = v;
+        }
+        if let Some(v) = o.h2_connection_window_bytes {
+            self.h2_connection_window_bytes = v;
+        }
+        if let Some(v) = o.h2_max_send_buf_size {
+            self.h2_max_send_buf_size = v;
+        }
+        if let Some(v) = o.h3_stream_window_bytes {
+            self.h3_stream_window_bytes = v;
+        }
+        if let Some(v) = o.h3_connection_window_bytes {
+            self.h3_connection_window_bytes = v;
+        }
         if let Some(v) = o.h3_max_concurrent_bidi_streams {
             self.h3_max_concurrent_bidi_streams = v;
         }
         if let Some(v) = o.h3_max_concurrent_uni_streams {
             self.h3_max_concurrent_uni_streams = v;
         }
-        if let Some(v) = o.h3_write_buffer_bytes { self.h3_write_buffer_bytes = v; }
-        if let Some(v) = o.h3_max_backpressure_bytes { self.h3_max_backpressure_bytes = v; }
-        if let Some(v) = o.h3_udp_socket_buffer_bytes { self.h3_udp_socket_buffer_bytes = v; }
-        if let Some(v) = o.client_active_ttl_secs { self.client_active_ttl_secs = v; }
-        if let Some(v) = o.udp_nat_idle_timeout_secs { self.udp_nat_idle_timeout_secs = v; }
+        if let Some(v) = o.h3_write_buffer_bytes {
+            self.h3_write_buffer_bytes = v;
+        }
+        if let Some(v) = o.h3_max_backpressure_bytes {
+            self.h3_max_backpressure_bytes = v;
+        }
+        if let Some(v) = o.h3_udp_socket_buffer_bytes {
+            self.h3_udp_socket_buffer_bytes = v;
+        }
+        if let Some(v) = o.client_active_ttl_secs {
+            self.client_active_ttl_secs = v;
+        }
+        if let Some(v) = o.udp_nat_idle_timeout_secs {
+            self.udp_nat_idle_timeout_secs = v;
+        }
         if let Some(v) = o.udp_max_concurrent_relay_tasks {
             self.udp_max_concurrent_relay_tasks = v;
         }
@@ -230,24 +244,37 @@ impl Default for TuningProfile {
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TuningOverrides {
-    #[serde(default)] pub h2_stream_window_bytes: Option<u32>,
-    #[serde(default)] pub h2_connection_window_bytes: Option<u32>,
-    #[serde(default)] pub h2_max_send_buf_size: Option<usize>,
-    #[serde(default)] pub h3_stream_window_bytes: Option<u64>,
-    #[serde(default)] pub h3_connection_window_bytes: Option<u64>,
-    #[serde(default)] pub h3_max_concurrent_bidi_streams: Option<u32>,
-    #[serde(default)] pub h3_max_concurrent_uni_streams: Option<u32>,
-    #[serde(default)] pub h3_write_buffer_bytes: Option<usize>,
-    #[serde(default)] pub h3_max_backpressure_bytes: Option<usize>,
-    #[serde(default)] pub h3_udp_socket_buffer_bytes: Option<usize>,
-    #[serde(default)] pub client_active_ttl_secs: Option<u64>,
-    #[serde(default)] pub udp_nat_idle_timeout_secs: Option<u64>,
-    #[serde(default)] pub udp_max_concurrent_relay_tasks: Option<usize>,
+    #[serde(default)]
+    pub h2_stream_window_bytes: Option<u32>,
+    #[serde(default)]
+    pub h2_connection_window_bytes: Option<u32>,
+    #[serde(default)]
+    pub h2_max_send_buf_size: Option<usize>,
+    #[serde(default)]
+    pub h3_stream_window_bytes: Option<u64>,
+    #[serde(default)]
+    pub h3_connection_window_bytes: Option<u64>,
+    #[serde(default)]
+    pub h3_max_concurrent_bidi_streams: Option<u32>,
+    #[serde(default)]
+    pub h3_max_concurrent_uni_streams: Option<u32>,
+    #[serde(default)]
+    pub h3_write_buffer_bytes: Option<usize>,
+    #[serde(default)]
+    pub h3_max_backpressure_bytes: Option<usize>,
+    #[serde(default)]
+    pub h3_udp_socket_buffer_bytes: Option<usize>,
+    #[serde(default)]
+    pub client_active_ttl_secs: Option<u64>,
+    #[serde(default)]
+    pub udp_nat_idle_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub udp_max_concurrent_relay_tasks: Option<usize>,
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TuningOverrides, TuningProfile, TuningPreset};
+    use super::{TuningOverrides, TuningPreset, TuningProfile};
 
     #[test]
     fn overrides_apply_on_top_of_preset() {

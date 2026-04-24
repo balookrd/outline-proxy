@@ -31,17 +31,15 @@ pub(super) async fn resolve_udp_target(
             if let Some(resolved) = dns_cache.lookup_one(host, *port, prefer_ipv4_upstream) {
                 return Ok(resolved);
             }
-            let addrs = resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await?;
+            let addrs =
+                resolve_via_singleflight(dns_cache, host, *port, prefer_ipv4_upstream).await?;
             addrs.first().copied().ok_or_else(|| {
                 anyhow!("dns lookup returned no records for {}", target.display_host_port())
             })
         },
         TargetAddr::Socket(addr) => {
             if prefer_ipv4_upstream && addr.is_ipv6() {
-                return Err(anyhow!(
-                    "ipv6 upstream disabled by prefer_ipv4_upstream for {}",
-                    addr
-                ));
+                return Err(anyhow!("ipv6 upstream disabled by prefer_ipv4_upstream for {}", addr));
             }
             Ok(*addr)
         },
@@ -101,8 +99,7 @@ async fn resolve_and_cache(
                 );
                 return Ok(stale);
             }
-            return Err(error)
-                .with_context(|| format!("dns lookup failed for {host}:{port}"));
+            return Err(error).with_context(|| format!("dns lookup failed for {host}:{port}"));
         },
     };
     if prefer_ipv4_upstream {
@@ -124,7 +121,9 @@ pub(super) async fn connect_tcp_target(
     outbound_ipv6: Option<&OutboundIpv6>,
 ) -> Result<TcpStream> {
     let resolved = sort_addrs_for_happy_eyeballs(
-        resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?.to_vec(),
+        resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream)
+            .await?
+            .to_vec(),
         prefer_ipv4_upstream,
     );
     connect_tcp_addrs(&resolved, fwmark, outbound_ipv6)

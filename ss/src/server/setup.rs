@@ -9,6 +9,7 @@ use crate::{
     config::Config,
     crypto::UserKey,
     metrics::{Protocol, Transport},
+    protocol::vless::VlessUser,
 };
 
 use super::state::TransportRoute;
@@ -25,11 +26,44 @@ pub(super) struct UserRoute {
     pub ws_path_udp: Arc<str>,
 }
 
+#[derive(Clone)]
+pub(super) struct VlessUserRoute {
+    pub user: VlessUser,
+    pub ws_path: Arc<str>,
+}
+
 pub(super) fn protocol_from_http_version(version: Version) -> Protocol {
     match version {
         Version::HTTP_2 => Protocol::Http2,
         _ => Protocol::Http1,
     }
+}
+
+pub(super) fn build_vless_transport_route_map(
+    routes: &[VlessUserRoute],
+) -> BTreeMap<String, Arc<super::state::VlessTransportRoute>> {
+    let mut grouped = BTreeMap::<String, Vec<VlessUser>>::new();
+    for route in routes {
+        grouped
+            .entry(route.ws_path.to_string())
+            .or_default()
+            .push(route.user.clone());
+    }
+
+    grouped
+        .into_iter()
+        .map(|(path, path_users)| {
+            let candidate_users =
+                path_users.iter().map(|user| user.label_arc()).collect::<Vec<_>>();
+            (
+                path,
+                Arc::new(super::state::VlessTransportRoute {
+                    users: Arc::from(path_users.into_boxed_slice()),
+                    candidate_users: Arc::from(candidate_users.into_boxed_slice()),
+                }),
+            )
+        })
+        .collect()
 }
 
 pub(super) fn build_transport_route_map(
@@ -42,19 +76,14 @@ pub(super) fn build_transport_route_map(
             Transport::Tcp => &route.ws_path_tcp,
             Transport::Udp => &route.ws_path_udp,
         };
-        grouped
-            .entry(path.to_owned())
-            .or_default()
-            .push(route.user.clone());
+        grouped.entry(path.to_owned()).or_default().push(route.user.clone());
     }
 
     grouped
         .into_iter()
         .map(|(path, path_users)| {
-            let candidate_users = path_users
-                .iter()
-                .map(|user| user.log_label())
-                .collect::<Vec<_>>();
+            let candidate_users =
+                path_users.iter().map(|user| user.log_label()).collect::<Vec<_>>();
             (
                 path,
                 Arc::new(TransportRoute {
@@ -81,6 +110,13 @@ pub(super) fn describe_user_routes(routes: &[UserRoute]) -> Vec<String> {
         .collect()
 }
 
+pub(super) fn describe_vless_user_routes(routes: &[VlessUserRoute]) -> Vec<String> {
+    routes
+        .iter()
+        .map(|route| format!("{} vless={}", route.user.label(), route.ws_path))
+        .collect()
+}
+
 pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     Ok(Arc::from(
         config
@@ -92,13 +128,32 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
                     Arc::from(entry.effective_ws_path_tcp(&config.ws_path_tcp));
                 let ws_path_udp: Arc<str> =
                     Arc::from(entry.effective_ws_path_udp(&config.ws_path_udp));
-                UserKey::new(entry.id, &entry.password, entry.fwmark, method).map(|user| {
-                    UserRoute {
-                        user,
-                        ws_path_tcp,
-                        ws_path_udp,
-                    }
+                let password = entry.password.expect("user_entries filters passwordless users");
+                UserKey::new(entry.id, &password, entry.fwmark, method).map(|user| UserRoute {
+                    user,
+                    ws_path_tcp,
+                    ws_path_udp,
                 })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
+pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserRoute]>> {
+    let Some(path) = config.vless_ws_path.as_deref() else {
+        return Ok(Arc::from(Vec::<VlessUserRoute>::new().into_boxed_slice()));
+    };
+    let ws_path: Arc<str> = Arc::from(path);
+    Ok(Arc::from(
+        config
+            .users
+            .iter()
+            .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
+            .map(|entry| {
+                let (entry, vless_id) = entry;
+                VlessUser::new(vless_id.clone(), entry.fwmark)
+                    .map(|user| VlessUserRoute { user, ws_path: Arc::clone(&ws_path) })
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),

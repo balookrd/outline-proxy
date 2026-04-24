@@ -143,7 +143,14 @@ fn build_user_artifact(
         config_filename,
         config_url,
         access_key_url,
-        yaml: render_outline_yaml(method.as_str(), &user.password, &tcp_url, &udp_url),
+        yaml: render_outline_yaml(
+            method.as_str(),
+            user.password
+                .as_deref()
+                .expect("user_entries filters passwordless users"),
+            &tcp_url,
+            &udp_url,
+        ),
     })
 }
 
@@ -267,6 +274,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             password: None,
@@ -274,19 +282,21 @@ mod tests {
             users: vec![
                 UserEntry {
                     id: "alice".into(),
-                    password: "secret-a".into(),
+                    password: Some("secret-a".into()),
                     fwmark: Some(1001),
                     method: Some(CipherKind::Aes256Gcm),
                     ws_path_tcp: Some("/alice/tcp".into()),
                     ws_path_udp: Some("/alice/udp".into()),
+                    vless_id: None,
                 },
                 UserEntry {
                     id: "bob".into(),
-                    password: "secret-b".into(),
+                    password: Some("secret-b".into()),
                     fwmark: Some(1002),
                     method: None,
                     ws_path_tcp: None,
                     ws_path_udp: None,
+                    vless_id: None,
                 },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
@@ -305,8 +315,7 @@ mod tests {
 
     #[test]
     fn builds_outline_artifacts_for_all_users() {
-        let artifacts =
-            build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
+        let artifacts = build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
 
         assert_eq!(artifacts.len(), 2);
         assert_eq!(
@@ -341,8 +350,7 @@ mod tests {
 
     #[test]
     fn writes_outline_artifacts_to_directory() {
-        let artifacts =
-            build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
+        let artifacts = build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
         let output_dir = std::env::temp_dir().join(format!(
             "outline-ss-rust-access-key-test-{}-{}",
             std::process::id(),

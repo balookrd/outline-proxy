@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use tokio::sync::Semaphore;
 
-use crate::{crypto::UserKey, metrics::Metrics, outbound::OutboundIpv6};
+use crate::{
+    crypto::UserKey, metrics::Metrics, outbound::OutboundIpv6, protocol::vless::VlessUser,
+};
 
 use super::nat::NatTable;
 use super::replay::ReplayStore;
@@ -15,6 +17,7 @@ use super::dns_cache::DnsCache;
 pub(super) struct RouteRegistry {
     pub(super) tcp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
+    pub(super) vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
 }
 
 /// UDP-only services. Not touched by the TCP path.
@@ -55,9 +58,22 @@ pub(super) struct TransportRoute {
     pub(super) candidate_users: Arc<[Arc<str>]>,
 }
 
+#[derive(Clone)]
+pub(super) struct VlessTransportRoute {
+    pub(super) users: Arc<[VlessUser]>,
+    pub(super) candidate_users: Arc<[Arc<str>]>,
+}
+
 pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
     Arc::new(TransportRoute {
         users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+        candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+    })
+}
+
+pub(super) fn empty_vless_transport_route() -> Arc<VlessTransportRoute> {
+    Arc::new(VlessTransportRoute {
+        users: Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
         candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
     })
 }

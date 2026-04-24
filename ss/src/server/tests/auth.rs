@@ -7,10 +7,10 @@ use http_body_util::Empty;
 use hyper_util::{client::legacy::Client, rt::TokioExecutor};
 use tokio::net::TcpListener;
 
-use super::super::{DnsCache, build_app, build_user_routes};
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
+use super::super::{DnsCache, build_app, build_user_routes};
 use super::{basic_auth_header, build_test_state, sample_config, set_cookie_pair};
 use crate::metrics::Metrics;
 
@@ -34,7 +34,8 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
 
@@ -126,7 +127,8 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
 

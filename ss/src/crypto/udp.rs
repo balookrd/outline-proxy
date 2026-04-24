@@ -131,7 +131,8 @@ fn try_decrypt_udp_packet_for_user(
         let key_len =
             derive_subkey(user.cipher(), user.master_key(), &separate_header[..8], &mut subkey)?;
         let algorithm = cipher_algorithm(user.cipher());
-        let key = UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
+        let key =
+            UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
         let less_safe = LessSafeKey::new(key);
         let nonce = ss2022_udp_nonce(&separate_header)?;
         let payload = with_scratch(ciphertext, |buf| {
@@ -229,11 +230,7 @@ pub fn encrypt_udp_packet_for_response(
                 UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
             let less_safe = LessSafeKey::new(key);
             let tag = less_safe
-                .seal_in_place_separate_tag(
-                    nonce_zero(),
-                    Aad::empty(),
-                    &mut packet[salt_len..],
-                )
+                .seal_in_place_separate_tag(nonce_zero(), Aad::empty(), &mut packet[salt_len..])
                 .map_err(|_| CryptoError::Cipher)?;
             packet.extend_from_slice(tag.as_ref());
             Ok(packet)
@@ -282,7 +279,9 @@ pub fn encrypt_udp_packet_for_response(
             let body_len = 8 + 8 + 1 + 8 + 8 + 2 + target.len() + payload.len();
 
             let mut nonce = [0_u8; XNONCE_LEN];
-            SystemRandom::new().fill(&mut nonce).map_err(|_| CryptoError::Random)?;
+            SystemRandom::new()
+                .fill(&mut nonce)
+                .map_err(|_| CryptoError::Random)?;
 
             let mut packet = Vec::with_capacity(XNONCE_LEN + body_len + TAG_LEN);
             packet.extend_from_slice(&nonce);

@@ -28,19 +28,18 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
     } else {
         None
     };
-    let ss_tcp_listener = if let Some(ss_listen) = config.ss_listen {
-        Some(TcpListener::bind(ss_listen).await.with_context(|| {
-            format!("failed to bind shadowsocks tcp listener {}", ss_listen)
-        })?)
-    } else {
-        None
-    };
+    let ss_tcp_listener =
+        if let Some(ss_listen) = config.ss_listen {
+            Some(TcpListener::bind(ss_listen).await.with_context(|| {
+                format!("failed to bind shadowsocks tcp listener {}", ss_listen)
+            })?)
+        } else {
+            None
+        };
     let ss_udp_socket = if let Some(ss_listen) = config.ss_listen {
-        Some(Arc::new(
-            UdpSocket::bind(ss_listen).await.with_context(|| {
-                format!("failed to bind shadowsocks udp socket {}", ss_listen)
-            })?,
-        ))
+        Some(Arc::new(UdpSocket::bind(ss_listen).await.with_context(|| {
+            format!("failed to bind shadowsocks udp socket {}", ss_listen)
+        })?))
     } else {
         None
     };
@@ -59,5 +58,11 @@ pub(super) async fn bind(config: &Config) -> Result<Bound> {
     } else {
         None
     };
-    Ok(Bound { listener, ss_tcp_listener, ss_udp_socket, metrics_listener, h3_server })
+    Ok(Bound {
+        listener,
+        ss_tcp_listener,
+        ss_udp_socket,
+        metrics_listener,
+        h3_server,
+    })
 }

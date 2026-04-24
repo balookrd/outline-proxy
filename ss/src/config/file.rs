@@ -29,6 +29,8 @@ pub(super) struct FileConfig {
     pub ws_path_tcp: Option<String>,
     #[serde(default)]
     pub ws_path_udp: Option<String>,
+    #[serde(default)]
+    pub vless_ws_path: Option<String>,
     pub http_root_auth: Option<bool>,
     pub http_root_realm: Option<String>,
     pub public_host: Option<String>,
@@ -78,6 +80,7 @@ mod tests {
 listen = "0.0.0.0:3000"
 ws_path_tcp = "/custom-tcp"
 ws_path_udp = "/custom-udp"
+vless_ws_path = "/vless"
 http_root_auth = true
 http_root_realm = "VPN"
 
@@ -92,11 +95,32 @@ ws_path_udp = "/alice-udp"
 
         assert_eq!(config.ws_path_tcp.as_deref(), Some("/custom-tcp"));
         assert_eq!(config.ws_path_udp.as_deref(), Some("/custom-udp"));
+        assert_eq!(config.vless_ws_path.as_deref(), Some("/vless"));
         assert_eq!(config.http_root_auth, Some(true));
         assert_eq!(config.http_root_realm.as_deref(), Some("VPN"));
         let users = config.users.unwrap();
         assert_eq!(users[0].ws_path_tcp.as_deref(), Some("/alice-tcp"));
         assert_eq!(users[0].ws_path_udp.as_deref(), Some("/alice-udp"));
+    }
+
+    #[test]
+    fn parses_user_vless_id() {
+        let config: FileConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:3000"
+vless_ws_path = "/vless"
+
+[[users]]
+id = "alice"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.vless_ws_path.as_deref(), Some("/vless"));
+        let users = config.users.unwrap();
+        assert_eq!(users[0].id, "alice");
+        assert_eq!(users[0].vless_id.as_deref(), Some("550e8400-e29b-41d4-a716-446655440000"));
     }
 
     #[test]
@@ -113,10 +137,7 @@ h3_max_concurrent_bidi_streams = 128
         )
         .unwrap();
 
-        assert_eq!(
-            config.tuning_profile,
-            Some(super::TuningPreset::Medium),
-        );
+        assert_eq!(config.tuning_profile, Some(super::TuningPreset::Medium),);
         let tuning = config.tuning.unwrap();
         assert_eq!(tuning.h3_udp_socket_buffer_bytes, Some(2_097_152));
         assert_eq!(tuning.h3_max_concurrent_bidi_streams, Some(128));

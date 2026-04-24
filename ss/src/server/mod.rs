@@ -13,10 +13,7 @@
 //! - [`transport`] — websocket/H3 request handlers and the shared session plumbing.
 //! - [`shadowsocks`] — the plain (non-websocket) shadowsocks listeners.
 
-use std::{
-    collections::BTreeSet,
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use anyhow::Result;
 use tokio::task::JoinSet;
@@ -53,10 +50,10 @@ use self::{
 
 use self::{
     bootstrap::{
-        build_app, build_metrics_app, ensure_rustls_provider_installed,
-        serve_h3_server, serve_metrics_listener, serve_tcp_listener,
+        build_app, build_metrics_app, ensure_rustls_provider_installed, serve_h3_server,
+        serve_metrics_listener, serve_tcp_listener,
     },
-    setup::describe_user_routes,
+    setup::{describe_user_routes, describe_vless_user_routes},
     shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
 };
@@ -66,11 +63,8 @@ pub async fn run(config: Config) -> Result<()> {
     let config = Arc::new(config);
     let built = services::build(&config)?;
     let bound = listeners::bind(&config).await?;
-    let app = build_app(
-        Arc::clone(&built.routes),
-        Arc::clone(&built.services),
-        Arc::clone(&built.auth),
-    );
+    let app =
+        build_app(Arc::clone(&built.routes), Arc::clone(&built.services), Arc::clone(&built.auth));
 
     let (shutdown_sender, shutdown_signal) = shutdown_channel();
 
@@ -93,7 +87,9 @@ pub async fn run(config: Config) -> Result<()> {
 
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
+    let vless_paths = built.vless_routes.keys().cloned().collect::<BTreeSet<_>>();
     let user_routes = describe_user_routes(built.user_routes.as_ref());
+    let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
     info!(
         listen = ?config.listen,
         ss_listen = ?config.ss_listen,
@@ -103,9 +99,12 @@ pub async fn run(config: Config) -> Result<()> {
         metrics_path = %config.metrics_path,
         default_tcp_ws_path = %config.ws_path_tcp,
         default_udp_ws_path = %config.ws_path_udp,
+        vless_ws_path = ?config.vless_ws_path,
         tcp_ws_paths = ?tcp_paths,
         udp_ws_paths = ?udp_paths,
+        vless_ws_paths = ?vless_paths,
         user_routes = ?user_routes,
+        vless_user_routes = ?vless_user_routes,
         method = ?config.method,
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,
@@ -125,9 +124,9 @@ pub async fn run(config: Config) -> Result<()> {
         let services = Arc::clone(&built.services);
         let auth = Arc::clone(&built.auth);
         let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move {
-            serve_h3_server(h3_server, routes, services, auth, shutdown).await
-        });
+        tasks.spawn(
+            async move { serve_h3_server(h3_server, routes, services, auth, shutdown).await },
+        );
     }
     if let Some(metrics_listener) = bound.metrics_listener {
         let metrics_app = build_metrics_app(built.metrics.clone(), config.metrics_path.clone());
