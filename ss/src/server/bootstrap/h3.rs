@@ -167,6 +167,8 @@ struct H3ConnectionCtx {
     tcp_paths: Arc<BTreeSet<String>>,
     udp_paths: Arc<BTreeSet<String>>,
     ws_config: H3WebSocketConfig,
+    tcp_server: Arc<WsTcpServerCtx>,
+    udp_server: Arc<UdpServerCtx>,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -181,6 +183,20 @@ pub(in crate::server) async fn serve_h3_server(
     let udp_paths: Arc<BTreeSet<String>> =
         Arc::new(routes.udp.keys().cloned().collect::<BTreeSet<_>>());
     let (endpoint, ws_config) = server.into_parts();
+    let tcp_server = Arc::new(WsTcpServerCtx {
+        metrics: services.metrics.clone(),
+        dns_cache: Arc::clone(&services.dns_cache),
+        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
+        outbound_ipv6: services.outbound_ipv6.clone(),
+    });
+    let udp_server = Arc::new(UdpServerCtx {
+        metrics: services.metrics.clone(),
+        nat_table: Arc::clone(&services.udp.nat_table),
+        replay_store: Arc::clone(&services.udp.replay_store),
+        dns_cache: Arc::clone(&services.dns_cache),
+        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
+        relay_semaphore: services.udp.relay_semaphore.clone(),
+    });
 
     loop {
         let incoming = tokio::select! {
@@ -205,6 +221,8 @@ pub(in crate::server) async fn serve_h3_server(
             tcp_paths: Arc::clone(&tcp_paths),
             udp_paths: Arc::clone(&udp_paths),
             ws_config: ws_config.clone(),
+            tcp_server: Arc::clone(&tcp_server),
+            udp_server: Arc::clone(&udp_server),
         });
 
         tokio::spawn(async move {
@@ -334,19 +352,13 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = ctx.services.metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
-        let server = WsTcpServerCtx {
-            metrics: ctx.services.metrics.clone(),
-            dns_cache: Arc::clone(&ctx.services.dns_cache),
-            prefer_ipv4_upstream: ctx.services.prefer_ipv4_upstream,
-            outbound_ipv6: ctx.services.outbound_ipv6.clone(),
-        };
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result = handle_tcp_h3_connection(socket, server, route_ctx).await;
+        let result = handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx).await;
         finish_ws_session(session, result, "tcp");
     } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
         let route = ctx.routes
@@ -356,21 +368,13 @@ async fn handle_h3_request(
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
         let session = ctx.services.metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
-        let server = Arc::new(UdpServerCtx {
-            metrics: ctx.services.metrics.clone(),
-            nat_table: Arc::clone(&ctx.services.udp.nat_table),
-            replay_store: Arc::clone(&ctx.services.udp.replay_store),
-            dns_cache: Arc::clone(&ctx.services.dns_cache),
-            prefer_ipv4_upstream: ctx.services.prefer_ipv4_upstream,
-            relay_semaphore: ctx.services.udp.relay_semaphore.clone(),
-        });
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         });
-        let result = handle_udp_h3_connection(socket, server, route_ctx).await;
+        let result = handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx).await;
         finish_ws_session(session, result, "udp");
     }
 

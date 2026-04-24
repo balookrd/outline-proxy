@@ -391,7 +391,7 @@ pub(super) async fn handle_tcp_connection(
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    server: WsTcpServerCtx,
+    server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
 ) -> Result<()> {
     run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route).await
