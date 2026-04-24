@@ -35,6 +35,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 socket2 = "0.5"
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
+subtle = "2.6"
 thiserror = "2.0"
 tokio = { version = "1.48", features = ["rt-multi-thread", "net", "sync", "time", "io-util", "macros", "signal"] }
 tokio-rustls = "0.26"
