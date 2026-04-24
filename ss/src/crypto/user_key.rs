@@ -7,6 +7,7 @@ use aes::{Aes128, Aes256, cipher::KeyInit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use chacha20poly1305::XChaCha20Poly1305;
 use md5::{Digest as _, Md5};
+use subtle::ConstantTimeEq;
 
 use super::error::CryptoError;
 use crate::config::CipherKind;
@@ -110,10 +111,10 @@ impl UserKey {
             let Ok(decoded) = STANDARD.decode(password.as_bytes()) else {
                 return Ok(false);
             };
-            return Ok(constant_time_eq(self.master_key(), &decoded));
+            return Ok(self.master_key().ct_eq(&decoded).into());
         }
         let derived = bytes_to_key(password.as_bytes(), self.cipher.key_len())?;
-        Ok(constant_time_eq(self.master_key(), &derived))
+        Ok(self.master_key().ct_eq(&derived).into())
     }
 
     pub(super) fn master_key(&self) -> &[u8] {
@@ -137,17 +138,6 @@ fn password_to_master_key(password: &str, cipher: CipherKind) -> Result<Vec<u8>,
     } else {
         bytes_to_key(password.as_bytes(), cipher.key_len())
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 fn bytes_to_key(password: &[u8], key_len: usize) -> Result<Vec<u8>, CryptoError> {

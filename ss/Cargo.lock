@@ -1282,6 +1282,7 @@ dependencies = [
  "serde_json",
  "socket2 0.5.10",
  "sockudo-ws",
+ "subtle",
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",

@@ -16,6 +16,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
+use subtle::ConstantTimeEq;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
 
@@ -94,31 +95,12 @@ fn bearer_token_matches(header: &HeaderValue, expected: &str) -> bool {
     let Some(presented) = value.strip_prefix("Bearer ").map(str::trim) else {
         return false;
     };
-    constant_time_eq(presented.as_bytes(), expected.as_bytes())
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff: u8 = 0;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
+    presented.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn constant_time_eq_works() {
-        assert!(constant_time_eq(b"abc", b"abc"));
-        assert!(!constant_time_eq(b"abc", b"abd"));
-        assert!(!constant_time_eq(b"abc", b"abcd"));
-        assert!(constant_time_eq(b"", b""));
-    }
 
     #[test]
     fn bearer_token_parsing() {
