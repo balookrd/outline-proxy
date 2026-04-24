@@ -10,7 +10,6 @@ pub use labels::{DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
 
 use std::{
-    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicI64, Ordering},
@@ -18,6 +17,7 @@ use std::{
     time::Instant,
 };
 
+use dashmap::DashMap;
 use metrics::{counter, gauge, histogram, with_local_recorder};
 use metrics_exporter_prometheus::{PrometheusHandle, PrometheusRecorder};
 use parking_lot::RwLock;
@@ -31,7 +31,7 @@ pub struct Metrics {
     h3_enabled: bool,
     pub(super) client_active_ttl_secs: u64,
     pub(super) process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
-    pub(super) client_last_seen: RwLock<HashMap<Arc<str>, AtomicI64>>,
+    pub(super) client_last_seen: DashMap<Arc<str>, AtomicI64>,
     pub(super) recorder: PrometheusRecorder,
     pub(super) handle: PrometheusHandle,
 }
@@ -46,7 +46,7 @@ impl Metrics {
             h3_enabled: config.h3_enabled(),
             client_active_ttl_secs: config.tuning.client_active_ttl_secs,
             process_memory_snapshot: RwLock::new(process_memory::sample()),
-            client_last_seen: RwLock::new(HashMap::new()),
+            client_last_seen: DashMap::new(),
             recorder,
             handle,
         });
@@ -190,18 +190,13 @@ impl Metrics {
     pub fn record_client_last_seen(&self, user: impl Into<Arc<str>>) {
         let user: Arc<str> = user.into();
         let ts = render::unix_timestamp_seconds();
-        {
-            let map = self.client_last_seen.read();
-            if let Some(cell) = map.get(&user) {
-                cell.store(ts, Ordering::Relaxed);
-            } else {
-                drop(map);
-                self.client_last_seen
-                    .write()
-                    .entry(Arc::clone(&user))
-                    .or_insert_with(|| AtomicI64::new(0))
-                    .store(ts, Ordering::Relaxed);
-            }
+        if let Some(cell) = self.client_last_seen.get(&user) {
+            cell.store(ts, Ordering::Relaxed);
+        } else {
+            self.client_last_seen
+                .entry(Arc::clone(&user))
+                .or_insert_with(|| AtomicI64::new(0))
+                .store(ts, Ordering::Relaxed);
         }
         with_local_recorder(&self.recorder, || {
             gauge!("outline_ss_client_last_seen_seconds", "user" => user).set(ts as f64);

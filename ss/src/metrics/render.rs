@@ -13,9 +13,8 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
     let ttl = metrics.client_active_ttl_secs as i64;
     let seen_snapshot: Vec<(Arc<str>, i64)> = metrics
         .client_last_seen
-        .read()
         .iter()
-        .map(|(k, v)| (Arc::clone(k), v.load(Ordering::Relaxed)))
+        .map(|entry| (Arc::clone(entry.key()), entry.value().load(Ordering::Relaxed)))
         .collect();
 
     with_local_recorder(&metrics.recorder, || {
