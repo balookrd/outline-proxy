@@ -27,8 +27,8 @@ mod udp;
 mod ws_socket;
 mod ws_writer;
 
-pub(super) use tcp::handle_tcp_h3_connection;
-pub(super) use udp::handle_udp_h3_connection;
+pub(in crate::server) use tcp::{TcpRouteCtx, TcpServerCtx, handle_tcp_h3_connection};
+pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
@@ -52,18 +52,19 @@ pub(super) async fn tcp_websocket_upgrade(
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state.services.metrics.open_websocket_session(Transport::Tcp, protocol);
     ws.on_upgrade(move |socket| async move {
-        let result = tcp::handle_tcp_connection(
-            socket,
-            Arc::clone(&route.users),
-            state.services.metrics.clone(),
+        let server = TcpServerCtx {
+            metrics: state.services.metrics.clone(),
+            dns_cache: Arc::clone(&state.services.dns_cache),
+            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
+            outbound_ipv6: state.services.outbound_ipv6.clone(),
+        };
+        let route_ctx = TcpRouteCtx {
+            users: Arc::clone(&route.users),
             protocol,
-            Arc::clone(&path),
-            Arc::clone(&route.candidate_users),
-            Arc::clone(&state.services.dns_cache),
-            state.services.prefer_ipv4_upstream,
-            state.services.outbound_ipv6.clone(),
-        )
-        .await;
+            path,
+            candidate_users: Arc::clone(&route.candidate_users),
+        };
+        let result = tcp::handle_tcp_connection(socket, server, route_ctx).await;
         finish_ws_session(session, result, "tcp");
     })
 }
@@ -140,23 +141,22 @@ pub(super) async fn udp_websocket_upgrade(
         .unwrap_or_else(empty_transport_route);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let session = state.services.metrics.open_websocket_session(Transport::Udp, protocol);
-    let nat_table = Arc::clone(&state.services.nat_table);
-    let replay_store = Arc::clone(&state.services.replay_store);
     ws.on_upgrade(move |socket| async move {
-        let result = udp::handle_udp_connection(
-            socket,
-            Arc::clone(&route.users),
-            state.services.metrics.clone(),
+        let server = Arc::new(UdpServerCtx {
+            metrics: state.services.metrics.clone(),
+            nat_table: Arc::clone(&state.services.nat_table),
+            replay_store: Arc::clone(&state.services.replay_store),
+            dns_cache: Arc::clone(&state.services.dns_cache),
+            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
+            relay_semaphore: state.services.udp_relay_semaphore.clone(),
+        });
+        let route_ctx = Arc::new(UdpRouteCtx {
+            users: Arc::clone(&route.users),
             protocol,
-            Arc::clone(&path),
-            Arc::clone(&route.candidate_users),
-            nat_table,
-            replay_store,
-            Arc::clone(&state.services.dns_cache),
-            state.services.prefer_ipv4_upstream,
-            state.services.udp_relay_semaphore.clone(),
-        )
-        .await;
+            path,
+            candidate_users: Arc::clone(&route.candidate_users),
+        });
+        let result = udp::handle_udp_connection(socket, server, route_ctx).await;
         finish_ws_session(session, result, "udp");
     })
 }

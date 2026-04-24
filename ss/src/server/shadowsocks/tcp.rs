@@ -24,14 +24,17 @@ use super::super::{
 };
 use super::handshake::ss_tcp_handshake;
 
-#[allow(clippy::too_many_arguments)]
+pub(in super::super) struct SsTcpCtx {
+    pub(in super::super) users: Arc<[UserKey]>,
+    pub(in super::super) metrics: Arc<Metrics>,
+    pub(in super::super) dns_cache: Arc<DnsCache>,
+    pub(in super::super) prefer_ipv4_upstream: bool,
+    pub(in super::super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
+}
+
 pub(in super::super) async fn serve_ss_tcp_listener(
     listener: TcpListener,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    ctx: Arc<SsTcpCtx>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
@@ -61,22 +64,10 @@ pub(in super::super) async fn serve_ss_tcp_listener(
                 continue;
             },
         };
-        let users = users.clone();
-        let metrics = metrics.clone();
-        let dns_cache = Arc::clone(&dns_cache);
-        let outbound_ipv6 = outbound_ipv6.clone();
+        let ctx = Arc::clone(&ctx);
         tokio::spawn(async move {
             let _permit = permit;
-            if let Err(error) = handle_ss_tcp_connection(
-                stream,
-                users,
-                metrics,
-                dns_cache,
-                prefer_ipv4_upstream,
-                outbound_ipv6,
-            )
-            .await
-            {
+            if let Err(error) = handle_ss_tcp_connection(stream, &ctx).await {
                 if is_expected_ws_close(&error) {
                     debug!(%peer, ?error, "shadowsocks tcp connection closed abruptly");
                 } else {
@@ -87,18 +78,11 @@ pub(in super::super) async fn serve_ss_tcp_listener(
     }
 }
 
-async fn handle_ss_tcp_connection(
-    socket: TcpStream,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<Arc<OutboundIpv6>>,
-) -> Result<()> {
+async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<()> {
     let peer_addr = socket.peer_addr().ok();
     let (mut client_reader, client_writer) = socket.into_split();
 
-    let Some(handshake) = ss_tcp_handshake(&mut client_reader, users, peer_addr).await? else {
+    let Some(handshake) = ss_tcp_handshake(&mut client_reader, ctx.users.clone(), peer_addr).await? else {
         return Ok(());
     };
 
@@ -113,16 +97,16 @@ async fn handle_ss_tcp_connection(
         "socket tcp starting upstream connect"
     );
     let upstream_stream = match connect_tcp_target(
-        dns_cache.as_ref(),
+        ctx.dns_cache.as_ref(),
         &handshake.target,
         handshake.user.fwmark(),
-        prefer_ipv4_upstream,
-        outbound_ipv6.as_deref(),
+        ctx.prefer_ipv4_upstream,
+        ctx.outbound_ipv6.as_deref(),
     )
     .await
     {
         Ok(stream) => {
-            metrics.record_tcp_connect(
+            ctx.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "success",
@@ -131,7 +115,7 @@ async fn handle_ss_tcp_connection(
             stream
         },
         Err(error) => {
-            metrics.record_tcp_connect(
+            ctx.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "error",
@@ -168,7 +152,7 @@ async fn handle_ss_tcp_connection(
         peer_addr,
         target: target_display,
     };
-    let relay_metrics = metrics.clone();
+    let relay_metrics = ctx.metrics.clone();
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = tokio::spawn(async move {
         super::super::relay::relay_upstream_to_client(
@@ -181,15 +165,15 @@ async fn handle_ss_tcp_connection(
         )
         .await
     });
-    metrics.record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
-    let upstream_guard = metrics.open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
+    ctx.metrics.record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
+    let upstream_guard = ctx.metrics.open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
 
     let relay_result = super::super::relay::relay_client_to_upstream(
         client_reader,
         handshake.decryptor,
         handshake.initial_payload,
         upstream_writer,
-        metrics,
+        ctx.metrics.clone(),
         Protocol::Socket,
         user_id,
     )

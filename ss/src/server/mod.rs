@@ -44,13 +44,20 @@ mod transport;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+use self::{
+    dns_cache::DnsCache,
+    setup::{build_transport_route_map, build_users},
+    state::{AuthPolicy, RouteRegistry, Services},
+};
+
 use self::{
     bootstrap::{
         build_app, build_metrics_app, ensure_rustls_provider_installed,
         serve_h3_server, serve_metrics_listener, serve_tcp_listener,
     },
     setup::describe_user_routes,
-    shadowsocks::{serve_ss_tcp_listener, serve_ss_udp_socket},
+    shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
 };
 
@@ -130,46 +137,27 @@ pub async fn run(config: Config) -> Result<()> {
         });
     }
     if let Some(listener) = bound.ss_tcp_listener {
-        let users = built.users.clone();
-        let metrics = built.metrics.clone();
-        let dns_cache = Arc::clone(&built.dns_cache);
-        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
-        let outbound_ipv6 = built.outbound_ipv6.clone();
-        let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move {
-            serve_ss_tcp_listener(
-                listener,
-                users,
-                metrics,
-                dns_cache,
-                prefer_ipv4_upstream,
-                outbound_ipv6,
-                shutdown,
-            )
-            .await
+        let ctx = Arc::new(SsTcpCtx {
+            users: built.users.clone(),
+            metrics: built.metrics.clone(),
+            dns_cache: Arc::clone(&built.dns_cache),
+            prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+            outbound_ipv6: built.outbound_ipv6.clone(),
         });
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move { serve_ss_tcp_listener(listener, ctx, shutdown).await });
     }
     if let Some(socket) = bound.ss_udp_socket {
-        let users = built.users.clone();
-        let metrics = built.metrics.clone();
-        let nat_table = Arc::clone(&built.nat_table);
-        let replay_store = Arc::clone(&built.replay_store);
-        let dns_cache = Arc::clone(&built.dns_cache);
-        let prefer_ipv4_upstream = config.prefer_ipv4_upstream;
-        let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move {
-            serve_ss_udp_socket(
-                socket,
-                users,
-                metrics,
-                nat_table,
-                replay_store,
-                dns_cache,
-                prefer_ipv4_upstream,
-                shutdown,
-            )
-            .await
+        let ctx = Arc::new(SsUdpCtx {
+            users: built.users.clone(),
+            metrics: built.metrics.clone(),
+            nat_table: Arc::clone(&built.nat_table),
+            replay_store: Arc::clone(&built.replay_store),
+            dns_cache: Arc::clone(&built.dns_cache),
+            prefer_ipv4_upstream: config.prefer_ipv4_upstream,
         });
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move { serve_ss_udp_socket(socket, ctx, shutdown).await });
     }
 
     // `shutdown_signal` lives past the spawn block so receivers inherited above

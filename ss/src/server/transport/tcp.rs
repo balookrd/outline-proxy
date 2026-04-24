@@ -42,6 +42,22 @@ use super::super::connect::connect_tcp_target;
 use super::super::constants::WS_TCP_KEEPALIVE_PING_INTERVAL_SECS;
 use super::super::dns_cache::DnsCache;
 
+/// Process-wide services shared by every TCP relay session.
+pub(in crate::server) struct TcpServerCtx {
+    pub(in crate::server) metrics: Arc<Metrics>,
+    pub(in crate::server) dns_cache: Arc<DnsCache>,
+    pub(in crate::server) prefer_ipv4_upstream: bool,
+    pub(in crate::server) outbound_ipv6: Option<Arc<OutboundIpv6>>,
+}
+
+/// Per-path state for a single TCP WebSocket session.
+pub(in crate::server) struct TcpRouteCtx {
+    pub(in crate::server) users: Arc<[UserKey]>,
+    pub(in crate::server) protocol: Protocol,
+    pub(in crate::server) path: Arc<str>,
+    pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
+}
+
 struct TcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
@@ -79,17 +95,10 @@ impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg>
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn run_tcp_relay<T: WsSocket>(
     socket: T,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    server: &TcpServerCtx,
+    route: &TcpRouteCtx,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
@@ -98,12 +107,12 @@ async fn run_tcp_relay<T: WsSocket>(
         writer,
         outbound_ctrl_rx,
         outbound_data_rx,
-        metrics.clone(),
+        server.metrics.clone(),
         Transport::Tcp,
-        protocol,
+        route.protocol,
     ));
 
-    let mut decryptor = AeadStreamDecryptor::new(users.clone());
+    let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
     let mut state = TcpRelayState::new();
     let mut client_closed = false;
@@ -141,14 +150,8 @@ async fn run_tcp_relay<T: WsSocket>(
                             &mut plaintext_buffer,
                             data,
                             &outbound_data_tx,
-                            users.as_ref(),
-                            &metrics,
-                            protocol,
-                            &path,
-                            candidate_users.as_ref(),
-                            dns_cache.as_ref(),
-                            prefer_ipv4_upstream,
-                            outbound_ipv6.as_deref(),
+                            server,
+                            route,
                             T::binary_msg,
                             T::close_msg,
                         )
@@ -228,41 +231,36 @@ async fn run_tcp_relay<T: WsSocket>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn handle_tcp_binary_frame<Msg>(
     state: &mut TcpRelayState,
     decryptor: &mut AeadStreamDecryptor,
     plaintext_buffer: &mut Vec<u8>,
     data: Bytes,
     outbound_data_tx: &mpsc::Sender<Msg>,
-    users: &[UserKey],
-    metrics: &Arc<Metrics>,
-    protocol: Protocol,
-    path: &str,
-    candidate_users: &[Arc<str>],
-    dns_cache: &DnsCache,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<&OutboundIpv6>,
+    server: &TcpServerCtx,
+    route: &TcpRouteCtx,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
 ) -> Result<()>
 where
     Msg: Send + 'static,
 {
-    metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "in", data.len());
+    server.metrics.record_websocket_binary_frame(Transport::Tcp, route.protocol, "in", data.len());
     decryptor.feed_ciphertext(&data);
     match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},
         Err(CryptoError::UnknownUser) => {
             debug!(
-                path = %path,
-                candidates = ?candidate_users,
+                path = %route.path,
+                candidates = ?route.candidate_users,
                 buffered = decryptor.buffered_data().len(),
-                attempts = ?diagnose_stream_handshake(users, decryptor.buffered_data()),
+                attempts = ?diagnose_stream_handshake(route.users.as_ref(), decryptor.buffered_data()),
                 "tcp authentication failed for all path candidates"
             );
             return Err(anyhow!(
-                "no configured key matched the incoming data on tcp path {path} candidates={candidate_users:?}",
+                "no configured key matched the incoming data on tcp path {} candidates={:?}",
+                route.path,
+                route.candidate_users,
             ));
         },
         Err(error) => return Err(anyhow!(error)),
@@ -278,41 +276,41 @@ where
         debug!(
             user = user.id(),
             cipher = user.cipher().as_str(),
-            path = %path,
+            path = %route.path,
             "tcp shadowsocks user authenticated"
         );
         let user_id = user.id_arc();
         let target_display = target.display_host_port();
         let connect_started = std::time::Instant::now();
         let stream = match connect_tcp_target(
-            dns_cache,
+            server.dns_cache.as_ref(),
             &target,
             user.fwmark(),
-            prefer_ipv4_upstream,
-            outbound_ipv6,
+            server.prefer_ipv4_upstream,
+            server.outbound_ipv6.as_deref(),
         )
         .await
         {
             Ok(stream) => {
-                metrics.record_tcp_connect(
+                server.metrics.record_tcp_connect(
                     Arc::clone(&user_id),
-                    protocol,
+                    route.protocol,
                     "success",
                     connect_started.elapsed().as_secs_f64(),
                 );
                 stream
             },
             Err(error) => {
-                metrics.record_tcp_connect(
+                server.metrics.record_tcp_connect(
                     Arc::clone(&user_id),
-                    protocol,
+                    route.protocol,
                     "error",
                     connect_started.elapsed().as_secs_f64(),
                 );
                 warn!(
                     user = user.id(),
-                    protocol = ?protocol,
-                    path = %path,
+                    protocol = ?route.protocol,
+                    path = %route.path,
                     target = %target_display,
                     error = %error,
                     "websocket tcp upstream connect failed; sending try-again close to client"
@@ -325,7 +323,7 @@ where
         info!(
             user = user.id(),
             fwmark = ?user.fwmark(),
-            path = %path,
+            path = %route.path,
             target = %target_display,
             "tcp upstream connected"
         );
@@ -333,8 +331,9 @@ where
         let (upstream_reader, writer) = stream.into_split();
         let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())?;
         let tx = outbound_data_tx.clone();
-        let relay_metrics = Arc::clone(metrics);
+        let relay_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
+        let protocol = route.protocol;
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
@@ -346,8 +345,8 @@ where
             )
             .await
         }));
-        metrics.record_tcp_authenticated_session(Arc::clone(&user_id), protocol);
-        state.upstream_guard = Some(metrics.open_tcp_upstream_connection(user_id, protocol));
+        server.metrics.record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
+        state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(user_id, route.protocol));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
         plaintext_buffer.drain(..consumed);
@@ -357,9 +356,9 @@ where
         && !plaintext_buffer.is_empty()
     {
         if let Some(user) = &state.authenticated_user {
-            metrics.record_tcp_payload_bytes(
+            server.metrics.record_tcp_payload_bytes(
                 user.id_arc(),
-                protocol,
+                route.protocol,
                 "client_to_target",
                 plaintext_buffer.len(),
             );
@@ -374,53 +373,18 @@ where
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_tcp_connection(
     socket: WebSocket,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    protocol: Protocol,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    server: TcpServerCtx,
+    route: TcpRouteCtx,
 ) -> Result<()> {
-    run_tcp_relay::<AxumWs>(
-        AxumWs(socket),
-        users,
-        metrics,
-        protocol,
-        path,
-        candidate_users,
-        dns_cache,
-        prefer_ipv4_upstream,
-        outbound_ipv6,
-    )
-    .await
+    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route).await
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
-    users: Arc<[UserKey]>,
-    metrics: Arc<Metrics>,
-    path: Arc<str>,
-    candidate_users: Arc<[Arc<str>]>,
-    dns_cache: Arc<DnsCache>,
-    prefer_ipv4_upstream: bool,
-    outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    server: TcpServerCtx,
+    route: TcpRouteCtx,
 ) -> Result<()> {
-    run_tcp_relay::<H3Ws>(
-        H3Ws(socket),
-        users,
-        metrics,
-        Protocol::Http3,
-        path,
-        candidate_users,
-        dns_cache,
-        prefer_ipv4_upstream,
-        outbound_ipv6,
-    )
-    .await
+    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route).await
 }
