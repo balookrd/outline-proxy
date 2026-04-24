@@ -288,6 +288,7 @@ where
     Msg: Send + 'static,
 {
     let mut buf = vec![0_u8; 16 * 1024];
+    let mut frame_buf = BytesMut::with_capacity(16 * 1024 + 16);
     loop {
         let read = match reader.read(&mut buf).await {
             Ok(0) => break,
@@ -298,9 +299,9 @@ where
             },
         };
         metrics.record_tcp_payload_bytes(Arc::clone(&user), protocol, "target_to_client", read);
-        let mut frame = BytesMut::with_capacity(read + 16);
+        frame_buf.reserve(read + 16);
         encode_frame(
-            &mut frame,
+            &mut frame_buf,
             session_id,
             SessionStatus::Keep,
             OPTION_DATA,
@@ -308,14 +309,15 @@ where
             None,
             Some(&buf[..read]),
         );
+        let frame = frame_buf.split().freeze();
         metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "out", frame.len());
-        if tx.send(make_binary(frame.freeze())).await.is_err() {
+        if tx.send(make_binary(frame)).await.is_err() {
             return Ok(());
         }
     }
-    let mut end = BytesMut::with_capacity(6);
-    encode_frame(&mut end, session_id, SessionStatus::End, 0, None, None, None);
-    let _ = tx.send(make_binary(end.freeze())).await;
+    frame_buf.reserve(6);
+    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
+    let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     Ok(())
 }
 
@@ -405,6 +407,7 @@ where
     Msg: Send + 'static,
 {
     let mut buf = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
+    let mut frame_buf = BytesMut::with_capacity(MAX_UDP_PAYLOAD_SIZE + 32);
     loop {
         let (read, from) = match socket.recv_from(&mut buf).await {
             Ok(v) => v,
@@ -418,9 +421,9 @@ where
         }
         metrics.record_udp_payload_bytes(Arc::clone(&user), protocol, "target_to_client", read);
         let src = TargetAddr::Socket(from);
-        let mut frame = BytesMut::with_capacity(read + 32);
+        frame_buf.reserve(read + 32);
         encode_frame(
-            &mut frame,
+            &mut frame_buf,
             session_id,
             SessionStatus::Keep,
             OPTION_DATA,
@@ -428,14 +431,15 @@ where
             Some(&src),
             Some(&buf[..read]),
         );
+        let frame = frame_buf.split().freeze();
         metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "out", frame.len());
-        if tx.send(make_binary(frame.freeze())).await.is_err() {
+        if tx.send(make_binary(frame)).await.is_err() {
             return Ok(());
         }
     }
-    let mut end = BytesMut::with_capacity(6);
-    encode_frame(&mut end, session_id, SessionStatus::End, 0, None, None, None);
-    let _ = tx.send(make_binary(end.freeze())).await;
+    frame_buf.reserve(6);
+    encode_frame(&mut frame_buf, session_id, SessionStatus::End, 0, None, None, None);
+    let _ = tx.send(make_binary(frame_buf.split().freeze())).await;
     Ok(())
 }
 
