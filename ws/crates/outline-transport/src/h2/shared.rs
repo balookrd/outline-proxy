@@ -1,10 +1,9 @@
-// Shared HTTP/2 connection infrastructure: window-size statics, TLS config,
-// H2Io async-IO adapter, connect_tls_h2, connection cache, per-key connect
-// locks, and all connect / gc logic.
+// HTTP/2 connection infrastructure: window-size statics, TLS config, H2Io
+// async-IO adapter, connect_tls_h2, H2Dialer (WsDialer impl), connection
+// cache, and connect / gc logic.
 //
-// Stream adapter types (H2WsStream) and the `websocket_target_uri` helper live
-// in the parent module (`mod.rs`). Generic URL helpers (`format_authority`,
-// `websocket_path`) are shared with the H3 transport in `crate::url_utils`.
+// Stream adapter types (H2WsStream) live in the parent module (`mod.rs`).
+// The generic dial skeleton is in `crate::shared_dial`.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -27,19 +26,19 @@ use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::protocol::Role;
-use tracing::{debug, info};
+use tracing::info;
 use url::Url;
 
 use crate::{
-    AbortOnDrop, WsTransportStream, SharedConnectionHealth, TransportConnectGuard,
-    TransportOperation,
-    DnsCache, connect_tcp_socket, resolve_host_with_preference,
+    AbortOnDrop, WsTransportStream, SharedConnectionHealth,
+    DnsCache, connect_tcp_socket,
 };
 use crate::shared_cache::{
     ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
 };
+use crate::url_utils::{format_authority, websocket_path};
 
-use super::{H2WsStream, websocket_h2_target_uri};
+use super::H2WsStream;
 
 // ── Window sizes ──────────────────────────────────────────────────────────────
 
@@ -346,6 +345,55 @@ fn h2_registry() -> &'static SharedConnectionRegistry<H2ConnectionKey, SharedH2C
     H2_REGISTRY.get_or_init(SharedConnectionRegistry::new)
 }
 
+// ── H2Dialer ──────────────────────────────────────────────────────────────────
+
+struct H2Dialer {
+    use_tls: bool,
+}
+
+impl crate::shared_dial::WsDialer for H2Dialer {
+    type Key = H2ConnectionKey;
+    type Conn = SharedH2Connection;
+
+    fn registry(&self) -> &'static SharedConnectionRegistry<H2ConnectionKey, SharedH2Connection> {
+        h2_registry()
+    }
+
+    fn metric_label(&self) -> &'static str {
+        "h2"
+    }
+
+    fn try_all_dns_addrs(&self) -> bool {
+        false
+    }
+
+    fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> H2ConnectionKey {
+        H2ConnectionKey::new(server_name, server_port, self.use_tls, fwmark)
+    }
+
+    async fn establish(
+        &self,
+        addr: SocketAddr,
+        server_name: &str,
+        fwmark: Option<u32>,
+        cache_key: Option<H2ConnectionKey>,
+    ) -> Result<Arc<SharedH2Connection>> {
+        Ok(Arc::new(connect_h2_connection(addr, server_name, self.use_tls, fwmark, cache_key).await?))
+    }
+
+    async fn open_on(
+        &self,
+        conn: &Arc<SharedH2Connection>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+    ) -> Result<WsTransportStream> {
+        let scheme = if self.use_tls { "https" } else { "http" };
+        let target_uri = format!("{scheme}://{}/{path}", format_authority(server_name, Some(server_port)));
+        conn.open_websocket(&target_uri).await
+    }
+}
+
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 pub(crate) async fn connect_websocket_h2(
@@ -364,114 +412,17 @@ pub(crate) async fn connect_websocket_h2(
         "wss" => true,
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
     };
-    let target_uri = websocket_h2_target_uri(url)?;
+    let path = websocket_path(url);
+    let dialer = H2Dialer { use_tls };
 
-    if should_reuse_h2_connection(source) {
-        // DNS resolution is deferred to the slow path inside connect_h2_reused
+    if crate::shared_cache::should_reuse_connection(source) {
+        // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        connect_h2_tcp_reused(cache, host, port, use_tls, &target_uri, fwmark, ipv6_first, source).await
+        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
     } else {
-        // Probes never share connections; resolve DNS upfront for the fresh dial.
-        let server_addr = resolve_host_with_preference(
-            cache,
-            host,
-            port,
-            "failed to resolve h2 websocket host",
-            ipv6_first,
-        )
-        .await?
-        .first()
-        .copied()
-        .ok_or_else(|| {
-            anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-                host: format!("{host}:{port}"),
-            })
-        })?;
-        connect_h2_tcp_new(server_addr, host, use_tls, &target_uri, fwmark, source).await
+        // Probes never share connections; fresh dial with no cache interaction.
+        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
     }
-}
-
-#[allow(clippy::too_many_arguments)] // private helper; grouping into a struct would cost more than it saves
-async fn connect_h2_tcp_reused(
-    cache: &DnsCache,
-    server_name: &str,
-    server_port: u16,
-    use_tls: bool,
-    target_uri: &str,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<WsTransportStream> {
-    let key = H2ConnectionKey::new(server_name, server_port, use_tls, fwmark);
-
-    crate::shared_cache::with_reuse(
-        h2_registry(),
-        key.clone(),
-        |shared| async move {
-            match shared.open_websocket(target_uri).await {
-                Ok(ws) => {
-                    outline_metrics::record_transport_connect(source, "h2", "reused");
-                    Ok(ws)
-                },
-                Err(error) => {
-                    debug!(
-                        server_name,
-                        server_port,
-                        use_tls,
-                        error = %format!("{error:#}"),
-                        "cached shared h2 connection failed to open websocket stream; reconnecting"
-                    );
-                    Err(error)
-                },
-            }
-        },
-        || async {
-            // Resolve DNS only now — we actually need a new TCP connection.
-            // Deferring resolution to this point keeps the cache key
-            // hostname-based while still connecting to the *current* address.
-            let server_addr = resolve_host_with_preference(
-                cache,
-                server_name,
-                server_port,
-                "failed to resolve h2 websocket host",
-                ipv6_first,
-            )
-            .await?
-            .first()
-            .copied()
-            .ok_or_else(|| {
-                anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-                    host: format!("{server_name}:{server_port}"),
-                })
-            })?;
-
-            let mut transport_guard = TransportConnectGuard::new(source, "h2");
-            let shared = Arc::new(
-                connect_h2_connection(server_addr, server_name, use_tls, fwmark, Some(key.clone()))
-                    .await?,
-            );
-            let ws = shared.open_websocket(target_uri).await?;
-            transport_guard.finish("success");
-            Ok((shared, ws))
-        },
-    )
-    .await
-}
-
-async fn connect_h2_tcp_new(
-    server_addr: SocketAddr,
-    server_name: &str,
-    use_tls: bool,
-    target_uri: &str,
-    fwmark: Option<u32>,
-    source: &'static str,
-) -> Result<WsTransportStream> {
-    let mut connect_guard = TransportConnectGuard::new(source, "h2");
-    let shared =
-        Arc::new(connect_h2_connection(server_addr, server_name, use_tls, fwmark, None).await?);
-    let ws = shared.open_websocket(target_uri).await?;
-    connect_guard.finish("success");
-    Ok(ws)
 }
 
 async fn connect_h2_connection(
@@ -591,10 +542,6 @@ fn classify_h2_close(error: &str) -> &'static str {
 
 // ── Cache helpers ─────────────────────────────────────────────────────────────
 
-fn should_reuse_h2_connection(source: &'static str) -> bool {
-    crate::shared_cache::should_reuse_connection(source)
-}
-
 /// Remove all cache entries whose shared connection is no longer open.
 /// Called periodically from the warm-standby maintenance loop so dead entries
 /// do not linger indefinitely when no new request re-checks their key (e.g.
@@ -613,30 +560,25 @@ fn is_expected_h2_close(error: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{H2ConnectionKey, should_reuse_h2_connection};
+    use super::H2ConnectionKey;
+    use crate::shared_cache::should_reuse_connection;
 
     #[test]
     fn h2_shared_connection_key_distinguishes_scheme_server_name_port_and_fwmark() {
         let base = H2ConnectionKey::new("one.example", 443, true, None);
 
-        // Different hostname
         assert_ne!(base, H2ConnectionKey::new("two.example", 443, true, None));
-        // Different scheme (wss vs ws)
         assert_ne!(base, H2ConnectionKey::new("one.example", 443, false, None));
-        // Different fwmark
         assert_ne!(base, H2ConnectionKey::new("one.example", 443, true, Some(42)));
-        // Different port — must produce a distinct key even though scheme is the same
         assert_ne!(base, H2ConnectionKey::new("one.example", 8443, true, None));
-        // Same IP-resolved address must NOT be distinguishable — the key is hostname-based
-        // so two logical uplinks pointing at the same host:port share one connection.
         assert_eq!(base, H2ConnectionKey::new("one.example", 443, true, None));
     }
 
     #[test]
     fn probe_sources_do_not_reuse_shared_h2_connections() {
-        assert!(should_reuse_h2_connection("direct"));
-        assert!(should_reuse_h2_connection("standby_tcp"));
-        assert!(!should_reuse_h2_connection("probe_ws"));
-        assert!(!should_reuse_h2_connection("probe_http"));
+        assert!(should_reuse_connection("direct"));
+        assert!(should_reuse_connection("standby_tcp"));
+        assert!(!should_reuse_connection("probe_ws"));
+        assert!(!should_reuse_connection("probe_http"));
     }
 }

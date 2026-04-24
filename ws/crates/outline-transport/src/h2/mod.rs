@@ -1,9 +1,9 @@
-// HTTP/2 WebSocket transport — stream adapter and URL helpers.
+// HTTP/2 WebSocket transport — stream adapter and re-exports.
 //
 // Layout:
-//   mod.rs  — H2WsStream adapter, websocket_target_uri, re-exports.
+//   mod.rs  — H2WsStream adapter, re-exports.
 //   shared  — window-size statics, TLS config, H2Io async-IO adapter,
-//              connect_tls_h2, shared-connection cache, connect / gc logic.
+//              connect_tls_h2, H2Dialer, shared-connection cache, connect / gc logic.
 
 mod shared;
 
@@ -12,34 +12,14 @@ pub use shared::init_h2_window_sizes;
 
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::Result;
 use futures_util::{Sink, Stream};
 use hyper_util::rt::TokioIo;
 use pin_project_lite::pin_project;
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
-use url::Url;
 
-use super::url_utils::{format_authority, websocket_path};
 use super::ws_stream::SharedConnectionHealth;
-
-// ── websocket_target_uri ──────────────────────────────────────────────────────
-
-/// Build an HTTP/2 CONNECT target URI from a WebSocket URL.
-/// `wss://` → `https://`, `ws://` → `http://`, with path and query preserved.
-pub(super) fn websocket_h2_target_uri(url: &Url) -> Result<String> {
-    let scheme = match url.scheme() {
-        "wss" => "https",
-        "ws" => "http",
-        other => bail!("unsupported websocket scheme for h2 target URI: {other}"),
-    };
-    let host = url
-        .host_str()
-        .ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
-    let mut uri = format!("{scheme}://{}", format_authority(host, url.port()));
-    uri.push_str(&websocket_path(url));
-    Ok(uri)
-}
 
 // ── H2WsStream ────────────────────────────────────────────────────────────────
 
