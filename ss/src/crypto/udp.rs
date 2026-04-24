@@ -154,11 +154,19 @@ fn try_decrypt_udp_packet_for_user(
 
     let (salt, ciphertext) = packet.split_at(salt_len);
     let less_safe = build_session_key(user.cipher(), user.master_key(), salt)?;
-    let plaintext = with_scratch(ciphertext, |buf| {
-        less_safe
-            .open_in_place(nonce_zero(), Aad::empty(), buf)
-            .ok()
-            .map(|slice| slice.to_vec())
+    let plaintext = DECRYPT_SCRATCH.with(|cell| {
+        let mut buf = cell.borrow_mut();
+        buf.clear();
+        buf.extend_from_slice(ciphertext);
+        match less_safe.open_in_place(nonce_zero(), Aad::empty(), &mut buf) {
+            Ok(slice) => {
+                let len = slice.len();
+                let mut out = std::mem::take(&mut *buf);
+                out.truncate(len);
+                Some(out)
+            }
+            Err(_) => None,
+        }
     });
     if let Some(plaintext) = plaintext {
         return Ok(Some(UdpPacket {
