@@ -9,7 +9,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::UdpWsTransport;
+use outline_transport::UdpSessionTransport;
 use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
@@ -86,7 +86,7 @@ impl TunUdpEngine {
         &self,
         key: UdpFlowKey,
         manager: &UplinkManager,
-    ) -> Result<(u64, Arc<UdpWsTransport>, usize, Arc<str>)> {
+    ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
         let remote_target = ip_to_target(key.remote_ip, key.remote_port);
         let (candidate, transport) = select_candidate_and_connect(manager, &remote_target).await?;
         manager
@@ -173,7 +173,7 @@ impl TunUdpEngine {
         &self,
         key: UdpFlowKey,
         flow_id: u64,
-        transport: Arc<UdpWsTransport>,
+        transport: Arc<UdpSessionTransport>,
         uplink_index: usize,
         manager: UplinkManager,
     ) {
@@ -297,7 +297,7 @@ impl TunUdpEngine {
         uplink_name: &str,
         manager: &UplinkManager,
         error: &anyhow::Error,
-    ) -> Result<(u64, Arc<UdpWsTransport>, usize, Arc<str>)> {
+    ) -> Result<(u64, Arc<UdpSessionTransport>, usize, Arc<str>)> {
         report_udp_runtime_failure(manager, uplink_index, error).await;
         self.close_flow_if_current(key, flow_id, "send_error").await;
         let replacement = self.create_flow(key.clone(), manager).await?;
@@ -319,7 +319,7 @@ async fn report_udp_runtime_failure(
 async fn select_candidate_and_connect(
     manager: &UplinkManager,
     remote_target: &TargetAddr,
-) -> Result<(UplinkCandidate, UdpWsTransport)> {
+) -> Result<(UplinkCandidate, UdpSessionTransport)> {
     let mut last_error = None;
     let strict_transport = manager.strict_active_uplink_for(TransportKind::Udp);
     let candidates = manager.udp_candidates(Some(remote_target)).await;

@@ -147,8 +147,8 @@ pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
-pub use udp_transport::{UdpWsTransport, is_dropped_oversized_udp_error};
-pub use vless::{VlessTcpReader, VlessTcpWriter, VlessUdpWsTransport};
+pub use udp_transport::{UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error};
+pub use vless::{VlessTcpReader, VlessTcpWriter, VlessUdpSessionMux, VlessUdpWsTransport};
 pub use ws_stream::WsTransportStream;
 
 // TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums

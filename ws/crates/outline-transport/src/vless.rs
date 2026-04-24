@@ -24,6 +24,7 @@
 //! `[version=0x00, addons_len=0x00]`, followed by raw TCP bytes or the same
 //! length-prefixed UDP stream.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -536,6 +537,214 @@ impl VlessUdpWsTransport {
         let _ = self.data_tx.send(Message::Close(None)).await;
         Ok(())
     }
+}
+
+// ── UDP session mux ────────────────────────────────────────────────────────
+
+/// Shadowsocks UDP multiplexes all destinations through one encrypted session
+/// (the target address is carried as a SOCKS-style atyp prefix in every
+/// datagram). VLESS UDP has no such prefix: the target is locked into the
+/// request header at session open, so each destination needs its own
+/// WebSocket session. `VlessUdpSessionMux` provides an SS-shaped API
+/// (`send_packet(socks5_framed_payload)` / `read_packet() -> socks5_framed`)
+/// on top of a lazy map of per-target VLESS sessions.
+///
+/// The on-wire framing delta is absorbed by stripping the SOCKS5 UDP header
+/// on send (to select/open the session and forward the raw payload) and
+/// prepending it on receive (so the caller's existing `TargetAddr::from_wire_bytes`
+/// parse still works).
+pub struct VlessUdpSessionMux {
+    dial: VlessUdpSessionDialer,
+    sessions: Arc<Mutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    downlink_tx: mpsc::Sender<Result<Bytes>>,
+    downlink_rx: Mutex<mpsc::Receiver<Result<Bytes>>>,
+    close_signal: watch::Sender<bool>,
+    _lifetime: Arc<UpstreamTransportGuard>,
+}
+
+/// Captured connection parameters used to dial a new per-target VLESS UDP
+/// session on demand. Everything here is cheap to clone and carries no
+/// target-specific state.
+#[derive(Clone)]
+struct VlessUdpSessionDialer {
+    dns_cache: Arc<DnsCache>,
+    url: Url,
+    mode: WsTransportMode,
+    uuid: [u8; 16],
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    source: &'static str,
+    keepalive_interval: Option<Duration>,
+}
+
+struct VlessUdpSessionEntry {
+    transport: Arc<VlessUdpWsTransport>,
+    _reader_task: AbortOnDrop,
+}
+
+impl VlessUdpSessionMux {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        dns_cache: Arc<DnsCache>,
+        url: Url,
+        mode: WsTransportMode,
+        uuid: [u8; 16],
+        fwmark: Option<u32>,
+        ipv6_first: bool,
+        source: &'static str,
+        keepalive_interval: Option<Duration>,
+    ) -> Self {
+        let (close_signal, _close_rx) = watch::channel(false);
+        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(256);
+        Self {
+            dial: VlessUdpSessionDialer {
+                dns_cache,
+                url,
+                mode,
+                uuid,
+                fwmark,
+                ipv6_first,
+                source,
+                keepalive_interval,
+            },
+            sessions: Arc::new(Mutex::new(HashMap::new())),
+            downlink_tx,
+            downlink_rx: Mutex::new(downlink_rx),
+            close_signal,
+            _lifetime: UpstreamTransportGuard::new(source, "udp"),
+        }
+    }
+
+    /// Send a SOCKS5-framed UDP payload (`atyp || addr || port || data`).
+    /// The target is parsed out to select an existing VLESS session or open
+    /// a new one; only the `data` portion crosses the VLESS wire, since the
+    /// target is already bound into the session's request header.
+    pub async fn send_packet(&self, socks5_payload: &[u8]) -> Result<()> {
+        let (target, consumed) = TargetAddr::from_wire_bytes(socks5_payload)
+            .context("vless udp: failed to parse SOCKS5 header from outbound payload")?;
+        let inner = &socks5_payload[consumed..];
+        let session = self.session_for(&target).await?;
+        session.transport.send_packet(inner).await
+    }
+
+    /// Read the next downlink datagram as a SOCKS5-framed payload, with the
+    /// originating session's `TargetAddr` prepended so the caller can parse
+    /// it exactly like the SS UDP path.
+    pub async fn read_packet(&self) -> Result<Bytes> {
+        let mut rx = self.downlink_rx.lock().await;
+        rx.recv().await.ok_or_else(|| anyhow::Error::from(WsClosed))?
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        self.close_signal.send_replace(true);
+        let sessions = {
+            let mut guard = self.sessions.lock().await;
+            std::mem::take(&mut *guard)
+        };
+        for (_, entry) in sessions {
+            let _ = entry.transport.close().await;
+        }
+        Ok(())
+    }
+
+    async fn session_for(&self, target: &TargetAddr) -> Result<Arc<VlessUdpSessionEntry>> {
+        // Fast path: session exists.
+        {
+            let guard = self.sessions.lock().await;
+            if let Some(entry) = guard.get(target) {
+                return Ok(Arc::clone(entry));
+            }
+        }
+        // Slow path: dial outside the lock, then insert — if a concurrent
+        // caller won the race, discard ours and reuse theirs.
+        let transport = Arc::new(
+            VlessUdpWsTransport::connect(
+                &self.dial.dns_cache,
+                &self.dial.url,
+                self.dial.mode,
+                &self.dial.uuid,
+                target,
+                self.dial.fwmark,
+                self.dial.ipv6_first,
+                self.dial.source,
+                self.dial.keepalive_interval,
+            )
+            .await
+            .with_context(|| TransportOperation::Connect {
+                target: format!("vless udp session to {target}"),
+            })?,
+        );
+        let reader_task = spawn_vless_udp_session_reader(
+            Arc::clone(&transport),
+            target.clone(),
+            self.downlink_tx.clone(),
+            self.close_signal.subscribe(),
+        );
+        let entry = Arc::new(VlessUdpSessionEntry {
+            transport,
+            _reader_task: reader_task,
+        });
+        let mut guard = self.sessions.lock().await;
+        if let Some(existing) = guard.get(target) {
+            let existing = Arc::clone(existing);
+            drop(guard);
+            // Duplicate dial: let the loser's transport drop — its reader
+            // task aborts with the Arc and its WS sink closes on Drop.
+            let _ = entry.transport.close().await;
+            return Ok(existing);
+        }
+        guard.insert(target.clone(), Arc::clone(&entry));
+        Ok(entry)
+    }
+}
+
+fn spawn_vless_udp_session_reader(
+    transport: Arc<VlessUdpWsTransport>,
+    target: TargetAddr,
+    downlink_tx: mpsc::Sender<Result<Bytes>>,
+    mut close_rx: watch::Receiver<bool>,
+) -> AbortOnDrop {
+    AbortOnDrop(tokio::spawn(async move {
+        // Pre-build the SOCKS5 wire prefix for this session's target —
+        // every downlink datagram carries the same one.
+        let prefix = match target.to_wire_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = downlink_tx
+                    .send(Err(anyhow::Error::from(error).context(
+                        "vless udp: failed to encode session target to SOCKS5 wire form",
+                    )))
+                    .await;
+                return;
+            },
+        };
+        loop {
+            let payload = tokio::select! {
+                biased;
+                _ = close_rx.changed() => {
+                    if *close_rx.borrow() { return; }
+                    continue;
+                }
+                res = transport.read_packet() => match res {
+                    Ok(p) => p,
+                    Err(error) => {
+                        // Per-session failure: surface it so the caller can
+                        // treat it as a transport-level error, then exit —
+                        // a replacement session will be opened on the next
+                        // send to this target.
+                        let _ = downlink_tx.send(Err(error)).await;
+                        return;
+                    }
+                },
+            };
+            let mut framed = BytesMut::with_capacity(prefix.len() + payload.len());
+            framed.extend_from_slice(&prefix);
+            framed.extend_from_slice(&payload);
+            if downlink_tx.send(Ok(framed.freeze())).await.is_err() {
+                return;
+            }
+        }
+    }))
 }
 
 #[cfg(test)]

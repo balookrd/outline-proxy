@@ -316,6 +316,11 @@ impl UdpWsTransport {
         Ok(())
     }
 
+    /// Wrap this SS transport as the protocol-agnostic `UdpSessionTransport`.
+    pub fn into_session(self) -> UdpSessionTransport {
+        UdpSessionTransport::Ss(self)
+    }
+
     async fn decrypt_udp_bytes(&self, bytes: &[u8]) -> Result<Vec<u8>> {
         if let Some(state) = &self.ss2022 {
             let expected_client_session_id = state.lock().await.client_session_id;
@@ -336,5 +341,40 @@ impl UdpWsTransport {
             return Ok(payload);
         }
         Ok(decrypt_udp_packet(self.cipher, &self.master_key, bytes)?)
+    }
+}
+
+/// Protocol-agnostic UDP session transport. Present as a single public type
+/// across the proxy, TUN, and uplink layers so callers don't need to branch
+/// on Shadowsocks vs. VLESS at every send/read site. Each variant accepts
+/// payloads pre-framed as `SOCKS5 UDP header || data` and returns downlink
+/// datagrams in the same shape — VLESS absorbs the framing delta internally
+/// (strip on send, prepend on receive) so the rest of the stack stays
+/// protocol-unaware.
+pub enum UdpSessionTransport {
+    Ss(UdpWsTransport),
+    Vless(crate::vless::VlessUdpSessionMux),
+}
+
+impl UdpSessionTransport {
+    pub async fn send_packet(&self, socks5_payload: &[u8]) -> Result<()> {
+        match self {
+            Self::Ss(t) => t.send_packet(socks5_payload).await,
+            Self::Vless(t) => t.send_packet(socks5_payload).await,
+        }
+    }
+
+    pub async fn read_packet(&self) -> Result<Bytes> {
+        match self {
+            Self::Ss(t) => t.read_packet().await,
+            Self::Vless(t) => t.read_packet().await,
+        }
+    }
+
+    pub async fn close(&self) -> Result<()> {
+        match self {
+            Self::Ss(t) => t.close().await,
+            Self::Vless(t) => t.close().await,
+        }
     }
 }

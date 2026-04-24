@@ -8,7 +8,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 
-use outline_transport::UdpWsTransport;
+use outline_transport::UdpSessionTransport;
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
 use outline_uplink::UplinkManager;
@@ -33,7 +33,7 @@ pub(super) struct UdpFlowKey {
 
 pub(super) struct UdpFlowState {
     pub(super) id: u64,
-    pub(super) transport: Arc<UdpWsTransport>,
+    pub(super) transport: Arc<UdpSessionTransport>,
     pub(super) uplink_index: usize,
     pub(super) uplink_name: Arc<str>,
     pub(super) group_name: Arc<str>,
