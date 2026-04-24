@@ -199,14 +199,16 @@ where
     }
 
     state.header_buffer.extend_from_slice(&data);
-    if state.header_buffer.len() > MAX_VLESS_HEADER_BUFFER {
-        warn!(path = %route.path, buffered = state.header_buffer.len(), "vless parse error: request header too large");
-        return Err(anyhow!("vless request header too large"));
-    }
 
     let request = match vless::parse_request(&state.header_buffer) {
         Ok(Some(request)) => request,
-        Ok(None) => return Ok(()),
+        Ok(None) => {
+            if state.header_buffer.len() > MAX_VLESS_HEADER_BUFFER {
+                warn!(path = %route.path, buffered = state.header_buffer.len(), "vless parse error: request header too large");
+                return Err(anyhow!("vless request header too large"));
+            }
+            return Ok(());
+        },
         Err(vless::VlessError::UnsupportedCommand(command)) => {
             warn!(path = %route.path, command, "unsupported vless command");
             return Err(anyhow!("unsupported vless command {command:#x}"));
