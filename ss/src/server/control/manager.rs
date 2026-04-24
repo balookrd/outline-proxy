@@ -9,6 +9,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use arc_swap::ArcSwap;
 use serde::Serialize;
+use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::{
@@ -87,6 +88,14 @@ pub(super) struct AccessUrlsView {
     pub vless_url: Option<String>,
 }
 
+#[derive(Debug, Error)]
+pub(in crate::server) enum AccessUrlError {
+    #[error("user {0:?} not found")]
+    NotFound(String),
+    #[error(transparent)]
+    Build(anyhow::Error),
+}
+
 impl From<&UserEntry> for UserView {
     fn from(entry: &UserEntry) -> Self {
         Self {
@@ -143,7 +152,7 @@ impl UserManager {
             .map(UserView::from)
     }
 
-    pub(super) async fn access_urls(&self, id: &str) -> Result<AccessUrlsView> {
+    pub(super) async fn access_urls(&self, id: &str) -> Result<AccessUrlsView, AccessUrlError> {
         let user = self
             .inner
             .lock()
@@ -152,13 +161,14 @@ impl UserManager {
             .iter()
             .find(|u| u.id == id)
             .cloned()
-            .ok_or_else(|| anyhow!("user {id:?} not found"))?;
+            .ok_or_else(|| AccessUrlError::NotFound(id.to_string()))?;
 
         let artifacts = build_access_key_artifacts_for_user(
             &self.access_key_base_config,
             &self.access_key_config,
             &user,
-        )?;
+        )
+        .map_err(AccessUrlError::Build)?;
         let mut view = AccessUrlsView {
             ss_config_url: None,
             ss_access_key_url: None,
