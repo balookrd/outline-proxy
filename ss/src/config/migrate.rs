@@ -21,15 +21,29 @@ pub(super) fn auto_migrate_if_legacy(
         return Ok(None);
     }
     let backup = backup_path(path);
-    fs::write(&backup, contents)
-        .with_context(|| format!("failed to write backup {}", backup.display()))?;
-    fs::write(path, &migrated)
-        .with_context(|| format!("failed to write migrated {}", path.display()))?;
-    tracing::warn!(
-        path = %path.display(),
-        backup = %backup.display(),
-        "migrated legacy config layout to sectioned form; original saved as backup",
-    );
+    match fs::write(&backup, contents).and_then(|()| fs::write(path, &migrated)) {
+        Ok(()) => {
+            tracing::warn!(
+                path = %path.display(),
+                backup = %backup.display(),
+                "migrated legacy config layout to sectioned form; original saved as backup",
+            );
+        },
+        Err(error) => {
+            // Read-only config mount or missing write permission: fall back to
+            // in-memory migration so the service still starts. Operator must
+            // run `--migrate-config` from a writable context to persist it.
+            let _ = fs::remove_file(&backup);
+            tracing::warn!(
+                path = %path.display(),
+                error = %error,
+                "legacy config layout detected but could not be rewritten in place; \
+                 migrated in memory only. Run `--migrate-config {}` from a writable \
+                 context to persist.",
+                path.display(),
+            );
+        },
+    }
     Ok(Some(migrated))
 }
 
