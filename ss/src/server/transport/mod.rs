@@ -25,6 +25,7 @@ use super::state::{AppState, empty_transport_route, empty_vless_transport_route}
 mod tcp;
 mod udp;
 mod vless;
+mod vless_mux;
 mod ws_socket;
 mod ws_writer;
 

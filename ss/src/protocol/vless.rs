@@ -10,11 +10,13 @@ use super::TargetAddr;
 pub const VERSION: u8 = 0x00;
 pub const COMMAND_TCP: u8 = 0x01;
 pub const COMMAND_UDP: u8 = 0x02;
+pub const COMMAND_MUX: u8 = 0x03;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VlessCommand {
     Tcp,
     Udp,
+    Mux,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -94,6 +96,7 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
     let command = match input[command_offset] {
         COMMAND_TCP => VlessCommand::Tcp,
         COMMAND_UDP => VlessCommand::Udp,
+        COMMAND_MUX => VlessCommand::Mux,
         other => return Err(VlessError::UnsupportedCommand(other)),
     };
 
@@ -269,12 +272,26 @@ mod tests {
 
     #[test]
     fn reject_unknown_command() {
-        let mut bytes = request_prefix(0x03);
+        let mut bytes = request_prefix(0x04);
         bytes.extend_from_slice(&53_u16.to_be_bytes());
         bytes.push(0x01);
         bytes.extend_from_slice(&[1, 1, 1, 1]);
 
-        assert_eq!(parse_request(&bytes).unwrap_err(), VlessError::UnsupportedCommand(0x03));
+        assert_eq!(parse_request(&bytes).unwrap_err(), VlessError::UnsupportedCommand(0x04));
+    }
+
+    #[test]
+    fn parse_vless_mux_request() {
+        let mut bytes = request_prefix(COMMAND_MUX);
+        bytes.extend_from_slice(&666_u16.to_be_bytes());
+        bytes.push(0x02);
+        let domain = b"v1.mux.cool";
+        bytes.push(domain.len() as u8);
+        bytes.extend_from_slice(domain);
+
+        let parsed = parse_request(&bytes).unwrap().unwrap();
+        assert_eq!(parsed.command, VlessCommand::Mux);
+        assert_eq!(parsed.consumed, bytes.len());
     }
 
     #[test]
