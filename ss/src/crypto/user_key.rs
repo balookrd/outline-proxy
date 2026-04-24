@@ -29,8 +29,6 @@ pub struct UserKey {
     cipher: CipherKind,
     master_key: Arc<[u8]>,
     fwmark: Option<u32>,
-    ws_path_tcp: Arc<str>,
-    ws_path_udp: Arc<str>,
     ciphers: Arc<CachedCiphers>,
 }
 
@@ -46,8 +44,6 @@ impl UserKey {
         password: &str,
         fwmark: Option<u32>,
         cipher: CipherKind,
-        ws_path_tcp: impl Into<String>,
-        ws_path_udp: impl Into<String>,
     ) -> Result<Self, CryptoError> {
         let id: Arc<str> = Arc::from(id.into());
         let log_label: Arc<str> =
@@ -58,8 +54,6 @@ impl UserKey {
             cipher,
             master_key: Arc::from(password_to_master_key(password, cipher)?),
             fwmark,
-            ws_path_tcp: Arc::from(ws_path_tcp.into()),
-            ws_path_udp: Arc::from(ws_path_udp.into()),
             ciphers: Arc::new(CachedCiphers {
                 xchacha: OnceLock::new(),
                 aes_header: OnceLock::new(),
@@ -110,14 +104,6 @@ impl UserKey {
 
     pub fn cipher(&self) -> CipherKind {
         self.cipher
-    }
-
-    pub fn ws_path_tcp(&self) -> &str {
-        &self.ws_path_tcp
-    }
-
-    pub fn ws_path_udp(&self) -> &str {
-        &self.ws_path_udp
     }
 
     pub fn matches_password(&self, password: &str) -> Result<bool, CryptoError> {

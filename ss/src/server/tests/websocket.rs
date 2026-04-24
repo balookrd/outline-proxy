@@ -18,7 +18,7 @@ use tokio_tungstenite::{
     tungstenite::{Message as WsMessage, protocol},
 };
 
-use super::super::{DnsCache, build_app, build_users, serve_tcp_listener};
+use super::super::{DnsCache, build_app, build_user_routes, serve_tcp_listener};
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
@@ -34,11 +34,11 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let users = build_users(&config)?;
+    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -81,11 +81,11 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
 
     let mut config = sample_config(addr);
     config.http_root_auth = true;
-    let users = build_users(&config)?;
+    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -110,11 +110,11 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
 
     let mut config = sample_config(addr);
     config.http_root_auth = true;
-    let users = build_users(&config)?;
+    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -164,12 +164,12 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let users = build_users(&config)?;
-    let user = users[0].clone();
+    let user_routes = build_user_routes(&config)?;
+    let user = user_routes[0].user.clone();
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -229,11 +229,11 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let addr = listener.local_addr()?;
 
     let config = sample_config(addr);
-    let users = build_users(&config)?;
+    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -323,11 +323,11 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
             },
         ],
     );
-    let users = build_users(&config)?;
+    let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
     let (routes, services, auth) = build_test_state(
-        users.clone(),
+        user_routes.clone(),
         Metrics::new(&config),
         nat_table,
         dns_cache,
@@ -337,10 +337,10 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
     let app = build_app(routes, services, auth);
     let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
-    let bob = users
+    let bob = user_routes
         .iter()
-        .find(|user| user.id() == "bob")
-        .cloned()
+        .find(|route| route.user.id() == "bob")
+        .map(|route| route.user.clone())
         .ok_or_else(|| anyhow::anyhow!("missing bob user"))?;
     let (mut socket, _) = connect_async(format!("ws://{listen_addr}/alice-tcp")).await?;
     let mut request = TargetAddr::Socket(upstream_addr).encode()?;

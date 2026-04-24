@@ -17,13 +17,14 @@ use super::{
     dns_cache::DnsCache,
     nat::NatTable,
     replay::ReplayStore,
-    setup::{build_transport_route_map, build_users},
+    setup::{UserRoute, build_transport_route_map, build_user_routes, user_keys},
     state::{AuthPolicy, RouteRegistry, Services, TransportRoute, UdpServices},
 };
 
 pub(super) struct Built {
     pub(super) metrics: Arc<Metrics>,
     pub(super) users: Arc<[UserKey]>,
+    pub(super) user_routes: Arc<[UserRoute]>,
     pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) routes: Arc<RouteRegistry>,
@@ -38,9 +39,10 @@ pub(super) struct Built {
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let metrics = Metrics::new(config.as_ref());
     metrics.start_process_memory_sampler();
-    let users = build_users(config)?;
-    let tcp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Tcp));
-    let udp_routes = Arc::new(build_transport_route_map(users.as_ref(), Transport::Udp));
+    let user_routes = build_user_routes(config)?;
+    let users = user_keys(user_routes.as_ref());
+    let tcp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
+    let udp_routes = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let outbound_ipv6: Option<Arc<OutboundIpv6>> =
         if let Some(prefix) = config.outbound_ipv6_prefix {
             Some(Arc::new(OutboundIpv6::Prefix(prefix)))
@@ -97,6 +99,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     Ok(Built {
         metrics,
         users,
+        user_routes,
         tcp_routes,
         udp_routes,
         routes,
