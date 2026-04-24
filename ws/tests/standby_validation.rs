@@ -9,7 +9,7 @@ use futures_util::{SinkExt, StreamExt};
 use outline_transport::WsTransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, UplinkManager,
-    UplinkTransport, WsProbeConfig,
+    UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 use shadowsocks_crypto::CipherKind;
 use tokio::net::{TcpListener, TcpStream};
@@ -83,6 +83,7 @@ async fn build_manager(
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
+            vless_uuid: None,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),
@@ -114,6 +115,7 @@ async fn build_manager(
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
             auto_failback: false,
+            vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         },
         std::sync::Arc::new(outline_transport::DnsCache::default()),
     )

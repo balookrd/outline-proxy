@@ -132,7 +132,7 @@ mod tests {
     use outline_transport::WsTransportMode;
     use outline_uplink::{
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
-        UplinkManager, UplinkRegistry, UplinkTransport, WsProbeConfig,
+        UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
     };
 
     use super::*;
@@ -188,6 +188,7 @@ mod tests {
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
             auto_failback: false,
+            vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         };
 
         let manager = UplinkManager::new_for_test("my-default", vec![uplink], probe, lb).unwrap();

@@ -15,7 +15,7 @@ use outline_routing::{
 use outline_transport::WsTransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportKind, UplinkConfig,
-    UplinkGroupConfig, UplinkRegistry, UplinkTransport, WsProbeConfig,
+    UplinkGroupConfig, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
@@ -57,6 +57,7 @@ fn lb() -> LoadBalancingConfig {
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: None,
         auto_failback: false,
+        vless_udp_mux_limits: VlessUdpMuxLimits::default(),
     }
 }
 
@@ -75,6 +76,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
+        vless_uuid: None,
     }
 }
 

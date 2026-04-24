@@ -207,6 +207,9 @@ pub(super) struct UplinkGroupSection {
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
+    pub(super) vless_udp_max_sessions: Option<usize>,
+    pub(super) vless_udp_session_idle_secs: Option<u64>,
+    pub(super) vless_udp_janitor_interval_secs: Option<u64>,
     /// Per-group override of top-level `[probe]`; unspecified fields inherit.
     pub(super) probe: Option<ProbeSection>,
 }
@@ -292,4 +295,7 @@ pub(super) struct LoadBalancingSection {
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
+    pub(super) vless_udp_max_sessions: Option<usize>,
+    pub(super) vless_udp_session_idle_secs: Option<u64>,
+    pub(super) vless_udp_janitor_interval_secs: Option<u64>,
 }

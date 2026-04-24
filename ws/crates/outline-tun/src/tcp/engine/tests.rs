@@ -1177,6 +1177,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
             auto_failback: false,
+            vless_udp_mux_limits: outline_uplink::VlessUdpMuxLimits::default(),
         },
     )
     .unwrap()

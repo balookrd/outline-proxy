@@ -203,7 +203,7 @@ impl UplinkManager {
                 anyhow!("uplink {} is VLESS but has no uuid", candidate.uplink.name)
             })?;
             let mode = self.effective_udp_ws_mode(candidate.index).await;
-            let mux = VlessUdpSessionMux::new(
+            let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
                 mode,
@@ -212,6 +212,7 @@ impl UplinkManager {
                 candidate.uplink.ipv6_first,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
+                self.inner.load_balancing.vless_udp_mux_limits,
             );
             return Ok(UdpSessionTransport::Vless(mux));
         }

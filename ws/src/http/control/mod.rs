@@ -121,8 +121,8 @@ mod tests {
     use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
     use outline_uplink::{
         CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, ServerAddr,
-        UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, WsProbeConfig,
-        WsTransportMode,
+        UplinkConfig, UplinkManager, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits,
+        WsProbeConfig, WsTransportMode,
     };
     use serde_json::Value;
     use std::net::{Ipv4Addr, SocketAddr};
@@ -309,6 +309,7 @@ mod tests {
             udp_ws_keepalive_interval: None,
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: None,
+            vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         }
     }
 
