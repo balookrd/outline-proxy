@@ -28,7 +28,8 @@ LimitSTACK=8M
 TasksMax=infinity
 NoNewPrivileges=true
 
-DynamicUser=true
+User=outline-ws
+Group=outline-ws
 StateDirectory=outline-ws-rust/_default
 LogsDirectory=outline-ws-rust/_default
 RuntimeDirectory=outline-ws-rust
@@ -57,11 +58,11 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-# /etc/outline-ws-rust is writable so the one-shot config migrator
-# (legacy top-level keys → [outline]) can persist the rewritten file and its
-# .bak backup. If you prefer a read-only config directory, drop this path —
-# the service will still start (the migration runs in memory and logs a
-# warning pointing at `outline-ws-rust --migrate-config`).
+# /etc/outline-ws-rust is writable so dashboard CRUD endpoints and the
+# on-load config migrator (legacy top-level keys → [outline]) can persist
+# changes. The directory must be owned by outline-ws:outline-ws — install.sh
+# sets this up; for manual installs, `chown -R outline-ws:outline-ws
+# /etc/outline-ws-rust && chmod 0750 /etc/outline-ws-rust`.
 ReadWritePaths=/var/lib/outline-ws-rust/_default /var/log/outline-ws-rust/_default /etc/outline-ws-rust
 
 [Install]

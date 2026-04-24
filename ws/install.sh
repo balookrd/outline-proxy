@@ -32,6 +32,9 @@ RAW_INSTANCE_CONFIG_URL="${RAW_INSTANCE_CONFIG_URL:-${RAW_BASE}/config.toml}"
 SERVICE_NAME="outline-ws-rust.service"
 TEMPLATE_NAME="outline-ws-rust@.service"
 
+SERVICE_USER="${SERVICE_USER:-outline-ws}"
+SERVICE_GROUP="${SERVICE_GROUP:-outline-ws}"
+
 log() {
   printf '[%s] %s\n' "$(date '+%F %T')" "$*"
 }
@@ -64,7 +67,8 @@ usage() {
   - скачивает релиз ${REPO_OWNER}/${REPO_NAME} под текущую архитектуру
   - устанавливает бинарник в ${INSTALL_PATH}
   - скачивает и устанавливает systemd unit-файлы
-  - создаёт ${CONFIG_DIR} и ${STATE_DIR}
+  - создаёт system-юзера/группу ${SERVICE_USER}:${SERVICE_GROUP}
+  - создаёт ${CONFIG_DIR} и ${STATE_DIR}, выставляет владельца/права
   - скачивает config.toml и example instance, если их ещё нет
   - перезапускает только уже активные outline-ws-rust unit'ы
 
@@ -75,6 +79,8 @@ usage() {
   INSTALL_PATH=...          Куда установить бинарник
   CONFIG_DIR=...            Каталог конфигурации
   STATE_DIR=...             Каталог рабочего состояния
+  SERVICE_USER=...          System-юзер сервиса (по умолчанию outline-ws)
+  SERVICE_GROUP=...         System-группа сервиса (по умолчанию outline-ws)
   GITHUB_TOKEN=...          GitHub token для обхода rate limit API
 
 После установки:
@@ -280,11 +286,50 @@ install_unit_files() {
   install -m 0644 "$tpl_tmp" "${SYSTEMD_DIR}/${TEMPLATE_NAME}"
 }
 
+ensure_service_user() {
+  # Сервис работает под фиксированным system-юзером (раньше был DynamicUser=true).
+  # Фиксированный юзер нужен, чтобы dashboard CRUD и автомиграция конфига могли
+  # писать в /etc/outline-ws-rust (UID стабилен между рестартами).
+  if ! getent group "$SERVICE_GROUP" >/dev/null; then
+    log "Создание группы ${SERVICE_GROUP}"
+    groupadd --system "$SERVICE_GROUP"
+  fi
+  if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
+    log "Создание пользователя ${SERVICE_USER}"
+    useradd --system --no-create-home --shell /usr/sbin/nologin \
+      --gid "$SERVICE_GROUP" "$SERVICE_USER"
+  fi
+}
+
+apply_config_ownership() {
+  # Каталог конфигурации должен принадлежать сервис-юзеру, чтобы процесс мог
+  # переписывать config.toml (dashboard /control/uplinks, --migrate-config).
+  chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$CONFIG_DIR"
+  chmod 0750 "$CONFIG_DIR"
+  [[ -d "${CONFIG_DIR}/instances" ]] && chmod 0750 "${CONFIG_DIR}/instances"
+  find "$CONFIG_DIR" -type f -exec chmod 0640 {} +
+}
+
+migrate_state_dir_from_dynamic_user() {
+  # Старые установки с DynamicUser=true держали state под /var/lib/private/…
+  # c приватным UID. После перехода на фиксированного юзера перекладываем
+  # данные в обычный /var/lib/outline-ws-rust и чиним владельца.
+  local private="/var/lib/private/outline-ws-rust"
+  if [[ -d "$private" && ! -L "$STATE_DIR" ]]; then
+    log "Миграция state из ${private} → ${STATE_DIR}"
+    mkdir -p "$STATE_DIR"
+    cp -a "${private}/." "${STATE_DIR}/"
+  fi
+  if [[ -e "$STATE_DIR" ]]; then
+    chown -R "${SERVICE_USER}:${SERVICE_GROUP}" "$STATE_DIR" || true
+  fi
+}
+
 download_default_config_if_missing() {
   if [[ ! -f "${CONFIG_DIR}/config.toml" ]]; then
     log "Скачивание default config"
     curl -fsSL -o "${CONFIG_DIR}/config.toml" "$RAW_CONFIG_URL"
-    chmod 600 "${CONFIG_DIR}/config.toml"
+    chmod 640 "${CONFIG_DIR}/config.toml"
   else
     log "config.toml уже существует — не перезаписываем"
   fi
@@ -296,7 +341,7 @@ download_instance_example_if_missing() {
   if [[ ! -f "${CONFIG_DIR}/instances/example.toml" ]]; then
     log "Скачивание example instance config"
     curl -fsSL -o "${CONFIG_DIR}/instances/example.toml" "$RAW_INSTANCE_CONFIG_URL"
-    chmod 600 "${CONFIG_DIR}/instances/example.toml"
+    chmod 640 "${CONFIG_DIR}/instances/example.toml"
   else
     log "instance example уже существует — не перезаписываем"
   fi
@@ -344,6 +389,10 @@ main() {
   need_cmd grep
   need_cmd find
   need_cmd uname
+  need_cmd useradd
+  need_cmd groupadd
+  need_cmd chown
+  need_cmd getent
 
   local target release_json release_tag release_name asset_url archive_path workdir
   local svc_tmp tpl_tmp
@@ -355,14 +404,16 @@ main() {
 
   mkdir -p "$TMP_DIR" "$CONFIG_DIR" "${CONFIG_DIR}/instances"
 
-  # With DynamicUser=true, systemd manages STATE_DIR via a private bind-mount and
-  # creates a symlink /var/lib/outline-ws-rust -> /var/lib/private/outline-ws-rust.
-  # If a plain directory already exists there (created by a prior install), systemd
-  # fails with "File exists".  Remove it so systemd can set up the symlink on first start.
-  if [[ -d "$STATE_DIR" && ! -L "$STATE_DIR" ]]; then
-    log "Удаление устаревшей директории ${STATE_DIR} (systemd создаст её сам через StateDirectory)"
-    rm -rf "$STATE_DIR"
+  ensure_service_user
+
+  # Если в системе остался symlink от старой DynamicUser-установки
+  # (/var/lib/outline-ws-rust → /var/lib/private/outline-ws-rust),
+  # убираем его: теперь state пишется обычным путём под фиксированным юзером.
+  if [[ -L "$STATE_DIR" ]]; then
+    log "Удаление устаревшего symlink ${STATE_DIR} (DynamicUser=true больше не используется)"
+    rm -f "$STATE_DIR"
   fi
+  migrate_state_dir_from_dynamic_user
 
   log "Архитектура: $(uname -m)"
   log "Target: ${target}"
@@ -442,6 +493,7 @@ main() {
 
   download_default_config_if_missing
   download_instance_example_if_missing
+  apply_config_ownership
 
   systemctl daemon-reload
   restart_previously_active_units
