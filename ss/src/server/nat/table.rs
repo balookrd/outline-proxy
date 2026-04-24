@@ -12,6 +12,7 @@ use tokio::sync::{Mutex, OnceCell};
 use tracing::debug;
 
 use crate::{
+    clock,
     crypto::{UdpSession, UserKey},
     fwmark::apply_fwmark_if_needed,
     metrics::Metrics,
@@ -19,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    entry::{NatEntry, NatKey, current_unix_secs, random_session_id},
+    entry::{NatEntry, NatKey, random_session_id},
     reader::{NatReaderCtx, nat_reader_task},
     socket::bind_nat_udp_socket,
 };
@@ -93,7 +94,7 @@ impl NatTable {
         let socket = Arc::new(socket);
 
         let active = Arc::new(Mutex::new(None));
-        let last_active_secs = Arc::new(AtomicU64::new(current_unix_secs()));
+        let last_active_secs = Arc::new(AtomicU64::new(clock::current_unix_secs()));
         let next_packet_id = Arc::new(AtomicU64::new(0));
         let server_session_id = match udp_session {
             UdpSession::Legacy => None,
@@ -136,7 +137,7 @@ impl NatTable {
     /// `self.idle_timeout`.  The reader task for each evicted entry is aborted
     /// when the `Arc<NatEntry>` refcount reaches zero.
     pub(crate) fn evict_idle(&self, metrics: &Metrics) {
-        let threshold = current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
+        let threshold = clock::current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
         let mut evicted = 0usize;
         self.entries.retain(|_, cell| match cell.get() {
             Some(entry) => {

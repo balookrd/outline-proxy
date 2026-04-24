@@ -203,7 +203,7 @@ fn roundtrip_ss2022_tcp_stream() {
     let mut nonce_counter = 0;
 
     let mut fixed_header = Vec::from([super::primitives::SS2022_TCP_REQUEST_TYPE]);
-    fixed_header.extend_from_slice(&super::primitives::current_unix_secs().to_be_bytes());
+    fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
@@ -267,7 +267,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut nonce_counter = 0;
 
     let mut fixed_header = vec![super::primitives::SS2022_TCP_REQUEST_TYPE];
-    fixed_header.extend_from_slice(&super::primitives::current_unix_secs().to_be_bytes());
+    fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(

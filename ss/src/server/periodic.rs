@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::time::Duration;
 use tracing::debug;
 
-use crate::{config::Config, outbound::OutboundIpv6};
+use crate::{clock, config::Config, outbound::OutboundIpv6};
 
 use super::{
     constants::{DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS},
@@ -14,6 +14,22 @@ use super::{
 };
 
 pub(super) fn spawn_maintenance(built: &Built, config: &Config, mut shutdown: ShutdownSignal) {
+    // Wall-clock cache: one Relaxed store per second instead of a syscall on every hot-path read.
+    {
+        let mut sd = shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(1));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = sd.cancelled() => break,
+                    _ = interval.tick() => clock::tick(),
+                }
+            }
+        });
+    }
+
     // NAT entry eviction + replay-filter sweep.
     {
         let nat_table = Arc::clone(&built.nat_table);

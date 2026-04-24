@@ -17,11 +17,13 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
+
+use crate::clock;
 
 /// Window width in packet-id slots. 1024 bits = 128 bytes per session — large
 /// enough to tolerate normal UDP reordering, small enough to keep per-session
@@ -160,7 +162,7 @@ impl ReplayStore {
                     .or_insert_with(|| {
                         Arc::new(ReplayEntry {
                             window: Mutex::new(ReplayWindow::new()),
-                            last_seen_secs: AtomicU64::new(current_unix_secs()),
+                            last_seen_secs: AtomicU64::new(clock::current_unix_secs()),
                         })
                     })
                     .value(),
@@ -168,13 +170,13 @@ impl ReplayStore {
         };
         entry
             .last_seen_secs
-            .store(current_unix_secs(), Ordering::Relaxed);
+            .store(clock::current_unix_secs(), Ordering::Relaxed);
         entry.window.lock().check_and_mark(packet_id)
     }
 
     /// Drop entries idle for longer than `idle_timeout`.
     pub(crate) fn evict_idle(&self) -> usize {
-        let threshold = current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
+        let threshold = clock::current_unix_secs().saturating_sub(self.idle_timeout.as_secs());
         let mut evicted = 0usize;
         self.entries.retain(|_, entry| {
             if entry.last_seen_secs.load(Ordering::Relaxed) < threshold {
@@ -194,12 +196,6 @@ impl ReplayStore {
     }
 }
 
-fn current_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
 
 #[cfg(test)]
 mod tests {

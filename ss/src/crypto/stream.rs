@@ -11,12 +11,13 @@ use super::{
     primitives::{
         LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN,
         SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
-        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, current_unix_secs, derive_subkey,
+        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, derive_subkey,
         next_stream_nonce, nonce_zero, parse_ss2022_request_header,
         validate_ss2022_request_fixed_header,
     },
     user_key::UserKey,
 };
+use crate::clock;
 
 #[derive(Clone, Debug)]
 pub struct StreamResponseContext {
@@ -514,7 +515,7 @@ fn encrypt_ss2022_chunk(
         output.extend_from_slice(salt);
         let header_start = output.len();
         output.extend_from_slice(&[SS2022_TCP_RESPONSE_TYPE]);
-        output.extend_from_slice(&current_unix_secs().to_be_bytes());
+        output.extend_from_slice(&clock::current_unix_secs().to_be_bytes());
         output.extend_from_slice(request_salt);
         output.extend_from_slice(
             &u16::try_from(plaintext.len())
