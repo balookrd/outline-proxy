@@ -91,6 +91,8 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
+            config_path: None,
+            control: None,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
@@ -137,6 +139,8 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
+            config_path: None,
+            control: None,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
@@ -185,6 +189,8 @@ mod tests {
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
+            config_path: None,
+            control: None,
         };
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(Duration::from_secs(300));

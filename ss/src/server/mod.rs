@@ -25,6 +25,8 @@ mod auth;
 mod bootstrap;
 mod connect;
 mod constants;
+#[cfg(feature = "control")]
+mod control;
 mod dns_cache;
 mod listeners;
 mod nat;
@@ -88,6 +90,19 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let vless_paths = built.vless_routes.keys().cloned().collect::<BTreeSet<_>>();
+
+    #[cfg(feature = "control")]
+    if let Some(control_config) = config.control.clone() {
+        let manager = Arc::new(control::UserManager::new(
+            config.as_ref(),
+            Arc::clone(&built.routes),
+            Arc::clone(&built.auth_users),
+            tcp_paths.clone(),
+            udp_paths.clone(),
+            vless_paths.clone(),
+        ));
+        control::spawn_control_server(control_config, manager, shutdown_signal.clone());
+    }
     let user_routes = describe_user_routes(built.user_routes.as_ref());
     let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
     info!(

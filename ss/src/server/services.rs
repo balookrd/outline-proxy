@@ -22,9 +22,11 @@ use super::{
         build_vless_transport_route_map, build_vless_user_routes, user_keys,
     },
     state::{
-        AuthPolicy, RouteRegistry, Services, TransportRoute, UdpServices, VlessTransportRoute,
+        AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
+        UdpServices, UserKeySlice, VlessTransportRoute,
     },
 };
+use arc_swap::ArcSwap;
 
 pub(super) struct Built {
     pub(super) metrics: Arc<Metrics>,
@@ -34,7 +36,9 @@ pub(super) struct Built {
     pub(super) tcp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp_routes: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) vless_routes: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
-    pub(super) routes: Arc<RouteRegistry>,
+    pub(super) routes: RoutesSnapshot,
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    pub(super) auth_users: AuthUsersSnapshot,
     pub(super) services: Arc<Services>,
     pub(super) auth: Arc<AuthPolicy>,
     pub(super) nat_table: Arc<NatTable>,
@@ -78,11 +82,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     let replay_store =
         ReplayStore::new(Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs));
     let dns_cache = DnsCache::new(Duration::from_secs(UDP_DNS_CACHE_TTL_SECS));
-    let routes = Arc::new(RouteRegistry {
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::clone(&tcp_routes),
         udp: Arc::clone(&udp_routes),
         vless: Arc::clone(&vless_routes),
-    });
+    }));
+    let auth_users: AuthUsersSnapshot =
+        Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::clone(&users))));
     let udp_relay_semaphore = if config.tuning.udp_max_concurrent_relay_tasks == 0 {
         None
     } else {
@@ -100,7 +106,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         },
     });
     let auth = Arc::new(AuthPolicy {
-        users: users.clone(),
+        users: Arc::clone(&auth_users),
         http_root_auth: config.http_root_auth,
         http_root_realm: Arc::from(config.http_root_realm.clone()),
     });
@@ -113,6 +119,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         udp_routes,
         vless_routes,
         routes,
+        auth_users,
         services,
         auth,
         nat_table,

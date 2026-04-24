@@ -12,8 +12,9 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::setup::{VlessUserRoute, build_vless_transport_route_map};
 use super::super::shutdown::ShutdownSignal;
-use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices};
+use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::{DnsCache, build_app};
+use arc_swap::ArcSwap;
 use super::sample_config;
 use crate::metrics::Metrics;
 use crate::protocol::vless::{COMMAND_TCP, COMMAND_UDP, VERSION, VlessUser, parse_uuid};
@@ -39,11 +40,11 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         user: vless_user,
         ws_path: Arc::from("/vless"),
     }]));
-    let routes = Arc::new(RouteRegistry {
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
-    });
+    }));
     let services = Arc::new(Services {
         metrics,
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
@@ -58,7 +59,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         },
     });
     let auth = Arc::new(AuthPolicy {
-        users: Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
@@ -115,11 +116,11 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         user: vless_user,
         ws_path: Arc::from("/vless"),
     }]));
-    let routes = Arc::new(RouteRegistry {
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
-    });
+    }));
     let services = Arc::new(Services {
         metrics,
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
@@ -134,7 +135,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         },
     });
     let auth = Arc::new(AuthPolicy {
-        users: Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
@@ -198,11 +199,11 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         user: vless_user,
         ws_path: Arc::from("/vless"),
     }]));
-    let routes = Arc::new(RouteRegistry {
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
-    });
+    }));
     let services = Arc::new(Services {
         metrics,
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
@@ -217,7 +218,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         },
     });
     let auth = Arc::new(AuthPolicy {
-        users: Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });

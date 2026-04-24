@@ -138,6 +138,15 @@ pub(super) struct ConfigArgs {
 
     #[arg(long, env = "OUTLINE_SS_TUNING_PROFILE", value_enum)]
     pub tuning_profile: Option<TuningPreset>,
+
+    #[arg(long, env = "OUTLINE_SS_CONTROL_LISTEN")]
+    pub control_listen: Option<SocketAddr>,
+
+    #[arg(long, env = "OUTLINE_SS_CONTROL_TOKEN")]
+    pub control_token: Option<String>,
+
+    #[arg(long, env = "OUTLINE_SS_CONTROL_TOKEN_FILE")]
+    pub control_token_file: Option<PathBuf>,
 }
 
 pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
@@ -163,5 +172,6 @@ pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
         ws_path_udp: None,
         vless_id: None,
         vless_ws_path: None,
+        enabled: None,
     })
 }

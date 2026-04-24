@@ -23,7 +23,7 @@ use super::super::{
         TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
-    state::{AppState, AuthPolicy, RouteRegistry, Services},
+    state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
         metrics_handler, not_found_handler, root_http_auth_handler, tcp_websocket_upgrade,
         udp_websocket_upgrade, vless_websocket_upgrade,
@@ -32,7 +32,7 @@ use super::super::{
 use super::tls::build_tcp_tls_acceptor;
 
 pub(in crate::server) fn build_app(
-    routes: Arc<RouteRegistry>,
+    routes: RoutesSnapshot,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
 ) -> Router {
@@ -42,17 +42,19 @@ pub(in crate::server) fn build_app(
         router = router.route("/", any(root_http_auth_handler));
     }
 
-    for path in routes.tcp.keys() {
+    let snap = routes.load();
+    for path in snap.tcp.keys() {
         router = router.route(path, any(tcp_websocket_upgrade));
     }
 
-    for path in routes.udp.keys() {
+    for path in snap.udp.keys() {
         router = router.route(path, any(udp_websocket_upgrade));
     }
 
-    for path in routes.vless.keys() {
+    for path in snap.vless.keys() {
         router = router.route(path, any(vless_websocket_upgrade));
     }
+    drop(snap);
 
     let state = AppState { routes, services, auth };
     router.fallback(any(not_found_handler)).with_state(state)

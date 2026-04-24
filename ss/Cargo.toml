@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 aes = "0.8"
 anyhow = "1.0"
+arc-swap = "1.7"
 axum = { version = "0.8", features = ["ws", "http2"] }
 base64 = "0.22"
 blake3 = "1.8"
@@ -30,6 +31,7 @@ ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yml = "0.0"
 socket2 = "0.5"
 sockudo-ws = { version = "1.7.3", default-features = false, features = ["tokio", "http3", "fastrand"] }
@@ -39,6 +41,10 @@ tokio-rustls = "0.26"
 toml = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "tracing-log"] }
+
+[features]
+default = ["control"]
+control = []
 
 [dev-dependencies]
 http-body-util = "0.1"

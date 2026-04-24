@@ -1,7 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, clap::ValueEnum, Deserialize, Serialize)]
 pub enum CipherKind {
     #[value(name = "aes-128-gcm")]
     #[serde(rename = "aes-128-gcm")]
@@ -58,27 +58,36 @@ impl CipherKind {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub id: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fwmark: Option<u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub method: Option<CipherKind>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_path_tcp: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_path_udp: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vless_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vless_ws_path: Option<String>,
+    /// `false` blocks the user without removing their config entry. Absent
+    /// in the config means enabled; control-plane mutations write the field
+    /// explicitly so on-disk state round-trips unambiguously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 impl UserEntry {
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
+
     pub fn effective_method(&self, default: CipherKind) -> CipherKind {
         self.method.unwrap_or(default)
     }

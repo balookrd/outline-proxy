@@ -436,6 +436,8 @@ mod tests {
             users: vec![],
             method: crate::config::CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
+            config_path: None,
+            control: None,
         }
     }
 

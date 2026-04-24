@@ -46,6 +46,16 @@ pub(super) struct FileConfig {
     pub tuning_profile: Option<TuningPreset>,
     #[serde(default)]
     pub tuning: Option<TuningOverrides>,
+    #[serde(default)]
+    pub control: Option<ControlFileConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ControlFileConfig {
+    pub listen: Option<SocketAddr>,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

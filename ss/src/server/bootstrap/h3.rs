@@ -27,7 +27,7 @@ use super::super::{
         parse_root_http_auth_password, password_matches_any_user,
     },
     constants::{H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS},
-    state::{AuthPolicy, RouteRegistry, Services, empty_transport_route},
+    state::{AuthPolicy, RoutesSnapshot, Services, empty_transport_route},
     transport::{
         UdpRouteCtx, UdpServerCtx, WsTcpRouteCtx, WsTcpServerCtx, finish_ws_session,
         handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
@@ -164,7 +164,7 @@ fn bind_h3_udp_socket(
 }
 
 struct H3ConnectionCtx {
-    routes: Arc<RouteRegistry>,
+    routes: RoutesSnapshot,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
     tcp_paths: Arc<BTreeSet<String>>,
@@ -176,15 +176,17 @@ struct H3ConnectionCtx {
 
 pub(in crate::server) async fn serve_h3_server(
     server: H3WebSocketServer<H3Transport>,
-    routes: Arc<RouteRegistry>,
+    routes: RoutesSnapshot,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
     mut shutdown: super::super::shutdown::ShutdownSignal,
 ) -> Result<()> {
+    let initial = routes.load();
     let tcp_paths: Arc<BTreeSet<String>> =
-        Arc::new(routes.tcp.keys().cloned().collect::<BTreeSet<_>>());
+        Arc::new(initial.tcp.keys().cloned().collect::<BTreeSet<_>>());
     let udp_paths: Arc<BTreeSet<String>> =
-        Arc::new(routes.udp.keys().cloned().collect::<BTreeSet<_>>());
+        Arc::new(initial.udp.keys().cloned().collect::<BTreeSet<_>>());
+    drop(initial);
     let (endpoint, ws_config) = server.into_parts();
     let tcp_server = Arc::new(WsTcpServerCtx {
         metrics: services.metrics.clone(),
@@ -294,8 +296,9 @@ async fn handle_h3_request(
     let path = request.uri().path().to_owned();
 
     if request.method() != Method::CONNECT {
+        let users_snap = ctx.auth.users.load();
         let response = h3_http_response(
-            ctx.auth.users.as_ref(),
+            users_snap.0.as_ref(),
             request.method(),
             &path,
             request.headers(),
@@ -347,12 +350,13 @@ async fn handle_h3_request(
     let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ctx.ws_config.clone());
 
     if ctx.tcp_paths.contains(ws_req.path.as_str()) {
-        let route = ctx
-            .routes
+        let routes_snap = ctx.routes.load();
+        let route = routes_snap
             .tcp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
+        drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = ctx
             .services
@@ -367,12 +371,13 @@ async fn handle_h3_request(
         let result = handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx).await;
         finish_ws_session(session, result, "tcp");
     } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
-        let route = ctx
-            .routes
+        let routes_snap = ctx.routes.load();
+        let route = routes_snap
             .udp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
+        drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
         let session = ctx
             .services

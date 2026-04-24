@@ -46,12 +46,13 @@ pub(super) async fn tcp_websocket_upgrade(
     };
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
-    let route = state
-        .routes
+    let routes_snap = state.routes.load();
+    let route = routes_snap
         .tcp
         .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
+    drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
     let session = state
         .services
@@ -88,12 +89,13 @@ pub(super) async fn vless_websocket_upgrade(
     };
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
-    let route = state
-        .routes
+    let routes_snap = state.routes.load();
+    let route = routes_snap
         .vless
         .get(&*path)
         .cloned()
         .unwrap_or_else(empty_vless_transport_route);
+    drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
     let session = state
         .services
@@ -131,8 +133,9 @@ pub(super) async fn root_http_auth_handler(
         return build_root_http_auth_forbidden_response(Body::empty());
     }
 
+    let users_snap = state.auth.users.load();
     match parse_root_http_auth_password(&headers) {
-        Some(password) if password_matches_any_user(state.auth.users.as_ref(), &password) => {
+        Some(password) if password_matches_any_user(users_snap.0.as_ref(), &password) => {
             build_root_http_auth_success_response(Body::empty())
         },
         Some(_) => {
@@ -181,12 +184,13 @@ pub(super) async fn udp_websocket_upgrade(
     let ws = ws.write_buffer_size(0);
     let protocol = protocol_from_http_version(version);
     let path: Arc<str> = Arc::from(uri.path());
-    let route = state
-        .routes
+    let routes_snap = state.routes.load();
+    let route = routes_snap
         .udp
         .get(&*path)
         .cloned()
         .unwrap_or_else(empty_transport_route);
+    drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
     let session = state
         .services
