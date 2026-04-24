@@ -173,9 +173,8 @@ The project is intentionally practical, but there are still boundaries:
 
 ## Repository Layout
 
-- [`config.toml`](config.toml) - example configuration (TOML)
-- [`config.yaml`](config.yaml) - example configuration (YAML)
-- [`config-router.yaml`](config-router.yaml) - example router configuration (YAML)
+- [`config.toml`](config.toml) - example configuration
+- [`config-router.toml`](config-router.toml) - example router configuration
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) - hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) - main operational dashboard
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) - `tun2tcp` dashboard
@@ -457,7 +456,7 @@ socks5:
 
 ## Configuration
 
-By default the process reads [`config.toml`](config.toml). YAML format (`.yaml` / `.yml`) is also supported — [`config.yaml`](config.yaml) is the YAML equivalent of the default example.
+By default the process reads [`config.toml`](config.toml).
 
 Example:
 

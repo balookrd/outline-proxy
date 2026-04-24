@@ -704,12 +704,12 @@ async fn load_config_allows_tun_without_socks5_listener() {
 // ── Edge-case validation tests ───────────────────────────────────────────────
 
 #[tokio::test]
-async fn load_config_rejects_invalid_yaml() {
-    let path = std::env::temp_dir().join("outline-ws-rust-invalid.yaml");
+async fn load_config_rejects_invalid_toml() {
+    let path = std::env::temp_dir().join("outline-ws-rust-invalid.toml");
     std::fs::write(
         &path,
-        // Invalid YAML: unterminated mapping with bad indentation.
-        "socks5:\n  listen: [unterminated\n",
+        // Invalid TOML: unterminated array.
+        "[socks5]\nlisten = [unterminated\n",
     )
     .unwrap();
 
@@ -789,27 +789,24 @@ async fn load_config_rejects_route_without_prefixes_or_file() {
 
 #[tokio::test]
 async fn load_config_rejects_empty_route_section() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-arr.yaml");
-    // YAML explicit empty array: simulate `route = []` via empty list.
-    // TOML doesn't allow literal empty `[[route]]` without entries, so use
-    // YAML where the user can type `route: []` explicitly.
+    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-arr.toml");
     std::fs::write(
         &path,
         r#"
-socks5:
-  listen: "127.0.0.1:1080"
+route = []
 
-uplink_group:
-  - name: main
+[socks5]
+listen = "127.0.0.1:1080"
 
-uplinks:
-  - name: primary
-    group: main
-    tcp_ws_url: "wss://example.com/secret/tcp"
-    method: chacha20-ietf-poly1305
-    password: Secret0
+[[uplink_group]]
+name = "main"
 
-route: []
+[[uplinks]]
+name = "primary"
+group = "main"
+tcp_ws_url = "wss://example.com/secret/tcp"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
 "#,
     )
     .unwrap();

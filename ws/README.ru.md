@@ -174,8 +174,6 @@ tun2udp + tun2tcp"]
 ## Структура репозитория
 
 - [`config.toml`](config.toml) — пример конфигурации (TOML)
-- [`config.yaml`](config.yaml) — пример конфигурации (YAML)
-- [`config-router.yaml`](config-router.yaml) — пример конфигурации для роутера (YAML)
 - [`systemd/outline-ws-rust.service`](systemd/outline-ws-rust.service) — hardened systemd unit
 - [`grafana/outline-ws-rust-dashboard.json`](grafana/outline-ws-rust-dashboard.json) — основной операционный дашборд
 - [`grafana/outline-ws-rust-tun-tcp-dashboard.json`](grafana/outline-ws-rust-tun-tcp-dashboard.json) — дашборд `tun2tcp`
@@ -451,7 +449,7 @@ socks5:
 
 ## Конфигурация
 
-По умолчанию процесс читает [`config.toml`](config.toml). Также поддерживается формат YAML (`.yaml` / `.yml`) — [`config.yaml`](config.yaml) является YAML-эквивалентом примера конфигурации.
+По умолчанию процесс читает [`config.toml`](config.toml).
 
 Пример:
 

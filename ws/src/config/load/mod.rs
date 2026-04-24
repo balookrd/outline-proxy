@@ -33,13 +33,10 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         let raw = fs::read_to_string(path)
             .await
             .with_context(|| format!("failed to read {}", path.display()))?;
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        Some(match ext {
-            "yaml" | "yml" => serde_yml::from_str::<ConfigFile>(&raw)
+        Some(
+            toml::from_str::<ConfigFile>(&raw)
                 .with_context(|| format!("failed to parse {}", path.display()))?,
-            _ => toml::from_str::<ConfigFile>(&raw)
-                .with_context(|| format!("failed to parse {}", path.display()))?,
-        })
+        )
     } else {
         None
     };
