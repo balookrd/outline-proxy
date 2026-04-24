@@ -230,16 +230,36 @@ fn build_http_server_builder(profile: &TuningProfile) -> HyperBuilder<TokioExecu
     builder
 }
 
-fn is_benign_http_serve_error(error: &(dyn std::error::Error + Send + Sync + 'static)) -> bool {
-    let message = error.to_string();
-    message.contains("connection closed")
-        || message.contains("closed before message completed")
-        || message.contains("canceled")
+fn is_benign_http_serve_error(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(cause) = source {
+        if let Some(hy) = cause.downcast_ref::<hyper::Error>()
+            && (hy.is_canceled() || hy.is_incomplete_message() || hy.is_closed())
+        {
+            return true;
+        }
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            use std::io::ErrorKind::*;
+            if matches!(
+                io.kind(),
+                ConnectionReset | BrokenPipe | UnexpectedEof | ConnectionAborted,
+            ) {
+                return true;
+            }
+        }
+        source = cause.source();
+    }
+    false
 }
 
 fn is_benign_tls_handshake_error(error: &std::io::Error) -> bool {
-    error.kind() == std::io::ErrorKind::UnexpectedEof
-        || error.to_string().contains("tls handshake eof")
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::UnexpectedEof
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionAborted,
+    )
 }
 
 #[cfg(test)]

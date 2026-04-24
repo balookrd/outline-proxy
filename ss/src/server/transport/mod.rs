@@ -239,27 +239,152 @@ pub(super) fn finish_ws_session(
     session.finish(outcome);
 }
 
+/// A benign cause for a WebSocket/QUIC connection to end without having to
+/// log it as an error. Derived from the cause chain by downcasting to concrete
+/// error types so that renaming a `Display` impl upstream cannot silently
+/// demote a real error to a benign close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BenignClose {
+    /// Peer went away without completing the close handshake (TCP reset,
+    /// broken pipe, UnexpectedEof on the socket, etc.).
+    PeerAbort,
+    /// Graceful HTTP/3 shutdown: `H3_NO_ERROR` from either side.
+    H3NoError,
+    /// QUIC idle timeout. Benign when a client simply stops talking.
+    QuicTimeout,
+}
+
+fn classify_cause(cause: &(dyn std::error::Error + 'static)) -> Option<BenignClose> {
+    if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+        return classify_io(io);
+    }
+    if let Some(ts) = cause.downcast_ref::<tungstenite::Error>() {
+        return classify_tungstenite(ts);
+    }
+    if let Some(hy) = cause.downcast_ref::<hyper::Error>() {
+        return classify_hyper(hy);
+    }
+    if let Some(qc) = cause.downcast_ref::<quinn::ConnectionError>() {
+        return classify_quinn(qc);
+    }
+    if let Some(h3) = cause.downcast_ref::<h3::error::ConnectionError>() {
+        return classify_h3_connection(h3);
+    }
+    if let Some(h3) = cause.downcast_ref::<h3::error::StreamError>() {
+        return classify_h3_stream(h3);
+    }
+
+    if let Some(sw) = cause.downcast_ref::<sockudo_ws::Error>() {
+        return classify_sockudo(sw);
+    }
+    None
+}
+
+fn classify_io(err: &std::io::Error) -> Option<BenignClose> {
+    use std::io::ErrorKind::*;
+    match err.kind() {
+        ConnectionReset | BrokenPipe | UnexpectedEof | ConnectionAborted => {
+            Some(BenignClose::PeerAbort)
+        },
+        _ => None,
+    }
+}
+
+fn classify_tungstenite(err: &tungstenite::Error) -> Option<BenignClose> {
+    use tungstenite::error::ProtocolError;
+    match err {
+        tungstenite::Error::ConnectionClosed | tungstenite::Error::AlreadyClosed => {
+            Some(BenignClose::PeerAbort)
+        },
+        tungstenite::Error::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake | ProtocolError::SendAfterClosing,
+        ) => Some(BenignClose::PeerAbort),
+        tungstenite::Error::Io(io) => classify_io(io),
+        _ => None,
+    }
+}
+
+fn classify_hyper(err: &hyper::Error) -> Option<BenignClose> {
+    if err.is_canceled() || err.is_incomplete_message() || err.is_closed() {
+        Some(BenignClose::PeerAbort)
+    } else {
+        None
+    }
+}
+
+fn classify_quinn(err: &quinn::ConnectionError) -> Option<BenignClose> {
+    match err {
+        quinn::ConnectionError::ApplicationClosed(close) if close.error_code.into_inner() == 0 => {
+            Some(BenignClose::H3NoError)
+        },
+        quinn::ConnectionError::LocallyClosed | quinn::ConnectionError::Reset => {
+            Some(BenignClose::PeerAbort)
+        },
+        quinn::ConnectionError::TimedOut => Some(BenignClose::QuicTimeout),
+        _ => None,
+    }
+}
+
+fn classify_h3_connection(err: &h3::error::ConnectionError) -> Option<BenignClose> {
+    if err.is_h3_no_error() {
+        return Some(BenignClose::H3NoError);
+    }
+    // h3::error::ConnectionError has `#[non_exhaustive]` variants so we cannot
+    // match on `Timeout` directly; fall back to its Display string, which is
+    // part of the public surface we already depend on.
+    classify_stringified_h3(&err.to_string())
+}
+
+fn classify_h3_stream(err: &h3::error::StreamError) -> Option<BenignClose> {
+    // `StreamError` exposes no public accessor and its variants are
+    // `#[non_exhaustive]`; the Display impl is the only stable surface.
+    classify_stringified_h3(&err.to_string())
+}
+
+// sockudo-ws collapses h3/quinn errors into `Http3(String)` (see
+// `vendor/sockudo-ws/src/error.rs`), so for that variant we have to parse the
+// display string. Every other sockudo-ws variant carries a typed source that
+// `classify_cause` will have already visited via the anyhow cause chain, so we
+// only handle the stringy h3 case here.
+fn classify_sockudo(err: &sockudo_ws::Error) -> Option<BenignClose> {
+    match err {
+        sockudo_ws::Error::ConnectionClosed | sockudo_ws::Error::ConnectionReset => {
+            Some(BenignClose::PeerAbort)
+        },
+        sockudo_ws::Error::Http3(msg) => classify_stringified_h3(msg),
+        _ => None,
+    }
+}
+
+fn classify_stringified_h3(msg: &str) -> Option<BenignClose> {
+    if msg.contains("ApplicationClose: H3_NO_ERROR") || msg.contains("ApplicationClose: 0x0") {
+        Some(BenignClose::H3NoError)
+    } else if msg.contains("Connection error: Timeout") {
+        Some(BenignClose::QuicTimeout)
+    } else {
+        None
+    }
+}
+
+fn classify_error(error: &anyhow::Error) -> Option<BenignClose> {
+    error.chain().find_map(classify_cause)
+}
+
 pub(super) fn is_expected_ws_close(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("Connection reset without closing handshake")
-            || message.contains("Connection reset by peer")
-            || message.contains("Broken pipe")
-            || message.contains("connection closed before message completed")
-            || message.contains("Sending after closing is not allowed")
-            || message.contains("peer closed connection without sending TLS close_notify")
-            || message.contains("ApplicationClose: H3_NO_ERROR")
-            || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
-            || message.contains("ApplicationClose: 0x0")
-            || message.contains("Connection error: Timeout")
-    })
+    classify_error(error).is_some() || has_tls_close_notify(error)
 }
 
 pub(super) fn is_normal_h3_shutdown(error: &anyhow::Error) -> bool {
+    matches!(classify_error(error), Some(BenignClose::H3NoError))
+}
+
+// rustls 0.23 signals this condition via an opaque `io::Error` whose kind is
+// `Other` and whose message is the only distinguishing marker, so we keep a
+// narrow string check here rather than downcasting.
+fn has_tls_close_notify(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
-        let message = cause.to_string();
-        message.contains("ApplicationClose: H3_NO_ERROR")
-            || message.contains("Remote error: ApplicationClose: H3_NO_ERROR")
-            || message.contains("ApplicationClose: 0x0")
+        cause
+            .to_string()
+            .contains("peer closed connection without sending TLS close_notify")
     })
 }

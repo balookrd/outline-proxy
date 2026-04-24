@@ -13,7 +13,7 @@ use tracing::warn;
 
 use crate::config::{CipherKind, UserEntry};
 
-use super::manager::{UserManager, UserPatch, UserView};
+use super::manager::{AccessUrlError, UserManager, UserPatch, UserView};
 
 #[derive(Clone)]
 pub(super) struct ControlState {
@@ -165,13 +165,15 @@ pub(super) async fn get_user_access_urls(
     match state.manager.access_urls(&id).await {
         Ok(view) => ok_json(view),
         Err(error) => {
-            let msg = format!("{error:#}");
-            warn!(%id, error = %msg, "control access URL generation failed");
-            let status = if msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::BAD_REQUEST
+            let status = match &error {
+                AccessUrlError::NotFound(_) => StatusCode::NOT_FOUND,
+                AccessUrlError::Build(_) => StatusCode::BAD_REQUEST,
             };
+            let msg = match &error {
+                AccessUrlError::NotFound(_) => error.to_string(),
+                AccessUrlError::Build(err) => format!("{err:#}"),
+            };
+            warn!(%id, error = %msg, "control access URL generation failed");
             error_response(status, msg)
         },
     }
