@@ -142,6 +142,10 @@ pub(super) struct DashboardInstanceFileConfig {
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {
     let contents = fs::read_to_string(path)
         .with_context(|| format!("failed to read config file {}", path.display()))?;
+    if let Some(migrated) = super::migrate::auto_migrate_if_legacy(path, &contents)? {
+        return toml::from_str(&migrated)
+            .with_context(|| format!("failed to parse migrated config file {}", path.display()));
+    }
     toml::from_str(&contents)
         .with_context(|| format!("failed to parse config file {}", path.display()))
 }

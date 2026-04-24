@@ -8,6 +8,38 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
+/// If `contents` contains any legacy top-level keys, migrate them, write the
+/// result to `path` (after placing a `<path>.bak` backup) and return the
+/// migrated text. Otherwise return `Ok(None)`. Used from the regular config
+/// loader so services keep running after an in-place upgrade.
+pub(super) fn auto_migrate_if_legacy(
+    path: &Path,
+    contents: &str,
+) -> Result<Option<String>> {
+    let (migrated, changed) = migrate_str(contents)?;
+    if !changed {
+        return Ok(None);
+    }
+    let backup = backup_path(path);
+    fs::write(&backup, contents)
+        .with_context(|| format!("failed to write backup {}", backup.display()))?;
+    fs::write(path, &migrated)
+        .with_context(|| format!("failed to write migrated {}", path.display()))?;
+    tracing::warn!(
+        path = %path.display(),
+        backup = %backup.display(),
+        "migrated legacy config layout to sectioned form; original saved as backup",
+    );
+    Ok(Some(migrated))
+}
+
+fn backup_path(path: &Path) -> std::path::PathBuf {
+    path.with_extension(format!(
+        "{}.bak",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("toml")
+    ))
+}
+
 /// Migrate legacy top-level keys in `path` into their new sections in place.
 ///
 /// Writes a `<path>.bak` copy before touching the original. Returns `true`
@@ -20,10 +52,7 @@ pub fn migrate_config_in_place(path: &Path) -> Result<bool> {
     if !changed {
         return Ok(false);
     }
-    let backup = path.with_extension(format!(
-        "{}.bak",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("toml")
-    ));
+    let backup = backup_path(path);
     fs::write(&backup, &original)
         .with_context(|| format!("failed to write backup {}", backup.display()))?;
     fs::write(path, migrated)
