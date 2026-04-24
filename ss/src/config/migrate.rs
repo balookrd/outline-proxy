@@ -8,6 +8,8 @@ use std::{fs, path::Path};
 use anyhow::{Context, Result};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
+use crate::fs_util::atomic_write;
+
 /// If `contents` contains any legacy top-level keys, migrate them, write the
 /// result to `path` (after placing a `<path>.bak` backup) and return the
 /// migrated text. Otherwise return `Ok(None)`. Used from the regular config
@@ -23,7 +25,9 @@ pub(super) fn auto_migrate_if_legacy(
     let backup = backup_path(path);
     // Tracing is not yet initialised at config-load time, so use eprintln!
     // directly — systemd/journald still captures stderr.
-    match fs::write(&backup, contents).and_then(|()| fs::write(path, &migrated)) {
+    match atomic_write(&backup, contents.as_bytes())
+        .and_then(|()| atomic_write(path, migrated.as_bytes()))
+    {
         Ok(()) => {
             eprintln!(
                 "config: migrated legacy flat-key layout in {} (backup: {})",
@@ -66,9 +70,9 @@ pub fn migrate_config_in_place(path: &Path) -> Result<bool> {
         return Ok(false);
     }
     let backup = backup_path(path);
-    fs::write(&backup, &original)
+    atomic_write(&backup, original.as_bytes())
         .with_context(|| format!("failed to write backup {}", backup.display()))?;
-    fs::write(path, migrated)
+    atomic_write(path, migrated.as_bytes())
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(true)
 }
