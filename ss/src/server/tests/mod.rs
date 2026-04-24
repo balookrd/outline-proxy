@@ -309,6 +309,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         tuning: Default::default(),
             config_path: None,
             control: None,
+            dashboard: None,
     }
 }
 

@@ -93,6 +93,7 @@ mod tests {
             tuning: Default::default(),
             config_path: None,
             control: None,
+            dashboard: None,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
@@ -141,6 +142,7 @@ mod tests {
             tuning: Default::default(),
             config_path: None,
             control: None,
+            dashboard: None,
         };
         let metrics = Metrics::new(&config);
         let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
@@ -191,6 +193,7 @@ mod tests {
             tuning: Default::default(),
             config_path: None,
             control: None,
+            dashboard: None,
         };
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(Duration::from_secs(300));

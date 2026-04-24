@@ -23,6 +23,28 @@ listen = "0.0.0.0:3000"
 # metrics_listen = "127.0.0.1:9090"
 metrics_path = "/metrics"
 
+# Optional runtime user-management API. Keep this on loopback or a private
+# management network.
+# [control]
+# listen = "127.0.0.1:7001"
+# token_file = "/etc/outline-ss-rust/control.token"
+
+# Optional browser UI on a separate listener. It proxies to the configured
+# control servers, keeping bearer tokens server-side.
+# [dashboard]
+# listen = "127.0.0.1:7002"
+# request_timeout_secs = 15
+#
+# [[dashboard.servers]]
+# name = "local"
+# control_url = "http://127.0.0.1:7001"
+# token_file = "/etc/outline-ss-rust/control.token"
+#
+# [[dashboard.servers]]
+# name = "edge-02"
+# control_url = "http://10.0.0.12:7001"
+# token_file = "/etc/outline-ss-rust/edge-02.control.token"
+
 # Prefer IPv4 when resolving upstream targets.
 # Useful when some clients or CDNs break over IPv6 but work over IPv4.
 # prefer_ipv4_upstream = true

@@ -23,6 +23,22 @@ pub struct ControlConfig {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
+pub struct DashboardConfig {
+    pub listen: SocketAddr,
+    pub request_timeout_secs: u64,
+    pub servers: Vec<DashboardServerConfig>,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
+pub struct DashboardServerConfig {
+    pub name: String,
+    pub control_url: String,
+    pub token: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Path of the config file this `Config` was loaded from, if any.
     /// Preserved so the control plane can persist runtime user mutations
@@ -31,6 +47,8 @@ pub struct Config {
     pub config_path: Option<PathBuf>,
     #[cfg_attr(not(feature = "control"), allow(dead_code))]
     pub control: Option<ControlConfig>,
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
+    pub dashboard: Option<DashboardConfig>,
     pub listen: Option<SocketAddr>,
     pub ss_listen: Option<SocketAddr>,
     pub tls_cert_path: Option<PathBuf>,
@@ -106,11 +124,17 @@ impl AppMode {
             tuning.apply_overrides(overrides);
         }
 
+        let config_dir = config_path
+            .as_deref()
+            .and_then(std::path::Path::parent)
+            .unwrap_or_else(|| std::path::Path::new("."));
         let control = resolve_control_config(&args, &file)?;
+        let dashboard = resolve_dashboard_config(&file, config_dir)?;
 
         let config = Config {
             config_path: config_path.clone(),
             control,
+            dashboard,
             listen: args.listen.or(file.listen),
             ss_listen: args.ss_listen.or(file.ss_listen),
             tls_cert_path: args.tls_cert_path.or(file.tls_cert_path),
@@ -274,6 +298,91 @@ pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
 }
 
+fn resolve_dashboard_config(
+    file: &FileConfig,
+    config_dir: &std::path::Path,
+) -> Result<Option<DashboardConfig>> {
+    let Some(dashboard) = file.dashboard.as_ref() else {
+        return Ok(None);
+    };
+    if dashboard.enabled == Some(false) {
+        return Ok(None);
+    }
+
+    let listen = dashboard
+        .listen
+        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.listen is not set"))?;
+    let servers = dashboard
+        .servers
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.servers is empty"))?;
+    if servers.is_empty() {
+        anyhow::bail!("dashboard enabled but dashboard.servers is empty");
+    }
+
+    let mut loaded = Vec::with_capacity(servers.len());
+    for (idx, server) in servers.iter().enumerate() {
+        let name = server
+            .name
+            .clone()
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("dashboard server #{idx} has no name"))?;
+        let control_url = server
+            .control_url
+            .clone()
+            .filter(|url| !url.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("dashboard server {name:?} has no control_url"))?;
+        if !control_url.starts_with("http://") {
+            anyhow::bail!(
+                "dashboard server {name:?} uses unsupported control_url {control_url:?}; \
+                 only http:// control listeners are supported"
+            );
+        }
+        control_url.parse::<hyper::Uri>().map_err(|error| {
+            anyhow::anyhow!("invalid dashboard server {name:?} control_url: {error}")
+        })?;
+
+        let inline_token = server.token.clone().filter(|token| !token.is_empty());
+        let file_token = match server.token_file.as_ref() {
+            Some(path) => {
+                let resolved = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    config_dir.join(path)
+                };
+                let contents = std::fs::read_to_string(&resolved).map_err(|error| {
+                    anyhow::anyhow!(
+                        "failed to read dashboard token file {}: {error}",
+                        resolved.display()
+                    )
+                })?;
+                let trimmed = contents.trim().to_owned();
+                if trimmed.is_empty() {
+                    anyhow::bail!("dashboard token file {} is empty", resolved.display());
+                }
+                Some(trimmed)
+            },
+            None => None,
+        };
+        if inline_token.is_some() && file_token.is_some() {
+            anyhow::bail!(
+                "dashboard server {name:?}: specify either token or token_file, not both"
+            );
+        }
+        let token = inline_token
+            .or(file_token)
+            .ok_or_else(|| anyhow::anyhow!("dashboard server {name:?} has no token"))?;
+
+        loaded.push(DashboardServerConfig { name, control_url, token });
+    }
+
+    Ok(Some(DashboardConfig {
+        listen,
+        request_timeout_secs: dashboard.request_timeout_secs.unwrap_or(15).max(1),
+        servers: loaded,
+    }))
+}
+
 fn resolve_control_config(args: &ConfigArgs, file: &FileConfig) -> Result<Option<ControlConfig>> {
     let file_control = file.control.as_ref();
     let listen = args.control_listen.or_else(|| file_control.and_then(|c| c.listen));
@@ -290,10 +399,7 @@ fn resolve_control_config(args: &ConfigArgs, file: &FileConfig) -> Result<Option
         (Some(t), None) => Some(t),
         (None, Some(path)) => {
             let contents = std::fs::read_to_string(&path).map_err(|error| {
-                anyhow::anyhow!(
-                    "failed to read control token file {}: {error}",
-                    path.display()
-                )
+                anyhow::anyhow!("failed to read control token file {}: {error}", path.display())
             })?;
             let trimmed = contents.trim().to_owned();
             if trimmed.is_empty() {

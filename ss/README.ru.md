@@ -223,6 +223,12 @@ cargo release-musl-armv7
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |
 | `control.token` | Bearer-токен, обязательный в каждом запросе. Для секретов предпочтительнее `control.token_file` |
 | `control.token_file` | Путь к файлу с bearer-токеном; взаимоисключим с `control.token` |
+| `[dashboard]` | Опциональный браузерный UI на отдельном listener; проксирует запросы к настроенным control-серверам и не отдаёт токены браузеру |
+| `dashboard.listen` | Адрес сокета dashboard listener, например `127.0.0.1:7002` |
+| `dashboard.request_timeout_secs` | Таймаут dashboard-to-control запросов. По умолчанию `15` |
+| `dashboard.servers[].name` | Отображаемое имя управляемого сервера |
+| `dashboard.servers[].control_url` | Базовый `http://` URL control listener этого сервера |
+| `dashboard.servers[].token` / `token_file` | Bearer-токен, который dashboard использует server-side при проксировании |
 
 ### Параметры пользователя
 
@@ -278,6 +284,26 @@ token_file = "/etc/outline-ss-rust/control.token"
 ```
 
 Каждый запрос обязан содержать `Authorization: Bearer <token>` — биндим слушатель только на loopback или management-сеть. Эквивалентные CLI-флаги: `--control-listen`, `--control-token`, `--control-token-file` (и переменные `OUTLINE_SS_CONTROL_*`). Сборка `--no-default-features` полностью исключает модуль управления.
+
+Та же фича может поднять браузерный dashboard на отдельном listener. Dashboard хранит control-токены серверов в конфиге процесса и проксирует действия браузера к настроенным `/control` endpoints.
+
+```toml
+[dashboard]
+listen = "127.0.0.1:7002"
+request_timeout_secs = 15
+
+[[dashboard.servers]]
+name = "local"
+control_url = "http://127.0.0.1:7001"
+token_file = "/etc/outline-ss-rust/control.token"
+
+[[dashboard.servers]]
+name = "edge-02"
+control_url = "http://10.0.0.12:7001"
+token_file = "/etc/outline-ss-rust/edge-02.control.token"
+```
+
+Открывайте `http://127.0.0.1:7002/dashboard`. Сейчас `control_url` для dashboard поддерживает `http://` control listeners.
 
 | Метод | Путь | Назначение |
 | --- | --- | --- |

@@ -103,6 +103,10 @@ pub async fn run(config: Config) -> Result<()> {
         ));
         control::spawn_control_server(control_config, manager, shutdown_signal.clone());
     }
+    #[cfg(feature = "control")]
+    if let Some(dashboard_config) = config.dashboard.clone() {
+        control::spawn_dashboard_server(dashboard_config, shutdown_signal.clone());
+    }
     let user_routes = describe_user_routes(built.user_routes.as_ref());
     let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
     info!(
@@ -111,6 +115,7 @@ pub async fn run(config: Config) -> Result<()> {
         tcp_tls = config.tcp_tls_enabled(),
         h3_listen = ?config.effective_h3_listen(),
         metrics_listen = ?config.metrics_listen,
+        dashboard_listen = ?config.dashboard.as_ref().map(|dashboard| dashboard.listen),
         metrics_path = %config.metrics_path,
         default_tcp_ws_path = %config.ws_path_tcp,
         default_udp_ws_path = %config.ws_path_udp,
