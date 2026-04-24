@@ -1,4 +1,7 @@
-use std::{net::{Ipv4Addr, SocketAddr}, sync::Arc};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use axum::http::{Method, Request, StatusCode, Version, header};
@@ -20,13 +23,13 @@ use tokio_tungstenite::{
     tungstenite::{Message as WsMessage, protocol},
 };
 
+use super::super::bootstrap::serve_listener;
+use super::super::nat::NatTable;
+use super::super::shutdown::ShutdownSignal;
 use super::super::{
     DnsCache, SsUdpCtx, build_app, build_user_routes, build_users, serve_h3_server,
     serve_ss_udp_socket,
 };
-use super::super::bootstrap::serve_listener;
-use super::super::nat::NatTable;
-use super::super::shutdown::ShutdownSignal;
 use super::{
     build_test_state, recv_decrypted_udp_response, sample_config, send_encrypted_udp_request,
     test_h3_client_config, test_h3_server_tls,
@@ -70,9 +73,10 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
         prefer_ipv4_upstream: false,
     };
-    let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await
-    });
+    let server =
+        tokio::spawn(
+            async move { serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await },
+        );
 
     let client1 = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     send_encrypted_udp_request(&client1, listen_addr, upstream_addr, b"ping-1", &user).await?;
@@ -105,7 +109,11 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
             let (read, peer) = upstream.recv_from(&mut buf).await?;
             peers.push(peer);
             assert_eq!(&buf[..read], expected);
-            let reply = if expected == b"ping-1" { b"pong-1".as_slice() } else { b"pong-2".as_slice() };
+            let reply = if expected == b"ping-1" {
+                b"pong-1".as_slice()
+            } else {
+                b"pong-2".as_slice()
+            };
             upstream.send_to(reply, peer).await?;
         }
         Result::<_, anyhow::Error>::Ok(peers)
@@ -127,7 +135,8 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
         "Authorization required",
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let tcp = tokio::net::TcpStream::connect(addr).await?;
     let (mut send_request, conn) = http2::Builder::new(TokioExecutor::new())
@@ -136,10 +145,9 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
         .await?;
     let driver = tokio::spawn(conn);
 
-    for (payload, expected_reply) in [
-        (b"ping-1".as_slice(), b"pong-1".as_slice()),
-        (b"ping-2".as_slice(), b"pong-2".as_slice()),
-    ] {
+    for (payload, expected_reply) in
+        [(b"ping-1".as_slice(), b"pong-1".as_slice()), (b"ping-2".as_slice(), b"pong-2".as_slice())]
+    {
         let req = Request::builder()
             .method(Method::CONNECT)
             .uri(format!("http://{addr}/udp"))
@@ -150,16 +158,15 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
         let mut response = send_request.send_request(req).await?;
         assert_eq!(response.status(), StatusCode::OK);
         let upgraded = hyper::upgrade::on(&mut response).await?;
-        let mut socket = WebSocketStream::from_raw_socket(
-            TokioIo::new(upgraded),
-            protocol::Role::Client,
-            None,
-        )
-        .await;
+        let mut socket =
+            WebSocketStream::from_raw_socket(TokioIo::new(upgraded), protocol::Role::Client, None)
+                .await;
 
         let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
         plaintext.extend_from_slice(payload);
-        socket.send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into())).await?;
+        socket
+            .send(WsMessage::Binary(encrypt_udp_packet(&user, &plaintext)?.into()))
+            .await?;
 
         let reply = tokio::time::timeout(std::time::Duration::from_secs(2), socket.next()).await?;
         let Some(Ok(WsMessage::Binary(enc_reply))) = reply else {
@@ -174,7 +181,10 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
 
     let peers = upstream_task.await??;
     assert_eq!(peers.len(), 2);
-    assert_eq!(peers[0], peers[1], "NAT socket source port should stay stable across WS reconnect");
+    assert_eq!(
+        peers[0], peers[1],
+        "NAT socket source port should stay stable across WS reconnect"
+    );
 
     driver.abort();
     server.abort();
@@ -194,7 +204,11 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
             let (read, peer) = upstream.recv_from(&mut buf).await?;
             peers.push(peer);
             assert_eq!(&buf[..read], expected);
-            let reply = if expected == b"ping-1" { b"pong-1".as_slice() } else { b"pong-2".as_slice() };
+            let reply = if expected == b"ping-1" {
+                b"pong-1".as_slice()
+            } else {
+                b"pong-2".as_slice()
+            };
             upstream.send_to(reply, peer).await?;
         }
         Result::<_, anyhow::Error>::Ok(peers)
@@ -234,10 +248,9 @@ async fn websocket_rfc9220_http3_udp_reuses_nat_entry_after_client_reconnect() -
     let driver =
         tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
 
-    for (payload, expected_reply) in [
-        (b"ping-1".as_slice(), b"pong-1".as_slice()),
-        (b"ping-2".as_slice(), b"pong-2".as_slice()),
-    ] {
+    for (payload, expected_reply) in
+        [(b"ping-1".as_slice(), b"pong-1".as_slice()), (b"ping-2".as_slice(), b"pong-2".as_slice())]
+    {
         let request = Request::builder()
             .method(Method::CONNECT)
             .uri(format!("https://localhost:{}/udp", addr.port()))

@@ -9,7 +9,9 @@ use tokio::{
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{AeadStreamDecryptor, CryptoError, MAX_CHUNK_SIZE, UserKey, diagnose_stream_handshake},
+    crypto::{
+        AeadStreamDecryptor, CryptoError, MAX_CHUNK_SIZE, UserKey, diagnose_stream_handshake,
+    },
     protocol::{TargetAddr, parse_target_addr},
 };
 
@@ -35,8 +37,11 @@ pub(super) async fn ss_tcp_handshake(
         decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
         let read_fut = client_reader.read_buf(decryptor.ciphertext_buffer_mut());
 
-        let read = match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await {
-            Ok(result) => result.map_err(|e| anyhow!(e).context("failed to read from shadowsocks client"))?,
+        let read = match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await
+        {
+            Ok(result) => {
+                result.map_err(|e| anyhow!(e).context("failed to read from shadowsocks client"))?
+            },
             Err(_) => {
                 let encrypted_buffered = decryptor.buffered_data();
                 let handshake_attempts = (!encrypted_buffered.is_empty())

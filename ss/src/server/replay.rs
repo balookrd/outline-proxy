@@ -155,20 +155,13 @@ pub(crate) struct ReplayStore {
 
 impl ReplayStore {
     pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        Arc::new(Self {
-            entries: DashMap::new(),
-            idle_timeout,
-        })
+        Arc::new(Self { entries: DashMap::new(), idle_timeout })
     }
 
     /// Returns `true` if the `(client_session_id, packet_id)` pair is fresh
     /// and has been recorded; `false` if it is a replay or falls outside the
     /// sliding window.
-    pub(crate) fn check_and_mark(
-        &self,
-        client_session_id: [u8; 8],
-        packet_id: u64,
-    ) -> bool {
+    pub(crate) fn check_and_mark(&self, client_session_id: [u8; 8], packet_id: u64) -> bool {
         let entry = if let Some(e) = self.entries.get(&client_session_id) {
             Arc::clone(e.value())
         } else {
@@ -211,7 +204,6 @@ impl ReplayStore {
         self.entries.len()
     }
 }
-
 
 #[cfg(test)]
 mod tests {

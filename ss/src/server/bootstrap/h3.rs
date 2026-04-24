@@ -6,9 +6,9 @@ use bytes::Bytes;
 use h3::server::Connection as H3Connection;
 use sockudo_ws::{
     Config as H3WebSocketConfig, ExtendedConnectRequest as H3ExtendedConnectRequest,
-    Http3 as H3Transport, Role as H3Role, Stream as H3Stream,
-    WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
-    build_extended_connect_error, build_extended_connect_response,
+    Http3 as H3Transport, Role as H3Role, Stream as H3Stream, WebSocketServer as H3WebSocketServer,
+    WebSocketStream as H3WebSocketStream, build_extended_connect_error,
+    build_extended_connect_response,
 };
 use tokio::time::Duration;
 use tracing::{debug, warn};
@@ -21,22 +21,23 @@ use crate::{
 
 use super::super::{
     auth::{
-        ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response, build_root_http_auth_challenge_response,
-        build_root_http_auth_forbidden_response, build_root_http_auth_success_response,
-        parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
+        ROOT_HTTP_AUTH_MAX_FAILURES, build_not_found_response,
+        build_root_http_auth_challenge_response, build_root_http_auth_forbidden_response,
+        build_root_http_auth_success_response, parse_failed_root_auth_attempts,
+        parse_root_http_auth_password, password_matches_any_user,
     },
-    constants::{
-        H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
-    },
+    constants::{H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS},
     state::{AuthPolicy, RouteRegistry, Services, empty_transport_route},
     transport::{
-        WsTcpRouteCtx, WsTcpServerCtx, UdpRouteCtx, UdpServerCtx,
-        finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
+        UdpRouteCtx, UdpServerCtx, WsTcpRouteCtx, WsTcpServerCtx, finish_ws_session,
+        handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
     },
 };
 use super::tls::load_h3_tls_config;
 
-pub(in crate::server) async fn build_h3_server(config: &Config) -> Result<H3WebSocketServer<H3Transport>> {
+pub(in crate::server) async fn build_h3_server(
+    config: &Config,
+) -> Result<H3WebSocketServer<H3Transport>> {
     let listen = config
         .effective_h3_listen()
         .ok_or_else(|| anyhow!("h3 server requested without tls configuration"))?;
@@ -86,7 +87,9 @@ fn build_h3_quinn_server_config(
 fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::TransportConfig> {
     let mut transport = quinn::TransportConfig::default();
     transport
-        .max_concurrent_bidi_streams(quinn::VarInt::from_u32(profile.h3_max_concurrent_bidi_streams))
+        .max_concurrent_bidi_streams(quinn::VarInt::from_u32(
+            profile.h3_max_concurrent_bidi_streams,
+        ))
         .max_concurrent_uni_streams(quinn::VarInt::from_u32(profile.h3_max_concurrent_uni_streams))
         .max_idle_timeout(Some(
             Duration::from_secs(H3_QUIC_IDLE_TIMEOUT_SECS)
@@ -237,10 +240,7 @@ pub(in crate::server) async fn serve_h3_server(
     Ok(())
 }
 
-async fn handle_h3_connection(
-    incoming: quinn::Incoming,
-    ctx: Arc<H3ConnectionCtx>,
-) -> Result<()> {
+async fn handle_h3_connection(incoming: quinn::Incoming, ctx: Arc<H3ConnectionCtx>) -> Result<()> {
     let connection = incoming
         .await
         .context("failed to accept incoming HTTP/3 connection")?;
@@ -320,7 +320,9 @@ async fn handle_h3_request(
         ws_req.protocol = protocol_header;
     }
 
-    if !ctx.tcp_paths.contains(ws_req.path.as_str()) && !ctx.udp_paths.contains(ws_req.path.as_str()) {
+    if !ctx.tcp_paths.contains(ws_req.path.as_str())
+        && !ctx.udp_paths.contains(ws_req.path.as_str())
+    {
         stream
             .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, Some("Not Found")))
             .await
@@ -345,13 +347,17 @@ async fn handle_h3_request(
     let socket = H3WebSocketStream::from_raw(h3_stream, H3Role::Server, ctx.ws_config.clone());
 
     if ctx.tcp_paths.contains(ws_req.path.as_str()) {
-        let route = ctx.routes
+        let route = ctx
+            .routes
             .tcp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-        let session = ctx.services.metrics.open_websocket_session(Transport::Tcp, Protocol::Http3);
+        let session = ctx
+            .services
+            .metrics
+            .open_websocket_session(Transport::Tcp, Protocol::Http3);
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
@@ -361,13 +367,17 @@ async fn handle_h3_request(
         let result = handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx).await;
         finish_ws_session(session, result, "tcp");
     } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
-        let route = ctx.routes
+        let route = ctx
+            .routes
             .udp
             .get(&ws_req.path)
             .cloned()
             .unwrap_or_else(empty_transport_route);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-        let session = ctx.services.metrics.open_websocket_session(Transport::Udp, Protocol::Http3);
+        let session = ctx
+            .services
+            .metrics
+            .open_websocket_session(Transport::Udp, Protocol::Http3);
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,

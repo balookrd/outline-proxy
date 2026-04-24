@@ -20,16 +20,10 @@ fn next_stream_nonce_rejects_after_threshold() {
     let mut counter = MAX_NONCE_COUNTER - 1;
     assert!(next_stream_nonce(&mut counter).is_ok());
     assert_eq!(counter, MAX_NONCE_COUNTER);
-    assert!(matches!(
-        next_stream_nonce(&mut counter),
-        Err(CryptoError::NonceExhausted)
-    ));
+    assert!(matches!(next_stream_nonce(&mut counter), Err(CryptoError::NonceExhausted)));
     // Counter must not advance past the limit on subsequent calls.
     assert_eq!(counter, MAX_NONCE_COUNTER);
-    assert!(matches!(
-        next_stream_nonce(&mut counter),
-        Err(CryptoError::NonceExhausted)
-    ));
+    assert!(matches!(next_stream_nonce(&mut counter), Err(CryptoError::NonceExhausted)));
 }
 
 fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey]> {
@@ -290,8 +284,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
 #[test]
 fn encrypts_ss2022_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
-    let user =
-        UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
+    let user = UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
@@ -307,8 +300,7 @@ fn encrypts_ss2022_udp_response() {
 #[test]
 fn encrypts_ss2022_chacha_udp_response() {
     let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-    let user =
-        UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
+    let user = UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
     let packet = encrypt_udp_packet_for_response(
         &user,
         &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
@@ -323,8 +315,7 @@ fn encrypts_ss2022_chacha_udp_response() {
 
 #[test]
 fn rejects_bad_ss2022_psk_length() {
-    let error =
-        UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022).unwrap_err();
+    let error = UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022).unwrap_err();
     assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
 }
 

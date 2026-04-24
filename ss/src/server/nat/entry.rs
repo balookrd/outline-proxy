@@ -103,17 +103,14 @@ impl NatEntry {
     /// Set the active client session that should receive upstream responses,
     /// along with the `UdpCipherMode` used to encrypt them. The previous session
     /// (if any) is replaced; its channel may be closed.
-    pub(crate) async fn register_session(
-        &self,
-        sender: UdpResponseSender,
-        session: UdpCipherMode,
-    ) {
+    pub(crate) async fn register_session(&self, sender: UdpResponseSender, session: UdpCipherMode) {
         *self.active.lock().await = Some(ActiveSession { sender, session });
     }
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.
     pub(crate) fn touch(&self) {
-        self.last_active_secs.store(clock::current_unix_secs(), Ordering::Relaxed);
+        self.last_active_secs
+            .store(clock::current_unix_secs(), Ordering::Relaxed);
     }
 
     pub(crate) fn socket(&self) -> &UdpSocket {

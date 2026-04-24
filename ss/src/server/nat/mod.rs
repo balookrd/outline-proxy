@@ -35,9 +35,9 @@ mod tests {
     use bytes::Bytes;
     use futures_util::future::BoxFuture;
 
-    use super::{NatKey, NatTable, ResponseSender, UdpResponseSender};
-    use super::reader::record_oversized_socket_response_drop;
     use super::super::constants::MAX_UDP_PAYLOAD_SIZE;
+    use super::reader::record_oversized_socket_response_drop;
+    use super::{NatKey, NatTable, ResponseSender, UdpResponseSender};
     use crate::{
         config::{CipherKind, Config},
         crypto::{UdpCipherMode, UserKey},
@@ -82,6 +82,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             password: None,
@@ -91,12 +92,7 @@ mod tests {
             tuning: Default::default(),
         };
         let metrics = Metrics::new(&config);
-        let user = UserKey::new(
-            "bob",
-            "secret-b",
-            None,
-            CipherKind::Chacha20IetfPoly1305,
-        )?;
+        let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
         let sender = test_sender(Protocol::Socket);
 
         assert!(record_oversized_socket_response_drop(
@@ -132,6 +128,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             password: None,
@@ -141,12 +138,7 @@ mod tests {
             tuning: Default::default(),
         };
         let metrics = Metrics::new(&config);
-        let user = UserKey::new(
-            "bob",
-            "secret-b",
-            None,
-            CipherKind::Chacha20IetfPoly1305,
-        )?;
+        let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
         let ws_sender = test_sender(Protocol::Http2);
 
         assert!(!record_oversized_socket_response_drop(
@@ -184,6 +176,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             password: None,
@@ -194,12 +187,7 @@ mod tests {
         };
         let metrics = Metrics::new(&config);
         let nat_table = NatTable::new(Duration::from_secs(300));
-        let user = UserKey::new(
-            "bob",
-            "secret-b",
-            None,
-            CipherKind::Chacha20IetfPoly1305,
-        )?;
+        let user = UserKey::new("bob", "secret-b", None, CipherKind::Chacha20IetfPoly1305)?;
         let key = NatKey {
             user_id: user.id_arc(),
             fwmark: None,
@@ -213,7 +201,9 @@ mod tests {
             let key = key.clone();
             let metrics = Arc::clone(&metrics);
             tasks.push(tokio::spawn(async move {
-                nat_table.get_or_create(key, &user, UdpCipherMode::Legacy, metrics).await
+                nat_table
+                    .get_or_create(key, &user, UdpCipherMode::Legacy, metrics)
+                    .await
             }));
         }
 

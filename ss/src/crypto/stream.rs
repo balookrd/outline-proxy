@@ -9,10 +9,9 @@ use ring::{
 use super::{
     error::CryptoError,
     primitives::{
-        LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN,
-        SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
-        SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm, derive_subkey,
-        next_stream_nonce, nonce_zero, parse_ss2022_request_header,
+        LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, MAX_SUBKEY_LEN, SS2022_REQUEST_FIXED_CIPHERTEXT_LEN,
+        SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_TCP_RESPONSE_TYPE, TAG_LEN, cipher_algorithm,
+        derive_subkey, next_stream_nonce, nonce_zero, parse_ss2022_request_header,
         validate_ss2022_request_fixed_header,
     },
     user_key::UserKey,
@@ -131,11 +130,8 @@ impl AeadStreamDecryptor {
 
                         let mut encrypted_header = self.buffer.split_to(header_len + TAG_LEN);
                         let nonce = next_stream_nonce(&mut active.nonce_counter)?;
-                        let header = active.key.open_in_place(
-                            nonce,
-                            Aad::empty(),
-                            &mut encrypted_header,
-                        )?;
+                        let header =
+                            active.key.open_in_place(nonce, Aad::empty(), &mut encrypted_header)?;
                         let initial_plaintext = parse_ss2022_request_header(header)?;
                         output.extend_from_slice(&initial_plaintext);
                         *header_parsed = true;
@@ -297,7 +293,8 @@ impl AeadStreamEncryptor {
         let mut subkey = [0_u8; MAX_SUBKEY_LEN];
         let key_len = derive_subkey(user.cipher(), user.master_key(), &salt, &mut subkey)?;
         let algorithm = cipher_algorithm(user.cipher());
-        let key = UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
+        let key =
+            UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
         let key = LessSafeKey::new(key);
 
         let mode = if user.cipher().is_2022() {

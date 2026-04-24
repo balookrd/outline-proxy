@@ -45,7 +45,8 @@ pub(super) fn derive_subkey(
         let okm = prk
             .expand(&[SS_SUBKEY_INFO], HkdfLen(key_len))
             .map_err(|_| CryptoError::KeyDerivation)?;
-        okm.fill(&mut out[..key_len]).map_err(|_| CryptoError::KeyDerivation)?;
+        okm.fill(&mut out[..key_len])
+            .map_err(|_| CryptoError::KeyDerivation)?;
     }
     Ok(key_len)
 }
@@ -209,4 +210,3 @@ impl hkdf::KeyType for HkdfLen {
         self.0
     }
 }
-

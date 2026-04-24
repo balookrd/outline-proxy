@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeSet, HashSet},
+    path::PathBuf,
+};
 
 use anyhow::{Result, bail};
 
@@ -50,10 +53,40 @@ impl Config {
             tcp_paths.insert(user.effective_ws_path_tcp(&self.ws_path_tcp).to_owned());
             udp_paths.insert(user.effective_ws_path_udp(&self.ws_path_udp).to_owned());
         }
+        let mut vless_paths = BTreeSet::new();
+        let vless_enabled_users = self.users.iter().filter(|user| user.vless_id.is_some());
+        if let Some(path) = self.vless_ws_path.as_deref() {
+            if !path.starts_with('/') {
+                bail!("vless_ws_path must start with '/'");
+            }
+            if self.users.iter().all(|user| user.vless_id.is_none()) {
+                bail!("vless_ws_path requires at least one [[users]] entry with vless_id");
+            }
+            vless_paths.insert(path.to_owned());
+        } else if self.users.iter().any(|user| user.vless_id.is_some()) {
+            bail!("users[].vless_id requires vless_ws_path");
+        }
+        let mut vless_seen = HashSet::new();
+        for user in vless_enabled_users {
+            let vless_id = user.vless_id.as_deref().expect("filtered above");
+            let parsed = crate::protocol::vless::parse_uuid(vless_id)
+                .map_err(|_| anyhow::anyhow!("invalid vless_id for user {}", user.id))?;
+            if !vless_seen.insert(parsed) {
+                bail!("duplicate vless_id for user {}", user.id);
+            }
+        }
         if let Some(conflict) = tcp_paths.intersection(&udp_paths).next() {
             bail!("tcp and udp websocket paths must be distinct, conflict on {}", conflict);
         }
-        if self.http_root_auth && (tcp_paths.contains("/") || udp_paths.contains("/")) {
+        if let Some(conflict) = tcp_paths.intersection(&vless_paths).next() {
+            bail!("tcp and vless websocket paths must be distinct, conflict on {}", conflict);
+        }
+        if let Some(conflict) = udp_paths.intersection(&vless_paths).next() {
+            bail!("udp and vless websocket paths must be distinct, conflict on {}", conflict);
+        }
+        if self.http_root_auth
+            && (tcp_paths.contains("/") || udp_paths.contains("/") || vless_paths.contains("/"))
+        {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
         }
         if self.http_root_realm.chars().any(char::is_control) {
@@ -118,6 +151,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
+            vless_ws_path: None,
             http_root_auth: false,
             http_root_realm: default_http_root_realm(),
             password: Some("secret".into()),
@@ -181,6 +215,48 @@ mod tests {
         .to_string();
 
         assert!(error.contains("http_root_auth requires all websocket paths to differ from '/'"));
+    }
+
+    #[test]
+    fn allows_vless_only_users() {
+        Config {
+            password: None,
+            vless_ws_path: Some("/vless".into()),
+            users: vec![super::super::UserEntry {
+                id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                password: None,
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            }],
+            ..base_config()
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_vless_path_conflict_with_tcp_path() {
+        let error = Config {
+            vless_ws_path: Some("/tcp".into()),
+            users: vec![super::super::UserEntry {
+                id: "550e8400-e29b-41d4-a716-446655440000".into(),
+                password: None,
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+            }],
+            ..base_config()
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("tcp and vless websocket paths must be distinct"));
     }
 
     #[test]

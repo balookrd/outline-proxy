@@ -49,6 +49,10 @@ metrics_path: "/metrics"
 ws_path_tcp: "/tcp"
 ws_path_udp: "/udp"
 
+# Optional VLESS over WebSocket path on the main TCP listener.
+# Use with TLS for public deployments. MVP supports TCP CONNECT only.
+# vless_ws_path: "/vless"
+
 # Optional OpenConnect-style password prompt on GET /.
 # The browser username is ignored; the password is matched against configured users.
 # After 3 failed passwords in the same browser session, the server returns 403.
@@ -75,6 +79,7 @@ method: "chacha20-ietf-poly1305"
 users:
   - id: "alice"
     password: "change-me"
+    # vless_id: "550e8400-e29b-41d4-a716-446655440000"
     fwmark: 1001
     method: "aes-128-gcm"
     ws_path_tcp: "/alice/tcp"
@@ -99,6 +104,10 @@ users:
 # Single-user fallback instead of users list:
 # password: "change-me"
 # fwmark: 1001
+
+# Optional VLESS-only user. Requires `vless_ws_path`; add this entry to `users`.
+# - id: "eve-vless"
+#   vless_id: "650e8400-e29b-41d4-a716-446655440000"
 
 # Resource-limit preset. Presets: "small" | "medium" | "large" (default).
 # Each preset defines H2/H3 flow-control windows and stream limits plus

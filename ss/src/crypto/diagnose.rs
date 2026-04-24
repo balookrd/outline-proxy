@@ -32,22 +32,18 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                 let salt = &buffer[..salt_len];
                 let mut candidate = buffer[salt_len..salt_len + fixed_len].to_vec();
                 let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-                let key_len = match derive_subkey(
-                    user.cipher(),
-                    user.master_key(),
-                    salt,
-                    &mut subkey,
-                ) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        return format!(
-                            "{}:{} subkey_error({})",
-                            user.id(),
-                            user.cipher().as_str(),
-                            error
-                        );
-                    },
-                };
+                let key_len =
+                    match derive_subkey(user.cipher(), user.master_key(), salt, &mut subkey) {
+                        Ok(n) => n,
+                        Err(error) => {
+                            return format!(
+                                "{}:{} subkey_error({})",
+                                user.id(),
+                                user.cipher().as_str(),
+                                error
+                            );
+                        },
+                    };
                 let algorithm = cipher_algorithm(user.cipher());
                 let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
@@ -105,22 +101,18 @@ pub fn diagnose_stream_handshake(users: &[UserKey], buffer: &[u8]) -> Vec<String
                 let salt = &buffer[..salt_len];
                 let encrypted_len = &buffer[salt_len..salt_len + 2 + TAG_LEN];
                 let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-                let key_len = match derive_subkey(
-                    user.cipher(),
-                    user.master_key(),
-                    salt,
-                    &mut subkey,
-                ) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        return format!(
-                            "{}:{} subkey_error({})",
-                            user.id(),
-                            user.cipher().as_str(),
-                            error
-                        );
-                    },
-                };
+                let key_len =
+                    match derive_subkey(user.cipher(), user.master_key(), salt, &mut subkey) {
+                        Ok(n) => n,
+                        Err(error) => {
+                            return format!(
+                                "{}:{} subkey_error({})",
+                                user.id(),
+                                user.cipher().as_str(),
+                                error
+                            );
+                        },
+                    };
                 let algorithm = cipher_algorithm(user.cipher());
                 let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,
@@ -285,22 +277,18 @@ pub fn diagnose_udp_packet(users: &[UserKey], packet: &[u8]) -> Vec<String> {
 
                 let (salt, ciphertext) = packet.split_at(salt_len);
                 let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-                let key_len = match derive_subkey(
-                    user.cipher(),
-                    user.master_key(),
-                    salt,
-                    &mut subkey,
-                ) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        return format!(
-                            "{}:{} subkey_error({})",
-                            user.id(),
-                            user.cipher().as_str(),
-                            error
-                        );
-                    },
-                };
+                let key_len =
+                    match derive_subkey(user.cipher(), user.master_key(), salt, &mut subkey) {
+                        Ok(n) => n,
+                        Err(error) => {
+                            return format!(
+                                "{}:{} subkey_error({})",
+                                user.id(),
+                                user.cipher().as_str(),
+                                error
+                            );
+                        },
+                    };
                 let algorithm = cipher_algorithm(user.cipher());
                 let key = match UnboundKey::new(algorithm, &subkey[..key_len]) {
                     Ok(key) => key,

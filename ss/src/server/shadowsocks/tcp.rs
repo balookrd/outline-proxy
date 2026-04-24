@@ -83,7 +83,9 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
     let peer_addr = socket.peer_addr().ok();
     let (mut client_reader, client_writer) = socket.into_split();
 
-    let Some(handshake) = ss_tcp_handshake(&mut client_reader, ctx.users.clone(), peer_addr).await? else {
+    let Some(handshake) =
+        ss_tcp_handshake(&mut client_reader, ctx.users.clone(), peer_addr).await?
+    else {
         return Ok(());
     };
 
@@ -144,7 +146,8 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
     );
 
     let (upstream_reader, upstream_writer) = upstream_stream.into_split();
-    let mut encryptor = AeadStreamEncryptor::new(&handshake.user, handshake.decryptor.response_context())?;
+    let mut encryptor =
+        AeadStreamEncryptor::new(&handshake.user, handshake.decryptor.response_context())?;
 
     let user_id = handshake.user.id_arc();
     let sink = SocketSink {
@@ -166,8 +169,11 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         )
         .await
     });
-    ctx.metrics.record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
-    let upstream_guard = ctx.metrics.open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
+    ctx.metrics
+        .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
+    let upstream_guard = ctx
+        .metrics
+        .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
 
     let relay_result = super::super::relay::relay_client_to_upstream(
         client_reader,

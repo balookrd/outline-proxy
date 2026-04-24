@@ -62,7 +62,8 @@ impl CipherKind {
 #[serde(deny_unknown_fields)]
 pub struct UserEntry {
     pub id: String,
-    pub password: String,
+    #[serde(default)]
+    pub password: Option<String>,
     #[serde(default)]
     pub fwmark: Option<u32>,
     #[serde(default)]
@@ -71,6 +72,8 @@ pub struct UserEntry {
     pub ws_path_tcp: Option<String>,
     #[serde(default)]
     pub ws_path_udp: Option<String>,
+    #[serde(default)]
+    pub vless_id: Option<String>,
 }
 
 impl UserEntry {
@@ -89,7 +92,7 @@ impl UserEntry {
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("configure at least one key via password or [[users]]")]
+    #[error("configure at least one key via password or [[users]] with password/vless_id")]
     MissingUsers,
     #[error("duplicate user id: {0}")]
     DuplicateUserId(String),

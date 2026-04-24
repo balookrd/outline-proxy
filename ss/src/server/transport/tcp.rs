@@ -42,13 +42,13 @@ use crate::{
     protocol::parse_target_addr,
 };
 
-use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
-use super::ws_writer;
 use super::super::connect::connect_tcp_target;
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
+use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
+use super::ws_writer;
 
 /// Process-wide services shared by every TCP relay session.
 pub(in crate::server) struct WsTcpServerCtx {
@@ -71,6 +71,12 @@ struct WsTcpRelayState {
     upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
     authenticated_user: Option<UserKey>,
     upstream_guard: Option<TcpUpstreamGuard>,
+}
+
+struct WsTcpFrameOutput<'a, Msg> {
+    data_tx: &'a mpsc::Sender<Msg>,
+    make_binary: fn(Bytes) -> Msg,
+    make_close: fn() -> Msg,
 }
 
 impl WsTcpRelayState {
@@ -157,11 +163,13 @@ async fn run_tcp_relay<T: WsSocket>(
                             &mut decryptor,
                             &mut plaintext_buffer,
                             data,
-                            &outbound_data_tx,
                             server,
                             route,
-                            T::binary_msg,
-                            T::close_msg,
+                            WsTcpFrameOutput {
+                                data_tx: &outbound_data_tx,
+                                make_binary: T::binary_msg,
+                                make_close: T::close_msg,
+                            },
                         )
                         .await
                         {
@@ -240,16 +248,16 @@ async fn handle_tcp_binary_frame<Msg>(
     decryptor: &mut AeadStreamDecryptor,
     plaintext_buffer: &mut Vec<u8>,
     data: Bytes,
-    outbound_data_tx: &mpsc::Sender<Msg>,
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
-    make_binary: fn(Bytes) -> Msg,
-    make_close: fn() -> Msg,
+    outbound: WsTcpFrameOutput<'_, Msg>,
 ) -> Result<(), FrameError>
 where
     Msg: Send + 'static,
 {
-    server.metrics.record_websocket_binary_frame(Transport::Tcp, route.protocol, "in", data.len());
+    server
+        .metrics
+        .record_websocket_binary_frame(Transport::Tcp, route.protocol, "in", data.len());
     decryptor.feed_ciphertext(&data);
     match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},
@@ -271,8 +279,8 @@ where
     }
 
     if state.upstream_writer.is_none() {
-        let Some((target, consumed)) = parse_target_addr(plaintext_buffer)
-            .map_err(|e| FrameError::Fatal(anyhow!(e)))?
+        let Some((target, consumed)) =
+            parse_target_addr(plaintext_buffer).map_err(|e| FrameError::Fatal(anyhow!(e)))?
         else {
             return Ok(());
         };
@@ -338,14 +346,18 @@ where
         let (upstream_reader, writer) = stream.into_split();
         let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
             .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
-        let tx = outbound_data_tx.clone();
+        let tx = outbound.data_tx.clone();
         let relay_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
         let protocol = route.protocol;
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
-                ChannelSink { tx, make_binary, make_close },
+                ChannelSink {
+                    tx,
+                    make_binary: outbound.make_binary,
+                    make_close: outbound.make_close,
+                },
                 &mut encryptor,
                 relay_metrics,
                 protocol,
@@ -353,8 +365,11 @@ where
             )
             .await
         }));
-        server.metrics.record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
-        state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(user_id, route.protocol));
+        server
+            .metrics
+            .record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
+        state.upstream_guard =
+            Some(server.metrics.open_tcp_upstream_connection(user_id, route.protocol));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
         plaintext_buffer.drain(..consumed);

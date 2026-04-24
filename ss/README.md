@@ -199,6 +199,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
+| `vless_ws_path` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |
@@ -210,6 +211,8 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `method` | Default Shadowsocks cipher |
 | `password` | Single-user fallback password or base64 PSK for `2022-*` methods |
 | `fwmark` | Single-user fallback `fwmark` |
+| `users[].password` | Optional per-user Shadowsocks password |
+| `users[].vless_id` | Optional per-user VLESS UUID |
 
 ### Per-User Settings
 
@@ -221,9 +224,36 @@ fwmark = 1001
 method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ```
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
+
+### VLESS over WebSocket/TLS
+
+The MVP VLESS inbound accepts VLESS TCP CONNECT over WebSocket on the main HTTP/1.1 or HTTP/2 listener. Use TLS (`tls_cert_path` / `tls_key_path`) for public deployments; the VLESS layer itself is stateless UUID authentication and does not add encryption. REALITY, XTLS, Vision, mux, XUDP, UDP, flow, fallback, and sniffing are intentionally not implemented.
+
+```toml
+listen = "0.0.0.0:443"
+tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
+vless_ws_path = "/vless"
+
+[[users]]
+id = "alice"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+```
+
+Example client URI for Happ, v2rayNG, or Hiddify:
+
+```text
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Fvless&encryption=none#outline-ss-rust-vless
+```
+
+Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user.
 
 When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
 

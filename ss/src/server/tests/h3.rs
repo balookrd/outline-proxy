@@ -10,9 +10,9 @@ use sockudo_ws::{
     Stream as H3Stream, WebSocketServer as H3WebSocketServer, WebSocketStream as H3WebSocketStream,
 };
 
-use super::super::{DnsCache, build_user_routes, serve_h3_server};
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
+use super::super::{DnsCache, build_user_routes, serve_h3_server};
 use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
 use crate::metrics::Metrics;
 

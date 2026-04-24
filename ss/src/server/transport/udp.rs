@@ -19,14 +19,14 @@ use crate::{
     server::replay::{self, ReplayStore},
 };
 
-use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
-use super::ws_writer;
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
     MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS,
     WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY,
 };
 use super::super::dns_cache::DnsCache;
+use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
+use super::ws_writer;
 
 /// Process-wide singletons shared by every UDP relay task.
 pub(in crate::server) struct UdpServerCtx {
@@ -69,33 +69,32 @@ where
         UDP_CACHED_USER_INDEX_EMPTY => None,
         index => Some(index),
     };
-    let (packet, user_index) = match decrypt_udp_packet_with_hint(
-        route.users.as_ref(),
-        &data,
-        preferred_user_index,
-    ) {
-        Ok(result) => result,
-        Err(CryptoError::UnknownUser) => {
-            debug!(
-                path = %route.path,
-                candidates = ?route.candidate_users,
-                attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
-                "udp authentication failed for all path candidates"
-            );
-            return Err(anyhow!(
-                "no configured key matched the incoming udp data on path {} candidates={:?}",
-                route.path,
-                route.candidate_users,
-            ));
-        },
-        Err(error) => return Err(anyhow!(error)),
-    };
+    let (packet, user_index) =
+        match decrypt_udp_packet_with_hint(route.users.as_ref(), &data, preferred_user_index) {
+            Ok(result) => result,
+            Err(CryptoError::UnknownUser) => {
+                debug!(
+                    path = %route.path,
+                    candidates = ?route.candidate_users,
+                    attempts = ?diagnose_udp_packet(route.users.as_ref(), &data),
+                    "udp authentication failed for all path candidates"
+                );
+                return Err(anyhow!(
+                    "no configured key matched the incoming udp data on path {} candidates={:?}",
+                    route.path,
+                    route.candidate_users,
+                ));
+            },
+            Err(error) => return Err(anyhow!(error)),
+        };
     session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
         && !server.replay_store.check_and_mark(csid, pid)
     {
-        server.metrics.record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);
+        server
+            .metrics
+            .record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);
         warn!(
             user = packet.user.id(),
             path = %route.path,
@@ -112,7 +111,9 @@ where
     if session.session_recorded.swap(true, Ordering::Relaxed) {
         server.metrics.record_client_last_seen(Arc::clone(&user_id));
     } else {
-        server.metrics.record_client_session(Arc::clone(&user_id), route.protocol, Transport::Udp);
+        server
+            .metrics
+            .record_client_session(Arc::clone(&user_id), route.protocol, Transport::Udp);
     }
     debug!(
         user = packet.user.id(),
@@ -121,7 +122,8 @@ where
         "udp shadowsocks user authenticated"
     );
 
-    let resolved = resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
+    let resolved =
+        resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream).await?;
     debug!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
@@ -136,16 +138,14 @@ where
         fwmark: packet.user.fwmark(),
         target: resolved,
     };
-    let entry = server.nat_table
+    let entry = server
+        .nat_table
         .get_or_create(nat_key, &packet.user, packet.session.clone(), Arc::clone(&server.metrics))
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
-        .register_session(
-            make_response_sender(outbound_tx, route.protocol),
-            packet.session.clone(),
-        )
+        .register_session(make_response_sender(outbound_tx, route.protocol), packet.session.clone())
         .await;
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
@@ -186,7 +186,12 @@ where
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    server.metrics.record_udp_request(user_id, route.protocol, "success", started_at.elapsed().as_secs_f64());
+    server.metrics.record_udp_request(
+        user_id,
+        route.protocol,
+        "success",
+        started_at.elapsed().as_secs_f64(),
+    );
 
     Ok(())
 }

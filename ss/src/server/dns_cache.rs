@@ -154,7 +154,7 @@ impl DnsCache {
         {
             RawEntryMut::Occupied(mut occ) => {
                 *occ.get_mut() = new_entry;
-            }
+            },
             RawEntryMut::Vacant(vac) => {
                 vac.insert_with_hasher(
                     hash,
@@ -162,7 +162,7 @@ impl DnsCache {
                     new_entry,
                     |k| compute_hash(&self.build_hasher, k.0, k.1, &k.2),
                 );
-            }
+            },
         }
     }
 
@@ -212,10 +212,7 @@ impl DnsCache {
             }
         };
 
-        (*shared)
-            .clone()
-            .await
-            .map_err(|e| anyhow::anyhow!("{:#}", e))
+        (*shared).clone().await.map_err(|e| anyhow::anyhow!("{:#}", e))
     }
 
     /// Removes entries whose expiry is older than `stale_grace` — callers that

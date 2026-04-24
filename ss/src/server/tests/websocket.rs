@@ -18,10 +18,10 @@ use tokio_tungstenite::{
     tungstenite::{Message as WsMessage, protocol},
 };
 
-use super::super::{DnsCache, build_app, build_user_routes, serve_tcp_listener};
 use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
+use super::super::{DnsCache, build_app, build_user_routes, serve_tcp_listener};
 use super::{build_test_state, sample_config, sample_config_with_users, write_test_h2_tls_cert};
 use crate::config::UserEntry;
 use crate::crypto::{AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet};
@@ -46,7 +46,8 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
         "Authorization required",
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -93,7 +94,8 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let (mut socket, _) = connect_async(format!("ws://{addr}/tcp")).await?;
     socket.close(None).await?;
@@ -122,7 +124,8 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
         config.http_root_realm.clone(),
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -177,7 +180,8 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
         "Authorization required",
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let client = Client::builder(TokioExecutor::new())
         .http2_only(true)
@@ -246,10 +250,9 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let mut tls_config = config.clone();
     tls_config.tls_cert_path = Some(cert_path.clone());
     tls_config.tls_key_path = Some(key_path.clone());
-    let server =
-        tokio::spawn(async move {
-            serve_tcp_listener(listener, app, Arc::new(tls_config), ShutdownSignal::never()).await
-        });
+    let server = tokio::spawn(async move {
+        serve_tcp_listener(listener, app, Arc::new(tls_config), ShutdownSignal::never()).await
+    });
 
     let mut roots = rustls::RootCertStore::empty();
     roots.add(cert_der)?;
@@ -307,19 +310,21 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
         vec![
             UserEntry {
                 id: "alice".into(),
-                password: "secret-a".into(),
+                password: Some("secret-a".into()),
                 fwmark: None,
                 method: None,
                 ws_path_tcp: Some("/alice-tcp".into()),
                 ws_path_udp: Some("/alice-udp".into()),
+                vless_id: None,
             },
             UserEntry {
                 id: "bob".into(),
-                password: "secret-b".into(),
+                password: Some("secret-b".into()),
                 fwmark: None,
                 method: None,
                 ws_path_tcp: Some("/bob-tcp".into()),
                 ws_path_udp: Some("/bob-udp".into()),
+                vless_id: None,
             },
         ],
     );
@@ -335,7 +340,8 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
         "Authorization required",
     );
     let app = build_app(routes, services, auth);
-    let server = tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
     let bob = user_routes
         .iter()

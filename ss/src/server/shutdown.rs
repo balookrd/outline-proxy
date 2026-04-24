@@ -58,7 +58,6 @@ impl ShutdownSignal {
             }
         }
     }
-
 }
 
 pub(crate) fn shutdown_channel() -> (ShutdownSender, ShutdownSignal) {

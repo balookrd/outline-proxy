@@ -12,7 +12,7 @@ use clap::Parser;
 use cli::ConfigArgs;
 use file::{FileConfig, default_config_path_if_exists, load_file_config};
 
-pub use tuning::{TuningOverrides, TuningProfile, TuningPreset};
+pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
 
 #[derive(Debug, Clone)]
@@ -41,6 +41,7 @@ pub struct Config {
     pub outbound_ipv6_refresh_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
+    pub vless_ws_path: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub password: Option<String>,
@@ -135,6 +136,7 @@ impl AppMode {
                 .ws_path_udp
                 .or(file.ws_path_udp)
                 .unwrap_or_else(|| "/udp".to_owned()),
+            vless_ws_path: file.vless_ws_path,
             http_root_auth: args.http_root_auth.or(file.http_root_auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm
@@ -184,15 +186,19 @@ impl Config {
         if let Some(password) = &self.password {
             users.push(UserEntry {
                 id: "default".to_owned(),
-                password: password.clone(),
+                password: Some(password.clone()),
                 fwmark: self.fwmark,
                 method: None,
                 ws_path_tcp: None,
                 ws_path_udp: None,
+                vless_id: None,
             });
         }
 
-        if users.is_empty() {
+        if users
+            .iter()
+            .all(|user| user.password.is_none() && user.vless_id.is_none())
+        {
             return Err(ConfigError::MissingUsers);
         }
 
@@ -203,7 +209,7 @@ impl Config {
             }
         }
 
-        Ok(users)
+        Ok(users.into_iter().filter(|user| user.password.is_some()).collect())
     }
 
     pub fn h3_enabled(&self) -> bool {

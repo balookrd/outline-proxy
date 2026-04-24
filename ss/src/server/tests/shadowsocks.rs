@@ -1,4 +1,7 @@
-use std::{net::{Ipv4Addr, SocketAddr}, sync::Arc};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    sync::Arc,
+};
 
 use anyhow::Result;
 use bytes::BytesMut;
@@ -7,11 +10,15 @@ use tokio::{
     net::{TcpListener, TcpStream, UdpSocket},
 };
 
-use super::super::{DnsCache, SsTcpCtx, SsUdpCtx, build_users, serve_ss_tcp_listener, serve_ss_udp_socket};
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
+use super::super::{
+    DnsCache, SsTcpCtx, SsUdpCtx, build_users, serve_ss_tcp_listener, serve_ss_udp_socket,
+};
 use super::sample_config;
-use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet};
+use crate::crypto::{
+    AeadStreamDecryptor, AeadStreamEncryptor, decrypt_udp_packet, encrypt_udp_packet,
+};
 use crate::metrics::Metrics;
 use crate::protocol::TargetAddr;
 
@@ -41,9 +48,10 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
         prefer_ipv4_upstream: false,
         outbound_ipv6: None,
     };
-    let server = tokio::spawn(async move {
-        serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await
-    });
+    let server =
+        tokio::spawn(
+            async move { serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await },
+        );
 
     let mut client = TcpStream::connect(listen_addr).await?;
     let mut request = TargetAddr::Socket(upstream_addr).encode()?;
@@ -96,9 +104,10 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
         dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
         prefer_ipv4_upstream: false,
     };
-    let server = tokio::spawn(async move {
-        serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await
-    });
+    let server =
+        tokio::spawn(
+            async move { serve_ss_udp_socket(listener, ctx, ShutdownSignal::never()).await },
+        );
 
     let client = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
