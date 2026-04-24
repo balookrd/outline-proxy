@@ -1,6 +1,6 @@
-//! Separate browser dashboard for managing users on configured control servers.
+//! Separate browser dashboard for managing users on configured control instances.
 //!
-//! The browser talks only to this listener. Per-server bearer tokens stay in
+//! The browser talks only to this listener. Per-instance bearer tokens stay in
 //! the process config and are injected server-side when proxying to `/control`.
 
 use std::{sync::Arc, time::Duration};
@@ -16,41 +16,42 @@ use axum::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::Method;
-use hyper_util::{
-    client::legacy::{connect::HttpConnector, Client},
-    rt::TokioExecutor,
-};
+use hyper::{Method, client::conn::http1};
+use hyper_util::rt::TokioIo;
+use rustls::{ClientConfig, RootCertStore, pki_types::ServerName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::{net::TcpListener, time::timeout};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    net::{TcpListener, TcpStream},
+    time::timeout,
+};
+use tokio_rustls::TlsConnector;
 use tracing::{info, warn};
 
-use crate::config::{DashboardConfig, DashboardServerConfig};
+use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
 use super::{super::shutdown::ShutdownSignal, ui};
-
-type HttpClient = Client<HttpConnector, Full<Bytes>>;
 
 #[derive(Clone)]
 struct DashboardState {
     request_timeout_secs: u64,
-    servers: Arc<[DashboardServerConfig]>,
-    client: HttpClient,
+    instances: Arc<[DashboardInstanceConfig]>,
+    tls_connector: TlsConnector,
 }
 
 #[derive(Debug, Deserialize)]
-struct ServerQuery {
-    server: String,
+struct InstanceQuery {
+    instance: String,
 }
 
 #[derive(Debug, Serialize)]
-struct ServersResponse {
-    servers: Vec<ServerView>,
+struct InstancesResponse {
+    instances: Vec<InstanceView>,
 }
 
 #[derive(Debug, Serialize)]
-struct ServerView {
+struct InstanceView {
     name: String,
     control_url: String,
 }
@@ -74,20 +75,20 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
         .with_context(|| format!("failed to bind dashboard listener {}", config.listen))?;
     info!(
         listen = %config.listen,
-        servers = config.servers.len(),
+        instances = config.instances.len(),
         "dashboard server started"
     );
 
     let state = DashboardState {
         request_timeout_secs: config.request_timeout_secs,
-        servers: Arc::from(config.servers),
-        client: Client::builder(TokioExecutor::new()).build_http(),
+        instances: Arc::from(config.instances),
+        tls_connector: tls_connector(),
     };
 
     let router = Router::new()
         .route("/", get(|| async { Redirect::temporary("/dashboard") }))
         .route("/dashboard", get(dashboard_page))
-        .route("/dashboard/api/servers", get(list_servers))
+        .route("/dashboard/api/instances", get(list_instances))
         .route("/dashboard/api/users", get(list_users).post(create_user))
         .route("/dashboard/api/users/{id}", delete(delete_user))
         .route("/dashboard/api/users/{id}/block", post(block_user))
@@ -105,12 +106,12 @@ async fn dashboard_page() -> impl IntoResponse {
     ([(header::CACHE_CONTROL, "no-store")], Html(ui::dashboard_html()))
 }
 
-async fn list_servers(State(state): State<DashboardState>) -> impl IntoResponse {
-    Json(ServersResponse {
-        servers: state
-            .servers
+async fn list_instances(State(state): State<DashboardState>) -> impl IntoResponse {
+    Json(InstancesResponse {
+        instances: state
+            .instances
             .iter()
-            .map(|server| ServerView {
+            .map(|server| InstanceView {
                 name: server.name.clone(),
                 control_url: server.control_url.clone(),
             })
@@ -120,14 +121,14 @@ async fn list_servers(State(state): State<DashboardState>) -> impl IntoResponse 
 
 async fn list_users(
     State(state): State<DashboardState>,
-    Query(query): Query<ServerQuery>,
+    Query(query): Query<InstanceQuery>,
 ) -> Response {
     proxy_empty(state, query, Method::GET, "/control/users").await
 }
 
 async fn create_user(
     State(state): State<DashboardState>,
-    Query(query): Query<ServerQuery>,
+    Query(query): Query<InstanceQuery>,
     Json(body): Json<Value>,
 ) -> Response {
     proxy_json(state, query, Method::POST, "/control/users", body).await
@@ -135,7 +136,7 @@ async fn create_user(
 
 async fn delete_user(
     State(state): State<DashboardState>,
-    Query(query): Query<ServerQuery>,
+    Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
     let path = format!("/control/users/{}", encode_path_segment(&id));
@@ -144,7 +145,7 @@ async fn delete_user(
 
 async fn block_user(
     State(state): State<DashboardState>,
-    Query(query): Query<ServerQuery>,
+    Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
     let path = format!("/control/users/{}/block", encode_path_segment(&id));
@@ -153,7 +154,7 @@ async fn block_user(
 
 async fn unblock_user(
     State(state): State<DashboardState>,
-    Query(query): Query<ServerQuery>,
+    Query(query): Query<InstanceQuery>,
     Path(id): Path<String>,
 ) -> Response {
     let path = format!("/control/users/{}/unblock", encode_path_segment(&id));
@@ -162,7 +163,7 @@ async fn unblock_user(
 
 async fn proxy_empty(
     state: DashboardState,
-    query: ServerQuery,
+    query: InstanceQuery,
     method: Method,
     path: &str,
 ) -> Response {
@@ -171,7 +172,7 @@ async fn proxy_empty(
 
 async fn proxy_json(
     state: DashboardState,
-    query: ServerQuery,
+    query: InstanceQuery,
     method: Method,
     path: &str,
     body: Value,
@@ -184,13 +185,13 @@ async fn proxy_json(
 
 async fn proxy(
     state: DashboardState,
-    query: ServerQuery,
+    query: InstanceQuery,
     method: Method,
     path: &str,
     body: Option<Vec<u8>>,
 ) -> Response {
-    let Some(server) = state.servers.iter().find(|server| server.name == query.server) else {
-        return json_error(StatusCode::NOT_FOUND, "unknown server");
+    let Some(server) = state.instances.iter().find(|server| server.name == query.instance) else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
     match send_control_request(&state, server, method, path, body).await {
         Ok((status, body)) => response_with_body(status, body),
@@ -200,7 +201,7 @@ async fn proxy(
 
 async fn send_control_request(
     state: &DashboardState,
-    server: &DashboardServerConfig,
+    server: &DashboardInstanceConfig,
     method: Method,
     path: &str,
     body: Option<Vec<u8>>,
@@ -215,24 +216,53 @@ async fn send_control_request(
 
 async fn send_control_request_inner(
     state: &DashboardState,
-    server: &DashboardServerConfig,
+    server: &DashboardInstanceConfig,
     method: Method,
     path: &str,
     body: Option<Vec<u8>>,
 ) -> Result<(StatusCode, Bytes)> {
-    let uri = instance_uri(&server.control_url, path)?;
+    let target = ControlTarget::new(&server.control_url, path)?;
     let request = hyper::Request::builder()
         .method(method)
-        .uri(uri)
+        .uri(target.path_and_query())
+        .header(header::HOST, target.host_header())
         .header(header::AUTHORIZATION, format!("Bearer {}", server.token))
         .header(header::ACCEPT, "application/json")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Full::new(Bytes::from(body.unwrap_or_default())))
         .context("failed to build control request")?;
 
-    let response = state
-        .client
-        .request(request)
+    let tcp = TcpStream::connect((target.host.as_str(), target.port))
+        .await
+        .with_context(|| format!("failed to connect to {}:{}", target.host, target.port))?;
+
+    match target.scheme {
+        ControlScheme::Http => exchange(tcp, request).await,
+        ControlScheme::Https => {
+            let server_name =
+                ServerName::try_from(target.host.clone()).context("invalid TLS server name")?;
+            let tls = state
+                .tls_connector
+                .connect(server_name, tcp)
+                .await
+                .context("TLS handshake with control API failed")?;
+            exchange(tls, request).await
+        },
+    }
+}
+
+async fn exchange<T>(io: T, request: hyper::Request<Full<Bytes>>) -> Result<(StatusCode, Bytes)>
+where
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (mut sender, conn) = http1::handshake(TokioIo::new(io))
+        .await
+        .context("HTTP/1 handshake with control API failed")?;
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let response = sender
+        .send_request(request)
         .await
         .context("control request failed")?;
     let status = response.status();
@@ -245,11 +275,67 @@ async fn send_control_request_inner(
     Ok((status, body))
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum ControlScheme {
+    Http,
+    Https,
+}
+
+struct ControlTarget {
+    scheme: ControlScheme,
+    host: String,
+    port: u16,
+    path_and_query: String,
+}
+
+impl ControlTarget {
+    fn new(base: &str, path: &str) -> Result<Self> {
+        let uri = instance_uri(base, path)?;
+        let scheme = match uri.scheme_str() {
+            Some("http") => ControlScheme::Http,
+            Some("https") => ControlScheme::Https,
+            Some(other) => bail!("unsupported control_url scheme {other:?}"),
+            None => bail!("control_url has no scheme"),
+        };
+        let authority = uri
+            .authority()
+            .ok_or_else(|| anyhow::anyhow!("control_url has no authority"))?;
+        let host = authority.host().to_owned();
+        let port = authority.port_u16().unwrap_or(match scheme {
+            ControlScheme::Http => 80,
+            ControlScheme::Https => 443,
+        });
+        let path_and_query = uri
+            .path_and_query()
+            .map(|value| value.as_str().to_owned())
+            .unwrap_or_else(|| "/".to_owned());
+        Ok(Self { scheme, host, port, path_and_query })
+    }
+
+    fn host_header(&self) -> String {
+        let default_port = match self.scheme {
+            ControlScheme::Http => 80,
+            ControlScheme::Https => 443,
+        };
+        if self.port == default_port {
+            self.host.clone()
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
+    }
+
+    fn path_and_query(&self) -> &str {
+        &self.path_and_query
+    }
+}
+
 fn instance_uri(base: &str, path: &str) -> Result<Uri> {
     let base_uri = base.parse::<Uri>().context("invalid control_url")?;
-    if base_uri.scheme_str() != Some("http") {
-        bail!("only http:// control URLs are supported");
-    }
+    let scheme = match base_uri.scheme_str() {
+        Some("http" | "https") => base_uri.scheme_str().expect("matched above"),
+        Some(other) => bail!("unsupported control_url scheme {other:?}"),
+        None => bail!("control_url has no scheme"),
+    };
     let authority = base_uri
         .authority()
         .ok_or_else(|| anyhow::anyhow!("control_url has no authority"))?;
@@ -260,8 +346,17 @@ fn instance_uri(base: &str, path: &str) -> Result<Uri> {
     } else {
         format!("{prefix}/{suffix}")
     };
-    let uri = format!("http://{authority}{full_path}");
+    let uri = format!("{scheme}://{authority}{full_path}");
     uri.parse::<Uri>().context("failed to build control request URI")
+}
+
+fn tls_connector() -> TlsConnector {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let config = ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    TlsConnector::from(Arc::new(config))
 }
 
 fn encode_path_segment(value: &str) -> String {
@@ -301,6 +396,12 @@ mod tests {
     fn instance_uri_preserves_base_path_prefix() {
         let uri = instance_uri("http://127.0.0.1:7001/admin", "/control/users").unwrap();
         assert_eq!(uri.to_string(), "http://127.0.0.1:7001/admin/control/users");
+    }
+
+    #[test]
+    fn instance_uri_supports_https() {
+        let uri = instance_uri("https://edge.example.com:7443/admin", "/control/users").unwrap();
+        assert_eq!(uri.to_string(), "https://edge.example.com:7443/admin/control/users");
     }
 
     #[test]

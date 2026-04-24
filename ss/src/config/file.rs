@@ -67,12 +67,12 @@ pub(super) struct DashboardFileConfig {
     pub listen: Option<SocketAddr>,
     pub request_timeout_secs: Option<u64>,
     #[serde(default)]
-    pub servers: Option<Vec<DashboardServerFileConfig>>,
+    pub instances: Option<Vec<DashboardInstanceFileConfig>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct DashboardServerFileConfig {
+pub(super) struct DashboardInstanceFileConfig {
     pub name: Option<String>,
     pub control_url: Option<String>,
     pub token: Option<String>,
@@ -169,7 +169,7 @@ h3_max_concurrent_bidi_streams = 128
     }
 
     #[test]
-    fn parses_dashboard_servers() {
+    fn parses_dashboard_instances() {
         let config: FileConfig = toml::from_str(
             r#"
 listen = "0.0.0.0:3000"
@@ -177,7 +177,7 @@ listen = "0.0.0.0:3000"
 [dashboard]
 listen = "127.0.0.1:7002"
 
-[[dashboard.servers]]
+[[dashboard.instances]]
 name = "local"
 control_url = "http://127.0.0.1:7001"
 token_file = "./control.token"
@@ -187,9 +187,9 @@ token_file = "./control.token"
 
         let dashboard = config.dashboard.unwrap();
         assert_eq!(dashboard.listen.unwrap().to_string(), "127.0.0.1:7002");
-        let servers = dashboard.servers.unwrap();
-        assert_eq!(servers[0].name.as_deref(), Some("local"));
-        assert_eq!(servers[0].control_url.as_deref(), Some("http://127.0.0.1:7001"));
+        let instances = dashboard.instances.unwrap();
+        assert_eq!(instances[0].name.as_deref(), Some("local"));
+        assert_eq!(instances[0].control_url.as_deref(), Some("http://127.0.0.1:7001"));
     }
 
     #[test]

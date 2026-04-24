@@ -27,12 +27,12 @@ pub struct ControlConfig {
 pub struct DashboardConfig {
     pub listen: SocketAddr,
     pub request_timeout_secs: u64,
-    pub servers: Vec<DashboardServerConfig>,
+    pub instances: Vec<DashboardInstanceConfig>,
 }
 
 #[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "control"), allow(dead_code))]
-pub struct DashboardServerConfig {
+pub struct DashboardInstanceConfig {
     pub name: String,
     pub control_url: String,
     pub token: String,
@@ -312,16 +312,16 @@ fn resolve_dashboard_config(
     let listen = dashboard
         .listen
         .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.listen is not set"))?;
-    let servers = dashboard
-        .servers
+    let instances = dashboard
+        .instances
         .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.servers is empty"))?;
-    if servers.is_empty() {
-        anyhow::bail!("dashboard enabled but dashboard.servers is empty");
+        .ok_or_else(|| anyhow::anyhow!("dashboard enabled but dashboard.instances is empty"))?;
+    if instances.is_empty() {
+        anyhow::bail!("dashboard enabled but dashboard.instances is empty");
     }
 
-    let mut loaded = Vec::with_capacity(servers.len());
-    for (idx, server) in servers.iter().enumerate() {
+    let mut loaded = Vec::with_capacity(instances.len());
+    for (idx, server) in instances.iter().enumerate() {
         let name = server
             .name
             .clone()
@@ -332,10 +332,10 @@ fn resolve_dashboard_config(
             .clone()
             .filter(|url| !url.trim().is_empty())
             .ok_or_else(|| anyhow::anyhow!("dashboard server {name:?} has no control_url"))?;
-        if !control_url.starts_with("http://") {
+        if !(control_url.starts_with("http://") || control_url.starts_with("https://")) {
             anyhow::bail!(
                 "dashboard server {name:?} uses unsupported control_url {control_url:?}; \
-                 only http:// control listeners are supported"
+                 only http:// and https:// control listeners are supported"
             );
         }
         control_url.parse::<hyper::Uri>().map_err(|error| {
@@ -373,13 +373,13 @@ fn resolve_dashboard_config(
             .or(file_token)
             .ok_or_else(|| anyhow::anyhow!("dashboard server {name:?} has no token"))?;
 
-        loaded.push(DashboardServerConfig { name, control_url, token });
+        loaded.push(DashboardInstanceConfig { name, control_url, token });
     }
 
     Ok(Some(DashboardConfig {
         listen,
         request_timeout_secs: dashboard.request_timeout_secs.unwrap_or(15).max(1),
-        servers: loaded,
+        instances: loaded,
     }))
 }
 
