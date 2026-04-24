@@ -39,7 +39,9 @@ use crate::{
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 use super::super::connect::connect_tcp_target;
-use super::super::constants::WS_TCP_KEEPALIVE_PING_INTERVAL_SECS;
+use super::super::constants::{
+    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
+};
 use super::super::dns_cache::DnsCache;
 
 /// Process-wide services shared by every TCP relay session.
@@ -101,8 +103,8 @@ async fn run_tcp_relay<T: WsSocket>(
     route: &TcpRouteCtx,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
-    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
-    let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(8);
+    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
+    let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,
         outbound_ctrl_rx,

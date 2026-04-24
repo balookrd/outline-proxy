@@ -24,6 +24,7 @@ use super::ws_writer;
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
     MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS,
+    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY,
 };
 use super::super::dns_cache::DnsCache;
 
@@ -211,8 +212,8 @@ async fn run_udp_relay<T: WsSocket>(
     route: Arc<UdpRouteCtx>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
-    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(64);
-    let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(8);
+    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
+    let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
     let session = UdpSessionState {
         session_recorded: Arc::new(AtomicBool::new(false)),
         cached_user_index: Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY)),
