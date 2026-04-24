@@ -213,6 +213,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `fwmark` | Single-user fallback `fwmark` |
 | `users[].password` | Optional per-user Shadowsocks password |
 | `users[].vless_id` | Optional per-user VLESS UUID |
+| `users[].vless_ws_path` | Optional per-user VLESS WebSocket path; falls back to top-level `vless_ws_path` |
 
 ### Per-User Settings
 
@@ -225,6 +226,7 @@ method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
+vless_ws_path = "/alice/vless"
 ```
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
@@ -245,15 +247,16 @@ vless_ws_path = "/vless"
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
+vless_ws_path = "/alice-vless"
 ```
 
 Example client URI for Happ, v2rayNG, or Hiddify:
 
 ```text
-vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Fvless&encryption=none#outline-ss-rust-vless
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#outline-ss-rust-vless
 ```
 
-Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user.
+Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].vless_ws_path` overrides the top-level `vless_ws_path`.
 
 When `http_root_auth = true`, a normal `GET /` responds with an HTTP Basic auth challenge. The username is ignored and the password is matched against the configured Shadowsocks users. `http_root_realm` controls the text shown in that password prompt. After three failed password attempts in the same browser session, the server returns `403 Forbidden`. Ordinary HTTP requests to any non-root path still return `404 Not Found`.
 
@@ -392,7 +395,7 @@ The generated Shadowsocks YAML automatically reflects:
 The generated VLESS URI automatically reflects:
 
 - `vless_id`
-- `vless_ws_path`
+- effective VLESS WebSocket path
 - the global public host and scheme
 - `security=tls` for `public_scheme = "wss"` and `security=none` for `ws`
 

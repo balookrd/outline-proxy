@@ -113,6 +113,7 @@ vless_ws_path = "/vless"
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
+vless_ws_path = "/alice-vless"
 "#,
         )
         .unwrap();
@@ -121,6 +122,7 @@ vless_id = "550e8400-e29b-41d4-a716-446655440000"
         let users = config.users.unwrap();
         assert_eq!(users[0].id, "alice");
         assert_eq!(users[0].vless_id.as_deref(), Some("550e8400-e29b-41d4-a716-446655440000"));
+        assert_eq!(users[0].vless_ws_path.as_deref(), Some("/alice-vless"));
     }
 
     #[test]

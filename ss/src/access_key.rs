@@ -167,9 +167,8 @@ fn build_vless_user_artifact(
     public_host: &str,
 ) -> Result<AccessKeyArtifact> {
     let vless_id = user.vless_id.as_deref().expect("checked by caller");
-    let vless_path = config
-        .vless_ws_path
-        .as_deref()
+    let vless_path = user
+        .effective_vless_ws_path(config.vless_ws_path.as_deref())
         .ok_or_else(|| anyhow!("vless_id for user {} requires vless_ws_path", user.id))?;
     let config_filename =
         format!("{}-vless{}", sanitize_filename(&user.id), ak.access_key_file_extension);
@@ -379,6 +378,7 @@ mod tests {
                     ws_path_tcp: Some("/alice/tcp".into()),
                     ws_path_udp: Some("/alice/udp".into()),
                     vless_id: None,
+                    vless_ws_path: None,
                 },
                 UserEntry {
                     id: "bob".into(),
@@ -388,6 +388,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: None,
+                    vless_ws_path: None,
                 },
                 UserEntry {
                     id: "carol vless".into(),
@@ -397,6 +398,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                    vless_ws_path: Some("/carol/vless path".into()),
                 },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
@@ -430,12 +432,12 @@ mod tests {
         assert_eq!(
             artifacts[2].access_key_url.as_deref(),
             Some(
-                "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fvless%20path&encryption=none#carol%20vless"
+                "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#carol%20vless"
             )
         );
         assert_eq!(
             artifacts[2].yaml,
-            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fvless%20path&encryption=none#carol%20vless\n"
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#carol%20vless\n"
         );
     }
 

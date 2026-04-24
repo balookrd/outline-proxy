@@ -141,10 +141,6 @@ pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
 }
 
 pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserRoute]>> {
-    let Some(path) = config.vless_ws_path.as_deref() else {
-        return Ok(Arc::from(Vec::<VlessUserRoute>::new().into_boxed_slice()));
-    };
-    let ws_path: Arc<str> = Arc::from(path);
     Ok(Arc::from(
         config
             .users
@@ -152,8 +148,11 @@ pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserR
             .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
             .map(|entry| {
                 let (entry, vless_id) = entry;
+                let ws_path = entry
+                    .effective_vless_ws_path(config.vless_ws_path.as_deref())
+                    .expect("config validation requires vless path");
                 VlessUser::new(vless_id.clone(), entry.fwmark)
-                    .map(|user| VlessUserRoute { user, ws_path: Arc::clone(&ws_path) })
+                    .map(|user| VlessUserRoute { user, ws_path: Arc::from(ws_path) })
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),

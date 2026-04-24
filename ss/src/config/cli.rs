@@ -162,5 +162,6 @@ pub(super) fn parse_user_entry(value: &str) -> Result<UserEntry, String> {
         ws_path_tcp: None,
         ws_path_udp: None,
         vless_id: None,
+        vless_ws_path: None,
     })
 }
