@@ -59,14 +59,20 @@ impl NatTable {
         udp_session: UdpSession,
         metrics: Arc<Metrics>,
     ) -> Result<Arc<NatEntry>> {
-        // DashMap shard lock is held only for the insert/lookup, then dropped
-        // before any `.await` — the OnceCell deduplicates concurrent creation.
-        let cell = Arc::clone(
-            self.entries
-                .entry(key.clone())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .value(),
-        );
+        // Fast path: read-lock the shard for an existing entry — the hot case
+        // after a session's first packet. Only fall back to `entry()` (write
+        // lock + key clone) when the entry is missing. The OnceCell still
+        // deduplicates concurrent creation on the cold path.
+        let cell = if let Some(existing) = self.entries.get(&key) {
+            Arc::clone(existing.value())
+        } else {
+            Arc::clone(
+                self.entries
+                    .entry(key.clone())
+                    .or_insert_with(|| Arc::new(OnceCell::new()))
+                    .value(),
+            )
+        };
 
         // On error the cell stays uninitialised; evict_idle drops such cells
         // without counting them as evictions (they never incremented the
