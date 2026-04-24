@@ -10,7 +10,7 @@ use sockudo_ws::{
     WebSocketStream as H3WebSocketStream, build_extended_connect_error,
     build_extended_connect_response,
 };
-use tokio::time::Duration;
+use tokio::{sync::Semaphore, time::Duration};
 use tracing::{debug, warn};
 
 use crate::{
@@ -26,7 +26,10 @@ use super::super::{
         build_root_http_auth_success_response, parse_failed_root_auth_attempts,
         parse_root_http_auth_password, password_matches_any_user,
     },
-    constants::{H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS},
+    constants::{
+        H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
+        H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
+    },
     state::{
         AuthPolicy, RoutesSnapshot, Services, empty_transport_route, empty_vless_transport_route,
     },
@@ -177,6 +180,7 @@ struct H3ConnectionCtx {
     tcp_server: Arc<WsTcpServerCtx>,
     udp_server: Arc<UdpServerCtx>,
     vless_server: Arc<VlessWsServerCtx>,
+    stream_semaphore: Arc<Semaphore>,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -216,7 +220,27 @@ pub(in crate::server) async fn serve_h3_server(
         outbound_ipv6: services.outbound_ipv6.clone(),
     });
 
+    let connection_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_CONNECTIONS));
+    let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));
+
     loop {
+        // Acquire a connection permit before accepting so that at most
+        // H3_MAX_CONCURRENT_CONNECTIONS connection handlers exist at once.
+        // New QUIC handshakes queue inside the endpoint (and are eventually
+        // dropped by QUIC's own anti-amplification limits) rather than
+        // spawning unbounded tasks.
+        let connection_permit = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                debug!("HTTP/3 endpoint stopping on shutdown signal");
+                endpoint.close(quinn::VarInt::from_u32(0), b"server shutting down");
+                break;
+            }
+            permit = connection_semaphore.clone().acquire_owned() => {
+                permit.expect("H3 connection semaphore unexpectedly closed")
+            }
+        };
+
         let incoming = tokio::select! {
             biased;
             _ = shutdown.cancelled() => {
@@ -243,9 +267,11 @@ pub(in crate::server) async fn serve_h3_server(
             tcp_server: Arc::clone(&tcp_server),
             udp_server: Arc::clone(&udp_server),
             vless_server: Arc::clone(&vless_server),
+            stream_semaphore: Arc::clone(&stream_semaphore),
         });
 
         tokio::spawn(async move {
+            let _connection_permit = connection_permit;
             if let Err(error) = handle_h3_connection(incoming, ctx).await
                 && !is_normal_h3_shutdown(&error)
             {
@@ -280,8 +306,19 @@ async fn handle_h3_connection(incoming: quinn::Incoming, ctx: Arc<H3ConnectionCt
                     },
                 };
 
+                // Cap the total number of in-flight stream handlers across
+                // all connections.  QUIC already bounds streams per
+                // connection via `max_concurrent_bidi_streams`, but without
+                // a global cap an attacker with many connections could
+                // force `connections * streams_per_connection` task spawns.
+                let stream_permit = match ctx.stream_semaphore.clone().acquire_owned().await {
+                    Ok(permit) => permit,
+                    Err(_) => break,
+                };
+
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
+                    let _stream_permit = stream_permit;
                     if let Err(error) = handle_h3_request(request, stream, ctx).await
                         && !is_normal_h3_shutdown(&error)
                     {

@@ -16,6 +16,18 @@ pub(super) const TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
 pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
 pub(super) const H3_MAX_UDP_PAYLOAD_SIZE: u16 = 1_350;
+// Cap on concurrent active HTTP/3 QUIC connections. Matches the TLS listener
+// so an attacker cannot force unbounded per-connection task spawns by opening
+// many QUIC handshakes in parallel.
+pub(super) const H3_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
+// Global cap on concurrent in-flight WebSocket streams across all HTTP/3
+// connections.  Per-connection stream concurrency is already bounded by
+// `tuning.h3_max_concurrent_bidi_streams`, but without a global limit the
+// total fan-out is `connections * streams_per_connection`, which at the
+// throughput profile would allow millions of spawned tasks.  Sized to give
+// plenty of headroom for legitimate multiplexed traffic while keeping total
+// fan-out bounded.
+pub(super) const H3_MAX_CONCURRENT_STREAMS: usize = 65_536;
 
 pub(super) const TCP_CONNECT_TIMEOUT_SECS: u64 = 5;
 pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
