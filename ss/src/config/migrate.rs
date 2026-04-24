@@ -21,26 +21,25 @@ pub(super) fn auto_migrate_if_legacy(
         return Ok(None);
     }
     let backup = backup_path(path);
+    // Tracing is not yet initialised at config-load time, so use eprintln!
+    // directly — systemd/journald still captures stderr.
     match fs::write(&backup, contents).and_then(|()| fs::write(path, &migrated)) {
         Ok(()) => {
-            tracing::warn!(
-                path = %path.display(),
-                backup = %backup.display(),
-                "migrated legacy config layout to sectioned form; original saved as backup",
+            eprintln!(
+                "config: migrated legacy flat-key layout in {} (backup: {})",
+                path.display(),
+                backup.display(),
             );
         },
         Err(error) => {
-            // Read-only config mount or missing write permission: fall back to
-            // in-memory migration so the service still starts. Operator must
-            // run `--migrate-config` from a writable context to persist it.
             let _ = fs::remove_file(&backup);
-            tracing::warn!(
-                path = %path.display(),
-                error = %error,
-                "legacy config layout detected but could not be rewritten in place; \
-                 migrated in memory only. Run `--migrate-config {}` from a writable \
-                 context to persist.",
-                path.display(),
+            eprintln!(
+                "config: legacy flat-key layout detected in {path} but the file is \
+                 not writable ({error}); migrated in memory only. Run \
+                 `outline-ss-rust --migrate-config {path}` from a writable context \
+                 to persist.",
+                path = path.display(),
+                error = error,
             );
         },
     }
