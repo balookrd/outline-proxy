@@ -74,6 +74,8 @@ pub struct UserEntry {
     pub ws_path_udp: Option<String>,
     #[serde(default)]
     pub vless_id: Option<String>,
+    #[serde(default)]
+    pub vless_ws_path: Option<String>,
 }
 
 impl UserEntry {
@@ -87,6 +89,10 @@ impl UserEntry {
 
     pub fn effective_ws_path_udp<'a>(&'a self, default: &'a str) -> &'a str {
         self.ws_path_udp.as_deref().unwrap_or(default)
+    }
+
+    pub fn effective_vless_ws_path<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.vless_ws_path.as_deref().or(default)
     }
 }
 

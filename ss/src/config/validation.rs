@@ -55,16 +55,29 @@ impl Config {
         }
         let mut vless_paths = BTreeSet::new();
         let vless_enabled_users = self.users.iter().filter(|user| user.vless_id.is_some());
-        if let Some(path) = self.vless_ws_path.as_deref() {
-            if !path.starts_with('/') {
-                bail!("vless_ws_path must start with '/'");
+        if let Some(path) = self.vless_ws_path.as_deref()
+            && !path.starts_with('/')
+        {
+            bail!("vless_ws_path must start with '/'");
+        }
+        if self.vless_ws_path.is_some() && self.users.iter().all(|user| user.vless_id.is_none()) {
+            bail!("vless_ws_path requires at least one [[users]] entry with vless_id");
+        }
+        for user in &self.users {
+            if let Some(path) = user.vless_ws_path.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} vless_ws_path must start with '/'", user.id);
             }
-            if self.users.iter().all(|user| user.vless_id.is_none()) {
-                bail!("vless_ws_path requires at least one [[users]] entry with vless_id");
+            if user.vless_ws_path.is_some() && user.vless_id.is_none() {
+                bail!("user {} vless_ws_path requires vless_id", user.id);
             }
-            vless_paths.insert(path.to_owned());
-        } else if self.users.iter().any(|user| user.vless_id.is_some()) {
-            bail!("users[].vless_id requires vless_ws_path");
+            if user.vless_id.is_some() {
+                let Some(path) = user.effective_vless_ws_path(self.vless_ws_path.as_deref()) else {
+                    bail!("user {} vless_id requires vless_ws_path", user.id);
+                };
+                vless_paths.insert(path.to_owned());
+            }
         }
         let mut vless_seen = HashSet::new();
         for user in vless_enabled_users {
@@ -230,6 +243,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                vless_ws_path: None,
             }],
             ..base_config()
         }
@@ -249,6 +263,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                vless_ws_path: None,
             }],
             ..base_config()
         }
@@ -257,6 +272,51 @@ mod tests {
         .to_string();
 
         assert!(error.contains("tcp and vless websocket paths must be distinct"));
+    }
+
+    #[test]
+    fn allows_per_user_vless_path_without_global_default() {
+        Config {
+            password: None,
+            vless_ws_path: None,
+            users: vec![super::super::UserEntry {
+                id: "alice".into(),
+                password: None,
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                vless_ws_path: Some("/alice-vless".into()),
+            }],
+            ..base_config()
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn rejects_vless_id_without_any_path() {
+        let error = Config {
+            password: None,
+            vless_ws_path: None,
+            users: vec![super::super::UserEntry {
+                id: "alice".into(),
+                password: None,
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                vless_ws_path: None,
+            }],
+            ..base_config()
+        }
+        .validate()
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("user alice vless_id requires vless_ws_path"));
     }
 
     #[test]

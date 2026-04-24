@@ -395,7 +395,7 @@ cargo run -- \
 Генерируемый VLESS URI автоматически отражает:
 
 - `vless_id`
-- `vless_ws_path`
+- эффективный VLESS WebSocket-путь
 - глобальный публичный хост и схему
 - `security=tls` для `public_scheme = "wss"` и `security=none` для `ws`
 
