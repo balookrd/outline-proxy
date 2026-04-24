@@ -12,11 +12,11 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{CryptoError, UdpSession, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
+    crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
     metrics::{Metrics, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{NatKey, NatTable, UdpResponseSender},
-    server::replay::ReplayStore,
+    server::replay::{self, ReplayStore},
 };
 
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
@@ -51,21 +51,6 @@ pub(in crate::server) struct UdpRouteCtx {
 struct UdpSessionState {
     session_recorded: Arc<AtomicBool>,
     cached_user_index: Arc<AtomicUsize>,
-}
-
-/// For SS-2022 sessions, extract the (client_session_id, packet_id) pair used
-/// as the replay-filter key. Returns `None` for legacy sessions which have no
-/// per-packet counter.
-fn session_replay_key(
-    session: &UdpSession,
-    packet_id: Option<u64>,
-) -> Option<([u8; 8], u64)> {
-    let csid = match session {
-        UdpSession::Legacy => return None,
-        UdpSession::Aes2022 { client_session_id }
-        | UdpSession::Chacha2022 { client_session_id } => *client_session_id,
-    };
-    packet_id.map(|pid| (csid, pid))
 }
 
 async fn handle_udp_datagram_common<Msg>(
@@ -107,7 +92,7 @@ where
     };
     session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
-    if let Some((csid, pid)) = session_replay_key(&packet.session, packet.packet_id)
+    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
         && !server.replay_store.check_and_mark(csid, pid)
     {
         server.metrics.record_udp_replay_dropped(Arc::clone(&user_id), route.protocol);

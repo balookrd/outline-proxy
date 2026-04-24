@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{CryptoError, UdpSession, UserKey, decrypt_udp_packet, diagnose_udp_packet},
+    crypto::{CryptoError, UserKey, decrypt_udp_packet, diagnose_udp_packet},
     metrics::{Metrics, Protocol, Transport},
     protocol::parse_target_addr,
 };
@@ -17,7 +17,7 @@ use super::super::{
     constants::{MAX_UDP_DATAGRAM_SIZE, MAX_UDP_PAYLOAD_SIZE, UDP_MAX_CONCURRENT_RELAY_TASKS},
     dns_cache::DnsCache,
     nat::{NatKey, NatTable, ResponseSender, UdpResponseSender},
-    replay::ReplayStore,
+    replay::{self, ReplayStore},
     shutdown::ShutdownSignal,
 };
 
@@ -43,15 +43,6 @@ impl ResponseSender for DatagramResponseSender {
     fn protocol(&self) -> Protocol {
         Protocol::Socket
     }
-}
-
-fn ss_udp_replay_key(session: &UdpSession, packet_id: Option<u64>) -> Option<([u8; 8], u64)> {
-    let csid = match session {
-        UdpSession::Legacy => return None,
-        UdpSession::Aes2022 { client_session_id }
-        | UdpSession::Chacha2022 { client_session_id } => *client_session_id,
-    };
-    packet_id.map(|pid| (csid, pid))
 }
 
 pub(in super::super) async fn serve_ss_udp_socket(
@@ -127,7 +118,7 @@ async fn handle_ss_udp_datagram(
         Err(error) => return Err(anyhow!(error)),
     };
     let user_id = packet.user.id_arc();
-    if let Some((csid, pid)) = ss_udp_replay_key(&packet.session, packet.packet_id)
+    if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id)
         && !ctx.replay_store.check_and_mark(csid, pid)
     {
         ctx.metrics.record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
