@@ -324,12 +324,19 @@ ensure_user_group() {
 
 install_dirs() {
   install -d -m 0755 "$INSTALL_BIN_DIR"
-  install -d -m 0755 "$CONFIG_DIR"
+  # Config dir is owned by the service account so the runtime can rewrite
+  # config.toml in place (legacy-layout auto-migration writes a .bak
+  # alongside). Mode 0750 keeps it invisible to other local users.
+  install -d -m 0750 -o "$SERVICE_USER" -g "$SERVICE_GROUP" "$CONFIG_DIR"
 }
 
 install_config_if_missing() {
   if [[ -f "$CONFIG_PATH" ]]; then
     log "Конфиг уже существует: ${CONFIG_PATH}"
+    # Fix up ownership on upgrades: older installs used root:SERVICE_GROUP,
+    # but the runtime now needs to rewrite the file for legacy-layout
+    # auto-migration, so the owner must be SERVICE_USER.
+    chown "$SERVICE_USER":"$SERVICE_GROUP" "$CONFIG_PATH"
     return
   fi
 
@@ -339,7 +346,7 @@ install_config_if_missing() {
   log "Скачиваю пример конфига ${cfg_url}"
   fetch "$cfg_url" "$CONFIG_PATH"
   chmod 0640 "$CONFIG_PATH"
-  chown root:"$SERVICE_GROUP" "$CONFIG_PATH"
+  chown "$SERVICE_USER":"$SERVICE_GROUP" "$CONFIG_PATH"
 }
 
 install_systemd_unit() {
