@@ -54,8 +54,11 @@ SystemCallArchitectures=native
 # enabled when the feature is unused.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
-# Read-only access to config and certificates.
-ReadOnlyPaths=/etc/outline-ss-rust
+# Config directory needs write access so the service can auto-migrate
+# legacy flat-key configs into the sectioned layout in place (with a .bak
+# backup alongside). Switch back to ReadOnlyPaths once migrations are no
+# longer performed in this deployment.
+ReadWritePaths=/etc/outline-ss-rust
 
 # Writable runtime state if the deployment wants to use it later.
 StateDirectory=outline-ss-rust
