@@ -3,6 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::{BufMut, Bytes, BytesMut};
+use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UdpSocket,
@@ -28,7 +29,7 @@ use super::{
         nat::bind_nat_udp_socket,
     },
     vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState},
-    ws_socket::{AxumWs, WsFrame, WsSocket},
+    ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket},
     ws_writer,
 };
 
@@ -717,4 +718,12 @@ pub(super) async fn handle_vless_connection(
     route: VlessWsRouteCtx,
 ) -> Result<()> {
     run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route).await
+}
+
+pub(in crate::server) async fn handle_vless_h3_connection(
+    socket: H3WebSocketStream<H3Stream<H3Transport>>,
+    server: Arc<VlessWsServerCtx>,
+    route: VlessWsRouteCtx,
+) -> Result<()> {
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route).await
 }

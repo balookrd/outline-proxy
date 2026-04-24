@@ -27,10 +27,13 @@ use super::super::{
         parse_root_http_auth_password, password_matches_any_user,
     },
     constants::{H3_MAX_UDP_PAYLOAD_SIZE, H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS},
-    state::{AuthPolicy, RoutesSnapshot, Services, empty_transport_route},
+    state::{
+        AuthPolicy, RoutesSnapshot, Services, empty_transport_route, empty_vless_transport_route,
+    },
     transport::{
-        UdpRouteCtx, UdpServerCtx, WsTcpRouteCtx, WsTcpServerCtx, finish_ws_session,
-        handle_tcp_h3_connection, handle_udp_h3_connection, is_normal_h3_shutdown,
+        UdpRouteCtx, UdpServerCtx, VlessWsRouteCtx, VlessWsServerCtx, WsTcpRouteCtx,
+        WsTcpServerCtx, finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection,
+        handle_vless_h3_connection, is_normal_h3_shutdown,
     },
 };
 use super::tls::load_h3_tls_config;
@@ -169,9 +172,11 @@ struct H3ConnectionCtx {
     auth: Arc<AuthPolicy>,
     tcp_paths: Arc<BTreeSet<String>>,
     udp_paths: Arc<BTreeSet<String>>,
+    vless_paths: Arc<BTreeSet<String>>,
     ws_config: H3WebSocketConfig,
     tcp_server: Arc<WsTcpServerCtx>,
     udp_server: Arc<UdpServerCtx>,
+    vless_server: Arc<VlessWsServerCtx>,
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -186,6 +191,8 @@ pub(in crate::server) async fn serve_h3_server(
         Arc::new(initial.tcp.keys().cloned().collect::<BTreeSet<_>>());
     let udp_paths: Arc<BTreeSet<String>> =
         Arc::new(initial.udp.keys().cloned().collect::<BTreeSet<_>>());
+    let vless_paths: Arc<BTreeSet<String>> =
+        Arc::new(initial.vless.keys().cloned().collect::<BTreeSet<_>>());
     drop(initial);
     let (endpoint, ws_config) = server.into_parts();
     let tcp_server = Arc::new(WsTcpServerCtx {
@@ -201,6 +208,12 @@ pub(in crate::server) async fn serve_h3_server(
         dns_cache: Arc::clone(&services.dns_cache),
         prefer_ipv4_upstream: services.prefer_ipv4_upstream,
         relay_semaphore: services.udp.relay_semaphore.clone(),
+    });
+    let vless_server = Arc::new(VlessWsServerCtx {
+        metrics: services.metrics.clone(),
+        dns_cache: Arc::clone(&services.dns_cache),
+        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
+        outbound_ipv6: services.outbound_ipv6.clone(),
     });
 
     loop {
@@ -225,9 +238,11 @@ pub(in crate::server) async fn serve_h3_server(
             auth: Arc::clone(&auth),
             tcp_paths: Arc::clone(&tcp_paths),
             udp_paths: Arc::clone(&udp_paths),
+            vless_paths: Arc::clone(&vless_paths),
             ws_config: ws_config.clone(),
             tcp_server: Arc::clone(&tcp_server),
             udp_server: Arc::clone(&udp_server),
+            vless_server: Arc::clone(&vless_server),
         });
 
         tokio::spawn(async move {
@@ -325,6 +340,7 @@ async fn handle_h3_request(
 
     if !ctx.tcp_paths.contains(ws_req.path.as_str())
         && !ctx.udp_paths.contains(ws_req.path.as_str())
+        && !ctx.vless_paths.contains(ws_req.path.as_str())
     {
         stream
             .send_response(build_extended_connect_error(StatusCode::NOT_FOUND, Some("Not Found")))
@@ -391,6 +407,28 @@ async fn handle_h3_request(
         });
         let result = handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx).await;
         finish_ws_session(session, result, "udp");
+    } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
+        let routes_snap = ctx.routes.load();
+        let route = routes_snap
+            .vless
+            .get(&ws_req.path)
+            .cloned()
+            .unwrap_or_else(empty_vless_transport_route);
+        drop(routes_snap);
+        debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
+        let session = ctx
+            .services
+            .metrics
+            .open_websocket_session(Transport::Tcp, Protocol::Http3);
+        let route_ctx = VlessWsRouteCtx {
+            users: Arc::clone(&route.users),
+            protocol: Protocol::Http3,
+            path: Arc::from(ws_req.path.as_str()),
+            candidate_users: Arc::clone(&route.candidate_users),
+        };
+        let result =
+            handle_vless_h3_connection(socket, Arc::clone(&ctx.vless_server), route_ctx).await;
+        finish_ws_session(session, result, "vless");
     }
 
     Ok(())
