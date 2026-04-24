@@ -27,6 +27,7 @@ pub struct ControlConfig {
 pub struct DashboardConfig {
     pub listen: SocketAddr,
     pub request_timeout_secs: u64,
+    pub refresh_interval_secs: u64,
     pub instances: Vec<DashboardInstanceConfig>,
 }
 
@@ -393,6 +394,7 @@ fn resolve_dashboard_config(
     Ok(Some(DashboardConfig {
         listen,
         request_timeout_secs: dashboard.request_timeout_secs.unwrap_or(15).max(1),
+        refresh_interval_secs: dashboard.refresh_interval_secs.unwrap_or(10).max(1),
         instances: loaded,
     }))
 }

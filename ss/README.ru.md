@@ -226,6 +226,7 @@ cargo release-musl-armv7
 | `[dashboard]` | Опциональный браузерный UI на отдельном listener; проксирует запросы к настроенным control-серверам и не отдаёт токены браузеру |
 | `dashboard.listen` | Адрес сокета dashboard listener, например `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Таймаут dashboard-to-control запросов. По умолчанию `15` |
+| `dashboard.refresh_interval_secs` | Интервал автообновления dashboard UI в секундах. По умолчанию `10` |
 | `dashboard.instances[].name` | Отображаемое имя управляемого инстанса |
 | `dashboard.instances[].control_url` | Базовый `http://` или `https://` URL control listener этого инстанса |
 | `dashboard.instances[].token` / `token_file` | Bearer-токен, который dashboard использует server-side при проксировании |
@@ -291,6 +292,7 @@ token_file = "/etc/outline-ss-rust/control.token"
 [dashboard]
 listen = "127.0.0.1:7002"
 request_timeout_secs = 15
+refresh_interval_secs = 10
 
 [[dashboard.instances]]
 name = "local"

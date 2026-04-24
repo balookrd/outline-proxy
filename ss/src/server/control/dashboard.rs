@@ -36,6 +36,7 @@ use super::{super::shutdown::ShutdownSignal, ui};
 #[derive(Clone)]
 struct DashboardState {
     request_timeout_secs: u64,
+    refresh_interval_secs: u64,
     instances: Arc<[DashboardInstanceConfig]>,
     tls_connector: TlsConnector,
 }
@@ -48,6 +49,7 @@ struct InstanceQuery {
 #[derive(Debug, Serialize)]
 struct InstancesResponse {
     instances: Vec<InstanceView>,
+    refresh_interval_secs: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +83,7 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
 
     let state = DashboardState {
         request_timeout_secs: config.request_timeout_secs,
+        refresh_interval_secs: config.refresh_interval_secs,
         instances: Arc::from(config.instances),
         tls_connector: tls_connector(),
     };
@@ -117,6 +120,7 @@ async fn list_instances(State(state): State<DashboardState>) -> impl IntoRespons
                 control_url: server.control_url.clone(),
             })
             .collect(),
+        refresh_interval_secs: state.refresh_interval_secs,
     })
 }
 
