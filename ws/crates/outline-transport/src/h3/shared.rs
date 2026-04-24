@@ -23,13 +23,13 @@ use sockudo_ws::{
 };
 use tokio::sync::Mutex;
 use tokio::time::timeout;
-use tracing::{debug, info};
+use tracing::info;
 use url::Url;
 
 use crate::{
-    AbortOnDrop, WsTransportStream, TransportConnectGuard, TransportOperation,
+    AbortOnDrop, WsTransportStream,
     bind_addr_for, bind_udp_socket,
-    DnsCache, resolve_host_with_preference,
+    DnsCache,
 };
 use crate::shared_cache::{
     ConnCloseLog, SharedConnectionRegistry, classify_by_substrings, log_conn_close,
@@ -285,6 +285,52 @@ fn h3_registry() -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3C
     H3_REGISTRY.get_or_init(SharedConnectionRegistry::new)
 }
 
+// ── H3Dialer ──────────────────────────────────────────────────────────────────
+
+struct H3Dialer;
+
+impl crate::shared_dial::WsDialer for H3Dialer {
+    type Key = H3ConnectionKey;
+    type Conn = SharedH3Connection;
+
+    fn registry(&self) -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3Connection> {
+        h3_registry()
+    }
+
+    fn metric_label(&self) -> &'static str {
+        "h3"
+    }
+
+    fn try_all_dns_addrs(&self) -> bool {
+        true
+    }
+
+    fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> H3ConnectionKey {
+        H3ConnectionKey::new(server_name, server_port, fwmark)
+    }
+
+    async fn establish(
+        &self,
+        addr: SocketAddr,
+        server_name: &str,
+        fwmark: Option<u32>,
+        cache_key: Option<H3ConnectionKey>,
+    ) -> Result<Arc<SharedH3Connection>> {
+        Ok(Arc::new(connect_h3_connection(addr, server_name, fwmark, cache_key).await?))
+    }
+
+    async fn open_on(
+        &self,
+        conn: &Arc<SharedH3Connection>,
+        server_name: &str,
+        server_port: u16,
+        path: &str,
+    ) -> Result<WsTransportStream> {
+        let ws = conn.open_websocket(server_name, server_port, path).await?;
+        Ok(WsTransportStream::H3 { inner: ws })
+    }
+}
+
 // ── Connect ───────────────────────────────────────────────────────────────────
 
 pub(crate) async fn connect_websocket_h3(
@@ -303,142 +349,16 @@ pub(crate) async fn connect_websocket_h3(
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
+    let dialer = H3Dialer;
 
-    if should_reuse_h3_connection(source) {
-        // DNS resolution is deferred to the slow path inside connect_h3_quic_reused
+    if crate::shared_cache::should_reuse_connection(source) {
+        // DNS resolution is deferred to the slow path inside connect_ws_reused
         // so the cache key stays hostname-based and is not affected by DNS rotation.
-        let ws = connect_h3_quic_reused(cache, host, port, &path, fwmark, ipv6_first, source).await?;
-        return Ok(WsTransportStream::H3 { inner: ws });
+        crate::shared_dial::connect_ws_reused(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
+    } else {
+        // Probes never share connections; resolve DNS upfront and try each address.
+        crate::shared_dial::connect_ws_probe(&dialer, cache, host, port, &path, fwmark, ipv6_first, source).await
     }
-
-    // Probes never share connections; resolve DNS upfront and try each address.
-    let server_addrs = resolve_host_with_preference(
-        cache,
-        host,
-        port,
-        "failed to resolve h3 websocket host",
-        ipv6_first,
-    )
-    .await?;
-    if server_addrs.is_empty() {
-        return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-            host: format!("{host}:{port}"),
-        }));
-    }
-
-    let mut last_error = None;
-    for server_addr in server_addrs.iter().copied() {
-        match dial_h3_with_websocket(server_addr, host, port, &path, fwmark, None, source).await {
-            Ok((_shared, ws)) => return Ok(WsTransportStream::H3 { inner: ws }),
-            Err(error) => last_error = Some(format!("{server_addr}: {error}")),
-        }
-    }
-
-    Err(anyhow::Error::new(TransportOperation::Connect {
-        target: format!(
-            "to any resolved h3 address for {host}:{port}: {}",
-            last_error.unwrap_or_else(|| "unknown error".to_string())
-        ),
-    }))
-}
-
-async fn connect_h3_quic_reused(
-    cache: &DnsCache,
-    server_name: &str,
-    server_port: u16,
-    path: &str,
-    fwmark: Option<u32>,
-    ipv6_first: bool,
-    source: &'static str,
-) -> Result<H3WsStream> {
-    let key = H3ConnectionKey::new(server_name, server_port, fwmark);
-
-    crate::shared_cache::with_reuse(
-        h3_registry(),
-        key.clone(),
-        |shared| async move {
-            match shared.open_websocket(server_name, server_port, path).await {
-                Ok(ws) => {
-                    outline_metrics::record_transport_connect(source, "h3", "reused");
-                    Ok(ws)
-                },
-                Err(error) => {
-                    debug!(
-                        server_name,
-                        server_port,
-                        error = %format!("{error:#}"),
-                        "cached shared h3 connection failed to open websocket stream; reconnecting"
-                    );
-                    Err(error)
-                },
-            }
-        },
-        || async {
-            // Resolve DNS only now — we actually need a new QUIC connection.
-            // Deferring resolution to this point keeps the cache key
-            // hostname-based while still connecting to the *current* address.
-            let server_addrs = resolve_host_with_preference(
-                cache,
-                server_name,
-                server_port,
-                "failed to resolve h3 websocket host",
-                ipv6_first,
-            )
-            .await?;
-            if server_addrs.is_empty() {
-                return Err(anyhow::Error::new(TransportOperation::DnsResolveNoAddresses {
-                    host: format!("{server_name}:{server_port}"),
-                }));
-            }
-
-            let mut last_error = None;
-            for server_addr in server_addrs.iter().copied() {
-                match dial_h3_with_websocket(
-                    server_addr,
-                    server_name,
-                    server_port,
-                    path,
-                    fwmark,
-                    Some(key.clone()),
-                    source,
-                )
-                .await
-                {
-                    Ok(pair) => return Ok(pair),
-                    Err(error) => last_error = Some(format!("{server_addr}: {error}")),
-                }
-            }
-
-            Err(anyhow::Error::new(TransportOperation::Connect {
-                target: format!(
-                    "to any resolved h3 address for {server_name}:{server_port}: {}",
-                    last_error.unwrap_or_else(|| "unknown error".to_string())
-                ),
-            }))
-        },
-    )
-    .await
-}
-
-/// Establishes a brand-new QUIC + HTTP/3 connection to `server_addr` and opens
-/// one WebSocket stream on it. When `cache_key` is `Some`, the driver task
-/// invalidates the cache entry on close; the actual cache *insert* is the
-/// caller's responsibility (the reused path delegates it to `with_reuse`).
-async fn dial_h3_with_websocket(
-    server_addr: SocketAddr,
-    server_name: &str,
-    server_port: u16,
-    path: &str,
-    fwmark: Option<u32>,
-    cache_key: Option<H3ConnectionKey>,
-    source: &'static str,
-) -> Result<(Arc<SharedH3Connection>, H3WsStream)> {
-    let mut transport_guard = TransportConnectGuard::new(source, "h3");
-    let shared =
-        Arc::new(connect_h3_connection(server_addr, server_name, fwmark, cache_key).await?);
-    let ws = shared.open_websocket(server_name, server_port, path).await?;
-    transport_guard.finish("success");
-    Ok((shared, ws))
 }
 
 async fn connect_h3_connection(
@@ -559,12 +479,6 @@ pub(crate) async fn gc_shared_h3_connections() {
     h3_registry().gc().await;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-pub(super) fn should_reuse_h3_connection(source: &'static str) -> bool {
-    crate::shared_cache::should_reuse_connection(source)
-}
-
 fn is_expected_h3_close(err: &str) -> bool {
     err.contains("H3_NO_ERROR")
         || err.contains("Connection closed by client")
@@ -587,27 +501,24 @@ fn is_expected_h3_close(err: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::H3ConnectionKey;
+    use crate::shared_cache::should_reuse_connection;
 
     #[test]
     fn h3_shared_connection_key_distinguishes_server_name_port_and_fwmark() {
         let base = H3ConnectionKey::new("example.com", 443, None);
 
-        // Same key for any resolved IP — the key is hostname-based
         assert_eq!(base, H3ConnectionKey::new("example.com", 443, None));
-        // Different hostname
         assert_ne!(base, H3ConnectionKey::new("example.net", 443, None));
-        // Different fwmark
         assert_ne!(base, H3ConnectionKey::new("example.com", 443, Some(100)));
-        // Different port
         assert_ne!(base, H3ConnectionKey::new("example.com", 8443, None));
     }
 
     #[test]
     fn probe_sources_do_not_reuse_shared_h3_connections() {
-        assert!(should_reuse_h3_connection("socks_tcp"));
-        assert!(should_reuse_h3_connection("standby_udp"));
-        assert!(!should_reuse_h3_connection("probe_ws"));
-        assert!(!should_reuse_h3_connection("probe_http"));
+        assert!(should_reuse_connection("socks_tcp"));
+        assert!(should_reuse_connection("standby_udp"));
+        assert!(!should_reuse_connection("probe_ws"));
+        assert!(!should_reuse_connection("probe_http"));
     }
 }

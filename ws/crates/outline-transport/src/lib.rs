@@ -104,6 +104,7 @@ pub(crate) mod h3;
 mod tcp_transport;
 mod udp_transport;
 mod shared_cache;
+mod shared_dial;
 mod tls;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod url_utils;
