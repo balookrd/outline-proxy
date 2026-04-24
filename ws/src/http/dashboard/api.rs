@@ -158,6 +158,140 @@ pub async fn handle_activate(
     json_response(StatusCode::OK, &DashboardActivateResponse { results })
 }
 
+#[derive(Debug, Deserialize)]
+struct ProxyEnvelope {
+    instance: String,
+    #[serde(default)]
+    body: Value,
+}
+
+pub async fn handle_uplinks_proxy(
+    request: Request<Incoming>,
+    state: DashboardState,
+) -> DashboardResponse {
+    let method = request.method().clone();
+    match method {
+        Method::GET | Method::POST | Method::PATCH | Method::DELETE => {},
+        _ => return json_error(StatusCode::METHOD_NOT_ALLOWED, "use GET/POST/PATCH/DELETE"),
+    }
+    let (envelope, query) = match parse_proxy_envelope(request).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let Some(instance) = state
+        .instances
+        .iter()
+        .find(|i| i.name == envelope.instance)
+    else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
+    };
+
+    let mut url = match instance_url(&instance.control_url, "/control/uplinks") {
+        Ok(url) => url,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_GATEWAY,
+                &serde_json::json!({ "error": format!("{error:#}") }),
+            );
+        },
+    };
+    if let Some(q) = query {
+        url.set_query(Some(&q));
+    }
+
+    let body = if matches!(method, Method::GET) {
+        None
+    } else {
+        Some(serde_json::to_vec(&envelope.body).unwrap_or_default())
+    };
+    match send_instance_request(instance, method, url, body, state.request_timeout_secs).await {
+        Ok((status, body)) => {
+            let parsed: Value = serde_json::from_slice(&body)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+            json_response(status, &parsed)
+        },
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
+    }
+}
+
+pub async fn handle_apply_proxy(
+    request: Request<Incoming>,
+    state: DashboardState,
+) -> DashboardResponse {
+    let (envelope, _) = match parse_proxy_envelope(request).await {
+        Ok(pair) => pair,
+        Err(response) => return response,
+    };
+    let Some(instance) = state
+        .instances
+        .iter()
+        .find(|i| i.name == envelope.instance)
+    else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
+    };
+    let url = match instance_url(&instance.control_url, "/control/apply") {
+        Ok(url) => url,
+        Err(error) => {
+            return json_response(
+                StatusCode::BAD_GATEWAY,
+                &serde_json::json!({ "error": format!("{error:#}") }),
+            );
+        },
+    };
+    match send_instance_request(
+        instance,
+        Method::POST,
+        url,
+        Some(Vec::new()),
+        state.request_timeout_secs,
+    )
+    .await
+    {
+        Ok((status, body)) => {
+            let parsed: Value = serde_json::from_slice(&body)
+                .unwrap_or_else(|_| serde_json::json!({ "raw": String::from_utf8_lossy(&body) }));
+            json_response(status, &parsed)
+        },
+        Err(error) => json_response(
+            StatusCode::BAD_GATEWAY,
+            &serde_json::json!({ "error": format!("{error:#}") }),
+        ),
+    }
+}
+
+async fn parse_proxy_envelope(
+    request: Request<Incoming>,
+) -> Result<(ProxyEnvelope, Option<String>), DashboardResponse> {
+    let query = request.uri().query().map(str::to_owned);
+    let bytes = match request.into_body().collect().await {
+        Ok(collected) => collected.to_bytes(),
+        Err(error) => {
+            warn!(error = %format!("{error:#}"), "failed to read dashboard proxy body");
+            return Err(json_error(StatusCode::BAD_REQUEST, "invalid request body"));
+        },
+    };
+    let envelope: ProxyEnvelope = if bytes.is_empty() {
+        return Err(json_error(StatusCode::BAD_REQUEST, "missing instance"));
+    } else {
+        match serde_json::from_slice(&bytes) {
+            Ok(v) => v,
+            Err(error) => {
+                return Err(json_response(
+                    StatusCode::BAD_REQUEST,
+                    &serde_json::json!({ "error": format!("invalid JSON: {error}") }),
+                ));
+            },
+        }
+    };
+    if envelope.instance.is_empty() {
+        return Err(json_error(StatusCode::BAD_REQUEST, "instance must not be empty"));
+    }
+    Ok((envelope, query))
+}
+
 async fn fetch_instance_topology(
     instance: &DashboardInstanceConfig,
     request_timeout_secs: u64,
