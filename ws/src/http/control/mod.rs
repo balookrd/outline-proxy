@@ -5,9 +5,13 @@
 //! present a bearer token matching `[control].token`; there is no anonymous
 //! access path.
 
+mod apply;
 mod handlers;
 mod server;
 mod topology;
+mod uplinks_crud;
+
+pub use apply::ApplyHandle;
 
 pub use server::spawn_control_server;
 
@@ -440,7 +444,13 @@ mod tests {
     ) -> (u16, String) {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let state = Arc::new(ControlState { token: token.to_string(), uplinks });
+        let state = Arc::new(ControlState {
+            token: token.to_string(),
+            uplinks,
+            config_path: None,
+            config_write_lock: tokio::sync::Mutex::new(()),
+            apply: None,
+        });
         let server_task = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             handle_connection(stream, state).await.unwrap();

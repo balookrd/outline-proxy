@@ -101,7 +101,7 @@ async fn resolve_dispatch(
 
     Route::Group {
         name: registry.default_group_name().into(),
-        manager: registry.default_group().clone(),
+        manager: registry.default_group(),
     }
 }
 
@@ -132,8 +132,7 @@ fn resolve_single_target(
         RouteTarget::Group(name) => {
             let manager = registry
                 .group_by_name(name)
-                .cloned()
-                .unwrap_or_else(|| registry.default_group().clone());
+                .unwrap_or_else(|| registry.default_group());
             Route::Group { name: name.clone(), manager }
         },
     }

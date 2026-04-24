@@ -21,6 +21,9 @@ mod tcp_timeouts;
 mod tun;
 mod uplinks;
 
+#[cfg(feature = "control")]
+pub(crate) use uplinks::validate_uplink_section;
+
 #[cfg(test)]
 mod tests;
 
@@ -71,7 +74,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
              the `metrics` feature disabled; rebuild with --features metrics"
         );
     }
-    let control = load_control_config(control_section, args, config_dir).await?;
+    let control = load_control_config(control_section, args, config_dir, path).await?;
     let dashboard = load_dashboard_config(dashboard_section, config_dir).await?;
     #[cfg(not(feature = "control"))]
     if control.is_some() {
@@ -212,6 +215,7 @@ async fn load_control_config(
     section: Option<&ControlSection>,
     args: &Args,
     config_dir: &Path,
+    config_path: &Path,
 ) -> Result<Option<ControlConfig>> {
     let listen = args.control_listen.or_else(|| section.and_then(|s| s.listen));
     let cli_token = args.control_token.clone().filter(|t| !t.is_empty());
@@ -235,7 +239,15 @@ async fn load_control_config(
 
     match (listen, token) {
         (None, None) => Ok(None),
-        (Some(listen), Some(token)) => Ok(Some(ControlConfig { listen, token })),
+        (Some(listen), Some(token)) => Ok(Some(ControlConfig {
+            listen,
+            token,
+            config_path: if config_path.exists() {
+                Some(config_path.to_path_buf())
+            } else {
+                None
+            },
+        })),
         (Some(_), None) => bail!(
             "control listener configured but no token set: provide [control].token, \
              [control].token_file, --control-token, or CONTROL_TOKEN"
