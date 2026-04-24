@@ -55,6 +55,11 @@ pub struct TuningProfile {
     /// Process-wide ceiling on in-flight UDP relay tasks across all WebSocket
     /// sessions. `0` disables the global cap.
     pub udp_max_concurrent_relay_tasks: usize,
+    /// Maximum number of distinct SS-2022 client-session windows the replay
+    /// store will hold concurrently. Guards against an authenticated client
+    /// rotating `client_session_id` on every packet to inflate memory between
+    /// eviction sweeps. `0` disables the cap.
+    pub udp_replay_max_sessions: usize,
 }
 
 impl TuningProfile {
@@ -73,6 +78,7 @@ impl TuningProfile {
         client_active_ttl_secs: 180,
         udp_nat_idle_timeout_secs: 120,
         udp_max_concurrent_relay_tasks: 1_024,
+        udp_replay_max_sessions: 16_384,
     };
 
     /// Balanced profile for typical deployments.
@@ -90,6 +96,7 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 240,
         udp_max_concurrent_relay_tasks: 2_048,
+        udp_replay_max_sessions: 65_536,
     };
 
     /// Maximum-throughput profile for single-tenant, high-bandwidth-delay-product links.
@@ -107,6 +114,7 @@ impl TuningProfile {
         client_active_ttl_secs: 300,
         udp_nat_idle_timeout_secs: 300,
         udp_max_concurrent_relay_tasks: 4_096,
+        udp_replay_max_sessions: 262_144,
     };
 
     pub(super) fn validate(&self) -> Result<()> {
@@ -185,6 +193,7 @@ impl TuningProfile {
             bail!("tuning.udp_nat_idle_timeout_secs must be > 0");
         }
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
+        // `udp_replay_max_sessions == 0` is a valid opt-out.
 
         Ok(())
     }
@@ -229,6 +238,9 @@ impl TuningProfile {
         if let Some(v) = o.udp_max_concurrent_relay_tasks {
             self.udp_max_concurrent_relay_tasks = v;
         }
+        if let Some(v) = o.udp_replay_max_sessions {
+            self.udp_replay_max_sessions = v;
+        }
     }
 }
 
@@ -270,6 +282,8 @@ pub struct TuningOverrides {
     pub udp_nat_idle_timeout_secs: Option<u64>,
     #[serde(default)]
     pub udp_max_concurrent_relay_tasks: Option<usize>,
+    #[serde(default)]
+    pub udp_replay_max_sessions: Option<usize>,
 }
 
 #[cfg(test)]

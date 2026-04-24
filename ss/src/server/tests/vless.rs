@@ -52,9 +52,10 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         outbound_ipv6: None,
         udp: UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(
-                300,
-            )),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
             relay_semaphore: None,
         },
     });
@@ -128,9 +129,10 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         outbound_ipv6: None,
         udp: UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(
-                300,
-            )),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
             relay_semaphore: None,
         },
     });
@@ -211,9 +213,10 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         outbound_ipv6: None,
         udp: UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(
-                300,
-            )),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
             relay_semaphore: None,
         },
     });

@@ -200,6 +200,7 @@ cargo release-musl-armv7
 | `tuning.client_active_ttl_secs` | TTL в секундах для вычисления `client_active` / `client_up` |
 | `tuning.udp_nat_idle_timeout_secs` | Время жизни UDP NAT-записи после последней исходящей датаграммы (значение по умолчанию зависит от профиля; `300` для `large`) |
 | `tuning.udp_max_concurrent_relay_tasks` | Глобальный cap на число одновременных UDP-relay-тасков по всем WebSocket-сессиям. `0` отключает cap |
+| `tuning.udp_replay_max_sessions` | Максимум одновременных SS-2022 anti-replay окон (по умолчанию зависит от профиля; `262144` для `large`). Пакеты с новым `client_session_id` отбрасываются при достижении лимита — это ограничивает память от клиента, который вращает session ID, раздувая стор. `0` отключает cap |
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
@@ -679,7 +680,7 @@ RUST_LOG=outline_ss_rust=info,tower_http=info
 - HTTP/3 требует публичной доступности UDP на выбранном порту.
 - `fwmark` работает только на Linux и требует достаточных привилегий — обычно `CAP_NET_ADMIN` или root.
 - TCP и UDP WebSocket-пути должны быть различными. Сервер проверяет это при запуске.
-- UDP-трафик Shadowsocks-2022 защищён скользящим anti-replay фильтром по per-session ID; дубликаты `packet_id` отбрасываются и считаются в `outline_ss_udp_replay_dropped_total`.
+- UDP-трафик Shadowsocks-2022 защищён скользящим anti-replay фильтром по per-session ID; дубликаты `packet_id` отбрасываются и считаются в `outline_ss_udp_replay_dropped_total`. Стор хранит не более `tuning.udp_replay_max_sessions` сессий — пакеты с новым session ID сверх этого cap отбрасываются и считаются в `outline_ss_udp_replay_store_full_dropped_total`, ограничивая память против клиента, вращающего session ID.
 - HTTP-аутентификация на корневом пути сравнивает пароли в constant-time.
 
 ## Замечания о совместимости

@@ -146,25 +146,52 @@ struct ReplayEntry {
     last_seen_secs: AtomicU64,
 }
 
+/// Outcome of [`ReplayStore::check_and_mark`]. `StoreFull` distinguishes a
+/// drop caused by the process-wide session cap from an actual replay — both
+/// drop the packet but they mean different things operationally.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ReplayCheck {
+    Fresh,
+    Replay,
+    StoreFull,
+}
+
 /// Process-wide store of replay windows, keyed by `client_session_id`.
 /// Entries idle for longer than `idle_timeout` are reaped by `evict_idle`.
+/// A non-zero `max_sessions` caps the number of concurrent session windows
+/// to prevent an authenticated client from spraying unique `client_session_id`
+/// values and inflating memory between eviction sweeps.
 pub(crate) struct ReplayStore {
     entries: DashMap<[u8; 8], Arc<ReplayEntry>>,
     idle_timeout: Duration,
+    max_sessions: usize,
 }
 
 impl ReplayStore {
-    pub(crate) fn new(idle_timeout: Duration) -> Arc<Self> {
-        Arc::new(Self { entries: DashMap::new(), idle_timeout })
+    /// `max_sessions = 0` disables the cap.
+    pub(crate) fn new(idle_timeout: Duration, max_sessions: usize) -> Arc<Self> {
+        Arc::new(Self { entries: DashMap::new(), idle_timeout, max_sessions })
     }
 
-    /// Returns `true` if the `(client_session_id, packet_id)` pair is fresh
-    /// and has been recorded; `false` if it is a replay or falls outside the
-    /// sliding window.
-    pub(crate) fn check_and_mark(&self, client_session_id: [u8; 8], packet_id: u64) -> bool {
+    /// Records a `(client_session_id, packet_id)` pair and reports whether it
+    /// is `Fresh`, a `Replay`, or dropped because the store is at capacity.
+    pub(crate) fn check_and_mark(
+        &self,
+        client_session_id: [u8; 8],
+        packet_id: u64,
+    ) -> ReplayCheck {
         let entry = if let Some(e) = self.entries.get(&client_session_id) {
             Arc::clone(e.value())
         } else {
+            // Check the cap before taking a shard lock in `entry(...)`.
+            // `len()` takes per-shard read locks; doing it while holding a
+            // shard write lock could deadlock against a concurrent `len()`
+            // call that already holds read locks elsewhere. The race between
+            // the check and the insert is benign: the cap is a soft bound,
+            // and we only allow one extra registration per racing caller.
+            if self.max_sessions > 0 && self.entries.len() >= self.max_sessions {
+                return ReplayCheck::StoreFull;
+            }
             Arc::clone(
                 self.entries
                     .entry(client_session_id)
@@ -180,7 +207,11 @@ impl ReplayStore {
         entry
             .last_seen_secs
             .store(clock::current_unix_secs(), Ordering::Relaxed);
-        entry.window.lock().check_and_mark(packet_id)
+        if entry.window.lock().check_and_mark(packet_id) {
+            ReplayCheck::Fresh
+        } else {
+            ReplayCheck::Replay
+        }
     }
 
     /// Drop entries idle for longer than `idle_timeout`.
@@ -254,13 +285,38 @@ mod tests {
 
     #[test]
     fn store_isolates_sessions() {
-        let store = ReplayStore::new(Duration::from_secs(60));
+        let store = ReplayStore::new(Duration::from_secs(60), 0);
         let a = [1_u8; 8];
         let b = [2_u8; 8];
-        assert!(store.check_and_mark(a, 7));
-        assert!(store.check_and_mark(b, 7)); // different session, same id ok
-        assert!(!store.check_and_mark(a, 7)); // replay on session a
-        assert!(!store.check_and_mark(b, 7)); // replay on session b
+        assert_eq!(store.check_and_mark(a, 7), ReplayCheck::Fresh);
+        assert_eq!(store.check_and_mark(b, 7), ReplayCheck::Fresh); // different session, same id ok
+        assert_eq!(store.check_and_mark(a, 7), ReplayCheck::Replay);
+        assert_eq!(store.check_and_mark(b, 7), ReplayCheck::Replay);
+    }
+
+    #[test]
+    fn store_rejects_new_sessions_when_at_cap() {
+        let store = ReplayStore::new(Duration::from_secs(60), 2);
+        let a = [1_u8; 8];
+        let b = [2_u8; 8];
+        let c = [3_u8; 8];
+        assert_eq!(store.check_and_mark(a, 1), ReplayCheck::Fresh);
+        assert_eq!(store.check_and_mark(b, 1), ReplayCheck::Fresh);
+        // Third distinct csid spills over the cap and is dropped.
+        assert_eq!(store.check_and_mark(c, 1), ReplayCheck::StoreFull);
+        // Already-known sessions continue to work at the cap.
+        assert_eq!(store.check_and_mark(a, 2), ReplayCheck::Fresh);
+        assert_eq!(store.check_and_mark(a, 2), ReplayCheck::Replay);
+    }
+
+    #[test]
+    fn store_cap_zero_disables_limit() {
+        let store = ReplayStore::new(Duration::from_secs(60), 0);
+        for i in 0..1_000_u16 {
+            let mut csid = [0_u8; 8];
+            csid[..2].copy_from_slice(&i.to_be_bytes());
+            assert_eq!(store.check_and_mark(csid, 1), ReplayCheck::Fresh);
+        }
     }
 
     #[test]

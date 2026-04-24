@@ -387,6 +387,22 @@ impl Metrics {
         });
     }
 
+    pub fn record_udp_replay_store_full_dropped(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+    ) {
+        let user: Arc<str> = user.into();
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_udp_replay_store_full_dropped_total",
+                "user"     => user,
+                "protocol" => protocol.as_str()
+            )
+            .increment(1);
+        });
+    }
+
     pub fn record_udp_nat_response_dropped(&self) {
         with_local_recorder(&self.recorder, || {
             counter!("outline_ss_udp_nat_responses_dropped_total").increment(1);

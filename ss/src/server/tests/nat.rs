@@ -72,9 +72,10 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
         outbound_ipv6: None,
         udp: UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
-            replay_store: super::super::replay::ReplayStore::new(std::time::Duration::from_secs(
-                300,
-            )),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
             relay_semaphore: None,
         },
     });
