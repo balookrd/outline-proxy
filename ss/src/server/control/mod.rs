@@ -21,7 +21,6 @@ mod handlers;
 mod manager;
 mod persist;
 mod server;
-mod ui;
 
 pub(in crate::server) use dashboard::spawn_dashboard_server;
 pub(in crate::server) use manager::UserManager;

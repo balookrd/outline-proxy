@@ -31,7 +31,9 @@ use tracing::{info, warn};
 
 use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
-use super::{super::shutdown::ShutdownSignal, ui};
+use super::super::shutdown::ShutdownSignal;
+
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
 
 #[derive(Clone)]
 struct DashboardState {
@@ -107,7 +109,7 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
 }
 
 async fn dashboard_page() -> impl IntoResponse {
-    ([(header::CACHE_CONTROL, "no-store")], Html(ui::dashboard_html()))
+    ([(header::CACHE_CONTROL, "no-store")], Html(DASHBOARD_HTML))
 }
 
 async fn list_instances(State(state): State<DashboardState>) -> impl IntoResponse {
