@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashSet, VecDeque},
     net::{SocketAddr, SocketAddrV6},
     sync::Arc,
 };
@@ -120,54 +119,54 @@ pub(super) async fn connect_tcp_target(
     prefer_ipv4_upstream: bool,
     outbound_ipv6: Option<&OutboundIpv6>,
 ) -> Result<TcpStream> {
-    let resolved = sort_addrs_for_happy_eyeballs(
-        resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream)
-            .await?
-            .to_vec(),
-        prefer_ipv4_upstream,
-    );
-    connect_tcp_addrs(&resolved, fwmark, outbound_ipv6)
+    let resolved = resolve_target_addrs(dns_cache, target, prefer_ipv4_upstream).await?;
+    let ordered = sort_addrs_for_happy_eyeballs(&resolved, prefer_ipv4_upstream);
+    connect_tcp_addrs(&ordered, fwmark, outbound_ipv6)
         .await
         .with_context(|| format!("tcp connect failed for {}", target.display_host_port()))
 }
 
 pub(super) fn sort_addrs_for_happy_eyeballs(
-    addrs: Vec<SocketAddr>,
+    addrs: &[SocketAddr],
     prefer_ipv4_upstream: bool,
 ) -> Vec<SocketAddr> {
-    let prefer_ipv6 = if prefer_ipv4_upstream {
-        false
-    } else {
-        addrs.first().is_some_and(SocketAddr::is_ipv6)
-    };
-    let mut seen = HashSet::with_capacity(addrs.len());
-    let mut ipv4 = VecDeque::new();
-    let mut ipv6 = VecDeque::new();
+    if addrs.len() <= 1 {
+        return addrs.to_vec();
+    }
+    let prefer_ipv6 = !prefer_ipv4_upstream && addrs.first().is_some_and(SocketAddr::is_ipv6);
+    let mut ipv4: Vec<SocketAddr> = Vec::new();
+    let mut ipv6: Vec<SocketAddr> = Vec::new();
 
-    for addr in addrs {
-        if !seen.insert(addr) {
-            continue;
-        }
-        if addr.is_ipv6() {
-            ipv6.push_back(addr);
-        } else {
-            ipv4.push_back(addr);
+    for &addr in addrs {
+        let bucket = if addr.is_ipv6() { &mut ipv6 } else { &mut ipv4 };
+        if !bucket.contains(&addr) {
+            bucket.push(addr);
         }
     }
 
-    let (primary, secondary) = if prefer_ipv6 {
-        (&mut ipv6, &mut ipv4)
-    } else {
-        (&mut ipv4, &mut ipv6)
-    };
+    let (primary, secondary) = if prefer_ipv6 { (ipv6, ipv4) } else { (ipv4, ipv6) };
     let mut ordered = Vec::with_capacity(primary.len() + secondary.len());
-    while let Some(addr) = primary.pop_front() {
-        ordered.push(addr);
-        if let Some(fallback_addr) = secondary.pop_front() {
-            ordered.push(fallback_addr);
+    let mut p = primary.into_iter();
+    let mut s = secondary.into_iter();
+    loop {
+        match (p.next(), s.next()) {
+            (Some(a), Some(b)) => {
+                ordered.push(a);
+                ordered.push(b);
+            }
+            (Some(a), None) => {
+                ordered.push(a);
+                ordered.extend(p);
+                break;
+            }
+            (None, Some(b)) => {
+                ordered.push(b);
+                ordered.extend(s);
+                break;
+            }
+            (None, None) => break,
         }
     }
-    ordered.extend(secondary.drain(..));
     ordered
 }
 
