@@ -3,16 +3,16 @@ use std::cell::RefCell;
 use aes::cipher::{BlockDecrypt, BlockEncrypt, generic_array::GenericArray};
 use chacha20poly1305::{XNonce, aead::AeadInPlace as _};
 use ring::{
-    aead::{Aad, LessSafeKey, UnboundKey},
+    aead::Aad,
     rand::{SecureRandom, SystemRandom},
 };
 
 use super::{
     error::CryptoError,
     primitives::{
-        MAX_SUBKEY_LEN, SS2022_UDP_SEPARATE_HEADER_LEN, SS2022_UDP_SERVER_TYPE, TAG_LEN,
-        XNONCE_LEN, cipher_algorithm, derive_subkey, nonce_zero,
-        parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body, ss2022_udp_nonce,
+        SS2022_UDP_SEPARATE_HEADER_LEN, SS2022_UDP_SERVER_TYPE, TAG_LEN, XNONCE_LEN,
+        build_session_key, nonce_zero, parse_ss2022_chacha_udp_request_body,
+        parse_ss2022_udp_request_body, ss2022_udp_nonce,
     },
     user_key::{AesHeaderCipher, UserKey},
 };
@@ -127,13 +127,8 @@ fn try_decrypt_udp_packet_for_user(
                 .try_into()
                 .map_err(|_| CryptoError::InvalidHeader)?,
         );
-        let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-        let key_len =
-            derive_subkey(user.cipher(), user.master_key(), &separate_header[..8], &mut subkey)?;
-        let algorithm = cipher_algorithm(user.cipher());
-        let key =
-            UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
-        let less_safe = LessSafeKey::new(key);
+        let less_safe =
+            build_session_key(user.cipher(), user.master_key(), &separate_header[..8])?;
         let nonce = ss2022_udp_nonce(&separate_header)?;
         let payload = with_scratch(ciphertext, |buf| {
             match less_safe.open_in_place(nonce, Aad::empty(), buf) {
@@ -158,11 +153,7 @@ fn try_decrypt_udp_packet_for_user(
     }
 
     let (salt, ciphertext) = packet.split_at(salt_len);
-    let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-    let key_len = derive_subkey(user.cipher(), user.master_key(), salt, &mut subkey)?;
-    let algorithm = cipher_algorithm(user.cipher());
-    let key = UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
-    let less_safe = LessSafeKey::new(key);
+    let less_safe = build_session_key(user.cipher(), user.master_key(), salt)?;
     let plaintext = with_scratch(ciphertext, |buf| {
         less_safe
             .open_in_place(nonce_zero(), Aad::empty(), buf)
@@ -186,11 +177,7 @@ pub fn encrypt_udp_packet(user: &UserKey, plaintext: &[u8]) -> Result<Vec<u8>, C
     let mut salt = vec![0_u8; user.cipher().salt_len()];
     SystemRandom::new().fill(&mut salt).map_err(|_| CryptoError::Random)?;
 
-    let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-    let key_len = derive_subkey(user.cipher(), user.master_key(), &salt, &mut subkey)?;
-    let algorithm = cipher_algorithm(user.cipher());
-    let key = UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
-    let less_safe = LessSafeKey::new(key);
+    let less_safe = build_session_key(user.cipher(), user.master_key(), &salt)?;
 
     let mut output = salt;
     let mut ciphertext = plaintext.to_vec();
@@ -222,13 +209,8 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(&header);
             packet.extend_from_slice(payload);
 
-            let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-            let key_len =
-                derive_subkey(user.cipher(), user.master_key(), &packet[..salt_len], &mut subkey)?;
-            let algorithm = cipher_algorithm(user.cipher());
-            let key =
-                UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
-            let less_safe = LessSafeKey::new(key);
+            let less_safe =
+                build_session_key(user.cipher(), user.master_key(), &packet[..salt_len])?;
             let tag = less_safe
                 .seal_in_place_separate_tag(nonce_zero(), Aad::empty(), &mut packet[salt_len..])
                 .map_err(|_| CryptoError::Cipher)?;
@@ -256,13 +238,8 @@ pub fn encrypt_udp_packet_for_response(
             packet.extend_from_slice(&target);
             packet.extend_from_slice(payload);
 
-            let mut subkey = [0_u8; MAX_SUBKEY_LEN];
-            let key_len =
-                derive_subkey(user.cipher(), user.master_key(), &server_session_id, &mut subkey)?;
-            let algorithm = cipher_algorithm(user.cipher());
-            let key =
-                UnboundKey::new(algorithm, &subkey[..key_len]).map_err(|_| CryptoError::Cipher)?;
-            let less_safe = LessSafeKey::new(key);
+            let less_safe =
+                build_session_key(user.cipher(), user.master_key(), &server_session_id)?;
             let tag = less_safe
                 .seal_in_place_separate_tag(
                     ss2022_udp_nonce(&separate_header)?,

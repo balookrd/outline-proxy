@@ -4,7 +4,7 @@ use std::{
 };
 
 use bytes::BytesMut;
-use ring::aead::{Aad, LessSafeKey, UnboundKey};
+use ring::aead::Aad;
 
 use super::{
     AeadStreamDecryptor, AeadStreamEncryptor, UdpCipherMode, UserKey, decrypt_udp_packet,
@@ -163,21 +163,12 @@ fn roundtrip_ss2022_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let mut subkey = [0_u8; super::primitives::MAX_SUBKEY_LEN];
-    let key_len = super::primitives::derive_subkey(
+    let key = super::primitives::build_session_key(
         CipherKind::Aes128Gcm2022,
         users[0].master_key(),
         &request_salt,
-        &mut subkey,
     )
     .unwrap();
-    let key = LessSafeKey::new(
-        UnboundKey::new(
-            super::primitives::cipher_algorithm(CipherKind::Aes128Gcm2022),
-            &subkey[..key_len],
-        )
-        .unwrap(),
-    );
     let mut nonce_counter = 0;
 
     let mut fixed_header = Vec::from([super::primitives::SS2022_TCP_REQUEST_TYPE]);
@@ -227,21 +218,12 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let mut subkey = [0_u8; super::primitives::MAX_SUBKEY_LEN];
-    let key_len = super::primitives::derive_subkey(
+    let key = super::primitives::build_session_key(
         CipherKind::Chacha20Poly13052022,
         users[0].master_key(),
         &request_salt,
-        &mut subkey,
     )
     .unwrap();
-    let key = LessSafeKey::new(
-        UnboundKey::new(
-            super::primitives::cipher_algorithm(CipherKind::Chacha20Poly13052022),
-            &subkey[..key_len],
-        )
-        .unwrap(),
-    );
     let mut nonce_counter = 0;
 
     let mut fixed_header = vec![super::primitives::SS2022_TCP_REQUEST_TYPE];
