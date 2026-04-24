@@ -16,7 +16,6 @@ Changes after `v1.0.2` (2026-04-12):
 - Added configurable H2/H3 resource tuning profiles (`small`, `medium`, `large`) with optional per-field `[tuning]` overrides.
 - Added process-wide `udp_max_concurrent_relay_tasks` semaphore for capping concurrent UDP relay tasks.
 - Added Grafana panel for UDP relay drops broken down by transport, protocol, and drop reason.
-- Added YAML configuration file support.
 - Added cooperative graceful shutdown on `SIGTERM` and `SIGINT`.
 - Added install-script version checks and nightly commit SHA resolution.
 - Added regression coverage for WebSocket and HTTP/3 UDP NAT reconnect behavior.

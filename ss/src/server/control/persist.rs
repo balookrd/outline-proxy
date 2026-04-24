@@ -1,13 +1,8 @@
 //! Config file round-trip for the `users` section.
 //!
-//! For TOML we use [`toml_edit`] so comments, key order, and whitespace
-//! outside the `users` array are preserved byte-for-byte. Only the `users`
-//! key itself is replaced.
-//!
-//! For YAML there is no widely-used edit-in-place crate, so the file is
-//! round-tripped through [`serde_yml`], which drops comments and normalises
-//! formatting. A warning is emitted on first mutation so operators are not
-//! surprised.
+//! We use [`toml_edit`] so comments, key order, and whitespace outside the
+//! `users` array are preserved byte-for-byte. Only the `users` key itself is
+//! replaced.
 //!
 //! The result is written atomically (temp file + rename) to avoid leaving a
 //! half-written config on disk if the process is killed mid-write.
@@ -18,7 +13,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use tracing::warn;
 
 use crate::config::UserEntry;
 
@@ -27,34 +21,10 @@ pub(super) fn persist_users(path: &Path, users: &[UserEntry]) -> Result<()> {
         .with_context(|| format!("failed to read config file {}", path.display()))?;
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     let new_contents = match ext {
-        "yaml" | "yml" => rewrite_yaml(&contents, users)?,
         "toml" | "" => rewrite_toml(&contents, users)?,
         other => bail!("unsupported config file extension: {other:?}"),
     };
     atomic_write(path, new_contents.as_bytes())
-}
-
-fn rewrite_yaml(original: &str, users: &[UserEntry]) -> Result<String> {
-    warn!(
-        "rewriting YAML config: comments and formatting outside the `users` key may be lost \
-         (YAML edit-in-place is not supported; consider TOML if comments must be preserved)"
-    );
-    let mut root: serde_yml::Value =
-        serde_yml::from_str(original).context("failed to parse existing YAML config")?;
-    let users_value =
-        serde_yml::to_value(users).context("failed to serialize users to YAML value")?;
-    match &mut root {
-        serde_yml::Value::Mapping(map) => {
-            map.insert(serde_yml::Value::String("users".to_owned()), users_value);
-        },
-        serde_yml::Value::Null => {
-            let mut map = serde_yml::Mapping::new();
-            map.insert(serde_yml::Value::String("users".to_owned()), users_value);
-            root = serde_yml::Value::Mapping(map);
-        },
-        _ => bail!("top-level YAML config must be a mapping"),
-    }
-    serde_yml::to_string(&root).context("failed to serialize YAML config")
 }
 
 fn rewrite_toml(original: &str, users: &[UserEntry]) -> Result<String> {
@@ -167,12 +137,4 @@ password = "stale"
         assert!(parsed.get("users").is_some());
     }
 
-    #[test]
-    fn yaml_rewrite_replaces_users_block() {
-        let original = "listen: 0.0.0.0:3000\nusers:\n  - id: alice\n    password: stale\n";
-        let out = rewrite_yaml(original, &sample_users()).expect("rewrite_yaml");
-        assert!(out.contains("alice"));
-        assert!(out.contains("bob"));
-        assert!(!out.contains("stale"));
-    }
 }
