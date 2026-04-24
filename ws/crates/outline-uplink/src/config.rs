@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use url::Url;
 
-pub use outline_transport::{ServerAddr, WsTransportMode};
+pub use outline_transport::{ServerAddr, VlessUdpMuxLimits, WsTransportMode};
 pub use shadowsocks_crypto::CipherKind;
 pub use socks5_proto::TargetAddr;
 
@@ -188,6 +188,10 @@ pub struct LoadBalancingConfig {
     /// When true, traffic returns to the highest-priority healthy uplink once it
     /// has been stable for `min_failures` consecutive probe cycles.
     pub auto_failback: bool,
+    /// Bounds on the per-uplink VLESS UDP session mux: max concurrent sessions
+    /// (LRU-evicted beyond the cap), per-session idle timeout, and janitor
+    /// scan interval. Ignored for non-VLESS uplinks.
+    pub vless_udp_mux_limits: VlessUdpMuxLimits,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]

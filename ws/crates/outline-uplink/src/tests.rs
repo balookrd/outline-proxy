@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::config::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
-    UplinkConfig, UplinkTransport, WsProbeConfig, WsTransportMode,
+    UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, WsTransportMode,
 };
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
@@ -36,6 +36,7 @@ fn lb() -> LoadBalancingConfig {
         tcp_ws_standby_keepalive_interval: None,
         tcp_active_keepalive_interval: None,
         auto_failback: false,
+        vless_udp_mux_limits: VlessUdpMuxLimits::default(),
     }
 }
 

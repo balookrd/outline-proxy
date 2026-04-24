@@ -283,7 +283,7 @@ mod tests {
     use super::*;
     use crate::config::{
         LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
-        WsProbeConfig,
+        VlessUdpMuxLimits, WsProbeConfig,
     };
     use crate::config::{CipherKind, UplinkTransport, WsTransportMode};
 
@@ -339,6 +339,7 @@ mod tests {
                 tcp_ws_standby_keepalive_interval: None,
                 tcp_active_keepalive_interval: None,
                 auto_failback: false,
+                vless_udp_mux_limits: VlessUdpMuxLimits::default(),
             },
         }
     }

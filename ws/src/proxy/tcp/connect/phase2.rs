@@ -255,7 +255,8 @@ mod tests {
     };
     use outline_uplink::{
         CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
-        UplinkCandidate, UplinkConfig, UplinkTransport, WsProbeConfig, WsTransportMode,
+        UplinkCandidate, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
+        WsTransportMode,
     };
     use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, TcpStream};
@@ -296,6 +297,7 @@ mod tests {
             tcp_ws_standby_keepalive_interval: None,
             tcp_active_keepalive_interval: Some(keepalive_interval),
             auto_failback: false,
+            vless_udp_mux_limits: VlessUdpMuxLimits::default(),
         }
     }
 

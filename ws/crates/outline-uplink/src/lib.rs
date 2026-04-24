@@ -17,7 +17,7 @@ mod utils;
 pub use config::{
     CipherKind, DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
     ProbeConfig, RoutingScope, ServerAddr, TcpProbeConfig, TargetAddr, UplinkConfig,
-    UplinkGroupConfig, UplinkTransport, WsProbeConfig, WsTransportMode,
+    UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, WsTransportMode,
 };
 #[cfg(test)]
 mod tests;

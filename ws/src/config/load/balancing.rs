@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use outline_uplink::{LoadBalancingConfig, LoadBalancingMode, RoutingScope};
+use outline_uplink::{LoadBalancingConfig, LoadBalancingMode, RoutingScope, VlessUdpMuxLimits};
 
 use super::super::schema::LoadBalancingSection;
 
@@ -63,5 +63,23 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
             }
         },
         auto_failback: lb.and_then(|l| l.auto_failback).unwrap_or(false),
+        vless_udp_mux_limits: {
+            let defaults = VlessUdpMuxLimits::default();
+            VlessUdpMuxLimits {
+                max_sessions: lb
+                    .and_then(|l| l.vless_udp_max_sessions)
+                    .unwrap_or(defaults.max_sessions),
+                // `0` disables idle eviction (janitor task is not spawned).
+                session_idle_timeout: match lb.and_then(|l| l.vless_udp_session_idle_secs) {
+                    Some(0) => None,
+                    Some(secs) => Some(Duration::from_secs(secs)),
+                    None => defaults.session_idle_timeout,
+                },
+                janitor_interval: lb
+                    .and_then(|l| l.vless_udp_janitor_interval_secs)
+                    .map(Duration::from_secs)
+                    .unwrap_or(defaults.janitor_interval),
+            }
+        },
     })
 }
