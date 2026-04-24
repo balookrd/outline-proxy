@@ -10,7 +10,8 @@ use tokio::sync::Semaphore;
 use tracing::debug;
 
 use outline_transport::{
-    DnsCache, TransportOperation, UdpWsTransport, connect_shadowsocks_udp_with_source,
+    DnsCache, TransportOperation, UdpWsTransport, VlessUdpWsTransport,
+    connect_shadowsocks_udp_with_source,
 };
 
 use crate::config::{DnsProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
@@ -27,22 +28,117 @@ pub(super) async fn run_dns_probe(
 ) -> Result<bool> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
-    let mut payload = dns_server.to_wire_bytes()?;
-    payload.extend_from_slice(&query);
 
-    let transport = {
-        let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-        match uplink.transport {
-            UplinkTransport::Ws => {
-                let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
-                    anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
-                })?;
-                UdpWsTransport::connect(
+    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "udp", probe: "dns" };
+
+    match uplink.transport {
+        UplinkTransport::Ws | UplinkTransport::Shadowsocks => {
+            let mut payload = dns_server.to_wire_bytes()?;
+            payload.extend_from_slice(&query);
+
+            let transport = {
+                let _permit =
+                    dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+                match uplink.transport {
+                    UplinkTransport::Ws => {
+                        let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
+                            anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
+                        })?;
+                        UdpWsTransport::connect(
+                            cache,
+                            udp_ws_url,
+                            effective_udp_mode,
+                            uplink.cipher,
+                            &uplink.password,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            None,
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!("DNS probe websocket for uplink {}", uplink.name),
+                        })?
+                    },
+                    UplinkTransport::Shadowsocks => {
+                        let socket = connect_shadowsocks_udp_with_source(
+                            cache,
+                            uplink.udp_addr.as_ref().ok_or_else(|| {
+                                anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name)
+                            })?,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!(
+                                "DNS probe shadowsocks socket for uplink {}",
+                                uplink.name
+                            ),
+                        })?;
+                        UdpWsTransport::from_socket(
+                            socket,
+                            uplink.cipher,
+                            &uplink.password,
+                            "probe_dns",
+                        )?
+                    },
+                    UplinkTransport::Vless => unreachable!(),
+                }
+            };
+
+            let result = async {
+                transport
+                    .send_packet(&payload)
+                    .await
+                    .context("failed to send DNS probe packet")?;
+                bytes.outgoing(payload.len());
+                let response = transport
+                    .read_packet()
+                    .await
+                    .context("failed to read DNS probe response")?;
+                bytes.incoming(response.len());
+                let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
+                validate_dns_response(&response[consumed..], &query)?;
+                Ok::<bool, anyhow::Error>(true)
+            }
+            .await;
+
+            debug!(
+                uplink = %uplink.name,
+                transport = "udp",
+                probe = "dns",
+                "closing probe transport after DNS probe"
+            );
+            if let Err(error) = transport.close().await {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "udp",
+                    probe = "dns",
+                    error = %format!("{error:#}"),
+                    "probe transport close returned error during teardown"
+                );
+            }
+            result
+        },
+        UplinkTransport::Vless => {
+            let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
+                anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
+            })?;
+            let uuid = uplink.vless_uuid.as_ref().ok_or_else(|| {
+                anyhow!("uplink {} has no vless_uuid for DNS probe", uplink.name)
+            })?;
+
+            let transport = {
+                let _permit =
+                    dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+                VlessUdpWsTransport::connect(
                     cache,
                     udp_ws_url,
                     effective_udp_mode,
-                    uplink.cipher,
-                    &uplink.password,
+                    uuid,
+                    &dns_server,
                     uplink.fwmark,
                     uplink.ipv6_first,
                     "probe_dns",
@@ -50,73 +146,57 @@ pub(super) async fn run_dns_probe(
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
-                    target: format!("DNS probe websocket for uplink {}", uplink.name),
+                    target: format!("DNS probe VLESS websocket for uplink {}", uplink.name),
                 })?
-            },
-            UplinkTransport::Vless => {
-                bail!(
-                    "DNS probe is not supported for VLESS uplinks yet (iteration 1: rely on WS probe)"
+            };
+
+            let result = async {
+                transport
+                    .send_packet(&query)
+                    .await
+                    .context("failed to send DNS probe packet")?;
+                bytes.outgoing(query.len());
+                let response = transport
+                    .read_packet()
+                    .await
+                    .context("failed to read DNS probe response")?;
+                bytes.incoming(response.len());
+                validate_dns_response(&response, &query)?;
+                Ok::<bool, anyhow::Error>(true)
+            }
+            .await;
+
+            debug!(
+                uplink = %uplink.name,
+                transport = "udp",
+                probe = "dns",
+                "closing probe transport after DNS probe"
+            );
+            if let Err(error) = transport.close().await {
+                debug!(
+                    uplink = %uplink.name,
+                    transport = "udp",
+                    probe = "dns",
+                    error = %format!("{error:#}"),
+                    "probe transport close returned error during teardown"
                 );
-            },
-            UplinkTransport::Shadowsocks => {
-                let socket = connect_shadowsocks_udp_with_source(
-                    cache,
-                    uplink.udp_addr.as_ref().ok_or_else(|| {
-                        anyhow!("uplink {} has no udp_addr for DNS probe", uplink.name)
-                    })?,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    "probe_dns",
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!(
-                        "DNS probe shadowsocks socket for uplink {}",
-                        uplink.name
-                    ),
-                })?;
-                UdpWsTransport::from_socket(socket, uplink.cipher, &uplink.password, "probe_dns")?
-            },
-        }
-    };
-
-    let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "udp", probe: "dns" };
-    let result = async {
-        transport
-            .send_packet(&payload)
-            .await
-            .context("failed to send DNS probe packet")?;
-        bytes.outgoing(payload.len());
-        let response = transport
-            .read_packet()
-            .await
-            .context("failed to read DNS probe response")?;
-        bytes.incoming(response.len());
-        let (_, consumed) = TargetAddr::from_wire_bytes(&response)?;
-        let dns = &response[consumed..];
-
-        if dns.len() < 12 {
-            bail!("DNS probe response is too short");
-        }
-        if dns[..2] != query[..2] {
-            bail!("DNS probe transaction id mismatch");
-        }
-        if dns[3] & 0x0f != 0 {
-            bail!("DNS probe returned non-zero rcode");
-        }
-
-        Ok::<bool, anyhow::Error>(true)
+            }
+            result
+        },
     }
-    .await;
+}
 
-    debug!(
-        uplink = %uplink.name,
-        transport = "udp",
-        probe = "dns",
-        "closing probe transport after DNS probe"
-    );
-    close_probe_udp_transport(&uplink.name, "dns", &transport).await;
-    result
+fn validate_dns_response(dns: &[u8], query: &[u8]) -> Result<()> {
+    if dns.len() < 12 {
+        bail!("DNS probe response is too short");
+    }
+    if dns[..2] != query[..2] {
+        bail!("DNS probe transaction id mismatch");
+    }
+    if dns[3] & 0x0f != 0 {
+        bail!("DNS probe returned non-zero rcode");
+    }
+    Ok(())
 }
 
 fn build_dns_query(name: &str) -> Vec<u8> {
@@ -135,18 +215,3 @@ fn build_dns_query(name: &str) -> Vec<u8> {
     out
 }
 
-async fn close_probe_udp_transport(
-    uplink_name: &str,
-    probe: &'static str,
-    transport: &UdpWsTransport,
-) {
-    if let Err(error) = transport.close().await {
-        debug!(
-            uplink = %uplink_name,
-            transport = "udp",
-            probe,
-            error = %format!("{error:#}"),
-            "probe transport close returned error during teardown"
-        );
-    }
-}
