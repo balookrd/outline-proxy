@@ -221,12 +221,12 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
 | `control.token` | Bearer token required on every request. Prefer `control.token_file` for secrets management |
 | `control.token_file` | Path to a file containing the bearer token; mutually exclusive with `control.token` |
-| `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control servers without exposing tokens to the browser |
+| `[dashboard]` | Optional browser UI on a separate listener; proxies to configured control instances without exposing tokens to the browser |
 | `dashboard.listen` | Socket address for the dashboard listener, e.g. `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Timeout for dashboard-to-control requests. Default: `15` |
-| `dashboard.servers[].name` | Display name for a managed server |
-| `dashboard.servers[].control_url` | Base `http://` URL of that server's control listener |
-| `dashboard.servers[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
+| `dashboard.instances[].name` | Display name for a managed instance |
+| `dashboard.instances[].control_url` | Base `http://` or `https://` URL of that instance's control listener |
+| `dashboard.instances[].token` / `token_file` | Bearer token used server-side when proxying to that control listener |
 
 ### Per-User Settings
 
@@ -290,18 +290,18 @@ The same feature can also serve a browser dashboard on a separate listener. The 
 listen = "127.0.0.1:7002"
 request_timeout_secs = 15
 
-[[dashboard.servers]]
+[[dashboard.instances]]
 name = "local"
 control_url = "http://127.0.0.1:7001"
 token_file = "/etc/outline-ss-rust/control.token"
 
-[[dashboard.servers]]
+[[dashboard.instances]]
 name = "edge-02"
-control_url = "http://10.0.0.12:7001"
+control_url = "https://10.0.0.12:7001"
 token_file = "/etc/outline-ss-rust/edge-02.control.token"
 ```
 
-Open `http://127.0.0.1:7002/dashboard`. Dashboard `control_url` currently supports `http://` control listeners.
+Open `http://127.0.0.1:7002/dashboard`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |

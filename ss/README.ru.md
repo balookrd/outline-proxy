@@ -226,9 +226,9 @@ cargo release-musl-armv7
 | `[dashboard]` | Опциональный браузерный UI на отдельном listener; проксирует запросы к настроенным control-серверам и не отдаёт токены браузеру |
 | `dashboard.listen` | Адрес сокета dashboard listener, например `127.0.0.1:7002` |
 | `dashboard.request_timeout_secs` | Таймаут dashboard-to-control запросов. По умолчанию `15` |
-| `dashboard.servers[].name` | Отображаемое имя управляемого сервера |
-| `dashboard.servers[].control_url` | Базовый `http://` URL control listener этого сервера |
-| `dashboard.servers[].token` / `token_file` | Bearer-токен, который dashboard использует server-side при проксировании |
+| `dashboard.instances[].name` | Отображаемое имя управляемого инстанса |
+| `dashboard.instances[].control_url` | Базовый `http://` или `https://` URL control listener этого инстанса |
+| `dashboard.instances[].token` / `token_file` | Bearer-токен, который dashboard использует server-side при проксировании |
 
 ### Параметры пользователя
 
@@ -292,18 +292,18 @@ token_file = "/etc/outline-ss-rust/control.token"
 listen = "127.0.0.1:7002"
 request_timeout_secs = 15
 
-[[dashboard.servers]]
+[[dashboard.instances]]
 name = "local"
 control_url = "http://127.0.0.1:7001"
 token_file = "/etc/outline-ss-rust/control.token"
 
-[[dashboard.servers]]
+[[dashboard.instances]]
 name = "edge-02"
-control_url = "http://10.0.0.12:7001"
+control_url = "https://10.0.0.12:7001"
 token_file = "/etc/outline-ss-rust/edge-02.control.token"
 ```
 
-Открывайте `http://127.0.0.1:7002/dashboard`. Сейчас `control_url` для dashboard поддерживает `http://` control listeners.
+Открывайте `http://127.0.0.1:7002/dashboard`.
 
 | Метод | Путь | Назначение |
 | --- | --- | --- |
