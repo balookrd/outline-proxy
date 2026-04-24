@@ -55,7 +55,12 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 
-ReadWritePaths=/var/lib/outline-ws-rust/%i
+# /etc/outline-ws-rust/instances is writable so the one-shot config migrator
+# (legacy top-level keys → [outline]) can persist the rewritten file and its
+# .bak backup. If you prefer a read-only config directory, drop this path —
+# the service will still start (the migration runs in memory and logs a
+# warning pointing at `outline-ws-rust --migrate-config`).
+ReadWritePaths=/var/lib/outline-ws-rust/%i /etc/outline-ws-rust/instances
 
 [Install]
 WantedBy=multi-user.target

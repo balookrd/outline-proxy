@@ -34,6 +34,22 @@ pub fn init_rustls_crypto_provider() -> Result<()> {
 }
 
 pub async fn run(args: Args) -> Result<()> {
+    if args.migrate_config {
+        let changed = config::migrate_config_file(&args.config).await?;
+        if changed {
+            tracing::info!(
+                path = %args.config.display(),
+                "config: migration persisted; original saved as .bak",
+            );
+        } else {
+            tracing::info!(
+                path = %args.config.display(),
+                "config: no legacy fields detected; nothing to migrate",
+            );
+        }
+        return Ok(());
+    }
+
     init_metrics();
     spawn_process_metrics_sampler();
     let config = load_config(&args.config, &args).await?;

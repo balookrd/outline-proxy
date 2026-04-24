@@ -8,12 +8,13 @@
 //! `compat.rs` once all deployed configs have been migrated.
 
 use std::ffi::OsString;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::fs;
 use toml::Value;
-use tracing::info;
+use tracing::{info, warn};
 
 const LEGACY_KEYS: &[&str] = &[
     "transport",
@@ -52,12 +53,52 @@ const UPLINK_INLINE_KEYS: &[&str] = &[
 ];
 
 /// If `raw` contains any legacy top-level uplink keys, rewrite the file on
-/// disk (after backing it up) and return the migrated TOML text. Otherwise
-/// return `None` and leave the file untouched.
+/// disk (after backing it up) and return the migrated TOML text. When the
+/// filesystem is read-only (e.g. systemd `ProtectSystem=strict`), the on-disk
+/// rewrite is skipped with a warning and the migrated text is still returned
+/// so in-memory loading succeeds. Use `--migrate-config` from a writable
+/// context to perform the rewrite.
 pub(super) async fn migrate_legacy_config_if_needed(
     path: &Path,
     raw: &str,
 ) -> Result<Option<String>> {
+    let Some(migrated) = migrate_in_memory(path, raw)? else {
+        return Ok(None);
+    };
+
+    match persist_migrated(path, raw, &migrated).await {
+        Ok(()) => {},
+        Err(err) if is_readonly_fs_error(&err) => {
+            warn!(
+                path = %path.display(),
+                error = %format_chain(&err),
+                "config: detected legacy top-level uplink fields, but the config directory is \
+                 not writable; continuing with in-memory migration. To persist the migration, \
+                 run `outline-ws-rust --migrate-config --config <path>` from a writable context",
+            );
+        },
+        Err(err) => return Err(err),
+    }
+
+    Ok(Some(migrated))
+}
+
+/// Explicit on-demand migration. Parses `path`, rewrites the file in place
+/// when legacy keys are present, and returns `true` if any change was made.
+/// All errors (including read-only filesystem) are propagated — this is meant
+/// to be invoked from a context that is expected to be writable.
+pub async fn migrate_config_file(path: &Path) -> Result<bool> {
+    let raw = fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let Some(migrated) = migrate_in_memory(path, &raw)? else {
+        return Ok(false);
+    };
+    persist_migrated(path, &raw, &migrated).await?;
+    Ok(true)
+}
+
+fn migrate_in_memory(path: &Path, raw: &str) -> Result<Option<String>> {
     let mut doc: toml::Table =
         toml::from_str(raw).with_context(|| format!("failed to parse {}", path.display()))?;
 
@@ -109,12 +150,15 @@ pub(super) async fn migrate_legacy_config_if_needed(
     doc.insert("outline".to_string(), Value::Table(outline));
 
     let serialized = toml::to_string_pretty(&doc).context("failed to serialize migrated config")?;
+    Ok(Some(serialized))
+}
 
+async fn persist_migrated(path: &Path, raw: &str, migrated: &str) -> Result<()> {
     let backup = backup_path(path);
     fs::write(&backup, raw)
         .await
         .with_context(|| format!("failed to write backup {}", backup.display()))?;
-    fs::write(path, &serialized)
+    fs::write(path, migrated)
         .await
         .with_context(|| format!("failed to write migrated {}", path.display()))?;
     info!(
@@ -122,14 +166,37 @@ pub(super) async fn migrate_legacy_config_if_needed(
         backup = %backup.display(),
         "config: migrated legacy top-level uplink fields into [outline]; original saved as .bak",
     );
-
-    Ok(Some(serialized))
+    Ok(())
 }
 
 fn backup_path(path: &Path) -> PathBuf {
     let mut s = OsString::from(path.as_os_str());
     s.push(".bak");
     PathBuf::from(s)
+}
+
+/// Detects read-only / permission errors that should not block startup.
+/// Covers EROFS, EACCES, and EPERM anywhere in the anyhow error chain.
+fn is_readonly_fs_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause.downcast_ref::<io::Error>().is_some_and(|io_err| {
+            matches!(
+                io_err.kind(),
+                io::ErrorKind::ReadOnlyFilesystem | io::ErrorKind::PermissionDenied,
+            )
+        })
+    })
+}
+
+fn format_chain(err: &anyhow::Error) -> String {
+    let mut out = String::new();
+    for (i, cause) in err.chain().enumerate() {
+        if i > 0 {
+            out.push_str(": ");
+        }
+        out.push_str(&cause.to_string());
+    }
+    out
 }
 
 #[cfg(test)]
@@ -192,6 +259,61 @@ mod tests {
         assert!(migrated.is_none(), "no migration expected");
         assert_eq!(on_disk, src);
         assert!(backup.is_none(), "no backup should be created");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn readonly_dir_falls_back_to_in_memory_migration() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        let src = "tcp_ws_url = \"wss://example.com/tcp\"\n\
+                   method = \"chacha20-ietf-poly1305\"\n\
+                   password = \"secret\"\n";
+        fs::write(&path, src).await.unwrap();
+
+        // Drop write permission on the containing directory so write() fails
+        // with EACCES — the closest portable stand-in for EROFS.
+        let orig = fs::metadata(dir.path()).await.unwrap().permissions();
+        fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555))
+            .await
+            .unwrap();
+
+        let result = migrate_legacy_config_if_needed(&path, src).await;
+
+        // Restore perms so TempDir cleanup works.
+        fs::set_permissions(dir.path(), orig).await.unwrap();
+
+        let migrated = result.expect("readonly fs should not fail startup");
+        let out = migrated.expect("in-memory migration should have produced text");
+        assert!(out.contains("[[outline.uplinks]]"));
+        // File on disk is unchanged and no backup was written.
+        assert_eq!(fs::read_to_string(&path).await.unwrap(), src);
+        assert!(fs::read_to_string(backup_path(&path)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn migrate_config_file_rewrites_and_reports_change() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.toml");
+        let src = "tcp_ws_url = \"wss://example.com/tcp\"\n\
+                   method = \"chacha20-ietf-poly1305\"\n\
+                   password = \"secret\"\n";
+        fs::write(&path, src).await.unwrap();
+
+        let changed = migrate_config_file(&path).await.unwrap();
+        assert!(changed);
+        assert!(
+            fs::read_to_string(&path)
+                .await
+                .unwrap()
+                .contains("[[outline.uplinks]]")
+        );
+
+        // Second invocation: no change, no error.
+        let changed = migrate_config_file(&path).await.unwrap();
+        assert!(!changed);
     }
 
     #[tokio::test]
