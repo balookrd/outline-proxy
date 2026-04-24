@@ -133,4 +133,8 @@ pub(super) fn register_descriptions() {
         "outline_ss_udp_nat_responses_dropped_total",
         "UDP upstream responses dropped because no WebSocket session was registered."
     );
+    describe_counter!(
+        "outline_ss_maintenance_task_panics_total",
+        "Background maintenance tasks that panicked and triggered server shutdown."
+    );
 }

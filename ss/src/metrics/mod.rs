@@ -124,6 +124,12 @@ impl Metrics {
         sampler::spawn(Arc::clone(self));
     }
 
+    pub fn record_maintenance_task_panic(&self, task: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_maintenance_task_panics_total", "task" => task).increment(1);
+        });
+    }
+
     pub fn record_websocket_binary_frame(
         &self,
         transport: Transport,

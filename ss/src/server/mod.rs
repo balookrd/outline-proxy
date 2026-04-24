@@ -70,22 +70,23 @@ pub async fn run(config: Config) -> Result<()> {
 
     let (shutdown_sender, shutdown_signal) = shutdown_channel();
 
+    let shutdown_sender = Arc::new(shutdown_sender);
+
     // OS signal handler: flip the shutdown flag on SIGTERM/SIGINT.
     {
-        let shutdown_sender = Arc::new(shutdown_sender);
         let handler_sender = Arc::clone(&shutdown_sender);
         tokio::spawn(async move {
             wait_for_shutdown_signal().await;
             handler_sender.send();
         });
-        // Drop the strong reference we hold locally so the handler task owns
-        // the only remaining `ShutdownSender`.  Dropping it after the handler
-        // fires eagerly releases resources, but the handler is the only place
-        // that actually needs to `send()`.
-        drop(shutdown_sender);
     }
 
-    periodic::spawn_maintenance(&built, &config, shutdown_signal.clone());
+    periodic::spawn_maintenance(
+        &built,
+        &config,
+        shutdown_signal.clone(),
+        Arc::clone(&shutdown_sender),
+    );
 
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
