@@ -145,6 +145,29 @@ async fn handle_ss_udp_datagram(
         "socket udp shadowsocks user authenticated"
     );
 
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        ctx.services.metrics.record_udp_oversized_datagram_dropped(
+            Arc::clone(&user_id),
+            Protocol::Socket,
+            "client_to_target",
+        );
+        warn!(
+            user = packet.user.id(),
+            client_addr = %client_addr,
+            target = %target_display,
+            plaintext_bytes = payload.len(),
+            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
+            "dropping oversized socket udp datagram before upstream send"
+        );
+        ctx.services.metrics.record_udp_request(
+            Arc::clone(&user_id),
+            Protocol::Socket,
+            "error",
+            started_at.elapsed().as_secs_f64(),
+        );
+        return Ok(());
+    }
+
     let resolved = resolve_udp_target(
         ctx.services.dns_cache.as_ref(),
         &target,
@@ -196,28 +219,6 @@ async fn handle_ss_udp_datagram(
         )
         .await;
 
-    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        ctx.services.metrics.record_udp_oversized_datagram_dropped(
-            Arc::clone(&user_id),
-            Protocol::Socket,
-            "client_to_target",
-        );
-        warn!(
-            user = packet.user.id(),
-            client_addr = %client_addr,
-            target = %resolved,
-            plaintext_bytes = payload.len(),
-            max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
-            "dropping oversized socket udp datagram before upstream send"
-        );
-        ctx.services.metrics.record_udp_request(
-            Arc::clone(&user_id),
-            Protocol::Socket,
-            "error",
-            started_at.elapsed().as_secs_f64(),
-        );
-        return Ok(());
-    }
     ctx.services.metrics.record_udp_payload_bytes(
         Arc::clone(&user_id),
         Protocol::Socket,
