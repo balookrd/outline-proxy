@@ -17,12 +17,10 @@
 
 mod entry;
 mod reader;
-mod socket;
 mod table;
 
 pub(crate) use entry::{NatKey, ResponseSender, UdpResponseSender};
-pub(crate) use socket::bind_nat_udp_socket;
-pub(crate) use table::NatTable;
+pub(crate) use table::{NatTable, bind_nat_udp_socket};
 
 #[cfg(test)]
 mod tests {
