@@ -573,6 +573,10 @@ failure_penalty_max_ms = 30000
 failure_penalty_halflife_secs = 60
 h3_downgrade_secs = 60
 # auto_failback = false
+# VLESS UDP session-mux bounds (only used by transport = "vless" uplinks).
+# vless_udp_max_sessions = 256              # LRU-evict beyond this many targets
+# vless_udp_session_idle_secs = 60          # 0 disables idle eviction
+# vless_udp_janitor_interval_secs = 15
 
 # Uplinks live under [outline]. Each [[outline.uplinks]] entry must declare
 # `group = "..."` matching an [[uplink_group]].name above.
@@ -602,6 +606,20 @@ udp_ws_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
+# VLESS-over-WebSocket uplink. Shares the WSS dial path with the "websocket"
+# transport; `uuid` replaces the Shadowsocks cipher/password. UDP is carried
+# as a per-destination session inside the same WSS endpoint.
+[[outline.uplinks]]
+name = "vless-edge"
+group = "main"
+transport = "vless"
+tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
+udp_ws_url = "wss://vless.example.com/SECRET/udp"
+tcp_ws_mode = "h2"
+udp_ws_mode = "h2"
+uuid = "11111111-2222-3333-4444-555555555555"
+weight = 0.5
+
 # Optional policy routing — first-match-wins by destination CIDR.
 # `via` accepts a group name or the reserved `direct` / `drop` targets.
 # Omit [[route]] entirely to send everything through the first group.
@@ -616,7 +634,7 @@ via = "main"
 
 ### Key config behavior
 
-- `transport` accepts `websocket` (default) or `shadowsocks`.
+- `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `uuid` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3` and are only used with `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
