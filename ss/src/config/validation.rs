@@ -191,6 +191,7 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: CipherKind::Chacha20IetfPoly1305,
+            access_key: Default::default(),
             tuning: super::super::TuningProfile::LARGE,
         }
     }

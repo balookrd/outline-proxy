@@ -49,6 +49,31 @@ pub fn build_access_key_artifacts(
     Ok(artifacts)
 }
 
+pub fn build_access_key_artifacts_for_user(
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+) -> Result<Vec<AccessKeyArtifact>> {
+    if config.listen.is_none() {
+        bail!("Outline access keys require the websocket listen listener to be configured");
+    }
+    let public_host = ak
+        .public_host
+        .as_deref()
+        .ok_or_else(|| anyhow!("--public-host is required to generate client configs"))?;
+
+    let mut user = user.clone();
+    user.enabled = Some(true);
+    let mut artifacts = Vec::new();
+    if user.password.is_some() {
+        artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
+    }
+    if user.vless_id.is_some() {
+        artifacts.push(build_vless_user_artifact(config, ak, &user, public_host)?);
+    }
+    Ok(artifacts)
+}
+
 pub fn render_access_key_report(artifacts: &[AccessKeyArtifact]) -> String {
     let mut out = String::new();
 
@@ -379,7 +404,7 @@ mod tests {
                     ws_path_udp: Some("/alice/udp".into()),
                     vless_id: None,
                     vless_ws_path: None,
-            enabled: None,
+                    enabled: None,
                 },
                 UserEntry {
                     id: "bob".into(),
@@ -390,7 +415,7 @@ mod tests {
                     ws_path_udp: None,
                     vless_id: None,
                     vless_ws_path: None,
-            enabled: None,
+                    enabled: None,
                 },
                 UserEntry {
                     id: "carol vless".into(),
@@ -405,6 +430,7 @@ mod tests {
                 },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
+            access_key: Default::default(),
             tuning: Default::default(),
             config_path: None,
             control: None,
