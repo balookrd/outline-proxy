@@ -34,9 +34,10 @@ pub(in super::super) struct SsTcpCtx {
 
 pub(in super::super) async fn serve_ss_tcp_listener(
     listener: TcpListener,
-    ctx: Arc<SsTcpCtx>,
+    ctx: SsTcpCtx,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
+    let ctx = Arc::new(ctx);
     let semaphore = Arc::new(Semaphore::new(SS_MAX_CONCURRENT_TCP_CONNECTIONS));
     loop {
         let (stream, peer) = tokio::select! {
