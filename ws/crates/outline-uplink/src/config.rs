@@ -82,13 +82,8 @@ pub struct UplinkConfig {
 impl UplinkConfig {
     pub fn supports_udp(&self) -> bool {
         match self.transport {
-            UplinkTransport::Ws => self.udp_ws_url.is_some(),
+            UplinkTransport::Ws | UplinkTransport::Vless => self.udp_ws_url.is_some(),
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
-            // VLESS UDP is session-per-destination (target in request header),
-            // unlike SS UDP which multiplexes via atyp in every datagram.
-            // Iteration 1 ships TCP only; UDP requires a per-target session
-            // manager that is tracked as follow-up work.
-            UplinkTransport::Vless => false,
         }
     }
 }

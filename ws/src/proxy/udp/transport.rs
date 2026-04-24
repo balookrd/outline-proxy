@@ -6,14 +6,14 @@ use tracing::{debug, info};
 
 use outline_metrics as metrics;
 use socks5_proto::TargetAddr;
-use outline_transport::UdpWsTransport;
+use outline_transport::UdpSessionTransport;
 use outline_uplink::{TransportKind, UplinkManager};
 
 #[derive(Clone)]
 pub(super) struct ActiveUdpTransport {
     pub(super) index: usize,
     pub(super) uplink_name: Arc<str>,
-    pub(super) transport: Arc<UdpWsTransport>,
+    pub(super) transport: Arc<UdpSessionTransport>,
 }
 
 pub(super) async fn select_udp_transport(
@@ -155,7 +155,7 @@ pub(super) fn replace_active_udp_transport_if_current(
     active_transport: &ArcSwap<ActiveUdpTransport>,
     expected_index: usize,
     replacement: ActiveUdpTransport,
-) -> Option<Arc<UdpWsTransport>> {
+) -> Option<Arc<UdpSessionTransport>> {
     let current = active_transport.load_full();
     if current.index != expected_index {
         return None;
@@ -177,7 +177,7 @@ pub(super) async fn close_active_udp_transport(
     close_udp_transport(transport, reason).await;
 }
 
-async fn close_udp_transport(transport: Arc<UdpWsTransport>, reason: &'static str) {
+async fn close_udp_transport(transport: Arc<UdpSessionTransport>, reason: &'static str) {
     if let Err(error) = transport.close().await {
         debug!(
             reason,
@@ -194,14 +194,14 @@ mod tests {
     use arc_swap::ArcSwap;
     use tokio::net::UdpSocket;
 
-    use outline_transport::UdpWsTransport;
+    use outline_transport::{UdpSessionTransport, UdpWsTransport};
     use shadowsocks_crypto::CipherKind;
 
     use super::*;
 
     #[tokio::test]
     async fn replacing_active_udp_transport_closes_previous_reader() {
-        let old_transport = Arc::new(
+        let old_transport = Arc::new(UdpSessionTransport::Ss(
             UdpWsTransport::from_socket(
                 UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
                 CipherKind::Chacha20IetfPoly1305,
@@ -209,8 +209,8 @@ mod tests {
                 "test_old",
             )
             .unwrap(),
-        );
-        let new_transport = Arc::new(
+        ));
+        let new_transport = Arc::new(UdpSessionTransport::Ss(
             UdpWsTransport::from_socket(
                 UdpSocket::bind(("127.0.0.1", 0)).await.unwrap(),
                 CipherKind::Chacha20IetfPoly1305,
@@ -218,7 +218,7 @@ mod tests {
                 "test_new",
             )
             .unwrap(),
-        );
+        ));
         let active_transport = ArcSwap::from_pointee(ActiveUdpTransport {
             index: 1,
             uplink_name: Arc::from("old"),

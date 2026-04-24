@@ -2,6 +2,7 @@ mod ctx;
 mod keepalive;
 mod refill;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -10,7 +11,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::{
-    TransportOperation, UdpWsTransport, WsTransportStream,
+    TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, WsTransportStream,
     connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
 
@@ -152,7 +153,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-    ) -> Result<UdpWsTransport> {
+    ) -> Result<UdpSessionTransport> {
         let cache = self.inner.dns_cache.as_ref();
         if candidate.uplink.transport == UplinkTransport::Shadowsocks {
             metrics::record_warm_standby_acquire(
@@ -181,7 +182,38 @@ impl UplinkManager {
                 candidate.uplink.cipher,
                 &candidate.uplink.password,
                 source,
+            )
+            .map(UdpSessionTransport::Ss);
+        }
+
+        if candidate.uplink.transport == UplinkTransport::Vless {
+            // VLESS UDP has no warm-standby pool — each destination opens its
+            // own WS session inside the mux on first packet, so there is no
+            // single pre-dialed stream to hand out up front.
+            metrics::record_warm_standby_acquire(
+                "udp",
+                &self.inner.group_name,
+                &candidate.uplink.name,
+                "miss",
             );
+            let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
+                anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
+            })?;
+            let uuid = candidate.uplink.vless_uuid.ok_or_else(|| {
+                anyhow!("uplink {} is VLESS but has no uuid", candidate.uplink.name)
+            })?;
+            let mode = self.effective_udp_ws_mode(candidate.index).await;
+            let mux = VlessUdpSessionMux::new(
+                Arc::clone(&self.inner.dns_cache),
+                udp_ws_url.clone(),
+                mode,
+                uuid,
+                candidate.uplink.fwmark,
+                candidate.uplink.ipv6_first,
+                source,
+                self.inner.load_balancing.udp_ws_keepalive_interval,
+            );
+            return Ok(UdpSessionTransport::Vless(mux));
         }
 
         // WS-pooled UDP: try to reuse a pooled stream first. `try_take_alive`
@@ -195,7 +227,8 @@ impl UplinkManager {
                 &candidate.uplink.password,
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
-            );
+            )
+            .map(UdpSessionTransport::Ss);
         }
 
         metrics::record_warm_standby_acquire(
@@ -228,7 +261,7 @@ impl UplinkManager {
         .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_ws_url) })?;
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
-        Ok(transport)
+        Ok(UdpSessionTransport::Ss(transport))
     }
 
     pub(crate) async fn refill_all_standby(&self) {
