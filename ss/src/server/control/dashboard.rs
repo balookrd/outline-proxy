@@ -5,14 +5,14 @@
 
 use std::{sync::Arc, time::Duration};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use axum::{
+    Json, Router,
     body::Body,
     extract::{Path, Query, State},
-    http::{header, StatusCode, Uri},
+    http::{StatusCode, Uri, header},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{delete, get, post},
-    Json, Router,
+    routing::{get, patch, post},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -90,7 +90,8 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
         .route("/dashboard", get(dashboard_page))
         .route("/dashboard/api/instances", get(list_instances))
         .route("/dashboard/api/users", get(list_users).post(create_user))
-        .route("/dashboard/api/users/{id}", delete(delete_user))
+        .route("/dashboard/api/users/{id}", patch(update_user).delete(delete_user))
+        .route("/dashboard/api/users/{id}/access-urls", get(get_user_access_urls))
         .route("/dashboard/api/users/{id}/block", post(block_user))
         .route("/dashboard/api/users/{id}/unblock", post(unblock_user))
         .fallback(not_found)
@@ -134,6 +135,16 @@ async fn create_user(
     proxy_json(state, query, Method::POST, "/control/users", body).await
 }
 
+async fn update_user(
+    State(state): State<DashboardState>,
+    Query(query): Query<InstanceQuery>,
+    Path(id): Path<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    let path = format!("/control/users/{}", encode_path_segment(&id));
+    proxy_json(state, query, Method::PATCH, &path, body).await
+}
+
 async fn delete_user(
     State(state): State<DashboardState>,
     Query(query): Query<InstanceQuery>,
@@ -141,6 +152,15 @@ async fn delete_user(
 ) -> Response {
     let path = format!("/control/users/{}", encode_path_segment(&id));
     proxy_empty(state, query, Method::DELETE, &path).await
+}
+
+async fn get_user_access_urls(
+    State(state): State<DashboardState>,
+    Query(query): Query<InstanceQuery>,
+    Path(id): Path<String>,
+) -> Response {
+    let path = format!("/control/users/{}/access-urls", encode_path_segment(&id));
+    proxy_empty(state, query, Method::GET, &path).await
 }
 
 async fn block_user(
@@ -261,10 +281,7 @@ where
     tokio::spawn(async move {
         let _ = conn.await;
     });
-    let response = sender
-        .send_request(request)
-        .await
-        .context("control request failed")?;
+    let response = sender.send_request(request).await.context("control request failed")?;
     let status = response.status();
     let body = response
         .into_body()

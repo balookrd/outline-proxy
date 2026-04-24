@@ -15,16 +15,16 @@ use tokio::{
 use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
 use super::nat::NatTable;
 use super::setup::{UserRoute, build_vless_transport_route_map};
+use super::state::{RoutesSnapshot, UserKeySlice};
 use super::{
     AuthPolicy, DnsCache, RouteRegistry, Services, UdpServices, build_transport_route_map,
     user_keys,
 };
-use super::state::{RoutesSnapshot, UserKeySlice};
-use arc_swap::ArcSwap;
 use crate::config::{CipherKind, Config, UserEntry};
 use crate::crypto::{decrypt_udp_packet, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::TargetAddr;
+use arc_swap::ArcSwap;
 
 mod auth;
 mod h3;
@@ -45,8 +45,7 @@ fn build_test_state(
     let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
-    let routes: RoutesSnapshot =
-        Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless }));
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless }));
     let services = Arc::new(Services {
         metrics,
         dns_cache,
@@ -306,10 +305,11 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         fwmark: None,
         users,
         method: CipherKind::Chacha20IetfPoly1305,
+        access_key: Default::default(),
         tuning: Default::default(),
-            config_path: None,
-            control: None,
-            dashboard: None,
+        config_path: None,
+        control: None,
+        dashboard: None,
     }
 }
 

@@ -12,6 +12,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 use crate::{
+    access_key::build_access_key_artifacts_for_user,
     config::{CipherKind, Config, UserEntry},
     crypto::UserKey,
     metrics::Transport,
@@ -43,6 +44,8 @@ pub(in crate::server) struct UserManager {
     default_ws_path_tcp: String,
     default_ws_path_udp: String,
     default_vless_ws_path: Option<String>,
+    access_key_config: crate::config::AccessKeyConfig,
+    access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
     // introduce a path outside this set are rejected — the routers cannot
     // dispatch requests to unknown paths until the next restart.
@@ -72,6 +75,16 @@ pub(super) struct UserView {
     pub vless_ws_path: Option<String>,
     pub has_password: bool,
     pub has_vless_id: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct AccessUrlsView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ss_config_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ss_access_key_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vless_url: Option<String>,
 }
 
 impl From<&UserEntry> for UserView {
@@ -107,6 +120,8 @@ impl UserManager {
             default_ws_path_tcp: config.ws_path_tcp.clone(),
             default_ws_path_udp: config.ws_path_udp.clone(),
             default_vless_ws_path: config.vless_ws_path.clone(),
+            access_key_config: config.access_key.clone(),
+            access_key_base_config: config.clone(),
             allowed_tcp_paths,
             allowed_udp_paths,
             allowed_vless_paths,
@@ -127,6 +142,39 @@ impl UserManager {
             .map(UserView::from)
     }
 
+    pub(super) fn access_urls(&self, id: &str) -> Result<AccessUrlsView> {
+        let user = self
+            .inner
+            .lock()
+            .users
+            .iter()
+            .find(|u| u.id == id)
+            .cloned()
+            .ok_or_else(|| anyhow!("user {id:?} not found"))?;
+
+        let artifacts = build_access_key_artifacts_for_user(
+            &self.access_key_base_config,
+            &self.access_key_config,
+            &user,
+        )?;
+        let mut view = AccessUrlsView {
+            ss_config_url: None,
+            ss_access_key_url: None,
+            vless_url: None,
+        };
+
+        for artifact in artifacts {
+            if artifact.yaml.starts_with("vless://") {
+                view.vless_url = artifact.access_key_url;
+            } else {
+                view.ss_config_url = artifact.config_url;
+                view.ss_access_key_url = artifact.access_key_url;
+            }
+        }
+
+        Ok(view)
+    }
+
     pub(super) fn create(&self, entry: UserEntry) -> Result<UserView> {
         self.validate_new(&entry)?;
         let mut guard = self.inner.lock();
@@ -136,6 +184,22 @@ impl UserManager {
         guard.users.push(entry);
         self.publish_and_persist(&guard.users)?;
         Ok(UserView::from(guard.users.last().expect("just pushed")))
+    }
+
+    pub(super) fn update(&self, id: &str, patch: UserPatch) -> Result<UserView> {
+        let mut guard = self.inner.lock();
+        let index = guard
+            .users
+            .iter()
+            .position(|u| u.id == id)
+            .ok_or_else(|| anyhow!("user {id:?} not found"))?;
+
+        let mut updated = guard.users[index].clone();
+        patch.apply_to(&mut updated);
+        self.validate_new(&updated)?;
+        guard.users[index] = updated;
+        self.publish_and_persist(&guard.users)?;
+        Ok(UserView::from(&guard.users[index]))
     }
 
     pub(super) fn delete(&self, id: &str) -> Result<()> {
@@ -237,10 +301,7 @@ impl UserManager {
         Ok(())
     }
 
-    fn rebuild_snapshots(
-        &self,
-        users: &[UserEntry],
-    ) -> Result<(RouteRegistry, Arc<[UserKey]>)> {
+    fn rebuild_snapshots(&self, users: &[UserEntry]) -> Result<(RouteRegistry, Arc<[UserKey]>)> {
         let enabled: Vec<&UserEntry> = users.iter().filter(|u| u.is_enabled()).collect();
 
         let mut seen_ids = HashSet::new();
@@ -260,11 +321,7 @@ impl UserManager {
                 Arc::from(user.effective_ws_path_udp(&self.default_ws_path_udp));
             let user_key = UserKey::new(user.id.clone(), password, user.fwmark, method)
                 .with_context(|| format!("failed to derive key for user {}", user.id))?;
-            user_routes.push(UserRoute {
-                user: user_key,
-                ws_path_tcp,
-                ws_path_udp,
-            });
+            user_routes.push(UserRoute { user: user_key, ws_path_tcp, ws_path_udp });
         }
 
         let mut vless_routes: Vec<VlessUserRoute> = Vec::new();
@@ -275,7 +332,10 @@ impl UserManager {
                 .ok_or_else(|| anyhow!("vless user {} missing vless_ws_path", user.id))?;
             let vless_user = VlessUser::new(vless_id.clone(), user.fwmark)
                 .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
-            vless_routes.push(VlessUserRoute { user: vless_user, ws_path: Arc::from(path) });
+            vless_routes.push(VlessUserRoute {
+                user: vless_user,
+                ws_path: Arc::from(path),
+            });
         }
 
         let tcp_map: BTreeMap<String, Arc<TransportRoute>> =
@@ -301,6 +361,46 @@ impl UserManager {
             },
             auth_keys,
         ))
+    }
+}
+
+pub(super) struct UserPatch {
+    pub password: Option<Option<String>>,
+    pub vless_id: Option<Option<String>>,
+    pub method: Option<Option<CipherKind>>,
+    pub fwmark: Option<Option<u32>>,
+    pub ws_path_tcp: Option<Option<String>>,
+    pub ws_path_udp: Option<Option<String>>,
+    pub vless_ws_path: Option<Option<String>>,
+    pub enabled: Option<bool>,
+}
+
+impl UserPatch {
+    fn apply_to(self, entry: &mut UserEntry) {
+        if let Some(password) = self.password {
+            entry.password = password;
+        }
+        if let Some(vless_id) = self.vless_id {
+            entry.vless_id = vless_id;
+        }
+        if let Some(method) = self.method {
+            entry.method = method;
+        }
+        if let Some(fwmark) = self.fwmark {
+            entry.fwmark = fwmark;
+        }
+        if let Some(ws_path_tcp) = self.ws_path_tcp {
+            entry.ws_path_tcp = ws_path_tcp;
+        }
+        if let Some(ws_path_udp) = self.ws_path_udp {
+            entry.ws_path_udp = ws_path_udp;
+        }
+        if let Some(vless_ws_path) = self.vless_ws_path {
+            entry.vless_ws_path = vless_ws_path;
+        }
+        if let Some(enabled) = self.enabled {
+            entry.enabled = Some(enabled);
+        }
     }
 }
 

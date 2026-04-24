@@ -80,6 +80,7 @@ pub struct Config {
     pub fwmark: Option<u32>,
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
+    pub access_key: AccessKeyConfig,
     /// Resolved tuning knobs (H2/H3 resource limits plus session/NAT timeouts
     /// and global UDP relay cap). Derived from the `tuning_profile` preset
     /// with any per-field overrides from `[tuning]` applied on top. Validated
@@ -93,6 +94,17 @@ pub struct AccessKeyConfig {
     pub public_scheme: String,
     pub access_key_url_base: Option<String>,
     pub access_key_file_extension: String,
+}
+
+impl Default for AccessKeyConfig {
+    fn default() -> Self {
+        Self {
+            public_host: None,
+            public_scheme: "wss".to_owned(),
+            access_key_url_base: None,
+            access_key_file_extension: ".yaml".to_owned(),
+        }
+    }
 }
 
 pub enum AppMode {
@@ -130,6 +142,19 @@ impl AppMode {
             .unwrap_or_else(|| std::path::Path::new("."));
         let control = resolve_control_config(&args, &file)?;
         let dashboard = resolve_dashboard_config(&file, config_dir)?;
+
+        let access_key = AccessKeyConfig {
+            public_host: args.public_host.or(file.public_host),
+            public_scheme: args
+                .public_scheme
+                .or(file.public_scheme)
+                .unwrap_or_else(|| "wss".to_owned()),
+            access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
+            access_key_file_extension: normalize_access_key_file_extension(
+                args.access_key_file_extension.or(file.access_key_file_extension),
+            ),
+        };
+        access_key.validate()?;
 
         let config = Config {
             config_path: config_path.clone(),
@@ -195,6 +220,7 @@ impl AppMode {
                 .method
                 .or(file.method)
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
+            access_key: access_key.clone(),
             tuning,
         };
         config.validate()?;
@@ -203,18 +229,6 @@ impl AppMode {
         let write_dir = args.write_access_keys_dir.or(file.write_access_keys_dir);
 
         if print || write_dir.is_some() {
-            let access_key = AccessKeyConfig {
-                public_host: args.public_host.or(file.public_host),
-                public_scheme: args
-                    .public_scheme
-                    .or(file.public_scheme)
-                    .unwrap_or_else(|| "wss".to_owned()),
-                access_key_url_base: args.access_key_url_base.or(file.access_key_url_base),
-                access_key_file_extension: normalize_access_key_file_extension(
-                    args.access_key_file_extension.or(file.access_key_file_extension),
-                ),
-            };
-            access_key.validate()?;
             Ok(AppMode::GenerateKeys { config, access_key, print, write_dir })
         } else {
             Ok(AppMode::Serve(config))

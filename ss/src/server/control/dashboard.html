@@ -5,64 +5,1192 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>outline-ss-rust users</title>
   <style>
-    :root { --bg:#f5f7f8; --panel:#fff; --soft:#f0f5f5; --ink:#182326; --muted:#647377; --line:#d7e0e3; --accent:#143d4a; --ok:#16825f; --warn:#b97710; --danger:#b13a2f; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
-    * { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--ink); font-size:15px; } button,input,select { font:inherit; } button { cursor:pointer; border:0; } button:disabled { cursor:wait; opacity:.62; }
-    .top { height:64px; display:flex; align-items:center; gap:22px; padding:0 32px; color:white; background:#102a33; } .brand { font-weight:760; font-size:18px; } .top .muted { color:#a9c1c7; } .spacer { flex:1; }
-    .pill { display:inline-flex; align-items:center; min-height:28px; border-radius:999px; padding:0 12px; background:#173f4c; border:1px solid #2f5b67; color:#d7f5eb; font-size:13px; }
-    .layout { display:grid; grid-template-columns:244px minmax(0,1fr); gap:28px; padding:28px; } .side,.card,.table,.drawer { background:var(--panel); border:1px solid var(--line); border-radius:8px; }
-    .side { min-height:calc(100vh - 120px); padding:22px 16px; } .label { color:var(--muted); font-size:12px; font-weight:780; letter-spacing:.06em; text-transform:uppercase; }
-    .nav { display:grid; gap:8px; margin:16px 0 28px; } .nav div { padding:12px 14px; border-radius:7px; color:var(--muted); } .nav .active { background:#dfecea; color:var(--ink); font-weight:740; }
-    .api { margin-top:16px; display:grid; gap:12px; font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:12px; } .note { margin-top:36px; padding:14px; border-radius:8px; background:#fff8e8; border:1px solid #efc66f; color:var(--muted); font-size:13px; line-height:1.4; } .note strong { display:block; color:var(--ink); margin-bottom:6px; }
-    main { display:grid; gap:24px; min-width:0; } .head { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:start; } h1 { margin:4px 0 8px; font-size:25px; line-height:1.18; } .subtle { color:var(--muted); line-height:1.45; }
-    .actions { display:flex; gap:12px; flex-wrap:wrap; justify-content:flex-end; } .btn { min-height:42px; border-radius:7px; padding:0 18px; background:var(--accent); color:white; font-weight:740; } .btn.secondary { background:white; color:var(--ink); border:1px solid #cfd9dc; }
-    .serverbar { display:grid; grid-template-columns:minmax(220px,320px) minmax(220px,1fr) auto; gap:12px; align-items:center; padding:16px; border:1px solid var(--line); border-radius:8px; background:white; } .status { min-height:22px; color:var(--muted); font-size:13px; } .status.error { color:var(--danger); } .status.ok { color:var(--ok); }
-    .stats { display:grid; grid-template-columns:repeat(4,minmax(160px,1fr)); gap:16px; } .card { padding:22px; min-height:104px; } .metric { margin-top:12px; font-size:24px; font-weight:790; line-height:1.15; } .metric small { color:var(--muted); font-size:15px; font-weight:650; }
-    .filters { display:grid; grid-template-columns:minmax(220px,1fr) 170px 170px; gap:16px; } .input,.select { width:100%; min-height:48px; border-radius:8px; border:1px solid #cfd9dc; background:#fbfcfc; color:var(--ink); padding:0 15px; }
-    .table { overflow:hidden; box-shadow:0 12px 28px rgba(24,35,38,.07); } table { width:100%; border-collapse:collapse; } th { height:54px; padding:0 20px; background:var(--soft); color:var(--muted); font-size:12px; font-weight:780; letter-spacing:.06em; text-align:left; text-transform:uppercase; } td { padding:18px 20px; border-top:1px solid var(--line); vertical-align:top; } .user-id { font-weight:780; margin-bottom:6px; } .mono { font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace; font-size:13px; }
-    .chips,.row-actions { display:flex; gap:8px; flex-wrap:wrap; } .chip { display:inline-flex; align-items:center; min-height:28px; border-radius:999px; padding:0 11px; font-size:12px; font-weight:760; background:#eaf0f3; color:var(--muted); border:1px solid #cbd6da; } .chip.ok { color:#126849; background:#e1f4eb; border-color:#9fd8bf; } .chip.warn { color:#80520c; background:#fff2d8; border-color:#edc875; }
-    .row-actions button { min-height:32px; border-radius:7px; padding:0 12px; color:var(--ink); background:white; border:1px solid #cfd9dc; font-size:13px; font-weight:720; } .row-actions .danger { color:var(--danger); background:#fff0ee; border-color:#f0bab4; }
-    .empty { padding:46px 20px; color:var(--muted); text-align:center; } .drawer-backdrop { position:fixed; inset:0; display:none; justify-content:flex-end; background:rgba(12,25,30,.26); z-index:10; } .drawer-backdrop.open { display:flex; } .drawer { width:min(440px,100%); height:100%; border-radius:0; overflow:auto; box-shadow:-18px 0 40px rgba(24,35,38,.16); } .drawer-head { display:flex; align-items:center; justify-content:space-between; min-height:64px; padding:0 24px; color:white; background:#173f4c; } .drawer-title { font-size:17px; font-weight:780; } .icon-btn { width:36px; height:36px; border-radius:7px; color:white; background:transparent; font-size:24px; }
-    .form { display:grid; gap:18px; padding:24px; } .field { display:grid; gap:8px; } .two { display:grid; grid-template-columns:1fr 1fr; gap:12px; } .check { display:flex; align-items:center; gap:10px; min-height:42px; padding:0 12px; border-radius:7px; background:var(--soft); border:1px solid #cfd9dc; font-weight:720; } .check input { width:18px; height:18px; accent-color:var(--ok); } .help { padding:14px; border:1px solid var(--line); border-radius:8px; background:#f8fbfb; color:var(--muted); font-size:13px; line-height:1.42; }
-    .toast { position:fixed; left:50%; bottom:24px; transform:translateX(-50%); display:none; min-width:min(560px,calc(100vw - 32px)); padding:13px 16px; border-radius:8px; background:#102a33; color:white; box-shadow:0 14px 30px rgba(24,35,38,.2); z-index:20; } .toast.show { display:block; }
-    @media (max-width:1040px) { .layout { grid-template-columns:1fr; } .side { display:none; } .stats { grid-template-columns:repeat(2,minmax(160px,1fr)); } .filters,.serverbar { grid-template-columns:1fr; } .actions { justify-content:flex-start; } th:nth-child(3),td:nth-child(3){display:none;} }
-    @media (max-width:720px) { .top { padding:0 18px; } .top .muted,.pill { display:none; } .layout { padding:18px; } .head,.stats,.two { grid-template-columns:1fr; } th:nth-child(4),td:nth-child(4){display:none;} th,td { padding-left:14px; padding-right:14px; } }
+    :root {
+      --bg:#f4f7fc;
+      --bg-accent:#edf2ff;
+      --panel:#ffffff;
+      --panel-soft:#f8faff;
+      --panel-strong:#eef2fb;
+      --ink:#1c2740;
+      --muted:#6b7a99;
+      --line:#d9e2f2;
+      --line-strong:#c7d5eb;
+      --brand:#6264ea;
+      --brand-strong:#4a56e2;
+      --brand-soft:#eef0ff;
+      --ok:#22c55e;
+      --ok-soft:#dcfce7;
+      --warn:#f59e0b;
+      --warn-soft:#fff3d6;
+      --danger:#ef4444;
+      --danger-soft:#fee2e2;
+      --shadow:0 18px 48px rgba(76, 96, 146, .12);
+      --shadow-soft:0 8px 20px rgba(76, 96, 146, .08);
+      --radius-xl:20px;
+      --radius-lg:16px;
+      --radius-md:12px;
+      --radius-sm:10px;
+      color-scheme:light;
+    }
+
+    body[data-theme="dark"] {
+      --bg:#0f1729;
+      --bg-accent:#18233e;
+      --panel:#131d33;
+      --panel-soft:#17243f;
+      --panel-strong:#1c2947;
+      --ink:#e7eeff;
+      --muted:#98a8cb;
+      --line:#243455;
+      --line-strong:#314670;
+      --brand:#7b7ff8;
+      --brand-strong:#9598ff;
+      --brand-soft:#242a5b;
+      --ok:#4ade80;
+      --ok-soft:#183925;
+      --warn:#fbbf24;
+      --warn-soft:#3c3117;
+      --danger:#fb7185;
+      --danger-soft:#40202a;
+      --shadow:0 24px 60px rgba(0, 0, 0, .32);
+      --shadow-soft:0 10px 24px rgba(0, 0, 0, .22);
+      color-scheme:dark;
+    }
+
+    * { box-sizing:border-box; }
+    html,body { min-height:100%; }
+    body {
+      margin:0;
+      background:
+        radial-gradient(circle at top left, rgba(98,100,234,.14), transparent 28%),
+        radial-gradient(circle at top right, rgba(34,197,94,.08), transparent 24%),
+        linear-gradient(180deg, var(--bg-accent), var(--bg));
+      color:var(--ink);
+      font:15px/1.45 "SF Pro Display","Segoe UI",system-ui,-apple-system,sans-serif;
+      transition:background .25s ease,color .25s ease;
+    }
+
+    button,input,select { font:inherit; }
+    button {
+      cursor:pointer;
+      border:0;
+      background:none;
+      color:inherit;
+    }
+    button:disabled { cursor:wait; opacity:.62; }
+
+    .shell {
+      display:grid;
+      grid-template-columns:292px minmax(0,1fr);
+      min-height:100vh;
+    }
+
+    .sidebar {
+      padding:20px 18px;
+      border-right:1px solid var(--line);
+      background:rgba(255,255,255,.58);
+      backdrop-filter:blur(14px);
+    }
+    body[data-theme="dark"] .sidebar { background:rgba(19,29,51,.72); }
+
+    .brand-row {
+      display:flex;
+      align-items:center;
+      gap:16px;
+      padding:10px 12px 22px;
+    }
+    .brand-mark {
+      width:38px;
+      height:38px;
+      border-radius:12px;
+      background:linear-gradient(135deg, var(--brand), var(--brand-strong));
+      box-shadow:var(--shadow-soft);
+      position:relative;
+      flex:0 0 auto;
+    }
+    .brand-mark::before {
+      content:"";
+      position:absolute;
+      inset:10px;
+      border-radius:6px;
+      background:rgba(255,255,255,.95);
+      transform:rotate(45deg);
+    }
+    .brand-copy {
+      display:grid;
+      gap:2px;
+      min-width:0;
+    }
+    .brand-title {
+      font-size:17px;
+      font-weight:760;
+      letter-spacing:-.02em;
+    }
+    .brand-subtitle {
+      color:var(--muted);
+      font-size:13px;
+    }
+
+    .nav {
+      display:grid;
+      gap:8px;
+      margin-top:8px;
+    }
+    .nav-item {
+      display:flex;
+      align-items:center;
+      gap:14px;
+      min-height:54px;
+      padding:0 18px;
+      border-radius:14px;
+      color:var(--muted);
+      font-size:16px;
+      font-weight:640;
+      transition:background .18s ease,color .18s ease,transform .18s ease;
+    }
+    .nav-item.active {
+      background:linear-gradient(135deg, var(--brand), #6c75f0);
+      color:#fff;
+      box-shadow:var(--shadow-soft);
+    }
+    .nav-item:not(.active):hover {
+      background:var(--panel-soft);
+      color:var(--ink);
+      transform:translateX(2px);
+    }
+    .nav-icon {
+      width:20px;
+      text-align:center;
+      opacity:.9;
+    }
+
+    .sidebar-foot {
+      margin-top:28px;
+      padding:18px;
+      border:1px solid var(--line);
+      border-radius:18px;
+      background:var(--panel);
+      box-shadow:var(--shadow-soft);
+    }
+    .sidebar-foot-title {
+      font-size:13px;
+      font-weight:740;
+      color:var(--ink);
+      margin-bottom:8px;
+    }
+    .sidebar-foot-copy {
+      color:var(--muted);
+      font-size:13px;
+    }
+
+    .content {
+      padding:24px 34px 36px;
+      min-width:0;
+    }
+
+    .topbar {
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:18px;
+      margin-bottom:26px;
+    }
+    .headline h1 {
+      margin:0 0 6px;
+      font-size:28px;
+      line-height:1.15;
+      letter-spacing:-.03em;
+    }
+    .headline p {
+      margin:0;
+      color:var(--muted);
+      font-size:15px;
+    }
+    .toolbar {
+      display:flex;
+      align-items:center;
+      gap:12px;
+      flex-wrap:wrap;
+      justify-content:flex-end;
+    }
+    .updated {
+      display:inline-flex;
+      align-items:center;
+      gap:8px;
+      min-height:40px;
+      padding:0 14px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      background:var(--panel);
+      color:var(--muted);
+      box-shadow:var(--shadow-soft);
+      white-space:nowrap;
+    }
+    .updated strong {
+      color:var(--ink);
+      font-weight:720;
+    }
+    .toggle-chip,
+    .theme-btn {
+      min-height:40px;
+      padding:0 14px;
+      border:1px solid var(--line-strong);
+      border-radius:14px;
+      background:var(--panel);
+      box-shadow:var(--shadow-soft);
+      transition:border-color .18s ease,background .18s ease,color .18s ease;
+    }
+    .toggle-chip {
+      display:inline-flex;
+      align-items:center;
+      gap:9px;
+      color:var(--ink);
+      font-weight:650;
+    }
+    .toggle-chip .dot {
+      width:10px;
+      height:10px;
+      border-radius:999px;
+      background:var(--ok);
+      box-shadow:0 0 0 5px rgba(34,197,94,.12);
+    }
+    .theme-btn {
+      width:44px;
+      padding:0;
+      display:inline-grid;
+      place-items:center;
+      color:var(--brand-strong);
+      font-size:18px;
+      font-weight:700;
+      border-width:2px;
+    }
+    .theme-btn:hover,
+    .toggle-chip:hover { border-color:var(--brand); }
+
+    .stats {
+      display:grid;
+      grid-template-columns:repeat(4,minmax(180px,1fr));
+      gap:18px;
+      margin-bottom:26px;
+    }
+    .stat-card {
+      padding:20px 22px;
+      border:1px solid var(--line);
+      border-radius:18px;
+      background:var(--panel);
+      box-shadow:var(--shadow-soft);
+      display:grid;
+      grid-template-columns:minmax(0,1fr) auto;
+      gap:14px;
+      align-items:center;
+    }
+    .stat-copy {
+      min-width:0;
+    }
+    .stat-label {
+      color:var(--muted);
+      font-size:13px;
+      font-weight:700;
+      margin-bottom:8px;
+    }
+    .stat-value {
+      font-size:22px;
+      line-height:1;
+      font-weight:800;
+      letter-spacing:-.03em;
+    }
+    .stat-icon {
+      width:44px;
+      height:44px;
+      border-radius:14px;
+      display:grid;
+      place-items:center;
+      font-size:20px;
+      color:var(--brand);
+      background:var(--brand-soft);
+    }
+    .stat-card.ok .stat-value,
+    .stat-card.ok .stat-icon { color:var(--ok); }
+    .stat-card.ok .stat-icon { background:var(--ok-soft); }
+    .stat-card.warn .stat-value { color:var(--warn); }
+    .stat-card.warn .stat-icon { color:var(--warn); background:var(--warn-soft); }
+
+    .control-bar,
+    .table-wrap {
+      border:1px solid var(--line);
+      border-radius:20px;
+      background:var(--panel);
+      box-shadow:var(--shadow);
+    }
+    .control-bar {
+      padding:20px;
+      display:grid;
+      grid-template-columns:minmax(240px,340px) minmax(0,1fr) auto auto;
+      gap:14px;
+      align-items:center;
+      margin-bottom:18px;
+    }
+    .status {
+      min-height:22px;
+      color:var(--muted);
+      font-size:13px;
+    }
+    .status.error { color:var(--danger); }
+    .status.ok { color:var(--ok); }
+
+    .btn {
+      min-height:42px;
+      padding:0 16px;
+      border-radius:12px;
+      background:linear-gradient(135deg, var(--brand), #6a73ef);
+      color:#fff;
+      font-weight:720;
+      box-shadow:0 10px 24px rgba(98,100,234,.24);
+    }
+    .btn.secondary {
+      background:var(--panel);
+      color:var(--ink);
+      border:1px solid var(--line-strong);
+      box-shadow:none;
+    }
+    .btn.ghost {
+      background:var(--panel-soft);
+      color:var(--muted);
+      border:1px solid var(--line);
+      box-shadow:none;
+    }
+
+    .filters {
+      display:grid;
+      grid-template-columns:minmax(220px,1fr) 190px 190px;
+      gap:16px;
+      margin-bottom:18px;
+    }
+    .input,
+    .select {
+      width:100%;
+      min-height:48px;
+      padding:0 16px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      background:var(--panel-soft);
+      color:var(--ink);
+      outline:none;
+      transition:border-color .18s ease,box-shadow .18s ease,background .18s ease;
+    }
+    .input:focus,
+    .select:focus {
+      border-color:var(--brand);
+      box-shadow:0 0 0 4px rgba(98,100,234,.12);
+      background:var(--panel);
+    }
+
+    .table-wrap {
+      overflow:hidden;
+    }
+    .table-head {
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      gap:16px;
+      padding:18px 24px;
+      border-bottom:1px solid var(--line);
+      background:var(--panel-soft);
+    }
+    .table-title {
+      display:flex;
+      align-items:center;
+      gap:12px;
+      min-width:0;
+    }
+    .table-dot {
+      width:11px;
+      height:11px;
+      border-radius:999px;
+      background:var(--ok);
+      box-shadow:0 0 0 5px rgba(34,197,94,.14);
+    }
+    .table-title strong {
+      font-size:18px;
+      letter-spacing:-.02em;
+    }
+    .table-title span {
+      color:var(--muted);
+      font-size:14px;
+    }
+    .table-head-actions {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      flex-wrap:wrap;
+    }
+    .badge {
+      display:inline-flex;
+      align-items:center;
+      min-height:30px;
+      padding:0 12px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:730;
+      border:1px solid transparent;
+      white-space:nowrap;
+    }
+    .badge.ok { background:var(--ok-soft); color:var(--ok); }
+    .badge.warn { background:var(--warn-soft); color:var(--warn); }
+    .badge.soft { background:var(--brand-soft); color:var(--brand); border-color:rgba(98,100,234,.14); }
+    .badge.muted { background:var(--panel-strong); color:var(--muted); border-color:var(--line); }
+
+    table {
+      width:100%;
+      border-collapse:collapse;
+    }
+    th {
+      height:52px;
+      padding:0 24px;
+      border-bottom:1px solid var(--line);
+      color:var(--muted);
+      font-size:12px;
+      font-weight:780;
+      letter-spacing:.08em;
+      text-align:left;
+      text-transform:uppercase;
+      background:var(--panel);
+    }
+    td {
+      padding:16px 24px;
+      border-top:1px solid var(--line);
+      vertical-align:top;
+    }
+    tbody tr { transition:background .18s ease; }
+    tbody tr:hover { background:var(--panel-soft); }
+    .user-id {
+      font-size:15px;
+      font-weight:760;
+      margin-bottom:6px;
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .subtle {
+      color:var(--muted);
+      font-size:13px;
+      line-height:1.45;
+    }
+    .mono {
+      font-family:"SFMono-Regular","SF Mono",ui-monospace,Menlo,Consolas,monospace;
+      font-size:13px;
+    }
+    .chips,
+    .row-actions {
+      display:flex;
+      gap:8px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .chip {
+      display:inline-flex;
+      align-items:center;
+      min-height:28px;
+      padding:0 11px;
+      border-radius:999px;
+      font-size:12px;
+      font-weight:760;
+      background:var(--panel-strong);
+      color:var(--muted);
+      border:1px solid var(--line);
+    }
+    .chip.ok { background:var(--ok-soft); color:var(--ok); border-color:transparent; }
+    .chip.warn { background:var(--warn-soft); color:var(--warn); border-color:transparent; }
+
+    .row-actions button {
+      min-height:38px;
+      padding:0 14px;
+      border-radius:12px;
+      border:1px solid var(--line);
+      background:var(--panel);
+      color:var(--muted);
+      font-size:14px;
+      font-weight:700;
+    }
+    .row-actions button:hover {
+      border-color:var(--brand);
+      color:var(--brand);
+    }
+    .row-actions .primary {
+      background:linear-gradient(135deg, var(--brand), #6a73ef);
+      color:#fff;
+      border-color:transparent;
+      box-shadow:0 10px 24px rgba(98,100,234,.22);
+    }
+    .row-actions .danger {
+      background:var(--danger-soft);
+      color:var(--danger);
+      border-color:transparent;
+    }
+
+    .empty {
+      padding:52px 24px;
+      text-align:center;
+      color:var(--muted);
+    }
+
+    .drawer-backdrop {
+      position:fixed;
+      inset:0;
+      display:none;
+      justify-content:flex-end;
+      background:rgba(10,18,34,.34);
+      backdrop-filter:blur(6px);
+      z-index:20;
+    }
+    .drawer-backdrop.open { display:flex; }
+    .drawer {
+      width:min(470px,100%);
+      height:100%;
+      border-left:1px solid var(--line);
+      background:var(--panel);
+      box-shadow:-24px 0 56px rgba(7,12,23,.24);
+      overflow:auto;
+    }
+    .drawer-head {
+      padding:24px 24px 18px;
+      display:flex;
+      align-items:flex-start;
+      justify-content:space-between;
+      gap:14px;
+      border-bottom:1px solid var(--line);
+      background:var(--panel-soft);
+    }
+    .drawer-title {
+      font-size:20px;
+      font-weight:780;
+      letter-spacing:-.02em;
+    }
+    .icon-btn {
+      width:42px;
+      height:42px;
+      border:1px solid var(--line);
+      border-radius:12px;
+      background:var(--panel);
+      color:var(--muted);
+      font-size:22px;
+    }
+    .form {
+      display:grid;
+      gap:18px;
+      padding:24px;
+    }
+    .field {
+      display:grid;
+      gap:8px;
+    }
+    .label {
+      color:var(--muted);
+      font-size:12px;
+      font-weight:780;
+      letter-spacing:.08em;
+      text-transform:uppercase;
+    }
+    .two {
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+    }
+    .check {
+      display:flex;
+      align-items:center;
+      gap:10px;
+      min-height:48px;
+      padding:0 14px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      background:var(--panel-soft);
+      font-weight:700;
+    }
+    .check input {
+      width:18px;
+      height:18px;
+      accent-color:var(--brand);
+    }
+    .help {
+      padding:14px 16px;
+      border:1px solid var(--line);
+      border-radius:14px;
+      background:var(--panel-soft);
+      color:var(--muted);
+      font-size:13px;
+    }
+    .drawer-actions {
+      display:flex;
+      gap:12px;
+      justify-content:flex-end;
+      flex-wrap:wrap;
+    }
+
+    .toast {
+      position:fixed;
+      left:50%;
+      bottom:24px;
+      transform:translateX(-50%);
+      display:none;
+      min-width:min(560px,calc(100vw - 32px));
+      padding:14px 16px;
+      border-radius:14px;
+      background:#10182b;
+      color:#fff;
+      box-shadow:0 18px 36px rgba(0,0,0,.28);
+      z-index:30;
+    }
+    .toast.show { display:block; }
+
+    @media (max-width:1240px) {
+      .stats { grid-template-columns:repeat(2,minmax(180px,1fr)); }
+      .control-bar { grid-template-columns:1fr 1fr; }
+    }
+
+    @media (max-width:1024px) {
+      .shell { grid-template-columns:1fr; }
+      .sidebar { display:none; }
+      .content { padding:22px 18px 30px; }
+      .topbar { flex-direction:column; }
+      .toolbar { justify-content:flex-start; }
+    }
+
+    @media (max-width:760px) {
+      .stats,
+      .filters,
+      .control-bar,
+      .two { grid-template-columns:1fr; }
+      .table-head {
+        flex-direction:column;
+        align-items:flex-start;
+      }
+      th:nth-child(3),
+      td:nth-child(3),
+      th:nth-child(4),
+      td:nth-child(4) { display:none; }
+      th,td { padding-left:16px; padding-right:16px; }
+    }
   </style>
 </head>
 <body>
-  <header class="top"><div class="brand">outline-ss-rust</div><div class="muted">Users Dashboard</div><div class="spacer"></div><div class="pill">server-side control proxy</div></header>
-  <div class="layout">
-    <aside class="side"><div class="label">Разделы</div><div class="nav"><div class="active">Пользователи</div><div>Серверы</div><div>Маршруты</div><div>Настройки</div></div><div class="label">API</div><div class="api"><div>GET /control/users</div><div>POST /control/users</div><div>POST /block</div><div>DELETE /{id}</div></div><div class="note"><strong>Токены на сервере</strong>Браузер работает с dashboard listener. Bearer-токены control endpoints не уходят в клиентский JS.</div></aside>
-    <main>
-      <section class="head"><div><h1>Управление пользователями</h1><div class="subtle">Выберите сервер из конфига dashboard и управляйте его runtime users через `/control`.</div></div><div class="actions"><button class="btn secondary" id="refreshButton" type="button">Обновить</button><button class="btn" id="openCreateButton" type="button">+ Новый</button></div></section>
-      <section class="serverbar"><select class="select" id="instanceSelect" aria-label="Сервер"></select><div class="status" id="statusText"></div><button class="btn" id="loadButton" type="button">Загрузить</button></section>
-      <section class="stats"><div class="card"><div class="label">Всего</div><div class="metric"><span id="totalCount">0</span> <small>польз.</small></div></div><div class="card"><div class="label">Активны</div><div class="metric"><span id="activeCount">0</span> <small>routes</small></div></div><div class="card"><div class="label">Транспорты</div><div class="metric"><span id="transportCount">0</span> <small>типов</small></div></div><div class="card"><div class="label">Последнее действие</div><div class="metric"><small id="lastAction">пока нет</small></div></div></section>
-      <section class="filters"><input class="input" id="searchInput" type="search" placeholder="Поиск по id, пути или методу"><select class="select" id="statusFilter"><option value="all">Все статусы</option><option value="enabled">Активные</option><option value="blocked">Заблокированные</option></select><select class="select" id="transportFilter"><option value="all">Все методы</option><option value="ss">Shadowsocks</option><option value="vless">VLESS</option></select></section>
-      <section class="table"><table><thead><tr><th>ID</th><th>Доступ</th><th>Метод</th><th>Пути</th><th>Действия</th></tr></thead><tbody id="usersTable"></tbody></table><div class="empty" id="emptyState">Загрузите пользователей выбранного сервера.</div></section>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div class="brand-copy">
+          <div class="brand-title">Network Dashboard</div>
+          <div class="brand-subtitle">outline-ss-rust control</div>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Навигация">
+        <button class="nav-item active" type="button"><span class="nav-icon">□</span><span>Instances</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">◉</span><span>Alerts</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">▤</span><span>Logs</span></button>
+        <button class="nav-item" type="button"><span class="nav-icon">⚙</span><span>Settings</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="sidebar-foot-title">Секреты остаются на сервере</div>
+        <div class="sidebar-foot-copy">Dashboard работает через server-side proxy. Bearer-токены control API не попадают в браузерный JS.</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="topbar">
+        <div class="headline">
+          <h1>Instances</h1>
+          <p>Управление runtime users, access URL и состоянием инстансов через `/control`.</p>
+        </div>
+        <div class="toolbar">
+          <div class="updated">◌ Last updated: <strong id="updatedAt">--:--:--</strong></div>
+          <button class="toggle-chip" id="refreshButton" type="button"><span class="dot"></span><span>Auto</span></button>
+          <button class="theme-btn" id="themeToggle" type="button" aria-label="Переключить день и ночь">☾</button>
+        </div>
+      </section>
+
+      <section class="stats">
+        <article class="stat-card">
+          <div class="stat-copy">
+            <div class="stat-label">Total Instances</div>
+            <div class="stat-value" id="totalCount">0</div>
+          </div>
+          <div class="stat-icon">□</div>
+        </article>
+        <article class="stat-card ok">
+          <div class="stat-copy">
+            <div class="stat-label">Healthy Instances</div>
+            <div class="stat-value" id="activeCount">0</div>
+          </div>
+          <div class="stat-icon">♥</div>
+        </article>
+        <article class="stat-card">
+          <div class="stat-copy">
+            <div class="stat-label">Transport Types</div>
+            <div class="stat-value" id="transportCount">0</div>
+          </div>
+          <div class="stat-icon">◎</div>
+        </article>
+        <article class="stat-card ok">
+          <div class="stat-copy">
+            <div class="stat-label">Last Action</div>
+            <div class="stat-value" id="lastAction">--</div>
+          </div>
+          <div class="stat-icon">↗</div>
+        </article>
+      </section>
+
+      <section class="control-bar">
+        <select class="select" id="instanceSelect" aria-label="Сервер"></select>
+        <div class="status" id="statusText"></div>
+        <button class="btn secondary" id="loadButton" type="button">Обновить</button>
+        <button class="btn" id="openCreateButton" type="button">+ Новый пользователь</button>
+      </section>
+
+      <section class="filters">
+        <input class="input" id="searchInput" type="search" placeholder="Поиск по id, пути или методу">
+        <select class="select" id="statusFilter">
+          <option value="all">Все статусы</option>
+          <option value="enabled">Активные</option>
+          <option value="blocked">Заблокированные</option>
+        </select>
+        <select class="select" id="transportFilter">
+          <option value="all">Все транспорты</option>
+          <option value="ss">Shadowsocks</option>
+          <option value="vless">VLESS</option>
+        </select>
+      </section>
+
+      <section class="table-wrap">
+        <div class="table-head">
+          <div class="table-title">
+            <span class="table-dot" aria-hidden="true"></span>
+            <strong id="instanceLabel">users</strong>
+            <span id="instanceMeta">Пользователи выбранного сервера</span>
+          </div>
+          <div class="table-head-actions">
+            <span class="badge soft">Mode: Active / Passive</span>
+            <span class="badge muted">Scope: Global</span>
+            <span class="badge ok" id="tableHealth">0 active</span>
+          </div>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Статус</th>
+              <th>Метод</th>
+              <th>Пути</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody id="usersTable"></tbody>
+        </table>
+        <div class="empty" id="emptyState">Загрузите пользователей выбранного сервера.</div>
+      </section>
     </main>
   </div>
-  <div class="drawer-backdrop" id="drawerBackdrop"><aside class="drawer"><div class="drawer-head"><div class="drawer-title">Новый пользователь</div><button class="icon-btn" id="closeDrawerButton" type="button" aria-label="Закрыть">×</button></div><form class="form" id="createForm"><label class="field"><span class="label">ID</span><input class="input" name="id" required autocomplete="off" placeholder="team-madrid"></label><div class="two"><label class="field"><span class="label">Password</span><input class="input" name="password" type="password" autocomplete="new-password" placeholder="для Shadowsocks"></label><label class="field"><span class="label">VLESS UUID</span><input class="input" name="vless_id" autocomplete="off" placeholder="xxxxxxxx-xxxx-..."></label></div><label class="field"><span class="label">Метод</span><select class="select" name="method"><option value="">default</option><option value="aes-128-gcm">aes-128-gcm</option><option value="aes-256-gcm">aes-256-gcm</option><option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option><option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option><option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option><option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option></select></label><div class="two"><label class="field"><span class="label">TCP path</span><input class="input mono" name="ws_path_tcp" placeholder="/tcp"></label><label class="field"><span class="label">UDP path</span><input class="input mono" name="ws_path_udp" placeholder="/udp"></label></div><label class="field"><span class="label">VLESS path</span><input class="input mono" name="vless_ws_path" placeholder="/vless"></label><div class="two"><label class="field"><span class="label">fwmark</span><input class="input mono" name="fwmark" type="number" min="0" step="1" placeholder="default"></label><label class="check"><input name="enabled" type="checkbox" checked>enabled</label></div><div class="help">Нужен password или vless_id. Новые пути должны уже быть зарегистрированы при старте целевого сервера.</div><div class="actions"><button class="btn secondary" id="cancelCreateButton" type="button">Отмена</button><button class="btn" type="submit">Создать</button></div></form></aside></div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop">
+    <aside class="drawer">
+      <div class="drawer-head">
+        <div class="drawer-title" id="drawerTitle">Новый пользователь</div>
+        <button class="icon-btn" id="closeDrawerButton" type="button" aria-label="Закрыть">×</button>
+      </div>
+      <form class="form" id="createForm">
+        <label class="field">
+          <span class="label">ID</span>
+          <input class="input" name="id" required autocomplete="off" placeholder="team-madrid">
+        </label>
+        <div class="two">
+          <label class="field">
+            <span class="label">Password</span>
+            <input class="input" name="password" type="password" autocomplete="new-password" placeholder="для Shadowsocks">
+          </label>
+          <label class="field">
+            <span class="label">VLESS UUID</span>
+            <input class="input" name="vless_id" autocomplete="off" placeholder="xxxxxxxx-xxxx-...">
+          </label>
+        </div>
+        <label class="field">
+          <span class="label">Метод</span>
+          <select class="select" name="method">
+            <option value="">default</option>
+            <option value="aes-128-gcm">aes-128-gcm</option>
+            <option value="aes-256-gcm">aes-256-gcm</option>
+            <option value="chacha20-ietf-poly1305">chacha20-ietf-poly1305</option>
+            <option value="2022-blake3-aes-128-gcm">2022-blake3-aes-128-gcm</option>
+            <option value="2022-blake3-aes-256-gcm">2022-blake3-aes-256-gcm</option>
+            <option value="2022-blake3-chacha20-poly1305">2022-blake3-chacha20-poly1305</option>
+          </select>
+        </label>
+        <div class="two">
+          <label class="field">
+            <span class="label">TCP path</span>
+            <input class="input mono" name="ws_path_tcp" placeholder="/tcp">
+          </label>
+          <label class="field">
+            <span class="label">UDP path</span>
+            <input class="input mono" name="ws_path_udp" placeholder="/udp">
+          </label>
+        </div>
+        <label class="field">
+          <span class="label">VLESS path</span>
+          <input class="input mono" name="vless_ws_path" placeholder="/vless">
+        </label>
+        <div class="two">
+          <label class="field">
+            <span class="label">fwmark</span>
+            <input class="input mono" name="fwmark" type="number" min="0" step="1" placeholder="default">
+          </label>
+          <label class="check"><input name="enabled" type="checkbox" checked>enabled</label>
+        </div>
+        <div class="help" id="formHelp">Нужен password или vless_id. Новые пути должны уже быть зарегистрированы при старте целевого сервера.</div>
+        <div class="drawer-actions">
+          <button class="btn secondary" id="cancelCreateButton" type="button">Отмена</button>
+          <button class="btn" id="submitUserButton" type="submit">Создать</button>
+        </div>
+      </form>
+    </aside>
+  </div>
+
   <div class="toast" id="toast" role="status"></div>
+
   <script>
-    const state = { users: [], busy: false, instances: [] };
-    const el = Object.fromEntries(["instanceSelect","loadButton","refreshButton","openCreateButton","closeDrawerButton","cancelCreateButton","drawerBackdrop","createForm","usersTable","emptyState","searchInput","statusFilter","transportFilter","statusText","totalCount","activeCount","transportCount","lastAction","toast"].map(id => [id, document.getElementById(id)]));
+    const THEME_KEY = "outline-ss-dashboard-theme";
+    const state = { users: [], busy: false, instances: [], editingId: null, autoRefresh: true };
+    const el = Object.fromEntries(["instanceSelect","loadButton","refreshButton","openCreateButton","closeDrawerButton","cancelCreateButton","drawerBackdrop","drawerTitle","formHelp","submitUserButton","createForm","usersTable","emptyState","searchInput","statusFilter","transportFilter","statusText","totalCount","activeCount","transportCount","lastAction","instanceLabel","instanceMeta","tableHealth","updatedAt","themeToggle","toast"].map(id => [id, document.getElementById(id)]));
+
     function selectedInstance(){ return el.instanceSelect.value; }
-    function setBusy(busy){ state.busy=busy; document.querySelectorAll("button").forEach(b=>b.disabled=busy); }
-    function setStatus(message,kind=""){ el.statusText.textContent=message; el.statusText.className="status"+(kind?" "+kind:""); }
-    function showToast(message){ el.toast.textContent=message; el.toast.classList.add("show"); clearTimeout(showToast.timer); showToast.timer=setTimeout(()=>el.toast.classList.remove("show"),3200); }
-    async function api(path, options={}){ const sep=path.includes("?")?"&":"?"; const res=await fetch(path+sep+"instance="+encodeURIComponent(selectedInstance()),{...options,headers:{"Accept":"application/json",...(options.body?{"Content-Type":"application/json"}:{}),...(options.headers||{})}}); if(res.status===204)return null; const text=await res.text(); let data=null; try{data=text?JSON.parse(text):null}catch{} if(!res.ok)throw new Error((data&&data.error)||text||res.statusText); return data; }
-    function esc(v){ return String(v??"").replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[ch])); }
-    function searchText(u){ return [u.id,u.method,u.ws_path_tcp,u.ws_path_udp,u.vless_ws_path,u.fwmark].filter(Boolean).join(" ").toLowerCase(); }
-    function filtered(){ const s=el.searchInput.value.trim().toLowerCase(), st=el.statusFilter.value, tr=el.transportFilter.value; return state.users.filter(u=>(!s||searchText(u).includes(s))&&(st==="all"||(st==="enabled"?u.enabled:!u.enabled))&&(tr==="all"||(tr==="ss"?u.has_password:u.has_vless_id))); }
-    function renderStats(){ el.totalCount.textContent=state.users.length; el.activeCount.textContent=state.users.filter(u=>u.enabled).length; const t=new Set(); state.users.forEach(u=>{ if(u.has_password)t.add("SS"); if(u.has_vless_id)t.add("VLESS"); }); el.transportCount.textContent=t.size; }
-    function renderUsers(){ renderStats(); const rows=filtered(); el.usersTable.innerHTML=rows.map(u=>{ const transports=(u.has_password?'<span class="chip">SS</span>':"")+(u.has_vless_id?'<span class="chip">VLESS</span>':""); const paths=[u.ws_path_tcp&&"tcp "+u.ws_path_tcp,u.ws_path_udp&&"udp "+u.ws_path_udp,u.vless_ws_path&&"vless "+u.vless_ws_path].filter(Boolean); const action=u.enabled?"block":"unblock"; return `<tr><td><div class="user-id">${esc(u.id)}</div><div class="subtle">${u.fwmark==null?"default fwmark":"fwmark "+esc(u.fwmark)}</div></td><td><div class="chips"><span class="chip ${u.enabled?"ok":"warn"}">${u.enabled?"active":"blocked"}</span>${transports}</div></td><td><span class="mono">${u.method?esc(u.method):'<span class="subtle">default</span>'}</span></td><td>${paths.length?paths.map(p=>`<div class="mono">${esc(p)}</div>`).join(""):'<span class="subtle">default paths</span>'}</td><td><div class="row-actions"><button type="button" data-action="${action}" data-id="${esc(u.id)}">${u.enabled?"Блок":"Разблок"}</button><button class="danger" type="button" data-action="delete" data-id="${esc(u.id)}">Удалить</button></div></td></tr>`; }).join(""); el.emptyState.style.display=rows.length?"none":"block"; el.emptyState.textContent=state.users.length?"Под текущие фильтры никто не попал.":"Пользователей пока нет."; }
-    async function loadInstances(){ const data=await fetch("/dashboard/api/instances").then(r=>r.json()); state.instances=data.instances||[]; el.instanceSelect.innerHTML=state.instances.map(s=>`<option value="${esc(s.name)}">${esc(s.name)} · ${esc(s.control_url)}</option>`).join(""); if(!state.instances.length)setStatus("В dashboard.instances нет инстансов.","error"); }
-    async function loadUsers(){ if(!selectedInstance()){ setStatus("Выберите сервер.","error"); return; } setBusy(true); try{ const data=await api("/dashboard/api/users"); state.users=Array.isArray(data.users)?data.users:[]; setStatus("Загружено: "+state.users.length+".","ok"); renderUsers(); }catch(e){ setStatus(e.message,"error"); showToast(e.message); }finally{ setBusy(false); } }
-    function payload(form){ const fd=new FormData(form), p={}; for(const [k,v] of fd.entries()){ if(k==="enabled")continue; const s=String(v).trim(); if(!s)continue; p[k]=k==="fwmark"?Number(s):s; } p.enabled=form.elements.enabled.checked; return p; }
-    async function createUser(e){ e.preventDefault(); const p=payload(e.currentTarget); if(!p.password&&!p.vless_id){ showToast("Нужен password или vless_id."); return; } setBusy(true); try{ const user=await api("/dashboard/api/users",{method:"POST",body:JSON.stringify(p)}); el.lastAction.textContent=user.id+" создан"; closeDrawer(); e.currentTarget.reset(); e.currentTarget.elements.enabled.checked=true; await loadUsers(); showToast("Пользователь создан."); }catch(err){ setStatus(err.message,"error"); showToast(err.message); }finally{ setBusy(false); } }
-    async function mutate(id,action){ if(action==="delete"&&!confirm("Удалить пользователя "+id+"?"))return; setBusy(true); try{ if(action==="delete"){ await api("/dashboard/api/users/"+encodeURIComponent(id),{method:"DELETE"}); el.lastAction.textContent=id+" удалён"; } else { const u=await api("/dashboard/api/users/"+encodeURIComponent(id)+"/"+action,{method:"POST"}); el.lastAction.textContent=u.id+(u.enabled?" разблокирован":" заблокирован"); } await loadUsers(); }catch(e){ setStatus(e.message,"error"); showToast(e.message); }finally{ setBusy(false); } }
-    function openDrawer(){ el.drawerBackdrop.classList.add("open"); setTimeout(()=>el.createForm.elements.id.focus(),30); } function closeDrawer(){ el.drawerBackdrop.classList.remove("open"); }
-    el.loadButton.addEventListener("click",loadUsers); el.refreshButton.addEventListener("click",loadUsers); el.instanceSelect.addEventListener("change",loadUsers); el.openCreateButton.addEventListener("click",openDrawer); el.closeDrawerButton.addEventListener("click",closeDrawer); el.cancelCreateButton.addEventListener("click",closeDrawer); el.drawerBackdrop.addEventListener("click",e=>{ if(e.target===el.drawerBackdrop)closeDrawer(); }); el.createForm.addEventListener("submit",createUser); el.usersTable.addEventListener("click",e=>{ const b=e.target.closest("button[data-action]"); if(b)mutate(b.dataset.id,b.dataset.action); }); el.searchInput.addEventListener("input",renderUsers); el.statusFilter.addEventListener("change",renderUsers); el.transportFilter.addEventListener("change",renderUsers);
-    loadInstances().then(loadUsers).catch(e=>setStatus(e.message,"error"));
+
+    function getPreferredTheme(){
+      const saved = localStorage.getItem(THEME_KEY);
+      if(saved === "light" || saved === "dark") return saved;
+      return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+
+    function applyTheme(theme){
+      document.body.dataset.theme = theme;
+      el.themeToggle.textContent = theme === "dark" ? "☀" : "☾";
+      el.themeToggle.title = theme === "dark" ? "Переключить на дневную тему" : "Переключить на ночную тему";
+      localStorage.setItem(THEME_KEY, theme);
+    }
+
+    function toggleTheme(){
+      applyTheme(document.body.dataset.theme === "dark" ? "light" : "dark");
+    }
+
+    function markUpdated(){
+      const now = new Date();
+      el.updatedAt.textContent = now.toLocaleTimeString("ru-RU", { hour12:false });
+    }
+
+    function setBusy(busy){
+      state.busy = busy;
+      document.querySelectorAll("button").forEach(button => { button.disabled = busy; });
+    }
+
+    function setStatus(message, kind=""){
+      el.statusText.textContent = message;
+      el.statusText.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function showToast(message){
+      el.toast.textContent = message;
+      el.toast.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => el.toast.classList.remove("show"), 3200);
+    }
+
+    async function api(path, options={}){
+      const sep = path.includes("?") ? "&" : "?";
+      const res = await fetch(path + sep + "instance=" + encodeURIComponent(selectedInstance()), {
+        ...options,
+        headers:{
+          "Accept":"application/json",
+          ...(options.body ? { "Content-Type":"application/json" } : {}),
+          ...(options.headers || {})
+        }
+      });
+      if(res.status === 204) return null;
+      const text = await res.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch {}
+      if(!res.ok) throw new Error((data && data.error) || text || res.statusText);
+      return data;
+    }
+
+    function esc(value){
+      return String(value ?? "").replace(/[&<>"']/g, ch => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", "\"":"&quot;", "'":"&#39;" }[ch]));
+    }
+
+    function searchText(user){
+      return [user.id,user.method,user.ws_path_tcp,user.ws_path_udp,user.vless_ws_path,user.fwmark].filter(Boolean).join(" ").toLowerCase();
+    }
+
+    function filtered(){
+      const s = el.searchInput.value.trim().toLowerCase();
+      const st = el.statusFilter.value;
+      const tr = el.transportFilter.value;
+      return state.users.filter(user =>
+        (!s || searchText(user).includes(s)) &&
+        (st === "all" || (st === "enabled" ? user.enabled : !user.enabled)) &&
+        (tr === "all" || (tr === "ss" ? user.has_password : user.has_vless_id))
+      );
+    }
+
+    function renderStats(){
+      el.totalCount.textContent = state.users.length;
+      el.activeCount.textContent = state.users.filter(user => user.enabled).length;
+      const transports = new Set();
+      state.users.forEach(user => {
+        if(user.has_password) transports.add("SS");
+        if(user.has_vless_id) transports.add("VLESS");
+      });
+      el.transportCount.textContent = transports.size;
+      el.tableHealth.textContent = state.users.filter(user => user.enabled).length + " active";
+    }
+
+    function actionButton(label, action, id, extraClass=""){
+      return `<button class="${extraClass}" type="button" data-action="${action}" data-id="${esc(id)}">${label}</button>`;
+    }
+
+    function renderUsers(){
+      renderStats();
+      const rows = filtered();
+      el.usersTable.innerHTML = rows.map(user => {
+        const transports = (user.has_password ? '<span class="chip">SS</span>' : "") + (user.has_vless_id ? '<span class="chip">VLESS</span>' : "");
+        const paths = [
+          user.ws_path_tcp && "tcp " + user.ws_path_tcp,
+          user.ws_path_udp && "udp " + user.ws_path_udp,
+          user.vless_ws_path && "vless " + user.vless_ws_path
+        ].filter(Boolean);
+        const action = user.enabled ? "block" : "unblock";
+        const statusChip = `<span class="chip ${user.enabled ? "ok" : "warn"}">${user.enabled ? "active" : "blocked"}</span>`;
+        return `<tr>
+          <td>
+            <div class="user-id"><span class="table-dot" style="width:10px;height:10px;box-shadow:none;background:${user.enabled ? "var(--ok)" : "var(--warn)"}"></span>${esc(user.id)}</div>
+            <div class="subtle">${user.fwmark == null ? "default fwmark" : "fwmark " + esc(user.fwmark)}</div>
+          </td>
+          <td><div class="chips">${statusChip}${transports}</div></td>
+          <td><span class="mono">${user.method ? esc(user.method) : '<span class="subtle">default</span>'}</span></td>
+          <td>${paths.length ? paths.map(path => `<div class="mono">${esc(path)}</div>`).join("") : '<span class="subtle">default paths</span>'}</td>
+          <td>
+            <div class="row-actions">
+              ${user.has_password ? actionButton("Outline config", "ss-config-url", user.id) : ""}
+              ${user.has_password ? actionButton("SS URL", "ss-access-key-url", user.id) : ""}
+              ${user.has_vless_id ? actionButton("VLESS URL", "vless-url", user.id) : ""}
+              ${actionButton("Редактировать", "edit", user.id)}
+              ${actionButton(user.enabled ? "Блок" : "Разблок", action, user.id, user.enabled ? "" : "primary")}
+              ${actionButton("Удалить", "delete", user.id, "danger")}
+            </div>
+          </td>
+        </tr>`;
+      }).join("");
+      el.emptyState.style.display = rows.length ? "none" : "block";
+      el.emptyState.textContent = state.users.length ? "Под текущие фильтры никто не попал." : "Пользователей пока нет.";
+      el.instanceMeta.textContent = selectedInstance() ? "Пользователи выбранного сервера" : "Выберите сервер для загрузки";
+    }
+
+    async function loadInstances(){
+      const data = await fetch("/dashboard/api/instances").then(res => res.json());
+      state.instances = data.instances || [];
+      el.instanceSelect.innerHTML = state.instances.map(server => `<option value="${esc(server.name)}">${esc(server.name)} · ${esc(server.control_url)}</option>`).join("");
+      el.instanceLabel.textContent = state.instances[0] ? state.instances[0].name : "users";
+      if(!state.instances.length) setStatus("В dashboard.instances нет инстансов.", "error");
+    }
+
+    async function loadUsers(){
+      if(!selectedInstance()){
+        setStatus("Выберите сервер.", "error");
+        return;
+      }
+      setBusy(true);
+      try {
+        const data = await api("/dashboard/api/users");
+        state.users = Array.isArray(data.users) ? data.users : [];
+        el.instanceLabel.textContent = selectedInstance();
+        setStatus("Загружено: " + state.users.length + ".", "ok");
+        markUpdated();
+        renderUsers();
+      } catch (error) {
+        setStatus(error.message, "error");
+        showToast(error.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function payload(form, editing=false){
+      const fd = new FormData(form);
+      const out = {};
+      for(const [key, value] of fd.entries()){
+        if(key === "enabled" || key === "id") continue;
+        const text = String(value).trim();
+        if(!text){
+          if(editing && ["password","vless_id","method","fwmark","ws_path_tcp","ws_path_udp","vless_ws_path"].includes(key)){
+            if(["method","fwmark","ws_path_tcp","ws_path_udp","vless_ws_path"].includes(key)) out[key] = null;
+          }
+          continue;
+        }
+        out[key] = key === "fwmark" ? Number(text) : text;
+      }
+      out.enabled = form.elements.enabled.checked;
+      if(!editing) out.id = form.elements.id.value.trim();
+      return out;
+    }
+
+    async function saveUser(event){
+      event.preventDefault();
+      const editing = Boolean(state.editingId);
+      const data = payload(event.currentTarget, editing);
+      if(!editing && !data.password && !data.vless_id){
+        showToast("Нужен password или vless_id.");
+        return;
+      }
+      setBusy(true);
+      try {
+        const path = editing ? "/dashboard/api/users/" + encodeURIComponent(state.editingId) : "/dashboard/api/users";
+        const user = await api(path, { method: editing ? "PATCH" : "POST", body: JSON.stringify(data) });
+        el.lastAction.textContent = user.id + (editing ? " updated" : " created");
+        closeDrawer();
+        await loadUsers();
+        showToast(editing ? "Пользователь обновлён." : "Пользователь создан.");
+      } catch (error) {
+        setStatus(error.message, "error");
+        showToast(error.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function copyText(text){
+      if(!text) throw new Error("URL не настроен.");
+      if(navigator.clipboard && window.isSecureContext){
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      const area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.opacity = "0";
+      document.body.appendChild(area);
+      area.select();
+      const ok = document.execCommand("copy");
+      area.remove();
+      if(!ok) throw new Error("Не удалось скопировать URL.");
+    }
+
+    async function copyAccessUrl(id, action){
+      const field = { "ss-config-url":"ss_config_url", "ss-access-key-url":"ss_access_key_url", "vless-url":"vless_url" }[action];
+      const label = { "ss-config-url":"Outline config URL", "ss-access-key-url":"SS URL", "vless-url":"VLESS URL" }[action];
+      setBusy(true);
+      try {
+        const urls = await api("/dashboard/api/users/" + encodeURIComponent(id) + "/access-urls");
+        await copyText(urls && urls[field]);
+        el.lastAction.textContent = label;
+        showToast(label + " скопирован.");
+      } catch (error) {
+        setStatus(error.message, "error");
+        showToast(error.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function mutate(id, action){
+      if(action === "delete" && !confirm("Удалить пользователя " + id + "?")) return;
+      setBusy(true);
+      try {
+        if(action === "delete"){
+          await api("/dashboard/api/users/" + encodeURIComponent(id), { method:"DELETE" });
+          el.lastAction.textContent = id + " deleted";
+        } else {
+          const user = await api("/dashboard/api/users/" + encodeURIComponent(id) + "/" + action, { method:"POST" });
+          el.lastAction.textContent = user.id + (user.enabled ? " enabled" : " blocked");
+        }
+        await loadUsers();
+      } catch (error) {
+        setStatus(error.message, "error");
+        showToast(error.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    function openDrawer(){
+      state.editingId = null;
+      el.drawerTitle.textContent = "Новый пользователь";
+      el.submitUserButton.textContent = "Создать";
+      el.formHelp.textContent = "Нужен password или vless_id. Новые пути должны уже быть зарегистрированы при старте целевого сервера.";
+      el.createForm.reset();
+      el.createForm.elements.id.disabled = false;
+      el.createForm.elements.enabled.checked = true;
+      el.drawerBackdrop.classList.add("open");
+      setTimeout(() => el.createForm.elements.id.focus(), 30);
+    }
+
+    function openEditDrawer(id){
+      const user = state.users.find(item => item.id === id);
+      if(!user) return;
+      state.editingId = id;
+      el.drawerTitle.textContent = "Редактировать пользователя";
+      el.submitUserButton.textContent = "Сохранить";
+      el.formHelp.textContent = "Password и VLESS UUID оставьте пустыми, если их не нужно менять. Пустые method, fwmark и path вернут default.";
+      el.createForm.reset();
+      el.createForm.elements.id.value = user.id;
+      el.createForm.elements.id.disabled = true;
+      el.createForm.elements.password.placeholder = user.has_password ? "оставить текущий пароль" : "добавить Shadowsocks password";
+      el.createForm.elements.vless_id.placeholder = user.has_vless_id ? "оставить текущий UUID" : "добавить VLESS UUID";
+      el.createForm.elements.method.value = user.method || "";
+      el.createForm.elements.ws_path_tcp.value = user.ws_path_tcp || "";
+      el.createForm.elements.ws_path_udp.value = user.ws_path_udp || "";
+      el.createForm.elements.vless_ws_path.value = user.vless_ws_path || "";
+      el.createForm.elements.fwmark.value = user.fwmark == null ? "" : user.fwmark;
+      el.createForm.elements.enabled.checked = user.enabled;
+      el.drawerBackdrop.classList.add("open");
+      setTimeout(() => el.createForm.elements.method.focus(), 30);
+    }
+
+    function closeDrawer(){
+      el.drawerBackdrop.classList.remove("open");
+      state.editingId = null;
+      el.createForm.elements.id.disabled = false;
+    }
+
+    function toggleAutoRefresh(){
+      state.autoRefresh = !state.autoRefresh;
+      el.refreshButton.querySelector("span:last-child").textContent = state.autoRefresh ? "Auto" : "Manual";
+      el.refreshButton.querySelector(".dot").style.background = state.autoRefresh ? "var(--ok)" : "var(--warn)";
+    }
+
+    applyTheme(getPreferredTheme());
+    markUpdated();
+    window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", event => {
+      if(!localStorage.getItem(THEME_KEY)) applyTheme(event.matches ? "dark" : "light");
+    });
+
+    el.themeToggle.addEventListener("click", toggleTheme);
+    el.loadButton.addEventListener("click", loadUsers);
+    el.refreshButton.addEventListener("click", toggleAutoRefresh);
+    el.instanceSelect.addEventListener("change", loadUsers);
+    el.openCreateButton.addEventListener("click", openDrawer);
+    el.closeDrawerButton.addEventListener("click", closeDrawer);
+    el.cancelCreateButton.addEventListener("click", closeDrawer);
+    el.drawerBackdrop.addEventListener("click", event => { if(event.target === el.drawerBackdrop) closeDrawer(); });
+    el.createForm.addEventListener("submit", saveUser);
+    el.usersTable.addEventListener("click", event => {
+      const button = event.target.closest("button[data-action]");
+      if(!button) return;
+      if(button.dataset.action === "edit") openEditDrawer(button.dataset.id);
+      else if(button.dataset.action.endsWith("-url")) copyAccessUrl(button.dataset.id, button.dataset.action);
+      else mutate(button.dataset.id, button.dataset.action);
+    });
+    el.searchInput.addEventListener("input", renderUsers);
+    el.statusFilter.addEventListener("change", renderUsers);
+    el.transportFilter.addEventListener("change", renderUsers);
+
+    loadInstances().then(loadUsers).catch(error => setStatus(error.message, "error"));
   </script>
 </body>
 </html>

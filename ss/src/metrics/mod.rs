@@ -435,6 +435,7 @@ mod tests {
             fwmark: None,
             users: vec![],
             method: crate::config::CipherKind::Chacha20IetfPoly1305,
+            access_key: Default::default(),
             tuning: Default::default(),
             config_path: None,
             control: None,
