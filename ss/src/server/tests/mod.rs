@@ -98,7 +98,7 @@ async fn tcp_ipv6_loopback_smoke() -> Result<()> {
 #[test]
 fn tcp_connect_order_interleaves_ipv4_and_ipv6() {
     let ordered = sort_addrs_for_happy_eyeballs(
-        vec![
+        &[
             SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
             SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),
             SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
