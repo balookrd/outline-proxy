@@ -31,16 +31,22 @@ pub fn build_access_key_artifacts(
     if config.listen.is_none() {
         bail!("Outline access keys require the websocket listen listener to be configured");
     }
-    let users = config.user_entries()?;
+    let users = config.effective_users()?;
     let public_host = ak
         .public_host
         .as_deref()
-        .ok_or_else(|| anyhow!("--public-host is required to generate Outline access keys"))?;
+        .ok_or_else(|| anyhow!("--public-host is required to generate client configs"))?;
 
-    users
-        .into_iter()
-        .map(|user| build_user_artifact(config, ak, &user, public_host))
-        .collect()
+    let mut artifacts = Vec::new();
+    for user in users {
+        if user.password.is_some() {
+            artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
+        }
+        if user.vless_id.is_some() {
+            artifacts.push(build_vless_user_artifact(config, ak, &user, public_host)?);
+        }
+    }
+    Ok(artifacts)
 }
 
 pub fn render_access_key_report(artifacts: &[AccessKeyArtifact]) -> String {
@@ -112,7 +118,7 @@ pub fn render_written_access_key_report(artifacts: &[WrittenAccessKeyArtifact]) 
     out
 }
 
-fn build_user_artifact(
+fn build_shadowsocks_user_artifact(
     config: &Config,
     ak: &AccessKeyConfig,
     user: &UserEntry,
@@ -154,6 +160,35 @@ fn build_user_artifact(
     })
 }
 
+fn build_vless_user_artifact(
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+) -> Result<AccessKeyArtifact> {
+    let vless_id = user.vless_id.as_deref().expect("checked by caller");
+    let vless_path = config
+        .vless_ws_path
+        .as_deref()
+        .ok_or_else(|| anyhow!("vless_id for user {} requires vless_ws_path", user.id))?;
+    let config_filename =
+        format!("{}-vless{}", sanitize_filename(&user.id), ak.access_key_file_extension);
+    let config_url = ak
+        .access_key_url_base
+        .as_deref()
+        .map(|base| join_url(base, &config_filename))
+        .transpose()?;
+    let vless_url = vless_uri(vless_id, public_host, &ak.public_scheme, vless_path, &user.id);
+
+    Ok(AccessKeyArtifact {
+        user_id: user.id.clone(),
+        config_filename,
+        config_url,
+        access_key_url: Some(vless_url.clone()),
+        yaml: format!("{vless_url}\n"),
+    })
+}
+
 fn render_outline_yaml(method: &str, password: &str, tcp_url: &str, udp_url: &str) -> String {
     format!(
         concat!(
@@ -183,6 +218,62 @@ fn render_outline_yaml(method: &str, password: &str, tcp_url: &str, udp_url: &st
 
 fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
     format!("{scheme}://{}{}", normalize_host(host), normalize_path(path))
+}
+
+fn vless_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> String {
+    let security = if scheme == "wss" { "tls" } else { "none" };
+    let default_port = if scheme == "wss" { 443 } else { 80 };
+    format!(
+        "vless://{}@{}?type=ws&security={security}&path={}&encryption=none#{}",
+        id,
+        vless_authority(host, default_port),
+        percent_encode_query_value(&normalize_path(path)),
+        percent_encode_fragment(label),
+    )
+}
+
+fn vless_authority(host: &str, default_port: u16) -> String {
+    let host = normalize_host(host);
+    if host_has_port(&host) {
+        host
+    } else {
+        format!("{host}:{default_port}")
+    }
+}
+
+fn host_has_port(host: &str) -> bool {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.contains("]:");
+    }
+    host.rsplit_once(':')
+        .is_some_and(|(_, port)| port.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn percent_encode_query_value(value: &str) -> String {
+    percent_encode(value, |byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+    })
+}
+
+fn percent_encode_fragment(value: &str) -> String {
+    percent_encode(value, |byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+    })
+}
+
+fn percent_encode(value: &str, keep: impl Fn(u8) -> bool) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if keep(byte) {
+            out.push(byte as char);
+        } else {
+            out.push('%');
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+    }
+    out
 }
 
 fn normalize_path(path: &str) -> String {
@@ -274,7 +365,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
-            vless_ws_path: None,
+            vless_ws_path: Some("/vless path".into()),
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             password: None,
@@ -298,6 +389,15 @@ mod tests {
                     ws_path_udp: None,
                     vless_id: None,
                 },
+                UserEntry {
+                    id: "carol vless".into(),
+                    password: None,
+                    fwmark: None,
+                    method: None,
+                    ws_path_tcp: None,
+                    ws_path_udp: None,
+                    vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                },
             ],
             method: CipherKind::Chacha20IetfPoly1305,
             tuning: Default::default(),
@@ -317,7 +417,7 @@ mod tests {
     fn builds_outline_artifacts_for_all_users() {
         let artifacts = build_access_key_artifacts(&sample_config(), &sample_ak_config()).unwrap();
 
-        assert_eq!(artifacts.len(), 2);
+        assert_eq!(artifacts.len(), 3);
         assert_eq!(
             artifacts[0].access_key_url.as_deref(),
             Some("ssconf://keys.example.com/outline/alice.yaml")
@@ -326,6 +426,17 @@ mod tests {
         assert!(artifacts[0].yaml.contains("url: \"wss://vpn.example.com/alice/udp\""));
         assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
         assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
+        assert_eq!(artifacts[2].config_filename, "carol_vless-vless.yaml");
+        assert_eq!(
+            artifacts[2].access_key_url.as_deref(),
+            Some(
+                "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fvless%20path&encryption=none#carol%20vless"
+            )
+        );
+        assert_eq!(
+            artifacts[2].yaml,
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fvless%20path&encryption=none#carol%20vless\n"
+        );
     }
 
     #[test]
@@ -362,7 +473,7 @@ mod tests {
 
         let written = write_access_key_artifacts(&artifacts, &output_dir).unwrap();
 
-        assert_eq!(written.len(), 2);
+        assert_eq!(written.len(), 3);
         assert_eq!(
             std::fs::read_to_string(output_dir.join("alice.yaml")).unwrap(),
             artifacts[0].yaml
@@ -370,6 +481,25 @@ mod tests {
         assert!(render_written_access_key_report(&written).contains("written_file:"));
 
         std::fs::remove_dir_all(output_dir).unwrap();
+    }
+
+    #[test]
+    fn builds_both_ss_and_vless_artifacts_for_combined_user() {
+        let mut config = sample_config();
+        config.users[0].vless_id = Some("650e8400-e29b-41d4-a716-446655440000".into());
+
+        let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
+
+        assert!(
+            artifacts
+                .iter()
+                .any(|artifact| artifact.config_filename == "alice.yaml")
+        );
+        assert!(
+            artifacts
+                .iter()
+                .any(|artifact| artifact.config_filename == "alice-vless.yaml")
+        );
     }
 
     #[test]
@@ -386,5 +516,6 @@ mod tests {
             artifacts[0].access_key_url.as_deref(),
             Some("ssconf://keys.example.com/outline/alice.txt")
         );
+        assert_eq!(artifacts[2].config_filename, "carol_vless-vless.txt");
     }
 }
