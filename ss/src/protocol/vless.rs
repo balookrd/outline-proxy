@@ -9,10 +9,18 @@ use super::TargetAddr;
 
 pub const VERSION: u8 = 0x00;
 pub const COMMAND_TCP: u8 = 0x01;
+pub const COMMAND_UDP: u8 = 0x02;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlessCommand {
+    Tcp,
+    Udp,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VlessRequest {
     pub user_id: [u8; 16],
+    pub command: VlessCommand,
     pub target: TargetAddr,
     pub consumed: usize,
 }
@@ -83,10 +91,11 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
         return Ok(None);
     }
 
-    let command = input[command_offset];
-    if command != COMMAND_TCP {
-        return Err(VlessError::UnsupportedCommand(command));
-    }
+    let command = match input[command_offset] {
+        COMMAND_TCP => VlessCommand::Tcp,
+        COMMAND_UDP => VlessCommand::Udp,
+        other => return Err(VlessError::UnsupportedCommand(other)),
+    };
 
     let port_offset = command_offset + 1;
     let port = u16::from_be_bytes([input[port_offset], input[port_offset + 1]]);
@@ -134,7 +143,7 @@ pub fn parse_request(input: &[u8]) -> Result<Option<VlessRequest>, VlessError> {
         other => return Err(VlessError::UnsupportedAddressType(other)),
     };
 
-    Ok(Some(VlessRequest { user_id, target, consumed }))
+    Ok(Some(VlessRequest { user_id, command, target, consumed }))
 }
 
 pub fn find_user<'a>(users: &'a [VlessUser], user_id: &[u8; 16]) -> Option<&'a VlessUser> {
@@ -243,13 +252,29 @@ mod tests {
     }
 
     #[test]
-    fn reject_udp_command() {
-        let mut bytes = request_prefix(0x02);
+    fn parse_vless_udp_request() {
+        let mut bytes = request_prefix(COMMAND_UDP);
         bytes.extend_from_slice(&53_u16.to_be_bytes());
         bytes.push(0x01);
         bytes.extend_from_slice(&[1, 1, 1, 1]);
 
-        assert_eq!(parse_request(&bytes).unwrap_err(), VlessError::UnsupportedCommand(0x02));
+        let parsed = parse_request(&bytes).unwrap().unwrap();
+        assert_eq!(parsed.command, VlessCommand::Udp);
+        assert_eq!(
+            parsed.target,
+            TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53)))
+        );
+        assert_eq!(parsed.consumed, bytes.len());
+    }
+
+    #[test]
+    fn reject_unknown_command() {
+        let mut bytes = request_prefix(0x03);
+        bytes.extend_from_slice(&53_u16.to_be_bytes());
+        bytes.push(0x01);
+        bytes.extend_from_slice(&[1, 1, 1, 1]);
+
+        assert_eq!(parse_request(&bytes).unwrap_err(), VlessError::UnsupportedCommand(0x03));
     }
 
     #[test]
