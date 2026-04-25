@@ -140,7 +140,17 @@ pub struct QuicDatagramChannel {
     /// Held in `Mutex<Option>` so the lazy install path can swap it in
     /// without the surrounding code needing `&mut self`.
     _oversize_pump: SyncMutex<Option<AbortOnDrop>>,
-    oversize_pump_spawned: AtomicBool,
+    /// Shared flag — flipped exactly once when EITHER the local-open
+    /// path (`ensure_oversize_pump`) or the peer-open path (the
+    /// `accept_bi` task spawned at construction) first installs the
+    /// oversize stream and spawns its record reader. The Arc lets
+    /// the accept_bi closure observe the same flag without
+    /// borrowing `&self`.
+    oversize_pump_spawned: Arc<AtomicBool>,
+    /// accept_bi pump that listens for server-initiated oversize-record
+    /// streams. Spawned at construction iff the negotiated ALPN
+    /// supports oversize records.
+    _oversize_accept_task: SyncMutex<Option<AbortOnDrop>>,
 }
 
 impl QuicDatagramChannel {
@@ -169,20 +179,79 @@ impl QuicDatagramChannel {
                 }
             }
         }));
-        Self {
-            conn,
-            inbound_tx,
+        let oversize_pump_spawned: Arc<AtomicBool> = Arc::new(AtomicBool::new(false));
+        let channel = Self {
+            conn: Arc::clone(&conn),
+            inbound_tx: inbound_tx.clone(),
             inbound_rx: Mutex::new(inbound_rx),
             _datagram_pump: datagram_pump,
             _oversize_pump: SyncMutex::new(None),
-            oversize_pump_spawned: AtomicBool::new(false),
+            oversize_pump_spawned: Arc::clone(&oversize_pump_spawned),
+            _oversize_accept_task: SyncMutex::new(None),
+        };
+        // accept_bi pump for server-initiated oversize-record streams:
+        // listen on the connection for any incoming bidi, peek 8 bytes
+        // for the magic, install the stream + spawn the record reader.
+        // Spawned only when the negotiated ALPN advertises oversize
+        // support; on legacy `ss` ALPN this path is dormant.
+        if conn.supports_oversize_stream() {
+            let conn_for_accept = Arc::clone(&conn);
+            let inbound_tx_for_accept = inbound_tx;
+            let flag_for_accept = Arc::clone(&oversize_pump_spawned);
+            let task = AbortOnDrop::new(tokio::spawn(async move {
+                let raw = conn_for_accept.raw_connection();
+                loop {
+                    let (send, mut recv) = match raw.accept_bi().await {
+                        Ok(pair) => pair,
+                        Err(_) => return,
+                    };
+                    let mut head = [0u8; crate::quic::OVERSIZE_STREAM_MAGIC.len()];
+                    if let Err(error) = tokio::io::AsyncReadExt::read_exact(&mut recv, &mut head)
+                        .await
+                    {
+                        debug!(?error, "accept_bi peek failed for ss oversize stream");
+                        continue;
+                    }
+                    if &head != crate::quic::OVERSIZE_STREAM_MAGIC {
+                        debug!(?head, "accept_bi got non-oversize stream from server, ignoring");
+                        continue;
+                    }
+                    let stream = crate::quic::OversizeStream::from_accept_validated(send, recv);
+                    let installed = conn_for_accept.install_accepted_oversize_stream(stream);
+                    // Spawn record reader if not already running.
+                    if flag_for_accept
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                    {
+                        let inbound_tx_for_reader = inbound_tx_for_accept.clone();
+                        tokio::spawn(async move {
+                            loop {
+                                match installed.recv_record().await {
+                                    Ok(Some(record)) => {
+                                        if inbound_tx_for_reader.send(Ok(record)).is_err() {
+                                            return;
+                                        }
+                                    }
+                                    Ok(None) => return,
+                                    Err(error) => {
+                                        debug!(?error, "ss oversize reader (peer-opened) aborting");
+                                        return;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }));
+            *channel._oversize_accept_task.lock() = Some(task);
         }
+        channel
     }
 
     /// Lazy-open the oversize-record stream and spawn its inbound pump
-    /// task into the same `inbound_tx` mpsc. Idempotent — concurrent
-    /// callers race via `compare_exchange` so the pump is started at
-    /// most once.
+    /// task into the same `inbound_tx` mpsc. Idempotent — both this
+    /// call and the accept_bi closure share `oversize_pump_spawned`
+    /// so the reader is started at most once across both paths.
     async fn ensure_oversize_pump(&self) -> Result<Arc<crate::quic::OversizeStream>> {
         let stream = self.conn.ensure_oversize_stream().await?;
         if self
