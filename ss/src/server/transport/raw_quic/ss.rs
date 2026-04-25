@@ -32,9 +32,55 @@ pub(in crate::server) struct RawQuicSsCtx {
     pub(in crate::server) services: Arc<Services>,
 }
 
+/// Per-QUIC-connection state for raw SS — tracks the lazily-opened
+/// oversize-record stream so server→client oversized SS-UDP packets
+/// can fall back to it instead of being dropped.
+pub(in crate::server) struct SsQuicConn {
+    oversize_stream: parking_lot::Mutex<Option<Arc<super::OversizeStream>>>,
+}
+
+impl SsQuicConn {
+    pub(in crate::server) fn new() -> Self {
+        Self {
+            oversize_stream: parking_lot::Mutex::new(None),
+        }
+    }
+
+    pub(in crate::server) fn install_oversize_stream(
+        &self,
+        stream: Arc<super::OversizeStream>,
+    ) -> Arc<super::OversizeStream> {
+        let mut guard = self.oversize_stream.lock();
+        if let Some(existing) = guard.as_ref() {
+            return Arc::clone(existing);
+        }
+        *guard = Some(Arc::clone(&stream));
+        stream
+    }
+
+    pub(in crate::server) fn oversize_stream(&self) -> Option<Arc<super::OversizeStream>> {
+        self.oversize_stream.lock().as_ref().map(Arc::clone)
+    }
+}
+
 pub(in crate::server) async fn handle_raw_ss_quic_stream(
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    ctx: Arc<RawQuicSsCtx>,
+) -> Result<()> {
+    handle_raw_ss_quic_stream_with_prefix(send, recv, Vec::new(), ctx).await
+}
+
+/// Same as [`handle_raw_ss_quic_stream`] but accepts a `prefix` of
+/// bytes already read off the recv stream by the caller (typically
+/// the 8 bytes peeked to disambiguate the oversize-record magic from
+/// an SS-TCP request stream's salt). The handler chains the prefix
+/// onto the recv side via tokio's read-chain so the SS-AEAD decryptor
+/// sees the original byte stream.
+pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    prefix: Vec<u8>,
     ctx: Arc<RawQuicSsCtx>,
 ) -> Result<()> {
     let session = ctx
@@ -42,7 +88,7 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream(
         .metrics
         .open_websocket_session(crate::metrics::Transport::Tcp, Protocol::QuicRaw);
 
-    let outcome = run_stream(&mut send, &mut recv, &ctx).await;
+    let outcome = run_stream(&mut send, &mut recv, prefix, &ctx).await;
     let outcome_for_metrics = match &outcome {
         Ok(()) => crate::metrics::DisconnectReason::Normal,
         Err(_) => crate::metrics::DisconnectReason::Error,
@@ -54,9 +100,25 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream(
 async fn run_stream(
     send: &mut quinn::SendStream,
     recv: &mut quinn::RecvStream,
+    prefix: Vec<u8>,
     ctx: &RawQuicSsCtx,
 ) -> Result<()> {
-    let Some(handshake) = ss_tcp_handshake(recv, ctx.users.clone(), None).await? else {
+    // If the caller pre-read bytes off the recv stream (the 8-byte
+    // oversize-magic peek that turned out NOT to match), splice them
+    // back in front of the stream for the SS handshake decryptor.
+    // The chain adapter exposes Cursor(prefix) ++ recv as a single
+    // AsyncRead; once the cursor is exhausted, reads pass through
+    // to recv directly. The chain's into_inner gives the recv stream
+    // back so the subsequent client→upstream relay still drives recv
+    // (no copy through chain wrapping after handshake).
+    let outcome = if prefix.is_empty() {
+        ss_tcp_handshake(recv, ctx.users.clone(), None).await?
+    } else {
+        use tokio::io::AsyncReadExt;
+        let mut chained = std::io::Cursor::new(prefix).chain(&mut *recv);
+        ss_tcp_handshake(&mut chained, ctx.users.clone(), None).await?
+    };
+    let Some(handshake) = outcome else {
         debug!("ss raw-quic stream closed before handshake completed");
         return Ok(());
     };
@@ -188,6 +250,7 @@ impl<'a> UpstreamSink for QuicSsSink<'a> {
 pub(in crate::server) async fn serve_raw_ss_quic_datagrams(
     connection: Arc<quinn::Connection>,
     ctx: Arc<super::RawQuicSsCtx>,
+    conn_state: Arc<SsQuicConn>,
 ) -> Result<()> {
     let remote = connection.remote_address();
     debug!(remote = %remote, "raw SS QUIC datagram pump started");
@@ -201,39 +264,135 @@ pub(in crate::server) async fn serve_raw_ss_quic_datagrams(
             | Err(quinn::ConnectionError::ConnectionClosed(_)) => return Ok(()),
             Err(error) => return Err(anyhow!(error).context("ss raw-quic read_datagram failed")),
         };
-        let conn_for_sender = Arc::clone(&connection);
-        let ss_ctx = SsUdpCtx {
-            users: Arc::clone(&ctx.users),
-            services: Arc::clone(&ctx.services),
-        };
-        tokio::spawn(async move {
-            if let Err(error) = handle_ss_udp_packet(
-                &ss_ctx,
-                data,
-                SsUdpClientId::QuicConnection(remote),
-                Protocol::QuicRaw,
-                move || {
-                    UdpResponseSender::new(Arc::new(QuicSsResponseSender {
-                        connection: conn_for_sender,
-                    }))
-                },
-            )
-            .await
-            {
-                warn!(?error, "ss raw-quic datagram handling failed");
+        spawn_handle_ss_packet(data, &connection, &ctx, &conn_state, remote);
+    }
+}
+
+/// Spawn the SS-UDP packet handler with a response sender wired to
+/// fall back to the connection-level oversize stream when the reply
+/// exceeds `max_datagram_size`. Used by both the datagram pump and
+/// the oversize-record pump — they hand identical packets to the
+/// same handler, only the inbound transport differs.
+fn spawn_handle_ss_packet(
+    data: Bytes,
+    connection: &Arc<quinn::Connection>,
+    ctx: &Arc<super::RawQuicSsCtx>,
+    conn_state: &Arc<SsQuicConn>,
+    remote: std::net::SocketAddr,
+) {
+    let conn_for_sender = Arc::clone(connection);
+    let conn_state_for_sender = Arc::clone(conn_state);
+    let ss_ctx = SsUdpCtx {
+        users: Arc::clone(&ctx.users),
+        services: Arc::clone(&ctx.services),
+    };
+    tokio::spawn(async move {
+        if let Err(error) = handle_ss_udp_packet(
+            &ss_ctx,
+            data,
+            SsUdpClientId::QuicConnection(remote),
+            Protocol::QuicRaw,
+            move || {
+                UdpResponseSender::new(Arc::new(QuicSsResponseSender {
+                    connection: conn_for_sender,
+                    conn_state: conn_state_for_sender,
+                }))
+            },
+        )
+        .await
+        {
+            warn!(?error, "ss raw-quic datagram handling failed");
+        }
+    });
+}
+
+/// Pump for inbound SS-AEAD UDP packets that arrive on the
+/// connection-level oversize-record stream (instead of QUIC
+/// datagrams). Each record is one self-contained SS packet —
+/// identical wire format to the datagram path — and is dispatched
+/// through the same NAT/handler logic.
+pub(in crate::server) async fn serve_raw_ss_oversize_records(
+    stream: Arc<super::OversizeStream>,
+    connection: Arc<quinn::Connection>,
+    ctx: Arc<super::RawQuicSsCtx>,
+    conn_state: Arc<SsQuicConn>,
+) -> Result<()> {
+    let remote = connection.remote_address();
+    debug!(remote = %remote, "raw SS QUIC oversize-record pump started");
+    loop {
+        match stream.recv_record().await {
+            Ok(Some(record)) => {
+                spawn_handle_ss_packet(record, &connection, &ctx, &conn_state, remote);
             }
-        });
+            Ok(None) => return Ok(()),
+            Err(error) => return Err(error.context("ss raw-quic oversize-record read failed")),
+        }
     }
 }
 
 struct QuicSsResponseSender {
     connection: Arc<quinn::Connection>,
+    conn_state: Arc<SsQuicConn>,
 }
 
 impl ResponseSender for QuicSsResponseSender {
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool> {
         let connection = Arc::clone(&self.connection);
-        Box::pin(async move { connection.send_datagram(data).is_ok() })
+        let conn_state = Arc::clone(&self.conn_state);
+        Box::pin(async move {
+            // Try the datagram path first: it's the cheap one and
+            // covers the common case (SS-AEAD UDP packets are usually
+            // small DNS queries / short replies).
+            let oversized = connection
+                .max_datagram_size()
+                .is_some_and(|max| data.len() > max);
+            if !oversized {
+                if let Err(error) = connection.send_datagram(data) {
+                    debug!(?error, "ss raw-quic send_datagram failed");
+                    return false;
+                }
+                return true;
+            }
+            // Oversized response on an MTU-aware connection — fall
+            // back to the oversize-record stream. Open server-side
+            // if the client hasn't opened it yet (the client's
+            // accept_bi loop installs symmetrically on its side).
+            // On legacy `ss` ALPN this path never runs because the
+            // client wouldn't have negotiated MTU support, but we
+            // still need a heuristic: only attempt open_bi when the
+            // negotiated ALPN advertises the fallback. The
+            // connection-level handshake_data lookup is cached by
+            // quinn so checking on every call is cheap.
+            let mtu_aware = connection
+                .handshake_data()
+                .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+                .and_then(|d| d.protocol)
+                .is_some_and(|bytes| bytes == b"ss-mtu");
+            if !mtu_aware {
+                debug!(len = data.len(), "ss raw-quic oversize response on legacy ALPN, dropping");
+                return false;
+            }
+            let stream = match conn_state.oversize_stream() {
+                Some(stream) => stream,
+                None => {
+                    let pair = match connection.open_bi().await {
+                        Ok(pair) => pair,
+                        Err(error) => {
+                            debug!(?error, "failed to open ss oversize stream for outbound packet");
+                            return false;
+                        }
+                    };
+                    let (send, recv) = pair;
+                    let stream = Arc::new(super::OversizeStream::from_local_open(send, recv));
+                    conn_state.install_oversize_stream(stream)
+                }
+            };
+            if let Err(error) = stream.send_record(&data).await {
+                debug!(?error, "ss raw-quic oversize-record send failed");
+                return false;
+            }
+            true
+        })
     }
 
     fn protocol(&self) -> Protocol {

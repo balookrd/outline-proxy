@@ -32,9 +32,10 @@ mod ws_socket;
 mod ws_writer;
 
 pub(in crate::server) use raw_quic::{
-    OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, StreamKind, VlessQuicConn,
-    classify_accept_bi, handle_raw_ss_quic_stream, handle_raw_vless_quic_stream,
-    handle_raw_vless_quic_stream_with_prefix, serve_raw_ss_quic_datagrams,
+    OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, SsQuicConn, StreamKind, VlessQuicConn,
+    classify_accept_bi, handle_raw_ss_quic_stream, handle_raw_ss_quic_stream_with_prefix,
+    handle_raw_vless_quic_stream, handle_raw_vless_quic_stream_with_prefix,
+    serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
     serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
 };
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};

@@ -445,18 +445,27 @@ async fn handle_raw_ss_connection(
     ctx: Arc<H3ConnectionCtx>,
 ) -> Result<()> {
     debug!(remote = %connection.remote_address(), "raw SS QUIC connection accepted");
+    let mtu_aware = connection
+        .handshake_data()
+        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|d| d.protocol)
+        .is_some_and(|bytes| bytes == b"ss-mtu");
     let connection = Arc::new(connection);
+    let conn_state =
+        Arc::new(super::super::transport::SsQuicConn::new());
 
     // Spawn the QUIC datagram pump for SS-UDP packets. It terminates when the
     // connection is closed (read_datagram returns ConnectionLost).
     let dgram_conn = Arc::clone(&connection);
     let dgram_ctx = Arc::clone(&ctx.raw_ss_ctx);
+    let dgram_state = Arc::clone(&conn_state);
     let dgram_task = tokio::spawn(async move {
-        super::super::transport::serve_raw_ss_quic_datagrams(dgram_conn, dgram_ctx).await
+        super::super::transport::serve_raw_ss_quic_datagrams(dgram_conn, dgram_ctx, dgram_state)
+            .await
     });
 
     let bidi_result = loop {
-        let (send, recv) = match connection.accept_bi().await {
+        let (send, mut recv) = match connection.accept_bi().await {
             Ok(pair) => pair,
             Err(quinn::ConnectionError::ApplicationClosed(_))
             | Err(quinn::ConnectionError::LocallyClosed)
@@ -468,15 +477,63 @@ async fn handle_raw_ss_connection(
             Ok(permit) => permit,
             Err(_) => break Ok(()),
         };
-        let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
-        tokio::spawn(async move {
-            let _permit = stream_permit;
-            if let Err(error) = handle_raw_ss_quic_stream(send, recv, raw_ctx).await
-                && !is_normal_h3_shutdown(&error)
-            {
-                warn!(?error, "ss raw-quic stream terminated with error");
+        // On the MTU-aware ALPN, peek 8 bytes off every accepted bidi
+        // to disambiguate the connection-level oversize-record stream
+        // (magic prefix) from a fresh SS-TCP request stream (random
+        // SS-AEAD salt). Magic-mismatched bytes are pre-fed back into
+        // the SS handshake decryptor via tokio's read-chain.
+        let prefix_or_kind = if mtu_aware {
+            match classify_accept_bi(&mut recv).await {
+                Ok(kind) => kind,
+                Err(error) => {
+                    warn!(?error, "ss raw-quic accept_bi peek failed");
+                    drop(stream_permit);
+                    continue;
+                }
             }
-        });
+        } else {
+            StreamKind::Other { consumed: [0u8; 8] }
+        };
+
+        match prefix_or_kind {
+            StreamKind::Oversize => {
+                let stream = Arc::new(OversizeStream::from_accept_validated(send, recv));
+                let installed = conn_state.install_oversize_stream(stream);
+                let conn_for_pump = Arc::clone(&connection);
+                let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
+                let state_for_pump = Arc::clone(&conn_state);
+                tokio::spawn(async move {
+                    let _permit = stream_permit;
+                    if let Err(error) = super::super::transport::serve_raw_ss_oversize_records(
+                        installed,
+                        conn_for_pump,
+                        raw_ctx,
+                        state_for_pump,
+                    )
+                    .await
+                    {
+                        debug!(?error, "ss raw-quic oversize-record pump terminated");
+                    }
+                });
+                continue;
+            }
+            StreamKind::Other { consumed } => {
+                let prefix = if mtu_aware { consumed.to_vec() } else { Vec::new() };
+                let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
+                tokio::spawn(async move {
+                    let _permit = stream_permit;
+                    if let Err(error) =
+                        super::super::transport::handle_raw_ss_quic_stream_with_prefix(
+                            send, recv, prefix, raw_ctx,
+                        )
+                        .await
+                        && !is_normal_h3_shutdown(&error)
+                    {
+                        warn!(?error, "ss raw-quic stream terminated with error");
+                    }
+                });
+            }
+        }
     };
     dgram_task.abort();
     let _ = dgram_task.await;
