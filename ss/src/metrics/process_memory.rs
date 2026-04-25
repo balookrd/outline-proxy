@@ -283,10 +283,10 @@ fn procfs_virtual_memory_diagnostics() -> VirtualMemoryDiagnostics {
             current_rss_kib = 0;
             continue;
         }
-        if smaps_value_kib(line, "Size:").is_some() {
-            current_size_kib = smaps_value_kib(line, "Size:").unwrap_or(0);
-        } else if smaps_value_kib(line, "Rss:").is_some() {
-            current_rss_kib = smaps_value_kib(line, "Rss:").unwrap_or(0);
+        if let Some(size) = smaps_value_kib(line, "Size:") {
+            current_size_kib = size;
+        } else if let Some(rss) = smaps_value_kib(line, "Rss:") {
+            current_rss_kib = rss;
         }
     }
 
