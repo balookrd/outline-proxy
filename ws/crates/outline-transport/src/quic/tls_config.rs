@@ -75,6 +75,19 @@ pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     ));
     transport.datagram_receive_buffer_size(Some(64 * 1024));
     transport.datagram_send_buffer_size(64 * 1024);
+    // VLESS / SS UDP over QUIC carry application UDP datagrams as QUIC
+    // datagrams (RFC 9221). The default initial_mtu of 1200 caps the
+    // sendable payload at ~1170 B for the first few RTTs while DPLPMTUD
+    // probes upward — long enough that real UDP traffic (DNS responses,
+    // 1316-byte VLESS-framed payloads on a 1500-Ethernet uplink) is
+    // dropped during the warm-up. Bump the floor to 1400 (safe whenever
+    // the path can carry standard 1500-byte Ethernet) and explicitly
+    // target 1452 — covers the common VLESS / SS oversized cases without
+    // waiting for MTU discovery to converge.
+    transport.initial_mtu(1400);
+    let mut mtu = quinn::MtuDiscoveryConfig::default();
+    mtu.upper_bound(1452);
+    transport.mtu_discovery_config(Some(mtu));
     config.transport_config(Arc::new(transport));
     guard.insert(alpn.to_vec(), config.clone());
     config
