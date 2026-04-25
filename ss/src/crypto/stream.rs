@@ -107,12 +107,13 @@ impl AeadStreamDecryptor {
 
             match &mut active.mode {
                 ActiveStreamMode::Legacy { pending_chunk_len } => {
-                    if !drain_legacy_payload(
+                    if !drain_payload(
                         &mut self.buffer,
                         &active.key,
                         &mut active.nonce_counter,
                         pending_chunk_len,
                         output,
+                        LEGACY_MAX_CHUNK_SIZE,
                     )? {
                         break;
                     }
@@ -142,12 +143,13 @@ impl AeadStreamDecryptor {
                         continue;
                     }
 
-                    if !drain_ss2022_payload(
+                    if !drain_payload(
                         &mut self.buffer,
                         &active.key,
                         &mut active.nonce_counter,
                         pending_chunk_len,
                         output,
+                        MAX_CHUNK_SIZE,
                     )? {
                         break;
                     }
@@ -353,43 +355,16 @@ fn drain_length_header(
     Ok(Some(chunk_len))
 }
 
-fn drain_legacy_payload(
+fn drain_payload(
     buffer: &mut BytesMut,
     key: &LessSafeKey,
     nonce_counter: &mut u64,
     pending_chunk_len: &mut Option<usize>,
     output: &mut Vec<u8>,
+    max_chunk_size: usize,
 ) -> Result<bool, CryptoError> {
     if pending_chunk_len.is_none() {
-        *pending_chunk_len =
-            drain_length_header(buffer, key, nonce_counter, LEGACY_MAX_CHUNK_SIZE)?;
-        if pending_chunk_len.is_none() {
-            return Ok(false);
-        }
-    }
-
-    let chunk_len = pending_chunk_len.expect("set above");
-    if buffer.len() < chunk_len + TAG_LEN {
-        return Ok(false);
-    }
-
-    let mut encrypted_payload = buffer.split_to(chunk_len + TAG_LEN);
-    let nonce = next_stream_nonce(nonce_counter)?;
-    let decrypted_payload = key.open_in_place(nonce, Aad::empty(), &mut encrypted_payload)?;
-    output.extend_from_slice(decrypted_payload);
-    *pending_chunk_len = None;
-    Ok(true)
-}
-
-fn drain_ss2022_payload(
-    buffer: &mut BytesMut,
-    key: &LessSafeKey,
-    nonce_counter: &mut u64,
-    pending_chunk_len: &mut Option<usize>,
-    output: &mut Vec<u8>,
-) -> Result<bool, CryptoError> {
-    if pending_chunk_len.is_none() {
-        *pending_chunk_len = drain_length_header(buffer, key, nonce_counter, MAX_CHUNK_SIZE)?;
+        *pending_chunk_len = drain_length_header(buffer, key, nonce_counter, max_chunk_size)?;
         if pending_chunk_len.is_none() {
             return Ok(false);
         }
