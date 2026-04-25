@@ -232,6 +232,18 @@ async fn connect_quic_connection(
         );
     }
 
+    // Pull the actually-negotiated ALPN out of the rustls handshake
+    // data. The `quic_client_config` may have offered both the
+    // MTU-aware and base ALPN to the same server in one ClientHello;
+    // the peer's choice tells us whether the oversize-stream fallback
+    // is available on this connection. Fall back to the offered ALPN
+    // if the server didn't echo one (unexpected for outline servers).
+    let negotiated_alpn = connection
+        .handshake_data()
+        .and_then(|data| data.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|data| data.protocol)
+        .unwrap_or_else(|| alpn.to_vec());
+
     let id = registry.next_id();
     let sessions_opened = Arc::new(AtomicU64::new(0));
     let sessions_for_driver = Arc::clone(&sessions_opened);
@@ -272,6 +284,8 @@ async fn connect_quic_connection(
         closed: AtomicBool::new(false),
         sessions_opened,
         vless_udp_demuxer: OnceCell::new(),
+        negotiated_alpn,
+        oversize_stream: OnceCell::new(),
         _driver_task: driver_task,
     })
 }

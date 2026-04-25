@@ -30,10 +30,13 @@ use socks5_proto::TargetAddr;
 use tokio::sync::mpsc;
 use tracing::debug;
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use crate::AbortOnDrop;
 use crate::vless::build_vless_udp_request_header;
 
 use super::SharedQuicConnection;
+use super::oversize::OversizeStream;
 
 const VLESS_VERSION: u8 = 0x00;
 const SESSION_ID_BYTES: usize = 4;
@@ -51,7 +54,22 @@ const PER_SESSION_DOWNLINK_CAP: usize = 256;
 /// while holding the lock.
 pub(crate) struct VlessUdpDemuxer {
     sessions: Arc<Mutex<hashbrown::HashMap<u32, mpsc::Sender<Bytes>>>>,
+    /// Strong handle to the parent connection. Held so the demuxer can
+    /// lazy-open the oversize-record stream on first oversize send,
+    /// without taking the connection as an arg on every call.
+    conn: Arc<SharedQuicConnection>,
+    /// Set to `true` exactly once via compare_exchange when the
+    /// oversize-record reader task is first spawned. Guards against
+    /// two concurrent senders both spawning a reader for the same
+    /// (lazily-opened) stream.
+    oversize_reader_spawned: AtomicBool,
     _reader_task: AbortOnDrop,
+    /// Reader task for inbound records on the oversize stream. Owned
+    /// by the demuxer (via Mutex) so it can be replaced lazily — at
+    /// construction it's None; the first call to `ensure_oversize`
+    /// installs it. Held purely to keep the task alive for the
+    /// demuxer's lifetime.
+    _oversize_reader_task: Mutex<Option<AbortOnDrop>>,
 }
 
 impl VlessUdpDemuxer {
@@ -59,9 +77,10 @@ impl VlessUdpDemuxer {
         let sessions: Arc<Mutex<hashbrown::HashMap<u32, mpsc::Sender<Bytes>>>> =
             Arc::new(Mutex::new(hashbrown::HashMap::new()));
         let sessions_for_task = Arc::clone(&sessions);
+        let conn_for_task = Arc::clone(&conn);
         let reader_task = AbortOnDrop::new(tokio::spawn(async move {
             loop {
-                let datagram = match conn.raw_connection().read_datagram().await {
+                let datagram = match conn_for_task.raw_connection().read_datagram().await {
                     Ok(d) => d,
                     Err(quinn::ConnectionError::ApplicationClosed(_))
                     | Err(quinn::ConnectionError::ConnectionClosed(_))
@@ -102,7 +121,10 @@ impl VlessUdpDemuxer {
         }));
         Arc::new(Self {
             sessions,
+            conn,
+            oversize_reader_spawned: AtomicBool::new(false),
             _reader_task: reader_task,
+            _oversize_reader_task: Mutex::new(None),
         })
     }
 
@@ -112,6 +134,63 @@ impl VlessUdpDemuxer {
 
     fn unregister(&self, id: u32) {
         self.sessions.lock().remove(&id);
+    }
+
+    /// Route one inbound oversize-record into the matching session's
+    /// downlink mpsc, mirroring the datagram reader's logic. Records
+    /// share the `[session_id_4B || payload]` layout with datagrams,
+    /// so the demuxer-side dispatch is identical.
+    fn route_record(&self, record: Bytes) {
+        if record.len() < SESSION_ID_BYTES {
+            debug!(len = record.len(), "vless oversize record too short, dropping");
+            return;
+        }
+        let id = u32::from_be_bytes([record[0], record[1], record[2], record[3]]);
+        let payload = record.slice(SESSION_ID_BYTES..);
+        let tx_opt = {
+            let guard = self.sessions.lock();
+            guard.get(&id).cloned()
+        };
+        if let Some(tx) = tx_opt {
+            // Same drop-on-back-pressure semantics as the datagram path:
+            // the per-session reader will observe `recv() == None` if
+            // the session went away.
+            let _ = tx.try_send(payload);
+        }
+    }
+
+    /// Open (or reuse) the connection-level oversize-record stream and
+    /// ensure a reader task is consuming inbound records. Idempotent —
+    /// concurrent callers race via `compare_exchange` so the reader is
+    /// spawned at most once. Returns `Err` if the negotiated ALPN does
+    /// not support oversize records or `open_bi` fails.
+    pub(crate) async fn ensure_oversize_stream(self: &Arc<Self>) -> Result<Arc<OversizeStream>> {
+        let stream = self.conn.ensure_oversize_stream().await?;
+        if self
+            .oversize_reader_spawned
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let demuxer = Arc::clone(self);
+            let stream_for_task = Arc::clone(&stream);
+            let task = AbortOnDrop::new(tokio::spawn(async move {
+                loop {
+                    match stream_for_task.recv_record().await {
+                        Ok(Some(record)) => demuxer.route_record(record),
+                        Ok(None) => {
+                            debug!("vless oversize stream EOF");
+                            return;
+                        }
+                        Err(error) => {
+                            debug!(?error, "vless oversize stream reader aborting");
+                            return;
+                        }
+                    }
+                }
+            }));
+            *self._oversize_reader_task.lock() = Some(task);
+        }
+        Ok(stream)
     }
 }
 
@@ -212,17 +291,48 @@ impl VlessUdpQuicSession {
         if self.closed.load(std::sync::atomic::Ordering::Relaxed) {
             bail!("vless udp quic session closed");
         }
-        if let Some(max) = self.conn.max_datagram_size()
-            && SESSION_ID_BYTES + payload.len() > max
-        {
+        let total_len = SESSION_ID_BYTES + payload.len();
+        let oversized = self
+            .conn
+            .max_datagram_size()
+            .is_some_and(|max| total_len > max);
+        if oversized {
+            // Fallback path: the negotiated ALPN may carry oversize
+            // records on a dedicated stream. If yes, frame the packet
+            // there. If not (legacy ALPN), the packet truly cannot be
+            // sent on this connection — surface the typed error so
+            // the TUN UDP engine drops it without flapping the uplink.
+            if self.conn.supports_oversize_stream() {
+                let mut record = Vec::with_capacity(total_len);
+                record.extend_from_slice(&self.id_prefix);
+                record.extend_from_slice(payload);
+                let stream = self
+                    .demuxer
+                    .ensure_oversize_stream()
+                    .await
+                    .context("failed to open vless oversize stream for outbound packet")?;
+                outline_metrics::add_probe_bytes(
+                    "_oversize",
+                    "_oversize",
+                    "udp",
+                    "vless",
+                    "outgoing",
+                    record.len(),
+                );
+                return stream
+                    .send_record(&record)
+                    .await
+                    .context("vless oversize record send failed");
+            }
             outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            let max = self.conn.max_datagram_size().unwrap_or(0);
             bail!(crate::OversizedUdpDatagram {
                 transport: "vless-udp-quic",
-                payload_len: SESSION_ID_BYTES + payload.len(),
+                payload_len: total_len,
                 limit: max,
             });
         }
-        let mut buf = BytesMut::with_capacity(SESSION_ID_BYTES + payload.len());
+        let mut buf = BytesMut::with_capacity(total_len);
         buf.put_slice(&self.id_prefix);
         buf.put_slice(payload);
         self.conn
