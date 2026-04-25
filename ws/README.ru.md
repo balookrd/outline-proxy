@@ -4,7 +4,7 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его либо на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, либо на прямые Shadowsocks socket uplink'и.
+`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, на прямые Shadowsocks socket uplink'и или на VLESS-over-WebSocket аплинки.
 
 Поддерживает:
 
@@ -12,6 +12,8 @@
 - SOCKS5 `UDP ASSOCIATE` и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - failover и балансировку нагрузки между несколькими аплинками
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
+- VLESS-over-WebSocket аплинки (UUID-аутентификация, общий WSS dial path, per-destination UDP session-mux)
+- прямые Shadowsocks TCP/UDP socket uplink'и
 - метрики Prometheus, встроенный multi-instance дашборд и готовые дашборды Grafana
 - интеграцию с существующим TUN-устройством для `tun2udp`
 - stateful `tun2tcp`-реле с production-ориентированными ограничениями
@@ -26,8 +28,8 @@
 
 1. Принимает локальный SOCKS5 и опциональный TUN-трафик.
 2. Выбирает лучший доступный аплинк с помощью health-проб, EWMA RTT-скоринга, sticky-маршрутизации, гистерезиса, штрафов и warm standby.
-3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback.
-4. Шифрует payload с помощью Shadowsocks AEAD перед отправкой в upstream.
+3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, либо к прямому Shadowsocks socket / VLESS-over-WebSocket аплинку.
+4. Шифрует payload с помощью Shadowsocks AEAD или формирует VLESS-кадры с UUID-аутентификацией перед отправкой в upstream.
 5. Публикует метрики Prometheus для runtime, аплинков, проб, TUN и `tun2tcp`.
 
 ## Архитектура
@@ -50,9 +52,13 @@ flowchart LR
         LB["Скоринг и маршрутизация
 EWMA RTT + weight + penalty
 sticky + hysteresis"]
-        WS["Transport connectors
+        WS["WS transport connectors
 HTTP/1.1 / HTTP/2 / HTTP/3"]
+        DS["Direct Shadowsocks
+TCP / UDP socket"]
         SS["Shadowsocks AEAD"]
+        VL["VLESS framing
+UUID auth"]
         TT["TUN engines
 tun2udp + tun2tcp"]
     end
@@ -62,16 +68,21 @@ tun2udp + tun2tcp"]
     S --> U
     TT --> U
     U --> LB
-    LB --> WS
-    WS --> SS
+    LB -->|"transport = websocket"| WS
+    LB -->|"transport = shadowsocks"| DS
+    LB -->|"transport = vless"| WS
+    WS -->|"outline"| SS
+    WS -->|"vless"| VL
 
-    subgraph Upstream["Outline upstream"]
-        O1["outline-over-ws uplink A"]
-        O2["outline-over-ws uplink B"]
+    subgraph Upstream["Upstream аплинки"]
+        O1["outline-over-ws (A/B)"]
+        O3["direct shadowsocks edge"]
+        O4["vless-over-ws edge"]
     end
 
     SS --> O1
-    SS --> O2
+    DS --> O3
+    VL --> O4
 
     subgraph Observability["Observability"]
         PR["Prometheus"]
@@ -107,6 +118,7 @@ tun2udp + tun2tcp"]
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
 - прямые Shadowsocks TCP/UDP socket uplink'и
+- VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `websocket`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
 - transport fallback:
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
