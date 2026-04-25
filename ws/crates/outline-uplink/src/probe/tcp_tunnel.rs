@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use tokio::sync::Semaphore;
 use tracing::debug;
 
-use outline_transport::DnsCache;
+use outline_transport::{DnsCache, TcpReader, TcpWriter};
 
 use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, UplinkTransport, WsTransportMode};
 
@@ -51,52 +51,121 @@ pub(super) async fn run_tcp_tunnel_probe(
     .await?;
 
     let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tcp" };
-    let result = async {
-        if needs_socks5_target {
-            writer
-                .send_chunk(&target_wire)
-                .await
-                .context("failed to send TCP tunnel probe target address")?;
-            bytes.outgoing(target_wire.len());
-        } else {
-            // VLESS: flush the request header (which carries the target) by
-            // sending an empty chunk; without this, server-first protocols
-            // would have nothing to trigger the upstream dial and the probe
-            // would hang waiting for a reply that never comes.
-            writer
-                .send_chunk(&[])
-                .await
-                .context("failed to flush VLESS request header for TCP tunnel probe")?;
-        }
-
-        match reader.read_chunk().await {
-            Ok(chunk) => {
-                bytes.incoming(chunk.len());
-                debug!(
-                    uplink = %uplink.name,
-                    target = %format!("{}:{}", probe.host, probe.port),
-                    bytes = chunk.len(),
-                    "TCP tunnel probe received data from target"
-                );
-            },
-            Err(ref e) if reader.closed_cleanly() => {
-                debug!(
-                    uplink = %uplink.name,
-                    target = %format!("{}:{}", probe.host, probe.port),
-                    error = %format!("{e:#}"),
-                    "TCP tunnel probe: remote closed cleanly"
-                );
-            },
-            Err(e) => {
-                return Err(e)
-                    .context(format!("TCP tunnel probe to {}:{} failed", probe.host, probe.port));
-            },
-        }
-
-        Ok::<bool, anyhow::Error>(true)
-    }
+    let result = exchange_tcp_tunnel_probe(
+        &mut writer,
+        &mut reader,
+        &uplink.name,
+        &probe.host,
+        probe.port,
+        &target_wire,
+        needs_socks5_target,
+        &bytes,
+    )
     .await;
 
     close_probe_tcp_writer(&uplink.name, "tcp", &mut writer).await;
     result
+}
+
+/// I/O half of the TCP-tunnel probe: drives the connected (writer, reader)
+/// pair through the SOCKS5 prefix (or VLESS header flush) and the
+/// any-byte-or-clean-close acceptance check. Split out from
+/// [`run_tcp_tunnel_probe`] so unit tests can drive it over an in-memory
+/// transport.
+#[allow(clippy::too_many_arguments)]
+async fn exchange_tcp_tunnel_probe(
+    writer: &mut TcpWriter,
+    reader: &mut TcpReader,
+    uplink_name: &str,
+    target_host: &str,
+    target_port: u16,
+    target_wire: &[u8],
+    needs_socks5_target: bool,
+    bytes: &BytesRecorder<'_>,
+) -> Result<bool> {
+    if needs_socks5_target {
+        writer
+            .send_chunk(target_wire)
+            .await
+            .context("failed to send TCP tunnel probe target address")?;
+        bytes.outgoing(target_wire.len());
+    } else {
+        // VLESS: flush the request header (which carries the target) by
+        // sending an empty chunk; without this, server-first protocols
+        // would have nothing to trigger the upstream dial and the probe
+        // would hang waiting for a reply that never comes.
+        writer
+            .send_chunk(&[])
+            .await
+            .context("failed to flush VLESS request header for TCP tunnel probe")?;
+    }
+
+    match reader.read_chunk().await {
+        Ok(chunk) => {
+            bytes.incoming(chunk.len());
+            debug!(
+                uplink = %uplink_name,
+                target = %format!("{target_host}:{target_port}"),
+                bytes = chunk.len(),
+                "TCP tunnel probe received data from target"
+            );
+        },
+        Err(ref e) if reader.closed_cleanly() => {
+            debug!(
+                uplink = %uplink_name,
+                target = %format!("{target_host}:{target_port}"),
+                error = %format!("{e:#}"),
+                "TCP tunnel probe: remote closed cleanly"
+            );
+        },
+        Err(e) => {
+            return Err(e)
+                .context(format!("TCP tunnel probe to {target_host}:{target_port} failed"));
+        },
+    }
+
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::probe::test_loopback::spawn_vless_loopback;
+
+    /// Regression for the "VLESS TCP-tunnel probe leaks SOCKS5 target_wire
+    /// into the upstream stream" bug AND the "VLESS request header is
+    /// never flushed for server-first targets" bug. With
+    /// `needs_socks5_target = false` the fake VLESS server must see an
+    /// empty app stream (just the request header, then EOF) — meaning
+    /// the empty `send_chunk(&[])` correctly flushed the header, and no
+    /// SOCKS5 prefix leaked in.
+    #[tokio::test]
+    async fn vless_tcp_tunnel_probe_flushes_header_without_socks5_prefix() {
+        let (mut writer, mut reader, server) = spawn_vless_loopback(b"OK");
+
+        let dummy_target =
+            TargetAddr::Domain("example.com".to_string(), 25).to_wire_bytes().unwrap();
+        let bytes = BytesRecorder { group: "g", uplink: "u", transport: "tcp", probe: "tcp" };
+        let result = exchange_tcp_tunnel_probe(
+            &mut writer,
+            &mut reader,
+            "u",
+            "example.com",
+            25,
+            &dummy_target,
+            false, // VLESS path
+            &bytes,
+        )
+        .await
+        .expect("exchange_tcp_tunnel_probe failed");
+        assert!(result, "any byte from the target counts as success");
+
+        writer.close().await.unwrap();
+        let capture = server.await.unwrap().unwrap();
+        assert!(
+            capture.app_stream.is_empty(),
+            "VLESS tcp-tunnel app stream must be empty (target carried in request header) — got: {:?}",
+            capture.app_stream
+        );
+    }
 }

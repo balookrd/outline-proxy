@@ -11,6 +11,9 @@ mod tcp_tunnel;
 mod transport;
 mod ws;
 
+#[cfg(test)]
+mod test_loopback;
+
 use std::sync::Arc;
 use std::time::Duration;
 
