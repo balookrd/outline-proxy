@@ -13,6 +13,8 @@ use outline_transport::{
     DnsCache, TransportOperation, UdpWsTransport, VlessUdpWsTransport,
     connect_shadowsocks_udp_with_source,
 };
+#[cfg(feature = "quic")]
+use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
 
 use crate::config::{DnsProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
 
@@ -44,21 +46,50 @@ pub(super) async fn run_dns_probe(
                         let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
                             anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
                         })?;
-                        UdpWsTransport::connect(
-                            cache,
-                            udp_ws_url,
-                            effective_udp_mode,
-                            uplink.cipher,
-                            &uplink.password,
-                            uplink.fwmark,
-                            uplink.ipv6_first,
-                            "probe_dns",
-                            None,
-                        )
-                        .await
-                        .with_context(|| TransportOperation::Connect {
-                            target: format!("DNS probe websocket for uplink {}", uplink.name),
-                        })?
+                        if effective_udp_mode == WsTransportMode::Quic {
+                            #[cfg(feature = "quic")]
+                            {
+                                connect_ss_udp_quic(
+                                    cache,
+                                    udp_ws_url,
+                                    uplink.fwmark,
+                                    uplink.ipv6_first,
+                                    "probe_dns",
+                                    uplink.cipher,
+                                    &uplink.password,
+                                )
+                                .await
+                                .with_context(|| TransportOperation::Connect {
+                                    target: format!(
+                                        "DNS probe raw-QUIC for uplink {}",
+                                        uplink.name
+                                    ),
+                                })?
+                            }
+                            #[cfg(not(feature = "quic"))]
+                            {
+                                let _ = udp_ws_url;
+                                return Err(anyhow!(
+                                    "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+                                ));
+                            }
+                        } else {
+                            UdpWsTransport::connect(
+                                cache,
+                                udp_ws_url,
+                                effective_udp_mode,
+                                uplink.cipher,
+                                &uplink.password,
+                                uplink.fwmark,
+                                uplink.ipv6_first,
+                                "probe_dns",
+                                None,
+                            )
+                            .await
+                            .with_context(|| TransportOperation::Connect {
+                                target: format!("DNS probe websocket for uplink {}", uplink.name),
+                            })?
+                        }
                     },
                     UplinkTransport::Shadowsocks => {
                         let socket = connect_shadowsocks_udp_with_source(
@@ -129,6 +160,72 @@ pub(super) async fn run_dns_probe(
             let uuid = uplink.vless_id.as_ref().ok_or_else(|| {
                 anyhow!("uplink {} has no vless_id for DNS probe", uplink.name)
             })?;
+
+            if effective_udp_mode == WsTransportMode::Quic {
+                #[cfg(feature = "quic")]
+                {
+                    let session = {
+                        let _permit = dial_limit
+                            .acquire_owned()
+                            .await
+                            .expect("probe dial semaphore closed");
+                        connect_vless_udp_session_quic(
+                            cache,
+                            udp_ws_url,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            "probe_dns",
+                            uuid,
+                            &dns_server,
+                        )
+                        .await
+                        .with_context(|| TransportOperation::Connect {
+                            target: format!(
+                                "DNS probe VLESS raw-QUIC for uplink {}",
+                                uplink.name
+                            ),
+                        })?
+                    };
+                    let result = async {
+                        session
+                            .send_packet(&query)
+                            .await
+                            .context("failed to send DNS probe packet")?;
+                        bytes.outgoing(query.len());
+                        let response = session
+                            .read_packet()
+                            .await
+                            .context("failed to read DNS probe response")?;
+                        bytes.incoming(response.len());
+                        validate_dns_response(&response, &query)?;
+                        Ok::<bool, anyhow::Error>(true)
+                    }
+                    .await;
+                    debug!(
+                        uplink = %uplink.name,
+                        transport = "udp",
+                        probe = "dns",
+                        "closing probe transport after DNS probe"
+                    );
+                    if let Err(error) = session.close().await {
+                        debug!(
+                            uplink = %uplink.name,
+                            transport = "udp",
+                            probe = "dns",
+                            error = %format!("{error:#}"),
+                            "probe transport close returned error during teardown"
+                        );
+                    }
+                    return result;
+                }
+                #[cfg(not(feature = "quic"))]
+                {
+                    let _ = (udp_ws_url, uuid);
+                    return Err(anyhow!(
+                        "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+                    ));
+                }
+            }
 
             let transport = {
                 let _permit =
