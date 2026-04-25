@@ -9,10 +9,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::tcp::{OwnedReadHalf, OwnedWriteHalf},
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
@@ -37,14 +34,18 @@ pub(in crate::server) trait UpstreamSink: Send {
     fn on_chunk_encrypted(&mut self, _plaintext: usize, _ciphertext: usize) {}
 }
 
-pub(in crate::server) async fn relay_upstream_to_client<S: UpstreamSink>(
-    mut upstream_reader: OwnedReadHalf,
+pub(in crate::server) async fn relay_upstream_to_client<R, S>(
+    mut upstream_reader: R,
     mut sink: S,
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
     protocol: Protocol,
     user_id: Arc<str>,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    S: UpstreamSink,
+{
     let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
@@ -82,15 +83,19 @@ pub(in crate::server) async fn relay_upstream_to_client<S: UpstreamSink>(
 /// Writes `initial_payload` first (already-decrypted bytes left over from the
 /// handshake), then loops: read ciphertext from the client, decrypt, write
 /// plaintext to upstream.  Shuts down the upstream writer on clean client EOF.
-pub(in crate::server) async fn relay_client_to_upstream(
-    mut client_reader: OwnedReadHalf,
+pub(in crate::server) async fn relay_client_to_upstream<R, W>(
+    mut client_reader: R,
     mut decryptor: AeadStreamDecryptor,
     initial_payload: Vec<u8>,
-    mut upstream_writer: OwnedWriteHalf,
+    mut upstream_writer: W,
     metrics: Arc<Metrics>,
     protocol: Protocol,
     user_id: Arc<str>,
-) -> Result<()> {
+) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
     if !initial_payload.is_empty() {
         metrics.record_tcp_payload_bytes(
             Arc::clone(&user_id),

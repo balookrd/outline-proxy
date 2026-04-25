@@ -19,6 +19,44 @@ use file::{FileConfig, default_config_path_if_exists, load_file_config};
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
 
+/// ALPN protocols recognised on the HTTP/3 QUIC endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum H3Alpn {
+    /// HTTP/3 (with Extended CONNECT WebSocket per RFC 9220).
+    H3,
+    /// Raw VLESS framed directly over QUIC bidirectional streams.
+    Vless,
+    /// Raw Shadowsocks AEAD framed directly over QUIC bidirectional streams.
+    Ss,
+}
+
+impl H3Alpn {
+    pub const fn wire_bytes(self) -> &'static [u8] {
+        match self {
+            Self::H3 => b"h3",
+            Self::Vless => b"vless",
+            Self::Ss => b"ss",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::H3 => "h3",
+            Self::Vless => "vless",
+            Self::Ss => "ss",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "h3" => Some(Self::H3),
+            "vless" => Some(Self::Vless),
+            "ss" => Some(Self::Ss),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 #[cfg_attr(not(feature = "control"), allow(dead_code))]
 pub struct ControlConfig {
@@ -61,6 +99,12 @@ pub struct Config {
     pub h3_listen: Option<SocketAddr>,
     pub h3_cert_path: Option<PathBuf>,
     pub h3_key_path: Option<PathBuf>,
+    /// ALPN protocols advertised on the HTTP/3 QUIC endpoint. Each entry
+    /// selects a different transport multiplexed on the same UDP port:
+    /// `"h3"` for HTTP/3 + WebSocket-over-HTTP/3 (the default), `"vless"`
+    /// for raw VLESS over QUIC streams, `"ss"` for raw Shadowsocks over QUIC
+    /// streams. Resolved from `[server.h3].alpn`; defaults to `["h3"]`.
+    pub h3_alpn: Vec<H3Alpn>,
     pub metrics_listen: Option<SocketAddr>,
     pub metrics_path: String,
     pub prefer_ipv4_upstream: bool,
@@ -186,6 +230,7 @@ impl AppMode {
             h3_listen: args.h3_listen.or(server_h3.listen),
             h3_cert_path: args.h3_cert_path.or(server_h3.cert_path),
             h3_key_path: args.h3_key_path.or(server_h3.key_path),
+            h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
             metrics_listen: args.metrics_listen.or(metrics.listen),
             metrics_path: args
                 .metrics_path
@@ -285,6 +330,10 @@ impl Config {
         self.h3_cert_path.is_some() && self.h3_key_path.is_some()
     }
 
+    pub fn h3_alpn_enabled(&self, alpn: H3Alpn) -> bool {
+        self.h3_alpn.contains(&alpn)
+    }
+
     pub fn tcp_tls_enabled(&self) -> bool {
         self.tls_cert_path.is_some() && self.tls_key_path.is_some()
     }
@@ -313,6 +362,27 @@ fn normalize_access_key_file_extension(extension: Option<String>) -> String {
 
 pub fn default_http_root_realm() -> String {
     "Authorization required".to_owned()
+}
+
+fn resolve_h3_alpn(input: Option<&[String]>) -> Result<Vec<H3Alpn>> {
+    let Some(raw) = input else {
+        return Ok(vec![H3Alpn::H3]);
+    };
+    if raw.is_empty() {
+        anyhow::bail!("server.h3.alpn must list at least one protocol");
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for entry in raw {
+        let alpn = H3Alpn::parse(entry).ok_or_else(|| {
+            anyhow::anyhow!("unknown server.h3.alpn entry {entry:?}; allowed: h3, vless, ss")
+        })?;
+        if !seen.insert(alpn) {
+            anyhow::bail!("server.h3.alpn contains duplicate entry {entry:?}");
+        }
+        out.push(alpn);
+    }
+    Ok(out)
 }
 
 fn resolve_dashboard_config(

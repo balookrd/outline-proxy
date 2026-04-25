@@ -61,6 +61,12 @@ pub(super) struct ServerH3Section {
     pub listen: Option<SocketAddr>,
     pub cert_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
+    /// ALPN protocols to advertise on the HTTP/3 QUIC endpoint. Allowed values
+    /// are `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS over
+    /// QUIC streams) and `"ss"` (raw Shadowsocks over QUIC streams). Defaults
+    /// to `["h3"]` when unset.
+    #[serde(default)]
+    pub alpn: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

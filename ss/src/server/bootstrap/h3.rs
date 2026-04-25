@@ -14,9 +14,10 @@ use tokio::{sync::Semaphore, time::Duration};
 use tracing::{debug, warn};
 
 use crate::{
-    config::{Config, TuningProfile},
+    config::{Config, H3Alpn, TuningProfile},
     crypto::UserKey,
     metrics::{Protocol, Transport},
+    protocol::vless::VlessUser,
 };
 
 use super::super::{
@@ -34,9 +35,11 @@ use super::super::{
         AuthPolicy, RoutesSnapshot, Services, empty_transport_route, empty_vless_transport_route,
     },
     transport::{
-        UdpRouteCtx, UdpServerCtx, VlessWsRouteCtx, VlessWsServerCtx, WsTcpRouteCtx,
-        WsTcpServerCtx, finish_ws_session, handle_tcp_h3_connection, handle_udp_h3_connection,
-        handle_vless_h3_connection, is_normal_h3_shutdown,
+        RawQuicSsCtx, RawQuicVlessRouteCtx, UdpRouteCtx, UdpServerCtx, VlessQuicConn,
+        VlessWsRouteCtx, VlessWsServerCtx, WsTcpRouteCtx, WsTcpServerCtx, finish_ws_session,
+        handle_raw_ss_quic_stream, handle_raw_vless_quic_stream, handle_tcp_h3_connection,
+        handle_udp_h3_connection, handle_vless_h3_connection, is_normal_h3_shutdown,
+        serve_raw_vless_quic_datagrams,
     },
 };
 use super::tls::load_h3_tls_config;
@@ -181,6 +184,18 @@ struct H3ConnectionCtx {
     udp_server: Arc<UdpServerCtx>,
     vless_server: Arc<VlessWsServerCtx>,
     stream_semaphore: Arc<Semaphore>,
+    alpn: Arc<[H3Alpn]>,
+    raw_vless_route: Arc<RawQuicVlessRouteCtx>,
+    raw_ss_ctx: Arc<RawQuicSsCtx>,
+}
+
+fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
+    let data = connection.handshake_data()?;
+    let handshake = data
+        .downcast::<quinn::crypto::rustls::HandshakeData>()
+        .ok()?;
+    let bytes = handshake.protocol?;
+    H3Alpn::parse(std::str::from_utf8(&bytes).ok()?)
 }
 
 pub(in crate::server) async fn serve_h3_server(
@@ -188,6 +203,10 @@ pub(in crate::server) async fn serve_h3_server(
     routes: RoutesSnapshot,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
+    alpn: Arc<[H3Alpn]>,
+    raw_vless_users: Arc<[VlessUser]>,
+    raw_vless_candidates: Arc<[Arc<str>]>,
+    raw_ss_users: Arc<[UserKey]>,
     mut shutdown: super::super::shutdown::ShutdownSignal,
 ) -> Result<()> {
     let initial = routes.load();
@@ -205,6 +224,15 @@ pub(in crate::server) async fn serve_h3_server(
 
     let connection_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_CONNECTIONS));
     let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));
+
+    let raw_vless_route = Arc::new(RawQuicVlessRouteCtx {
+        users: raw_vless_users,
+        candidate_users: raw_vless_candidates,
+    });
+    let raw_ss_ctx = Arc::new(RawQuicSsCtx {
+        users: raw_ss_users,
+        services: Arc::clone(&services),
+    });
 
     loop {
         // Acquire a connection permit before accepting so that at most
@@ -251,14 +279,17 @@ pub(in crate::server) async fn serve_h3_server(
             udp_server: Arc::clone(&udp_server),
             vless_server: Arc::clone(&vless_server),
             stream_semaphore: Arc::clone(&stream_semaphore),
+            alpn: Arc::clone(&alpn),
+            raw_vless_route: Arc::clone(&raw_vless_route),
+            raw_ss_ctx: Arc::clone(&raw_ss_ctx),
         });
 
         tokio::spawn(async move {
             let _connection_permit = connection_permit;
-            if let Err(error) = handle_h3_connection(incoming, ctx).await
+            if let Err(error) = handle_quic_connection(incoming, ctx).await
                 && !is_normal_h3_shutdown(&error)
             {
-                warn!(?error, "HTTP/3 connection terminated with error");
+                warn!(?error, "QUIC connection terminated with error");
             }
         });
     }
@@ -266,10 +297,131 @@ pub(in crate::server) async fn serve_h3_server(
     Ok(())
 }
 
-async fn handle_h3_connection(incoming: quinn::Incoming, ctx: Arc<H3ConnectionCtx>) -> Result<()> {
+async fn handle_quic_connection(
+    incoming: quinn::Incoming,
+    ctx: Arc<H3ConnectionCtx>,
+) -> Result<()> {
     let connection = incoming
         .await
-        .context("failed to accept incoming HTTP/3 connection")?;
+        .context("failed to accept incoming QUIC connection")?;
+    let alpn = negotiated_alpn(&connection);
+    match alpn {
+        Some(H3Alpn::H3) if ctx.alpn.contains(&H3Alpn::H3) => handle_h3_connection(connection, ctx).await,
+        Some(H3Alpn::Vless) if ctx.alpn.contains(&H3Alpn::Vless) => {
+            handle_raw_vless_connection(connection, ctx).await
+        },
+        Some(H3Alpn::Ss) if ctx.alpn.contains(&H3Alpn::Ss) => {
+            handle_raw_ss_connection(connection, ctx).await
+        },
+        other => {
+            warn!(?other, "rejecting QUIC connection with unsupported or disabled ALPN");
+            connection.close(quinn::VarInt::from_u32(2), b"unsupported alpn");
+            Ok(())
+        },
+    }
+}
+
+async fn handle_raw_vless_connection(
+    connection: quinn::Connection,
+    ctx: Arc<H3ConnectionCtx>,
+) -> Result<()> {
+    debug!(remote = %connection.remote_address(), "raw VLESS QUIC connection accepted");
+    let connection = Arc::new(connection);
+    let conn_state = Arc::new(VlessQuicConn::new());
+
+    let dgram_conn = Arc::clone(&connection);
+    let dgram_state = Arc::clone(&conn_state);
+    let dgram_server = Arc::clone(&ctx.vless_server);
+    let dgram_task = tokio::spawn(async move {
+        serve_raw_vless_quic_datagrams(dgram_conn, dgram_state, dgram_server).await
+    });
+
+    let bidi_result = loop {
+        let (send, recv) = match connection.accept_bi().await {
+            Ok(pair) => pair,
+            Err(quinn::ConnectionError::ApplicationClosed(_))
+            | Err(quinn::ConnectionError::LocallyClosed)
+            | Err(quinn::ConnectionError::TimedOut)
+            | Err(quinn::ConnectionError::Reset) => break Ok(()),
+            Err(error) => break Err(anyhow!(error).context("vless raw-quic accept_bi failed")),
+        };
+        let stream_permit = match ctx.stream_semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break Ok(()),
+        };
+        let server = Arc::clone(&ctx.vless_server);
+        let route = Arc::clone(&ctx.raw_vless_route);
+        let conn_for_stream = Arc::clone(&connection);
+        let state_for_stream = Arc::clone(&conn_state);
+        tokio::spawn(async move {
+            let _permit = stream_permit;
+            if let Err(error) = handle_raw_vless_quic_stream(
+                send,
+                recv,
+                server,
+                route,
+                conn_for_stream,
+                state_for_stream,
+            )
+            .await
+                && !is_normal_h3_shutdown(&error)
+            {
+                warn!(?error, "vless raw-quic stream terminated with error");
+            }
+        });
+    };
+    dgram_task.abort();
+    let _ = dgram_task.await;
+    bidi_result
+}
+
+async fn handle_raw_ss_connection(
+    connection: quinn::Connection,
+    ctx: Arc<H3ConnectionCtx>,
+) -> Result<()> {
+    debug!(remote = %connection.remote_address(), "raw SS QUIC connection accepted");
+    let connection = Arc::new(connection);
+
+    // Spawn the QUIC datagram pump for SS-UDP packets. It terminates when the
+    // connection is closed (read_datagram returns ConnectionLost).
+    let dgram_conn = Arc::clone(&connection);
+    let dgram_ctx = Arc::clone(&ctx.raw_ss_ctx);
+    let dgram_task = tokio::spawn(async move {
+        super::super::transport::serve_raw_ss_quic_datagrams(dgram_conn, dgram_ctx).await
+    });
+
+    let bidi_result = loop {
+        let (send, recv) = match connection.accept_bi().await {
+            Ok(pair) => pair,
+            Err(quinn::ConnectionError::ApplicationClosed(_))
+            | Err(quinn::ConnectionError::LocallyClosed)
+            | Err(quinn::ConnectionError::TimedOut)
+            | Err(quinn::ConnectionError::Reset) => break Ok(()),
+            Err(error) => break Err(anyhow!(error).context("ss raw-quic accept_bi failed")),
+        };
+        let stream_permit = match ctx.stream_semaphore.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break Ok(()),
+        };
+        let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
+        tokio::spawn(async move {
+            let _permit = stream_permit;
+            if let Err(error) = handle_raw_ss_quic_stream(send, recv, raw_ctx).await
+                && !is_normal_h3_shutdown(&error)
+            {
+                warn!(?error, "ss raw-quic stream terminated with error");
+            }
+        });
+    };
+    dgram_task.abort();
+    let _ = dgram_task.await;
+    bidi_result
+}
+
+async fn handle_h3_connection(
+    connection: quinn::Connection,
+    ctx: Arc<H3ConnectionCtx>,
+) -> Result<()> {
     let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
         H3Connection::new(h3_quinn::Connection::new(connection))
             .await

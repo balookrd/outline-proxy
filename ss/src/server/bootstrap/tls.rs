@@ -27,7 +27,8 @@ pub(super) fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig
         .as_deref()
         .ok_or_else(|| anyhow!("missing h3_key_path"))?;
 
-    load_server_tls_config(cert_path, key_path, &[b"h3".as_slice()])
+    let alpn: Vec<&[u8]> = config.h3_alpn.iter().map(|p| p.wire_bytes()).collect();
+    load_server_tls_config(cert_path, key_path, &alpn)
         .context("failed to build HTTP/3 TLS config")
 }
 

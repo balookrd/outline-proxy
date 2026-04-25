@@ -19,6 +19,7 @@ pub enum Protocol {
     Http2,
     Http3,
     Socket,
+    QuicRaw,
 }
 
 impl Protocol {
@@ -28,6 +29,7 @@ impl Protocol {
             Self::Http2 => "http2",
             Self::Http3 => "http3",
             Self::Socket => "socket",
+            Self::QuicRaw => "quic",
         }
     }
 }

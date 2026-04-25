@@ -57,7 +57,18 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let server = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -147,7 +158,18 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
         http_root_realm: Arc::from("Authorization required"),
     });
     let server_task = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -233,7 +255,18 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
         config.http_root_realm.clone(),
     );
     let server = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -297,7 +330,18 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
         config.http_root_realm.clone(),
     );
     let server = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -385,7 +429,18 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
         http_root_realm: Arc::from("Authorization required"),
     });
     let server_task = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -504,7 +559,18 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
         http_root_realm: Arc::from("Authorization required"),
     });
     let server_task = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
@@ -617,7 +683,18 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
         http_root_realm: Arc::from("Authorization required"),
     });
     let server_task = tokio::spawn(async move {
-        serve_h3_server(server, routes, services, auth, ShutdownSignal::never()).await
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![crate::config::H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;

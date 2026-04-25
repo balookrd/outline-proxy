@@ -2,8 +2,7 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use tokio::{
-    io::AsyncReadExt,
-    net::tcp::OwnedReadHalf,
+    io::{AsyncRead, AsyncReadExt},
     time::{Duration, timeout},
 };
 use tracing::{debug, warn};
@@ -17,15 +16,15 @@ use crate::{
 
 use super::super::constants::SS_TCP_HANDSHAKE_TIMEOUT_SECS;
 
-pub(super) struct SsHandshakeOutcome {
-    pub(super) user: UserKey,
-    pub(super) target: TargetAddr,
-    pub(super) initial_payload: Vec<u8>,
-    pub(super) decryptor: AeadStreamDecryptor,
+pub(in crate::server) struct SsHandshakeOutcome {
+    pub(in crate::server) user: UserKey,
+    pub(in crate::server) target: TargetAddr,
+    pub(in crate::server) initial_payload: Vec<u8>,
+    pub(in crate::server) decryptor: AeadStreamDecryptor,
 }
 
-pub(super) async fn ss_tcp_handshake(
-    client_reader: &mut OwnedReadHalf,
+pub(in crate::server) async fn ss_tcp_handshake<R: AsyncRead + Unpin>(
+    client_reader: &mut R,
     users: Arc<[UserKey]>,
     peer_addr: Option<SocketAddr>,
 ) -> Result<Option<SsHandshakeOutcome>> {
