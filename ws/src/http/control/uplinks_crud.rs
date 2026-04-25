@@ -45,7 +45,7 @@ pub(crate) struct UplinkPayload {
     pub(crate) weight: Option<f64>,
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
-    pub(crate) uuid: Option<String>,
+    pub(crate) vless_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -511,7 +511,7 @@ fn payload_to_table(payload: &UplinkPayload) -> Table {
     if let Some(v) = payload.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
     }
-    set_str(&mut tbl, "uuid", payload.uuid.as_deref());
+    set_str(&mut tbl, "vless_id", payload.vless_id.as_deref());
     tbl
 }
 
@@ -560,8 +560,8 @@ fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     if let Some(v) = patch.ipv6_first {
         tbl.insert("ipv6_first", Item::Value(Value::from(v)));
     }
-    if let Some(v) = patch.uuid.as_deref() {
-        set_str(tbl, "uuid", Some(v));
+    if let Some(v) = patch.vless_id.as_deref() {
+        set_str(tbl, "vless_id", Some(v));
     }
 }
 

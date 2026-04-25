@@ -157,7 +157,7 @@ mod tests {
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
-            vless_uuid: None,        };
+            vless_id: None,        };
         let probe = ProbeConfig {
             interval: Duration::from_secs(120),
             timeout: Duration::from_secs(10),

@@ -76,7 +76,7 @@ pub struct UplinkConfig {
     pub ipv6_first: bool,
     /// Present when `transport = "vless"`. Raw 16-byte user id; parsed from
     /// the config string via `outline_transport::vless::parse_uuid`.
-    pub vless_uuid: Option<[u8; 16]>,
+    pub vless_id: Option<[u8; 16]>,
 }
 
 impl UplinkConfig {

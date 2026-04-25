@@ -174,9 +174,9 @@ impl UplinkManager {
         let (writer, reader) = match uplink.transport {
             UplinkTransport::Vless => {
                 let uuid = uplink
-                    .vless_uuid
+                    .vless_id
                     .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+                    .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
                 let (w, r) = outline_transport::connect_vless_tcp_quic(
                     cache,
                     url,
@@ -288,8 +288,8 @@ impl UplinkManager {
             let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
                 anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
             })?;
-            let uuid = candidate.uplink.vless_uuid.ok_or_else(|| {
-                anyhow!("uplink {} is VLESS but has no uuid", candidate.uplink.name)
+            let uuid = candidate.uplink.vless_id.ok_or_else(|| {
+                anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)
             })?;
             let mode = self.effective_udp_ws_mode(candidate.index).await;
             #[cfg(feature = "quic")]

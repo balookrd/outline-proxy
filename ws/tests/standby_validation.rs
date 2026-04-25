@@ -83,7 +83,7 @@ async fn build_manager(
             weight: 1.0,
             fwmark: None,
             ipv6_first: false,
-            vless_uuid: None,
+            vless_id: None,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

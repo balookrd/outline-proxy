@@ -126,8 +126,8 @@ pub(super) async fn run_dns_probe(
             let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
                 anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
             })?;
-            let uuid = uplink.vless_uuid.as_ref().ok_or_else(|| {
-                anyhow!("uplink {} has no vless_uuid for DNS probe", uplink.name)
+            let uuid = uplink.vless_id.as_ref().ok_or_else(|| {
+                anyhow!("uplink {} has no vless_id for DNS probe", uplink.name)
             })?;
 
             let transport = {

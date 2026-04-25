@@ -177,7 +177,7 @@ pub(crate) struct UplinkSection {
     pub(crate) fwmark: Option<u32>,
     pub(crate) ipv6_first: Option<bool>,
     /// VLESS user id (hex/dashed), required when `transport = "vless"`.
-    pub(crate) uuid: Option<String>,
+    pub(crate) vless_id: Option<String>,
     /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
     /// declared; optional in legacy config (all uplinks land in `default`).
     pub(crate) group: Option<String>,
