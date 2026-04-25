@@ -11,7 +11,7 @@ use tracing::debug;
 
 use outline_transport::DnsCache;
 
-use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, WsTransportMode};
+use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
 
 use super::metrics::BytesRecorder;
 use super::transport::{close_probe_tcp_writer, connect_probe_tcp};
@@ -55,6 +55,12 @@ pub(super) async fn run_http_probe(
         path
     };
 
+    // VLESS encodes the target host:port in its request header, so the SOCKS5
+    // atyp-prefixed wire form must NOT be sent as the first chunk — that would
+    // leak as garbage bytes into the upstream HTTP stream and the origin server
+    // would reply 400. Shadowsocks-AEAD has no header of its own and expects
+    // the SOCKS5 wire form as the first decrypted bytes, so it still gets it.
+    let needs_socks5_target = uplink.transport != UplinkTransport::Vless;
     let target_wire = target.to_wire_bytes()?;
     let (mut writer, mut reader) = connect_probe_tcp(
         cache,
@@ -68,11 +74,13 @@ pub(super) async fn run_http_probe(
     .await?;
     let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "http" };
     let result = async {
-        writer
-            .send_chunk(&target_wire)
-            .await
-            .context("failed to send HTTP probe target")?;
-        bytes.outgoing(target_wire.len());
+        if needs_socks5_target {
+            writer
+                .send_chunk(&target_wire)
+                .await
+                .context("failed to send HTTP probe target")?;
+            bytes.outgoing(target_wire.len());
+        }
 
         // Use HEAD so health checks do not pull response bodies through the data
         // path. This keeps probe traffic tiny even when the probe URL points at a
