@@ -27,12 +27,14 @@
 
 mod connection;
 mod dial;
+pub(crate) mod oversize;
 mod tls_config;
 pub(crate) mod vless_udp;
 
 pub use connection::SharedQuicConnection;
 pub use dial::connect_quic_uplink;
 pub(crate) use dial::gc_shared_quic_connections;
+pub use oversize::{OVERSIZE_STREAM_MAGIC, OversizeStream};
 
 /// ALPN identifier for raw VLESS over QUIC.
 pub const ALPN_VLESS: &[u8] = b"vless";
@@ -40,3 +42,33 @@ pub const ALPN_VLESS: &[u8] = b"vless";
 pub const ALPN_SS: &[u8] = b"ss";
 /// ALPN identifier for HTTP/3 (used by the `crate::h3` module).
 pub const ALPN_H3: &[u8] = b"h3";
+
+/// ALPN identifier for raw VLESS over QUIC with oversize-stream fallback
+/// for UDP datagrams that exceed `Connection::max_datagram_size()`. Wire
+/// format on the bidi data path is identical to [`ALPN_VLESS`]; the
+/// difference is that endpoints may open one bidi stream per connection
+/// marked with [`OVERSIZE_STREAM_MAGIC`] to carry length-prefixed UDP
+/// records that wouldn't fit in a QUIC datagram.
+pub const ALPN_VLESS_MTU: &[u8] = b"vless-mtu";
+/// ALPN identifier for raw Shadowsocks over QUIC with the same oversize-
+/// stream fallback as [`ALPN_VLESS_MTU`]. Sibling ALPN to [`ALPN_SS`].
+pub const ALPN_SS_MTU: &[u8] = b"ss-mtu";
+
+/// Returns the matching MTU-aware ALPN for a base ALPN, if any. The
+/// per-ALPN connection registry uses the MTU-aware ALPN as the
+/// preferred attempt; if the server doesn't advertise it the dialer
+/// falls back to the base ALPN with oversize records disabled.
+pub fn mtu_alpn_for(alpn: &'static [u8]) -> Option<&'static [u8]> {
+    if alpn == ALPN_VLESS {
+        Some(ALPN_VLESS_MTU)
+    } else if alpn == ALPN_SS {
+        Some(ALPN_SS_MTU)
+    } else {
+        None
+    }
+}
+
+/// Returns `true` when the ALPN bytes denote an MTU-aware variant.
+pub fn alpn_supports_oversize(alpn: &[u8]) -> bool {
+    alpn == ALPN_VLESS_MTU || alpn == ALPN_SS_MTU
+}
