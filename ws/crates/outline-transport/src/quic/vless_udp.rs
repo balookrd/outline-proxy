@@ -70,6 +70,10 @@ pub(crate) struct VlessUdpDemuxer {
     /// installs it. Held purely to keep the task alive for the
     /// demuxer's lifetime.
     _oversize_reader_task: Mutex<Option<AbortOnDrop>>,
+    /// accept_bi pump task that listens for server-initiated
+    /// oversize-record streams. Spawned at construction iff the
+    /// negotiated ALPN supports oversize records.
+    _oversize_accept_task: Mutex<Option<AbortOnDrop>>,
 }
 
 impl VlessUdpDemuxer {
@@ -119,13 +123,88 @@ impl VlessUdpDemuxer {
                 }
             }
         }));
-        Arc::new(Self {
+        let demuxer = Arc::new(Self {
             sessions,
-            conn,
+            conn: Arc::clone(&conn),
             oversize_reader_spawned: AtomicBool::new(false),
             _reader_task: reader_task,
             _oversize_reader_task: Mutex::new(None),
-        })
+            _oversize_accept_task: Mutex::new(None),
+        });
+        // When the negotiated ALPN supports the oversize-stream
+        // fallback, spawn an accept_bi pump so the server can open
+        // the stream first (typical for proxy traffic where DNS /
+        // video responses are large but client queries are small).
+        if conn.supports_oversize_stream() {
+            let demuxer_for_accept = Arc::clone(&demuxer);
+            let task = AbortOnDrop::new(tokio::spawn(async move {
+                demuxer_for_accept.run_accept_bi_pump().await;
+            }));
+            *demuxer._oversize_accept_task.lock() = Some(task);
+        }
+        demuxer
+    }
+
+    /// accept_bi loop for server-initiated oversize-record streams.
+    /// On magic match installs the stream into the connection (via
+    /// `install_accepted_oversize_stream`) and spawns the record
+    /// reader. A non-magic stream from the server is unexpected for
+    /// our protocols and is logged and dropped.
+    async fn run_accept_bi_pump(self: Arc<Self>) {
+        let raw = self.conn.raw_connection();
+        loop {
+            let (_send, mut recv) = match raw.accept_bi().await {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+            let mut head = [0u8; super::OVERSIZE_STREAM_MAGIC.len()];
+            if let Err(error) = tokio::io::AsyncReadExt::read_exact(&mut recv, &mut head).await {
+                debug!(?error, "accept_bi peek failed for vless oversize stream");
+                continue;
+            }
+            if &head != super::OVERSIZE_STREAM_MAGIC {
+                debug!(?head, "accept_bi got non-oversize stream from server, ignoring");
+                continue;
+            }
+            // Server initiated — pair its send/recv halves into a
+            // ready-to-use OversizeStream and try to install on the
+            // connection. If a local stream is already installed
+            // (we sent oversize first), the install is a no-op and
+            // the redundant peer-opened pair is dropped.
+            let stream = OversizeStream::from_accept_validated(_send, recv);
+            let installed = self.conn.install_accepted_oversize_stream(stream);
+            self.spawn_oversize_reader_if_needed(installed);
+        }
+    }
+
+    /// Idempotent helper: spawn the record reader task for the given
+    /// oversize stream if no reader has yet been spawned. Used by
+    /// both `ensure_oversize_stream` (local-open path) and
+    /// `run_accept_bi_pump` (peer-open path).
+    fn spawn_oversize_reader_if_needed(self: &Arc<Self>, stream: Arc<OversizeStream>) {
+        if self
+            .oversize_reader_spawned
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let demuxer = Arc::clone(self);
+            let task = AbortOnDrop::new(tokio::spawn(async move {
+                loop {
+                    match stream.recv_record().await {
+                        Ok(Some(record)) => demuxer.route_record(record),
+                        Ok(None) => {
+                            debug!("vless oversize stream EOF");
+                            return;
+                        }
+                        Err(error) => {
+                            debug!(?error, "vless oversize stream reader aborting");
+                            return;
+                        }
+                    }
+                }
+            }));
+            *self._oversize_reader_task.lock() = Some(task);
+        }
     }
 
     fn register(&self, id: u32, tx: mpsc::Sender<Bytes>) {
@@ -161,35 +240,13 @@ impl VlessUdpDemuxer {
 
     /// Open (or reuse) the connection-level oversize-record stream and
     /// ensure a reader task is consuming inbound records. Idempotent —
-    /// concurrent callers race via `compare_exchange` so the reader is
-    /// spawned at most once. Returns `Err` if the negotiated ALPN does
-    /// not support oversize records or `open_bi` fails.
+    /// concurrent callers and the accept_bi pump share the same
+    /// compare_exchange flag so the reader is spawned at most once.
+    /// Returns `Err` if the negotiated ALPN does not support oversize
+    /// records or `open_bi` fails.
     pub(crate) async fn ensure_oversize_stream(self: &Arc<Self>) -> Result<Arc<OversizeStream>> {
         let stream = self.conn.ensure_oversize_stream().await?;
-        if self
-            .oversize_reader_spawned
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            let demuxer = Arc::clone(self);
-            let stream_for_task = Arc::clone(&stream);
-            let task = AbortOnDrop::new(tokio::spawn(async move {
-                loop {
-                    match stream_for_task.recv_record().await {
-                        Ok(Some(record)) => demuxer.route_record(record),
-                        Ok(None) => {
-                            debug!("vless oversize stream EOF");
-                            return;
-                        }
-                        Err(error) => {
-                            debug!(?error, "vless oversize stream reader aborting");
-                            return;
-                        }
-                    }
-                }
-            }));
-            *self._oversize_reader_task.lock() = Some(task);
-        }
+        self.spawn_oversize_reader_if_needed(Arc::clone(&stream));
         Ok(stream)
     }
 }
