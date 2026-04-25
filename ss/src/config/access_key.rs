@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, anyhow, bail};
 
-use crate::config::{AccessKeyConfig, Config, UserEntry};
+use super::{AccessKeyConfig, Config, UserEntry};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccessKeyArtifact {

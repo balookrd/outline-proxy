@@ -1,3 +1,4 @@
+pub mod access_key;
 mod cli;
 mod file;
 mod migrate;

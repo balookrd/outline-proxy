@@ -13,8 +13,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::{
-    access_key::build_access_key_artifacts_for_user,
-    config::{CipherKind, Config, UserEntry},
+    config::{CipherKind, Config, UserEntry, access_key::build_access_key_artifacts_for_user},
     crypto::UserKey,
     metrics::Transport,
     protocol::vless::VlessUser,
