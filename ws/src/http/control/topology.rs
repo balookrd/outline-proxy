@@ -29,6 +29,9 @@ pub(crate) struct ControlGroupTopology {
 struct ControlUplinkTopology {
     index: usize,
     name: String,
+    transport: String,
+    tcp_ws_mode: Option<String>,
+    udp_ws_mode: Option<String>,
     weight: f64,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
@@ -82,6 +85,9 @@ fn build_uplink_topology(
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),
+        transport: uplink.transport.clone(),
+        tcp_ws_mode: uplink.tcp_ws_mode.clone(),
+        udp_ws_mode: uplink.udp_ws_mode.clone(),
         weight: uplink.weight,
         tcp_healthy: uplink.tcp_healthy,
         udp_healthy: uplink.udp_healthy,

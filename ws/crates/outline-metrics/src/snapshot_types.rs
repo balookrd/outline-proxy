@@ -36,6 +36,17 @@ pub struct UplinkSnapshot {
     /// Name of the uplink group this entry belongs to. Emitted as the
     /// `group` Prometheus label alongside `uplink`.
     pub group: String,
+    /// Inner protocol / encapsulation (`ws`, `shadowsocks`, `vless`) — what
+    /// payload format the uplink speaks. Surfaced on dashboards as the
+    /// "encapsulation" layer.
+    pub transport: String,
+    /// Outer transport mode for TCP-style sessions (`http1`, `h2`, `h3`,
+    /// `quic`). `Some` whenever the uplink has a dial URL on TCP — i.e. for
+    /// `ws` and `vless`. `None` for plain `shadowsocks`.
+    pub tcp_ws_mode: Option<String>,
+    /// Outer transport mode for UDP-style sessions. Same semantics as
+    /// `tcp_ws_mode`. `Some` only when the uplink supports UDP via WS/QUIC.
+    pub udp_ws_mode: Option<String>,
     pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,

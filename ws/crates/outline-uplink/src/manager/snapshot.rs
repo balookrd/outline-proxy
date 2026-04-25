@@ -1,6 +1,7 @@
 use tokio::time::Instant;
 
 use super::super::selection::{effective_latency, selection_score};
+use super::super::config::UplinkTransport;
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
@@ -49,6 +50,17 @@ impl UplinkManager {
                 index,
                 name: uplink.name.clone(),
                 group: self.inner.group_name.clone(),
+                transport: uplink.transport.to_string(),
+                tcp_ws_mode: match uplink.transport {
+                    UplinkTransport::Ws => uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_ws_mode.to_string()),
+                    UplinkTransport::Vless => uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string()),
+                    UplinkTransport::Shadowsocks => None,
+                },
+                udp_ws_mode: match uplink.transport {
+                    UplinkTransport::Ws => uplink.udp_ws_url.as_ref().map(|_| uplink.udp_ws_mode.to_string()),
+                    UplinkTransport::Vless => uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string()),
+                    UplinkTransport::Shadowsocks => None,
+                },
                 weight: uplink.weight,
                 tcp_healthy: status.tcp.healthy,
                 udp_healthy: status.udp.healthy,
