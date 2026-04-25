@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="outline-ws-rust" width="320">
+</p>
+
 # outline-ws-rust
 
 `outline-ws-rust` is a production-oriented Rust proxy that accepts local SOCKS5 traffic and forwards it to either Outline-compatible WebSocket transports over HTTP/1.1, HTTP/2, or HTTP/3, or to direct Shadowsocks socket uplinks.
