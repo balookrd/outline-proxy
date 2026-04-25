@@ -89,10 +89,10 @@ async fn handle_request(request: Request<Incoming>, state: DashboardState) -> Da
             html_response(ui::dashboard_html(state.refresh_interval_secs))
         },
         (&Method::GET, "/dashboard/uplinks") => html_response(ui::uplinks_html()),
-        (&Method::GET, "/dashboard/sidebar-logo.png") => plain_response(
+        (&Method::GET, "/dashboard/outline-logo.png") => plain_response(
             StatusCode::OK,
             "image/png",
-            Bytes::from_static(include_bytes!("sidebar-logo.png")),
+            Bytes::from_static(include_bytes!("outline-logo.png")),
         ),
         (&Method::GET, "/dashboard/api/topology") => api::handle_topology(state).await,
         (&Method::POST, "/dashboard/api/activate") => api::handle_activate(request, state).await,
