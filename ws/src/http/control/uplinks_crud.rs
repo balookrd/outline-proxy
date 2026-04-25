@@ -154,12 +154,10 @@ async fn handle_list(
     if let Some(path) = &state.config_path {
         if let Ok(raw) = fs::read_to_string(path).await {
             if let Ok(mut doc) = raw.parse::<DocumentMut>() {
+                let arr = get_or_init_outline_uplinks(&mut doc);
                 for entry in entries.iter_mut() {
-                    let Some(group_tbl) = find_group_mut(&mut doc, &entry.group) else {
-                        continue;
-                    };
-                    let arr = get_or_init_uplinks_array(group_tbl);
-                    let Some(idx) = find_uplink_index(arr, &entry.name) else {
+                    let Some(idx) = find_outline_uplink_index(arr, &entry.group, &entry.name)
+                    else {
                         continue;
                     };
                     if let Some(tbl) = arr.get(idx) {
@@ -232,16 +230,20 @@ async fn handle_create(
 
     let _guard = state.config_write_lock.lock().await;
     let result = mutate_config_file(&path, |doc| {
-        let group_tbl = find_group_mut(doc, &body.group)
-            .ok_or_else(|| format!("uplink_group \"{}\" not found", body.group))?;
-        let arr = get_or_init_uplinks_array(group_tbl);
-        if find_uplink_index(arr, &name).is_some() {
+        if find_group_mut(doc, &body.group).is_none() {
+            return Err(format!("uplink_group \"{}\" not found", body.group));
+        }
+        let arr = get_or_init_outline_uplinks(doc);
+        if find_outline_uplink_index(arr, &body.group, &name).is_some() {
             return Err(format!(
                 "uplink \"{name}\" already exists in group \"{}\" on disk",
                 body.group
             ));
         }
-        arr.push(payload_to_table(&body.uplink));
+        let mut tbl = payload_to_table(&body.uplink);
+        // Persist the group discriminator alongside the uplink fields.
+        tbl.insert("group", Item::Value(Value::from(body.group.as_str())));
+        arr.push(tbl);
         Ok(())
     })
     .await;
@@ -304,17 +306,14 @@ async fn handle_update(
         },
     };
 
-    let group_tbl = match find_group_mut(&mut doc, &body.group) {
-        Some(t) => t,
-        None => {
-            return json_error_owned(
-                StatusCode::NOT_FOUND,
-                format!("uplink_group \"{}\" not found", body.group),
-            );
-        },
-    };
-    let arr = get_or_init_uplinks_array(group_tbl);
-    let idx = match find_uplink_index(arr, &body.name) {
+    if find_group_mut(&mut doc, &body.group).is_none() {
+        return json_error_owned(
+            StatusCode::NOT_FOUND,
+            format!("uplink_group \"{}\" not found", body.group),
+        );
+    }
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = match find_outline_uplink_index(arr, &body.group, &body.name) {
         Some(i) => i,
         None => {
             return json_error_owned(
@@ -375,12 +374,13 @@ async fn handle_delete(
     let group_name = body.group.clone();
     let uplink_name = body.name.clone();
     let result = mutate_config_file(&path, |doc| {
-        let group_tbl = find_group_mut(doc, &group_name)
-            .ok_or_else(|| format!("uplink_group \"{group_name}\" not found"))?;
-        let arr = get_or_init_uplinks_array(group_tbl);
-        let idx = find_uplink_index(arr, &uplink_name)
+        if find_group_mut(doc, &group_name).is_none() {
+            return Err(format!("uplink_group \"{group_name}\" not found"));
+        }
+        let arr = get_or_init_outline_uplinks(doc);
+        let idx = find_outline_uplink_index(arr, &group_name, &uplink_name)
             .ok_or_else(|| format!("uplink \"{uplink_name}\" not found in group \"{group_name}\""))?;
-        if arr.len() <= 1 {
+        if count_uplinks_in_group(arr, &group_name) <= 1 {
             return Err(format!(
                 "cannot delete last uplink in group \"{group_name}\"; \
                  a group must contain at least one uplink"
@@ -468,19 +468,43 @@ pub(crate) fn find_group_mut<'a>(doc: &'a mut DocumentMut, group: &str) -> Optio
     None
 }
 
-fn get_or_init_uplinks_array(group_tbl: &mut Table) -> &mut ArrayOfTables {
-    if !group_tbl.contains_key("uplinks") {
-        group_tbl.insert("uplinks", Item::ArrayOfTables(ArrayOfTables::new()));
+/// Get or init the canonical `[[outline.uplinks]]` array-of-tables. The
+/// loader treats this top-level array as the source of truth: each entry
+/// carries a `group = "..."` discriminator that links it to a
+/// `[[uplink_group]]` table by name.
+fn get_or_init_outline_uplinks(doc: &mut DocumentMut) -> &mut ArrayOfTables {
+    if !doc.contains_key("outline") {
+        let mut t = Table::new();
+        t.set_implicit(true);
+        doc.insert("outline", Item::Table(t));
     }
-    group_tbl
+    let outline_tbl = doc
+        .get_mut("outline")
+        .and_then(Item::as_table_mut)
+        .expect("[outline] must be a table");
+    if !outline_tbl.contains_key("uplinks") {
+        outline_tbl.insert("uplinks", Item::ArrayOfTables(ArrayOfTables::new()));
+    }
+    outline_tbl
         .get_mut("uplinks")
         .and_then(Item::as_array_of_tables_mut)
-        .expect("uplinks must be array-of-tables after insert")
+        .expect("outline.uplinks must be array-of-tables after insert")
 }
 
-fn find_uplink_index(arr: &ArrayOfTables, name: &str) -> Option<usize> {
+/// Locate an entry inside `[[outline.uplinks]]` matching both `group` and
+/// `name`. Uplink names are globally unique, but we also constrain on the
+/// group field to keep the API symmetric (delete/patch always supply both).
+fn find_outline_uplink_index(arr: &ArrayOfTables, group: &str, name: &str) -> Option<usize> {
+    arr.iter().position(|t| {
+        t.get("group").and_then(|v| v.as_str()) == Some(group)
+            && t.get("name").and_then(|v| v.as_str()) == Some(name)
+    })
+}
+
+fn count_uplinks_in_group(arr: &ArrayOfTables, group: &str) -> usize {
     arr.iter()
-        .position(|t| t.get("name").and_then(|v| v.as_str()) == Some(name))
+        .filter(|t| t.get("group").and_then(|v| v.as_str()) == Some(group))
+        .count()
 }
 
 // ─── payload <-> table conversion ────────────────────────────────────────
@@ -629,19 +653,21 @@ mod tests {
 [[uplink_group]]
 name = "core"
 
-  [[uplink_group.uplinks]]
-  name = "u1"
-  transport = "shadowsocks"
-  tcp_addr = "1.2.3.4:8388"
-  method = "chacha20-ietf-poly1305"
-  password = "secret-password-1"
+[[outline.uplinks]]
+name = "u1"
+group = "core"
+transport = "shadowsocks"
+tcp_addr = "1.2.3.4:8388"
+method = "chacha20-ietf-poly1305"
+password = "secret-password-1"
 
-  [[uplink_group.uplinks]]
-  name = "u2"
-  transport = "shadowsocks"
-  tcp_addr = "5.6.7.8:8388"
-  method = "chacha20-ietf-poly1305"
-  password = "secret-password-2"
+[[outline.uplinks]]
+name = "u2"
+group = "core"
+transport = "shadowsocks"
+tcp_addr = "5.6.7.8:8388"
+method = "chacha20-ietf-poly1305"
+password = "secret-password-2"
 "#
     }
 
@@ -653,20 +679,20 @@ name = "core"
     }
 
     #[test]
-    fn finds_uplink_index_by_name() {
+    fn finds_uplink_index_by_group_and_name() {
         let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-        let group = find_group_mut(&mut doc, "core").unwrap();
-        let arr = get_or_init_uplinks_array(group);
-        assert_eq!(find_uplink_index(arr, "u1"), Some(0));
-        assert_eq!(find_uplink_index(arr, "u2"), Some(1));
-        assert_eq!(find_uplink_index(arr, "u3"), None);
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        assert_eq!(find_outline_uplink_index(arr, "core", "u1"), Some(0));
+        assert_eq!(find_outline_uplink_index(arr, "core", "u2"), Some(1));
+        assert_eq!(find_outline_uplink_index(arr, "core", "u3"), None);
+        // Wrong group must not match even when the name exists.
+        assert_eq!(find_outline_uplink_index(arr, "other", "u1"), None);
     }
 
     #[test]
     fn insert_appends_uplink_table() {
         let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-        let group = find_group_mut(&mut doc, "core").unwrap();
-        let arr = get_or_init_uplinks_array(group);
+        let arr = get_or_init_outline_uplinks(&mut doc);
         let payload = UplinkPayload {
             name: Some("u3".into()),
             transport: Some("shadowsocks".into()),
@@ -675,18 +701,20 @@ name = "core"
             password: Some("secret-password-3".into()),
             ..Default::default()
         };
-        arr.push(payload_to_table(&payload));
+        let mut tbl = payload_to_table(&payload);
+        tbl.insert("group", Item::Value(Value::from("core")));
+        arr.push(tbl);
         let rendered = doc.to_string();
         assert!(rendered.contains("\"u3\""), "missing inserted uplink:\n{rendered}");
         assert!(rendered.contains("9.9.9.9:8388"));
+        assert!(rendered.contains("group = \"core\""));
     }
 
     #[test]
     fn merge_patch_updates_existing_fields_only() {
         let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-        let group = find_group_mut(&mut doc, "core").unwrap();
-        let arr = get_or_init_uplinks_array(group);
-        let idx = find_uplink_index(arr, "u1").unwrap();
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
         let patch = UplinkPayload {
             password: Some("new-password".into()),
             weight: Some(2.5),
@@ -703,13 +731,31 @@ name = "core"
     #[test]
     fn remove_drops_entry() {
         let mut doc = sample_config().parse::<DocumentMut>().unwrap();
-        let group = find_group_mut(&mut doc, "core").unwrap();
-        let arr = get_or_init_uplinks_array(group);
-        let idx = find_uplink_index(arr, "u1").unwrap();
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
         arr.remove(idx);
         let rendered = doc.to_string();
         assert!(!rendered.contains("\"u1\""));
         assert!(rendered.contains("\"u2\""));
+    }
+
+    #[test]
+    fn count_uplinks_in_group_counts_only_matching_group() {
+        let mut doc = sample_config().parse::<DocumentMut>().unwrap();
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        assert_eq!(count_uplinks_in_group(arr, "core"), 2);
+        assert_eq!(count_uplinks_in_group(arr, "missing"), 0);
+    }
+
+    #[test]
+    fn enrich_round_trip_returns_uplink_fields() {
+        let mut doc = sample_config().parse::<DocumentMut>().unwrap();
+        let arr = get_or_init_outline_uplinks(&mut doc);
+        let idx = find_outline_uplink_index(arr, "core", "u1").unwrap();
+        let json = table_to_json(arr.get(idx).unwrap()).expect("table_to_json");
+        assert_eq!(json["name"], "u1");
+        assert_eq!(json["group"], "core");
+        assert_eq!(json["tcp_addr"], "1.2.3.4:8388");
     }
 
     #[test]
