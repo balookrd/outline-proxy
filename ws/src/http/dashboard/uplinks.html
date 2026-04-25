@@ -83,7 +83,8 @@ body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, B
 .shell { min-height: 100vh; display: grid; grid-template-columns: 220px 1fr; }
 .nav { background: var(--nav); color: var(--nav-text); display: flex; flex-direction: column; min-height: 100vh; border-right: 1px solid var(--nav-card-border); }
 .brand { height: 64px; display: flex; gap: 10px; align-items: center; padding: 0 18px; font-weight: 600; color: var(--nav-brand); font-size: 15px; }
-.logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, #6366f1, #4f46e5); display: grid; place-items: center; color: #fff; font-size: 14px; font-weight: 700; }
+.logo { width: 42px; height: 36px; display: grid; place-items: center; flex-shrink: 0; }
+.logo img { width: 42px; height: 36px; object-fit: contain; display: block; }
 .menu { padding: 8px 10px; display: grid; gap: 2px; }
 .item { height: 38px; width: 100%; border: 0; border-radius: 8px; display: flex; align-items: center; gap: 10px; padding: 0 12px; color: var(--nav-text); background: transparent; text-align: left; font-size: 13.5px; cursor: pointer; text-decoration: none; }
 .item:hover { background: var(--nav-hover); }
@@ -142,7 +143,7 @@ select:focus, input:focus { outline: 1px solid var(--blue); border-color: var(--
 <body>
 <div class="shell">
   <aside class="nav">
-    <div class="brand"><span class="logo">◆</span><span>Network Dashboard</span></div>
+    <div class="brand"><span class="logo"><img src="/dashboard/sidebar-logo.png" alt="" aria-hidden="true"></span><span>Network Dashboard</span></div>
     <nav class="menu">
       <a class="item" href="/dashboard"><span class="item-icon">▣</span><span>Instances</span></a>
       <a class="item active" href="/dashboard/uplinks"><span class="item-icon">⚒</span><span>Uplinks</span></a>
