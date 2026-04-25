@@ -6,6 +6,10 @@ edition = "2024"
 [features]
 default = ["metrics"]
 metrics = ["outline-metrics/prometheus", "outline-metrics/tun"]
+# Enable raw QUIC transport support — exposes the `QuicSs` arms in
+# `UpstreamWriter` and unblocks Shadowsocks / VLESS over raw QUIC for
+# tunneled flows. Mirrors `outline-transport`'s `quic` feature.
+quic = ["outline-transport/quic"]
 
 [dependencies]
 anyhow = "1.0"

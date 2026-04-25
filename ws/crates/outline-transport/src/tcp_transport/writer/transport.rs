@@ -143,3 +143,37 @@ impl WriteTransport for SocketWriteTransport {
         true
     }
 }
+
+#[cfg(feature = "quic")]
+#[doc(hidden)]
+pub struct QuicWriteTransport {
+    pub(super) send: Option<quinn::SendStream>,
+}
+
+#[cfg(feature = "quic")]
+impl WriteTransport for QuicWriteTransport {
+    async fn write_frame(&mut self, frame: Vec<u8>) -> Result<()> {
+        let send = self
+            .send
+            .as_mut()
+            .ok_or_else(|| anyhow!("quic writer already closed"))?;
+        send.write_all(&frame)
+            .await
+            .context("failed to write encrypted frame to quic stream")
+    }
+
+    async fn close(&mut self) -> Result<()> {
+        if let Some(mut send) = self.send.take() {
+            // `finish()` issues FIN; quinn returns Err only on already-closed
+            // streams which we treat as already-cleaned-up.
+            let _ = send.finish();
+        }
+        Ok(())
+    }
+
+    fn supports_half_close(&self) -> bool {
+        // QUIC streams support unidirectional FIN — write half can close
+        // independently of the read half.
+        true
+    }
+}

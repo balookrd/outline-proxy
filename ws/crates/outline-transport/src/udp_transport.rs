@@ -1,13 +1,11 @@
-use anyhow::{Context, Result, anyhow, bail};
-use crate::{TransportOperation, WsClosed};
+use anyhow::{Context, Result, bail};
+use crate::{TransportOperation};
 use outline_ss2022::Ss2022Error;
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::UdpSocket;
-use tokio::sync::{Mutex, mpsc, watch};
-use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio::sync::{Mutex, watch};
 use tracing::warn;
 use url::Url;
 
@@ -17,8 +15,10 @@ use shadowsocks_crypto::{
 };
 use shadowsocks_crypto::CipherKind;
 use crate::config::WsTransportMode;
+use crate::frame_io::DatagramChannel;
+use crate::frame_io_ws::from_ws_datagrams;
 
-use super::{AbortOnDrop, DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
+use super::{DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 
@@ -30,13 +30,9 @@ struct Ss2022UdpState {
 }
 
 enum UdpTransport {
-    Websocket {
-        data_tx: mpsc::Sender<Message>,
-        downlink_rx: Mutex<mpsc::Receiver<Result<Vec<u8>>>>,
-        _writer_task: AbortOnDrop,
-        _reader_task: AbortOnDrop,
-        _keepalive_task: Option<AbortOnDrop>,
-    },
+    /// Datagram-oriented transport (WebSocket today; QUIC datagrams in
+    /// future). All control (Ping/Pong, Close) is hidden inside the impl.
+    Channel(Arc<dyn DatagramChannel>),
     Socket {
         socket: UdpSocket,
     },
@@ -65,120 +61,24 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
+        let channel: Arc<dyn DatagramChannel> =
+            Arc::new(from_ws_datagrams(ws_stream, keepalive_interval));
+        Self::from_channel(channel, cipher, password, source)
+    }
+
+    /// Build an SS UDP transport over an arbitrary [`DatagramChannel`]. The
+    /// channel is opaque — the SS layer cares only about send/recv of
+    /// already-encrypted datagrams.
+    pub fn from_channel(
+        channel: Arc<dyn DatagramChannel>,
+        cipher: CipherKind,
+        password: &str,
+        source: &'static str,
+    ) -> Result<Self> {
         let master_key = cipher.derive_master_key(password)?;
         let (close_signal, _close_rx) = watch::channel(false);
-        let (sink, stream) = ws_stream.split();
-        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
-        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
-        let writer_task = tokio::spawn(async move {
-            let mut ws_sink = sink;
-            let mut ctrl_open = true;
-            loop {
-                if ctrl_open {
-                    tokio::select! {
-                        biased;
-                        msg = ctrl_rx.recv() => match msg {
-                            Some(m) => {
-                                if ws_sink.send(m).await.is_err() { return; }
-                            }
-                            None => ctrl_open = false,
-                        },
-                        msg = data_rx.recv() => match msg {
-                            Some(Message::Close(_)) | None => {
-                                let _ = ws_sink.close().await;
-                                return;
-                            }
-                            Some(m) => {
-                                if ws_sink.send(m).await.is_err() { return; }
-                            }
-                        },
-                    }
-                } else {
-                    match data_rx.recv().await {
-                        Some(Message::Close(_)) | None => {
-                            let _ = ws_sink.close().await;
-                            return;
-                        },
-                        Some(m) => {
-                            if ws_sink.send(m).await.is_err() {
-                                return;
-                            }
-                        },
-                    }
-                }
-            }
-        });
-        let keepalive_task = keepalive_interval.map(|interval| {
-            let keepalive_ctrl_tx = ctrl_tx.clone();
-            AbortOnDrop(tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await; // skip the first immediate tick
-                loop {
-                    ticker.tick().await;
-                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
-                        break;
-                    }
-                }
-            }))
-        });
-        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Vec<u8>>>(64);
-        let reader_ctrl_tx = ctrl_tx.clone();
-        let mut close_rx = close_signal.subscribe();
-        let reader_task = tokio::spawn(async move {
-            let mut stream = stream;
-            loop {
-                let msg = tokio::select! {
-                    _ = close_rx.changed() => {
-                        if *close_rx.borrow() {
-                            let _ = downlink_tx.send(Err(anyhow!("udp transport closed"))).await;
-                            return;
-                        }
-                        continue;
-                    }
-                    msg = stream.next() => msg,
-                };
-                match msg {
-                    None => return,
-                    Some(Err(e)) => {
-                        // Result-form .context() so the typed marker is
-                        // preserved for downcast_ref (anyhow only preserves
-                        // typed context when applied to Result, not to an
-                        // already-constructed Error).
-                        let err: anyhow::Result<()> =
-                            Err(e).context(TransportOperation::WebSocketRead);
-                        let _ = downlink_tx.send(Err(err.unwrap_err())).await;
-                        return;
-                    }
-                    Some(Ok(Message::Binary(bytes))) => {
-                        if downlink_tx.send(Ok(bytes.into())).await.is_err() {
-                            return;
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        let _ = downlink_tx.send(Err(anyhow::Error::from(WsClosed))).await;
-                        return;
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = reader_ctrl_tx.try_send(Message::Pong(payload));
-                    }
-                    Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
-                    Some(Ok(Message::Text(_))) => {
-                        let _ = downlink_tx
-                            .send(Err(anyhow!("unexpected text websocket frame")))
-                            .await;
-                        return;
-                    }
-                }
-            }
-        });
         Ok(Self {
-            transport: UdpTransport::Websocket {
-                data_tx,
-                downlink_rx: Mutex::new(downlink_rx),
-                _writer_task: AbortOnDrop(writer_task),
-                _reader_task: AbortOnDrop(reader_task),
-                _keepalive_task: keepalive_task,
-            },
+            transport: UdpTransport::Channel(channel),
             cipher,
             master_key,
             ss2022: cipher.is_ss2022().then(|| {
@@ -253,10 +153,7 @@ impl UdpWsTransport {
             encrypt_udp_packet(self.cipher, &self.master_key, payload)?
         };
         match &self.transport {
-            UdpTransport::Websocket { data_tx, .. } => data_tx
-                .send(Message::Binary(packet.into()))
-                .await
-                .context(TransportOperation::WebSocketSend),
+            UdpTransport::Channel(chan) => chan.send_datagram(Bytes::from(packet)).await,
             UdpTransport::Socket { socket } => {
                 if packet.len() > MAX_UDP_SOCKET_PACKET_SIZE {
                     warn!(
@@ -298,11 +195,11 @@ impl UdpWsTransport {
                 };
                 self.decrypt_udp_bytes(&buf[..len]).await.map(Bytes::from)
             },
-            UdpTransport::Websocket { downlink_rx, .. } => {
-                let bytes = {
-                    let mut rx = downlink_rx.lock().await;
-                    rx.recv().await.ok_or_else(|| anyhow::Error::from(WsClosed))??
-                };
+            UdpTransport::Channel(chan) => {
+                let bytes = chan
+                    .recv_datagram()
+                    .await?
+                    .ok_or_else(|| anyhow::Error::from(crate::WsClosed))?;
                 self.decrypt_udp_bytes(&bytes).await.map(Bytes::from)
             },
         }
@@ -310,8 +207,8 @@ impl UdpWsTransport {
 
     pub async fn close(&self) -> Result<()> {
         self.close_signal.send_replace(true);
-        if let UdpTransport::Websocket { data_tx, .. } = &self.transport {
-            let _ = data_tx.send(Message::Close(None)).await;
+        if let UdpTransport::Channel(chan) = &self.transport {
+            chan.close().await;
         }
         Ok(())
     }
@@ -354,6 +251,10 @@ impl UdpWsTransport {
 pub enum UdpSessionTransport {
     Ss(UdpWsTransport),
     Vless(crate::vless::VlessUdpSessionMux),
+    /// VLESS UDP over raw QUIC — multiple targets multiplexed on a
+    /// shared QUIC connection by server-allocated `session_id`.
+    #[cfg(feature = "quic")]
+    VlessQuic(crate::vless_quic_mux::VlessUdpQuicMux),
 }
 
 impl UdpSessionTransport {
@@ -361,6 +262,8 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.send_packet(socks5_payload).await,
             Self::Vless(t) => t.send_packet(socks5_payload).await,
+            #[cfg(feature = "quic")]
+            Self::VlessQuic(t) => t.send_packet(socks5_payload).await,
         }
     }
 
@@ -368,6 +271,8 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.read_packet().await,
             Self::Vless(t) => t.read_packet().await,
+            #[cfg(feature = "quic")]
+            Self::VlessQuic(t) => t.read_packet().await,
         }
     }
 
@@ -375,6 +280,8 @@ impl UdpSessionTransport {
         match self {
             Self::Ss(t) => t.close().await,
             Self::Vless(t) => t.close().await,
+            #[cfg(feature = "quic")]
+            Self::VlessQuic(t) => t.close().await,
         }
     }
 }

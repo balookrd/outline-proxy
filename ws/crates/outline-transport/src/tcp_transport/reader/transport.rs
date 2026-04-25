@@ -184,3 +184,24 @@ impl ReadTransport for SocketReadTransport {
         Ok(buf)
     }
 }
+
+#[cfg(feature = "quic")]
+#[doc(hidden)]
+pub struct QuicReadTransport {
+    pub(super) recv: quinn::RecvStream,
+}
+
+#[cfg(feature = "quic")]
+impl ReadTransport for QuicReadTransport {
+    async fn read_exact(&mut self, len: usize, closed_cleanly: &mut bool) -> Result<Vec<u8>> {
+        let mut buf = vec![0u8; len];
+        match self.recv.read_exact(&mut buf).await {
+            Ok(()) => Ok(buf),
+            Err(quinn::ReadExactError::FinishedEarly(_)) => {
+                *closed_cleanly = true;
+                bail!("quic stream closed");
+            }
+            Err(e) => Err(e).context("quic stream read failed"),
+        }
+    }
+}

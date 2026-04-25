@@ -25,7 +25,7 @@ const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 impl UplinkManager {
     /// Returns the effective TCP WebSocket mode for `index`, falling back to
     /// H2 when H3 has been marked broken by repeated runtime errors.
-    pub(crate) async fn effective_tcp_ws_mode(
+    pub async fn effective_tcp_ws_mode(
         &self,
         index: usize,
     ) -> crate::config::WsTransportMode {
@@ -149,6 +149,95 @@ impl UplinkManager {
         self.connect_tcp_ws_fresh(candidate, source).await
     }
 
+    /// Dial a fresh TCP session over raw QUIC. Returns a ready-to-use
+    /// `(TcpWriter, TcpReader)` pair — no warm-standby pool is involved
+    /// because QUIC connection sharing already happens at the
+    /// per-ALPN cache layer (`outline_transport::quic`).
+    ///
+    /// `source` selects between probe and shared paths (probes bypass
+    /// the connection cache; everything else can reuse).
+    #[cfg(feature = "quic")]
+    pub async fn connect_tcp_quic_fresh(
+        &self,
+        candidate: &UplinkCandidate,
+        target: &socks5_proto::TargetAddr,
+        source: &'static str,
+    ) -> Result<(outline_transport::TcpWriter, outline_transport::TcpReader)> {
+        use outline_transport::UpstreamTransportGuard;
+        let cache = self.inner.dns_cache.as_ref();
+        let uplink = &candidate.uplink;
+        let url = uplink.tcp_ws_url.as_ref().ok_or_else(|| {
+            anyhow!("uplink {} missing tcp_ws_url for quic transport", uplink.name)
+        })?;
+        let lifetime = UpstreamTransportGuard::new(source, "tcp");
+        let started = Instant::now();
+        let (writer, reader) = match uplink.transport {
+            UplinkTransport::Vless => {
+                let uuid = uplink
+                    .vless_uuid
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+                let (w, r) = outline_transport::connect_vless_tcp_quic(
+                    cache,
+                    url,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                    uuid,
+                    target,
+                    lifetime,
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("vless quic to {}", url),
+                })?;
+                (
+                    outline_transport::TcpWriter::Vless(w),
+                    outline_transport::TcpReader::Vless(r),
+                )
+            }
+            UplinkTransport::Ws => {
+                // Standalone "shadowsocks-over-quic" path uses the
+                // existing WS uplink config: same URL field, but
+                // `tcp_ws_mode = "quic"` selects this branch.
+                let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
+                let (mut w, r) = outline_transport::connect_ss_tcp_quic(
+                    cache,
+                    url,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("ss quic to {}", url),
+                })?;
+                let request_salt = w.request_salt();
+                let r = r.with_request_salt(request_salt);
+                let target_wire = target.to_wire_bytes()?;
+                w.send_chunk(&target_wire)
+                    .await
+                    .context("failed to send target address over ss-quic")?;
+                (
+                    outline_transport::TcpWriter::QuicSs(w),
+                    outline_transport::TcpReader::QuicSs(r),
+                )
+            }
+            UplinkTransport::Shadowsocks => {
+                bail!(
+                    "uplink {} uses direct shadowsocks transport, not compatible with quic mode",
+                    uplink.name
+                );
+            }
+        };
+        self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
+            .await;
+        Ok((writer, reader))
+    }
+
     pub async fn acquire_udp_standby_or_connect(
         &self,
         candidate: &UplinkCandidate,
@@ -188,7 +277,7 @@ impl UplinkManager {
 
         if candidate.uplink.transport == UplinkTransport::Vless {
             // VLESS UDP has no warm-standby pool — each destination opens its
-            // own WS session inside the mux on first packet, so there is no
+            // own session inside the mux on first packet, so there is no
             // single pre-dialed stream to hand out up front.
             metrics::record_warm_standby_acquire(
                 "udp",
@@ -203,6 +292,19 @@ impl UplinkManager {
                 anyhow!("uplink {} is VLESS but has no uuid", candidate.uplink.name)
             })?;
             let mode = self.effective_udp_ws_mode(candidate.index).await;
+            #[cfg(feature = "quic")]
+            if mode == outline_transport::WsTransportMode::Quic {
+                let mux = outline_transport::VlessUdpQuicMux::new(
+                    Arc::clone(&self.inner.dns_cache),
+                    udp_ws_url.clone(),
+                    uuid,
+                    candidate.uplink.fwmark,
+                    candidate.uplink.ipv6_first,
+                    source,
+                    self.inner.load_balancing.vless_udp_mux_limits,
+                );
+                return Ok(UdpSessionTransport::VlessQuic(mux));
+            }
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
@@ -247,6 +349,23 @@ impl UplinkManager {
         })?;
         let mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
+        #[cfg(feature = "quic")]
+        if mode == outline_transport::WsTransportMode::Quic {
+            let transport = outline_transport::connect_ss_udp_quic(
+                cache,
+                udp_ws_url,
+                candidate.uplink.fwmark,
+                candidate.uplink.ipv6_first,
+                source,
+                candidate.uplink.cipher,
+                &candidate.uplink.password,
+            )
+            .await
+            .with_context(|| TransportOperation::Connect { target: format!("ss quic to {}", udp_ws_url) })?;
+            self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
+                .await;
+            return Ok(UdpSessionTransport::Ss(transport));
+        }
         let transport = UdpWsTransport::connect(
             cache,
             udp_ws_url,

@@ -15,7 +15,7 @@ edition = "2024"
 [features]
 default = ["h3", "metrics", "control", "dashboard", "env-filter", "multi-thread", "mimalloc", "tun"]
 tun = ["dep:outline-tun", "outline-tun/metrics", "outline-metrics/tun"]   # TUN device support (transparent proxy)
-h3 = ["outline-transport/h3"]
+h3 = ["outline-transport/h3", "outline-tun?/quic", "outline-uplink/quic"]
 metrics = ["outline-metrics/prometheus", "outline-transport/metrics", "outline-uplink/metrics", "dep:serde_json", "hyper/server"]
 # control: authenticated mutating HTTP plane (manual uplink switch etc.).
 # Independent of `metrics`; both planes bind separate sockets but share hyper's server stack.

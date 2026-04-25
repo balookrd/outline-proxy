@@ -5,11 +5,15 @@ edition = "2024"
 
 [features]
 default = []
-h3 = ["dep:h3", "dep:h3-quinn", "dep:quinn", "dep:once_cell", "sockudo-ws/http3"]
+# Raw QUIC transport (no HTTP/3 framing). Required by `h3` since both share
+# the underlying quinn endpoint and TLS config builder.
+quic = ["dep:quinn", "dep:once_cell"]
+h3 = ["quic", "dep:h3", "dep:h3-quinn", "sockudo-ws/http3"]
 metrics = ["outline-metrics/prometheus", "hyper/server"]
 
 [dependencies]
 anyhow = "1.0"
+async-trait = "0.1"
 bytes = "1.10"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 hashbrown = "0.14"

@@ -101,6 +101,16 @@ mod guards;
 mod h2;
 #[cfg(feature = "h3")]
 pub(crate) mod h3;
+#[cfg(feature = "quic")]
+pub mod quic;
+#[cfg(feature = "quic")]
+mod quic_connect;
+#[cfg(feature = "quic")]
+mod vless_quic_mux;
+pub mod frame_io;
+#[cfg(feature = "quic")]
+mod frame_io_quic;
+mod frame_io_ws;
 mod tcp_transport;
 mod udp_transport;
 mod shared_cache;
@@ -148,6 +158,13 @@ pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
 pub use udp_transport::{UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error};
+#[cfg(feature = "quic")]
+pub use quic_connect::{
+    connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,
+    connect_vless_udp_session_quic,
+};
+#[cfg(feature = "quic")]
+pub use vless_quic_mux::VlessUdpQuicMux;
 pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpMuxLimits, VlessUdpSessionMux, VlessUdpWsTransport,
 };
@@ -161,6 +178,8 @@ pub use tcp_transport::{
     TcpReader, TcpShadowsocksReader, TcpShadowsocksWriter, TcpWriter,
     WsReadDiag, WsTcpWriter, SocketTcpWriter,
 };
+#[cfg(feature = "quic")]
+pub use tcp_transport::{QuicTcpReader, QuicTcpWriter};
 
 // Error-chain inspection helpers shared across crates.
 pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_disconnect, lower_error};
@@ -264,6 +283,15 @@ pub async fn connect_websocket_with_source(
                 },
             }
         },
+        WsTransportMode::Quic => {
+            // Raw QUIC bypasses the WebSocket layer entirely; callers must
+            // dispatch to `crate::quic::connect_quic_uplink` before reaching
+            // this function. Reaching here means a config-routing bug.
+            anyhow::bail!(
+                "WsTransportMode::Quic does not produce a WebSocket stream; \
+                 caller must dispatch to the raw-QUIC dial path"
+            );
+        }
     }
 }
 

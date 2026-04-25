@@ -16,6 +16,12 @@ pub enum WsTransportMode {
     Http1,
     H2,
     H3,
+    /// Raw QUIC: no WebSocket framing, no HTTP/3. Pairs with the
+    /// outline-ss-rust server's matching `outline-quic` ALPN. TCP-like
+    /// sessions ride a fresh bidi stream; UDP-like sessions use QUIC
+    /// datagrams (RFC 9221). Available only when the `quic` feature is
+    /// enabled at build time.
+    Quic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +48,7 @@ impl std::str::FromStr for WsTransportMode {
             "http1" => Ok(Self::Http1),
             "h2" => Ok(Self::H2),
             "h3" => Ok(Self::H3),
+            "quic" => Ok(Self::Quic),
             _ => bail!("unsupported websocket transport mode: {s}"),
         }
     }
@@ -109,6 +116,7 @@ impl fmt::Display for WsTransportMode {
             Self::Http1 => "http1",
             Self::H2 => "h2",
             Self::H3 => "h3",
+            Self::Quic => "quic",
         };
         f.write_str(value)
     }
