@@ -200,6 +200,8 @@ pub async fn gc_shared_connections() {
     h2::gc_shared_h2_connections().await;
     #[cfg(feature = "h3")]
     crate::h3::gc_shared_h3_connections().await;
+    #[cfg(feature = "quic")]
+    crate::quic::gc_shared_quic_connections().await;
 }
 
 pub async fn connect_websocket_with_source(

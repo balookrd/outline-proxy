@@ -25,7 +25,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use parking_lot::Mutex as SyncMutex;
 use socks5_proto::TargetAddr;

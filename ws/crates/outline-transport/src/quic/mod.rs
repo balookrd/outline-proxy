@@ -33,7 +33,6 @@ pub(crate) mod vless_udp;
 pub use connection::SharedQuicConnection;
 pub use dial::connect_quic_uplink;
 pub(crate) use dial::gc_shared_quic_connections;
-pub(crate) use tls_config::shared_quic_endpoint;
 
 /// ALPN identifier for raw VLESS over QUIC.
 pub const ALPN_VLESS: &[u8] = b"vless";
