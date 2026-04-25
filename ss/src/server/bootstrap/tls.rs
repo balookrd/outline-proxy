@@ -27,7 +27,12 @@ pub(super) fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig
         .as_deref()
         .ok_or_else(|| anyhow!("missing h3_key_path"))?;
 
-    let alpn: Vec<&[u8]> = config.h3_alpn.iter().map(|p| p.wire_bytes()).collect();
+    // Advertise the MTU-aware sibling alongside each base ALPN
+    // (vless-mtu / vless, ss-mtu / ss) — newer clients pick the
+    // sibling and use the oversize-record stream fallback; older
+    // clients pick the base and behave exactly as before.
+    let alpn: Vec<&[u8]> =
+        config.h3_alpn.iter().flat_map(|p| p.advertised_alpns().iter().copied()).collect();
     load_server_tls_config(cert_path, key_path, &alpn)
         .context("failed to build HTTP/3 TLS config")
 }

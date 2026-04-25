@@ -39,6 +39,20 @@ impl H3Alpn {
         }
     }
 
+    /// All ALPN identifiers the server should advertise for this
+    /// protocol, in preference order (MTU-aware sibling first when
+    /// applicable). Newer clients negotiate the MTU-aware variant
+    /// and use the oversize-record stream fallback for UDP datagrams
+    /// that exceed `Connection::max_datagram_size()`; older clients
+    /// negotiate the base ALPN and behave as before.
+    pub const fn advertised_alpns(self) -> &'static [&'static [u8]] {
+        match self {
+            Self::H3 => &[b"h3"],
+            Self::Vless => &[b"vless-mtu", b"vless"],
+            Self::Ss => &[b"ss-mtu", b"ss"],
+        }
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::H3 => "h3",
@@ -47,11 +61,22 @@ impl H3Alpn {
         }
     }
 
+    /// Returns `true` if the negotiated ALPN bytes denote the
+    /// MTU-aware sibling for this protocol (e.g. `vless-mtu` for
+    /// `Self::Vless`). Always `false` for `Self::H3`.
+    pub fn is_mtu_variant(self, negotiated: &[u8]) -> bool {
+        match self {
+            Self::H3 => false,
+            Self::Vless => negotiated == b"vless-mtu",
+            Self::Ss => negotiated == b"ss-mtu",
+        }
+    }
+
     pub fn parse(value: &str) -> Option<Self> {
         match value {
             "h3" => Some(Self::H3),
-            "vless" => Some(Self::Vless),
-            "ss" => Some(Self::Ss),
+            "vless" | "vless-mtu" => Some(Self::Vless),
+            "ss" | "ss-mtu" => Some(Self::Ss),
             _ => None,
         }
     }
