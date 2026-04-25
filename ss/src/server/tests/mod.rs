@@ -46,17 +46,17 @@ fn build_test_state(
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
     let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless }));
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
         dns_cache,
-        prefer_ipv4_upstream: false,
-        outbound_ipv6: None,
-        udp: UdpServices {
+        false,
+        None,
+        UdpServices {
             nat_table,
             replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300), 0),
             relay_semaphore: None,
         },
-    });
+    ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
         http_root_auth,

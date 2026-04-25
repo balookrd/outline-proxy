@@ -11,6 +11,7 @@ use crate::{
 
 use super::nat::NatTable;
 use super::replay::ReplayStore;
+use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx};
 
 use super::dns_cache::DnsCache;
 
@@ -52,6 +53,53 @@ pub(super) struct Services {
     pub(super) prefer_ipv4_upstream: bool,
     pub(super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
     pub(super) udp: UdpServices,
+    /// Pre-built per-process transport contexts. Each `Arc::clone` on these is
+    /// one refcount bump instead of allocating a fresh struct + cloning four
+    /// inner `Arc`s on every WebSocket upgrade.
+    pub(super) tcp_server: Arc<WsTcpServerCtx>,
+    pub(super) udp_server: Arc<UdpServerCtx>,
+    pub(super) vless_server: Arc<VlessWsServerCtx>,
+}
+
+impl Services {
+    pub(super) fn new(
+        metrics: Arc<Metrics>,
+        dns_cache: Arc<DnsCache>,
+        prefer_ipv4_upstream: bool,
+        outbound_ipv6: Option<Arc<OutboundIpv6>>,
+        udp: UdpServices,
+    ) -> Self {
+        let tcp_server = Arc::new(WsTcpServerCtx {
+            metrics: Arc::clone(&metrics),
+            dns_cache: Arc::clone(&dns_cache),
+            prefer_ipv4_upstream,
+            outbound_ipv6: outbound_ipv6.clone(),
+        });
+        let udp_server = Arc::new(UdpServerCtx {
+            metrics: Arc::clone(&metrics),
+            nat_table: Arc::clone(&udp.nat_table),
+            replay_store: Arc::clone(&udp.replay_store),
+            dns_cache: Arc::clone(&dns_cache),
+            prefer_ipv4_upstream,
+            relay_semaphore: udp.relay_semaphore.clone(),
+        });
+        let vless_server = Arc::new(VlessWsServerCtx {
+            metrics: Arc::clone(&metrics),
+            dns_cache: Arc::clone(&dns_cache),
+            prefer_ipv4_upstream,
+            outbound_ipv6: outbound_ipv6.clone(),
+        });
+        Self {
+            metrics,
+            dns_cache,
+            prefer_ipv4_upstream,
+            outbound_ipv6,
+            udp,
+            tcp_server,
+            udp_server,
+            vless_server,
+        }
+    }
 }
 
 /// Credentials and HTTP front-door auth policy.

@@ -91,17 +91,17 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     } else {
         Some(Arc::new(Semaphore::new(config.tuning.udp_max_concurrent_relay_tasks)))
     };
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
         dns_cache,
-        prefer_ipv4_upstream: config.prefer_ipv4_upstream,
+        config.prefer_ipv4_upstream,
         outbound_ipv6,
-        udp: UdpServices {
+        UdpServices {
             nat_table,
             replay_store,
             relay_semaphore: udp_relay_semaphore,
         },
-    });
+    ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::clone(&auth_users),
         http_root_auth: config.http_root_auth,

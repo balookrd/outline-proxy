@@ -59,13 +59,8 @@ pub(super) async fn tcp_websocket_upgrade(
         .services
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
+    let server = Arc::clone(&state.services.tcp_server);
     ws.on_upgrade(move |socket| async move {
-        let server = WsTcpServerCtx {
-            metrics: state.services.metrics.clone(),
-            dns_cache: Arc::clone(&state.services.dns_cache),
-            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
-            outbound_ipv6: state.services.outbound_ipv6.clone(),
-        };
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
@@ -102,13 +97,8 @@ pub(super) async fn vless_websocket_upgrade(
         .services
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
+    let server = Arc::clone(&state.services.vless_server);
     ws.on_upgrade(move |socket| async move {
-        let server = VlessWsServerCtx {
-            metrics: state.services.metrics.clone(),
-            dns_cache: Arc::clone(&state.services.dns_cache),
-            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
-            outbound_ipv6: state.services.outbound_ipv6.clone(),
-        };
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
@@ -197,15 +187,8 @@ pub(super) async fn udp_websocket_upgrade(
         .services
         .metrics
         .open_websocket_session(Transport::Udp, protocol);
+    let server = Arc::clone(&state.services.udp_server);
     ws.on_upgrade(move |socket| async move {
-        let server = Arc::new(UdpServerCtx {
-            metrics: state.services.metrics.clone(),
-            nat_table: Arc::clone(&state.services.udp.nat_table),
-            replay_store: Arc::clone(&state.services.udp.replay_store),
-            dns_cache: Arc::clone(&state.services.dns_cache),
-            prefer_ipv4_upstream: state.services.prefer_ipv4_upstream,
-            relay_semaphore: state.services.udp.relay_semaphore.clone(),
-        });
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
