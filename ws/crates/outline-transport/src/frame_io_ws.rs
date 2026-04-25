@@ -29,11 +29,6 @@ use tracing::debug;
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
 use crate::{AbortOnDrop, TransportOperation, WsClosed, WsTransportStream};
 
-/// Default idle timeout for WS reads when none is supplied. Matches the
-/// SOCKS idle-watcher so both defences fire simultaneously when an
-/// upstream is truly dead.
-pub const DEFAULT_WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(75);
-
 // ── Writer task ────────────────────────────────────────────────────────────
 
 /// Spawn the WS writer task: drains `ctrl_rx` (Pings/Pongs/Close) with

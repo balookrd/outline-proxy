@@ -15,7 +15,6 @@ use anyhow::{Context, Result};
 use hashbrown::HashMap;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
-use rustls::ClientConfig;
 
 use crate::bind_udp_socket;
 
