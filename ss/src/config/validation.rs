@@ -72,25 +72,25 @@ impl Config {
         }
         let mut vless_paths = BTreeSet::new();
         let vless_enabled_users = self.users.iter().filter(|user| user.vless_id.is_some());
-        if let Some(path) = self.vless_ws_path.as_deref()
+        if let Some(path) = self.ws_path_vless.as_deref()
             && !path.starts_with('/')
         {
-            bail!("vless_ws_path must start with '/'");
+            bail!("ws_path_vless must start with '/'");
         }
-        if self.vless_ws_path.is_some() && self.users.iter().all(|user| user.vless_id.is_none()) {
-            bail!("vless_ws_path requires at least one [[users]] entry with vless_id");
+        if self.ws_path_vless.is_some() && self.users.iter().all(|user| user.vless_id.is_none()) {
+            bail!("ws_path_vless requires at least one [[users]] entry with vless_id");
         }
         for user in &self.users {
-            if let Some(path) = user.vless_ws_path.as_deref()
+            if let Some(path) = user.ws_path_vless.as_deref()
                 && !path.starts_with('/')
             {
-                bail!("user {} vless_ws_path must start with '/'", user.id);
+                bail!("user {} ws_path_vless must start with '/'", user.id);
             }
-            if user.vless_ws_path.is_some() && user.vless_id.is_none() {
-                bail!("user {} vless_ws_path requires vless_id", user.id);
+            if user.ws_path_vless.is_some() && user.vless_id.is_none() {
+                bail!("user {} ws_path_vless requires vless_id", user.id);
             }
             if user.vless_id.is_some() {
-                match user.effective_vless_ws_path(self.vless_ws_path.as_deref()) {
+                match user.effective_ws_path_vless(self.ws_path_vless.as_deref()) {
                     Some(path) => {
                         vless_paths.insert(path.to_owned());
                     },
@@ -100,7 +100,7 @@ impl Config {
                         // QUIC endpoint via ALPN "vless".
                         if !self.h3_alpn.contains(&H3Alpn::Vless) {
                             bail!(
-                                "user {} vless_id requires vless_ws_path (or enable raw \
+                                "user {} vless_id requires ws_path_vless (or enable raw \
                                  VLESS-over-QUIC by adding \"vless\" to [server.h3].alpn)",
                                 user.id
                             );
@@ -198,7 +198,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
-            vless_ws_path: None,
+            ws_path_vless: None,
             http_root_auth: false,
             http_root_realm: default_http_root_realm(),
             users: vec![super::super::UserEntry {
@@ -209,7 +209,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: None,
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             }],
             method: CipherKind::Chacha20IetfPoly1305,
@@ -276,7 +276,7 @@ mod tests {
     #[test]
     fn allows_vless_only_users() {
         Config {
-            vless_ws_path: Some("/vless".into()),
+            ws_path_vless: Some("/vless".into()),
             users: vec![super::super::UserEntry {
                 id: "550e8400-e29b-41d4-a716-446655440000".into(),
                 password: None,
@@ -285,7 +285,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             }],
             ..base_config()
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn rejects_vless_path_conflict_with_tcp_path() {
         let error = Config {
-            vless_ws_path: Some("/tcp".into()),
+            ws_path_vless: Some("/tcp".into()),
             users: vec![
                 super::super::UserEntry {
                     id: "alice".into(),
@@ -307,7 +307,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: None,
-                    vless_ws_path: None,
+                    ws_path_vless: None,
                     enabled: None,
                 },
                 super::super::UserEntry {
@@ -318,7 +318,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                    vless_ws_path: None,
+                    ws_path_vless: None,
                     enabled: None,
                 },
             ],
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn allows_per_user_vless_path_without_global_default() {
         Config {
-            vless_ws_path: None,
+            ws_path_vless: None,
             users: vec![super::super::UserEntry {
                 id: "alice".into(),
                 password: None,
@@ -343,7 +343,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                vless_ws_path: Some("/alice-vless".into()),
+                ws_path_vless: Some("/alice-vless".into()),
                 enabled: None,
             }],
             ..base_config()
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
         Config {
-            vless_ws_path: None,
+            ws_path_vless: None,
             h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
             users: vec![super::super::UserEntry {
                 id: "alice".into(),
@@ -365,7 +365,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             }],
             ..base_config()
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn rejects_vless_id_without_any_path() {
         let error = Config {
-            vless_ws_path: None,
+            ws_path_vless: None,
             users: vec![super::super::UserEntry {
                 id: "alice".into(),
                 password: None,
@@ -386,7 +386,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             }],
             ..base_config()
@@ -395,7 +395,7 @@ mod tests {
         .unwrap_err()
         .to_string();
 
-        assert!(error.contains("user alice vless_id requires vless_ws_path"));
+        assert!(error.contains("user alice vless_id requires ws_path_vless"));
     }
 
     #[test]

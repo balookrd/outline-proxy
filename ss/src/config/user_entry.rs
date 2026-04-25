@@ -75,7 +75,7 @@ pub struct UserEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vless_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vless_ws_path: Option<String>,
+    pub ws_path_vless: Option<String>,
     /// `false` blocks the user without removing their config entry. Absent
     /// in the config means enabled; control-plane mutations write the field
     /// explicitly so on-disk state round-trips unambiguously.
@@ -100,8 +100,8 @@ impl UserEntry {
         self.ws_path_udp.as_deref().unwrap_or(default)
     }
 
-    pub fn effective_vless_ws_path<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
-        self.vless_ws_path.as_deref().or(default)
+    pub fn effective_ws_path_vless<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
+        self.ws_path_vless.as_deref().or(default)
     }
 }
 

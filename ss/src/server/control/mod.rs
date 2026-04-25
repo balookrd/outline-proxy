@@ -7,7 +7,7 @@
 //! config file the server was loaded from, so they survive restart.
 //!
 //! Known v1 limitations:
-//! - New per-user `ws_path_tcp`/`ws_path_udp`/`vless_ws_path` values must
+//! - New per-user `ws_path_tcp`/`ws_path_udp`/`ws_path_vless` values must
 //!   already exist in the startup config (the Axum/H3 routers only register
 //!   paths known at startup). Creating a user on a brand-new path requires a
 //!   restart.

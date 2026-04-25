@@ -39,6 +39,7 @@ Changes after `v1.0.2` (2026-04-12):
 ### Changed
 
 - Moved tuning parameters (`client_active_ttl_secs`, `udp_nat_idle_timeout_secs`, `udp_max_concurrent_relay_tasks`) from top-level config fields into `TuningProfile` inside `[tuning]`. **Breaking change**: configs with old top-level keys fail on `deny_unknown_fields`.
+- Renamed the per-user `vless_ws_path` config key to `ws_path_vless` for parity with `ws_path_tcp` / `ws_path_udp`. The control-plane JSON field and dashboard form use the new name as well. **Breaking change**: configs and API clients using the old name fail on `deny_unknown_fields`.
 - Split the metrics module into focused submodules (`labels`, `registry`, `guards`, `sampler`, `render`).
 - Consolidated transport session lifecycle and error classification into shared helpers, eliminating duplicated match blocks across TCP/UDP and WS/H3 paths.
 - Split large server, transport, crypto, and config modules into smaller submodules for maintainability.

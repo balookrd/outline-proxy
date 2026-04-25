@@ -235,7 +235,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
-| `vless_ws_path` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
+| `ws_path_vless` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |
@@ -249,7 +249,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `fwmark` | Single-user fallback `fwmark` |
 | `users[].password` | Optional per-user Shadowsocks password |
 | `users[].vless_id` | Optional per-user VLESS UUID |
-| `users[].vless_ws_path` | Optional per-user VLESS WebSocket path; falls back to top-level `vless_ws_path` |
+| `users[].ws_path_vless` | Optional per-user VLESS WebSocket path; falls back to top-level `ws_path_vless` |
 | `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
 | `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
@@ -274,7 +274,7 @@ method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-vless_ws_path = "/alice/vless"
+ws_path_vless = "/alice/vless"
 ```
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
@@ -290,12 +290,12 @@ tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
 
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
-vless_ws_path = "/vless"
+ws_path_vless = "/vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-vless_ws_path = "/alice-vless"
+ws_path_vless = "/alice-vless"
 ```
 
 Example client URI for Happ, v2rayNG, or Hiddify:
@@ -304,7 +304,7 @@ Example client URI for Happ, v2rayNG, or Hiddify:
 vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#outline-ss-rust-vless
 ```
 
-Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].vless_ws_path` overrides the top-level `vless_ws_path`.
+Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].ws_path_vless` overrides the top-level `ws_path_vless`.
 
 ### Control Plane
 
@@ -342,7 +342,7 @@ Open `http://127.0.0.1:7002/dashboard`.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/control/users` | List users (metadata only — no secrets in the response) |
-| `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "vless_ws_path": "/...", "enabled": true }` — at least one of `password`/`vless_id` is required |
+| `POST` | `/control/users` | Create a user. Body: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "ws_path_vless": "/...", "enabled": true }` — at least one of `password`/`vless_id` is required |
 | `GET` | `/control/users/{id}` | Get a single user's metadata |
 | `DELETE` | `/control/users/{id}` | Remove the user |
 | `POST` | `/control/users/{id}/block` | Disable a user (`enabled = false`) without deleting |
@@ -357,7 +357,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 
 Limitations (v1):
 
-- Per-user `ws_path_tcp` / `ws_path_udp` / `vless_ws_path` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.
+- Per-user `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` values must already exist in the startup config — the Axum/H3 routers only register paths known at boot. Introducing a brand-new path still requires a restart.
 - The plain Shadowsocks listener (`ss_listen`) uses a startup snapshot of user keys and is not updated at runtime. WebSocket transports (TCP/UDP/VLESS) are.
 - The implicit user synthesized from the top-level `password` field is not manageable here; add an explicit `[[users]]` entry instead.
 

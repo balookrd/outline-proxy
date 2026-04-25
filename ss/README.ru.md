@@ -237,7 +237,7 @@ cargo release-musl-armv7
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
-| `vless_ws_path` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
+| `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
@@ -251,7 +251,7 @@ cargo release-musl-armv7
 | `fwmark` | `fwmark` в режиме одного пользователя |
 | `users[].password` | Опциональный пароль Shadowsocks на пользователя |
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
-| `users[].vless_ws_path` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `vless_ws_path` |
+| `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
 | `users[].enabled` | Опциональный переключатель. `false` блокирует пользователя (маршруты и аутентификация отключаются), не удаляя запись. По умолчанию `true` |
 | `[control]` | Опциональный HTTP-эндпоинт управления пользователями в рантайме (фича `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |
@@ -276,7 +276,7 @@ method = "aes-256-gcm"
 ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-vless_ws_path = "/alice/vless"
+ws_path_vless = "/alice/vless"
 ```
 
 Для `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305` параметр `password` должен содержать base64-кодированный сырой PSK длиной ровно 16, 32 и 32 байта соответственно, например `openssl rand -base64 32`.
@@ -292,12 +292,12 @@ tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
 
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
-vless_ws_path = "/vless"
+ws_path_vless = "/vless"
 
 [[users]]
 id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
-vless_ws_path = "/alice-vless"
+ws_path_vless = "/alice-vless"
 ```
 
 Пример клиентского URI для Happ, v2rayNG или Hiddify:
@@ -306,7 +306,7 @@ vless_ws_path = "/alice-vless"
 vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#outline-ss-rust-vless
 ```
 
-VLESS- и Shadowsocks-WebSocket-пути должны не пересекаться. Запись `[[users]]` может одновременно содержать `password` для Shadowsocks и `vless_id` для VLESS, либо только `vless_id` для VLESS-only-пользователя. `users[].vless_ws_path` перекрывает верхнеуровневый `vless_ws_path`.
+VLESS- и Shadowsocks-WebSocket-пути должны не пересекаться. Запись `[[users]]` может одновременно содержать `password` для Shadowsocks и `vless_id` для VLESS, либо только `vless_id` для VLESS-only-пользователя. `users[].ws_path_vless` перекрывает верхнеуровневый `ws_path_vless`.
 
 ### Управляющий эндпоинт
 
@@ -344,7 +344,7 @@ token_file = "/etc/outline-ss-rust/edge-02.control.token"
 | Метод | Путь | Назначение |
 | --- | --- | --- |
 | `GET` | `/control/users` | Список пользователей (только метаданные — секреты не отдаются) |
-| `POST` | `/control/users` | Создать пользователя. Тело: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "vless_ws_path": "/...", "enabled": true }` — требуется хотя бы одно из `password`/`vless_id` |
+| `POST` | `/control/users` | Создать пользователя. Тело: `{ "id": "...", "password": "...", "vless_id": "...", "method": "...", "fwmark": 0, "ws_path_tcp": "/...", "ws_path_udp": "/...", "ws_path_vless": "/...", "enabled": true }` — требуется хотя бы одно из `password`/`vless_id` |
 | `GET` | `/control/users/{id}` | Получить метаданные пользователя |
 | `DELETE` | `/control/users/{id}` | Удалить пользователя |
 | `POST` | `/control/users/{id}/block` | Заблокировать (`enabled = false`) без удаления |
@@ -359,7 +359,7 @@ curl -XPOST -H "Authorization: Bearer $TOKEN" http://127.0.0.1:7001/control/user
 
 Ограничения v1:
 
-- Значения `ws_path_tcp` / `ws_path_udp` / `vless_ws_path` у создаваемого пользователя должны уже присутствовать в стартовом конфиге — Axum/H3 роутеры регистрируют пути только на старте. Ввод совершенно нового пути по-прежнему требует рестарта.
+- Значения `ws_path_tcp` / `ws_path_udp` / `ws_path_vless` у создаваемого пользователя должны уже присутствовать в стартовом конфиге — Axum/H3 роутеры регистрируют пути только на старте. Ввод совершенно нового пути по-прежнему требует рестарта.
 - Обычный Shadowsocks-слушатель (`ss_listen`) использует стартовый снимок ключей и в рантайме не обновляется. WebSocket-транспорты (TCP/UDP/VLESS) обновляются.
 - Неявный пользователь, синтезируемый из верхнеуровневого `password`, через этот API не управляется — добавьте явную запись `[[users]]`.
 

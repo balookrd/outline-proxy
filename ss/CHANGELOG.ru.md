@@ -39,6 +39,7 @@
 ### Изменено
 
 - Tuning-параметры (`client_active_ttl_secs`, `udp_nat_idle_timeout_secs`, `udp_max_concurrent_relay_tasks`) перенесены из топ-левела конфига в `TuningProfile` внутри секции `[tuning]`. **Breaking change**: конфиги со старыми топ-левел ключами не проходят `deny_unknown_fields`.
+- Поле `vless_ws_path` у `[[users]]` переименовано в `ws_path_vless` для единообразия с `ws_path_tcp` / `ws_path_udp`. JSON-поле control API и форма дашборда тоже используют новое имя. **Breaking change**: конфиги и API-клиенты со старым именем не проходят `deny_unknown_fields`.
 - Модуль метрик разбит на специализированные субмодули (`labels`, `registry`, `guards`, `sampler`, `render`).
 - Lifecycle сессии и классификация ошибок транспорта вынесены в общие хелперы, устраняя дублирующиеся match-блоки для TCP/UDP и WS/H3 путей.
 - Крупные модули server, transport, crypto и config разбиты на более мелкие субмодули для упрощения поддержки.

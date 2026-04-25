@@ -65,7 +65,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: None,
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             },
             UserEntry {
@@ -76,7 +76,7 @@ mod tests {
                 ws_path_tcp: Some("/bob/tcp".to_owned()),
                 ws_path_udp: Some("/bob/udp".to_owned()),
                 vless_id: None,
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: Some(false),
             },
         ]
