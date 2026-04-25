@@ -20,13 +20,13 @@ use tokio::time::{Instant, timeout};
 
 use outline_transport::DnsCache;
 
-use crate::config::{ProbeConfig, UplinkConfig, UplinkTransport};
+use crate::config::{ProbeConfig, UplinkConfig, UplinkTransport, WsTransportMode};
 
 use self::dns::run_dns_probe;
 use self::http::run_http_probe;
 use self::metrics::record_attempt;
 use self::tcp_tunnel::run_tcp_tunnel_probe;
-use self::ws::{run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
+use self::ws::{run_quic_handshake_probe, run_tcp_socket_probe, run_udp_socket_probe, run_ws_probe};
 use super::types::ProbeOutcome;
 
 #[cfg(test)]
@@ -80,21 +80,36 @@ async fn run_tcp_probe(
         let ws_attempt = async {
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
-                    run_ws_probe(
-                        cache,
-                        group,
-                        &uplink.name,
-                        "tcp",
-                        uplink
-                            .tcp_ws_url
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                        effective_tcp_mode,
-                        uplink.fwmark,
-                        Arc::clone(&dial_limit),
-                        probe.timeout,
-                    )
-                    .await
+                    let url = uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?;
+                    if effective_tcp_mode == WsTransportMode::Quic {
+                        run_quic_handshake_probe(
+                            cache,
+                            &uplink.name,
+                            "tcp",
+                            url,
+                            uplink.transport,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            Arc::clone(&dial_limit),
+                        )
+                        .await
+                    } else {
+                        run_ws_probe(
+                            cache,
+                            group,
+                            &uplink.name,
+                            "tcp",
+                            url,
+                            effective_tcp_mode,
+                            uplink.fwmark,
+                            Arc::clone(&dial_limit),
+                            probe.timeout,
+                        )
+                        .await
+                    }
                 },
                 UplinkTransport::Shadowsocks => {
                     run_tcp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await
@@ -162,21 +177,36 @@ async fn run_udp_probe(
         let ws_attempt = async {
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
-                    run_ws_probe(
-                        cache,
-                        group,
-                        &uplink.name,
-                        "udp",
-                        uplink
-                            .udp_ws_url
-                            .as_ref()
-                            .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?,
-                        effective_udp_mode,
-                        uplink.fwmark,
-                        Arc::clone(&dial_limit),
-                        probe.timeout,
-                    )
-                    .await
+                    let url = uplink
+                        .udp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?;
+                    if effective_udp_mode == WsTransportMode::Quic {
+                        run_quic_handshake_probe(
+                            cache,
+                            &uplink.name,
+                            "udp",
+                            url,
+                            uplink.transport,
+                            uplink.fwmark,
+                            uplink.ipv6_first,
+                            Arc::clone(&dial_limit),
+                        )
+                        .await
+                    } else {
+                        run_ws_probe(
+                            cache,
+                            group,
+                            &uplink.name,
+                            "udp",
+                            url,
+                            effective_udp_mode,
+                            uplink.fwmark,
+                            Arc::clone(&dial_limit),
+                            probe.timeout,
+                        )
+                        .await
+                    }
                 },
                 UplinkTransport::Shadowsocks => {
                     run_udp_socket_probe(cache, uplink, Arc::clone(&dial_limit)).await

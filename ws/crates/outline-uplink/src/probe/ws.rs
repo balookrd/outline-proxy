@@ -16,7 +16,7 @@ use outline_transport::{
     connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
 
-use crate::config::{UplinkConfig, WsTransportMode};
+use crate::config::{UplinkConfig, UplinkTransport, WsTransportMode};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
@@ -59,6 +59,71 @@ pub(super) async fn run_ws_probe(
         );
     }
     Ok(())
+}
+
+/// Connectivity-only probe over raw QUIC: opens (or reuses) a per-ALPN
+/// `quinn::Connection` to the uplink and immediately drops it. Mirrors
+/// [`run_ws_probe`] for the `WsTransportMode::Quic` dispatch path, where
+/// there is no WebSocket handshake to verify.
+#[cfg(feature = "quic")]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_quic_handshake_probe(
+    cache: &DnsCache,
+    uplink_name: &str,
+    transport: &'static str,
+    url: &url::Url,
+    uplink_transport: UplinkTransport,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    dial_limit: Arc<Semaphore>,
+) -> Result<()> {
+    let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
+    let alpn: &'static [u8] = match uplink_transport {
+        UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
+        UplinkTransport::Ws => outline_transport::quic::ALPN_SS,
+        UplinkTransport::Shadowsocks => {
+            return Err(anyhow!(
+                "raw-QUIC probe requested for shadowsocks uplink {uplink_name}; this transport does not use a URL"
+            ));
+        }
+    };
+    let _conn = outline_transport::quic::connect_quic_uplink(
+        cache,
+        url,
+        fwmark,
+        ipv6_first,
+        "probe_quic",
+        alpn,
+    )
+    .await
+    .with_context(|| TransportOperation::Connect {
+        target: format!("raw-QUIC probe to {url}"),
+    })?;
+    debug!(
+        uplink = %uplink_name,
+        transport,
+        probe = "quic",
+        url = %url,
+        "raw-QUIC probe connected, releasing"
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "quic"))]
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn run_quic_handshake_probe(
+    _cache: &DnsCache,
+    _uplink_name: &str,
+    _transport: &'static str,
+    _url: &url::Url,
+    _uplink_transport: UplinkTransport,
+    _fwmark: Option<u32>,
+    _ipv6_first: bool,
+    _dial_limit: Arc<Semaphore>,
+) -> Result<()> {
+    Err(anyhow!(
+        "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+    ))
 }
 
 pub(super) async fn run_tcp_socket_probe(
