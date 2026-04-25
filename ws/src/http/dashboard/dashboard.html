@@ -170,6 +170,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-pill.proto-ws { background: var(--green-soft); color: var(--green-strong); border-color: var(--chip-fb-border); }
 .proto-pill .proto-leg { font-size: 9.5px; opacity: .7; margin-right: 5px; padding: 1px 5px; border-radius: 4px; background: rgba(0,0,0,.12); letter-spacing: .04em; }
 .proto-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+.proto-pill.proto-downgraded { border-style: dashed; box-shadow: inset 0 0 0 1px rgba(214, 130, 30, .35); }
+.proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
 .rows-head { min-height: 46px; color: var(--muted); font-size: 11px; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
 .row { border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: 0; }
@@ -302,46 +304,56 @@ function groupConfigChips(group) {
 function protocolLabel(transport) {
   const v = String(transport || "").toLowerCase();
   if (v === "vless") return "VLESS";
-  if (v === "shadowsocks") return "Shadowsocks";
-  if (v === "ws") return "WS";
+  if (v === "shadowsocks" || v === "ws") return "SS";
   return transport ? String(transport) : "—";
 }
 function encapsulationLabel(transport) {
-  const v = String(transport || "").toLowerCase();
-  if (v === "vless") return "VLESS";
-  if (v === "shadowsocks") return "Shadowsocks";
-  if (v === "ws") return "Shadowsocks";
-  return transport ? String(transport) : "—";
+  return protocolLabel(transport);
 }
 function transportLabel(mode) {
   const v = String(mode || "").toLowerCase();
-  if (v === "http1") return "WS / HTTP/1.1";
-  if (v === "h2") return "WS / HTTP/2";
-  if (v === "h3") return "WS / HTTP/3";
+  if (v === "http1") return "WS/H1";
+  if (v === "h2") return "WS/H2";
+  if (v === "h3") return "WS/H3";
   if (v === "quic") return "QUIC";
   return null;
 }
 function stackLabel(transport, mode) {
   const enc = encapsulationLabel(transport);
+  const t = String(transport || "").toLowerCase();
+  if (t === "shadowsocks") return "SS/QUIC";
   const tr = transportLabel(mode);
-  if (transport === "shadowsocks") return `${enc} (direct)`;
   if (!tr) return enc;
-  return `${enc} over ${tr}`;
+  return `${enc}/${tr}`;
+}
+function downgradeTitle(configured, effective, leg) {
+  return `${leg} auto-downgraded ${configured.toUpperCase()} → ${effective.toUpperCase()} (H3/QUIC unreachable)`;
+}
+function legPill(t, cls, leg, configured, effective, downgraded) {
+  const dg = downgraded ? " proto-downgraded" : "";
+  const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
+  const title = downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`;
+  const legTag = leg ? `<span class="proto-leg">${leg}</span>` : "";
+  return `<span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}</span>`;
 }
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
   const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
   const tcpMode = uplink.tcp_ws_mode || null;
   const udpMode = uplink.udp_ws_mode || null;
+  const tcpEff = uplink.tcp_ws_mode_effective || tcpMode;
+  const udpEff = uplink.udp_ws_mode_effective || udpMode;
+  const tcpDg = !!uplink.tcp_downgrade_active && tcpMode !== tcpEff;
+  const udpDg = !!uplink.udp_downgrade_active && udpMode !== udpEff;
   if (t === "shadowsocks") {
     return `<span class="proto-pill ${cls}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}</span>`;
   }
-  if (tcpMode && udpMode && tcpMode === udpMode) {
-    return `<span class="proto-pill ${cls}" title="encapsulation/transport">${escapeHtml(stackLabel(t, tcpMode))}</span>`;
+  if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg) {
+    return legPill(t, cls, "", tcpMode, tcpEff, tcpDg);
   }
   const parts = [];
-  if (tcpMode) parts.push(`<span class="proto-pill ${cls}" title="TCP path"><span class="proto-leg">TCP</span>${escapeHtml(stackLabel(t, tcpMode))}</span>`);
-  if (udpMode) parts.push(`<span class="proto-pill ${cls}" title="UDP path"><span class="proto-leg">UDP</span>${escapeHtml(stackLabel(t, udpMode))}</span>`);
+  if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg));
+  if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg));
   if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(encapsulationLabel(t))}</span>`;
   return `<div class="proto-stack">${parts.join("")}</div>`;
 }
@@ -361,8 +373,14 @@ function activeProtocolChip(group) {
     if (!u) return "";
     const t = String(u.transport || "").toLowerCase();
     const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
-    const mode = scope === "UDP" ? u.udp_ws_mode : u.tcp_ws_mode;
-    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}" style="margin-left:2px">${escapeHtml(stackLabel(t, mode))}</span></span>`;
+    const isUdp = scope === "UDP";
+    const configured = isUdp ? u.udp_ws_mode : u.tcp_ws_mode;
+    const effective = (isUdp ? u.udp_ws_mode_effective : u.tcp_ws_mode_effective) || configured;
+    const downgraded = !!(isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active) && configured !== effective;
+    const dg = downgraded ? " proto-downgraded" : "";
+    const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
+    const title = downgraded ? downgradeTitle(configured, effective, scope) : "";
+    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(t, effective))}${star}</span></span>`;
   }).join("");
 }
 function uplinkRole(u) {

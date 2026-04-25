@@ -32,6 +32,14 @@ struct ControlUplinkTopology {
     transport: String,
     tcp_ws_mode: Option<String>,
     udp_ws_mode: Option<String>,
+    /// Effective TCP mode after applying the H3/QUIC → H2 auto-downgrade
+    /// window. Equals `tcp_ws_mode` when no downgrade is active.
+    tcp_ws_mode_effective: Option<String>,
+    /// Effective UDP mode after applying the H3/QUIC → H2 auto-downgrade
+    /// window. Equals `udp_ws_mode` when no downgrade is active.
+    udp_ws_mode_effective: Option<String>,
+    tcp_downgrade_active: bool,
+    udp_downgrade_active: bool,
     weight: f64,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
@@ -39,6 +47,21 @@ struct ControlUplinkTopology {
     active_global: bool,
     active_tcp: bool,
     active_udp: bool,
+}
+
+fn effective_mode(
+    transport: &str,
+    configured: Option<&str>,
+    downgrade_active: bool,
+) -> Option<String> {
+    let mode = configured?;
+    let supports_downgrade = matches!(transport, "ws" | "vless");
+    let advanced = matches!(mode, "h3" | "quic");
+    if downgrade_active && supports_downgrade && advanced {
+        Some("h2".to_string())
+    } else {
+        Some(mode.to_string())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -82,12 +105,32 @@ fn build_uplink_topology(
     snapshot: &UplinkManagerSnapshot,
     uplink: &UplinkSnapshot,
 ) -> ControlUplinkTopology {
+    let tcp_downgrade_active = uplink
+        .h3_tcp_downgrade_until_ms
+        .is_some_and(|ms| ms > 0);
+    let udp_downgrade_active = uplink
+        .h3_udp_downgrade_until_ms
+        .is_some_and(|ms| ms > 0);
+    let tcp_ws_mode_effective = effective_mode(
+        &uplink.transport,
+        uplink.tcp_ws_mode.as_deref(),
+        tcp_downgrade_active,
+    );
+    let udp_ws_mode_effective = effective_mode(
+        &uplink.transport,
+        uplink.udp_ws_mode.as_deref(),
+        udp_downgrade_active,
+    );
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),
         transport: uplink.transport.clone(),
         tcp_ws_mode: uplink.tcp_ws_mode.clone(),
         udp_ws_mode: uplink.udp_ws_mode.clone(),
+        tcp_ws_mode_effective,
+        udp_ws_mode_effective,
+        tcp_downgrade_active,
+        udp_downgrade_active,
         weight: uplink.weight,
         tcp_healthy: uplink.tcp_healthy,
         udp_healthy: uplink.udp_healthy,
