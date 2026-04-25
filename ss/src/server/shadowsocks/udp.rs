@@ -21,9 +21,27 @@ use super::super::{
     state::Services,
 };
 
-pub(in super::super) struct SsUdpCtx {
-    pub(in super::super) users: Arc<[UserKey]>,
-    pub(in super::super) services: Arc<Services>,
+/// Identifies the client end of an SS-UDP relay for log/metrics purposes.
+/// Plain UDP listeners use the source `SocketAddr`; raw-QUIC listeners use
+/// the QUIC connection's remote address.
+#[derive(Clone)]
+pub(in super::super) enum SsUdpClientId {
+    Datagram(SocketAddr),
+    QuicConnection(SocketAddr),
+}
+
+impl std::fmt::Display for SsUdpClientId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Datagram(addr) => write!(f, "{addr}"),
+            Self::QuicConnection(addr) => write!(f, "quic://{addr}"),
+        }
+    }
+}
+
+pub(in crate::server) struct SsUdpCtx {
+    pub(in crate::server) users: Arc<[UserKey]>,
+    pub(in crate::server) services: Arc<Services>,
 }
 
 struct DatagramResponseSender {
@@ -100,12 +118,40 @@ async fn handle_ss_udp_datagram(
     client_addr: SocketAddr,
     outbound_socket: Arc<UdpSocket>,
 ) -> Result<()> {
+    handle_ss_udp_packet(
+        ctx,
+        data,
+        SsUdpClientId::Datagram(client_addr),
+        Protocol::Socket,
+        move || {
+            UdpResponseSender::new(Arc::new(DatagramResponseSender {
+                socket: Arc::clone(&outbound_socket),
+                client_addr,
+            }))
+        },
+    )
+    .await
+}
+
+/// Process one SS-AEAD UDP datagram regardless of where it came from (raw
+/// UDP socket or QUIC datagram). Caller supplies a closure that builds the
+/// response sender after the user has been authenticated.
+pub(in super::super) async fn handle_ss_udp_packet<F>(
+    ctx: &SsUdpCtx,
+    data: Bytes,
+    client_id: SsUdpClientId,
+    protocol: Protocol,
+    make_sender: F,
+) -> Result<()>
+where
+    F: FnOnce() -> UdpResponseSender,
+{
     let started_at = std::time::Instant::now();
     let packet = match decrypt_udp_packet(ctx.users.as_ref(), &data) {
         Ok(packet) => packet,
         Err(CryptoError::UnknownUser) => {
             debug!(
-                client_addr = %client_addr,
+                client = %client_id,
                 encrypted_bytes = data.len(),
                 attempts = ?diagnose_udp_packet(ctx.users.as_ref(), &data),
                 "socket udp authentication failed for all configured users"
@@ -121,10 +167,10 @@ async fn handle_ss_udp_datagram(
             ReplayCheck::Replay => {
                 ctx.services
                     .metrics
-                    .record_udp_replay_dropped(Arc::clone(&user_id), Protocol::Socket);
+                    .record_udp_replay_dropped(Arc::clone(&user_id), protocol);
                 warn!(
                     user = packet.user.id(),
-                    client_addr = %client_addr,
+                    client = %client_id,
                     packet_id = pid,
                     "dropping replayed ss-2022 udp datagram"
                 );
@@ -133,10 +179,10 @@ async fn handle_ss_udp_datagram(
             ReplayCheck::StoreFull => {
                 ctx.services
                     .metrics
-                    .record_udp_replay_store_full_dropped(Arc::clone(&user_id), Protocol::Socket);
+                    .record_udp_replay_store_full_dropped(Arc::clone(&user_id), protocol);
                 warn!(
                     user = packet.user.id(),
-                    client_addr = %client_addr,
+                    client = %client_id,
                     packet_id = pid,
                     "dropping ss-2022 udp datagram: replay store at capacity"
                 );
@@ -155,7 +201,7 @@ async fn handle_ss_udp_datagram(
     debug!(
         user = packet.user.id(),
         cipher = packet.user.cipher().as_str(),
-        client_addr = %client_addr,
+        client = %client_id,
         plaintext_bytes = payload.len(),
         "socket udp shadowsocks user authenticated"
     );
@@ -163,12 +209,12 @@ async fn handle_ss_udp_datagram(
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         ctx.services.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
-            Protocol::Socket,
+            protocol,
             "client_to_target",
         );
         warn!(
             user = packet.user.id(),
-            client_addr = %client_addr,
+            client = %client_id,
             target = %target_display,
             plaintext_bytes = payload.len(),
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
@@ -176,7 +222,7 @@ async fn handle_ss_udp_datagram(
         );
         ctx.services.metrics.record_udp_request(
             Arc::clone(&user_id),
-            Protocol::Socket,
+            protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -191,7 +237,7 @@ async fn handle_ss_udp_datagram(
     .await?;
     debug!(
         user = packet.user.id(),
-        client_addr = %client_addr,
+        client = %client_id,
         target = %target_display,
         resolved = %resolved,
         plaintext_bytes = payload.len(),
@@ -200,7 +246,7 @@ async fn handle_ss_udp_datagram(
     debug!(
         user = packet.user.id(),
         fwmark = ?packet.user.fwmark(),
-        client_addr = %client_addr,
+        client = %client_id,
         target = %target_display,
         resolved = %resolved,
         "socket udp datagram relay"
@@ -225,24 +271,18 @@ async fn handle_ss_udp_datagram(
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
     entry
-        .register_session(
-            UdpResponseSender::new(Arc::new(DatagramResponseSender {
-                socket: outbound_socket,
-                client_addr,
-            })),
-            packet.session.clone(),
-        )
+        .register_session(make_sender(), packet.session.clone())
         .await;
 
     ctx.services.metrics.record_udp_payload_bytes(
         Arc::clone(&user_id),
-        Protocol::Socket,
+        protocol,
         "client_to_target",
         payload.len(),
     );
     debug!(
         user = packet.user.id(),
-        client_addr = %client_addr,
+        client = %client_id,
         target = %resolved,
         plaintext_bytes = payload.len(),
         "socket udp relaying datagram to upstream"
@@ -250,7 +290,7 @@ async fn handle_ss_udp_datagram(
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         ctx.services.metrics.record_udp_request(
             Arc::clone(&user_id),
-            Protocol::Socket,
+            protocol,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -259,7 +299,7 @@ async fn handle_ss_udp_datagram(
     entry.touch();
     ctx.services.metrics.record_udp_request(
         user_id,
-        Protocol::Socket,
+        protocol,
         "success",
         started_at.elapsed().as_secs_f64(),
     );

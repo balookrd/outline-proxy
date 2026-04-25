@@ -146,10 +146,39 @@ pub async fn run(config: Config) -> Result<()> {
         let routes = Arc::clone(&built.routes);
         let services = Arc::clone(&built.services);
         let auth = Arc::clone(&built.auth);
-        let shutdown = shutdown_signal.clone();
-        tasks.spawn(
-            async move { serve_h3_server(h3_server, routes, services, auth, shutdown).await },
+        let alpn: Arc<[crate::config::H3Alpn]> = Arc::from(config.h3_alpn.clone().into_boxed_slice());
+        let raw_vless_users: Arc<[crate::protocol::vless::VlessUser]> = Arc::from(
+            built
+                .vless_user_routes
+                .iter()
+                .map(|r| r.user.clone())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
         );
+        let raw_vless_candidates: Arc<[Arc<str>]> = Arc::from(
+            built
+                .vless_user_routes
+                .iter()
+                .map(|r| r.user.label_arc())
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        );
+        let raw_ss_users = Arc::clone(&built.users);
+        let shutdown = shutdown_signal.clone();
+        tasks.spawn(async move {
+            serve_h3_server(
+                h3_server,
+                routes,
+                services,
+                auth,
+                alpn,
+                raw_vless_users,
+                raw_vless_candidates,
+                raw_ss_users,
+                shutdown,
+            )
+            .await
+        });
     }
     if let Some(metrics_listener) = bound.metrics_listener {
         let metrics_app =

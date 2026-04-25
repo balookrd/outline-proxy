@@ -22,6 +22,7 @@ use crate::metrics::{DisconnectReason, Metrics, Transport, WebSocketSessionGuard
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
+mod raw_quic;
 mod tcp;
 mod udp;
 mod vless;
@@ -30,6 +31,10 @@ mod vless_udp;
 mod ws_socket;
 mod ws_writer;
 
+pub(in crate::server) use raw_quic::{
+    RawQuicSsCtx, RawQuicVlessRouteCtx, VlessQuicConn, handle_raw_ss_quic_stream,
+    handle_raw_vless_quic_stream, serve_raw_ss_quic_datagrams, serve_raw_vless_quic_datagrams,
+};
 pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};

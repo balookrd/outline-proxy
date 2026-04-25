@@ -212,6 +212,16 @@ Uses RFC 9220 Extended CONNECT over QUIC. This requires:
 
 The repository currently vendors and patches upstream crates to make this path practical. See [PATCHES.md](PATCHES.md).
 
+### Raw VLESS / Shadowsocks over QUIC
+
+Configurable via `[server.h3].alpn` (defaults to `["h3"]`). When the list also includes `"vless"` or `"ss"`, the same QUIC endpoint also accepts non-HTTP/3 protocols on the same UDP port. After the QUIC handshake, the server inspects the negotiated ALPN on `quinn::Connection::handshake_data()` and dispatches:
+
+- `h3` — existing HTTP/3 + WebSocket-over-HTTP/3 path.
+- `vless` — raw VLESS framing on QUIC bidi streams, plus QUIC datagrams for UDP. The per-connection UDP session table maps a server-allocated `session_id` (4-byte big-endian, prefixed on every datagram) to the upstream UDP socket; the originating bidi stream's recv side is the session's lifetime anchor and closing it tears the session down. The `mux.cool` command is rejected — every additional target opens its own bidi stream, letting QUIC's native multiplexing handle head-of-line isolation.
+- `ss` — raw Shadowsocks AEAD on QUIC. A bidi stream carries one SS-AEAD TCP session; the handshake parser is identical to the plain `ss_listen` listener (auth by trial decrypt of the first chunk), so user identity, fwmark, NAT entries and metric labels behave the same. UDP is delivered as one QUIC datagram per SS-AEAD packet through the shared `handle_ss_udp_packet` helper, so the NAT table and replay store are reused unchanged.
+
+The same `H3_MAX_CONCURRENT_CONNECTIONS` and `H3_MAX_CONCURRENT_STREAMS` semaphores bound the raw-QUIC paths. Datagram queues are sized off `tuning.h3_*` knobs.
+
 ## Observability Design
 
 Metrics are intentionally low-cardinality and focused on production operations.
@@ -219,7 +229,7 @@ Metrics are intentionally low-cardinality and focused on production operations.
 Labels include:
 
 - `transport`: `tcp` or `udp`
-- `protocol`: `http1`, `http2`, `http3`
+- `protocol`: `http1`, `http2`, `http3`, `socket` (plain SS listeners), `quic` (raw VLESS/SS over QUIC)
 - `user`: user identifier
 - `result`: `success`, `timeout`, or `error` where applicable
 - `direction`: traffic direction for byte counters

@@ -12,6 +12,7 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Added
 
+- Added raw VLESS-over-QUIC and Shadowsocks-over-QUIC (no WebSocket, no HTTP/3 framing). The same `h3_listen` QUIC endpoint multiplexes them by ALPN: a new `[server.h3].alpn` list (default `["h3"]`) selects the protocols advertised — `h3` keeps the existing HTTP/3 + WebSocket-over-HTTP/3 path, `vless` carries one VLESS request per QUIC bidi stream (TCP target spliced on the stream; UDP target uses the bidi stream as a control/lifetime anchor and exchanges packets as QUIC datagrams prefixed with a 4-byte big-endian session_id), `ss` carries one SS-AEAD TCP session per bidi stream and one SS-AEAD UDP packet per QUIC datagram (routed through the same NAT table and replay store as the plain UDP listener). Adds the `quic` protocol label to existing metrics. The `mux.cool` VLESS command is rejected on raw QUIC — open additional QUIC streams instead.
 - Added VLESS mux.cool / XUDP support over WebSocket: TCP and UDP sub-connections share a single VLESS stream (xray/happ/hiddify-compatible), with per-packet destination addressing on Keep frames and up to 8 concurrent sub-connections per session. The XUDP `GlobalID` is parsed but cross-connection session reuse is not yet wired.
 - Added configurable H2/H3 resource tuning profiles (`small`, `medium`, `large`) with optional per-field `[tuning]` overrides.
 - Added process-wide `udp_max_concurrent_relay_tasks` semaphore for capping concurrent UDP relay tasks.

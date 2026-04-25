@@ -212,6 +212,16 @@ sequenceDiagram
 
 В репозитории вендорятся и патчатся upstream-крейты для поддержки этого пути. Подробности — в [PATCHES.md](../PATCHES.md) ([Русский](../PATCHES.ru.md)).
 
+### Сырой VLESS / Shadowsocks поверх QUIC
+
+Настраивается через `[server.h3].alpn` (по умолчанию `["h3"]`). Если в списке также указаны `"vless"` или `"ss"`, тот же QUIC-эндпоинт принимает не только HTTP/3-соединения на том же UDP-порту. После QUIC handshake'а сервер смотрит согласованный ALPN через `quinn::Connection::handshake_data()` и направляет соединение в нужный обработчик:
+
+- `h3` — существующий путь HTTP/3 + WebSocket-over-HTTP/3.
+- `vless` — VLESS framing напрямую поверх bidi QUIC-стримов плюс QUIC datagram'ы для UDP. Per-connection таблица UDP-сессий маппит `session_id` (4 байта big-endian, префиксируется на каждой datagram'е), выданный сервером, в upstream UDP-сокет; recv-сторона исходного bidi-стрима — якорь времени жизни сессии, её закрытие сворачивает сессию. Команда `mux.cool` отклоняется — каждый дополнительный таргет открывает свой bidi-стрим, отдавая нативной мультиплексирующей логике QUIC обработку HoL-изоляции.
+- `ss` — сырой Shadowsocks AEAD поверх QUIC. Один bidi-стрим = одна SS-AEAD TCP-сессия; парсер handshake'а тот же, что у обычного `ss_listen` (идентификация пользователя по trial decrypt первого chunk'а), поэтому идентификация пользователя, fwmark, NAT-записи и метки метрик работают одинаково. UDP проходит как одна QUIC datagram = один SS-AEAD пакет через общий хелпер `handle_ss_udp_packet`, поэтому NAT-таблица и replay store переиспользуются без изменений.
+
+Те же семафоры `H3_MAX_CONCURRENT_CONNECTIONS` и `H3_MAX_CONCURRENT_STREAMS` ограничивают и raw-QUIC пути. Размеры datagram-очередей берутся из `tuning.h3_*`.
+
 ## Дизайн наблюдаемости
 
 Метрики намеренно имеют низкую кардинальность и ориентированы на производственную эксплуатацию.
@@ -219,7 +229,7 @@ sequenceDiagram
 Метки включают:
 
 - `transport`: `tcp` или `udp`
-- `protocol`: `http1`, `http2`, `http3`
+- `protocol`: `http1`, `http2`, `http3`, `socket` (обычные SS-слушатели), `quic` (сырой VLESS/SS поверх QUIC)
 - `user`: идентификатор пользователя
 - `result`: `success`, `timeout` или `error` там, где применимо
 - `direction`: направление трафика для счётчиков байт

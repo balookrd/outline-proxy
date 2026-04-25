@@ -45,14 +45,17 @@ It supports:
 | HTTP/1.1 WebSocket | Supported | Plain `ws://` or `wss://` |
 | HTTP/2 WebSocket | Supported | RFC 8441 Extended CONNECT |
 | HTTP/3 WebSocket | Supported | RFC 9220 Extended CONNECT |
+| Raw VLESS over QUIC | Supported | ALPN `vless`; bidi stream per TCP target, QUIC datagrams for UDP with session_id prefix |
+| Raw Shadowsocks over QUIC | Supported | ALPN `ss`; bidi stream = one SS-AEAD TCP session, QUIC datagrams = SS-UDP packets |
 | Built-in TLS for h1/h2 | Supported | Optional, on the main TCP listener |
-| Built-in QUIC/TLS for h3 | Supported | Optional, on `h3_listen` (may reuse the `listen` port over UDP) |
+| Built-in QUIC/TLS for h3 | Supported | Optional, on `h3_listen` (may reuse the `listen` port over UDP); ALPN list is configurable |
 | IPv6 | Supported | Listener, upstream resolution, and access key generation |
 | Prometheus metrics | Supported | Dedicated listener and low-cardinality labels |
 | Grafana dashboard | Supported | Ready-made JSON dashboard included |
 | Outline dynamic access keys | Supported | `ssconf://` + generated YAML |
 | VLESS over WebSocket | Supported | TCP, UDP, mux.cool with XUDP per-packet addressing (xray/happ/hiddify-compatible), up to 8 concurrent sub-connections; available over HTTP/1.1, HTTP/2, and HTTP/3 |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
+| VLESS / Shadowsocks raw over QUIC | Supported | No WebSocket / no HTTP/3 framing; selected by ALPN (`vless`, `ss`) on the same `h3_listen` port |
 | Outline management API | Not supported | Data plane only |
 | SIP003 plugin negotiation | Not supported | Out of scope |
 
@@ -67,14 +70,18 @@ flowchart LR
     SS["Outline / Shadowsocks Client"] --> H1["HTTP/1.1 WS"]
     SS --> H2["HTTP/2 WS (RFC 8441)"]
     SS --> H3["HTTP/3 WS (RFC 9220)"]
+    SS --> SSQ["Raw SS over QUIC (ALPN ss)"]
 
     VL["VLESS Client (Happ / v2rayNG / Hiddify)"] --> H1
     VL --> H2
     VL --> H3
+    VL --> VLQ["Raw VLESS over QUIC (ALPN vless)"]
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
     H3 --> S
+    VLQ --> S
+    SSQ --> S
 
     S --> ROUTER["Per-path router"]
     ROUTER --> SSAUTH["Shadowsocks AEAD user detection"]
@@ -139,6 +146,16 @@ Each incoming datagram is dispatched to an independent relay task. At most 256 c
 
 NAT entries are evicted after `tuning.udp_nat_idle_timeout_secs` (default 300 seconds under the `large` profile) of no outbound traffic. A background task scans for idle entries every 60 seconds.
 
+### Raw VLESS / Shadowsocks over QUIC (no WebSocket)
+
+When `[server.h3]` advertises additional ALPN protocols, the same QUIC endpoint multiplexes more than just HTTP/3. Each QUIC connection is dispatched by the negotiated ALPN:
+
+- `h3` — HTTP/3 + WebSocket-over-HTTP/3 (default, unchanged).
+- `vless` — VLESS framed directly on QUIC bidirectional streams. One bidi stream carries one VLESS request: TCP target gets full-duplex byte splicing on the same stream, UDP target uses the bidi stream as a control/lifetime anchor and exchanges packets as QUIC datagrams prefixed with a 4-byte big-endian session_id allocated by the server in the VLESS response header `[VERSION, 0x00, session_id]`. The `mux.cool` command is rejected — open multiple QUIC streams instead.
+- `ss` — Shadowsocks AEAD framed directly on QUIC. One bidi stream is one SS-AEAD TCP session (identical wire format to the plain TCP listener — first chunk identifies the user); each QUIC datagram is one SS-AEAD UDP packet, also identical to the plain UDP listener and routed through the same NAT table.
+
+Configure with `alpn = ["h3", "vless", "ss"]` under `[server.h3]`. Datagrams must be enabled on the QUIC endpoint (the server enables them automatically when `h3_listen` is set).
+
 ## User Model
 
 Each user can define:
@@ -200,8 +217,9 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `listen` | Optional main TCP listener for HTTP/1.1 and HTTP/2 |
 | `ss_listen` | Optional plain Shadowsocks TCP+UDP listener for classic `ss://` clients |
 | `tls_cert_path` / `tls_key_path` | Optional built-in TLS for the main listener |
-| `h3_listen` | Optional QUIC listener address for HTTP/3; must be set explicitly when HTTP/3 is enabled |
-| `h3_cert_path` / `h3_key_path` | Required to enable HTTP/3 |
+| `h3_listen` | Optional QUIC listener address for HTTP/3 (and, when ALPN list extends, raw VLESS/SS over QUIC); must be set explicitly when HTTP/3 is enabled |
+| `h3_cert_path` / `h3_key_path` | Required to enable the QUIC endpoint |
+| `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Allowed values: `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS framed on QUIC streams), `"ss"` (raw Shadowsocks AEAD framed on QUIC streams). Defaults to `["h3"]` |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
 | `prefer_ipv4_upstream` | Prefer IPv4 for upstream DNS resolution and connects; useful when IPv6 paths are broken |

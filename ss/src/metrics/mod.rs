@@ -437,6 +437,7 @@ mod tests {
             h3_listen: None,
             h3_cert_path: None,
             h3_key_path: None,
+            h3_alpn: vec![crate::config::H3Alpn::H3],
             metrics_listen: Some("127.0.0.1:9090".parse().unwrap()),
             metrics_path: "/metrics".to_owned(),
             prefer_ipv4_upstream: false,
