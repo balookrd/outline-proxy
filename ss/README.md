@@ -51,7 +51,7 @@ It supports:
 | Prometheus metrics | Supported | Dedicated listener and low-cardinality labels |
 | Grafana dashboard | Supported | Ready-made JSON dashboard included |
 | Outline dynamic access keys | Supported | `ssconf://` + generated YAML |
-| VLESS over WebSocket | Supported | TCP, UDP, mux.cool with XUDP per-packet addressing (xray/happ/hiddify-compatible), up to 8 concurrent sub-connections |
+| VLESS over WebSocket | Supported | TCP, UDP, mux.cool with XUDP per-packet addressing (xray/happ/hiddify-compatible), up to 8 concurrent sub-connections; available over HTTP/1.1, HTTP/2, and HTTP/3 |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | Outline management API | Not supported | Data plane only |
 | SIP003 plugin negotiation | Not supported | Out of scope |
@@ -70,6 +70,7 @@ flowchart LR
 
     VL["VLESS Client (Happ / v2rayNG / Hiddify)"] --> H1
     VL --> H2
+    VL --> H3
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
@@ -262,7 +263,7 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 
 ### VLESS over WebSocket/TLS
 
-The VLESS inbound accepts VLESS over WebSocket on the main HTTP/1.1 or HTTP/2 listener. Use TLS (`tls_cert_path` / `tls_key_path`) for public deployments; the VLESS layer itself is stateless UUID authentication and does not add encryption. Supported commands: TCP CONNECT, UDP (length-prefixed datagrams), and mux.cool with XUDP per-packet addressing (xray-style multiplexing, up to 8 concurrent sub-connections per session; XUDP `GlobalID` is accepted but not yet reused across reconnects). REALITY, XTLS, Vision, flow, fallback, and sniffing are intentionally not implemented.
+The VLESS inbound accepts VLESS over WebSocket on the main HTTP/1.1 or HTTP/2 listener and, when configured, on the QUIC HTTP/3 listener (`h3_listen`). Use TLS (`tls_cert_path` / `tls_key_path`) for public deployments; the VLESS layer itself is stateless UUID authentication and does not add encryption. Supported commands: TCP CONNECT, UDP (length-prefixed datagrams), and mux.cool with XUDP per-packet addressing (xray-style multiplexing, up to 8 concurrent sub-connections per session; XUDP `GlobalID` is accepted but not yet reused across reconnects). REALITY, XTLS, Vision, flow, fallback, and sniffing are intentionally not implemented.
 
 ```toml
 listen = "0.0.0.0:443"

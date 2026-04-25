@@ -148,7 +148,7 @@ Important behaviors:
 
 ## VLESS Data Path
 
-A separate WebSocket path (`vless_ws_path`, optionally per-user) accepts VLESS streams on the main HTTP/1.1 or HTTP/2 listener. VLESS authentication is stateless UUID matching against the per-path user set; the protocol layer itself adds no encryption, so TLS on the main listener is required for public deployments.
+A separate WebSocket path (`vless_ws_path`, optionally per-user) accepts VLESS streams on the main HTTP/1.1 or HTTP/2 listener, and on the QUIC HTTP/3 listener when `h3_listen` is configured. VLESS authentication is stateless UUID matching against the per-path user set; the protocol layer itself adds no encryption, so TLS on the main listener (or the QUIC HTTP/3 endpoint) is required for public deployments.
 
 ```mermaid
 sequenceDiagram
