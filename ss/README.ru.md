@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="outline-ss|ws-rust logo" width="320">
+</p>
+
 # outline-ss-rust
 
 `outline-ss-rust` — ориентированная на production Rust-реализация WebSocket-релея на базе Shadowsocks, вдохновлённая `outline-ss-server`.
