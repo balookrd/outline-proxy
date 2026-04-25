@@ -43,6 +43,60 @@ pub(super) async fn connect_probe_tcp(
         .await
         .expect("probe dial semaphore closed");
 
+    #[cfg(feature = "quic")]
+    if effective_tcp_mode == WsTransportMode::Quic
+        && (uplink.transport == UplinkTransport::Ws
+            || uplink.transport == UplinkTransport::Vless)
+    {
+        let url = uplink
+            .tcp_ws_url
+            .as_ref()
+            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?;
+        return match uplink.transport {
+            UplinkTransport::Vless => {
+                let uuid = uplink
+                    .vless_uuid
+                    .as_ref()
+                    .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+                let (w, r) = outline_transport::connect_vless_tcp_quic(
+                    cache,
+                    url,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                    uuid,
+                    target,
+                    lifetime,
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("{probe_label} vless quic for uplink {}", uplink.name),
+                })?;
+                Ok((TcpWriter::Vless(w), TcpReader::Vless(r)))
+            }
+            UplinkTransport::Ws => {
+                let (mut w, r) = outline_transport::connect_ss_tcp_quic(
+                    cache,
+                    url,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                    uplink.cipher,
+                    &master_key,
+                    Arc::clone(&lifetime),
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("{probe_label} ss quic for uplink {}", uplink.name),
+                })?;
+                let request_salt = w.request_salt();
+                let r = r.with_request_salt(request_salt);
+                Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r)))
+            }
+            _ => unreachable!(),
+        };
+    }
+
     match uplink.transport {
         UplinkTransport::Ws => {
             let ws_stream = connect_websocket_with_source(
@@ -104,25 +158,23 @@ pub(super) async fn connect_probe_tcp(
                 target: format!("{probe_label} vless websocket for uplink {}", uplink.name),
             })?;
             let shared_conn_info = ws_stream.shared_connection_info();
-            let (ws_sink, ws_stream) = ws_stream.split();
             let uuid = uplink
                 .vless_uuid
                 .as_ref()
                 .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
-            let (writer, ctrl_tx) = outline_transport::VlessTcpWriter::connect(
-                ws_sink,
-                uuid,
-                target,
-                Arc::clone(&lifetime),
-            );
             let diag = outline_transport::WsReadDiag {
                 conn_id: shared_conn_info.map(|(id, _)| id),
                 mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),
                 uplink: uplink.name.clone(),
                 target: target.to_string(),
             };
-            let reader = outline_transport::VlessTcpReader::new(ws_stream, ctrl_tx, lifetime)
-                .with_diag(diag);
+            let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
+                ws_stream,
+                uuid,
+                target,
+                lifetime,
+                diag,
+            );
             Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)))
         },
         UplinkTransport::Shadowsocks => {

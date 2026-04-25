@@ -7,7 +7,6 @@ use tracing::debug;
 use outline_transport::{
     TcpReader, TcpWriter,
     TcpShadowsocksReader, TcpShadowsocksWriter, UpstreamTransportGuard,
-    VlessTcpReader, VlessTcpWriter,
     connect_shadowsocks_tcp_with_source,
 };
 use socks5_proto::TargetAddr;
@@ -139,6 +138,26 @@ pub(super) async fn connect_tcp_uplink_fresh(
     candidate: &UplinkCandidate,
     target: &TargetAddr,
 ) -> Result<ConnectedTcpUplink> {
+    #[cfg(feature = "h3")]
+    {
+        let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
+        if mode == outline_transport::WsTransportMode::Quic {
+            let (writer, reader) = uplinks
+                .connect_tcp_quic_fresh(candidate, target, "socks_tcp")
+                .await?;
+            debug!(
+                uplink = %candidate.uplink.name,
+                target = %target,
+                transport = "quic",
+                "opened raw-QUIC TCP uplink"
+            );
+            return Ok(ConnectedTcpUplink {
+                writer,
+                reader,
+                source: TcpUplinkSource::FreshDial,
+            });
+        }
+    }
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
     let (writer, reader) = do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await?;
     Ok(ConnectedTcpUplink {
@@ -155,7 +174,6 @@ async fn do_tcp_ss_setup(
     source: &'static str,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
-    let (ws_sink, ws_stream) = ws_stream.split();
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let diag = outline_transport::WsReadDiag {
         conn_id: shared_conn_info.map(|(id, _)| id),
@@ -169,9 +187,13 @@ async fn do_tcp_ss_setup(
             .vless_uuid
             .as_ref()
             .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
-        let (writer, ctrl_tx) =
-            VlessTcpWriter::connect(ws_sink, uuid, target, Arc::clone(&lifetime));
-        let reader = VlessTcpReader::new(ws_stream, ctrl_tx, lifetime).with_diag(diag);
+        let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
+            ws_stream,
+            uuid,
+            target,
+            lifetime,
+            diag,
+        );
         debug!(
             uplink = %uplink.name,
             target = %target,
@@ -182,6 +204,7 @@ async fn do_tcp_ss_setup(
         return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
     }
 
+    let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let (mut writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))

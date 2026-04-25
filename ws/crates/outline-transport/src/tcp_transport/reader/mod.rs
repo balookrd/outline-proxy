@@ -13,6 +13,8 @@ use crate::UpstreamTransportGuard;
 
 use ss2022::{Ss2022TcpReaderState, parse_ss2022_response_header};
 use transport::{ReadTransport, SocketReadTransport, WsReadTransport, WsStream};
+#[cfg(feature = "quic")]
+use transport::QuicReadTransport;
 
 pub struct TcpShadowsocksReader<T: ReadTransport> {
     transport: T,
@@ -34,6 +36,8 @@ pub struct TcpShadowsocksReader<T: ReadTransport> {
 
 pub type WsTcpReader = TcpShadowsocksReader<WsReadTransport>;
 pub type SocketTcpReader = TcpShadowsocksReader<SocketReadTransport>;
+#[cfg(feature = "quic")]
+pub type QuicTcpReader = TcpShadowsocksReader<QuicReadTransport>;
 
 impl TcpShadowsocksReader<WsReadTransport> {
     pub fn new(
@@ -81,6 +85,29 @@ impl TcpShadowsocksReader<SocketReadTransport> {
         mk[..master_key.len()].copy_from_slice(master_key);
         Self {
             transport: SocketReadTransport { reader },
+            cipher,
+            master_key: mk,
+            cipher_state: None,
+            nonce: [0u8; 12],
+            ss2022: None,
+            _lifetime: lifetime,
+            closed_cleanly: false,
+        }
+    }
+}
+
+#[cfg(feature = "quic")]
+impl TcpShadowsocksReader<QuicReadTransport> {
+    pub fn new_quic(
+        recv: quinn::RecvStream,
+        cipher: CipherKind,
+        master_key: &[u8],
+        lifetime: Arc<UpstreamTransportGuard>,
+    ) -> Self {
+        let mut mk = [0u8; 32];
+        mk[..master_key.len()].copy_from_slice(master_key);
+        Self {
+            transport: QuicReadTransport { recv },
             cipher,
             master_key: mk,
             cipher_state: None,

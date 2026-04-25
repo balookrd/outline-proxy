@@ -183,6 +183,8 @@ impl TunTcpEngine {
                 TcpWriter::Ws(w) => UpstreamWriter::TunneledWs(w),
                 TcpWriter::Socket(w) => UpstreamWriter::TunneledSocket(w),
                 TcpWriter::Vless(w) => UpstreamWriter::TunneledVless(w),
+                #[cfg(feature = "quic")]
+                TcpWriter::QuicSs(w) => UpstreamWriter::TunneledQuicSs(w),
             }));
             let (pending_payloads, should_close_client_half) = {
                 let mut state = flow.lock().await;

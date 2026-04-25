@@ -32,11 +32,8 @@ use parking_lot::Mutex as SyncMutex;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
-use futures_util::{SinkExt, StreamExt};
 use socks5_proto::TargetAddr;
 use tokio::sync::{Mutex, mpsc, watch};
-use tokio::time::timeout;
-use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
 use tracing::debug;
 use url::Url;
 
@@ -93,6 +90,18 @@ fn hex_val(byte: u8) -> Result<u8> {
     }
 }
 
+/// Build the standard VLESS UDP request header. Exposed so transports
+/// that bypass the WebSocket layer (raw QUIC) can write it directly to
+/// the underlying control stream.
+pub fn build_vless_udp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
+    build_request_header(uuid, VLESS_CMD_UDP, target)
+}
+
+/// Build the standard VLESS TCP request header. Same exposure rationale.
+pub fn build_vless_tcp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
+    build_request_header(uuid, VLESS_CMD_TCP, target)
+}
+
 fn build_request_header(uuid: &[u8; 16], command: u8, target: &TargetAddr) -> Vec<u8> {
     let mut out = Vec::with_capacity(1 + 16 + 1 + 1 + 2 + 1 + 256);
     out.push(VLESS_VERSION);
@@ -122,59 +131,30 @@ fn build_request_header(uuid: &[u8; 16], command: u8, target: &TargetAddr) -> Ve
 
 // ── TCP writer ─────────────────────────────────────────────────────────────
 
-/// VLESS TCP writer over a WebSocket sink. Emits the request header on the
-/// first `send_chunk` concatenated with the payload into a single binary
-/// frame; subsequent frames are raw client bytes.
+/// VLESS TCP writer. Emits the request header on the first `send_chunk`
+/// concatenated with the payload into a single frame; subsequent frames
+/// are raw client bytes. Decoupled from the underlying transport via
+/// [`crate::frame_io::FrameSink`] — works identically over WS or QUIC.
 pub struct VlessTcpWriter {
-    data_tx: Option<mpsc::Sender<Message>>,
-    _writer_task: Option<AbortOnDrop>,
+    sink: Option<Box<dyn crate::frame_io::FrameSink>>,
     pending_header: Option<Vec<u8>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
 impl VlessTcpWriter {
-    pub fn connect(
-        sink: futures_util::stream::SplitSink<WsTransportStream, Message>,
+    /// Build over an arbitrary [`crate::frame_io::FrameSink`].
+    pub fn with_sink(
+        sink: Box<dyn crate::frame_io::FrameSink>,
         uuid: &[u8; 16],
         target: &TargetAddr,
         lifetime: Arc<UpstreamTransportGuard>,
-    ) -> (Self, mpsc::Sender<Message>) {
-        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
-        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
-        let writer_task = tokio::spawn(async move {
-            let mut ws_sink = sink;
-            let mut ctrl_open = true;
-            loop {
-                if ctrl_open {
-                    tokio::select! {
-                        biased;
-                        msg = ctrl_rx.recv() => match msg {
-                            Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                            None => ctrl_open = false,
-                        },
-                        msg = data_rx.recv() => match msg {
-                            Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                            None => { let _ = ws_sink.close().await; return; }
-                        },
-                    }
-                } else {
-                    match data_rx.recv().await {
-                        Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                        None => { let _ = ws_sink.close().await; return; }
-                    }
-                }
-            }
-        });
+    ) -> Self {
         let header = build_request_header(uuid, VLESS_CMD_TCP, target);
-        (
-            Self {
-                data_tx: Some(data_tx),
-                _writer_task: Some(AbortOnDrop::new(writer_task)),
-                pending_header: Some(header),
-                _lifetime: lifetime,
-            },
-            ctrl_tx,
-        )
+        Self {
+            sink: Some(sink),
+            pending_header: Some(header),
+            _lifetime: lifetime,
+        }
     }
 
     pub fn supports_half_close(&self) -> bool {
@@ -190,156 +170,147 @@ impl VlessTcpWriter {
         } else {
             payload.to_vec()
         };
-        self.data_tx
-            .as_ref()
+        self.sink
+            .as_mut()
             .ok_or_else(|| anyhow!("vless writer already closed"))?
-            .send(Message::Binary(frame.into()))
+            .send_frame(Bytes::from(frame))
             .await
-            .context(TransportOperation::WebSocketSend)
     }
 
-    /// VLESS has no framing-layer keepalive of its own; the WS layer Ping
-    /// that the paired reader forwards is the only defence. A zero-byte
-    /// binary frame would be delivered to the destination TCP socket as a
-    /// zero-byte write — harmless but pointless — so this is a no-op.
+    /// VLESS has no framing-layer keepalive of its own; the underlying
+    /// transport (WS Ping, QUIC PING) handles this. No-op here.
     pub async fn send_keepalive(&mut self) -> Result<()> {
         Ok(())
     }
 
     pub async fn close(&mut self) -> Result<()> {
-        drop(self.data_tx.take());
+        if let Some(mut sink) = self.sink.take() {
+            sink.close().await?;
+        }
         Ok(())
     }
 }
 
 // ── TCP reader ─────────────────────────────────────────────────────────────
 
-/// VLESS TCP reader over a WebSocket stream. Strips the `[version,
-/// addons_len(, addons…)]` prefix off the first response frame; subsequent
-/// frames are returned as raw bytes. Buffering is only used when the first
-/// frame is smaller than the response header or carries addons — the common
-/// case is a single allocation-free path.
+/// VLESS TCP reader. Strips the `[version, addons_len(, addons…)]` prefix
+/// off the first response frame; subsequent frames are returned as raw
+/// bytes. Buffering is only used when the first frame is smaller than the
+/// response header or carries addons. Decoupled from the underlying
+/// transport via [`crate::frame_io::FrameSource`].
 pub struct VlessTcpReader {
-    stream: futures_util::stream::SplitStream<WsTransportStream>,
-    ctrl_tx: mpsc::Sender<Message>,
+    source: Box<dyn crate::frame_io::FrameSource>,
     pending_header: bool,
     header_buf: Vec<u8>,
-    diag: crate::WsReadDiag,
     _lifetime: Arc<UpstreamTransportGuard>,
-    pub closed_cleanly: bool,
 }
 
 impl VlessTcpReader {
-    pub fn new(
-        stream: futures_util::stream::SplitStream<WsTransportStream>,
-        ctrl_tx: mpsc::Sender<Message>,
+    pub fn with_source(
+        source: Box<dyn crate::frame_io::FrameSource>,
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Self {
         Self {
-            stream,
-            ctrl_tx,
+            source,
             pending_header: true,
             header_buf: Vec::new(),
-            diag: crate::WsReadDiag::default(),
             _lifetime: lifetime,
-            closed_cleanly: false,
         }
     }
 
-    pub fn with_diag(mut self, diag: crate::WsReadDiag) -> Self {
-        self.diag = diag;
-        self
+    /// Whether the stream EOF / Close was a clean teardown vs runtime
+    /// fault — surfaced from the underlying source.
+    pub fn closed_cleanly(&self) -> bool {
+        self.source.closed_cleanly()
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
         loop {
-            let next = match timeout(WS_READ_IDLE_TIMEOUT, self.stream.next()).await {
-                Err(_) => bail!(
-                    "vless websocket upstream read idle for {}s on uplink {} target {}",
-                    WS_READ_IDLE_TIMEOUT.as_secs(),
-                    self.diag.uplink,
-                    self.diag.target,
-                ),
-                Ok(None) => {
-                    self.closed_cleanly = true;
-                    return Err(anyhow::Error::from(WsClosed));
-                },
-                Ok(Some(Ok(msg))) => msg,
-                Ok(Some(Err(e))) => return Err(e).context(TransportOperation::WebSocketRead),
+            let bytes = match self.source.recv_frame().await? {
+                None => return Err(anyhow::Error::from(WsClosed)),
+                Some(b) => b,
             };
-            match next {
-                Message::Binary(bytes) => {
-                    if self.pending_header {
-                        // Accumulate until we have at least the 2-byte response
-                        // header (version + addons_len); addons bytes (if any)
-                        // are consumed afterwards.
-                        self.header_buf.extend_from_slice(&bytes);
-                        if self.header_buf.len() < 2 {
-                            continue;
-                        }
-                        let version = self.header_buf[0];
-                        if version != VLESS_VERSION {
-                            bail!("vless bad response version {version:#x}");
-                        }
-                        let addons_len = self.header_buf[1] as usize;
-                        let need = 2 + addons_len;
-                        if self.header_buf.len() < need {
-                            continue;
-                        }
-                        let tail = self.header_buf.split_off(need);
-                        self.header_buf.clear();
-                        self.pending_header = false;
-                        if !tail.is_empty() {
-                            return Ok(tail);
-                        }
-                        continue;
-                    }
-                    return Ok(bytes.into());
-                },
-                Message::Close(frame) => {
-                    let try_again = frame
-                        .as_ref()
-                        .map(|f| f.code == CloseCode::Again)
-                        .unwrap_or(false);
-                    if !try_again {
-                        self.closed_cleanly = true;
-                    }
-                    debug!(
-                        target: "outline_ws_rust::session_death",
-                        try_again,
-                        frame = ?frame,
-                        "vless reader: websocket received Close frame from upstream"
-                    );
-                    return Err(anyhow::Error::from(WsClosed));
-                },
-                Message::Ping(payload) => {
-                    let _ = self.ctrl_tx.try_send(Message::Pong(payload));
-                },
-                Message::Pong(_) | Message::Frame(_) => {},
-                Message::Text(_) => bail!("unexpected text websocket frame"),
+            if self.pending_header {
+                self.header_buf.extend_from_slice(&bytes);
+                if self.header_buf.len() < 2 {
+                    continue;
+                }
+                let version = self.header_buf[0];
+                if version != VLESS_VERSION {
+                    bail!("vless bad response version {version:#x}");
+                }
+                let addons_len = self.header_buf[1] as usize;
+                let need = 2 + addons_len;
+                if self.header_buf.len() < need {
+                    continue;
+                }
+                let tail = self.header_buf.split_off(need);
+                self.header_buf.clear();
+                self.pending_header = false;
+                if !tail.is_empty() {
+                    return Ok(tail);
+                }
+                continue;
             }
+            return Ok(bytes.into());
         }
     }
 }
 
+// ── WS convenience constructor ─────────────────────────────────────────────
+
+/// Build a VLESS TCP writer/reader pair over a WebSocket stream.
+/// Convenience wrapper around `frame_io_ws::from_ws_frames` +
+/// [`VlessTcpWriter::with_sink`] / [`VlessTcpReader::with_source`].
+pub fn vless_tcp_pair_from_ws(
+    ws_stream: WsTransportStream,
+    uuid: &[u8; 16],
+    target: &TargetAddr,
+    lifetime: Arc<UpstreamTransportGuard>,
+    diag: crate::WsReadDiag,
+) -> (VlessTcpWriter, VlessTcpReader) {
+    let (sink, source) = crate::frame_io_ws::from_ws_frames(
+        ws_stream,
+        Some(WS_READ_IDLE_TIMEOUT),
+        None,
+    );
+    let source = source.with_diag(diag.uplink, diag.target);
+    let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
+    let reader = VlessTcpReader::with_source(Box::new(source), lifetime);
+    (writer, reader)
+}
+
 // ── UDP transport ──────────────────────────────────────────────────────────
 
-/// VLESS UDP datagram transport over a WebSocket stream. Parallel to
-/// `UdpWsTransport` but without any Shadowsocks crypto: each outbound packet
-/// is sent as `len(2 BE) || payload`, with the VLESS request header bundled
-/// ahead of the first one.
-pub struct VlessUdpWsTransport {
-    data_tx: mpsc::Sender<Message>,
-    downlink_rx: Mutex<mpsc::Receiver<Result<Bytes>>>,
-    _writer_task: AbortOnDrop,
-    _reader_task: AbortOnDrop,
-    _keepalive_task: Option<AbortOnDrop>,
+/// VLESS UDP datagram transport. Each outbound packet is sent as
+/// `len(2 BE) || payload`, with the VLESS request header bundled ahead of
+/// the first one. Inbound: the first datagram begins with the response
+/// header `[version, addons_len, addons…]`, followed by `len || payload`
+/// records (one or more per underlying datagram).
+///
+/// Decoupled from the underlying transport via [`DatagramChannel`] —
+/// works identically over WS Binary frames or QUIC datagrams.
+pub struct VlessUdpTransport {
+    chan: Arc<dyn crate::frame_io::DatagramChannel>,
     pending_header: Mutex<Option<Vec<u8>>>,
-    close_signal: watch::Sender<bool>,
+    /// Reader-side state. Single mutex covers both the in-progress
+    /// reassembly buffer and the "saw response header yet?" flag — they
+    /// are touched together and `read_packet` is serialized by the caller
+    /// (one outstanding read at a time per session).
+    recv_state: Mutex<VlessUdpRecvState>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
-impl VlessUdpWsTransport {
+struct VlessUdpRecvState {
+    pending_header: bool,
+    buf: BytesMut,
+}
+
+/// Public alias kept for backwards compatibility with the previous
+/// `VlessUdpWsTransport` name. New code should use `VlessUdpTransport`.
+pub type VlessUdpWsTransport = VlessUdpTransport;
+
+impl VlessUdpTransport {
     pub fn from_websocket(
         ws_stream: WsTransportStream,
         uuid: &[u8; 16],
@@ -347,148 +318,28 @@ impl VlessUdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Self {
-        let (close_signal, _close_rx) = watch::channel(false);
-        let (sink, stream) = ws_stream.split();
-        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
-        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+        let chan: Arc<dyn crate::frame_io::DatagramChannel> = Arc::new(
+            crate::frame_io_ws::from_ws_datagrams(ws_stream, keepalive_interval),
+        );
+        Self::from_channel(chan, uuid, target, source)
+    }
 
-        let writer_task = tokio::spawn(async move {
-            let mut ws_sink = sink;
-            let mut ctrl_open = true;
-            loop {
-                if ctrl_open {
-                    tokio::select! {
-                        biased;
-                        msg = ctrl_rx.recv() => match msg {
-                            Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                            None => ctrl_open = false,
-                        },
-                        msg = data_rx.recv() => match msg {
-                            Some(Message::Close(_)) | None => {
-                                let _ = ws_sink.close().await;
-                                return;
-                            }
-                            Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                        },
-                    }
-                } else {
-                    match data_rx.recv().await {
-                        Some(Message::Close(_)) | None => {
-                            let _ = ws_sink.close().await;
-                            return;
-                        }
-                        Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
-                    }
-                }
-            }
-        });
-
-        let keepalive_task = keepalive_interval.map(|interval| {
-            let keepalive_ctrl_tx = ctrl_tx.clone();
-            AbortOnDrop(tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(interval);
-                ticker.tick().await;
-                loop {
-                    ticker.tick().await;
-                    if keepalive_ctrl_tx.send(Message::Ping(vec![].into())).await.is_err() {
-                        break;
-                    }
-                }
-            }))
-        });
-
-        let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(64);
-        let reader_ctrl_tx = ctrl_tx.clone();
-        let mut close_rx = close_signal.subscribe();
-        let reader_task = tokio::spawn(async move {
-            let mut stream = stream;
-            let mut pending_header = true;
-            // Per-packet reassembly buffer: each downlink frame may contain
-            // zero or more `len || payload` datagrams, possibly split across
-            // WS messages.
-            let mut buf: BytesMut = BytesMut::new();
-            loop {
-                let msg = tokio::select! {
-                    _ = close_rx.changed() => {
-                        if *close_rx.borrow() {
-                            let _ = downlink_tx.send(Err(anyhow!("udp transport closed"))).await;
-                            return;
-                        }
-                        continue;
-                    }
-                    msg = stream.next() => msg,
-                };
-                match msg {
-                    None => return,
-                    Some(Err(e)) => {
-                        let err: anyhow::Result<()> = Err(e).context(TransportOperation::WebSocketRead);
-                        let _ = downlink_tx.send(Err(err.unwrap_err())).await;
-                        return;
-                    }
-                    Some(Ok(Message::Binary(bytes))) => {
-                        buf.extend_from_slice(&bytes);
-                        if pending_header {
-                            if buf.len() < 2 {
-                                continue;
-                            }
-                            let version = buf[0];
-                            if version != VLESS_VERSION {
-                                let _ = downlink_tx
-                                    .send(Err(anyhow!("vless bad udp response version {version:#x}")))
-                                    .await;
-                                return;
-                            }
-                            let addons_len = buf[1] as usize;
-                            if buf.len() < 2 + addons_len {
-                                continue;
-                            }
-                            let _ = buf.split_to(2 + addons_len);
-                            pending_header = false;
-                        }
-                        loop {
-                            if buf.len() < 2 { break; }
-                            let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
-                            if len > MAX_VLESS_UDP_PAYLOAD {
-                                let _ = downlink_tx
-                                    .send(Err(anyhow!("vless udp datagram too large: {len}")))
-                                    .await;
-                                return;
-                            }
-                            if buf.len() < 2 + len { break; }
-                            let _ = buf.split_to(2);
-                            let payload = buf.split_to(len).freeze();
-                            if downlink_tx.send(Ok(payload)).await.is_err() {
-                                return;
-                            }
-                        }
-                    }
-                    Some(Ok(Message::Close(_))) => {
-                        let _ = downlink_tx.send(Err(anyhow::Error::from(WsClosed))).await;
-                        return;
-                    }
-                    Some(Ok(Message::Ping(payload))) => {
-                        let _ = reader_ctrl_tx.try_send(Message::Pong(payload));
-                    }
-                    Some(Ok(Message::Pong(_) | Message::Frame(_))) => {}
-                    Some(Ok(Message::Text(_))) => {
-                        let _ = downlink_tx
-                            .send(Err(anyhow!("unexpected text websocket frame")))
-                            .await;
-                        return;
-                    }
-                }
-            }
-        });
-
+    /// Build a VLESS UDP transport over an arbitrary [`DatagramChannel`].
+    /// The channel is opaque to the protocol layer.
+    pub fn from_channel(
+        chan: Arc<dyn crate::frame_io::DatagramChannel>,
+        uuid: &[u8; 16],
+        target: &TargetAddr,
+        source: &'static str,
+    ) -> Self {
         let header = build_request_header(uuid, VLESS_CMD_UDP, target);
         Self {
-            data_tx,
-            downlink_rx: Mutex::new(downlink_rx),
-            _writer_task: AbortOnDrop(writer_task),
-            _reader_task: AbortOnDrop(reader_task),
-            _keepalive_task: keepalive_task,
+            chan,
             pending_header: Mutex::new(Some(header)),
-            close_signal,
+            recv_state: Mutex::new(VlessUdpRecvState {
+                pending_header: true,
+                buf: BytesMut::new(),
+            }),
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
         }
     }
@@ -523,22 +374,69 @@ impl VlessUdpWsTransport {
         frame.reserve(need);
         frame.put_u16(payload.len() as u16);
         frame.extend_from_slice(payload);
-        self.data_tx
-            .send(Message::Binary(frame.into()))
-            .await
-            .context(TransportOperation::WebSocketSend)
+        self.chan.send_datagram(Bytes::from(frame)).await
     }
 
     pub async fn read_packet(&self) -> Result<Bytes> {
-        let mut rx = self.downlink_rx.lock().await;
-        rx.recv().await.ok_or_else(|| anyhow::Error::from(WsClosed))?
+        loop {
+            // First try to extract a full record from the buffer without
+            // touching the wire — handles the (uncommon) case of a single
+            // underlying datagram carrying multiple len-prefixed records.
+            {
+                let mut state = self.recv_state.lock().await;
+                if !state.pending_header
+                    && let Some(payload) = try_split_packet(&mut state.buf)?
+                {
+                    return Ok(payload);
+                }
+            }
+            let next = self
+                .chan
+                .recv_datagram()
+                .await?
+                .ok_or_else(|| anyhow::Error::from(WsClosed))?;
+            let mut state = self.recv_state.lock().await;
+            state.buf.extend_from_slice(&next);
+            if state.pending_header {
+                if state.buf.len() < 2 {
+                    continue;
+                }
+                let version = state.buf[0];
+                if version != VLESS_VERSION {
+                    bail!("vless bad udp response version {version:#x}");
+                }
+                let addons_len = state.buf[1] as usize;
+                if state.buf.len() < 2 + addons_len {
+                    continue;
+                }
+                let _ = state.buf.split_to(2 + addons_len);
+                state.pending_header = false;
+            }
+            if let Some(payload) = try_split_packet(&mut state.buf)? {
+                return Ok(payload);
+            }
+        }
     }
 
     pub async fn close(&self) -> Result<()> {
-        self.close_signal.send_replace(true);
-        let _ = self.data_tx.send(Message::Close(None)).await;
+        self.chan.close().await;
         Ok(())
     }
+}
+
+fn try_split_packet(buf: &mut BytesMut) -> Result<Option<Bytes>> {
+    if buf.len() < 2 {
+        return Ok(None);
+    }
+    let len = u16::from_be_bytes([buf[0], buf[1]]) as usize;
+    if len > MAX_VLESS_UDP_PAYLOAD {
+        bail!("vless udp datagram too large: {len}");
+    }
+    if buf.len() < 2 + len {
+        return Ok(None);
+    }
+    let _ = buf.split_to(2);
+    Ok(Some(buf.split_to(len).freeze()))
 }
 
 // ── UDP session mux ────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = ["metrics"]
 metrics = ["outline-metrics/prometheus"]
+quic = ["outline-transport/quic"]
 
 [dependencies]
 anyhow = "1.0"
