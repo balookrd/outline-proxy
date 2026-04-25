@@ -364,7 +364,12 @@ impl VlessUdpTransport {
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
         if payload.len() > MAX_VLESS_UDP_PAYLOAD {
-            bail!("vless udp uplink datagram too large: {}", payload.len());
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            bail!(crate::OversizedUdpDatagram {
+                transport: "vless-udp",
+                payload_len: payload.len(),
+                limit: MAX_VLESS_UDP_PAYLOAD,
+            });
         }
         let mut frame: Vec<u8> = {
             let mut header = self.pending_header.lock().await;

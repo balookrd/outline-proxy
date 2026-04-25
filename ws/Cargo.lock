@@ -1376,6 +1376,7 @@ dependencies = [
  "socket2 0.5.10",
  "socks5-proto",
  "sockudo-ws",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
  "tokio-tungstenite",
