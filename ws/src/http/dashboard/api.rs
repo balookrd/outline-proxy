@@ -174,15 +174,47 @@ pub async fn handle_uplinks_proxy(
         Method::GET | Method::POST | Method::PATCH | Method::DELETE => {},
         _ => return json_error(StatusCode::METHOD_NOT_ALLOWED, "use GET/POST/PATCH/DELETE"),
     }
-    let (envelope, query) = match parse_proxy_envelope(request).await {
-        Ok(pair) => pair,
-        Err(response) => return response,
+
+    // GET requests carry the instance (and optional filters) in the query
+    // string; mutating methods carry an envelope `{instance, body}` in the
+    // request body.
+    let (instance_name, body, query) = if matches!(method, Method::GET) {
+        let raw_query = request.uri().query().unwrap_or("").to_string();
+        let mut name: Option<String> = None;
+        let mut forwarded: Vec<(String, String)> = Vec::new();
+        for (k, v) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+            if k == "instance" {
+                name = Some(v.into_owned());
+            } else {
+                forwarded.push((k.into_owned(), v.into_owned()));
+            }
+        }
+        let Some(name) = name else {
+            return json_error(StatusCode::BAD_REQUEST, "missing instance query");
+        };
+        let forwarded_query = if forwarded.is_empty() {
+            None
+        } else {
+            Some(
+                url::form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs(forwarded.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+                    .finish(),
+            )
+        };
+        (name, None, forwarded_query)
+    } else {
+        let (envelope, query) = match parse_proxy_envelope(request).await {
+            Ok(pair) => pair,
+            Err(response) => return response,
+        };
+        (
+            envelope.instance,
+            Some(serde_json::to_vec(&envelope.body).unwrap_or_default()),
+            query,
+        )
     };
-    let Some(instance) = state
-        .instances
-        .iter()
-        .find(|i| i.name == envelope.instance)
-    else {
+
+    let Some(instance) = state.instances.iter().find(|i| i.name == instance_name) else {
         return json_error(StatusCode::NOT_FOUND, "unknown instance");
     };
 
@@ -199,11 +231,6 @@ pub async fn handle_uplinks_proxy(
         url.set_query(Some(&q));
     }
 
-    let body = if matches!(method, Method::GET) {
-        None
-    } else {
-        Some(serde_json::to_vec(&envelope.body).unwrap_or_default())
-    };
     match send_instance_request(instance, method, url, body, state.request_timeout_secs).await {
         Ok((status, body)) => {
             let parsed: Value = serde_json::from_slice(&body)

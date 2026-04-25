@@ -18,8 +18,6 @@ use tokio::fs;
 use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
 use tracing::{info, warn};
 
-use outline_uplink::UplinkRegistry;
-
 use crate::config::UplinkSection;
 use crate::config::validate_uplink_section;
 
@@ -82,6 +80,8 @@ struct UplinkListEntry {
     group: String,
     name: String,
     index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -96,7 +96,7 @@ pub(crate) async fn handle_uplinks(
     state: std::sync::Arc<ControlState>,
 ) -> ControlResponse {
     match *request.method() {
-        Method::GET => handle_list(&state.uplinks, request.uri().query()).await,
+        Method::GET => handle_list(state.clone(), request.uri().query()).await,
         Method::POST => handle_create(request, state).await,
         Method::PATCH => handle_update(request, state).await,
         Method::DELETE => handle_delete(request, state).await,
@@ -108,7 +108,10 @@ pub(crate) async fn handle_uplinks(
     }
 }
 
-async fn handle_list(registry: &UplinkRegistry, query: Option<&str>) -> ControlResponse {
+async fn handle_list(
+    state: std::sync::Arc<ControlState>,
+    query: Option<&str>,
+) -> ControlResponse {
     let mut filter_group: Option<String> = None;
     let mut filter_name: Option<String> = None;
     if let Some(q) = query {
@@ -121,7 +124,7 @@ async fn handle_list(registry: &UplinkRegistry, query: Option<&str>) -> ControlR
         }
     }
 
-    let snapshots = registry.snapshots().await;
+    let snapshots = state.uplinks.snapshots().await;
     let mut entries = Vec::new();
     for snap in &snapshots {
         if let Some(g) = &filter_group {
@@ -139,7 +142,31 @@ async fn handle_list(registry: &UplinkRegistry, query: Option<&str>) -> ControlR
                 group: snap.group.clone(),
                 name: uplink.name.clone(),
                 index: uplink.index,
+                config: None,
             });
+        }
+    }
+
+    // Best-effort enrichment: when the on-disk config is reachable, attach
+    // each uplink's full TOML table as a JSON object so editors can pre-fill
+    // forms. We swallow read/parse errors — the entries still carry the
+    // identifying triple (group, name, index).
+    if let Some(path) = &state.config_path {
+        if let Ok(raw) = fs::read_to_string(path).await {
+            if let Ok(mut doc) = raw.parse::<DocumentMut>() {
+                for entry in entries.iter_mut() {
+                    let Some(group_tbl) = find_group_mut(&mut doc, &entry.group) else {
+                        continue;
+                    };
+                    let arr = get_or_init_uplinks_array(group_tbl);
+                    let Some(idx) = find_uplink_index(arr, &entry.name) else {
+                        continue;
+                    };
+                    if let Some(tbl) = arr.get(idx) {
+                        entry.config = table_to_json(tbl);
+                    }
+                }
+            }
         }
     }
 
@@ -149,6 +176,15 @@ async fn handle_list(registry: &UplinkRegistry, query: Option<&str>) -> ControlR
     }
 
     json_response(StatusCode::OK, &UplinkListResponse { uplinks: entries })
+}
+
+/// Convert a `toml_edit` table into a `serde_json::Value` by round-tripping
+/// through a TOML string. Returns `None` if the round-trip fails (which
+/// would be a surprising bug, not a normal user error).
+fn table_to_json(tbl: &Table) -> Option<serde_json::Value> {
+    let text = tbl.to_string();
+    let value: toml::Value = toml::from_str(&text).ok()?;
+    serde_json::to_value(value).ok()
 }
 
 async fn handle_create(
