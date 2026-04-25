@@ -111,9 +111,14 @@ select:focus, input:focus { outline: 1px solid var(--blue); border-color: var(--
 .group-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .group-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 10px; }
 .group-count { padding: 2px 8px; border-radius: 999px; background: var(--gray-soft); color: var(--muted); font-size: 11.5px; font-weight: 500; }
-.uplink-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px; border-top: 1px solid var(--line); }
+.uplink-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px; border-top: 1px solid var(--line); }
 .uplink-row:first-child { border-top: 0; }
-.uplink-name { font-weight: 500; }
+.uplink-info { display: grid; gap: 4px; min-width: 0; flex: 1; }
+.uplink-name { font-weight: 600; font-size: 13.5px; }
+.uplink-meta { display: flex; gap: 6px; flex-wrap: wrap; }
+.meta-chip { font-size: 11.5px; padding: 2px 8px; border-radius: 999px; background: var(--soft); border: 1px solid var(--line); color: var(--muted); }
+.meta-chip strong { color: var(--text); font-weight: 500; }
+.meta-chip.transport { background: var(--blue-soft); color: var(--blue); border-color: var(--blue-soft); }
 .uplink-actions { display: flex; gap: 6px; }
 .form-box { margin-top: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--soft-2); display: grid; gap: 8px; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; }
@@ -169,10 +174,18 @@ const state = {
   instances: [],
   currentInstance: null,
   groups: [],
+  // map: instance name -> { "group\u0000name": configObject }
+  detailsByInstance: {},
   dirtyInstances: new Set(),
   openForm: null, // { kind: 'create'|'edit', group, name? }
   errors: [],
 };
+
+function detailsKey(group, name) { return group + "\u0000" + name; }
+function getUplinkConfig(group, name) {
+  const map = state.detailsByInstance[state.currentInstance];
+  return map ? (map[detailsKey(group, name)] || null) : null;
+}
 
 const TRANSPORTS = ["shadowsocks", "vless"];
 const WS_MODES = ["", "http1", "http2", "http3"];
@@ -237,10 +250,23 @@ function renderGroups() {
       <div class="uplinks"></div>`;
     const list = panel.querySelector(".uplinks");
     for (const u of uplinks) {
+      const cfg = getUplinkConfig(group.name, u.name) || {};
+      const chips = [];
+      if (cfg.transport) chips.push(`<span class="meta-chip transport">${escapeHtml(cfg.transport)}</span>`);
+      if (cfg.tcp_addr) chips.push(`<span class="meta-chip">TCP <strong>${escapeHtml(cfg.tcp_addr)}</strong></span>`);
+      if (cfg.udp_addr) chips.push(`<span class="meta-chip">UDP <strong>${escapeHtml(cfg.udp_addr)}</strong></span>`);
+      if (cfg.tcp_ws_url) chips.push(`<span class="meta-chip">TCP WS <strong>${escapeHtml(cfg.tcp_ws_url)}</strong></span>`);
+      if (cfg.udp_ws_url) chips.push(`<span class="meta-chip">UDP WS <strong>${escapeHtml(cfg.udp_ws_url)}</strong></span>`);
+      if (cfg.method) chips.push(`<span class="meta-chip">${escapeHtml(cfg.method)}</span>`);
+      if (cfg.weight != null) chips.push(`<span class="meta-chip">w=${escapeHtml(cfg.weight)}</span>`);
+      if (cfg.fwmark != null) chips.push(`<span class="meta-chip">fwmark=${escapeHtml(cfg.fwmark)}</span>`);
       const row = document.createElement("div");
       row.className = "uplink-row";
       row.innerHTML = `
-        <div class="uplink-name">${escapeHtml(u.name)}</div>
+        <div class="uplink-info">
+          <div class="uplink-name">${escapeHtml(u.name)}</div>
+          <div class="uplink-meta">${chips.join("") || `<span class="meta-chip">no on-disk config</span>`}</div>
+        </div>
         <div class="uplink-actions">
           <button class="btn" type="button" data-edit-group="${escapeHtml(group.name)}" data-edit-name="${escapeHtml(u.name)}">Edit</button>
           <button class="btn danger" type="button" data-del-group="${escapeHtml(group.name)}" data-del-name="${escapeHtml(u.name)}">Delete</button>
@@ -287,18 +313,24 @@ const FIELDS = [
 function renderForm(form) {
   const box = document.createElement("div");
   box.className = "form-box";
+  const existing = form.kind === "edit" ? (getUplinkConfig(form.group, form.name) || {}) : {};
   const title = form.kind === "create"
     ? `Add uplink to "${form.group}"`
-    : `Edit "${form.name}" in "${form.group}" (blank = unchanged)`;
+    : `Edit "${form.name}" in "${form.group}" (only changed fields are sent)`;
   const fields = FIELDS.map(f => {
     if (form.kind === "edit" && f.key === "name") return "";
+    const cur = existing[f.key];
     if (f.type === "select") {
-      const opts = f.options.map(v => `<option value="${escapeHtml(v)}">${v === "" ? "—" : escapeHtml(v)}</option>`).join("");
+      const opts = f.options.map(v => {
+        const selected = (v !== "" && String(cur) === v) ? " selected" : "";
+        return `<option value="${escapeHtml(v)}"${selected}>${v === "" ? "—" : escapeHtml(v)}</option>`;
+      }).join("");
       return `<div class="form-field"><label>${escapeHtml(f.label)}</label><select data-field="${f.key}">${opts}</select></div>`;
     }
     const type = f.type === "number" ? "number" : "text";
     const step = f.type === "number" && f.key === "weight" ? ` step="0.1"` : "";
-    return `<div class="form-field"><label>${escapeHtml(f.label)}</label><input type="${type}" data-field="${f.key}"${step}></div>`;
+    const value = cur != null ? ` value="${escapeHtml(cur)}"` : "";
+    return `<div class="form-field"><label>${escapeHtml(f.label)}</label><input type="${type}" data-field="${f.key}"${step}${value}></div>`;
   }).join("");
   box.innerHTML = `
     <div style="font-weight:600;">${escapeHtml(title)}</div>
@@ -410,14 +442,31 @@ async function loadInstances() {
   } catch (err) {
     state.errors.push(String(err));
   }
+  if (state.currentInstance) {
+    await loadDetails(state.currentInstance);
+  }
   renderErrors();
   renderInstanceSelect();
   renderDirty();
   renderGroups();
 }
 
+async function loadDetails(instance) {
+  try {
+    const res = await fetch(`/dashboard/api/uplinks?instance=${encodeURIComponent(instance)}`, { cache: "no-store" });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const map = {};
+    for (const entry of data.uplinks || []) {
+      if (entry.config) map[detailsKey(entry.group, entry.name)] = entry.config;
+    }
+    state.detailsByInstance[instance] = map;
+  } catch (err) {
+    state.errors.push(`details for ${instance}: ${err.message || err}`);
+  }
+}
+
 async function loadInstance(name) {
-  // Re-fetch topology — simpler and keeps all instances fresh.
   state.currentInstance = name;
   await loadInstances();
 }
@@ -443,11 +492,14 @@ document.getElementById("themeToggle").addEventListener("click", () => {
   const cur = document.documentElement.getAttribute("data-theme") || "dark";
   applyTheme(cur === "dark" ? "light" : "dark");
 });
-document.getElementById("instanceSelect").addEventListener("change", e => {
+document.getElementById("instanceSelect").addEventListener("change", async e => {
   state.currentInstance = e.target.value;
   state.openForm = null;
   const cur = state.instances.find(i => i.name === state.currentInstance);
   state.groups = cur ? cur.groups : [];
+  if (!state.detailsByInstance[state.currentInstance]) {
+    await loadDetails(state.currentInstance);
+  }
   renderDirty();
   renderGroups();
 });
