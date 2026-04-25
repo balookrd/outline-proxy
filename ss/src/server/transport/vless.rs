@@ -506,7 +506,7 @@ where
 
 pub(super) async fn handle_vless_connection(
     socket: WebSocket,
-    server: VlessWsServerCtx,
+    server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
 ) -> Result<()> {
     run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route).await

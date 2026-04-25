@@ -398,7 +398,7 @@ where
 
 pub(super) async fn handle_tcp_connection(
     socket: WebSocket,
-    server: WsTcpServerCtx,
+    server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
 ) -> Result<()> {
     run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route).await

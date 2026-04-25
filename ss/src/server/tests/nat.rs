@@ -65,12 +65,12 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
     let users = build_users(&config)?;
     let user = users[0].clone();
     let metrics = Metrics::new(&config);
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
-        dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
-        prefer_ipv4_upstream: false,
-        outbound_ipv6: None,
-        udp: UdpServices {
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
@@ -78,7 +78,7 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
             ),
             relay_semaphore: None,
         },
-    });
+    ));
     let ctx = SsUdpCtx { users, services };
     let server =
         tokio::spawn(

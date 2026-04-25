@@ -199,26 +199,9 @@ pub(in crate::server) async fn serve_h3_server(
         Arc::new(initial.vless.keys().cloned().collect::<BTreeSet<_>>());
     drop(initial);
     let (endpoint, ws_config) = server.into_parts();
-    let tcp_server = Arc::new(WsTcpServerCtx {
-        metrics: services.metrics.clone(),
-        dns_cache: Arc::clone(&services.dns_cache),
-        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
-        outbound_ipv6: services.outbound_ipv6.clone(),
-    });
-    let udp_server = Arc::new(UdpServerCtx {
-        metrics: services.metrics.clone(),
-        nat_table: Arc::clone(&services.udp.nat_table),
-        replay_store: Arc::clone(&services.udp.replay_store),
-        dns_cache: Arc::clone(&services.dns_cache),
-        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
-        relay_semaphore: services.udp.relay_semaphore.clone(),
-    });
-    let vless_server = Arc::new(VlessWsServerCtx {
-        metrics: services.metrics.clone(),
-        dns_cache: Arc::clone(&services.dns_cache),
-        prefer_ipv4_upstream: services.prefer_ipv4_upstream,
-        outbound_ipv6: services.outbound_ipv6.clone(),
-    });
+    let tcp_server = Arc::clone(&services.tcp_server);
+    let udp_server = Arc::clone(&services.udp_server);
+    let vless_server = Arc::clone(&services.vless_server);
 
     let connection_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_CONNECTIONS));
     let stream_semaphore = Arc::new(Semaphore::new(H3_MAX_CONCURRENT_STREAMS));

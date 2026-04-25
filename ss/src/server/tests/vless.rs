@@ -45,12 +45,12 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
     }));
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
-        dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
-        prefer_ipv4_upstream: false,
-        outbound_ipv6: None,
-        udp: UdpServices {
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
@@ -58,7 +58,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
             ),
             relay_semaphore: None,
         },
-    });
+    ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
@@ -122,12 +122,12 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
     }));
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
-        dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
-        prefer_ipv4_upstream: false,
-        outbound_ipv6: None,
-        udp: UdpServices {
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
@@ -135,7 +135,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
             ),
             relay_semaphore: None,
         },
-    });
+    ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
@@ -206,12 +206,12 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
         udp: Arc::new(BTreeMap::new()),
         vless: vless_routes,
     }));
-    let services = Arc::new(Services {
+    let services = Arc::new(Services::new(
         metrics,
-        dns_cache: DnsCache::new(std::time::Duration::from_secs(30)),
-        prefer_ipv4_upstream: false,
-        outbound_ipv6: None,
-        udp: UdpServices {
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
             nat_table: NatTable::new(std::time::Duration::from_secs(300)),
             replay_store: super::super::replay::ReplayStore::new(
                 std::time::Duration::from_secs(300),
@@ -219,7 +219,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
             ),
             relay_semaphore: None,
         },
-    });
+    ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
         http_root_auth: false,
