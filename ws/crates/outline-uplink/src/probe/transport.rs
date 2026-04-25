@@ -75,7 +75,7 @@ pub(super) async fn connect_probe_tcp(
                 Ok((TcpWriter::Vless(w), TcpReader::Vless(r)))
             }
             UplinkTransport::Ws => {
-                let (mut w, r) = outline_transport::connect_ss_tcp_quic(
+                let (w, r) = outline_transport::connect_ss_tcp_quic(
                     cache,
                     url,
                     uplink.fwmark,
