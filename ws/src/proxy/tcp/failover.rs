@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use futures_util::StreamExt;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use outline_transport::{
     TcpReader, TcpWriter,
@@ -10,7 +10,7 @@ use outline_transport::{
     connect_shadowsocks_tcp_with_source,
 };
 use socks5_proto::TargetAddr;
-use outline_uplink::{UplinkCandidate, UplinkManager, UplinkTransport};
+use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager, UplinkTransport};
 
 pub(super) const MAX_CHUNK0_FAILOVER_BUF: usize = 32 * 1024;
 
@@ -142,20 +142,41 @@ pub(super) async fn connect_tcp_uplink_fresh(
     {
         let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
         if mode == outline_transport::WsTransportMode::Quic {
-            let (writer, reader) = uplinks
+            match uplinks
                 .connect_tcp_quic_fresh(candidate, target, "socks_tcp")
-                .await?;
-            debug!(
-                uplink = %candidate.uplink.name,
-                target = %target,
-                transport = "quic",
-                "opened raw-QUIC TCP uplink"
-            );
-            return Ok(ConnectedTcpUplink {
-                writer,
-                reader,
-                source: TcpUplinkSource::FreshDial,
-            });
+                .await
+            {
+                Ok((writer, reader)) => {
+                    debug!(
+                        uplink = %candidate.uplink.name,
+                        target = %target,
+                        transport = "quic",
+                        "opened raw-QUIC TCP uplink"
+                    );
+                    return Ok(ConnectedTcpUplink {
+                        writer,
+                        reader,
+                        source: TcpUplinkSource::FreshDial,
+                    });
+                }
+                Err(e) => {
+                    warn!(
+                        uplink = %candidate.uplink.name,
+                        target = %target,
+                        error = %format!("{e:#}"),
+                        fallback = "ws/h2",
+                        "raw-QUIC TCP dial failed, falling back to WS over H2"
+                    );
+                    uplinks.note_advanced_mode_dial_failure(
+                        candidate.index,
+                        TransportKind::Tcp,
+                        &e,
+                    );
+                    // Fall through to the WS path below; effective_tcp_ws_mode
+                    // will now return H2 for the rest of the downgrade window,
+                    // and connect_websocket_with_source handles H2 → H1.
+                }
+            }
         }
     }
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;

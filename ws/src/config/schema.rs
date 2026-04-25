@@ -208,6 +208,11 @@ pub(super) struct UplinkGroupSection {
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
+    /// Cooldown before retrying the configured "advanced" dial mode (H3 or
+    /// raw QUIC) after a failure forced a fall-back to H2. Accepts the
+    /// historical key `h3_downgrade_secs` as well as the broader
+    /// `mode_downgrade_secs`. Default: 60.
+    #[serde(alias = "mode_downgrade_secs")]
     pub(super) h3_downgrade_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
@@ -296,6 +301,11 @@ pub(super) struct LoadBalancingSection {
     pub(super) failure_penalty_ms: Option<u64>,
     pub(super) failure_penalty_max_ms: Option<u64>,
     pub(super) failure_penalty_halflife_secs: Option<u64>,
+    /// Cooldown before retrying the configured "advanced" dial mode (H3 or
+    /// raw QUIC) after a failure forced a fall-back to H2. Accepts the
+    /// historical key `h3_downgrade_secs` as well as the broader
+    /// `mode_downgrade_secs`. Default: 60.
+    #[serde(alias = "mode_downgrade_secs")]
     pub(super) h3_downgrade_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
