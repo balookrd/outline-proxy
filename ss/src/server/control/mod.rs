@@ -16,12 +16,10 @@
 //! - The implicit user synthesized from the top-level `password` field cannot
 //!   be mutated via the control plane.
 
-mod dashboard;
 mod handlers;
 mod manager;
 mod persist;
 mod server;
 
-pub(in crate::server) use dashboard::spawn_dashboard_server;
 pub(in crate::server) use manager::UserManager;
 pub(in crate::server) use server::spawn_control_server;

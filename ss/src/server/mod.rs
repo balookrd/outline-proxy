@@ -27,6 +27,8 @@ mod connect;
 mod constants;
 #[cfg(feature = "control")]
 mod control;
+#[cfg(feature = "control")]
+mod dashboard;
 mod dns_cache;
 mod listeners;
 mod nat;
@@ -106,7 +108,7 @@ pub async fn run(config: Config) -> Result<()> {
     }
     #[cfg(feature = "control")]
     if let Some(dashboard_config) = config.dashboard.clone() {
-        control::spawn_dashboard_server(dashboard_config, shutdown_signal.clone());
+        dashboard::spawn_dashboard_server(dashboard_config, shutdown_signal.clone());
     }
     let user_routes = describe_user_routes(built.user_routes.as_ref());
     let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
