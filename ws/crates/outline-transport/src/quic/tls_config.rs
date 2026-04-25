@@ -56,13 +56,28 @@ static QUIC_CLIENT_CONFIGS: OnceLock<Mutex<HashMap<Vec<u8>, quinn::ClientConfig>
 /// timeout match the H3 path: PING every 10s, drop after 30s of silence.
 /// QUIC datagrams are enabled (RFC 9221) — required by VLESS-UDP and
 /// SS-UDP over raw QUIC.
+///
+/// For the legacy `vless` / `ss` ALPNs the rustls config offers BOTH
+/// the MTU-aware sibling (e.g. `vless-mtu`) AND the requested base
+/// ALPN in `alpn_protocols`, in that order — newer servers pick the
+/// MTU-aware variant and the resulting connection exposes the
+/// oversize-stream fallback; older servers pick the base ALPN and
+/// the connection behaves exactly as before. Caller branches via
+/// [`super::SharedQuicConnection::supports_oversize_stream`].
 pub(crate) fn quic_client_config(alpn: &[u8]) -> quinn::ClientConfig {
     let cache = QUIC_CLIENT_CONFIGS.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = cache.lock();
     if let Some(existing) = guard.get(alpn) {
         return existing.clone();
     }
-    let tls = crate::tls::build_client_config(&[alpn]);
+    // Build the offered-ALPN list: MTU-aware sibling first (server
+    // picks the highest-preference one it supports), then the base
+    // ALPN. Older servers that only know the base ALPN still match.
+    let alpn_offered: Vec<&[u8]> = match super::mtu_alpn_for(alpn) {
+        Some(mtu_alpn) => vec![mtu_alpn, alpn],
+        None => vec![alpn],
+    };
+    let tls = crate::tls::build_client_config(&alpn_offered);
     let quic_tls = quinn::crypto::rustls::QuicClientConfig::try_from((*tls).clone())
         .expect("rustls ALPN config is always QUIC-compatible");
     let mut config = quinn::ClientConfig::new(Arc::new(quic_tls));

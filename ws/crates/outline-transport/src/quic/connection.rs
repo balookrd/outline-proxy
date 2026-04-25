@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use anyhow::{Context, Result, bail};
 use tokio::sync::OnceCell;
 
+use super::oversize::OversizeStream;
 use super::vless_udp::VlessUdpDemuxer;
 
 /// One QUIC connection per `(server_name, port, fwmark)` cache key.
@@ -35,6 +36,19 @@ pub struct SharedQuicConnection {
     /// per-session mpsc. Only used when this connection's ALPN is
     /// `vless` and at least one UDP session is active.
     pub(super) vless_udp_demuxer: OnceCell<Arc<VlessUdpDemuxer>>,
+    /// ALPN negotiated during the TLS handshake. Used by callers to
+    /// branch between MTU-aware variants (`vless-mtu`, `ss-mtu`) and
+    /// the legacy single-ALPN behaviour. Empty if the peer did not
+    /// negotiate any ALPN, which is unexpected for our deployments
+    /// but tolerated to keep the field infallible.
+    pub(super) negotiated_alpn: Vec<u8>,
+    /// Connection-level oversize-record bidi stream, lazy-opened on
+    /// first use. Carries UDP payloads that exceed the negotiated
+    /// `max_datagram_size`. `None` when the negotiated ALPN is one of
+    /// the legacy non-MTU variants (e.g. plain `vless` / `ss`); the
+    /// per-session send paths fall back to `OversizedUdpDatagram`
+    /// errors in that case so the TUN UDP engine drops the packet.
+    pub(super) oversize_stream: OnceCell<Arc<OversizeStream>>,
     pub(super) _driver_task: crate::AbortOnDrop,
 }
 
@@ -110,6 +124,54 @@ impl SharedQuicConnection {
         self.vless_udp_demuxer
             .get_or_init(|| async { VlessUdpDemuxer::spawn(Arc::clone(self)) })
             .await
+    }
+
+    /// ALPN negotiated during the TLS handshake. Empty bytes if no
+    /// ALPN was negotiated (unexpected for outline deployments).
+    pub fn negotiated_alpn(&self) -> &[u8] {
+        &self.negotiated_alpn
+    }
+
+    /// `true` when the negotiated ALPN supports the oversize-record
+    /// stream fallback (one of [`super::ALPN_VLESS_MTU`] /
+    /// [`super::ALPN_SS_MTU`]).
+    pub fn supports_oversize_stream(&self) -> bool {
+        super::alpn_supports_oversize(&self.negotiated_alpn)
+    }
+
+    /// Get or lazy-open the connection-level oversize-record bidi
+    /// stream. Returns `Err` if the negotiated ALPN does not advertise
+    /// oversize-stream support, or if the underlying `open_bi` fails.
+    /// Subsequent calls reuse the same stream regardless of how it was
+    /// opened (locally on first send, or accepted from the peer if it
+    /// opens first).
+    pub async fn ensure_oversize_stream(self: &Arc<Self>) -> Result<Arc<OversizeStream>> {
+        if !self.supports_oversize_stream() {
+            bail!("oversize-stream not supported on this connection's negotiated ALPN");
+        }
+        let stream = self
+            .oversize_stream
+            .get_or_try_init(|| async {
+                let (send, recv) = self.open_bidi_stream().await?;
+                Ok::<_, anyhow::Error>(OversizeStream::from_local_open(send, recv))
+            })
+            .await?;
+        Ok(Arc::clone(stream))
+    }
+
+    /// Install an oversize-stream that was accepted from the peer (the
+    /// peer opened it first). Idempotent: if a local-opened stream is
+    /// already cached, returns the existing one; otherwise installs and
+    /// returns the supplied one.
+    pub fn install_accepted_oversize_stream(
+        &self,
+        stream: Arc<OversizeStream>,
+    ) -> Arc<OversizeStream> {
+        // OnceCell::set returns Err with the original value when full.
+        match self.oversize_stream.set(Arc::clone(&stream)) {
+            Ok(()) => stream,
+            Err(_) => Arc::clone(self.oversize_stream.get().expect("set returned Err so a value is present")),
+        }
     }
 
     /// Underlying connection — used by the VLESS-UDP demuxer to call

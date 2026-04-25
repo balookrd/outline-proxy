@@ -58,7 +58,7 @@ pub const ALPN_SS_MTU: &[u8] = b"ss-mtu";
 /// per-ALPN connection registry uses the MTU-aware ALPN as the
 /// preferred attempt; if the server doesn't advertise it the dialer
 /// falls back to the base ALPN with oversize records disabled.
-pub fn mtu_alpn_for(alpn: &'static [u8]) -> Option<&'static [u8]> {
+pub fn mtu_alpn_for(alpn: &[u8]) -> Option<&'static [u8]> {
     if alpn == ALPN_VLESS {
         Some(ALPN_VLESS_MTU)
     } else if alpn == ALPN_SS {
