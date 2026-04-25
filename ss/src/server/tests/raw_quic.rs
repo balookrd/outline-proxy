@@ -391,6 +391,134 @@ async fn vless_raw_quic_udp_relay_smoke() -> Result<()> {
     Ok(())
 }
 
+/// End-to-end test for the VLESS UDP oversize stream-fallback. Sends a
+/// payload that exceeds `Connection::max_datagram_size()` over the
+/// connection-level oversize-record stream and verifies the upstream
+/// echo arrives back on the same stream (triggered by the server
+/// reader-task observing oversize on the response and dispatching to
+/// the same OversizeStream rather than QUIC datagrams).
+#[tokio::test]
+async fn vless_raw_quic_udp_oversize_relay() -> Result<()> {
+    // Upstream echo capable of 2 KiB packets — well over the 1200 B
+    // default max_datagram_size that initial_mtu=1200 yields, so both
+    // directions are forced through the oversize stream.
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 4096];
+        let (n, peer) = upstream.recv_from(&mut buf).await?;
+        upstream.send_to(&buf[..n], peer).await?;
+        Result::<_, anyhow::Error>::Ok(buf[..n].to_vec())
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    // Server advertises BOTH `vless-mtu` and `vless`; client offers
+    // only `vless-mtu` so the negotiated ALPN is unambiguous.
+    let (tls_config, cert_der) = raw_quic_server_tls(&[b"vless-mtu", b"vless"])?;
+    let server = bind_raw_quic_server(server_addr, tls_config).await?;
+    let addr = server.local_addr()?;
+
+    let config = super::sample_config(addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(VLESS_UUID.into(), None)?;
+    let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
+    let raw_vless_candidates: Arc<[Arc<str>]> =
+        Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
+
+    let routes = empty_route_registry();
+    let services = build_services(metrics);
+    let auth = empty_auth();
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            Arc::from(vec![H3Alpn::Vless].into_boxed_slice()),
+            raw_vless_users,
+            raw_vless_candidates,
+            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(raw_quic_client_config_with_datagrams(
+        cert_der,
+        &[b"vless-mtu"],
+    )?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+
+    // Step 1: open the control bidi for the UDP session and read the
+    // server-allocated session_id (4-byte BE) out of the response
+    // header. Identical to the non-oversize smoke test.
+    let (mut ctrl_send, mut ctrl_recv) = connection.open_bi().await?;
+    let mut header = Vec::new();
+    header.push(VERSION);
+    header.extend_from_slice(&parse_uuid(VLESS_UUID)?);
+    header.push(0); // option length
+    header.push(COMMAND_UDP);
+    header.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    header.push(0x01); // ipv4
+    header.extend_from_slice(&[127, 0, 0, 1]);
+    ctrl_send.write_all(&header).await?;
+
+    let mut response = [0_u8; 6];
+    ctrl_recv.read_exact(&mut response).await?;
+    assert_eq!(response[0], VERSION);
+    assert_eq!(response[1], 0x00);
+    let session_id = u32::from_be_bytes([response[2], response[3], response[4], response[5]]);
+
+    // Step 2: open the connection-level oversize-record stream. Magic
+    // prefix (8 bytes) + length-prefixed record carrying
+    // [session_id_4B || payload_2048B]. The payload is well above
+    // any quinn max_datagram_size we'd see locally, forcing the
+    // server reader-task to also use the stream for the echoed
+    // response.
+    let (mut over_send, mut over_recv) = connection.open_bi().await?;
+    over_send.write_all(b"OUTLINE\x01").await?;
+    let payload: Vec<u8> = (0..2048u32).map(|i| (i & 0xff) as u8).collect();
+    let record_len = (4 + payload.len()) as u16;
+    let mut record_frame = Vec::with_capacity(2 + record_len as usize);
+    record_frame.extend_from_slice(&record_len.to_be_bytes());
+    record_frame.extend_from_slice(&session_id.to_be_bytes());
+    record_frame.extend_from_slice(&payload);
+    over_send.write_all(&record_frame).await?;
+
+    // Step 3: upstream sees the original payload and echoes it. The
+    // task asserts the body it received matches what we sent.
+    let upstream_observed = upstream_task.await??;
+    assert_eq!(upstream_observed, payload, "upstream payload mismatch");
+
+    // Step 4: read the echoed record back. Server's reader-task on
+    // the per-session UDP socket sees a 2048-byte response, observes
+    // the oversize condition, and writes the record into the SAME
+    // oversize stream (it was installed at accept_bi time on the
+    // server side from our open_bi above). The first 8 bytes the
+    // server writes are the symmetric magic; subsequent bytes are
+    // length-prefixed records.
+    let mut server_magic = [0_u8; 8];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut server_magic)).await??;
+    assert_eq!(&server_magic, b"OUTLINE\x01");
+    let mut len_buf = [0_u8; 2];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut len_buf)).await??;
+    let echoed_len = u16::from_be_bytes(len_buf) as usize;
+    assert_eq!(echoed_len, 4 + payload.len(), "echoed record length mismatch");
+    let mut echoed = vec![0_u8; echoed_len];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut echoed)).await??;
+    let echoed_session = u32::from_be_bytes([echoed[0], echoed[1], echoed[2], echoed[3]]);
+    assert_eq!(echoed_session, session_id, "echoed session_id mismatch");
+    assert_eq!(&echoed[4..], &payload[..], "echoed payload mismatch");
+
+    let _ = ctrl_send.finish();
+    let _ = over_send.finish();
+    server_task.abort();
+    let _ = server_task.await;
+    endpoint.close(0_u32.into(), b"done");
+    Ok(())
+}
+
 #[tokio::test]
 async fn ss_raw_quic_udp_relay_smoke() -> Result<()> {
     // UDP echo upstream.
