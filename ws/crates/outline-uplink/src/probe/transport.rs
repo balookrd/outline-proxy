@@ -49,9 +49,8 @@ pub(super) async fn connect_probe_tcp(
             || uplink.transport == UplinkTransport::Vless)
     {
         let url = uplink
-            .tcp_ws_url
-            .as_ref()
-            .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?;
+            .tcp_dial_url()
+            .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
         return match uplink.transport {
             UplinkTransport::Vless => {
                 let uuid = uplink
@@ -145,9 +144,9 @@ pub(super) async fn connect_probe_tcp(
             let ws_stream = connect_websocket_with_source(
                 cache,
                 uplink
-                    .tcp_ws_url
+                    .vless_ws_url
                     .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    .ok_or_else(|| anyhow!("uplink {} missing vless_ws_url", uplink.name))?,
                 effective_tcp_mode,
                 uplink.fwmark,
                 uplink.ipv6_first,

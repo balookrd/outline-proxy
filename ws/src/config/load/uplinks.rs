@@ -16,6 +16,8 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) tcp_ws_mode: Option<WsTransportMode>,
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_ws_mode: Option<WsTransportMode>,
+    pub(super) vless_ws_url: Option<Url>,
+    pub(super) vless_ws_mode: Option<WsTransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
     pub(super) cipher: Option<CipherKind>,
@@ -48,6 +50,13 @@ impl ResolvedUplinkInput {
             udp_ws_mode: args
                 .udp_ws_mode
                 .or_else(|| outline.and_then(|section| section.udp_ws_mode)),
+            vless_ws_url: args
+                .vless_ws_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.vless_ws_url.clone())),
+            vless_ws_mode: args
+                .vless_ws_mode
+                .or_else(|| outline.and_then(|section| section.vless_ws_mode)),
             tcp_addr: args
                 .tcp_addr
                 .clone()
@@ -78,6 +87,8 @@ impl ResolvedUplinkInput {
             tcp_ws_mode: uplink.tcp_ws_mode,
             udp_ws_url: uplink.udp_ws_url.clone(),
             udp_ws_mode: uplink.udp_ws_mode,
+            vless_ws_url: uplink.vless_ws_url.clone(),
+            vless_ws_mode: uplink.vless_ws_mode,
             tcp_addr: uplink.tcp_addr.clone(),
             udp_addr: uplink.udp_addr.clone(),
             cipher: uplink.method,
@@ -102,6 +113,8 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             tcp_ws_mode,
             udp_ws_url,
             udp_ws_mode,
+            vless_ws_url,
+            vless_ws_mode,
             tcp_addr,
             udp_addr,
             cipher,
@@ -146,45 +159,105 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             None
         };
 
+        // Per-transport field gating: each transport owns a disjoint subset of
+        // the WS/socket fields. Cross-population is rejected at parse time so
+        // misconfiguration surfaces as a clear error rather than a confusing
+        // dial failure later.
+        let (tcp_ws_url, tcp_ws_mode, udp_ws_url, udp_ws_mode, vless_ws_url, vless_ws_mode, tcp_addr, udp_addr) =
+            match transport {
+                UplinkTransport::Ws => {
+                    if vless_ws_url.is_some() || vless_ws_mode.is_some() {
+                        bail!(
+                            "uplink {name}: `vless_ws_url`/`vless_ws_mode` are only valid for transport=vless"
+                        );
+                    }
+                    if tcp_addr.is_some() || udp_addr.is_some() {
+                        bail!(
+                            "uplink {name}: `tcp_addr`/`udp_addr` are only valid for transport=shadowsocks"
+                        );
+                    }
+                    let tcp_ws_url = Some(tcp_ws_url.ok_or_else(|| {
+                        anyhow!("uplink {name}: transport=ws requires `tcp_ws_url`")
+                    })?);
+                    (
+                        tcp_ws_url,
+                        tcp_ws_mode.unwrap_or_default(),
+                        udp_ws_url,
+                        udp_ws_mode.unwrap_or_default(),
+                        None,
+                        WsTransportMode::default(),
+                        None,
+                        None,
+                    )
+                },
+                UplinkTransport::Vless => {
+                    if tcp_ws_url.is_some()
+                        || tcp_ws_mode.is_some()
+                        || udp_ws_url.is_some()
+                        || udp_ws_mode.is_some()
+                    {
+                        bail!(
+                            "uplink {name}: `tcp_ws_url`/`tcp_ws_mode`/`udp_ws_url`/`udp_ws_mode` are not valid for transport=vless; use the single `vless_ws_url`/`vless_ws_mode` instead (the VLESS server exposes one path for both TCP and UDP)"
+                        );
+                    }
+                    if tcp_addr.is_some() || udp_addr.is_some() {
+                        bail!(
+                            "uplink {name}: `tcp_addr`/`udp_addr` are only valid for transport=shadowsocks"
+                        );
+                    }
+                    let vless_ws_url = Some(vless_ws_url.ok_or_else(|| {
+                        anyhow!("uplink {name}: transport=vless requires `vless_ws_url`")
+                    })?);
+                    (
+                        None,
+                        WsTransportMode::default(),
+                        None,
+                        WsTransportMode::default(),
+                        vless_ws_url,
+                        vless_ws_mode.unwrap_or_default(),
+                        None,
+                        None,
+                    )
+                },
+                UplinkTransport::Shadowsocks => {
+                    if tcp_ws_url.is_some()
+                        || tcp_ws_mode.is_some()
+                        || udp_ws_url.is_some()
+                        || udp_ws_mode.is_some()
+                        || vless_ws_url.is_some()
+                        || vless_ws_mode.is_some()
+                    {
+                        bail!(
+                            "uplink {name}: websocket uplink fields are not valid for transport=shadowsocks; use `tcp_addr`/`udp_addr`"
+                        );
+                    }
+                    let tcp_addr = Some(tcp_addr.ok_or_else(|| {
+                        anyhow!("uplink {name}: transport=shadowsocks requires `tcp_addr`")
+                    })?);
+                    (
+                        None,
+                        WsTransportMode::default(),
+                        None,
+                        WsTransportMode::default(),
+                        None,
+                        WsTransportMode::default(),
+                        tcp_addr,
+                        udp_addr,
+                    )
+                },
+            };
+
         Ok(UplinkConfig {
             name,
             transport,
-            tcp_ws_url: match transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => Some(tcp_ws_url.ok_or_else(|| {
-                    anyhow!("missing tcp_ws_url: set it in config.toml or pass --tcp-ws-url")
-                })?),
-                UplinkTransport::Shadowsocks => {
-                    if tcp_ws_url.is_some() || udp_ws_url.is_some() {
-                        bail!(
-                            "websocket uplink fields are not valid for transport=shadowsocks; use tcp_addr/udp_addr"
-                        );
-                    }
-                    None
-                },
-            },
-            tcp_ws_mode: tcp_ws_mode.unwrap_or_default(),
-            udp_ws_url: match transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => udp_ws_url,
-                UplinkTransport::Shadowsocks => None,
-            },
-            udp_ws_mode: udp_ws_mode.unwrap_or_default(),
-            tcp_addr: match transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => {
-                    if tcp_addr.is_some() || udp_addr.is_some() {
-                        bail!(
-                            "socket uplink fields are not valid for transport=websocket/vless; use tcp_ws_url/udp_ws_url"
-                        );
-                    }
-                    None
-                },
-                UplinkTransport::Shadowsocks => Some(tcp_addr.ok_or_else(|| {
-                    anyhow!("missing tcp_addr: set it in config.toml or pass --tcp-addr")
-                })?),
-            },
-            udp_addr: match transport {
-                UplinkTransport::Ws | UplinkTransport::Vless => None,
-                UplinkTransport::Shadowsocks => udp_addr,
-            },
+            tcp_ws_url,
+            tcp_ws_mode,
+            udp_ws_url,
+            udp_ws_mode,
+            vless_ws_url,
+            vless_ws_mode,
+            tcp_addr,
+            udp_addr,
             cipher,
             password,
             weight,
@@ -241,6 +314,8 @@ fn cli_uplink_override_requested(args: &Args) -> bool {
         || args.tcp_ws_mode.is_some()
         || args.udp_ws_url.is_some()
         || args.udp_ws_mode.is_some()
+        || args.vless_ws_url.is_some()
+        || args.vless_ws_mode.is_some()
         || args.tcp_addr.is_some()
         || args.udp_addr.is_some()
         || args.method.is_some()

@@ -30,6 +30,19 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Changed
 
+- **Breaking config change for `transport = "vless"` uplinks.** The VLESS server exposes a single WS path (`ws_path_vless`) shared by TCP and UDP, so the client now takes a single `vless_ws_url` / `vless_ws_mode` pair instead of duplicated `tcp_ws_url`+`udp_ws_url` / `tcp_ws_mode`+`udp_ws_mode`. The old fields are rejected with an explicit parse error when `transport = "vless"`. CLI: new `--vless-ws-url` / `--vless-ws-mode` (`OUTLINE_VLESS_WS_URL` / `OUTLINE_VLESS_WS_MODE`). Migration: replace
+  ```toml
+  tcp_ws_url = "wss://host/path"
+  udp_ws_url = "wss://host/path"
+  tcp_ws_mode = "h2"
+  udp_ws_mode = "h2"
+  ```
+  with
+  ```toml
+  vless_ws_url = "wss://host/path"
+  vless_ws_mode = "h2"
+  ```
+  No alias / silent fallback; `transport = "ws"` and `transport = "shadowsocks"` are unaffected.
 - Reworked configuration, bootstrap, proxy, UDP, metrics, and TUN internals to fit the workspace layout and smaller focused modules.
 - Reduced hot-path overhead with lower-allocation DNS caching, boxed AEAD variants, finer-grained uplink status locking, non-blocking `AsyncFd` TUN I/O, less heap churn in UDP/TCP paths, a mutex-free UDP send path, SACK scoreboard without per-ACK cloning, sticky-route pruning moved off the connect hot path, coalesced `/metrics` scrapes, and lock-free standby-pool reads.
 - Raised the WebSocket read idle timeout from 120s to 300s so long idle periods (e.g. while an upstream model is thinking) no longer evict otherwise healthy sessions.

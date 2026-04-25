@@ -104,6 +104,8 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         tcp_ws_mode: WsTransportMode::Http1,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
         udp_ws_mode: WsTransportMode::Http1,
+        vless_ws_url: None,
+        vless_ws_mode: WsTransportMode::Http1,
         tcp_addr: None,
         udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,

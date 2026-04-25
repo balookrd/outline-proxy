@@ -84,9 +84,8 @@ async fn run_tcp_probe(
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
                     let url = uplink
-                        .tcp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?;
+                        .tcp_dial_url()
+                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
                     if effective_tcp_mode == WsTransportMode::Quic {
                         run_quic_handshake_probe(
                             cache,
@@ -181,9 +180,8 @@ async fn run_udp_probe(
             match uplink.transport {
                 UplinkTransport::Ws | UplinkTransport::Vless => {
                     let url = uplink
-                        .udp_ws_url
-                        .as_ref()
-                        .ok_or_else(|| anyhow!("uplink {} missing udp_ws_url", uplink.name))?;
+                        .udp_dial_url()
+                        .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
                     if effective_udp_mode == WsTransportMode::Quic {
                         run_quic_handshake_probe(
                             cache,

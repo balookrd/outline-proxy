@@ -64,7 +64,7 @@ impl UplinkManager {
                 label: "tcp",
                 refill_source: "standby_tcp",
                 desired: lb.warm_standby_tcp,
-                url: uplink.tcp_ws_url.as_ref(),
+                url: uplink.tcp_dial_url(),
                 mode: self.effective_tcp_ws_mode(index).await,
             },
             TransportKind::Udp => StandbyCtx {
@@ -77,7 +77,7 @@ impl UplinkManager {
                 label: "udp",
                 refill_source: "standby_udp",
                 desired: lb.warm_standby_udp,
-                url: uplink.udp_ws_url.as_ref(),
+                url: uplink.udp_dial_url(),
                 mode: self.effective_udp_ws_mode(index).await,
             },
         }
