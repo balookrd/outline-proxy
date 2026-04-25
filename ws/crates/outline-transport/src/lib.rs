@@ -157,7 +157,9 @@ pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};
 
 // Entry points — connection constructors for TCP/UDP/WebSocket transports.
-pub use udp_transport::{UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error};
+pub use udp_transport::{
+    OversizedUdpDatagram, UdpSessionTransport, UdpWsTransport, is_dropped_oversized_udp_error,
+};
 #[cfg(feature = "quic")]
 pub use quic_connect::{
     connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,

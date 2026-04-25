@@ -215,11 +215,12 @@ impl VlessUdpQuicSession {
         if let Some(max) = self.conn.max_datagram_size()
             && SESSION_ID_BYTES + payload.len() > max
         {
-            bail!(
-                "vless udp datagram too large: {} > {} (peer max_datagram_size)",
-                SESSION_ID_BYTES + payload.len(),
-                max
-            );
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            bail!(crate::OversizedUdpDatagram {
+                transport: "vless-udp-quic",
+                payload_len: SESSION_ID_BYTES + payload.len(),
+                limit: max,
+            });
         }
         let mut buf = BytesMut::with_capacity(SESSION_ID_BYTES + payload.len());
         buf.put_slice(&self.id_prefix);

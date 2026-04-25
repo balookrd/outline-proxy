@@ -4,8 +4,8 @@ use std::io::ErrorKind;
 use anyhow::Error;
 use outline_ss2022::Ss2022Error;
 use outline_transport::{
-    TransportOperation, WsClosed, contains_any, find_io_error_kind, find_typed,
-    is_transport_level_disconnect, lower_error,
+    OversizedUdpDatagram, TransportOperation, WsClosed, contains_any, find_io_error_kind,
+    find_typed, is_transport_level_disconnect, lower_error,
 };
 use shadowsocks_crypto::CryptoError;
 
@@ -145,6 +145,9 @@ pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str 
             TransportOperation::Connect { .. } => "connect_failed",
             TransportOperation::DnsResolveNoAddresses { .. } => "dns_no_addresses",
         };
+    }
+    if find_typed::<OversizedUdpDatagram>(error).is_some() {
+        return "oversized_udp";
     }
     // Typed: ss2022 framing/replay errors.
     if let Some(ss) = find_typed::<Ss2022Error>(error) {

@@ -47,10 +47,25 @@ pub struct UdpWsTransport {
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
+/// Marker error for "the upstream UDP transport rejected this datagram
+/// because it exceeds a hard size limit it cannot fragment around"
+/// (e.g. QUIC `max_datagram_size`, the 64 KiB VLESS UDP frame ceiling).
+/// Surfaced via `bail!(OversizedUdpDatagram { ... })` so callers can
+/// distinguish "too big to send, drop the packet" from a real transport
+/// failure that should mark the uplink unhealthy.
+#[derive(Debug, thiserror::Error)]
+#[error("oversized UDP datagram: {payload_len} > {limit} ({transport})")]
+pub struct OversizedUdpDatagram {
+    pub transport: &'static str,
+    pub payload_len: usize,
+    pub limit: usize,
+}
+
 pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .any(|e| matches!(e.downcast_ref::<Ss2022Error>(), Some(Ss2022Error::OversizedUdpUplink)))
+    error.chain().any(|e| {
+        matches!(e.downcast_ref::<Ss2022Error>(), Some(Ss2022Error::OversizedUdpUplink))
+            || e.downcast_ref::<OversizedUdpDatagram>().is_some()
+    })
 }
 
 impl UdpWsTransport {
