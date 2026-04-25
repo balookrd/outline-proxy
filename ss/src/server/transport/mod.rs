@@ -26,6 +26,7 @@ mod tcp;
 mod udp;
 mod vless;
 mod vless_mux;
+mod vless_udp;
 mod ws_socket;
 mod ws_writer;
 
