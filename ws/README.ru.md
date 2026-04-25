@@ -4,7 +4,7 @@
 
 # outline-ws-rust
 
-`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, на прямые Shadowsocks socket uplink'и или на VLESS-over-WebSocket аплинки.
+`outline-ws-rust` — production-ориентированный Rust-прокси, который принимает локальный SOCKS5-трафик и перенаправляет его на Outline-совместимые WebSocket-транспорты по HTTP/1.1, HTTP/2 или HTTP/3, на прямые Shadowsocks socket uplink'и, на VLESS-over-WebSocket аплинки, либо на raw QUIC аплинки (Shadowsocks / VLESS прямо поверх QUIC-стримов и датаграмм, без WebSocket).
 
 Поддерживает:
 
@@ -12,6 +12,7 @@
 - SOCKS5 `UDP ASSOCIATE` и `hev-socks5` `UDP-in-TCP` (`CMD=0x05`)
 - failover и балансировку нагрузки между несколькими аплинками
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`) и RFC 9220 (`ws-over-h3`)
+- raw QUIC транспорт (per-ALPN: `vless`, `ss`, `h3`) — VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket / HTTP/3
 - VLESS-over-WebSocket аплинки (UUID-аутентификация, общий WSS dial path, per-destination UDP session-mux)
 - прямые Shadowsocks TCP/UDP socket uplink'и
 - метрики Prometheus, встроенный multi-instance дашборд и готовые дашборды Grafana
@@ -28,7 +29,7 @@
 
 1. Принимает локальный SOCKS5 и опциональный TUN-трафик.
 2. Выбирает лучший доступный аплинк с помощью health-проб, EWMA RTT-скоринга, sticky-маршрутизации, гистерезиса, штрафов и warm standby.
-3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, либо к прямому Shadowsocks socket / VLESS-over-WebSocket аплинку.
+3. Подключается к Outline WebSocket-транспорту в запрошенном режиме (`http1`, `h2` или `h3`) с автоматическим fallback, к raw QUIC аплинку (`quic`, без fallback — пара к ALPN-листенеру на сервере), либо к прямому Shadowsocks socket / VLESS-over-WebSocket аплинку.
 4. Шифрует payload с помощью Shadowsocks AEAD или формирует VLESS-кадры с UUID-аутентификацией перед отправкой в upstream.
 5. Публикует метрики Prometheus для runtime, аплинков, проб, TUN и `tun2tcp`.
 
@@ -54,6 +55,8 @@ EWMA RTT + weight + penalty
 sticky + hysteresis"]
         WS["WS transport connectors
 HTTP/1.1 / HTTP/2 / HTTP/3"]
+        QC["Raw QUIC connectors
+ALPN: vless / ss"]
         DS["Direct Shadowsocks
 TCP / UDP socket"]
         SS["Shadowsocks AEAD"]
@@ -68,21 +71,26 @@ tun2udp + tun2tcp"]
     S --> U
     TT --> U
     U --> LB
-    LB -->|"transport = websocket"| WS
+    LB -->|"*_ws_mode = http1/h2/h3"| WS
+    LB -->|"*_ws_mode = quic"| QC
     LB -->|"transport = shadowsocks"| DS
-    LB -->|"transport = vless"| WS
     WS -->|"outline"| SS
     WS -->|"vless"| VL
+    QC -->|"transport = websocket"| SS
+    QC -->|"transport = vless"| VL
 
     subgraph Upstream["Upstream аплинки"]
         O1["outline-over-ws (A/B)"]
+        O2["raw-quic edge (vless / ss)"]
         O3["direct shadowsocks edge"]
         O4["vless-over-ws edge"]
     end
 
     SS --> O1
+    SS --> O2
     DS --> O3
     VL --> O4
+    VL --> O2
 
     subgraph Observability["Observability"]
         PR["Prometheus"]
@@ -117,11 +125,13 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
+- raw QUIC (per-ALPN, без WebSocket / HTTP/3): выбирается через `*_ws_mode = "quic"`. ALPN `vless` несёт VLESS-TCP (один bidi на сессию) и VLESS-UDP (per-target control bidi + датаграммы, демукс по 4-байтному `session_id`, выдаваемому сервером). ALPN `ss` несёт Shadowsocks-TCP (один bidi на сессию) и Shadowsocks-UDP (1 датаграмма = 1 SS-AEAD пакет, RFC 9221). Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. Без fallback — провал dial / handshake помечает аплинк как недоступный.
 - прямые Shadowsocks TCP/UDP socket uplink'и
 - VLESS-over-WebSocket аплинки (`transport = "vless"`, UUID-аутентификация, общий WSS dial path с `websocket`, per-destination UDP session-mux с границей `vless_udp_max_sessions`)
-- transport fallback:
+- transport fallback (только WS-режимы):
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
+  - у `quic` fallback'а нет by design
 
 ### Шифрование
 
@@ -627,6 +637,39 @@ tcp_ws_mode = "h2"
 udp_ws_mode = "h2"
 uuid = "11111111-2222-3333-4444-555555555555"
 weight = 0.5
+
+# VLESS поверх raw QUIC (ALPN = "vless"). Установка *_ws_mode = "quic"
+# обходит WebSocket-слой целиком: VLESS-кадры идут прямо по QUIC bidi
+# (TCP) и QUIC-датаграммам (UDP, с 4-байтным префиксом session_id,
+# выдаваемым сервером). Из URL берётся только host:port. Без fallback —
+# провал dial помечает аплинк недоступным.
+[[outline.uplinks]]
+name = "vless-quic"
+group = "main"
+transport = "vless"
+tcp_ws_url = "https://vless.example.com:443"
+udp_ws_url = "https://vless.example.com:443"
+tcp_ws_mode = "quic"
+udp_ws_mode = "quic"
+uuid = "11111111-2222-3333-4444-555555555555"
+weight = 1.0
+
+# Shadowsocks поверх raw QUIC (ALPN = "ss"). Один QUIC bidi на SS-TCP
+# сессию; SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами.
+# Cipher / password те же, что в WS-варианте. transport = "websocket" +
+# tcp_ws_mode = "quic" — это SS-over-QUIC; transport = "vless" +
+# tcp_ws_mode = "quic" — VLESS-over-QUIC (см. выше).
+[[outline.uplinks]]
+name = "ss-quic"
+group = "main"
+transport = "websocket"
+tcp_ws_url = "https://ss.example.com:443"
+udp_ws_url = "https://ss.example.com:443"
+tcp_ws_mode = "quic"
+udp_ws_mode = "quic"
+method = "chacha20-ietf-poly1305"
+password = "Secret0"
+weight = 1.0
 
 # Опциональный policy-routing: first-match-wins по CIDR назначения.
 # `via` принимает имя группы или зарезервированные `direct` / `drop`.
