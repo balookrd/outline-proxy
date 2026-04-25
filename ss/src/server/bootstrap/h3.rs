@@ -122,6 +122,19 @@ fn build_h3_transport_config(profile: &TuningProfile) -> Result<quinn::Transport
         .send_window(profile.h3_connection_window_bytes)
         .datagram_receive_buffer_size(Some(profile.h3_connection_window_bytes as usize))
         .datagram_send_buffer_size(profile.h3_connection_window_bytes as usize);
+    // Endpoint also serves raw-QUIC ALPNs (vless / ss) which carry
+    // application UDP datagrams as QUIC datagrams (RFC 9221). The
+    // default initial_mtu of 1200 caps the server→client datagram
+    // payload at ~1170 B for the first few RTTs of every connection
+    // while DPLPMTUD probes upward — long enough to drop real UDP
+    // traffic (DNS, video) on a 1500-Ethernet link. Bump the floor
+    // to 1400 (safe whenever the path supports standard 1500 MTU)
+    // and let MTU discovery target 1452 from there. The matching
+    // client config in outline-ws-rust uses identical values.
+    transport.initial_mtu(1400);
+    let mut mtu = quinn::MtuDiscoveryConfig::default();
+    mtu.upper_bound(1452);
+    transport.mtu_discovery_config(Some(mtu));
     Ok(transport)
 }
 
