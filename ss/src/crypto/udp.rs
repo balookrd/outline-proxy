@@ -9,10 +9,10 @@ use ring::{
 
 use super::{
     error::CryptoError,
-    primitives::{
-        SS2022_UDP_SEPARATE_HEADER_LEN, SS2022_UDP_SERVER_TYPE, TAG_LEN, XNONCE_LEN,
-        build_session_key, nonce_zero, parse_ss2022_chacha_udp_request_body,
-        parse_ss2022_udp_request_body, ss2022_udp_nonce,
+    primitives::{TAG_LEN, XNONCE_LEN, build_session_key, nonce_zero},
+    ss2022_header::{
+        SS2022_UDP_SEPARATE_HEADER_LEN, SS2022_UDP_SERVER_TYPE,
+        parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body, ss2022_udp_nonce,
     },
     user_key::{AesHeaderCipher, UserKey},
 };

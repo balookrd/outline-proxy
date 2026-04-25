@@ -1,6 +1,7 @@
 mod diagnose;
 mod error;
 mod primitives;
+mod ss2022_header;
 mod stream;
 mod udp;
 mod user_key;

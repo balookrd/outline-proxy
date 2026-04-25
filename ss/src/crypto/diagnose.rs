@@ -4,10 +4,13 @@ use ring::aead::Aad;
 use super::{
     error::CryptoError,
     primitives::{
-        LEGACY_MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_UDP_SEPARATE_HEADER_LEN,
-        TAG_LEN, XNONCE_LEN, build_session_key, nonce_zero,
+        LEGACY_MAX_CHUNK_SIZE, TAG_LEN, XNONCE_LEN, build_session_key, nonce_zero,
+        try_open_fixed_header,
+    },
+    ss2022_header::{
+        SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_UDP_SEPARATE_HEADER_LEN,
         parse_ss2022_chacha_udp_request_body, parse_ss2022_udp_request_body, ss2022_udp_nonce,
-        try_open_fixed_header, validate_ss2022_request_fixed_header,
+        validate_ss2022_request_fixed_header,
     },
     udp::decrypt_ss2022_separate_header,
     user_key::UserKey,
