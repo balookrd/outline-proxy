@@ -842,7 +842,7 @@
         </div>
         <label class="field">
           <span class="label">VLESS path</span>
-          <input class="input mono" name="vless_ws_path" placeholder="/vless">
+          <input class="input mono" name="ws_path_vless" placeholder="/vless">
         </label>
         <div class="two">
           <label class="field">
@@ -931,7 +931,7 @@
     }
 
     function searchText(user){
-      return [user.id,user.method,user.ws_path_tcp,user.ws_path_udp,user.vless_ws_path,user.fwmark].filter(Boolean).join(" ").toLowerCase();
+      return [user.id,user.method,user.ws_path_tcp,user.ws_path_udp,user.ws_path_vless,user.fwmark].filter(Boolean).join(" ").toLowerCase();
     }
 
     function filtered(){
@@ -978,7 +978,7 @@
         const paths = [
           user.ws_path_tcp && "tcp " + user.ws_path_tcp,
           user.ws_path_udp && "udp " + user.ws_path_udp,
-          user.vless_ws_path && "vless " + user.vless_ws_path
+          user.ws_path_vless && "vless " + user.ws_path_vless
         ].filter(Boolean);
         const action = user.enabled ? "block" : "unblock";
         return `<tr>
@@ -1047,8 +1047,8 @@
         if(key === "enabled" || key === "id") continue;
         const text = String(value).trim();
         if(!text){
-          if(editing && ["password","vless_id","method","fwmark","ws_path_tcp","ws_path_udp","vless_ws_path"].includes(key)){
-            if(["method","fwmark","ws_path_tcp","ws_path_udp","vless_ws_path"].includes(key)) out[key] = null;
+          if(editing && ["password","vless_id","method","fwmark","ws_path_tcp","ws_path_udp","ws_path_vless"].includes(key)){
+            if(["method","fwmark","ws_path_tcp","ws_path_udp","ws_path_vless"].includes(key)) out[key] = null;
           }
           continue;
         }
@@ -1165,7 +1165,7 @@
       el.createForm.elements.method.value = user.method || "";
       el.createForm.elements.ws_path_tcp.value = user.ws_path_tcp || "";
       el.createForm.elements.ws_path_udp.value = user.ws_path_udp || "";
-      el.createForm.elements.vless_ws_path.value = user.vless_ws_path || "";
+      el.createForm.elements.ws_path_vless.value = user.ws_path_vless || "";
       el.createForm.elements.fwmark.value = user.fwmark == null ? "" : user.fwmark;
       el.createForm.elements.enabled.checked = user.enabled;
       el.drawerBackdrop.classList.add("open");

@@ -103,7 +103,7 @@ method = "chacha20-ietf-poly1305"
 id = "alice"
 password = "change-me"
 # vless_id = "550e8400-e29b-41d4-a716-446655440000"
-# vless_ws_path = "/alice/vless"
+# ws_path_vless = "/alice/vless"
 fwmark = 1001
 method = "aes-128-gcm"
 ws_path_tcp = "/alice/tcp"
@@ -129,11 +129,11 @@ ws_path_tcp = "/dave/tcp"
 ws_path_udp = "/dave/udp"
 
 # Optional VLESS-only user. Requires `[websocket].vless_path` (global) or
-# a per-user `vless_ws_path`.
+# a per-user `ws_path_vless`.
 # [[users]]
 # id = "eve-vless"
 # vless_id = "650e8400-e29b-41d4-a716-446655440000"
-# vless_ws_path = "/eve/vless"
+# ws_path_vless = "/eve/vless"
 
 # Resource-limit preset. Presets: "small" | "medium" | "large" (default).
 # Each preset defines H2/H3 flow-control windows and stream limits plus

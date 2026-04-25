@@ -446,7 +446,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".to_owned(),
             ws_path_udp: "/udp".to_owned(),
-            vless_ws_path: None,
+            ws_path_vless: None,
             http_root_auth: false,
             http_root_realm: "Authorization required".to_owned(),
             users: vec![crate::config::UserEntry {
@@ -457,7 +457,7 @@ mod tests {
                 ws_path_tcp: None,
                 ws_path_udp: None,
                 vless_id: None,
-                vless_ws_path: None,
+                ws_path_vless: None,
                 enabled: None,
             }],
             method: crate::config::CipherKind::Chacha20IetfPoly1305,

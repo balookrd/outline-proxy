@@ -43,7 +43,7 @@ pub(in crate::server) struct UserManager {
     default_method: CipherKind,
     default_ws_path_tcp: String,
     default_ws_path_udp: String,
-    default_vless_ws_path: Option<String>,
+    default_ws_path_vless: Option<String>,
     access_key_config: crate::config::AccessKeyConfig,
     access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
@@ -72,7 +72,7 @@ pub(super) struct UserView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_path_udp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vless_ws_path: Option<String>,
+    pub ws_path_vless: Option<String>,
     pub has_password: bool,
     pub has_vless_id: bool,
 }
@@ -104,7 +104,7 @@ impl From<&UserEntry> for UserView {
             fwmark: entry.fwmark,
             ws_path_tcp: entry.ws_path_tcp.clone(),
             ws_path_udp: entry.ws_path_udp.clone(),
-            vless_ws_path: entry.vless_ws_path.clone(),
+            ws_path_vless: entry.ws_path_vless.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
         }
@@ -127,7 +127,7 @@ impl UserManager {
             default_method: config.method,
             default_ws_path_tcp: config.ws_path_tcp.clone(),
             default_ws_path_udp: config.ws_path_udp.clone(),
-            default_vless_ws_path: config.vless_ws_path.clone(),
+            default_ws_path_vless: config.ws_path_vless.clone(),
             access_key_config: config.access_key.clone(),
             access_key_base_config: config.clone(),
             allowed_tcp_paths,
@@ -283,16 +283,16 @@ impl UserManager {
         }
         if entry.vless_id.is_some() {
             let path = entry
-                .vless_ws_path
+                .ws_path_vless
                 .as_deref()
-                .or(self.default_vless_ws_path.as_deref())
-                .ok_or_else(|| anyhow!("vless_id requires vless_ws_path"))?;
+                .or(self.default_ws_path_vless.as_deref())
+                .ok_or_else(|| anyhow!("vless_id requires ws_path_vless"))?;
             if !path.starts_with('/') {
-                bail!("vless_ws_path must start with '/'");
+                bail!("ws_path_vless must start with '/'");
             }
             if !self.allowed_vless_paths.contains(path) {
                 bail!(
-                    "vless_ws_path {path:?} was not registered at startup; restart the \
+                    "ws_path_vless {path:?} was not registered at startup; restart the \
                      server after adding it to the config file"
                 );
             }
@@ -345,8 +345,8 @@ impl UserManager {
         for user in &enabled {
             let Some(vless_id) = &user.vless_id else { continue };
             let path = user
-                .effective_vless_ws_path(self.default_vless_ws_path.as_deref())
-                .ok_or_else(|| anyhow!("vless user {} missing vless_ws_path", user.id))?;
+                .effective_ws_path_vless(self.default_ws_path_vless.as_deref())
+                .ok_or_else(|| anyhow!("vless user {} missing ws_path_vless", user.id))?;
             let vless_user = VlessUser::new(vless_id.clone(), user.fwmark)
                 .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
             vless_routes.push(VlessUserRoute {
@@ -388,7 +388,7 @@ pub(super) struct UserPatch {
     pub fwmark: Option<Option<u32>>,
     pub ws_path_tcp: Option<Option<String>>,
     pub ws_path_udp: Option<Option<String>>,
-    pub vless_ws_path: Option<Option<String>>,
+    pub ws_path_vless: Option<Option<String>>,
     pub enabled: Option<bool>,
 }
 
@@ -412,8 +412,8 @@ impl UserPatch {
         if let Some(ws_path_udp) = self.ws_path_udp {
             entry.ws_path_udp = ws_path_udp;
         }
-        if let Some(vless_ws_path) = self.vless_ws_path {
-            entry.vless_ws_path = vless_ws_path;
+        if let Some(ws_path_vless) = self.ws_path_vless {
+            entry.ws_path_vless = ws_path_vless;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);

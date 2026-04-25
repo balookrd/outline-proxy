@@ -94,7 +94,7 @@ const MAPPINGS: &[(&str, &[&str])] = &[
     ("outbound_ipv6_refresh_secs", &["outbound", "ipv6_refresh_secs"]),
     ("ws_path_tcp", &["websocket", "tcp_path"]),
     ("ws_path_udp", &["websocket", "udp_path"]),
-    ("vless_ws_path", &["websocket", "vless_path"]),
+    ("ws_path_vless", &["websocket", "vless_path"]),
     ("http_root_auth", &["http_root", "auth"]),
     ("http_root_realm", &["http_root", "realm"]),
     ("public_host", &["access_keys", "public_host"]),

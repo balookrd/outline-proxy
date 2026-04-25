@@ -47,7 +47,7 @@ pub(super) struct CreateRequest {
     #[serde(default)]
     pub ws_path_udp: Option<String>,
     #[serde(default)]
-    pub vless_ws_path: Option<String>,
+    pub ws_path_vless: Option<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -62,7 +62,7 @@ impl From<CreateRequest> for UserEntry {
             ws_path_tcp: req.ws_path_tcp,
             ws_path_udp: req.ws_path_udp,
             vless_id: req.vless_id,
-            vless_ws_path: req.vless_ws_path,
+            ws_path_vless: req.ws_path_vless,
             enabled: req.enabled,
         }
     }
@@ -83,7 +83,7 @@ pub(super) struct UpdateRequest {
     #[serde(default)]
     pub ws_path_udp: FieldPatch<String>,
     #[serde(default)]
-    pub vless_ws_path: FieldPatch<String>,
+    pub ws_path_vless: FieldPatch<String>,
     #[serde(default)]
     pub enabled: Option<bool>,
 }
@@ -97,7 +97,7 @@ impl From<UpdateRequest> for UserPatch {
             fwmark: req.fwmark.into_option(),
             ws_path_tcp: req.ws_path_tcp.into_option(),
             ws_path_udp: req.ws_path_udp.into_option(),
-            vless_ws_path: req.vless_ws_path.into_option(),
+            ws_path_vless: req.ws_path_vless.into_option(),
             enabled: req.enabled,
         }
     }

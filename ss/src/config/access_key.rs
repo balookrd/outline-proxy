@@ -193,8 +193,8 @@ fn build_vless_user_artifact(
 ) -> Result<AccessKeyArtifact> {
     let vless_id = user.vless_id.as_deref().expect("checked by caller");
     let vless_path = user
-        .effective_vless_ws_path(config.vless_ws_path.as_deref())
-        .ok_or_else(|| anyhow!("vless_id for user {} requires vless_ws_path", user.id))?;
+        .effective_ws_path_vless(config.ws_path_vless.as_deref())
+        .ok_or_else(|| anyhow!("vless_id for user {} requires ws_path_vless", user.id))?;
     let config_filename =
         format!("{}-vless{}", sanitize_filename(&user.id), ak.access_key_file_extension);
     let config_url = ak
@@ -390,7 +390,7 @@ mod tests {
             outbound_ipv6_refresh_secs: 30,
             ws_path_tcp: "/tcp".into(),
             ws_path_udp: "/udp".into(),
-            vless_ws_path: Some("/vless path".into()),
+            ws_path_vless: Some("/vless path".into()),
             http_root_auth: false,
             http_root_realm: "Authorization required".into(),
             users: vec![
@@ -402,7 +402,7 @@ mod tests {
                     ws_path_tcp: Some("/alice/tcp".into()),
                     ws_path_udp: Some("/alice/udp".into()),
                     vless_id: None,
-                    vless_ws_path: None,
+                    ws_path_vless: None,
                     enabled: None,
                 },
                 UserEntry {
@@ -413,7 +413,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: None,
-                    vless_ws_path: None,
+                    ws_path_vless: None,
                     enabled: None,
                 },
                 UserEntry {
@@ -424,7 +424,7 @@ mod tests {
                     ws_path_tcp: None,
                     ws_path_udp: None,
                     vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
-                    vless_ws_path: Some("/carol/vless path".into()),
+                    ws_path_vless: Some("/carol/vless path".into()),
                     enabled: None,
                 },
             ],

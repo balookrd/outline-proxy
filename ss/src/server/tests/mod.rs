@@ -276,7 +276,7 @@ fn sample_config(listen: SocketAddr) -> Config {
             ws_path_tcp: None,
             ws_path_udp: None,
             vless_id: None,
-            vless_ws_path: None,
+            ws_path_vless: None,
             enabled: None,
         }],
     )
@@ -300,7 +300,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         outbound_ipv6_refresh_secs: 30,
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
-        vless_ws_path: None,
+        ws_path_vless: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users,

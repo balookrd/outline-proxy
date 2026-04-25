@@ -149,7 +149,7 @@ pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserR
             .map(|entry| {
                 let (entry, vless_id) = entry;
                 let ws_path = entry
-                    .effective_vless_ws_path(config.vless_ws_path.as_deref())
+                    .effective_ws_path_vless(config.ws_path_vless.as_deref())
                     .expect("config validation requires vless path");
                 VlessUser::new(vless_id.clone(), entry.fwmark)
                     .map(|user| VlessUserRoute { user, ws_path: Arc::from(ws_path) })

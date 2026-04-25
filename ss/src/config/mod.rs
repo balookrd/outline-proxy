@@ -147,7 +147,7 @@ pub struct Config {
     pub outbound_ipv6_refresh_secs: u64,
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
-    pub vless_ws_path: Option<String>,
+    pub ws_path_vless: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,
@@ -292,7 +292,7 @@ impl AppMode {
                 .ws_path_udp
                 .or(websocket.udp_path)
                 .unwrap_or_else(|| "/udp".to_owned()),
-            vless_ws_path: websocket.vless_path,
+            ws_path_vless: websocket.vless_path,
             http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm
