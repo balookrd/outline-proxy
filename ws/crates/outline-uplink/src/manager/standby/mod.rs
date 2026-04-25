@@ -23,19 +23,24 @@ use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
 
 impl UplinkManager {
-    /// Returns the effective TCP WebSocket mode for `index`, falling back to
-    /// H2 when H3 has been marked broken by repeated runtime errors.
+    /// Returns the effective TCP dial mode for `index`, falling back to H2
+    /// when an "advanced" mode (H3 or raw QUIC) has been marked broken by
+    /// repeated runtime / dial errors.  Applies to Ws and Vless transports.
     pub async fn effective_tcp_ws_mode(
         &self,
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
-        // H3→H2 downgrade applies only to WS uplinks. VLESS does not run the
-        // downgrade machinery (different probe path, no shared H3 fallback).
-        if uplink.transport == UplinkTransport::Ws
-            && configured == crate::config::WsTransportMode::H3
-        {
+        let advanced = matches!(
+            configured,
+            crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
+        );
+        let supports_downgrade = matches!(
+            uplink.transport,
+            UplinkTransport::Ws | UplinkTransport::Vless
+        );
+        if advanced && supports_downgrade {
             let status = self.inner.read_status(index);
             if status
                 .tcp
@@ -48,16 +53,23 @@ impl UplinkManager {
         configured
     }
 
-    /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS transport.
+    /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS / UDP-over-QUIC
+    /// transport.
     pub(crate) async fn effective_udp_ws_mode(
         &self,
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.udp_dial_mode();
-        if uplink.transport == UplinkTransport::Ws
-            && configured == crate::config::WsTransportMode::H3
-        {
+        let advanced = matches!(
+            configured,
+            crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
+        );
+        let supports_downgrade = matches!(
+            uplink.transport,
+            UplinkTransport::Ws | UplinkTransport::Vless
+        );
+        if advanced && supports_downgrade {
             let status = self.inner.read_status(index);
             if status
                 .udp
@@ -351,11 +363,11 @@ impl UplinkManager {
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
             anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
         })?;
-        let mode = self.effective_udp_ws_mode(candidate.index).await;
+        let mut mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
         #[cfg(feature = "quic")]
         if mode == outline_transport::WsTransportMode::Quic {
-            let transport = outline_transport::connect_ss_udp_quic(
+            match outline_transport::connect_ss_udp_quic(
                 cache,
                 udp_ws_url,
                 candidate.uplink.fwmark,
@@ -365,10 +377,32 @@ impl UplinkManager {
                 &candidate.uplink.password,
             )
             .await
-            .with_context(|| TransportOperation::Connect { target: format!("ss quic to {}", udp_ws_url) })?;
-            self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
-                .await;
-            return Ok(UdpSessionTransport::Ss(transport));
+            {
+                Ok(transport) => {
+                    self.report_connection_latency(
+                        candidate.index,
+                        TransportKind::Udp,
+                        started.elapsed(),
+                    )
+                    .await;
+                    return Ok(UdpSessionTransport::Ss(transport));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        uplink = %candidate.uplink.name,
+                        url = %udp_ws_url,
+                        error = %format!("{e:#}"),
+                        fallback = "ws/h2",
+                        "ss raw-QUIC UDP dial failed, falling back to WS over H2"
+                    );
+                    self.note_advanced_mode_dial_failure(
+                        candidate.index,
+                        TransportKind::Udp,
+                        &e,
+                    );
+                    mode = self.effective_udp_ws_mode(candidate.index).await;
+                }
+            }
         }
         let transport = UdpWsTransport::connect(
             cache,

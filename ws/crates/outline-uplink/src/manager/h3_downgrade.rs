@@ -1,11 +1,14 @@
-//! Single source of truth for the H3→H2 downgrade window.
+//! Single source of truth for the "advanced WS mode → H2" downgrade window.
 //!
-//! Four independent events can (re)set [`PerTransportStatus::h3_downgrade_until`]:
+//! Originally only H3 → H2 (hence the field name `h3_downgrade_until`); now
+//! also covers raw QUIC → H2 for both Ws and Vless transports.  Four
+//! independent events can (re)set [`PerTransportStatus::h3_downgrade_until`]:
 //! runtime traffic failure, probe transport failure, probe connect failure,
-//! and an H3 recovery re-probe that failed to confirm recovery.  All of them
-//! go through [`UplinkManager::extend_h3_downgrade`] so the guard conditions
-//! (WS transport, H3 mode), the "set or extend — never shorten" rule, and the
-//! "log once per window start" rule live in exactly one place.
+//! and a recovery re-probe that failed to confirm recovery.  All of them go
+//! through [`UplinkManager::extend_h3_downgrade`] so the guard conditions
+//! (Ws/Vless transport, H3-or-Quic dial mode), the "set or extend — never
+//! shorten" rule, and the "log once per window start" rule live in exactly
+//! one place.
 //!
 //! [`PerTransportStatus::h3_downgrade_until`]: crate::types::PerTransportStatus::h3_downgrade_until
 
@@ -51,14 +54,14 @@ impl UplinkManager {
         trigger: H3DowngradeTrigger<'_>,
     ) {
         let uplink = &self.inner.uplinks[index];
-        if uplink.transport != UplinkTransport::Ws {
+        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return;
         }
         let ws_mode = match transport {
-            TransportKind::Tcp => uplink.tcp_ws_mode,
-            TransportKind::Udp => uplink.udp_ws_mode,
+            TransportKind::Tcp => uplink.tcp_dial_mode(),
+            TransportKind::Udp => uplink.udp_dial_mode(),
         };
-        if ws_mode != WsTransportMode::H3 {
+        if !matches!(ws_mode, WsTransportMode::H3 | WsTransportMode::Quic) {
             return;
         }
 
@@ -132,6 +135,19 @@ impl UplinkManager {
                 "H3 still unreachable after recovery probe, extending downgrade window"
             );
         }
+    }
+
+    /// Public entry-point for dial-time fallback: a synchronous QUIC (or H3)
+    /// dial just failed, so mark the downgrade window the same way a runtime
+    /// failure would.  The next call to `effective_*_ws_mode` will return H2
+    /// for the rest of the window.
+    pub fn note_advanced_mode_dial_failure(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        error: &anyhow::Error,
+    ) {
+        self.extend_h3_downgrade(index, transport, H3DowngradeTrigger::RuntimeFailure(error));
     }
 
     /// Clear the H3 downgrade window for `(index, transport)`.  Called when
