@@ -1,4 +1,3 @@
-mod access_key;
 mod clock;
 mod config;
 mod crypto;
@@ -12,7 +11,7 @@ mod server;
 use anyhow::Result;
 use tracing_subscriber::{EnvFilter, fmt};
 
-use crate::access_key::{
+use crate::config::access_key::{
     build_access_key_artifacts, render_access_key_report, render_written_access_key_report,
     write_access_key_artifacts,
 };
