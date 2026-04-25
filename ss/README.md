@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/logo.png" alt="outline-sslws-rust logo" width="320">
+</p>
+
 # outline-ss-rust
 
 `outline-ss-rust` is a production-oriented Rust implementation of a WebSocket-based Shadowsocks relay inspired by `outline-ss-server`.
