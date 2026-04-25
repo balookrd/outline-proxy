@@ -76,7 +76,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
-        vless_uuid: None,
+        vless_id: None,
     }
 }
 

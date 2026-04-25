@@ -184,9 +184,9 @@ async fn do_tcp_ss_setup(
 
     if uplink.transport == UplinkTransport::Vless {
         let uuid = uplink
-            .vless_uuid
+            .vless_id
             .as_ref()
-            .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+            .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
         let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
             ws_stream,
             uuid,

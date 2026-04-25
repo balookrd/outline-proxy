@@ -23,7 +23,7 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) weight: Option<f64>,
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
-    pub(super) uuid: Option<String>,
+    pub(super) vless_id: Option<String>,
 }
 
 impl ResolvedUplinkInput {
@@ -66,7 +66,7 @@ impl ResolvedUplinkInput {
             ipv6_first: args
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),
-            uuid: None,
+            vless_id: None,
         }
     }
 
@@ -85,7 +85,7 @@ impl ResolvedUplinkInput {
             weight: uplink.weight,
             fwmark: uplink.fwmark,
             ipv6_first: uplink.ipv6_first,
-            uuid: uplink.uuid.clone(),
+            vless_id: uplink.vless_id.clone(),
         }
     }
 
@@ -109,7 +109,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first,
-            uuid,
+            vless_id,
         } = input;
 
         let weight = weight.unwrap_or(1.0);
@@ -132,16 +132,16 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             pw
         };
 
-        let vless_uuid = if is_vless {
-            let raw = uuid.ok_or_else(|| {
-                anyhow!("uplink {name}: transport=vless requires `uuid = \"…\"`")
+        let vless_id = if is_vless {
+            let raw = vless_id.ok_or_else(|| {
+                anyhow!("uplink {name}: transport=vless requires `vless_id = \"…\"`")
             })?;
             Some(outline_transport::vless::parse_uuid(&raw).with_context(|| {
-                format!("uplink {name}: invalid vless uuid")
+                format!("uplink {name}: invalid vless_id")
             })?)
         } else {
-            if uuid.is_some() {
-                bail!("uplink {name}: `uuid` is only valid for transport=vless");
+            if vless_id.is_some() {
+                bail!("uplink {name}: `vless_id` is only valid for transport=vless");
             }
             None
         };
@@ -190,7 +190,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first: ipv6_first.unwrap_or(false),
-            vless_uuid,
+            vless_id,
         })
     }
 }

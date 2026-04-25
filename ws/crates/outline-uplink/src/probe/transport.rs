@@ -55,9 +55,9 @@ pub(super) async fn connect_probe_tcp(
         return match uplink.transport {
             UplinkTransport::Vless => {
                 let uuid = uplink
-                    .vless_uuid
+                    .vless_id
                     .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+                    .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
                 let (w, r) = outline_transport::connect_vless_tcp_quic(
                     cache,
                     url,
@@ -159,9 +159,9 @@ pub(super) async fn connect_probe_tcp(
             })?;
             let shared_conn_info = ws_stream.shared_connection_info();
             let uuid = uplink
-                .vless_uuid
+                .vless_id
                 .as_ref()
-                .ok_or_else(|| anyhow!("uplink {} missing vless uuid", uplink.name))?;
+                .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
             let diag = outline_transport::WsReadDiag {
                 conn_id: shared_conn_info.map(|(id, _)| id),
                 mode: shared_conn_info.map(|(_, m)| m).unwrap_or("h1"),

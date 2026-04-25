@@ -205,7 +205,7 @@ password = "Secret0"
 
 # VLESS-over-WebSocket example. Uses the same WSS dial plumbing as
 # `transport = "ws"` (same url / mode / ipv6_first / fwmark fields) but
-# authenticates with `uuid` instead of cipher+password.
+# authenticates with `vless_id` instead of cipher+password.
 # [[outline.uplinks]]
 # name = "vless-edge"
 # group = "main"
@@ -214,7 +214,7 @@ password = "Secret0"
 # udp_ws_url = "wss://vless.example.com/SECRET/udp"
 # tcp_ws_mode = "h2"
 # udp_ws_mode = "h2"
-# uuid = "11111111-2222-3333-4444-555555555555"
+# vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 0.5
 
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
@@ -239,7 +239,7 @@ password = "Secret0"
 # udp_ws_url = "https://vless.example.com:443"
 # tcp_ws_mode = "quic"
 # udp_ws_mode = "quic"
-# uuid = "11111111-2222-3333-4444-555555555555"
+# vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 1.0
 #
 # Shadowsocks over raw QUIC. ALPN = "ss". One QUIC bidi per SS-TCP

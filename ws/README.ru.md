@@ -625,7 +625,7 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # VLESS-over-WebSocket аплинк. Использует тот же WSS-путь дозвона, что и
-# transport = "websocket"; `uuid` заменяет Shadowsocks-овые cipher/password.
+# transport = "websocket"; `vless_id` заменяет Shadowsocks-овые cipher/password.
 # UDP передаётся как сессия-на-назначение внутри того же WSS-эндпоинта.
 [[outline.uplinks]]
 name = "vless-edge"
@@ -635,7 +635,7 @@ tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
 udp_ws_url = "wss://vless.example.com/SECRET/udp"
 tcp_ws_mode = "h2"
 udp_ws_mode = "h2"
-uuid = "11111111-2222-3333-4444-555555555555"
+vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 0.5
 
 # VLESS поверх raw QUIC (ALPN = "vless"). Установка *_ws_mode = "quic"
@@ -651,7 +651,7 @@ tcp_ws_url = "https://vless.example.com:443"
 udp_ws_url = "https://vless.example.com:443"
 tcp_ws_mode = "quic"
 udp_ws_mode = "quic"
-uuid = "11111111-2222-3333-4444-555555555555"
+vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 
 # Shadowsocks поверх raw QUIC (ALPN = "ss"). Один QUIC bidi на SS-TCP
@@ -685,7 +685,7 @@ via = "main"
 
 ### Ключевые параметры конфигурации
 
-- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `uuid` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
+- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
 - `tcp_ws_mode` / `udp_ws_mode` принимают значения `http1`, `h2` или `h3` и используются только с `transport = "websocket"`.
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
