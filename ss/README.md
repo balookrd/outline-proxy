@@ -12,20 +12,22 @@ It is designed for deployments that need modern WebSocket transports, multi-user
 
 ## Overview
 
-This server accepts Shadowsocks AEAD traffic encapsulated inside WebSocket binary frames and relays it to arbitrary TCP or UDP destinations.
+This server accepts Shadowsocks AEAD or VLESS traffic encapsulated inside WebSocket binary frames and relays it to arbitrary TCP or UDP destinations.
 
 It supports:
 
 - WebSocket over HTTP/1.1
 - WebSocket over HTTP/2 via RFC 8441 Extended CONNECT
 - WebSocket over HTTP/3 via RFC 9220 Extended CONNECT
-- Multiple users with independent passwords
+- Shadowsocks AEAD (including SS-2022) over WebSocket — TCP and UDP
+- VLESS over WebSocket — TCP, UDP, and mux.cool with XUDP per-packet addressing (xray / Happ / Hiddify-compatible)
+- Multiple users with independent Shadowsocks passwords and/or VLESS UUIDs
 - Per-user cipher selection
-- Per-user TCP and UDP WebSocket paths
+- Per-user TCP, UDP, and VLESS WebSocket paths
 - Per-user Linux `fwmark` on outbound sockets
 - IPv4 and IPv6 listeners, upstream targets, and client URLs
 - Prometheus metrics and a ready-made Grafana dashboard
-- Outline-compatible dynamic access key generation for WebSocket clients
+- Outline-compatible dynamic access key generation for Shadowsocks WebSocket clients and `vless://` link generation for VLESS clients
 - Optional built-in TLS for the HTTP/1.1 and HTTP/2 listener
 - Optional built-in QUIC/TLS listener for HTTP/3
 
@@ -62,17 +64,25 @@ Quick view:
 
 ```mermaid
 flowchart LR
-    C["Outline / Shadowsocks Client"] --> H1["HTTP/1.1 WS"]
-    C --> H2["HTTP/2 WS (RFC 8441)"]
-    C --> H3["HTTP/3 WS (RFC 9220)"]
+    SS["Outline / Shadowsocks Client"] --> H1["HTTP/1.1 WS"]
+    SS --> H2["HTTP/2 WS (RFC 8441)"]
+    SS --> H3["HTTP/3 WS (RFC 9220)"]
+
+    VL["VLESS Client (Happ / v2rayNG / Hiddify)"] --> H1
+    VL --> H2
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
     H3 --> S
 
-    S --> AUTH["Per-path user subset + AEAD user detection"]
-    AUTH --> TCP["TCP relay"]
-    AUTH --> UDP["UDP relay"]
+    S --> ROUTER["Per-path router"]
+    ROUTER --> SSAUTH["Shadowsocks AEAD user detection"]
+    ROUTER --> VLAUTH["VLESS UUID auth + mux.cool / XUDP"]
+
+    SSAUTH --> TCP["TCP relay"]
+    SSAUTH --> UDP["UDP relay"]
+    VLAUTH --> TCP
+    VLAUTH --> UDP
 
     TCP --> NET["Outbound Internet / Private Network"]
     UDP --> NET

@@ -14,20 +14,22 @@
 
 ## Обзор
 
-Сервер принимает Shadowsocks AEAD-трафик, инкапсулированный в бинарные фреймы WebSocket, и ретранслирует его к произвольным TCP- или UDP-назначениям.
+Сервер принимает Shadowsocks AEAD- или VLESS-трафик, инкапсулированный в бинарные фреймы WebSocket, и ретранслирует его к произвольным TCP- или UDP-назначениям.
 
 Поддерживается:
 
 - WebSocket over HTTP/1.1
 - WebSocket over HTTP/2 — RFC 8441 Extended CONNECT
 - WebSocket over HTTP/3 — RFC 9220 Extended CONNECT
-- Несколько пользователей с независимыми паролями
+- Shadowsocks AEAD (включая SS-2022) поверх WebSocket — TCP и UDP
+- VLESS поверх WebSocket — TCP, UDP и mux.cool с XUDP per-packet addressing (совместимо с xray / Happ / Hiddify)
+- Несколько пользователей с независимыми паролями Shadowsocks и/или VLESS UUID
 - Выбор шифра на уровне пользователя
-- Индивидуальные TCP и UDP WebSocket-пути на пользователя
+- Индивидуальные TCP-, UDP- и VLESS-пути WebSocket на пользователя
 - Linux `fwmark` на исходящих сокетах на уровне пользователя
 - IPv4 и IPv6: слушатели, upstream-цели и генерация client URL
 - Метрики Prometheus и готовый дашборд Grafana
-- Генерация Outline-совместимых динамических ключей доступа для WebSocket-клиентов
+- Генерация Outline-совместимых динамических ключей доступа для Shadowsocks-клиентов и `vless://` ссылок для VLESS-клиентов
 - Опциональный встроенный TLS для HTTP/1.1 и HTTP/2
 - Опциональный встроенный QUIC/TLS-слушатель для HTTP/3
 
@@ -64,17 +66,25 @@
 
 ```mermaid
 flowchart LR
-    C["Outline / Shadowsocks Client"] --> H1["HTTP/1.1 WS"]
-    C --> H2["HTTP/2 WS (RFC 8441)"]
-    C --> H3["HTTP/3 WS (RFC 9220)"]
+    SS["Outline / Shadowsocks клиент"] --> H1["HTTP/1.1 WS"]
+    SS --> H2["HTTP/2 WS (RFC 8441)"]
+    SS --> H3["HTTP/3 WS (RFC 9220)"]
+
+    VL["VLESS клиент (Happ / v2rayNG / Hiddify)"] --> H1
+    VL --> H2
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
     H3 --> S
 
-    S --> AUTH["Per-path user subset + AEAD user detection"]
-    AUTH --> TCP["TCP relay"]
-    AUTH --> UDP["UDP relay"]
+    S --> ROUTER["Маршрутизация по WS-путям"]
+    ROUTER --> SSAUTH["Shadowsocks AEAD: идентификация пользователя"]
+    ROUTER --> VLAUTH["VLESS UUID + mux.cool / XUDP"]
+
+    SSAUTH --> TCP["TCP relay"]
+    SSAUTH --> UDP["UDP relay"]
+    VLAUTH --> TCP
+    VLAUTH --> UDP
 
     TCP --> NET["Outbound Internet / Private Network"]
     UDP --> NET
