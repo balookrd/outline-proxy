@@ -9,9 +9,12 @@ use ring::{
 use super::{
     error::CryptoError,
     primitives::{
-        LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, SS2022_REQUEST_FIXED_CIPHERTEXT_LEN,
-        SS2022_REQUEST_FIXED_HEADER_LEN, SS2022_TCP_RESPONSE_TYPE, TAG_LEN, build_session_key,
-        next_stream_nonce, nonce_zero, parse_ss2022_request_header, try_open_fixed_header,
+        LEGACY_MAX_CHUNK_SIZE, MAX_CHUNK_SIZE, TAG_LEN, build_session_key, next_stream_nonce,
+        nonce_zero, try_open_fixed_header,
+    },
+    ss2022_header::{
+        SS2022_REQUEST_FIXED_CIPHERTEXT_LEN, SS2022_REQUEST_FIXED_HEADER_LEN,
+        SS2022_TCP_RESPONSE_TYPE, parse_ss2022_request_header,
         validate_ss2022_request_fixed_header,
     },
     user_key::UserKey,
