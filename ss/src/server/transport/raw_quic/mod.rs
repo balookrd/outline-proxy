@@ -5,13 +5,18 @@
 //! endpoint, then each bidi stream carries one VLESS request or one SS TCP
 //! session.
 
+mod oversize;
 mod ss;
 mod vless;
 
+pub(in crate::server) use oversize::{
+    OVERSIZE_STREAM_MAGIC, OversizeStream, StreamKind, classify_accept_bi,
+};
 pub(in crate::server) use ss::{
     RawQuicSsCtx, handle_raw_ss_quic_stream, serve_raw_ss_quic_datagrams,
 };
 pub(in crate::server) use vless::{
     RawQuicVlessRouteCtx, VlessQuicConn, handle_raw_vless_quic_stream,
+    handle_raw_vless_quic_stream_with_prefix, serve_raw_vless_oversize_records,
     serve_raw_vless_quic_datagrams,
 };

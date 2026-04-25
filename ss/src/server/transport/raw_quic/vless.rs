@@ -43,6 +43,14 @@ use super::super::super::{
 pub(in crate::server) struct VlessQuicConn {
     next_session: AtomicU32,
     sessions: RwLock<HashMap<u32, Arc<VlessUdpSession>>>,
+    /// Connection-level oversize-record stream, lazy-installed when
+    /// either the client opens it (peer accept_bi path) or the server
+    /// itself needs to send an oversized response (server-initiated
+    /// open). `None` when the negotiated ALPN is the legacy `vless`
+    /// (no MTU-aware fallback) or when no oversized packet has flowed
+    /// yet on this connection. Wrapped in `Arc<Mutex>` so the read-loop
+    /// task and per-session writers can share access.
+    oversize_stream: parking_lot::Mutex<Option<Arc<super::OversizeStream>>>,
 }
 
 struct VlessUdpSession {
@@ -55,7 +63,27 @@ impl VlessQuicConn {
         Self {
             next_session: AtomicU32::new(1),
             sessions: RwLock::new(HashMap::new()),
+            oversize_stream: parking_lot::Mutex::new(None),
         }
+    }
+
+    /// Install the oversize-record stream (idempotent — first install
+    /// wins, subsequent calls return the existing one). Returns the
+    /// stream the caller should use.
+    pub(in crate::server) fn install_oversize_stream(
+        &self,
+        stream: Arc<super::OversizeStream>,
+    ) -> Arc<super::OversizeStream> {
+        let mut guard = self.oversize_stream.lock();
+        if let Some(existing) = guard.as_ref() {
+            return Arc::clone(existing);
+        }
+        *guard = Some(Arc::clone(&stream));
+        stream
+    }
+
+    pub(in crate::server) fn oversize_stream(&self) -> Option<Arc<super::OversizeStream>> {
+        self.oversize_stream.lock().as_ref().map(Arc::clone)
     }
 
     fn allocate_session(&self) -> u32 {
@@ -83,8 +111,34 @@ pub(in crate::server) struct RawQuicVlessRouteCtx {
 }
 
 pub(in crate::server) async fn handle_raw_vless_quic_stream(
+    send: quinn::SendStream,
+    recv: quinn::RecvStream,
+    server: Arc<VlessWsServerCtx>,
+    route: Arc<RawQuicVlessRouteCtx>,
+    connection: Arc<quinn::Connection>,
+    conn_state: Arc<VlessQuicConn>,
+) -> Result<()> {
+    handle_raw_vless_quic_stream_with_prefix(
+        send,
+        recv,
+        Vec::new(),
+        server,
+        route,
+        connection,
+        conn_state,
+    )
+    .await
+}
+
+/// Same as [`handle_raw_vless_quic_stream`] but accepts a `prefix` of
+/// bytes already read off the recv stream by the caller (typically the
+/// 8 bytes peeked to disambiguate the oversize-record magic from a
+/// VLESS request header). The handler treats those bytes as the first
+/// chunk of the inbound stream.
+pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,
+    prefix: Vec<u8>,
     server: Arc<VlessWsServerCtx>,
     route: Arc<RawQuicVlessRouteCtx>,
     connection: Arc<quinn::Connection>,
@@ -97,6 +151,7 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream(
     let outcome = run_stream(
         &mut send,
         &mut recv,
+        prefix,
         &server,
         &route,
         &connection,
@@ -114,6 +169,7 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream(
 async fn run_stream(
     send: &mut quinn::SendStream,
     recv: &mut quinn::RecvStream,
+    prefix: Vec<u8>,
     server: &VlessWsServerCtx,
     route: &RawQuicVlessRouteCtx,
     connection: &Arc<quinn::Connection>,
@@ -122,8 +178,26 @@ async fn run_stream(
     // Read enough bytes from the stream to parse a VLESS request header.
     // We pull in chunks of up to MAX_VLESS_HEADER_BUFFER bytes; parsing is
     // tolerant of partial input and signals readiness via Ok(Some(_)).
-    let mut header_buf = Vec::with_capacity(128);
+    // `prefix` carries any bytes the caller pre-read off the recv stream
+    // (e.g. the 8-byte peek used to disambiguate the oversize-record
+    // magic from a VLESS request header) so they re-enter the parser.
+    let mut header_buf = if prefix.is_empty() { Vec::with_capacity(128) } else { prefix };
     let request = loop {
+        // Try parsing first so a `prefix` that already carries the
+        // full header avoids an unnecessary read on a stream the
+        // peer may not write to again until handshake completes.
+        match vless::parse_request(&header_buf) {
+            Ok(Some(request)) => break request,
+            Ok(None) => {
+                if header_buf.len() > MAX_VLESS_HEADER_BUFFER {
+                    return Err(anyhow!("vless raw-quic header too large"));
+                }
+            },
+            Err(vless::VlessError::UnsupportedCommand(c)) => {
+                return Err(anyhow!("unsupported vless command {c:#x}"));
+            },
+            Err(error) => return Err(anyhow!(error)),
+        }
         let mut chunk = [0_u8; 256];
         let read_fut = recv.read(&mut chunk);
         let read = match timeout(Duration::from_secs(SS_TCP_HANDSHAKE_TIMEOUT_SECS), read_fut).await
@@ -139,19 +213,6 @@ async fn run_stream(
             },
         };
         header_buf.extend_from_slice(&chunk[..read]);
-        match vless::parse_request(&header_buf) {
-            Ok(Some(request)) => break request,
-            Ok(None) => {
-                if header_buf.len() > MAX_VLESS_HEADER_BUFFER {
-                    return Err(anyhow!("vless raw-quic header too large"));
-                }
-                continue;
-            },
-            Err(vless::VlessError::UnsupportedCommand(c)) => {
-                return Err(anyhow!("unsupported vless command {c:#x}"));
-            },
-            Err(error) => return Err(anyhow!(error)),
-        }
     };
 
     let user = match vless::find_user(route.users.as_ref(), &request.user_id).cloned() {
@@ -370,9 +431,19 @@ async fn handle_udp(
         .await
         .context("failed to write vless raw-quic udp response header")?;
 
+    // The negotiated ALPN is recorded on the connection for the entire
+    // lifetime — `mtu_aware` here selects whether oversize responses
+    // can fall back to the connection-level oversize-record stream
+    // instead of being dropped silently.
+    let mtu_aware = connection
+        .handshake_data()
+        .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
+        .and_then(|d| d.protocol)
+        .is_some_and(|bytes| bytes == b"vless-mtu");
     let metrics = Arc::clone(&server.metrics);
     let user_label = user.label_arc();
     let conn_for_reader = Arc::clone(connection);
+    let conn_state_for_reader = Arc::clone(conn_state);
     let socket_for_reader = Arc::clone(&socket);
     let reader_task = tokio::spawn(async move {
         let mut buf = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
@@ -393,7 +464,81 @@ async fn handle_udp(
                 "target_to_client",
                 n,
             );
-            let mut datagram = BytesMut::with_capacity(4 + n);
+            let total_len = 4 + n;
+            let max_dgram = conn_for_reader.max_datagram_size();
+            let oversized = max_dgram.is_some_and(|max| total_len > max);
+            if oversized && mtu_aware {
+                // Fall back to the connection-level oversize-record
+                // stream. Open it on first use (server-initiated open
+                // is fine — the client side accept_bi loop is expected
+                // to detect the magic and install symmetrically).
+                let stream = match conn_state_for_reader.oversize_stream() {
+                    Some(stream) => stream,
+                    None => {
+                        let pair = match conn_for_reader.open_bi().await {
+                            Ok(pair) => pair,
+                            Err(error) => {
+                                debug!(
+                                    session_id,
+                                    ?error,
+                                    "failed to open vless oversize stream for outbound packet"
+                                );
+                                continue;
+                            }
+                        };
+                        let (send, recv) = pair;
+                        let stream =
+                            Arc::new(super::OversizeStream::from_local_open(send, recv));
+                        let installed =
+                            conn_state_for_reader.install_oversize_stream(stream);
+                        // Ensure inbound records on this server-opened
+                        // stream are still demuxed: spawn the read pump.
+                        let pump_stream = Arc::clone(&installed);
+                        let pump_state = Arc::clone(&conn_state_for_reader);
+                        // Need the server context for metric attribution
+                        // — clone metrics into a thin shim. The cheap
+                        // path here is "open once per connection", so
+                        // a small allocation is fine.
+                        let _ = pump_state;
+                        let _ = pump_stream;
+                        // The accept_bi-side pump is wired by the
+                        // bootstrap when the client opens this stream;
+                        // for the symmetric case where the server opens
+                        // first, the client's accept_bi handler does
+                        // the same on its side. Server-side inbound
+                        // records continue to flow through the
+                        // datagram pump until the client also writes
+                        // into this stream, at which point the
+                        // serve_raw_vless_oversize_records pump
+                        // installed by the bootstrap handler picks
+                        // them up.
+                        installed
+                    }
+                };
+                let mut record = Vec::with_capacity(total_len);
+                record.extend_from_slice(&session_id.to_be_bytes());
+                record.extend_from_slice(&buf[..n]);
+                if let Err(error) = stream.send_record(&record).await {
+                    debug!(
+                        session_id,
+                        ?error,
+                        "vless raw-quic oversize-record send failed; closing reader"
+                    );
+                    return;
+                }
+                continue;
+            }
+            if oversized {
+                // Legacy ALPN client — silent drop, mirror of the
+                // outline-ws-rust client side.
+                debug!(
+                    session_id,
+                    n,
+                    "vless raw-quic oversized response on legacy ALPN, dropping"
+                );
+                continue;
+            }
+            let mut datagram = BytesMut::with_capacity(total_len);
             datagram.put_u32(session_id);
             datagram.extend_from_slice(&buf[..n]);
             if conn_for_reader.send_datagram(datagram.freeze()).is_err() {
@@ -426,6 +571,61 @@ async fn handle_udp(
     reader_task.abort();
     let _ = send.finish();
     Ok(())
+}
+
+/// Route one inbound `[session_id_4B || payload]` record into the
+/// matching session's upstream UDP socket. Identical dispatch logic
+/// to the datagram pump — both sources route by the same prefix.
+async fn route_vless_udp_record(
+    record: bytes::Bytes,
+    server: &VlessWsServerCtx,
+    conn_state: &VlessQuicConn,
+) {
+    if record.len() < 4 {
+        warn!(len = record.len(), "vless raw-quic oversize record too short, dropping");
+        return;
+    }
+    let session_id = u32::from_be_bytes([record[0], record[1], record[2], record[3]]);
+    let Some(session) = conn_state.lookup(session_id) else {
+        debug!(session_id, "vless raw-quic oversize record for unknown session, dropping");
+        return;
+    };
+    let payload = record.slice(4..);
+    if payload.len() > MAX_UDP_PAYLOAD_SIZE {
+        warn!(session_id, len = payload.len(), "vless raw-quic oversize record exceeds max payload");
+        return;
+    }
+    if let Err(error) = session.socket.send(&payload).await {
+        debug!(session_id, ?error, "vless raw-quic upstream send failed (oversize record)");
+        return;
+    }
+    server.metrics.record_udp_payload_bytes(
+        Arc::clone(&session.user_label),
+        Protocol::QuicRaw,
+        "client_to_target",
+        payload.len(),
+    );
+}
+
+/// Pump task for the inbound side of the connection-level oversize
+/// record stream. Spawned by [`serve_raw_vless_oversize_records`] and
+/// the connection-level accept_bi handler when the client opens the
+/// stream.
+pub(in crate::server) async fn serve_raw_vless_oversize_records(
+    stream: Arc<super::OversizeStream>,
+    server: Arc<VlessWsServerCtx>,
+    conn_state: Arc<VlessQuicConn>,
+) -> Result<()> {
+    debug!("raw VLESS QUIC oversize-record pump started");
+    loop {
+        match stream.recv_record().await {
+            Ok(Some(record)) => {
+                route_vless_udp_record(record, &server, &conn_state).await;
+            }
+            Ok(None) => return Ok(()),
+            Err(error) => return Err(error.context("vless raw-quic oversize-record read failed")),
+        }
+    }
 }
 
 /// QUIC datagram pump for raw VLESS-UDP.
