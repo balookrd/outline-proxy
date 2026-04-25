@@ -531,6 +531,19 @@ impl UplinkManager {
                 )
             })?;
 
+        // Manual switch is a clean-slate signal from the operator: clear all
+        // accumulated probe/runtime metrics so the auto-selection loop cannot
+        // immediately revert to a different uplink based on stale health,
+        // cooldowns, EWMA or penalties. Without this reset, a chosen uplink
+        // whose `healthy == Some(false)` or whose cooldown is still active
+        // would be overridden by `strict_transport_candidates` on the next
+        // dispatch.
+        self.reset_all_uplink_statuses();
+        // Drop sticky routes too — they may pin traffic to the previous active
+        // uplink for sessions that already cached a routing decision. We
+        // re-seed the relevant keys below.
+        self.inner.sticky_routes.write().await.clear();
+
         if self.strict_global_active_uplink() {
             self.set_active_uplink_index_for_transport(TransportKind::Tcp, index)
                 .await;
@@ -563,7 +576,23 @@ impl UplinkManager {
             }
         }
 
+        // Wake up the probe loop so a fresh health/latency reading is
+        // collected immediately for the cleared statuses instead of waiting
+        // for the next scheduled probe interval.
+        self.inner.probe_wakeup.notify_waiters();
+
         Ok(index)
+    }
+
+    /// Clear every per-uplink status field used by the auto-selection logic:
+    /// healthy flags, cooldowns, EWMA/latency, penalties, consecutive
+    /// success/failure counters, h3 downgrade gate, and last error. Called on
+    /// manual switch so accumulated state from a degraded period does not
+    /// influence the new selection.
+    fn reset_all_uplink_statuses(&self) {
+        for slot in self.inner.statuses.iter() {
+            *slot.lock() = Default::default();
+        }
     }
 
     pub(crate) async fn set_active_uplink_index_for_transport(
