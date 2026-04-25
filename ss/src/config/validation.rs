@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{Result, bail};
 
-use super::{AccessKeyConfig, Config};
+use super::{AccessKeyConfig, Config, H3Alpn};
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
@@ -90,10 +90,23 @@ impl Config {
                 bail!("user {} vless_ws_path requires vless_id", user.id);
             }
             if user.vless_id.is_some() {
-                let Some(path) = user.effective_vless_ws_path(self.vless_ws_path.as_deref()) else {
-                    bail!("user {} vless_id requires vless_ws_path", user.id);
-                };
-                vless_paths.insert(path.to_owned());
+                match user.effective_vless_ws_path(self.vless_ws_path.as_deref()) {
+                    Some(path) => {
+                        vless_paths.insert(path.to_owned());
+                    },
+                    None => {
+                        // No WebSocket path is fine when raw VLESS-over-QUIC
+                        // is enabled — the user is still reachable on the
+                        // QUIC endpoint via ALPN "vless".
+                        if !self.h3_alpn.contains(&H3Alpn::Vless) {
+                            bail!(
+                                "user {} vless_id requires vless_ws_path (or enable raw \
+                                 VLESS-over-QUIC by adding \"vless\" to [server.h3].alpn)",
+                                user.id
+                            );
+                        }
+                    },
+                }
             }
         }
         let mut vless_seen = HashSet::new();
@@ -331,6 +344,28 @@ mod tests {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 vless_ws_path: Some("/alice-vless".into()),
+                enabled: None,
+            }],
+            ..base_config()
+        }
+        .validate()
+        .unwrap();
+    }
+
+    #[test]
+    fn allows_vless_id_without_path_when_raw_quic_alpn_enabled() {
+        Config {
+            vless_ws_path: None,
+            h3_alpn: vec![crate::config::H3Alpn::H3, crate::config::H3Alpn::Vless],
+            users: vec![super::super::UserEntry {
+                id: "alice".into(),
+                password: None,
+                fwmark: None,
+                method: None,
+                ws_path_tcp: None,
+                ws_path_udp: None,
+                vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
+                vless_ws_path: None,
                 enabled: None,
             }],
             ..base_config()
