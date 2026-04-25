@@ -13,7 +13,8 @@ use serde_json::Value;
 use super::DashboardState;
 use super::proxy;
 
-const DASHBOARD_HTML: &str = include_str!("../dashboard.html");
+const DASHBOARD_HTML: &str = include_str!("dashboard.html");
+const OUTLINE_LOGO_PNG: &[u8] = include_bytes!("outline-logo.png");
 
 #[derive(Debug, Deserialize)]
 pub(super) struct InstanceQuery {
@@ -36,6 +37,16 @@ pub(super) async fn dashboard_page() -> impl IntoResponse {
     (
         [(header::CACHE_CONTROL, "no-store")],
         Html(DASHBOARD_HTML),
+    )
+}
+
+pub(super) async fn dashboard_logo() -> impl IntoResponse {
+    (
+        [
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+            (header::CONTENT_TYPE, "image/png"),
+        ],
+        OUTLINE_LOGO_PNG,
     )
 }
 

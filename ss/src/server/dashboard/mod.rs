@@ -21,7 +21,7 @@ use tracing::{info, warn};
 
 use crate::config::{DashboardConfig, DashboardInstanceConfig};
 
-use super::super::shutdown::ShutdownSignal;
+use super::shutdown::ShutdownSignal;
 
 #[derive(Clone)]
 pub(super) struct DashboardState {
@@ -59,6 +59,10 @@ async fn run(config: DashboardConfig, mut shutdown: ShutdownSignal) -> Result<()
     let router = Router::new()
         .route("/", get(|| async { Redirect::temporary("/dashboard") }))
         .route("/dashboard", get(handlers::dashboard_page))
+        .route(
+            "/dashboard/assets/outline-logo.png",
+            get(handlers::dashboard_logo),
+        )
         .route("/dashboard/api/instances", get(handlers::list_instances))
         .route(
             "/dashboard/api/users",
