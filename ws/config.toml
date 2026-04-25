@@ -171,7 +171,10 @@ group = "main"
 transport = "ws"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
-# requested mode; runtime fallback order is h3 -> h2 -> http1
+# Requested transport mode. WebSocket variants ("h3", "h2", "http1") fall
+# back automatically: h3 -> h2 -> http1. "quic" selects raw QUIC (no
+# WebSocket / no HTTP/3) — see the QUIC examples below; raw QUIC has no
+# fallback (dial failure surfaces as an uplink failure).
 tcp_ws_mode = "h3"
 # Linux only, requires CAP_NET_ADMIN if set
 # fwmark = 100
@@ -213,6 +216,45 @@ password = "Secret0"
 # udp_ws_mode = "h2"
 # uuid = "11111111-2222-3333-4444-555555555555"
 # weight = 0.5
+
+# Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
+# outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
+# the protocol on the same QUIC endpoint, then VLESS / SS framing rides
+# directly on QUIC bidi streams (TCP-like sessions) or QUIC datagrams
+# (UDP-like sessions). Available when the workspace `h3` feature is on
+# (default builds). No fallback: dial / handshake failure surfaces as a
+# normal uplink failure for the classifier.
+#
+# `*_ws_url` is reused as the QUIC dial target — only host:port matter
+# (path is ignored on raw-QUIC), so any scheme works.
+#
+# VLESS over raw QUIC. ALPN = "vless". Multiple TCP / UDP sessions to
+# different targets share one QUIC connection; UDP sessions are demuxed
+# by a 4-byte server-allocated session_id prefix on each datagram.
+# [[outline.uplinks]]
+# name = "vless-quic"
+# group = "main"
+# transport = "vless"
+# tcp_ws_url = "https://vless.example.com:443"
+# udp_ws_url = "https://vless.example.com:443"
+# tcp_ws_mode = "quic"
+# udp_ws_mode = "quic"
+# uuid = "11111111-2222-3333-4444-555555555555"
+# weight = 1.0
+#
+# Shadowsocks over raw QUIC. ALPN = "ss". One QUIC bidi per SS-TCP
+# session; SS-UDP rides QUIC datagrams 1:1 with SS-AEAD packets. Same
+# cipher / password as the WS path.
+# [[outline.uplinks]]
+# name = "ss-quic"
+# group = "main"
+# transport = "ws"   # ws+quic mode = SS-over-QUIC; vless+quic = VLESS-over-QUIC
+# tcp_ws_url = "https://ss.example.com:443"
+# udp_ws_url = "https://ss.example.com:443"
+# tcp_ws_mode = "quic"
+# udp_ws_mode = "quic"
+# method = "chacha20-ietf-poly1305"
+# password = "Secret0"
 
 # Direct Shadowsocks example (no WebSocket wrapper):
 # [[outline.uplinks]]

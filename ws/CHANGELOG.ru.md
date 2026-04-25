@@ -14,6 +14,7 @@
 
 ### Добавлено
 
+- Raw QUIC транспорт (`*_ws_mode = "quic"`): VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket и без HTTP/3. ALPN per-connection выбирает протокол (`vless`, `ss`, `h3`); парный листенер — в outline-ss-rust. Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. VLESS-UDP использует per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм. SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами. Без fallback by design — провал dial / handshake помечает аплинк недоступным.
 - В правилах `[[route]]` кроме `file` теперь принимается список `files = [..., ...]`; все пути мерджатся в CIDR-набор правила, и за каждым отдельно следит hot-reload. Удобно, когда IPv4 и IPv6 GeoIP-фиды лежат в разных файлах.
 - HTTP-поверхность разделена на независимые плоскости метрик и управления; control plane теперь требует bearer-аутентификацию и включается отдельной Cargo-фичей.
 - Добавлен `POST /switch` для ручного переключения активного аплинка.

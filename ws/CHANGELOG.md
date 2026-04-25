@@ -14,6 +14,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Added
 
+- Raw QUIC transport (`*_ws_mode = "quic"`): VLESS / Shadowsocks framed directly over QUIC bidi streams and datagrams (RFC 9221), no WebSocket / no HTTP/3. ALPN selects the protocol on a per-connection basis (`vless`, `ss`, `h3`); pairs with the matching listener in outline-ss-rust. Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection. VLESS-UDP uses a per-target control bidi (server returns a 4-byte `session_id`) plus connection-level datagram demux. SS-UDP rides QUIC datagrams 1:1 with SS-AEAD packets. No fallback by design — dial / handshake failure surfaces as a normal uplink failure.
 - `[[route]]` rules now accept a `files = [..., ...]` list in addition to the existing `file`; all paths are merged into the rule's CIDR set and each one is watched independently for hot-reload. Useful for keeping IPv4 and IPv6 GeoIP feeds in separate files.
 - Split the HTTP surface into independent metrics and control planes; the control plane now requires bearer authentication and can be enabled with its own Cargo feature.
 - Added `POST /switch` for manual active-uplink switching.
