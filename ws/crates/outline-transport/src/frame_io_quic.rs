@@ -19,11 +19,17 @@
 #![cfg(feature = "quic")]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
+use parking_lot::Mutex as SyncMutex;
+use tokio::sync::Mutex;
+use tokio::sync::mpsc;
+use tracing::debug;
 
+use crate::AbortOnDrop;
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
 use crate::quic::SharedQuicConnection;
 
@@ -106,41 +112,145 @@ pub async fn open_quic_frame_pair(
 
 // ── Datagram pipe (UDP-like) ───────────────────────────────────────────────
 
-/// QUIC [`DatagramChannel`] over a shared connection. Send / recv are
-/// thin wrappers around `quinn::Connection::send_datagram` /
-/// `read_datagram`. Note: all sessions sharing the connection see all
-/// inbound datagrams — caller is responsible for demuxing (VLESS UDP
-/// session mux does this via per-target sessions, each on its own
-/// connection; SS UDP carries the destination in-band).
+/// QUIC [`DatagramChannel`] over a shared connection. Inbound datagrams
+/// AND inbound oversize records (when the negotiated ALPN supports the
+/// oversize-stream fallback) are merged into one mpsc that
+/// `recv_datagram` drains; outbound packets that fit the negotiated
+/// `max_datagram_size` go on the QUIC datagram path, larger ones fall
+/// back to the connection-level [`crate::quic::OversizeStream`].
+///
+/// All sessions sharing the connection see all inbound packets — caller
+/// is responsible for demuxing (SS UDP carries the destination in-band
+/// inside the encrypted payload, so the SS layer above this channel
+/// just consumes whatever arrives).
 pub struct QuicDatagramChannel {
     conn: Arc<SharedQuicConnection>,
+    /// Inbound queue: both the QUIC datagram pump task and (when open)
+    /// the oversize-record pump task push into this. `recv_datagram`
+    /// drains it.
+    inbound_tx: mpsc::UnboundedSender<Result<Bytes>>,
+    inbound_rx: Mutex<mpsc::UnboundedReceiver<Result<Bytes>>>,
+    /// Datagram pump task — drains `conn.recv_datagram()` into
+    /// `inbound_tx`. Spawned eagerly at construction; held purely so
+    /// it lives as long as the channel.
+    _datagram_pump: AbortOnDrop,
+    /// Oversize-record pump task — lazy-spawned the first time an
+    /// oversize record needs to be sent (`send_datagram` oversize
+    /// branch) or the first time the peer opens the oversize stream.
+    /// Held in `Mutex<Option>` so the lazy install path can swap it in
+    /// without the surrounding code needing `&mut self`.
+    _oversize_pump: SyncMutex<Option<AbortOnDrop>>,
+    oversize_pump_spawned: AtomicBool,
 }
 
 impl QuicDatagramChannel {
     pub fn new(conn: Arc<SharedQuicConnection>) -> Self {
-        Self { conn }
+        let (inbound_tx, inbound_rx) = mpsc::unbounded_channel::<Result<Bytes>>();
+        let conn_for_pump = Arc::clone(&conn);
+        let inbound_tx_for_pump = inbound_tx.clone();
+        let datagram_pump = AbortOnDrop::new(tokio::spawn(async move {
+            loop {
+                match conn_for_pump.recv_datagram().await {
+                    Ok(Some(b)) => {
+                        if inbound_tx_for_pump.send(Ok(b)).is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = inbound_tx_for_pump.send(Ok(Bytes::new()));
+                        // Connection closed — propagate by dropping
+                        // the sender via task exit.
+                        return;
+                    }
+                    Err(error) => {
+                        let _ = inbound_tx_for_pump.send(Err(error));
+                        return;
+                    }
+                }
+            }
+        }));
+        Self {
+            conn,
+            inbound_tx,
+            inbound_rx: Mutex::new(inbound_rx),
+            _datagram_pump: datagram_pump,
+            _oversize_pump: SyncMutex::new(None),
+            oversize_pump_spawned: AtomicBool::new(false),
+        }
+    }
+
+    /// Lazy-open the oversize-record stream and spawn its inbound pump
+    /// task into the same `inbound_tx` mpsc. Idempotent — concurrent
+    /// callers race via `compare_exchange` so the pump is started at
+    /// most once.
+    async fn ensure_oversize_pump(&self) -> Result<Arc<crate::quic::OversizeStream>> {
+        let stream = self.conn.ensure_oversize_stream().await?;
+        if self
+            .oversize_pump_spawned
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            let stream_for_pump = Arc::clone(&stream);
+            let inbound_tx = self.inbound_tx.clone();
+            let pump = AbortOnDrop::new(tokio::spawn(async move {
+                loop {
+                    match stream_for_pump.recv_record().await {
+                        Ok(Some(record)) => {
+                            if inbound_tx.send(Ok(record)).is_err() {
+                                return;
+                            }
+                        }
+                        Ok(None) => {
+                            debug!("ss oversize stream EOF");
+                            return;
+                        }
+                        Err(error) => {
+                            debug!(?error, "ss oversize stream reader aborting");
+                            return;
+                        }
+                    }
+                }
+            }));
+            *self._oversize_pump.lock() = Some(pump);
+        }
+        Ok(stream)
     }
 }
 
 #[async_trait]
 impl DatagramChannel for QuicDatagramChannel {
     async fn send_datagram(&self, data: Bytes) -> Result<()> {
-        // Fail loudly on oversize: caller must enforce
-        // `max_datagram_size()` before reaching this point.
-        if let Some(max) = self.conn.max_datagram_size()
-            && data.len() > max
-        {
-            anyhow::bail!(
-                "quic datagram too large: {} > {} (peer max_datagram_size)",
-                data.len(),
-                max
-            );
+        let oversized = self
+            .conn
+            .max_datagram_size()
+            .is_some_and(|max| data.len() > max);
+        if oversized {
+            if self.conn.supports_oversize_stream() {
+                let stream = self.ensure_oversize_pump().await?;
+                return stream
+                    .send_record(&data)
+                    .await
+                    .context("ss oversize record send failed");
+            }
+            outline_metrics::record_dropped_oversized_udp_packet("outgoing");
+            let max = self.conn.max_datagram_size().unwrap_or(0);
+            anyhow::bail!(crate::OversizedUdpDatagram {
+                transport: "ss-udp-quic",
+                payload_len: data.len(),
+                limit: max,
+            });
         }
         self.conn.send_datagram(data)
     }
 
     async fn recv_datagram(&self) -> Result<Option<Bytes>> {
-        self.conn.recv_datagram().await
+        let mut rx = self.inbound_rx.lock().await;
+        match rx.recv().await {
+            Some(Ok(b)) if b.is_empty() => Ok(None),
+            Some(Ok(b)) => Ok(Some(b)),
+            Some(Err(e)) => Err(e),
+            None => Ok(None),
+        }
     }
 
     async fn close(&self) {
