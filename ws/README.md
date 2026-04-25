@@ -632,32 +632,31 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # VLESS-over-WebSocket uplink. Shares the WSS dial path with the "websocket"
-# transport; `vless_id` replaces the Shadowsocks cipher/password. UDP is carried
-# as a per-destination session inside the same WSS endpoint.
+# transport; `vless_id` replaces the Shadowsocks cipher/password. The VLESS
+# server exposes one WS path (`ws_path_vless`) shared by TCP and UDP, so the
+# client takes a single `vless_ws_url`/`vless_ws_mode` pair — using
+# `tcp_ws_url`/`udp_ws_url` with `transport = "vless"` is rejected at parse
+# time.
 [[outline.uplinks]]
 name = "vless-edge"
 group = "main"
 transport = "vless"
-tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
-udp_ws_url = "wss://vless.example.com/SECRET/udp"
-tcp_ws_mode = "h2"
-udp_ws_mode = "h2"
+vless_ws_url = "wss://vless.example.com/SECRET/vless"
+vless_ws_mode = "h2"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 0.5
 
-# VLESS over raw QUIC (ALPN = "vless"). Set *_ws_mode = "quic" to bypass
-# the WebSocket layer entirely and ride VLESS framing directly on QUIC
-# bidi streams (TCP) and datagrams (UDP, prefixed with the
+# VLESS over raw QUIC (ALPN = "vless"). Set vless_ws_mode = "quic" to
+# bypass the WebSocket layer entirely and ride VLESS framing directly on
+# QUIC bidi streams (TCP) and datagrams (UDP, prefixed with the
 # server-allocated 4-byte session_id). Only host:port from the URL is
 # used. No fallback — dial failure marks the uplink down.
 [[outline.uplinks]]
 name = "vless-quic"
 group = "main"
 transport = "vless"
-tcp_ws_url = "https://vless.example.com:443"
-udp_ws_url = "https://vless.example.com:443"
-tcp_ws_mode = "quic"
-udp_ws_mode = "quic"
+vless_ws_url = "https://vless.example.com:443"
+vless_ws_mode = "quic"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 

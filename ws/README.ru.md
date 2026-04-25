@@ -626,19 +626,20 @@ password = "Secret0"
 
 # VLESS-over-WebSocket аплинк. Использует тот же WSS-путь дозвона, что и
 # transport = "websocket"; `vless_id` заменяет Shadowsocks-овые cipher/password.
-# UDP передаётся как сессия-на-назначение внутри того же WSS-эндпоинта.
+# Сервер VLESS открывает один WS-путь (`ws_path_vless`), общий для TCP и
+# UDP, поэтому в клиентском конфиге задаётся одна пара
+# `vless_ws_url`/`vless_ws_mode` — поля `tcp_ws_url`/`udp_ws_url` для
+# `transport = "vless"` запрещены и парсер отвергнет их с явной ошибкой.
 [[outline.uplinks]]
 name = "vless-edge"
 group = "main"
 transport = "vless"
-tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
-udp_ws_url = "wss://vless.example.com/SECRET/udp"
-tcp_ws_mode = "h2"
-udp_ws_mode = "h2"
+vless_ws_url = "wss://vless.example.com/SECRET/vless"
+vless_ws_mode = "h2"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 0.5
 
-# VLESS поверх raw QUIC (ALPN = "vless"). Установка *_ws_mode = "quic"
+# VLESS поверх raw QUIC (ALPN = "vless"). Установка vless_ws_mode = "quic"
 # обходит WebSocket-слой целиком: VLESS-кадры идут прямо по QUIC bidi
 # (TCP) и QUIC-датаграммам (UDP, с 4-байтным префиксом session_id,
 # выдаваемым сервером). Из URL берётся только host:port. Без fallback —
@@ -647,10 +648,8 @@ weight = 0.5
 name = "vless-quic"
 group = "main"
 transport = "vless"
-tcp_ws_url = "https://vless.example.com:443"
-udp_ws_url = "https://vless.example.com:443"
-tcp_ws_mode = "quic"
-udp_ws_mode = "quic"
+vless_ws_url = "https://vless.example.com:443"
+vless_ws_mode = "quic"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 

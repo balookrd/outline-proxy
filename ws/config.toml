@@ -204,16 +204,17 @@ method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
 # VLESS-over-WebSocket example. Uses the same WSS dial plumbing as
-# `transport = "ws"` (same url / mode / ipv6_first / fwmark fields) but
-# authenticates with `vless_id` instead of cipher+password.
+# `transport = "ws"` but authenticates with `vless_id` instead of
+# cipher+password. The VLESS server exposes a single WS path
+# (`ws_path_vless`) shared by TCP and UDP, so VLESS uplinks take a
+# single `vless_ws_url` / `vless_ws_mode` pair (NOT `tcp_ws_url`/
+# `udp_ws_url`, which are rejected for `transport = "vless"`).
 # [[outline.uplinks]]
 # name = "vless-edge"
 # group = "main"
 # transport = "vless"
-# tcp_ws_url = "wss://vless.example.com/SECRET/tcp"
-# udp_ws_url = "wss://vless.example.com/SECRET/udp"
-# tcp_ws_mode = "h2"
-# udp_ws_mode = "h2"
+# vless_ws_url = "wss://vless.example.com/SECRET/vless"
+# vless_ws_mode = "h2"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 0.5
 
@@ -225,7 +226,7 @@ password = "Secret0"
 # (default builds). No fallback: dial / handshake failure surfaces as a
 # normal uplink failure for the classifier.
 #
-# `*_ws_url` is reused as the QUIC dial target — only host:port matter
+# The dial URL is reused as the QUIC dial target — only host:port matter
 # (path is ignored on raw-QUIC), so any scheme works.
 #
 # VLESS over raw QUIC. ALPN = "vless". Multiple TCP / UDP sessions to
@@ -235,10 +236,8 @@ password = "Secret0"
 # name = "vless-quic"
 # group = "main"
 # transport = "vless"
-# tcp_ws_url = "https://vless.example.com:443"
-# udp_ws_url = "https://vless.example.com:443"
-# tcp_ws_mode = "quic"
-# udp_ws_mode = "quic"
+# vless_ws_url = "https://vless.example.com:443"
+# vless_ws_mode = "quic"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 1.0
 #

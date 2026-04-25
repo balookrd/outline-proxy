@@ -76,6 +76,8 @@ pub(super) fn load_groups(
         || args.tcp_ws_mode.is_some()
         || args.udp_ws_url.is_some()
         || args.udp_ws_mode.is_some()
+        || args.vless_ws_url.is_some()
+        || args.vless_ws_mode.is_some()
         || args.tcp_addr.is_some()
         || args.udp_addr.is_some()
         || args.method.is_some()

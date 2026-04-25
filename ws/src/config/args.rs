@@ -44,6 +44,15 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_UDP_WS_MODE", help = "http1, h2, or h3")]
     pub udp_ws_mode: Option<WsTransportMode>,
 
+    /// VLESS-only: single WS URL serving both TCP and UDP. Required when
+    /// `transport = "vless"`. Mutually exclusive with `tcp_ws_url`/`udp_ws_url`.
+    #[arg(long, env = "OUTLINE_VLESS_WS_URL")]
+    pub vless_ws_url: Option<Url>,
+
+    /// VLESS-only: WS transport mode (http1, h2, h3, quic).
+    #[arg(long, env = "OUTLINE_VLESS_WS_MODE", help = "http1, h2, h3, or quic")]
+    pub vless_ws_mode: Option<WsTransportMode>,
+
     #[arg(long, env = "SHADOWSOCKS_METHOD")]
     pub method: Option<CipherKind>,
 

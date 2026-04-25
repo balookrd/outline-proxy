@@ -63,10 +63,20 @@ pub struct UplinkGroupConfig {
 pub struct UplinkConfig {
     pub name: String,
     pub transport: UplinkTransport,
+    /// `transport = "ws"` only. None for vless/shadowsocks.
     pub tcp_ws_url: Option<Url>,
+    /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
     pub tcp_ws_mode: WsTransportMode,
+    /// `transport = "ws"` only. None for vless/shadowsocks.
     pub udp_ws_url: Option<Url>,
+    /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
     pub udp_ws_mode: WsTransportMode,
+    /// `transport = "vless"` only. The VLESS server exposes a single
+    /// WS path (`ws_path_vless`) shared by TCP and UDP, so one URL covers
+    /// both directions.
+    pub vless_ws_url: Option<Url>,
+    /// `transport = "vless"` only.
+    pub vless_ws_mode: WsTransportMode,
     pub tcp_addr: Option<ServerAddr>,
     pub udp_addr: Option<ServerAddr>,
     pub cipher: CipherKind,
@@ -82,8 +92,47 @@ pub struct UplinkConfig {
 impl UplinkConfig {
     pub fn supports_udp(&self) -> bool {
         match self.transport {
-            UplinkTransport::Ws | UplinkTransport::Vless => self.udp_ws_url.is_some(),
+            UplinkTransport::Ws => self.udp_ws_url.is_some(),
+            UplinkTransport::Vless => self.vless_ws_url.is_some(),
             UplinkTransport::Shadowsocks => self.udp_addr.is_some(),
+        }
+    }
+
+    /// URL to dial for TCP-style sessions. For VLESS this is the single
+    /// `vless_ws_url`; for WS this is `tcp_ws_url`. Shadowsocks returns None.
+    pub fn tcp_dial_url(&self) -> Option<&Url> {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_ws_url.as_ref(),
+            UplinkTransport::Ws => self.tcp_ws_url.as_ref(),
+            UplinkTransport::Shadowsocks => None,
+        }
+    }
+
+    /// URL to dial for UDP-style sessions. For VLESS this is the single
+    /// `vless_ws_url`; for WS this is `udp_ws_url`. Shadowsocks returns None.
+    pub fn udp_dial_url(&self) -> Option<&Url> {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_ws_url.as_ref(),
+            UplinkTransport::Ws => self.udp_ws_url.as_ref(),
+            UplinkTransport::Shadowsocks => None,
+        }
+    }
+
+    /// WS transport mode for TCP-style sessions, abstracting the
+    /// per-transport mode field.
+    pub fn tcp_dial_mode(&self) -> WsTransportMode {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_ws_mode,
+            _ => self.tcp_ws_mode,
+        }
+    }
+
+    /// WS transport mode for UDP-style sessions, abstracting the
+    /// per-transport mode field.
+    pub fn udp_dial_mode(&self) -> WsTransportMode {
+        match self.transport {
+            UplinkTransport::Vless => self.vless_ws_mode,
+            _ => self.udp_ws_mode,
         }
     }
 }

@@ -76,6 +76,8 @@ async fn build_manager(
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url,
             udp_ws_mode: WsTransportMode::Http1,
+            vless_ws_url: None,
+            vless_ws_mode: WsTransportMode::Http1,
             tcp_addr: None,
             udp_addr: None,
             cipher: CipherKind::Chacha20IetfPoly1305,

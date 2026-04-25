@@ -30,8 +30,11 @@ impl UplinkManager {
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
+        let configured = uplink.tcp_dial_mode();
+        // H3→H2 downgrade applies only to WS uplinks. VLESS does not run the
+        // downgrade machinery (different probe path, no shared H3 fallback).
         if uplink.transport == UplinkTransport::Ws
-            && uplink.tcp_ws_mode == crate::config::WsTransportMode::H3
+            && configured == crate::config::WsTransportMode::H3
         {
             let status = self.inner.read_status(index);
             if status
@@ -42,7 +45,7 @@ impl UplinkManager {
                 return crate::config::WsTransportMode::H2;
             }
         }
-        uplink.tcp_ws_mode
+        configured
     }
 
     /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS transport.
@@ -51,8 +54,9 @@ impl UplinkManager {
         index: usize,
     ) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
+        let configured = uplink.udp_dial_mode();
         if uplink.transport == UplinkTransport::Ws
-            && uplink.udp_ws_mode == crate::config::WsTransportMode::H3
+            && configured == crate::config::WsTransportMode::H3
         {
             let status = self.inner.read_status(index);
             if status
@@ -63,7 +67,7 @@ impl UplinkManager {
                 return crate::config::WsTransportMode::H2;
             }
         }
-        uplink.udp_ws_mode
+        configured
     }
 
     /// Pops one connection from the TCP standby pool without falling back to
@@ -166,8 +170,8 @@ impl UplinkManager {
         use outline_transport::UpstreamTransportGuard;
         let cache = self.inner.dns_cache.as_ref();
         let uplink = &candidate.uplink;
-        let url = uplink.tcp_ws_url.as_ref().ok_or_else(|| {
-            anyhow!("uplink {} missing tcp_ws_url for quic transport", uplink.name)
+        let url = uplink.tcp_dial_url().ok_or_else(|| {
+            anyhow!("uplink {} missing dial URL for quic transport", uplink.name)
         })?;
         let lifetime = UpstreamTransportGuard::new(source, "tcp");
         let started = Instant::now();
@@ -285,8 +289,8 @@ impl UplinkManager {
                 &candidate.uplink.name,
                 "miss",
             );
-            let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
-                anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
+            let udp_ws_url = candidate.uplink.vless_ws_url.as_ref().ok_or_else(|| {
+                anyhow!("vless_ws_url is not configured for uplink {}", candidate.uplink.name)
             })?;
             let uuid = candidate.uplink.vless_id.ok_or_else(|| {
                 anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)

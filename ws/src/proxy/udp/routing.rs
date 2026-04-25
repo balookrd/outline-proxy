@@ -150,6 +150,8 @@ mod tests {
             tcp_ws_mode: WsTransportMode::Http1,
             udp_ws_url: None,
             udp_ws_mode: WsTransportMode::Http1,
+            vless_ws_url: None,
+            vless_ws_mode: WsTransportMode::Http1,
             tcp_addr: None,
             udp_addr: None,
             cipher: shadowsocks_crypto::CipherKind::Chacha20IetfPoly1305,
