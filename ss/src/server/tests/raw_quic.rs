@@ -582,3 +582,103 @@ async fn ss_raw_quic_udp_relay_smoke() -> Result<()> {
     endpoint.close(0_u32.into(), b"done");
     Ok(())
 }
+
+/// End-to-end test for the SS-AEAD UDP oversize stream-fallback.
+/// Mirror of `vless_raw_quic_udp_oversize_relay` but for the
+/// `ss-mtu` ALPN — simpler, since SS-UDP carries the target inside
+/// each self-contained AEAD packet (no per-session control bidi,
+/// no session_id allocation).
+#[tokio::test]
+async fn ss_raw_quic_udp_oversize_relay() -> Result<()> {
+    let upstream = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let mut buf = [0_u8; 4096];
+        let (n, peer) = upstream.recv_from(&mut buf).await?;
+        upstream.send_to(&buf[..n], peer).await?;
+        Result::<_, anyhow::Error>::Ok(buf[..n].to_vec())
+    });
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = raw_quic_server_tls(&[b"ss-mtu", b"ss"])?;
+    let server = bind_raw_quic_server(server_addr, tls_config).await?;
+    let addr = server.local_addr()?;
+
+    let config = super::sample_config(addr);
+    let users = super::super::setup::build_users(&config)?;
+    let user = users[0].clone();
+    let metrics = Metrics::new(&config);
+    let routes = empty_route_registry();
+    let services = build_services(metrics);
+    let auth = empty_auth();
+
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+            users,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(raw_quic_client_config_with_datagrams(
+        cert_der,
+        &[b"ss-mtu"],
+    )?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+
+    // Build SS-AEAD UDP packet: target_addr || 2048-byte payload.
+    // After AEAD encryption + salt the wire size is well past the
+    // 1200 B default max_datagram_size, so the server is forced to
+    // route the echoed reply through the oversize-record stream.
+    let payload: Vec<u8> = (0..2048u32).map(|i| (i & 0xff) as u8).collect();
+    let mut plaintext = TargetAddr::Socket(upstream_addr).encode()?;
+    plaintext.extend_from_slice(&payload);
+    let encrypted = encrypt_udp_packet(&user, &plaintext)?;
+
+    // Open the connection-level oversize-record stream and push
+    // the encrypted SS-UDP packet as a single length-prefixed
+    // record. The server's accept_bi peek path installs the
+    // stream; serve_raw_ss_oversize_records pumps records into
+    // handle_ss_udp_packet — same handler the QUIC datagram pump
+    // uses.
+    let (mut over_send, mut over_recv) = connection.open_bi().await?;
+    over_send.write_all(b"OUTLINE\x01").await?;
+    let record_len = encrypted.len() as u16;
+    let mut frame = Vec::with_capacity(2 + encrypted.len());
+    frame.extend_from_slice(&record_len.to_be_bytes());
+    frame.extend_from_slice(&encrypted);
+    over_send.write_all(&frame).await?;
+
+    // Upstream echoes the original 2048-byte payload.
+    assert_eq!(upstream_task.await??, payload, "upstream payload mismatch");
+
+    // Read the encrypted echoed packet back as a record. Server
+    // wrote magic first (symmetric), then [len_be(2) || encrypted].
+    let mut server_magic = [0_u8; 8];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut server_magic)).await??;
+    assert_eq!(&server_magic, b"OUTLINE\x01");
+    let mut len_buf = [0_u8; 2];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut len_buf)).await??;
+    let echoed_len = u16::from_be_bytes(len_buf) as usize;
+    let mut echoed = vec![0_u8; echoed_len];
+    tokio::time::timeout(Duration::from_secs(5), over_recv.read_exact(&mut echoed)).await??;
+
+    let packet = decrypt_udp_packet(std::slice::from_ref(&user), &echoed)?;
+    let (_, consumed) = crate::protocol::parse_target_addr(&packet.payload)?
+        .ok_or_else(|| anyhow::anyhow!("missing target in udp response"))?;
+    assert_eq!(&packet.payload[consumed..], &payload[..], "echoed payload mismatch");
+
+    let _ = over_send.finish();
+    server_task.abort();
+    let _ = server_task.await;
+    endpoint.close(0_u32.into(), b"done");
+    Ok(())
+}
