@@ -76,9 +76,27 @@ impl UplinkManager {
         uplink_index: usize,
     ) {
         let routing_key = routing_key(transport, target, self.inner.load_balancing.routing_scope);
-        self.set_active_uplink_index_for_transport(transport, uplink_index)
-            .await;
+        // In strict global mode with probe enabled, the global active uplink is
+        // owned by (a) the operator via manual switch and (b) the probe loop —
+        // not by per-session connect outcomes. Letting every successful connect
+        // write `active_uplinks` here lets in-flight sessions that started
+        // before a manual switch silently revert it: the session selected the
+        // old active, succeeds (handshake passes even when the data path is
+        // broken), and overwrites the operator's choice. Same rationale as
+        // [`confirm_runtime_failover_uplink`] — only update sticky routes.
+        let owns_active = !(self.strict_global_active_uplink() && self.inner.probe.enabled());
+        if owns_active {
+            self.set_active_uplink_index_for_transport(transport, uplink_index)
+                .await;
+        }
         self.store_sticky_route(&routing_key, uplink_index).await;
+        // Successful end-to-end connect on this uplink is strong evidence the
+        // data path is alive — clear the runtime-failure streak so a transient
+        // burst of failures does not push it to unhealthy.
+        self.inner.with_status_mut(uplink_index, |status| match transport {
+            TransportKind::Tcp => status.tcp.consecutive_runtime_failures = 0,
+            TransportKind::Udp => status.udp.consecutive_runtime_failures = 0,
+        });
     }
 
     pub async fn confirm_runtime_failover_uplink(

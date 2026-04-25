@@ -712,8 +712,12 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
     .unwrap();
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
+    // Seed the global active explicitly: in strict_global + probe-enabled,
+    // `confirm_selected_uplink` deliberately no longer writes `active_uplinks`
+    // (the operator/probe own that bit), so we set it directly to mirror the
+    // post-dispatch state this test cares about.
     manager
-        .confirm_selected_uplink(TransportKind::Tcp, Some(&target), 0)
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0)
         .await;
     manager
         .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(&target), 1)
