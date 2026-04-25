@@ -12,7 +12,7 @@ use tracing::debug;
 
 use outline_transport::DnsCache;
 
-use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, WsTransportMode};
+use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, UplinkTransport, WsTransportMode};
 
 use super::metrics::BytesRecorder;
 use super::transport::{close_probe_tcp_writer, connect_probe_tcp};
@@ -34,6 +34,10 @@ pub(super) async fn run_tcp_tunnel_probe(
         TargetAddr::Domain(probe.host.clone(), probe.port)
     };
 
+    // VLESS encodes the target in the request header — sending the SOCKS5
+    // wire form as the first application chunk would leak as garbage into
+    // the upstream stream. SS-AEAD requires it.
+    let needs_socks5_target = uplink.transport != UplinkTransport::Vless;
     let target_wire = target.to_wire_bytes()?;
     let (mut writer, mut reader) = connect_probe_tcp(
         cache,
@@ -48,11 +52,22 @@ pub(super) async fn run_tcp_tunnel_probe(
 
     let bytes = BytesRecorder { group, uplink: &uplink.name, transport: "tcp", probe: "tcp" };
     let result = async {
-        writer
-            .send_chunk(&target_wire)
-            .await
-            .context("failed to send TCP tunnel probe target address")?;
-        bytes.outgoing(target_wire.len());
+        if needs_socks5_target {
+            writer
+                .send_chunk(&target_wire)
+                .await
+                .context("failed to send TCP tunnel probe target address")?;
+            bytes.outgoing(target_wire.len());
+        } else {
+            // VLESS: flush the request header (which carries the target) by
+            // sending an empty chunk; without this, server-first protocols
+            // would have nothing to trigger the upstream dial and the probe
+            // would hang waiting for a reply that never comes.
+            writer
+                .send_chunk(&[])
+                .await
+                .context("failed to flush VLESS request header for TCP tunnel probe")?;
+        }
 
         match reader.read_chunk().await {
             Ok(chunk) => {
