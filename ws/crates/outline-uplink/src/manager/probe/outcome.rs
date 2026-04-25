@@ -27,6 +27,9 @@ fn record_transport_success(status: &mut PerTransportStatus) {
     status.consecutive_failures = 0;
     status.consecutive_successes = status.consecutive_successes.saturating_add(1);
     status.healthy = Some(true);
+    // Probe confirms the data path works again: drop any data-plane failure
+    // streak so a fresh burst is required before another health flip.
+    status.consecutive_runtime_failures = 0;
     // Only clear runtime-failure cooldown when the probe confirms the transport is
     // healthy. Clearing unconditionally would make a recently-failed uplink
     // immediately eligible again, causing oscillation under load.

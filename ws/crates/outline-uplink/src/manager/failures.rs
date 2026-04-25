@@ -126,6 +126,17 @@ impl UplinkManager {
         let probe_enabled = self.inner.probe.enabled();
         let failure_cooldown = self.inner.load_balancing.failure_cooldown;
         let load_balancing = self.inner.load_balancing.clone();
+        // Same threshold the probe uses to flip `healthy`. Reusing it keeps
+        // operator expectations consistent: "after N failed attempts the uplink
+        // is considered down" applies to both signals.
+        let runtime_failure_threshold = self.inner.probe.min_failures.max(1) as u32;
+        // Data-plane failures only escalate to a health flip when the probe is
+        // the authoritative signal AND we are in strict global mode — that is
+        // the configuration where `should_keep` ignores cooldown, so without an
+        // explicit health flip the active uplink would never lose its slot
+        // until the slow probe cycle catches up.
+        let runtime_health_escalation =
+            probe_enabled && self.strict_global_active_uplink();
 
         let kind = match transport {
             TransportKind::Tcp => "tcp",
@@ -163,6 +174,19 @@ impl UplinkManager {
                     if !probe_enabled {
                         status.tcp.healthy = Some(false);
                     }
+                    // Track consecutive data-plane failures separately from probe
+                    // failures so that under strict global + probe-enabled the
+                    // dispatch path can escalate to a health flip after enough
+                    // back-to-back failures, without waiting up to two probe
+                    // cycles for the slow signal to confirm what every new
+                    // connection is already observing.
+                    status.tcp.consecutive_runtime_failures =
+                        status.tcp.consecutive_runtime_failures.saturating_add(1);
+                    if runtime_health_escalation
+                        && status.tcp.consecutive_runtime_failures >= runtime_failure_threshold
+                    {
+                        status.tcp.healthy = Some(false);
+                    }
                     if probe_enabled && !already_in_cooldown {
                         mark_probe_wakeup(
                             &mut status.tcp.last_probe_wakeup,
@@ -182,6 +206,13 @@ impl UplinkManager {
                         status.udp.cooldown_until = Some(now + failure_cooldown);
                     }
                     if !probe_enabled {
+                        status.udp.healthy = Some(false);
+                    }
+                    status.udp.consecutive_runtime_failures =
+                        status.udp.consecutive_runtime_failures.saturating_add(1);
+                    if runtime_health_escalation
+                        && status.udp.consecutive_runtime_failures >= runtime_failure_threshold
+                    {
                         status.udp.healthy = Some(false);
                     }
                     if probe_enabled && !already_in_cooldown {
@@ -345,6 +376,11 @@ impl UplinkManager {
             // other health signal, so we update the health state from traffic.
             match transport {
                 TransportKind::Tcp => {
+                    // Real data flowing on this transport invalidates the
+                    // runtime-failure streak regardless of who owns the health
+                    // bit — even when probe is authoritative, we should not
+                    // escalate to a health flip while the data path is alive.
+                    status.tcp.consecutive_runtime_failures = 0;
                     if !probe_enabled {
                         status.tcp.healthy = Some(true);
                         status.tcp.consecutive_failures = 0;
@@ -362,6 +398,7 @@ impl UplinkManager {
                     // failed uplink before the probe has had a chance to confirm.
                 },
                 TransportKind::Udp => {
+                    status.udp.consecutive_runtime_failures = 0;
                     if !probe_enabled {
                         status.udp.healthy = Some(true);
                         status.udp.consecutive_failures = 0;

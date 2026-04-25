@@ -141,6 +141,14 @@ pub(crate) struct PerTransportStatus {
     pub(crate) cooldown_until: Option<Instant>,
     pub(crate) consecutive_failures: u32,
     pub(crate) consecutive_successes: u32,
+    /// Consecutive data-plane (runtime) failures observed by the dispatch
+    /// path on this transport. Separate from `consecutive_failures`, which
+    /// counts probe outcomes — runtime failures are noisier and should not
+    /// share a counter with the authoritative probe signal. Used in strict
+    /// global + probe-enabled mode to flip `healthy = Some(false)` after
+    /// `probe.min_failures` consecutive runtime failures, without waiting
+    /// for the next probe cycle.
+    pub(crate) consecutive_runtime_failures: u32,
     /// When set, connections must use H2 instead of H3 until this instant
     /// because H3 produced repeated APPLICATION_CLOSE or other transport
     /// errors. Cleared by a successful explicit H3 re-probe.
