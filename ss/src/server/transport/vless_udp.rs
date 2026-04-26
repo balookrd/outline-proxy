@@ -17,7 +17,10 @@ use super::{
         abort::AbortOnDrop, connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE,
         nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
     },
-    vless::{UpstreamSession, VlessRelayState, VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx},
+    vless::{
+        UpstreamSession, VlessFrameError, VlessRelayState, VlessWsOutbound, VlessWsRouteCtx,
+        VlessWsServerCtx,
+    },
 };
 
 pub(super) const MAX_VLESS_UDP_CLIENT_BUFFER: usize = MAX_UDP_PAYLOAD_SIZE + 2;
@@ -29,7 +32,7 @@ pub(super) async fn establish_vless_udp_upstream<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-) -> Result<()>
+) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
@@ -53,8 +56,9 @@ where
                 error = %error,
                 "vless udp dns resolution failed; sending try-again close"
             );
-            let _ = outbound.ctrl_tx.send((outbound.make_try_again_close)()).await;
-            return Err(error).context("vless udp dns resolution failed");
+            return Err(VlessFrameError::UpstreamConnectFailed(
+                error.context("vless udp dns resolution failed"),
+            ));
         },
     };
 
@@ -70,8 +74,9 @@ where
                 error = %error,
                 "vless udp bind/connect failed; sending try-again close"
             );
-            let _ = outbound.ctrl_tx.send((outbound.make_try_again_close)()).await;
-            return Err(error).context("vless udp upstream bind/connect failed");
+            return Err(VlessFrameError::UpstreamConnectFailed(
+                error.context("vless udp upstream bind/connect failed"),
+            ));
         },
     };
 
