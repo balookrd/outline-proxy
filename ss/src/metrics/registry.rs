@@ -92,10 +92,6 @@ pub(super) fn register_descriptions() {
         "outline_ss_tcp_payload_bytes_total",
         "Plain TCP payload bytes relayed after Shadowsocks decryption."
     );
-    describe_counter!(
-        "outline_ss_client_payload_bytes_total",
-        "Plain payload bytes relayed for each client across TCP and UDP."
-    );
     describe_counter!("outline_ss_udp_requests_total", "UDP relay requests by result.");
     describe_histogram!(
         "outline_ss_udp_relay_duration_seconds",
