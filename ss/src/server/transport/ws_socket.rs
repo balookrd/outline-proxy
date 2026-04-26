@@ -52,6 +52,13 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     fn ping_msg() -> Self::Msg;
     fn pong_msg(payload: Bytes) -> Self::Msg;
     fn binary_len(msg: &Self::Msg) -> Option<usize>;
+    /// Approximate payload length of a frame, regardless of kind. Used by
+    /// the probe-sink helper to cap how many bytes of junk a rejected peer
+    /// can drain before we close: counting only `Binary` (via
+    /// [`Self::binary_len`]) would let a probe spray Pings forever without
+    /// ever tripping the cap. Frame-header overhead is intentionally not
+    /// included — the cap is a coarse safety bound, not a billing meter.
+    fn msg_len(msg: &Self::Msg) -> usize;
     fn make_udp_response_sender(
         tx: mpsc::Sender<Self::Msg>,
         protocol: Protocol,
@@ -119,6 +126,14 @@ impl WsSocket for AxumWs {
             None
         }
     }
+    fn msg_len(m: &Message) -> usize {
+        match m {
+            Message::Binary(b) => b.len(),
+            Message::Text(t) => t.len(),
+            Message::Ping(p) | Message::Pong(p) => p.len(),
+            Message::Close(_) => 0,
+        }
+    }
     fn make_udp_response_sender(
         tx: mpsc::Sender<Message>,
         protocol: Protocol,
@@ -184,6 +199,14 @@ impl WsSocket for H3Ws {
             Some(b.len())
         } else {
             None
+        }
+    }
+    fn msg_len(m: &H3Message) -> usize {
+        match m {
+            H3Message::Binary(b) => b.len(),
+            H3Message::Text(t) => t.len(),
+            H3Message::Ping(p) | H3Message::Pong(p) => p.len(),
+            H3Message::Close(_) => 0,
         }
     }
     fn make_udp_response_sender(

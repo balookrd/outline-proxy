@@ -28,6 +28,7 @@ use super::{
         dns_cache::DnsCache,
         scratch::TcpRelayBuf,
     },
+    sink,
     vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState},
     vless_udp::{self, forward_vless_udp_client_frames},
     ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket},
@@ -179,17 +180,37 @@ async fn run_vless_relay<T: WsSocket>(
                             // sees an abrupt TCP/QUIC RST instead of an RFC
                             // 6455 close — a sharp signature for active probes
                             // that distinguishes VLESS from a benign WS peer.
-                            let close_msg = match &frame_err {
+                            //
+                            // For Fatal (parser/auth) failures we additionally
+                            // run the inbound side through `sink::sink_ws`
+                            // before the close: the VLESS parser bails on the
+                            // 18th byte while the SS-AEAD path stalls until
+                            // the handshake timeout, so an immediate close
+                            // *also* leaks a timing fingerprint. Sinking
+                            // until the same handshake timeout (or a 64 KiB
+                            // cap) collapses that distinguisher.
+                            // UpstreamConnectFailed is a post-handshake
+                            // failure on an authenticated session — there is
+                            // no probe to mask, so the client gets an
+                            // immediate Try-Again close.
+                            let (close_msg, sinked) = match &frame_err {
                                 VlessFrameError::UpstreamConnectFailed(_) => {
-                                    T::close_try_again_msg()
+                                    (T::close_try_again_msg(), false)
                                 },
-                                VlessFrameError::Fatal(_) => T::close_msg(),
+                                VlessFrameError::Fatal(_) => {
+                                    sink::sink_ws::<T>(&mut reader).await;
+                                    (T::close_msg(), true)
+                                },
                             };
                             let _ = outbound_ctrl_tx.send(close_msg).await;
                             drop(outbound_ctrl_tx);
                             drop(outbound_data_tx);
                             let _ = writer_task.await;
-                            return Err(frame_err.into_inner());
+                            let mut error = frame_err.into_inner();
+                            if sinked {
+                                error = error.context(sink::HandshakeRejectedMarker);
+                            }
+                            return Err(error);
                         }
                     },
                     WsFrame::Close => {

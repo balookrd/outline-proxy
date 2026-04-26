@@ -33,7 +33,7 @@ use super::super::super::{
     constants::{MAX_UDP_PAYLOAD_SIZE, SS_TCP_HANDSHAKE_TIMEOUT_SECS},
     nat::bind_nat_udp_socket,
     scratch::{TcpRelayBuf, UdpRecvBuf},
-    transport::VlessWsServerCtx,
+    transport::{VlessWsServerCtx, sink},
 };
 
 /// Per-QUIC-connection state for raw VLESS: tracks open UDP sessions so the
@@ -143,6 +143,9 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
     .await;
     let outcome_for_metrics = match &outcome {
         Ok(()) => crate::metrics::DisconnectReason::Normal,
+        Err(error) if sink::is_handshake_rejected(error) => {
+            crate::metrics::DisconnectReason::HandshakeRejected
+        },
         Err(_) => crate::metrics::DisconnectReason::Error,
     };
     session.finish(outcome_for_metrics);
@@ -165,6 +168,12 @@ async fn run_stream(
     // (e.g. the 8-byte peek used to disambiguate the oversize-record
     // magic from a VLESS request header) so they re-enter the parser.
     let mut header_buf = if prefix.is_empty() { Vec::with_capacity(128) } else { prefix };
+    // Probe-resistance helper: when the parser rejects the header bytes
+    // (wrong version, unsupported command, oversized buffer), sink the
+    // remaining stream until the handshake-equivalent timeout (or byte
+    // cap) before returning the error. The peer ends up seeing an
+    // unfinished handshake instead of an instant close that would
+    // fingerprint VLESS apart from a stalled SS-AEAD raw-QUIC stream.
     let request = loop {
         // Try parsing first so a `prefix` that already carries the
         // full header avoids an unnecessary read on a stream the
@@ -173,13 +182,20 @@ async fn run_stream(
             Ok(Some(request)) => break request,
             Ok(None) => {
                 if header_buf.len() > MAX_VLESS_HEADER_BUFFER {
-                    return Err(anyhow!("vless raw-quic header too large"));
+                    sink::sink_async_read(recv).await;
+                    return Err(anyhow!("vless raw-quic header too large")
+                        .context(sink::HandshakeRejectedMarker));
                 }
             },
             Err(vless::VlessError::UnsupportedCommand(c)) => {
-                return Err(anyhow!("unsupported vless command {c:#x}"));
+                sink::sink_async_read(recv).await;
+                return Err(anyhow!("unsupported vless command {c:#x}")
+                    .context(sink::HandshakeRejectedMarker));
             },
-            Err(error) => return Err(anyhow!(error)),
+            Err(error) => {
+                sink::sink_async_read(recv).await;
+                return Err(anyhow!(error).context(sink::HandshakeRejectedMarker));
+            },
         }
         let mut chunk = [0_u8; 256];
         let read_fut = recv.read(&mut chunk);
@@ -206,7 +222,8 @@ async fn run_stream(
                 candidates = ?route.candidate_users,
                 "rejected vless raw-quic user"
             );
-            return Err(anyhow!("unknown vless user"));
+            sink::sink_async_read(recv).await;
+            return Err(anyhow!("unknown vless user").context(sink::HandshakeRejectedMarker));
         },
     };
 

@@ -19,7 +19,7 @@ use super::super::{
     constants::SS_MAX_CONCURRENT_TCP_CONNECTIONS,
     shutdown::ShutdownSignal,
     state::Services,
-    transport::is_expected_ws_close,
+    transport::{is_expected_ws_close, sink},
 };
 use super::handshake::ss_tcp_handshake;
 
@@ -82,6 +82,13 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
     let Some(handshake) =
         ss_tcp_handshake(&mut client_reader, ctx.users.clone(), peer_addr).await?
     else {
+        // Probe-resistance: AEAD authentication failed for every configured
+        // user. Rather than closing immediately — which would let an active
+        // probe distinguish us from a stalled handshake by timing — keep
+        // reading the socket into /dev/null until the same handshake-style
+        // timeout fires or the byte cap trips, then return and let the
+        // outer task drop the connection.
+        sink::sink_async_read(&mut client_reader).await;
         return Ok(());
     };
 

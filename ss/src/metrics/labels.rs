@@ -61,6 +61,13 @@ pub enum DisconnectReason {
     Normal,
     ClientDisconnect,
     Error,
+    /// Handshake rejected by the protocol parser or auth check, the
+    /// session was held open in the probe-resistance sink until the
+    /// handshake-equivalent timeout (or byte cap) before closing. Split
+    /// out from `Error` so probe activity is visible separately from
+    /// genuine relay errors and so the long sink-mode session lifetime
+    /// does not skew p99 session-duration histograms for real errors.
+    HandshakeRejected,
 }
 
 impl DisconnectReason {
@@ -69,6 +76,7 @@ impl DisconnectReason {
             Self::Normal => "normal",
             Self::ClientDisconnect => "client_disconnect",
             Self::Error => "error",
+            Self::HandshakeRejected => "handshake_rejected",
         }
     }
 }

@@ -23,6 +23,7 @@ use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
 mod raw_quic;
+pub(in crate::server) mod sink;
 mod tcp;
 mod udp;
 mod vless;
@@ -31,6 +32,7 @@ mod vless_udp;
 mod ws_socket;
 mod ws_writer;
 
+pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use raw_quic::{
     OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, SsQuicConn, StreamKind, VlessQuicConn,
     classify_accept_bi, handle_raw_ss_quic_stream, handle_raw_ss_quic_stream_with_prefix,
@@ -219,6 +221,9 @@ pub(super) fn finish_ws_session(
             } else if is_expected_ws_close(&error) {
                 debug!(?error, "{kind} websocket connection closed abruptly");
                 DisconnectReason::ClientDisconnect
+            } else if sink::is_handshake_rejected(&error) {
+                debug!(?error, "{kind} websocket session rejected at handshake");
+                DisconnectReason::HandshakeRejected
             } else {
                 warn!(?error, "{kind} websocket connection terminated with error");
                 DisconnectReason::Error
