@@ -535,6 +535,7 @@ mod tests {
         let counters = metrics.user_counters(&user);
         counters.tcp_in(Protocol::Http3).increment(100);
         counters.tcp_out(Protocol::Http3).increment(250);
+        counters.udp_out(Protocol::Http3).increment(64);
 
         let rendered = metrics.render_prometheus();
         assert!(rendered.contains(
@@ -542,6 +543,9 @@ mod tests {
         ));
         assert!(rendered.contains(
             "outline_ss_tcp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"target_to_client\"} 250"
+        ));
+        assert!(rendered.contains(
+            "outline_ss_udp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"target_to_client\"} 64"
         ));
     }
 }

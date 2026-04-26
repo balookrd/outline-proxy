@@ -199,6 +199,8 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
 where
     Msg: Send + 'static,
 {
+    let user_counters = metrics.user_counters(&user_id);
+    let target_to_client = user_counters.udp_out(protocol);
     let mut buffer = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
         let read = match socket.recv(&mut buffer).await {
@@ -211,12 +213,7 @@ where
         if read == 0 {
             continue;
         }
-        metrics.record_udp_payload_bytes(
-            Arc::clone(&user_id),
-            protocol,
-            "target_to_client",
-            read,
-        );
+        target_to_client.increment(read as u64);
         let mut framed = BytesMut::with_capacity(2 + read);
         framed.put_u16(read as u16);
         framed.extend_from_slice(&buffer[..read]);

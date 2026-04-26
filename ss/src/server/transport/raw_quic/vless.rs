@@ -291,13 +291,12 @@ async fn handle_tcp(
             .context("failed to forward initial vless payload upstream")?;
     }
 
-    // Bidirectional splice. Use two tasks so each direction gets its own
-    // metric counters and so that upstream EOF closes the QUIC stream's send
-    // side (and vice versa) without entangling the read loops.
-    let metrics_c2t = Arc::clone(&server.metrics);
-    let user_c2t = user.label_arc();
-    let metrics_t2c = Arc::clone(&server.metrics);
-    let user_t2c = user.label_arc();
+    // Bidirectional splice. Two tasks so upstream EOF closes the QUIC stream's
+    // send side (and vice versa) without entangling the read loops.
+    let user_label = user.label_arc();
+    let user_counters = server.metrics.user_counters(&user_label);
+    let client_to_target = user_counters.tcp_in(Protocol::QuicRaw).clone();
+    let target_to_client = user_counters.tcp_out(Protocol::QuicRaw).clone();
 
     let upload = async {
         let mut buf = vec![0_u8; 16 * 1024];
@@ -312,12 +311,7 @@ async fn handle_tcp(
             if n == 0 {
                 continue;
             }
-            metrics_c2t.record_tcp_payload_bytes(
-                Arc::clone(&user_c2t),
-                Protocol::QuicRaw,
-                "client_to_target",
-                n,
-            );
+            client_to_target.increment(n as u64);
             up_writer
                 .write_all(&buf[..n])
                 .await
@@ -337,12 +331,7 @@ async fn handle_tcp(
             if n == 0 {
                 break;
             }
-            metrics_t2c.record_tcp_payload_bytes(
-                Arc::clone(&user_t2c),
-                Protocol::QuicRaw,
-                "target_to_client",
-                n,
-            );
+            target_to_client.increment(n as u64);
             send.write_all(&buf[..n])
                 .await
                 .context("failed to write to raw-quic send stream")?;
@@ -417,8 +406,11 @@ async fn handle_udp(
         .and_then(|d| d.downcast::<quinn::crypto::rustls::HandshakeData>().ok())
         .and_then(|d| d.protocol)
         .is_some_and(|bytes| bytes == b"vless-mtu");
-    let metrics = Arc::clone(&server.metrics);
-    let user_label = user.label_arc();
+    let target_to_client = server
+        .metrics
+        .user_counters(&user.label_arc())
+        .udp_out(Protocol::QuicRaw)
+        .clone();
     let conn_for_reader = Arc::clone(connection);
     let conn_state_for_reader = Arc::clone(conn_state);
     let socket_for_reader = Arc::clone(&socket);
@@ -435,12 +427,7 @@ async fn handle_udp(
             if n == 0 {
                 continue;
             }
-            metrics.record_udp_payload_bytes(
-                Arc::clone(&user_label),
-                Protocol::QuicRaw,
-                "target_to_client",
-                n,
-            );
+            target_to_client.increment(n as u64);
             let total_len = 4 + n;
             let max_dgram = conn_for_reader.max_datagram_size();
             let oversized = max_dgram.is_some_and(|max| total_len > max);
