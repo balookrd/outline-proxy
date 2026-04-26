@@ -77,8 +77,11 @@ use anyhow::{Context, Result, anyhow};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 use tokio_tungstenite::client_async_tls;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{debug, warn};
 use url::Url;
+
+use crate::resumption::SessionId;
 
 // Upper bound for the HTTP/1.1 WebSocket handshake (TCP connect + TLS +
 // HTTP upgrade).  Unlike h2/h3 there is no shared pool to get stuck in, but
@@ -111,6 +114,7 @@ pub mod frame_io;
 #[cfg(feature = "quic")]
 mod frame_io_quic;
 mod frame_io_ws;
+pub mod resumption;
 mod tcp_transport;
 mod udp_transport;
 mod shared_cache;
@@ -217,6 +221,24 @@ pub async fn connect_websocket_with_source(
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<WsTransportStream> {
+    connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None).await
+}
+
+/// Variant of [`connect_websocket_with_source`] that participates in
+/// cross-transport session resumption. When `resume_request` is `Some`,
+/// the chosen WebSocket transport sends `X-Outline-Resume: <hex>` on the
+/// upgrade so the server can re-attach to a parked upstream. Either way
+/// the server may issue a fresh Session ID via `X-Outline-Session`,
+/// readable on the returned stream via [`WsTransportStream::issued_session_id`].
+pub async fn connect_websocket_with_resume(
+    cache: &DnsCache,
+    url: &Url,
+    mode: WsTransportMode,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    source: &'static str,
+    resume_request: Option<SessionId>,
+) -> Result<WsTransportStream> {
     let requested = mode;
     let mode = ws_mode_cache::effective_mode(url, mode).await;
     if mode != requested {
@@ -229,11 +251,13 @@ pub async fn connect_websocket_with_source(
     }
     match mode {
         WsTransportMode::Http1 => {
-            let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
+            let (ws_stream, issued) =
+                connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                    .await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
-            Ok(WsTransportStream::new_http1(ws_stream))
+            Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
         },
-        WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
+        WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
                 Ok(stream)
@@ -246,13 +270,15 @@ pub async fn connect_websocket_with_source(
                     "h2 websocket connect failed, falling back"
                 );
                 ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
-                let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
+                let (ws_stream, issued) =
+                    connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                        .await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(WsTransportStream::new_http1(ws_stream))
+                Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
             },
         },
         #[cfg(feature = "h3")]
-        WsTransportMode::H3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source).await {
+        WsTransportMode::H3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
                 Ok(stream)
@@ -265,7 +291,7 @@ pub async fn connect_websocket_with_source(
                     "h3 websocket connect failed, falling back"
                 );
                 ws_mode_cache::record_failure(url, WsTransportMode::H3).await;
-                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
+                match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                         Ok(stream)
@@ -278,10 +304,11 @@ pub async fn connect_websocket_with_source(
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
                         ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
-                        let ws_stream =
-                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
+                        let (ws_stream, issued) =
+                            connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                                .await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(WsTransportStream::new_http1(ws_stream))
+                        Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
                     },
                 }
             },
@@ -290,7 +317,7 @@ pub async fn connect_websocket_with_source(
         WsTransportMode::H3 => {
             warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
             ws_mode_cache::record_failure(url, WsTransportMode::H3).await;
-            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
+            match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
                     Ok(stream)
@@ -298,10 +325,11 @@ pub async fn connect_websocket_with_source(
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
                     ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
-                    let ws_stream =
-                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
+                    let (ws_stream, issued) =
+                        connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
+                            .await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(WsTransportStream::new_http1(ws_stream))
+                    Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
                 },
             }
         },
@@ -365,7 +393,8 @@ async fn connect_websocket_http1(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<H1WsStream> {
+    resume_request: Option<SessionId>,
+) -> Result<(H1WsStream, Option<SessionId>)> {
     let mut connect_guard = TransportConnectGuard::new(source, "http1");
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -381,12 +410,35 @@ async fn connect_websocket_http1(
                     host: format!("{host}:{port}"),
                 })
             })?;
-    let ws_stream = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
+    let (ws_stream, issued_session_id) = timeout(HTTP1_WS_CONNECT_TIMEOUT, async {
         let tcp = connect_tcp_socket(server_addr, fwmark).await?;
-        let (ws_stream, _) = client_async_tls(url.as_str(), tcp)
+        // Build a `Request` so we can attach `X-Outline-*` headers; the
+        // default form (`url.as_str().into_client_request()`) hides the
+        // builder behind tungstenite's `IntoClientRequest` glue. Errors
+        // from `into_client_request` are bubbled up unchanged so they
+        // keep the original `tungstenite::Error` causality chain.
+        let mut request = url
+            .as_str()
+            .into_client_request()
+            .context("HTTP/1 websocket request builder failed")?;
+        request
+            .headers_mut()
+            .insert(crate::resumption::RESUME_CAPABLE_HEADER, "1".parse().expect("static header value"));
+        if let Some(id) = resume_request {
+            request.headers_mut().insert(
+                crate::resumption::RESUME_REQUEST_HEADER,
+                id.to_hex().parse().expect("hex Session ID is a valid header value"),
+            );
+        }
+        let (ws_stream, response) = client_async_tls(request, tcp)
             .await
             .context("HTTP/1 websocket handshake failed")?;
-        Ok::<_, anyhow::Error>(ws_stream)
+        let issued = response
+            .headers()
+            .get(crate::resumption::SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        Ok::<_, anyhow::Error>((ws_stream, issued))
     })
     .await
     .map_err(|_| {
@@ -396,7 +448,7 @@ async fn connect_websocket_http1(
         )
     })??;
     connect_guard.finish("success");
-    Ok(ws_stream)
+    Ok((ws_stream, issued_session_id))
 }
 
 #[cfg(test)]

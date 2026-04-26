@@ -220,8 +220,12 @@ impl SharedH2Connection {
         !self.closed.load(Ordering::Acquire)
     }
 
-    async fn open_websocket(self: &Arc<Self>, target_uri: &str) -> Result<WsTransportStream> {
-        match self.open_websocket_inner(target_uri).await {
+    async fn open_websocket(
+        self: &Arc<Self>,
+        target_uri: &str,
+        resume_request: Option<crate::resumption::SessionId>,
+    ) -> Result<WsTransportStream> {
+        match self.open_websocket_inner(target_uri, resume_request).await {
             Ok(ws) => Ok(ws),
             Err(error) => {
                 // Any failure opening a new CONNECT stream on an already-cached
@@ -240,17 +244,27 @@ impl SharedH2Connection {
     async fn open_websocket_inner(
         self: &Arc<Self>,
         target_uri: &str,
+        resume_request: Option<crate::resumption::SessionId>,
     ) -> Result<WsTransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
         }
 
-        let request: Request<Empty<Bytes>> = Request::builder()
+        let mut request_builder = Request::builder()
             .method(Method::CONNECT)
             .version(Version::HTTP_2)
             .uri(target_uri)
             .extension(Protocol::from_static("websocket"))
             .header("sec-websocket-version", "13")
+            // Always advertise resumption support; the server only mints a
+            // Session ID when this header is present and resumption is
+            // enabled in its config. Servers without the feature ignore it.
+            .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
+        if let Some(id) = resume_request {
+            request_builder =
+                request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
+        }
+        let request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
             .expect("request builder never fails");
 
@@ -288,6 +302,11 @@ impl SharedH2Connection {
         if !response.status().is_success() {
             bail!("HTTP/2 websocket CONNECT failed with status {}", response.status());
         }
+        let issued_session_id = response
+            .headers()
+            .get(crate::resumption::SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::resumption::SessionId::parse_hex);
 
         let upgraded = timeout(OPEN_WEBSOCKET_TIMEOUT, hyper::upgrade::on(&mut response))
             .await
@@ -303,6 +322,7 @@ impl SharedH2Connection {
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
         Ok(WsTransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
+            issued_session_id,
         })
     }
 }
@@ -349,6 +369,11 @@ fn h2_registry() -> &'static SharedConnectionRegistry<H2ConnectionKey, SharedH2C
 
 struct H2Dialer {
     use_tls: bool,
+    /// Session ID the caller wants to resume on this open. Captured at
+    /// dialer construction so the trait `open_on` method can stay
+    /// signature-stable while threading the request through to
+    /// `SharedH2Connection::open_websocket`.
+    resume_request: Option<crate::resumption::SessionId>,
 }
 
 impl crate::shared_dial::WsDialer for H2Dialer {
@@ -390,7 +415,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
     ) -> Result<WsTransportStream> {
         let scheme = if self.use_tls { "https" } else { "http" };
         let target_uri = format!("{scheme}://{}/{path}", format_authority(server_name, Some(server_port)));
-        conn.open_websocket(&target_uri).await
+        conn.open_websocket(&target_uri, self.resume_request).await
     }
 }
 
@@ -402,6 +427,7 @@ pub(crate) async fn connect_websocket_h2(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
+    resume_request: Option<crate::resumption::SessionId>,
 ) -> Result<WsTransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
@@ -413,7 +439,7 @@ pub(crate) async fn connect_websocket_h2(
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
     };
     let path = websocket_path(url);
-    let dialer = H2Dialer { use_tls };
+    let dialer = H2Dialer { use_tls, resume_request };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
