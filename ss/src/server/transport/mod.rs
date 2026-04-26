@@ -99,6 +99,7 @@ pub(super) async fn vless_websocket_upgrade(
     OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
+    headers: HeaderMap,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
@@ -118,16 +119,21 @@ pub(super) async fn vless_websocket_upgrade(
     let session = server
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
-    ws.on_upgrade(move |socket| async move {
+    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result = vless::handle_vless_connection(socket, server, route_ctx).await;
+        let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "vless");
-    })
+    });
+    let response_resume =
+        ResumeContext::from_request_headers(&headers, &state.services.orphan_registry);
+    response_resume.issue_session_header(response.headers_mut());
+    response
 }
 
 pub(super) async fn root_http_auth_handler(

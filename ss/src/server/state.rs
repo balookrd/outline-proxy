@@ -100,6 +100,7 @@ impl Services {
             dns_cache,
             prefer_ipv4_upstream,
             outbound_ipv6,
+            orphan_registry: Arc::clone(&orphan_registry),
         });
         Self {
             tcp_server,

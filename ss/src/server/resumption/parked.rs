@@ -33,6 +33,41 @@ impl Parked {
     }
 }
 
+/// Per-protocol context preserved alongside a parked TCP upstream.
+///
+/// On resume the relay path needs different inner state depending on
+/// which proxy protocol authenticated the original session:
+///
+/// - SS-over-WebSocket needs the original [`UserKey`] so the new client
+///   stream can build a fresh `AeadStreamEncryptor` for the same user.
+/// - VLESS-over-WebSocket does not encrypt the relay payload at all —
+///   the proxy passes raw bytes between the WS frame layer and the
+///   upstream socket, so no inner crypto context is preserved.
+///
+/// Resume-attach paths must match on the variant they expect; a request
+/// to resume an SS session through a VLESS handler (or vice versa) is
+/// treated as a miss to avoid cross-protocol confusion attacks.
+pub(crate) enum TcpProtocolContext {
+    /// Shadowsocks-over-WebSocket session. Carries the per-user
+    /// `UserKey` needed to derive a fresh response cipher for the new
+    /// client stream.
+    Ss(UserKey),
+    /// VLESS-over-WebSocket session (single-target). No inner crypto
+    /// state is kept; the new client stream simply forwards raw bytes.
+    Vless,
+}
+
+impl TcpProtocolContext {
+    /// Stable label for metrics and structured logs.
+    #[allow(dead_code)]
+    pub(crate) fn label(&self) -> &'static str {
+        match self {
+            Self::Ss(_) => "ss",
+            Self::Vless => "vless",
+        }
+    }
+}
+
 /// Upstream TCP relay state preserved for cross-transport resumption.
 ///
 /// At park time the relay loop has already split the upstream `TcpStream`
@@ -48,7 +83,9 @@ pub(crate) struct ParkedTcp {
     #[allow(dead_code)]
     pub(crate) protocol: Protocol,
     pub(crate) owner: Arc<str>,
-    pub(crate) user: UserKey,
+    /// Per-protocol context preserved across the resume hand-off; see
+    /// [`TcpProtocolContext`].
+    pub(crate) protocol_context: TcpProtocolContext,
     pub(crate) user_counters: Arc<PerUserCounters>,
     pub(crate) upstream_guard: TcpUpstreamGuard,
 }
