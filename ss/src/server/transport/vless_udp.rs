@@ -93,6 +93,10 @@ where
     let user_id = user.label_arc();
     let protocol = route.protocol;
     let reader_socket = Arc::clone(&socket);
+    // The relay-task return type is unified across the VLESS variants
+    // (TCP, UDP, Mux) as `VlessRelayTaskOutput`. UDP never resumes, so
+    // the inner future's `Result<()>` is wrapped into the `Closed`
+    // outcome — the natural reading is "no harvested reader to hand off".
     state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
@@ -104,6 +108,7 @@ where
             user_id,
         )
         .await
+        .map(|()| super::vless::VlessRelayOutcome::Closed)
     })));
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);

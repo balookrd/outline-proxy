@@ -16,11 +16,11 @@
 
 use tokio::task::JoinHandle;
 
-pub(crate) struct AbortOnDrop<T>(JoinHandle<T>);
+pub(crate) struct AbortOnDrop<T>(Option<JoinHandle<T>>);
 
 impl<T> AbortOnDrop<T> {
     pub(crate) fn new(handle: JoinHandle<T>) -> Self {
-        Self(handle)
+        Self(Some(handle))
     }
 
     /// Eagerly abort the task. Drop also aborts, so calling this is only
@@ -28,12 +28,27 @@ impl<T> AbortOnDrop<T> {
     /// (e.g. immediately on cleanup, before later async work).
     #[allow(dead_code)]
     pub(crate) fn abort(&self) {
-        self.0.abort();
+        if let Some(handle) = &self.0 {
+            handle.abort();
+        }
+    }
+
+    /// Detaches the underlying `JoinHandle` and suppresses the on-drop
+    /// abort. The caller takes responsibility for the task's lifecycle —
+    /// typically by `.await`ing it and then handing off any output. Used
+    /// by the cross-transport resumption path to harvest a relay task's
+    /// reader without aborting the task first.
+    pub(crate) fn into_inner(mut self) -> JoinHandle<T> {
+        self.0
+            .take()
+            .expect("AbortOnDrop::into_inner called on detached handle")
     }
 }
 
 impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
-        self.0.abort();
+        if let Some(handle) = self.0.take() {
+            handle.abort();
+        }
     }
 }

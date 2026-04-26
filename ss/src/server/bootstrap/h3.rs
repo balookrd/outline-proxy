@@ -654,9 +654,15 @@ async fn handle_h3_request(
 
     // Resume negotiation. Parse `X-Outline-*` headers up-front (cheap)
     // so we can both echo the assigned Session ID in the upgrade
-    // response and pass the request side into the TCP relay path.
+    // response and pass the request side into the relay path. Each
+    // proxy protocol owns its own registry handle (in practice they
+    // point at the same underlying `Arc<OrphanRegistry>`); we pick the
+    // one that matches the path so the receiving relay queries the
+    // intended registry.
     let resume = if ctx.tcp_paths.contains(ws_req.path.as_str()) {
         ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
+    } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
+        ResumeContext::from_request_headers(request.headers(), &ctx.vless_server.orphan_registry)
     } else {
         ResumeContext::default()
     };
@@ -733,8 +739,13 @@ async fn handle_h3_request(
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result =
-            handle_vless_h3_connection(socket, Arc::clone(&ctx.vless_server), route_ctx).await;
+        let result = handle_vless_h3_connection(
+            socket,
+            Arc::clone(&ctx.vless_server),
+            route_ctx,
+            resume,
+        )
+        .await;
         finish_ws_session(session, result, "vless");
     }
 

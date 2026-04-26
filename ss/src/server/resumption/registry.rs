@@ -305,7 +305,7 @@ mod tests {
         metrics::{Metrics, Protocol},
     };
 
-    use super::super::parked::{Parked, ParkedTcp};
+    use super::super::parked::{Parked, ParkedTcp, TcpProtocolContext};
     use super::*;
 
     fn test_config() -> Config {
@@ -382,7 +382,7 @@ mod tests {
             target_display: Arc::from("example.com:443"),
             protocol: Protocol::Http2,
             owner: Arc::clone(&user_id),
-            user,
+            protocol_context: TcpProtocolContext::Ss(user),
             user_counters: metrics.user_counters(&user_id),
             upstream_guard: metrics.open_tcp_upstream_connection(user_id, Protocol::Http2),
         })

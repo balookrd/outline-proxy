@@ -48,7 +48,7 @@ use crate::{
 use super::super::connect::connect_tcp_target;
 use super::super::relay::UpstreamRelayOutcome;
 use super::super::resumption::{
-    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId,
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
@@ -459,7 +459,7 @@ async fn try_park_on_drop(
         target_display,
         protocol: route.protocol,
         owner: Arc::clone(&owner),
-        user,
+        protocol_context: TcpProtocolContext::Ss(user),
         user_counters,
         upstream_guard,
     };
@@ -534,6 +534,24 @@ where
             && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
                 server.orphan_registry.take_for_resume(resume_id, &user_id)
         {
+            // Cross-protocol mismatch (a SS-authenticated client
+            // presents a Session ID minted under VLESS, or vice versa)
+            // is rejected outright. The owner check inside
+            // `take_for_resume` already binds an ID to a single user
+            // identity, so this should only fire if SS and VLESS users
+            // share an identifier — a configuration error worth
+            // surfacing rather than silently re-routing.
+            let TcpProtocolContext::Ss(parked_user) = parked.protocol_context else {
+                warn!(
+                    user = user.id(),
+                    path = %route.path,
+                    parked_kind = parked.protocol_context.label(),
+                    "rejecting resume: parked session belongs to a different proxy protocol"
+                );
+                return Err(FrameError::Fatal(anyhow!(
+                    "cross-protocol resume rejected: parked session is not SS"
+                )));
+            };
             info!(
                 user = user.id(),
                 path = %route.path,
@@ -541,7 +559,7 @@ where
                 "tcp upstream resumed from orphan registry"
             );
             let mut encryptor =
-                AeadStreamEncryptor::new(&parked.user, decryptor.response_context())
+                AeadStreamEncryptor::new(&parked_user, decryptor.response_context())
                     .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
             let tx = outbound.data_tx.clone();
             let make_binary = outbound.make_binary;
@@ -566,7 +584,7 @@ where
             }));
             state.relay_cancel = Some(cancel);
             state.user_counters = Some(parked.user_counters);
-            state.authenticated_user = Some(parked.user);
+            state.authenticated_user = Some(parked_user);
             state.upstream_writer = Some(parked.upstream_writer);
             state.upstream_guard = Some(parked.upstream_guard);
             state.upstream_target_display = Some(parked.target_display);

@@ -7,7 +7,7 @@ use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UdpSocket,
-    sync::mpsc,
+    sync::{Notify, mpsc},
 };
 use tracing::{debug, info, warn};
 
@@ -26,14 +26,29 @@ use super::{
             WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
         },
         dns_cache::DnsCache,
+        resumption::{OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
         scratch::TcpRelayBuf,
     },
     sink,
+    tcp::ResumeContext,
     vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState},
     vless_udp::{self, forward_vless_udp_client_frames},
     ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket},
     ws_writer,
 };
+
+/// Outcome of [`relay_vless_upstream_to_client`]. Mirrors the SS-WS path's
+/// `UpstreamRelayOutcome` but typed for the VLESS relay's reader. Made
+/// `pub(super)` so the UDP and Mux helper modules can construct the
+/// `Closed` variant when wrapping their own relay task return values
+/// into the unified [`VlessRelayTaskOutput`] type.
+pub(super) enum VlessRelayOutcome {
+    /// Upstream EOF or sink error; reader is consumed.
+    Closed,
+    /// Caller fired the cancel notify; reader is returned for hand-off
+    /// into the orphan registry.
+    Cancelled(tokio::net::tcp::OwnedReadHalf),
+}
 
 const MAX_VLESS_HEADER_BUFFER: usize = 512;
 
@@ -66,6 +81,9 @@ pub(in crate::server) struct VlessWsServerCtx {
     pub(in crate::server) dns_cache: Arc<DnsCache>,
     pub(in crate::server) prefer_ipv4_upstream: bool,
     pub(in crate::server) outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    /// Cross-transport session-resumption registry. No-op when disabled
+    /// in config.
+    pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
 }
 
 pub(in crate::server) struct VlessWsRouteCtx {
@@ -82,6 +100,12 @@ pub(super) enum UpstreamSession {
     Mux(MuxState),
 }
 
+/// Return type of the VLESS-TCP relay task. Carries either a closed
+/// outcome (no parking possible) or the harvested reader half so that
+/// [`run_vless_relay`] can move it into the orphan registry on
+/// disconnect.
+type VlessRelayTaskOutput = Result<VlessRelayOutcome>;
+
 pub(super) struct VlessRelayState {
     pub(super) header_buffer: Vec<u8>,
     pub(super) upstream: UpstreamSession,
@@ -90,11 +114,25 @@ pub(super) struct VlessRelayState {
     /// `?`-returns and panics. Without it, UDP readers would block on
     /// `socket.recv` forever (UDP has no shutdown signal) and orphan their
     /// `Arc<UdpSocket>` + 64 KiB buffer.
-    pub(super) upstream_to_client: Option<AbortOnDrop<Result<()>>>,
+    pub(super) upstream_to_client: Option<AbortOnDrop<VlessRelayTaskOutput>>,
     pub(super) authenticated_user: Option<VlessUser>,
     pub(super) user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
     pub(super) udp_client_buffer: BytesMut,
+    /// Notify used to ask the spawned relay task (TCP path only) to stop
+    /// and return its reader half on park-on-drop. `None` for the UDP
+    /// and Mux paths, which take the legacy abort-on-drop teardown.
+    relay_cancel: Option<Arc<Notify>>,
+    /// Human-readable target host:port of the active TCP upstream. Only
+    /// populated on the TCP path; used for logging and to populate the
+    /// `ParkedTcp::target_display` field on park.
+    upstream_target_display: Option<Arc<str>>,
+    /// Session ID we minted at WS-Upgrade time and surfaced via
+    /// `X-Outline-Session`. Used as the registry key on park.
+    issued_session_id: Option<SessionId>,
+    /// Session ID the client offered for resumption. Consumed (`take()`)
+    /// on the first authenticated VLESS-TCP frame.
+    pending_resume_request: Option<SessionId>,
 }
 
 pub(super) struct VlessWsOutbound<'a, Msg> {
@@ -104,7 +142,7 @@ pub(super) struct VlessWsOutbound<'a, Msg> {
 }
 
 impl VlessRelayState {
-    fn new() -> Self {
+    fn new(resume: ResumeContext) -> Self {
         Self {
             header_buffer: Vec::with_capacity(128),
             upstream: UpstreamSession::None,
@@ -113,6 +151,10 @@ impl VlessRelayState {
             user_counters: None,
             upstream_guard: None,
             udp_client_buffer: BytesMut::new(),
+            relay_cancel: None,
+            upstream_target_display: None,
+            issued_session_id: resume.issued_session_id,
+            pending_resume_request: resume.requested_resume,
         }
     }
 }
@@ -121,6 +163,7 @@ async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
@@ -140,7 +183,7 @@ async fn run_vless_relay<T: WsSocket>(
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await;
 
-    let mut state = VlessRelayState::new();
+    let mut state = VlessRelayState::new(resume);
     let mut client_closed = false;
     // Last instant any inbound WS frame was observed; reset on every recv.
     // The keepalive tick checks this against `pong_deadline` and tears the
@@ -241,14 +284,23 @@ async fn run_vless_relay<T: WsSocket>(
         }
     }
 
-    match &mut state.upstream {
-        UpstreamSession::Tcp(upstream) => {
-            upstream.shutdown().await.ok();
-        },
-        UpstreamSession::Mux(mux) => {
-            mux.shutdown().await;
-        },
-        UpstreamSession::Udp(_) | UpstreamSession::None => {},
+    // Try parking the TCP upstream into the orphan registry. Returns
+    // `true` if the upstream and reader were moved to the registry; in
+    // that case the regular shutdown branch below is skipped. UDP and
+    // Mux paths are not parkable in the MVP and always fall through to
+    // the legacy teardown.
+    let parked = try_park_vless_on_drop(&mut state, server, route).await;
+
+    if !parked {
+        match &mut state.upstream {
+            UpstreamSession::Tcp(upstream) => {
+                upstream.shutdown().await.ok();
+            },
+            UpstreamSession::Mux(mux) => {
+                mux.shutdown().await;
+            },
+            UpstreamSession::Udp(_) | UpstreamSession::None => {},
+        }
     }
 
     // `state.upstream_to_client` is `AbortOnDrop`, so dropping `state` at
@@ -256,13 +308,106 @@ async fn run_vless_relay<T: WsSocket>(
     // reader self-exits in microseconds anyway after the upstream shutdown
     // above, and for UDP awaiting would hang forever on `socket.recv`.
     let _ = client_closed;
-    if let Some(guard) = state.upstream_guard.take() {
+    if !parked
+        && let Some(guard) = state.upstream_guard.take()
+    {
         guard.finish();
     }
     drop(outbound_ctrl_tx);
     drop(outbound_data_tx);
     let _ = writer_task.await;
     Ok(())
+}
+
+/// Attempts to move the live VLESS-TCP upstream into the orphan registry.
+/// Returns `true` iff the upstream was parked; on `false` the caller
+/// performs the legacy shutdown. Only the single-target TCP path is
+/// eligible — UDP, Mux and unauthenticated sessions always fall through.
+async fn try_park_vless_on_drop(
+    state: &mut VlessRelayState,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+) -> bool {
+    if !server.orphan_registry.enabled() {
+        return false;
+    }
+    let Some(session_id) = state.issued_session_id else {
+        return false;
+    };
+    if !matches!(state.upstream, UpstreamSession::Tcp(_)) {
+        return false;
+    }
+    let Some(cancel) = state.relay_cancel.take() else {
+        return false;
+    };
+    let Some(task) = state.upstream_to_client.take() else {
+        return false;
+    };
+    cancel.notify_one();
+    let reader = match task.into_inner().await {
+        Ok(Ok(VlessRelayOutcome::Cancelled(reader))) => reader,
+        Ok(Ok(VlessRelayOutcome::Closed)) => return false,
+        Ok(Err(error)) => {
+            debug!(?error, "vless relay task errored before park; not parking");
+            return false;
+        },
+        Err(join_error) => {
+            warn!(?join_error, "vless relay task panicked while harvesting reader for park");
+            return false;
+        },
+    };
+    let writer = match std::mem::replace(&mut state.upstream, UpstreamSession::None) {
+        UpstreamSession::Tcp(writer) => writer,
+        other => {
+            // Should not happen: we matched `Tcp` above and we are the
+            // only mutator. Restore and back out.
+            state.upstream = other;
+            return false;
+        },
+    };
+    let user = match state.authenticated_user.take() {
+        Some(user) => user,
+        None => return false,
+    };
+    let user_counters = match state.user_counters.take() {
+        Some(c) => c,
+        None => return false,
+    };
+    let upstream_guard = match state.upstream_guard.take() {
+        Some(g) => g,
+        None => return false,
+    };
+    let target_display = state
+        .upstream_target_display
+        .take()
+        .unwrap_or_else(|| Arc::from("?"));
+    let owner = user.label_arc();
+    let parked = ParkedTcp {
+        upstream_writer: writer,
+        upstream_reader: reader,
+        target_display,
+        protocol: route.protocol,
+        owner: Arc::clone(&owner),
+        // VLESS does not encrypt the relay payload, so the parked entry
+        // carries no inner crypto context. Resume-attach on the VLESS
+        // side just spawns a fresh raw-byte relay on the new client
+        // stream.
+        protocol_context: TcpProtocolContext::Vless,
+        user_counters,
+        upstream_guard,
+    };
+    debug!(
+        user = %owner,
+        path = %route.path,
+        "parking vless tcp upstream into orphan registry",
+    );
+    server.orphan_registry.park(session_id, Parked::Tcp(parked));
+    // The original `VlessUser` is not preserved in the parked entry —
+    // the next client stream re-runs UUID match against the route's
+    // user list. Restore on the relay state so the caller's cleanup
+    // drops it normally.
+    state.authenticated_user = Some(user);
+    true
 }
 
 async fn handle_vless_binary_frame<Msg>(
@@ -456,6 +601,87 @@ where
     let target_display = target.display_host_port();
     info!(user = user.label(), path = %route.path, target = %target_display, "vless tcp target");
 
+    // Resume attempt: re-attach to a parked VLESS-TCP upstream when the
+    // client offered a Session ID that this user owns. The target sent
+    // in the VLESS request is intentionally ignored on a hit — by spec
+    // the parked target is authoritative.
+    let user_id_for_resume = user.label_arc();
+    if let Some(resume_id) = state.pending_resume_request.take()
+        && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
+            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+    {
+        let TcpProtocolContext::Vless = parked.protocol_context else {
+            warn!(
+                user = user.label(),
+                path = %route.path,
+                parked_kind = parked.protocol_context.label(),
+                "rejecting resume: parked session belongs to a different proxy protocol"
+            );
+            return Err(VlessFrameError::Fatal(anyhow!(
+                "cross-protocol resume rejected: parked session is not VLESS"
+            )));
+        };
+        info!(
+            user = user.label(),
+            path = %route.path,
+            target = %parked.target_display,
+            "vless tcp upstream resumed from orphan registry"
+        );
+        // Send the standard VLESS response header so the client moves
+        // its parser past the handshake before receiving payload.
+        outbound
+            .data_tx
+            .send((outbound.make_binary)(Bytes::from_static(&[vless::VERSION, 0x00])))
+            .await
+            .map_err(|error| anyhow!("failed to queue vless response header on resume: {error}"))?;
+
+        let tx = outbound.data_tx.clone();
+        let metrics = Arc::clone(&server.metrics);
+        let user_id_for_relay = Arc::clone(&user_id_for_resume);
+        let protocol = route.protocol;
+        let cancel = Arc::new(Notify::new());
+        let cancel_for_task = Arc::clone(&cancel);
+        let parked_reader = parked.upstream_reader;
+        let make_binary = outbound.make_binary;
+        let make_close = outbound.make_close;
+        state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+            relay_vless_upstream_to_client(
+                parked_reader,
+                tx,
+                make_binary,
+                make_close,
+                metrics,
+                protocol,
+                user_id_for_relay,
+                Some(cancel_for_task),
+            )
+            .await
+        })));
+        state.relay_cancel = Some(cancel);
+        state.user_counters = Some(parked.user_counters);
+        state.upstream_guard = Some(parked.upstream_guard);
+        state.upstream_target_display = Some(parked.target_display);
+        state.authenticated_user = Some(user);
+        state.upstream = UpstreamSession::Tcp(parked.upstream_writer);
+
+        // Forward any payload bytes that arrived in the same WS frame
+        // as the VLESS request header.
+        let leftover = state.header_buffer.split_off(request.consumed);
+        state.header_buffer.clear();
+        if !leftover.is_empty()
+            && let UpstreamSession::Tcp(writer) = &mut state.upstream
+        {
+            if let Some(counters) = &state.user_counters {
+                counters.tcp_in(route.protocol).increment(leftover.len() as u64);
+            }
+            writer
+                .write_all(&leftover)
+                .await
+                .context("failed to write initial vless payload upstream after resume")?;
+        }
+        return Ok(());
+    }
+
     let connect_started = std::time::Instant::now();
     let stream = match connect_tcp_target(
         server.dns_cache.as_ref(),
@@ -509,6 +735,12 @@ where
     let metrics = Arc::clone(&server.metrics);
     let user_id = user.label_arc();
     let protocol = route.protocol;
+    // Cancel-notify is registered unconditionally so park-on-drop can
+    // harvest the reader. When resumption is disabled the notify is
+    // simply never fired and the relay loop runs in its single-arm
+    // (legacy) mode.
+    let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
     state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_upstream_to_client(
             upstream_reader,
@@ -518,9 +750,12 @@ where
             metrics,
             protocol,
             user_id,
+            Some(cancel_for_task),
         )
         .await
     })));
+    state.relay_cancel = Some(cancel);
+    state.upstream_target_display = Some(Arc::from(target_display.as_str()));
     server
         .metrics
         .record_tcp_authenticated_session(user.label_arc(), route.protocol);
@@ -558,7 +793,8 @@ async fn relay_vless_upstream_to_client<Msg>(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     user_id: Arc<str>,
-) -> Result<()>
+    cancel: Option<Arc<Notify>>,
+) -> VlessRelayTaskOutput
 where
     Msg: Send + 'static,
 {
@@ -566,34 +802,54 @@ where
     let target_to_client = user_counters.tcp_out(protocol);
     let mut buffer = TcpRelayBuf::take();
     loop {
-        let read = upstream_reader
-            .read(&mut *buffer)
-            .await
-            .context("failed to read from vless upstream")?;
-        if read == 0 {
-            break;
+        // Cancel arm: when no notify is registered, substitute a never-
+        // resolving future so the select degenerates to a single-arm
+        // read loop matching the legacy behaviour.
+        let cancelled = async {
+            match cancel.as_deref() {
+                Some(notify) => notify.notified().await,
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled => {
+                // Do NOT push a Close frame here: the caller is parking
+                // the upstream so a subsequent resume can reattach a
+                // new client stream. Sending Close would race the
+                // reconnect.
+                return Ok(VlessRelayOutcome::Cancelled(upstream_reader));
+            }
+            read_result = upstream_reader.read(&mut *buffer) => {
+                let read = read_result.context("failed to read from vless upstream")?;
+                if read == 0 {
+                    break;
+                }
+                target_to_client.increment(read as u64);
+                tx.send(make_binary(Bytes::copy_from_slice(&buffer[..read])))
+                    .await
+                    .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
+            }
         }
-        target_to_client.increment(read as u64);
-        tx.send(make_binary(Bytes::copy_from_slice(&buffer[..read])))
-            .await
-            .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
     }
     let _ = tx.send(make_close()).await;
-    Ok(())
+    Ok(VlessRelayOutcome::Closed)
 }
 
 pub(super) async fn handle_vless_connection(
     socket: WebSocket,
     server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
-    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route).await
+    run_vless_relay::<AxumWs>(AxumWs(socket), &server, &route, resume).await
 }
 
 pub(in crate::server) async fn handle_vless_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     server: Arc<VlessWsServerCtx>,
     route: VlessWsRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
-    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route).await
+    run_vless_relay::<H3Ws>(H3Ws(socket), &server, &route, resume).await
 }
