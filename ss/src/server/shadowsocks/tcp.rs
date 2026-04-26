@@ -162,6 +162,9 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
     let relay_metrics = ctx.services.tcp_server.metrics.clone();
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = tokio::spawn(async move {
+        // Direct shadowsocks TCP has no resume path; pass `None` for the
+        // cancel signal so the relay function degenerates to its legacy
+        // EOF-driven loop. The outcome is therefore always `Closed`.
         super::super::relay::relay_upstream_to_client(
             upstream_reader,
             sink,
@@ -169,8 +172,10 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             relay_metrics,
             Protocol::Socket,
             relay_user_id,
+            None,
         )
         .await
+        .map(|_| ())
     });
     ctx.services
         .tcp_server

@@ -43,6 +43,9 @@ pub(crate) struct ParkedTcp {
     pub(crate) upstream_reader: OwnedReadHalf,
     /// Human-readable target host:port, kept for logging only.
     pub(crate) target_display: Arc<str>,
+    /// Protocol of the original session. Stashed for future log/metric
+    /// dimensioning at resume time; not read by the MVP code path.
+    #[allow(dead_code)]
     pub(crate) protocol: Protocol,
     pub(crate) owner: Arc<str>,
     pub(crate) user: UserKey,

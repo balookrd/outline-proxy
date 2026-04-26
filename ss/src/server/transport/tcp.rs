@@ -6,7 +6,10 @@ use bytes::Bytes;
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use std::time::Duration;
 
-use tokio::{io::AsyncWriteExt, sync::mpsc};
+use tokio::{
+    io::AsyncWriteExt,
+    sync::{Notify, mpsc},
+};
 use tracing::{debug, info, warn};
 
 /// Failure modes returned by [`handle_tcp_binary_frame`]. [`run_tcp_relay`]
@@ -43,6 +46,10 @@ use crate::{
 };
 
 use super::super::connect::connect_tcp_target;
+use super::super::relay::UpstreamRelayOutcome;
+use super::super::resumption::{
+    OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId,
+};
 use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
     WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
@@ -59,6 +66,10 @@ pub(in crate::server) struct WsTcpServerCtx {
     pub(in crate::server) dns_cache: Arc<DnsCache>,
     pub(in crate::server) prefer_ipv4_upstream: bool,
     pub(in crate::server) outbound_ipv6: Option<Arc<OutboundIpv6>>,
+    /// Cross-transport session-resumption registry. Always present;
+    /// when resumption is disabled in config the registry is a no-op
+    /// and adds no overhead to the TCP path.
+    pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
 }
 
 /// Per-path state for a single TCP WebSocket session.
@@ -69,12 +80,94 @@ pub(in crate::server) struct WsTcpRouteCtx {
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
 }
 
+/// Per-request resumption negotiation state, parsed once at WS Upgrade
+/// time from `X-Outline-*` headers and threaded into the relay loop.
+#[derive(Default)]
+pub(in crate::server) struct ResumeContext {
+    /// Session ID the client asked us to resume. Validated against the
+    /// orphan registry only after authentication succeeds, since the
+    /// upgrade handler does not know `user_id` yet.
+    pub(in crate::server) requested_resume: Option<SessionId>,
+    /// Session ID we minted (and surfaced to the client via the
+    /// `X-Outline-Session` response header) so that, on disconnect, the
+    /// upstream can be parked under a key the client already knows.
+    pub(in crate::server) issued_session_id: Option<SessionId>,
+}
+
+/// Lower-cased name of the request header carrying the Session ID a
+/// client wishes to resume.
+pub(in crate::server) const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
+/// Lower-cased name of the request header advertising client support for
+/// session resumption.
+pub(in crate::server) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
+/// Lower-cased name of the response header carrying the Session ID the
+/// server has assigned to the just-established session.
+pub(in crate::server) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
+
+impl ResumeContext {
+    /// Builds a [`ResumeContext`] by inspecting incoming HTTP request
+    /// headers and, when applicable, minting a fresh server-issued
+    /// Session ID. When resumption is disabled in config — or when the
+    /// client neither offered `Resume` nor advertised `Resume-Capable` —
+    /// both fields are left `None` and the relay path runs unchanged.
+    pub(in crate::server) fn from_request_headers(
+        headers: &axum::http::HeaderMap,
+        registry: &OrphanRegistry,
+    ) -> Self {
+        let requested_resume = headers
+            .get(RESUME_REQUEST_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(SessionId::parse_hex);
+        let resume_capable = headers
+            .get(RESUME_CAPABLE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim() == "1");
+        let issued_session_id = if registry.enabled()
+            && (resume_capable || requested_resume.is_some())
+        {
+            registry.mint_session_id()
+        } else {
+            None
+        };
+        Self { requested_resume, issued_session_id }
+    }
+
+    /// Inserts the `X-Outline-Session` response header carrying the
+    /// minted Session ID. No-op when no ID was minted.
+    pub(in crate::server) fn issue_session_header(&self, headers: &mut axum::http::HeaderMap) {
+        if let Some(id) = self.issued_session_id
+            && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+        {
+            headers.insert(SESSION_RESPONSE_HEADER, value);
+        }
+    }
+}
+
+/// Relay-task return type used by the TCP-WS path. Carries either a
+/// closed outcome (no parking possible) or the harvested reader half so
+/// that [`run_tcp_relay`] can park it after the client disconnects.
+type RelayTaskOutput = Result<UpstreamRelayOutcome<tokio::net::tcp::OwnedReadHalf>>;
+
 struct WsTcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
-    upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
+    upstream_to_client: Option<tokio::task::JoinHandle<RelayTaskOutput>>,
+    /// Notify used to ask the spawned relay task to stop and return its
+    /// reader half. Set in tandem with `upstream_to_client`.
+    relay_cancel: Option<Arc<Notify>>,
     authenticated_user: Option<UserKey>,
     user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
+    /// Human-readable target host:port for the active upstream. Only used
+    /// for park-time logging and to populate `ParkedTcp::target_display`.
+    upstream_target_display: Option<Arc<str>>,
+    /// Mirror of [`ResumeContext::issued_session_id`] kept on the relay
+    /// state so the park-on-drop branch can find it without re-threading
+    /// `ResumeContext` through every helper.
+    issued_session_id: Option<SessionId>,
+    /// Session ID the client asked us to resume. Consumed (`take()`) at
+    /// the first authenticated frame; on resume hit it points at parked
+    /// state, on miss it is dropped and a fresh upstream is established.
+    pending_resume_request: Option<SessionId>,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -84,13 +177,17 @@ struct WsTcpFrameOutput<'a, Msg> {
 }
 
 impl WsTcpRelayState {
-    fn new() -> Self {
+    fn new(resume: ResumeContext) -> Self {
         Self {
             upstream_writer: None,
             upstream_to_client: None,
+            relay_cancel: None,
             authenticated_user: None,
             user_counters: None,
             upstream_guard: None,
+            upstream_target_display: None,
+            issued_session_id: resume.issued_session_id,
+            pending_resume_request: resume.requested_resume,
         }
     }
 }
@@ -118,6 +215,7 @@ async fn run_tcp_relay<T: WsSocket>(
     socket: T,
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
@@ -133,7 +231,7 @@ async fn run_tcp_relay<T: WsSocket>(
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
     let mut plaintext_buffer = ScratchBuf::take();
-    let mut state = WsTcpRelayState::new();
+    let mut state = WsTcpRelayState::new(resume);
     let mut client_closed = false;
 
     // Periodic WebSocket Ping sent from server to client.
@@ -251,32 +349,127 @@ async fn run_tcp_relay<T: WsSocket>(
         }
     }
 
-    if let Some(mut upstream) = state.upstream_writer.take() {
-        upstream.shutdown().await.ok();
+    // Try to park the upstream into the orphan registry before any
+    // teardown. `try_park_on_drop` consumes the relevant fields of `state`
+    // on success; on failure it leaves them intact for the legacy cleanup
+    // below.
+    let parked = try_park_on_drop(&mut state, server, route).await;
+
+    if !parked {
+        if let Some(mut upstream) = state.upstream_writer.take() {
+            upstream.shutdown().await.ok();
+        }
+        if client_closed {
+            if let Some(task) = state.upstream_to_client.take() {
+                task.abort();
+            }
+        } else if let Some(task) = state.upstream_to_client.take() {
+            // Surface relay-task errors but ignore the resumption outcome
+            // (we already decided not to park).
+            match task.await.context("tcp upstream relay task join failed")? {
+                Ok(_) => {},
+                Err(error) => return Err(error),
+            }
+        }
+        if let Some(guard) = state.upstream_guard.take() {
+            guard.finish();
+        }
     }
 
-    if client_closed {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.abort();
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
+    drop(outbound_ctrl_tx);
+    drop(outbound_data_tx);
+    if client_closed || parked {
         let _ = writer_task.await;
     } else {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.await.context("tcp upstream relay task join failed")??;
-        }
-        if let Some(guard) = state.upstream_guard.take() {
-            guard.finish();
-        }
-        drop(outbound_ctrl_tx);
-        drop(outbound_data_tx);
         writer_task.await.context("websocket writer task join failed")??;
     }
     Ok(())
+}
+
+/// Attempts to move the still-live upstream socket into the orphan
+/// registry. Returns `true` iff the upstream was parked; on `false` the
+/// caller falls back to legacy shutdown.
+///
+/// All early-exit paths leave `state.upstream_writer` (and friends)
+/// intact so the legacy cleanup branch can take over without surprise.
+async fn try_park_on_drop(
+    state: &mut WsTcpRelayState,
+    server: &WsTcpServerCtx,
+    route: &WsTcpRouteCtx,
+) -> bool {
+    if !server.orphan_registry.enabled() {
+        return false;
+    }
+    let Some(session_id) = state.issued_session_id else {
+        return false;
+    };
+    if state.upstream_writer.is_none() {
+        // Authentication never completed (or upstream connect failed).
+        return false;
+    }
+    // Harvest the spawned relay task's reader half via cancel-notify.
+    let Some(cancel) = state.relay_cancel.take() else {
+        return false;
+    };
+    let Some(task) = state.upstream_to_client.take() else {
+        return false;
+    };
+    cancel.notify_one();
+    let reader = match task.await {
+        Ok(Ok(UpstreamRelayOutcome::Cancelled(reader))) => reader,
+        Ok(Ok(UpstreamRelayOutcome::Closed)) => {
+            // Upstream EOF'd before our cancel was observed; nothing
+            // worth parking.
+            return false;
+        },
+        Ok(Err(error)) => {
+            debug!(?error, "relay task errored before park; not parking");
+            return false;
+        },
+        Err(join_error) => {
+            warn!(?join_error, "relay task panicked while harvesting reader for park");
+            return false;
+        },
+    };
+    let writer = state.upstream_writer.take().expect("checked above");
+    let user = match state.authenticated_user.take() {
+        Some(user) => user,
+        None => {
+            // Should not happen if `upstream_writer` was set, but keep
+            // the cleanup honest.
+            return false;
+        },
+    };
+    let user_counters = match state.user_counters.take() {
+        Some(c) => c,
+        None => return false,
+    };
+    let upstream_guard = match state.upstream_guard.take() {
+        Some(g) => g,
+        None => return false,
+    };
+    let target_display = state
+        .upstream_target_display
+        .take()
+        .unwrap_or_else(|| Arc::from("?"));
+    let owner = user.id_arc();
+    let parked = ParkedTcp {
+        upstream_writer: writer,
+        upstream_reader: reader,
+        target_display,
+        protocol: route.protocol,
+        owner: Arc::clone(&owner),
+        user,
+        user_counters,
+        upstream_guard,
+    };
+    debug!(
+        user = %owner,
+        path = %route.path,
+        "parking tcp upstream into orphan registry",
+    );
+    server.orphan_registry.park(session_id, Parked::Tcp(parked));
+    true
 }
 
 async fn handle_tcp_binary_frame<Msg>(
@@ -330,7 +523,62 @@ where
             "tcp shadowsocks user authenticated"
         );
         let user_id = user.id_arc();
-        let target_display = target.display_host_port();
+        let target_display: Arc<str> = Arc::from(target.display_host_port());
+
+        // Resume attempt: if the client offered a Session ID and the
+        // registry has a parked TCP entry for this authenticated user,
+        // re-attach to that upstream instead of connecting afresh. The
+        // target sent in this handshake is intentionally ignored on a
+        // hit — by spec the parked target is authoritative.
+        if let Some(resume_id) = state.pending_resume_request.take()
+            && let ResumeOutcome::Hit(Parked::Tcp(parked)) =
+                server.orphan_registry.take_for_resume(resume_id, &user_id)
+        {
+            info!(
+                user = user.id(),
+                path = %route.path,
+                target = %parked.target_display,
+                "tcp upstream resumed from orphan registry"
+            );
+            let mut encryptor =
+                AeadStreamEncryptor::new(&parked.user, decryptor.response_context())
+                    .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
+            let tx = outbound.data_tx.clone();
+            let make_binary = outbound.make_binary;
+            let make_close = outbound.make_close;
+            let relay_metrics = Arc::clone(&server.metrics);
+            let relay_user_id = Arc::clone(&user_id);
+            let protocol = route.protocol;
+            let cancel = Arc::new(Notify::new());
+            let cancel_for_task = Arc::clone(&cancel);
+            let parked_reader = parked.upstream_reader;
+            state.upstream_to_client = Some(tokio::spawn(async move {
+                super::super::relay::relay_upstream_to_client(
+                    parked_reader,
+                    ChannelSink { tx, make_binary, make_close },
+                    &mut encryptor,
+                    relay_metrics,
+                    protocol,
+                    relay_user_id,
+                    Some(cancel_for_task),
+                )
+                .await
+            }));
+            state.relay_cancel = Some(cancel);
+            state.user_counters = Some(parked.user_counters);
+            state.authenticated_user = Some(parked.user);
+            state.upstream_writer = Some(parked.upstream_writer);
+            state.upstream_guard = Some(parked.upstream_guard);
+            state.upstream_target_display = Some(parked.target_display);
+            plaintext_buffer.drain(..consumed);
+            // Subsequent payload bytes (if any) are forwarded by the
+            // generic write branch below.
+            return forward_plaintext_to_writer(state, plaintext_buffer, route.protocol).await;
+        }
+        // Fall through: either no resume requested or the registry
+        // missed (unknown / owner-mismatch / disabled). The miss is
+        // already counted by `take_for_resume`.
+
         let connect_started = std::time::Instant::now();
         let stream = match connect_tcp_target(
             server.dns_cache.as_ref(),
@@ -383,24 +631,30 @@ where
         let mut encryptor = AeadStreamEncryptor::new(&user, decryptor.response_context())
             .map_err(|e| FrameError::Fatal(anyhow!(e)))?;
         let tx = outbound.data_tx.clone();
+        let make_binary = outbound.make_binary;
+        let make_close = outbound.make_close;
         let relay_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
         let protocol = route.protocol;
+        // Cancel-notify is registered unconditionally so park-on-drop
+        // can harvest the reader. When resumption is disabled the
+        // notify is simply never fired and the relay loop runs in its
+        // legacy single-arm mode.
+        let cancel = Arc::new(Notify::new());
+        let cancel_for_task = Arc::clone(&cancel);
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
-                ChannelSink {
-                    tx,
-                    make_binary: outbound.make_binary,
-                    make_close: outbound.make_close,
-                },
+                ChannelSink { tx, make_binary, make_close },
                 &mut encryptor,
                 relay_metrics,
                 protocol,
                 relay_user_id,
+                Some(cancel_for_task),
             )
             .await
         }));
+        state.relay_cancel = Some(cancel);
         server
             .metrics
             .record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
@@ -409,22 +663,34 @@ where
         state.user_counters = Some(server.metrics.user_counters(&user.id_arc()));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
+        state.upstream_target_display = Some(target_display);
         plaintext_buffer.drain(..consumed);
     }
 
+    forward_plaintext_to_writer(state, plaintext_buffer, route.protocol).await
+}
+
+/// Forwards any decrypted payload waiting in `plaintext_buffer` to the
+/// active upstream writer. Returns `Ok(())` if there is nothing to write
+/// or the write succeeded; otherwise wraps the error in `FrameError::Fatal`.
+async fn forward_plaintext_to_writer(
+    state: &mut WsTcpRelayState,
+    plaintext_buffer: &mut Vec<u8>,
+    protocol: Protocol,
+) -> Result<(), FrameError> {
     if let Some(writer) = &mut state.upstream_writer
         && !plaintext_buffer.is_empty()
     {
         if let Some(counters) = &state.user_counters {
-            counters.tcp_in(route.protocol).increment(plaintext_buffer.len() as u64);
+            counters.tcp_in(protocol).increment(plaintext_buffer.len() as u64);
         }
         writer
             .write_all(plaintext_buffer)
             .await
-            .context("failed to write decrypted data upstream")?;
+            .context("failed to write decrypted data upstream")
+            .map_err(FrameError::Fatal)?;
         plaintext_buffer.clear();
     }
-
     Ok(())
 }
 
@@ -432,14 +698,16 @@ pub(super) async fn handle_tcp_connection(
     socket: WebSocket,
     server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
-    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route).await
+    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume).await
 }
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
     socket: H3WebSocketStream<H3Stream<H3Transport>>,
     server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
+    resume: ResumeContext,
 ) -> Result<()> {
-    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route).await
+    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume).await
 }
