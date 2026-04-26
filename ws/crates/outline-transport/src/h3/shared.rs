@@ -105,8 +105,12 @@ impl SharedH3Connection {
         server_name: &str,
         server_port: u16,
         path: &str,
-    ) -> Result<H3WsStream> {
-        match self.open_websocket_inner(server_name, server_port, path).await {
+        resume_request: Option<crate::resumption::SessionId>,
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
+        match self
+            .open_websocket_inner(server_name, server_port, path, resume_request)
+            .await
+        {
             Ok(ws) => Ok(ws),
             Err(error) => {
                 // Any failure opening a new CONNECT stream on an already-cached
@@ -126,16 +130,23 @@ impl SharedH3Connection {
         server_name: &str,
         server_port: u16,
         path: &str,
-    ) -> Result<H3WsStream> {
+        resume_request: Option<crate::resumption::SessionId>,
+    ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
         }
 
-        let request: Request<()> = Request::builder()
+        let mut request_builder = Request::builder()
             .method(Method::CONNECT)
             .uri(websocket_h3_target_uri(server_name, server_port, path)?)
             .extension(h3::ext::Protocol::WEBSOCKET)
             .header("sec-websocket-version", "13")
+            .header(crate::resumption::RESUME_CAPABLE_HEADER, "1");
+        if let Some(id) = resume_request {
+            request_builder =
+                request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
+        }
+        let request: Request<()> = request_builder
             .body(())
             .expect("request builder never fails");
 
@@ -166,17 +177,25 @@ impl SharedH3Connection {
         if !response.status().is_success() {
             bail!("HTTP/3 websocket CONNECT failed with status {}", response.status());
         }
+        let issued_session_id = response
+            .headers()
+            .get(crate::resumption::SESSION_RESPONSE_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::resumption::SessionId::parse_hex);
 
         let h3_stream = SockudoTransportStream::<SockudoHttp3>::from_h3_client(stream);
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
-        Ok(H3WsStream {
-            inner: SockudoWebSocketStream::from_raw(
-                h3_stream,
-                sockudo_ws::Role::Client,
-                SockudoConfig::builder().http3_idle_timeout(90_000).build(),
-            ),
-            _shared_connection: Arc::clone(self),
-        })
+        Ok((
+            H3WsStream {
+                inner: SockudoWebSocketStream::from_raw(
+                    h3_stream,
+                    sockudo_ws::Role::Client,
+                    SockudoConfig::builder().http3_idle_timeout(90_000).build(),
+                ),
+                _shared_connection: Arc::clone(self),
+            },
+            issued_session_id,
+        ))
     }
 }
 
@@ -287,7 +306,12 @@ fn h3_registry() -> &'static SharedConnectionRegistry<H3ConnectionKey, SharedH3C
 
 // ── H3Dialer ──────────────────────────────────────────────────────────────────
 
-struct H3Dialer;
+struct H3Dialer {
+    /// Session ID the caller wants to resume on this open. Captured at
+    /// dialer construction so the trait `open_on` method can stay
+    /// signature-stable while threading the request through.
+    resume_request: Option<crate::resumption::SessionId>,
+}
 
 impl crate::shared_dial::WsDialer for H3Dialer {
     type Key = H3ConnectionKey;
@@ -326,8 +350,10 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_port: u16,
         path: &str,
     ) -> Result<WsTransportStream> {
-        let ws = conn.open_websocket(server_name, server_port, path).await?;
-        Ok(WsTransportStream::H3 { inner: ws })
+        let (ws, issued_session_id) = conn
+            .open_websocket(server_name, server_port, path, self.resume_request)
+            .await?;
+        Ok(WsTransportStream::H3 { inner: ws, issued_session_id })
     }
 }
 
@@ -339,6 +365,7 @@ pub(crate) async fn connect_websocket_h3(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
+    resume_request: Option<crate::resumption::SessionId>,
 ) -> Result<WsTransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
@@ -349,7 +376,7 @@ pub(crate) async fn connect_websocket_h3(
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
-    let dialer = H3Dialer;
+    let dialer = H3Dialer { resume_request };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

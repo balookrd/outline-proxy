@@ -12,6 +12,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
+use crate::resumption::SessionId;
 
 use super::h2::H2WsStream;
 
@@ -121,22 +122,69 @@ pin_project! {
     /// interface, so higher-level protocol code (the SOCKS proxy, the TCP/UDP
     /// Shadowsocks transports, the uplink standby pool) does not have to care
     /// which transport a given session is using.
+    ///
+    /// The `issued_session_id` slot carries the Session ID minted by the
+    /// server in the `X-Outline-Session` response header on a successful
+    /// WebSocket Upgrade — `None` if the server did not send one (most
+    /// commonly because cross-transport session resumption is disabled
+    /// at the server, or the client did not advertise `Resume-Capable`).
+    /// Callers that participate in resumption stash this value before the
+    /// stream is used and present it back via `X-Outline-Resume` on the
+    /// next reconnect.
     #[project = WsTransportStreamProj]
     pub enum WsTransportStream {
-        Http1 { #[pin] inner: H1WsStream, activity: H1Activity },
-        H2 { #[pin] inner: H2WsStream },
-        H3 { #[pin] inner: H3WsStream },
+        Http1 {
+            #[pin]
+            inner: H1WsStream,
+            activity: H1Activity,
+            issued_session_id: Option<SessionId>,
+        },
+        H2 {
+            #[pin]
+            inner: H2WsStream,
+            issued_session_id: Option<SessionId>,
+        },
+        H3 {
+            #[pin]
+            inner: H3WsStream,
+            issued_session_id: Option<SessionId>,
+        },
     }
 }
 
 impl WsTransportStream {
     /// Wrap a raw HTTP/1 WebSocket stream, initialising activity tracking.
+    /// The session-ID slot is left `None`; callers that did receive an
+    /// `X-Outline-Session` header should use [`Self::new_http1_with_session`].
     pub fn new_http1(inner: H1WsStream) -> Self {
+        Self::new_http1_with_session(inner, None)
+    }
+
+    /// Wrap a raw HTTP/1 WebSocket stream with the Session ID issued by
+    /// the server during the upgrade. The server's `X-Outline-Session`
+    /// header is observed in the upgrade response immediately above
+    /// `client_async_tls`; that is the only place where we can read it
+    /// before the connection becomes a generic `WebSocketStream`.
+    pub fn new_http1_with_session(
+        inner: H1WsStream,
+        issued_session_id: Option<SessionId>,
+    ) -> Self {
         let activity = H1Activity::new();
         // Mark the moment of birth as activity so a freshly-dialed stream is
         // not immediately reported stale before the first frame arrives.
         activity.touch();
-        WsTransportStream::Http1 { inner, activity }
+        WsTransportStream::Http1 { inner, activity, issued_session_id }
+    }
+
+    /// Returns the Session ID issued by the server in the upgrade
+    /// response, or `None` when the server did not send one. Stable
+    /// across the lifetime of the stream; reads are cheap (`Copy`).
+    pub fn issued_session_id(&self) -> Option<SessionId> {
+        match self {
+            WsTransportStream::Http1 { issued_session_id, .. } => *issued_session_id,
+            WsTransportStream::H2 { issued_session_id, .. } => *issued_session_id,
+            WsTransportStream::H3 { issued_session_id, .. } => *issued_session_id,
+        }
     }
 
     /// Returns `true` when the underlying shared connection (H2 / H3) is still
@@ -149,9 +197,9 @@ impl WsTransportStream {
     pub fn is_connection_alive(&self) -> bool {
         match self {
             WsTransportStream::Http1 { activity, .. } => activity.is_fresh(H1_STALENESS_THRESHOLD),
-            WsTransportStream::H2 { inner } => inner.is_connection_alive(),
+            WsTransportStream::H2 { inner, .. } => inner.is_connection_alive(),
             #[cfg(feature = "h3")]
-            WsTransportStream::H3 { inner } => inner.is_connection_alive(),
+            WsTransportStream::H3 { inner, .. } => inner.is_connection_alive(),
             #[cfg(not(feature = "h3"))]
             WsTransportStream::H3 { .. } => true,
         }
@@ -164,9 +212,9 @@ impl WsTransportStream {
     pub fn shared_connection_info(&self) -> Option<(u64, &'static str)> {
         match self {
             WsTransportStream::Http1 { .. } => None,
-            WsTransportStream::H2 { inner } => Some(inner.shared_connection_info()),
+            WsTransportStream::H2 { inner, .. } => Some(inner.shared_connection_info()),
             #[cfg(feature = "h3")]
-            WsTransportStream::H3 { inner } => Some(inner.shared_connection_info()),
+            WsTransportStream::H3 { inner, .. } => Some(inner.shared_connection_info()),
             #[cfg(not(feature = "h3"))]
             WsTransportStream::H3 { .. } => None,
         }
@@ -181,16 +229,16 @@ impl Stream for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, activity } => {
+            WsTransportStreamProj::Http1 { inner, activity, .. } => {
                 let poll = inner.poll_next(cx);
                 if let std::task::Poll::Ready(Some(_)) = &poll {
                     activity.touch();
                 }
                 poll
             },
-            WsTransportStreamProj::H2 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::H2 { inner, .. } => inner.poll_next(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner } => match inner.poll_next(cx) {
+            WsTransportStreamProj::H3 { inner, .. } => match inner.poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(message))) => {
                     std::task::Poll::Ready(Some(Ok(sockudo_to_tungstenite_message(message))))
                 },
@@ -202,7 +250,7 @@ impl Stream for WsTransportStream {
             },
             // Stub variant — Infallible inner field makes this branch unreachable.
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner } => inner.poll_next(cx),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_next(cx),
         }
     }
 }
@@ -216,30 +264,30 @@ impl Sink<Message> for WsTransportStream {
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
             WsTransportStreamProj::Http1 { inner, .. } => inner.poll_ready(cx),
-            WsTransportStreamProj::H2 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::H2 { inner, .. } => inner.poll_ready(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner } => inner.poll_ready(cx),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx),
         }
     }
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, activity } => {
+            WsTransportStreamProj::Http1 { inner, activity, .. } => {
                 let result = inner.start_send(item);
                 if result.is_ok() {
                     activity.touch();
                 }
                 result
             },
-            WsTransportStreamProj::H2 { inner } => inner.start_send(item),
+            WsTransportStreamProj::H2 { inner, .. } => inner.start_send(item),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner } => inner
+            WsTransportStreamProj::H3 { inner, .. } => inner
                 .start_send(tungstenite_to_sockudo_message(item)?)
                 .map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner } => inner.start_send(item),
+            WsTransportStreamProj::H3 { inner, .. } => inner.start_send(item),
         }
     }
 
@@ -249,11 +297,11 @@ impl Sink<Message> for WsTransportStream {
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
             WsTransportStreamProj::Http1 { inner, .. } => inner.poll_flush(cx),
-            WsTransportStreamProj::H2 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::H2 { inner, .. } => inner.poll_flush(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner } => inner.poll_flush(cx),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx),
         }
     }
 
@@ -263,11 +311,11 @@ impl Sink<Message> for WsTransportStream {
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
             WsTransportStreamProj::Http1 { inner, .. } => inner.poll_close(cx),
-            WsTransportStreamProj::H2 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::H2 { inner, .. } => inner.poll_close(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner } => inner.poll_close(cx),
+            WsTransportStreamProj::H3 { inner, .. } => inner.poll_close(cx),
         }
     }
 }
