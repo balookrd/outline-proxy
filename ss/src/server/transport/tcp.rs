@@ -34,7 +34,7 @@ impl From<anyhow::Error> for FrameError {
 
 use crate::{
     crypto::{
-        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE, UserKey,
+        AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey,
         diagnose_stream_handshake,
     },
     metrics::{Metrics, Protocol, TcpUpstreamGuard, Transport},
@@ -47,6 +47,7 @@ use super::super::constants::{
     WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
+use super::super::scratch::ScratchBuf;
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 
@@ -127,7 +128,7 @@ async fn run_tcp_relay<T: WsSocket>(
     ));
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
-    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
+    let mut plaintext_buffer = ScratchBuf::take();
     let mut state = WsTcpRelayState::new();
     let mut client_closed = false;
 
