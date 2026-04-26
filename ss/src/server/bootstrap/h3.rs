@@ -391,7 +391,7 @@ async fn handle_raw_vless_connection(
         match prefix_or_kind {
             StreamKind::Oversize => {
                 let stream = Arc::new(OversizeStream::from_accept_validated(send, recv));
-                let installed = conn_state.install_oversize_stream(stream);
+                let installed = conn_state.oversize_slot.install(stream);
                 let server = Arc::clone(&ctx.vless_server);
                 let state_for_pump = Arc::clone(&conn_state);
                 tokio::spawn(async move {
@@ -498,7 +498,7 @@ async fn handle_raw_ss_connection(
         match prefix_or_kind {
             StreamKind::Oversize => {
                 let stream = Arc::new(OversizeStream::from_accept_validated(send, recv));
-                let installed = conn_state.install_oversize_stream(stream);
+                let installed = conn_state.oversize_slot.install(stream);
                 let conn_for_pump = Arc::clone(&connection);
                 let raw_ctx = Arc::clone(&ctx.raw_ss_ctx);
                 let state_for_pump = Arc::clone(&conn_state);

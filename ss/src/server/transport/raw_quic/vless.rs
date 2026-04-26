@@ -46,11 +46,10 @@ pub(in crate::server) struct VlessQuicConn {
     /// Connection-level oversize-record stream, lazy-installed when
     /// either the client opens it (peer accept_bi path) or the server
     /// itself needs to send an oversized response (server-initiated
-    /// open). `None` when the negotiated ALPN is the legacy `vless`
+    /// open). Empty when the negotiated ALPN is the legacy `vless`
     /// (no MTU-aware fallback) or when no oversized packet has flowed
-    /// yet on this connection. Wrapped in `Arc<Mutex>` so the read-loop
-    /// task and per-session writers can share access.
-    oversize_stream: parking_lot::Mutex<Option<Arc<super::OversizeStream>>>,
+    /// yet on this connection.
+    pub(in crate::server) oversize_slot: super::OversizeStreamSlot,
 }
 
 struct VlessUdpSession {
@@ -63,27 +62,8 @@ impl VlessQuicConn {
         Self {
             next_session: AtomicU32::new(1),
             sessions: RwLock::new(HashMap::new()),
-            oversize_stream: parking_lot::Mutex::new(None),
+            oversize_slot: super::OversizeStreamSlot::new(),
         }
-    }
-
-    /// Install the oversize-record stream (idempotent — first install
-    /// wins, subsequent calls return the existing one). Returns the
-    /// stream the caller should use.
-    pub(in crate::server) fn install_oversize_stream(
-        &self,
-        stream: Arc<super::OversizeStream>,
-    ) -> Arc<super::OversizeStream> {
-        let mut guard = self.oversize_stream.lock();
-        if let Some(existing) = guard.as_ref() {
-            return Arc::clone(existing);
-        }
-        *guard = Some(Arc::clone(&stream));
-        stream
-    }
-
-    pub(in crate::server) fn oversize_stream(&self) -> Option<Arc<super::OversizeStream>> {
-        self.oversize_stream.lock().as_ref().map(Arc::clone)
     }
 
     fn allocate_session(&self) -> u32 {
@@ -472,7 +452,7 @@ async fn handle_udp(
                 // stream. Open it on first use (server-initiated open
                 // is fine — the client side accept_bi loop is expected
                 // to detect the magic and install symmetrically).
-                let stream = match conn_state_for_reader.oversize_stream() {
+                let stream = match conn_state_for_reader.oversize_slot.get() {
                     Some(stream) => stream,
                     None => {
                         let pair = match conn_for_reader.open_bi().await {
@@ -490,7 +470,7 @@ async fn handle_udp(
                         let stream =
                             Arc::new(super::OversizeStream::from_local_open(send, recv));
                         let installed =
-                            conn_state_for_reader.install_oversize_stream(stream);
+                            conn_state_for_reader.oversize_slot.install(stream);
                         // Ensure inbound records on this server-opened
                         // stream are still demuxed: spawn the read pump.
                         let pump_stream = Arc::clone(&installed);
