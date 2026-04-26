@@ -277,12 +277,10 @@ where
         .register_session(make_sender(), packet.session.clone())
         .await;
 
-    ctx.services.udp_server.metrics.record_udp_payload_bytes(
-        Arc::clone(&user_id),
-        protocol,
-        "client_to_target",
-        payload.len(),
-    );
+    entry
+        .user_counters()
+        .udp_in(protocol)
+        .increment(payload.len() as u64);
     debug!(
         user = packet.user.id(),
         client = %client_id,

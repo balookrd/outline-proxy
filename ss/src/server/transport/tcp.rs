@@ -37,7 +37,7 @@ use crate::{
         AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey,
         diagnose_stream_handshake,
     },
-    metrics::{Metrics, Protocol, TcpUpstreamGuard, Transport},
+    metrics::{Metrics, PerUserCounters, Protocol, TcpUpstreamGuard, Transport},
     outbound::OutboundIpv6,
     protocol::parse_target_addr,
 };
@@ -71,6 +71,7 @@ struct WsTcpRelayState {
     upstream_writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
     authenticated_user: Option<UserKey>,
+    user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
 }
 
@@ -86,6 +87,7 @@ impl WsTcpRelayState {
             upstream_writer: None,
             upstream_to_client: None,
             authenticated_user: None,
+            user_counters: None,
             upstream_guard: None,
         }
     }
@@ -371,6 +373,7 @@ where
             .record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
         state.upstream_guard =
             Some(server.metrics.open_tcp_upstream_connection(user_id, route.protocol));
+        state.user_counters = Some(server.metrics.user_counters(&user.id_arc()));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
         plaintext_buffer.drain(..consumed);
@@ -379,13 +382,8 @@ where
     if let Some(writer) = &mut state.upstream_writer
         && !plaintext_buffer.is_empty()
     {
-        if let Some(user) = &state.authenticated_user {
-            server.metrics.record_tcp_payload_bytes(
-                user.id_arc(),
-                route.protocol,
-                "client_to_target",
-                plaintext_buffer.len(),
-            );
+        if let Some(counters) = &state.user_counters {
+            counters.tcp_in(route.protocol).increment(plaintext_buffer.len() as u64);
         }
         writer
             .write_all(plaintext_buffer)

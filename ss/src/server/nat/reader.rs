@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use crate::{
     clock,
     crypto::{UserKey, encrypt_udp_packet_for_response},
-    metrics::{Metrics, Protocol},
+    metrics::{Metrics, PerUserCounters, Protocol},
     protocol::TargetAddr,
 };
 
@@ -27,6 +27,7 @@ pub(super) struct NatReaderCtx {
     pub(super) target: SocketAddr,
     pub(super) server_session_id: Option<[u8; 8]>,
     pub(super) metrics: Arc<Metrics>,
+    pub(super) user_counters: Arc<PerUserCounters>,
     pub(super) last_active: Arc<AtomicU64>,
     pub(super) next_packet_id: Arc<AtomicU64>,
 }
@@ -39,12 +40,12 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         target,
         server_session_id,
         metrics,
+        user_counters,
         last_active,
         next_packet_id,
     } = ctx;
 
     let user_id = user.id_arc();
-    let user_counters = metrics.user_counters(&user_id);
     let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
         let (n, source) = match socket.recv_from(&mut buf).await {

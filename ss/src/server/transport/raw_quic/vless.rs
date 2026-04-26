@@ -279,29 +279,24 @@ async fn handle_tcp(
         .metrics
         .record_tcp_authenticated_session(user.label_arc(), Protocol::QuicRaw);
 
+    // Pre-resolve per-user counters once; both the leftover write and the
+    // bidirectional splice tasks below reuse them on the hot path.
+    let user_label = user.label_arc();
+    let user_counters = server.metrics.user_counters(&user_label);
+    let client_to_target = user_counters.tcp_in(Protocol::QuicRaw).clone();
+    let target_to_client = user_counters.tcp_out(Protocol::QuicRaw).clone();
+
     // Pipe initial payload (bytes left over from the header buffer beyond the
     // request header) to upstream before splicing further.
     let leftover: Vec<u8> = header_buf.split_off(request.consumed);
     drop(header_buf);
     if !leftover.is_empty() {
-        server.metrics.record_tcp_payload_bytes(
-            user.label_arc(),
-            Protocol::QuicRaw,
-            "client_to_target",
-            leftover.len(),
-        );
+        client_to_target.increment(leftover.len() as u64);
         up_writer
             .write_all(&leftover)
             .await
             .context("failed to forward initial vless payload upstream")?;
     }
-
-    // Bidirectional splice. Two tasks so upstream EOF closes the QUIC stream's
-    // send side (and vice versa) without entangling the read loops.
-    let user_label = user.label_arc();
-    let user_counters = server.metrics.user_counters(&user_label);
-    let client_to_target = user_counters.tcp_in(Protocol::QuicRaw).clone();
-    let target_to_client = user_counters.tcp_out(Protocol::QuicRaw).clone();
 
     let upload = async {
         let mut buf = vec![0_u8; 16 * 1024];
