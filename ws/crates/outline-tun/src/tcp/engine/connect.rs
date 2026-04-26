@@ -136,11 +136,13 @@ async fn connect_tcp_uplink(
         }
     }
 
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
-        match do_tcp_ss_setup(ws, &candidate.uplink, target).await {
+        match do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval).await {
             Ok(v) => return Ok(v),
             Err(e) => {
                 debug!(
@@ -153,13 +155,14 @@ async fn connect_tcp_uplink(
     }
 
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "tun_tcp").await?;
-    do_tcp_ss_setup(ws, &candidate.uplink, target).await
+    do_tcp_ss_setup(ws, &candidate.uplink, target, keepalive_interval).await
 }
 
 async fn do_tcp_ss_setup(
     ws_stream: outline_transport::WsTransportStream,
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
+    keepalive_interval: Option<std::time::Duration>,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let lifetime = UpstreamTransportGuard::new("tun_tcp", "tcp");
@@ -176,7 +179,12 @@ async fn do_tcp_ss_setup(
             .as_ref()
             .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
         let (writer, reader) = outline_transport::vless::vless_tcp_pair_from_ws(
-            ws_stream, uuid, target, lifetime, diag,
+            ws_stream,
+            uuid,
+            target,
+            lifetime,
+            diag,
+            keepalive_interval,
         );
         return Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)));
     }

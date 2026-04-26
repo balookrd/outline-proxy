@@ -108,11 +108,13 @@ pub(super) async fn connect_tcp_uplink(
         });
     }
 
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
+
     // Variant A: try a standby pool connection first.  If it turns out to be
     // stale (fails before any server bytes arrive), discard it silently and
     // retry with a fresh on-demand dial — without recording a runtime failure.
     if let Some(ws) = uplinks.try_take_tcp_standby(candidate).await {
-        match do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await {
+        match do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp", keepalive_interval).await {
             Ok((writer, reader)) => {
                 return Ok(ConnectedTcpUplink {
                     writer,
@@ -179,8 +181,10 @@ pub(super) async fn connect_tcp_uplink_fresh(
             }
         }
     }
+    let keepalive_interval = uplinks.load_balancing().tcp_ws_keepalive_interval;
     let ws = uplinks.connect_tcp_ws_fresh(candidate, "socks_tcp").await?;
-    let (writer, reader) = do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp").await?;
+    let (writer, reader) =
+        do_tcp_ss_setup(ws, &candidate.uplink, target, "socks_tcp", keepalive_interval).await?;
     Ok(ConnectedTcpUplink {
         writer,
         reader,
@@ -193,6 +197,7 @@ async fn do_tcp_ss_setup(
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,
+    keepalive_interval: Option<std::time::Duration>,
 ) -> Result<(TcpWriter, TcpReader)> {
     let shared_conn_info = ws_stream.shared_connection_info();
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
@@ -214,6 +219,7 @@ async fn do_tcp_ss_setup(
             target,
             lifetime,
             diag,
+            keepalive_interval,
         );
         debug!(
             uplink = %uplink.name,

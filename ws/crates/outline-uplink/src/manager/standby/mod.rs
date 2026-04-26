@@ -99,7 +99,10 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
     ) -> Option<WsTransportStream> {
-        if candidate.uplink.transport != UplinkTransport::Ws {
+        if !matches!(
+            candidate.uplink.transport,
+            UplinkTransport::Ws | UplinkTransport::Vless
+        ) {
             return None;
         }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
@@ -113,7 +116,10 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<WsTransportStream> {
         let cache = self.inner.dns_cache.as_ref();
-        if candidate.uplink.transport != UplinkTransport::Ws {
+        if !matches!(
+            candidate.uplink.transport,
+            UplinkTransport::Ws | UplinkTransport::Vless
+        ) {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
         metrics::record_warm_standby_acquire(
@@ -128,12 +134,13 @@ impl UplinkManager {
             mode = %mode,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
+        let url = candidate.uplink.tcp_dial_url().ok_or_else(|| {
+            anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name)
+        })?;
         let started = Instant::now();
         let ws = connect_websocket_with_source(
             cache,
-            candidate.uplink.tcp_ws_url.as_ref().ok_or_else(|| {
-                anyhow!("uplink {} missing tcp_ws_url", candidate.uplink.name)
-            })?,
+            url,
             mode,
             candidate.uplink.fwmark,
             candidate.uplink.ipv6_first,
@@ -141,10 +148,7 @@ impl UplinkManager {
         )
         .await
         .with_context(|| TransportOperation::Connect {
-            target: format!(
-                "to {}",
-                candidate.uplink.tcp_ws_url.as_ref().expect("validated tcp_ws_url")
-            ),
+            target: format!("to {}", url),
         })?;
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
@@ -450,7 +454,7 @@ impl UplinkManager {
             return;
         }
         let ctx = self.standby_ctx(index, TransportKind::Tcp).await;
-        if ctx.uplink.transport != UplinkTransport::Ws {
+        if !matches!(ctx.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return;
         }
         ctx.keepalive().await;

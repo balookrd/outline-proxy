@@ -258,17 +258,21 @@ impl VlessTcpReader {
 /// Build a VLESS TCP writer/reader pair over a WebSocket stream.
 /// Convenience wrapper around `frame_io_ws::from_ws_frames` +
 /// [`VlessTcpWriter::with_sink`] / [`VlessTcpReader::with_source`].
+///
+/// `keepalive_interval` enables WS Ping frames on the active session to
+/// defeat NAT/middlebox idle-timeout drops; pass `None` to disable.
 pub fn vless_tcp_pair_from_ws(
     ws_stream: WsTransportStream,
     uuid: &[u8; 16],
     target: &TargetAddr,
     lifetime: Arc<UpstreamTransportGuard>,
     diag: crate::WsReadDiag,
+    keepalive_interval: Option<Duration>,
 ) -> (VlessTcpWriter, VlessTcpReader) {
     let (sink, source) = crate::frame_io_ws::from_ws_frames(
         ws_stream,
         Some(WS_READ_IDLE_TIMEOUT),
-        None,
+        keepalive_interval,
     );
     let source = source.with_diag(diag.uplink, diag.target);
     let writer = VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));

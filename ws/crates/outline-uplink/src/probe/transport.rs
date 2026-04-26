@@ -173,6 +173,7 @@ pub(super) async fn connect_probe_tcp(
                 target,
                 lifetime,
                 diag,
+                None,
             );
             Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)))
         },
