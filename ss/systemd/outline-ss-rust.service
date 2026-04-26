@@ -11,15 +11,6 @@ Group=outline-ss-rust
 Environment=RUST_LOG=outline_ss_rust=info,tower_http=info
 Environment=NO_COLOR=1
 Environment=MIMALLOC_ARENA_RESERVE=262144
-# Aggressive purge: return unused pages to the OS quickly so RSS reflects
-# real working set instead of mimalloc's reserved-but-idle segments. Required
-# on multi-thread workloads where short-lived threads (tokio blocking pool,
-# QUIC handshake bursts) would otherwise leave abandoned segments holding
-# tens of MiB each.
-Environment=MIMALLOC_PURGE_DELAY=0
-Environment=MIMALLOC_PURGE_DECOMMITS=1
-Environment=MIMALLOC_ABANDONED_PAGE_PURGE=1
-Environment=MIMALLOC_ARENA_PURGE_MULT=1
 ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.toml
 Restart=on-failure
 RestartSec=3
