@@ -44,7 +44,8 @@ use crate::{
 
 use super::super::connect::connect_tcp_target;
 use super::super::constants::{
-    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
+    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
+    WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
 use super::super::scratch::ScratchBuf;
@@ -147,9 +148,11 @@ async fn run_tcp_relay<T: WsSocket>(
     // handles incoming Pings: it queues a Pong response and loops — every Ping
     // frame also resets the idle timeout.
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
     let mut keepalive = tokio::time::interval(ping_interval);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await; // skip the first immediate tick
+    let mut last_inbound = std::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -159,6 +162,7 @@ async fn run_tcp_relay<T: WsSocket>(
                     Some(m) => m,
                     None => break,
                 };
+                last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
                     WsFrame::Binary(data) => {
                         if let Err(frame_err) = handle_tcp_binary_frame(
@@ -209,6 +213,18 @@ async fn run_tcp_relay<T: WsSocket>(
                 }
             },
             _ = keepalive.tick() => {
+                // Tear down silently-dead sessions: if no inbound frame has
+                // been seen for `pong_deadline`, the peer is gone (mobile in
+                // tunnel, NAT rebind, ISP black-hole). Without this check we
+                // wait on the underlying TCP/QUIC keepalive, which can be
+                // minutes — long enough to pin upstream sockets and buffers.
+                if last_inbound.elapsed() > pong_deadline {
+                    debug!(
+                        elapsed_secs = last_inbound.elapsed().as_secs(),
+                        "tcp websocket pong deadline exceeded; closing session"
+                    );
+                    break;
+                }
                 // Don't fail the session on a Ping send error — the writer task
                 // may have already exited if the WS connection closed cleanly on
                 // the write side while we were reading.  The next T::recv() call

@@ -19,9 +19,10 @@ use crate::{
 
 use super::{
     super::{
+        abort::AbortOnDrop,
         connect::connect_tcp_target,
         constants::{
-            WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY,
+            WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
             WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
         },
         dns_cache::DnsCache,
@@ -58,7 +59,12 @@ pub(super) enum UpstreamSession {
 pub(super) struct VlessRelayState {
     pub(super) header_buffer: Vec<u8>,
     pub(super) upstream: UpstreamSession,
-    pub(super) upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
+    /// `AbortOnDrop` ensures the upstream→client task is cancelled on every
+    /// exit path of the owning `run_vless_relay` future, including
+    /// `?`-returns and panics. Without it, UDP readers would block on
+    /// `socket.recv` forever (UDP has no shutdown signal) and orphan their
+    /// `Arc<UdpSocket>` + 64 KiB buffer.
+    pub(super) upstream_to_client: Option<AbortOnDrop<Result<()>>>,
     pub(super) authenticated_user: Option<VlessUser>,
     pub(super) user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
@@ -87,19 +93,6 @@ impl VlessRelayState {
     }
 }
 
-impl Drop for VlessRelayState {
-    /// Safety net: cancel the upstream→client relay task on every exit
-    /// path (clean break, `?`-return, panic). UDP relay tasks otherwise
-    /// block indefinitely inside `socket.recv` because UDP has no
-    /// shutdown, and dropping a `JoinHandle` does NOT cancel the task.
-    /// `MuxState` has its own `Drop` that aborts each sub-conn reader.
-    fn drop(&mut self) {
-        if let Some(task) = self.upstream_to_client.take() {
-            task.abort();
-        }
-    }
-}
-
 async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
@@ -118,12 +111,20 @@ async fn run_vless_relay<T: WsSocket>(
     ));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
+    let pong_deadline = ping_interval * WS_PONG_DEADLINE_MULTIPLIER;
     let mut keepalive = tokio::time::interval(ping_interval);
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     keepalive.tick().await;
 
     let mut state = VlessRelayState::new();
     let mut client_closed = false;
+    // Last instant any inbound WS frame was observed; reset on every recv.
+    // The keepalive tick checks this against `pong_deadline` and tears the
+    // session down if the peer has gone silent (mobile in tunnel, NAT
+    // rebind, ISP black-hole) — without it the only timeout is the
+    // underlying TCP/QUIC keepalive which may take minutes or never fire,
+    // leaving UDP-upstream sockets and 64 KiB reader buffers pinned.
+    let mut last_inbound = std::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -133,6 +134,7 @@ async fn run_vless_relay<T: WsSocket>(
                     Some(m) => m,
                     None => break,
                 };
+                last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
                     WsFrame::Binary(data) => {
                         if let Err(error) = handle_vless_binary_frame(
@@ -172,6 +174,13 @@ async fn run_vless_relay<T: WsSocket>(
                 }
             },
             _ = keepalive.tick() => {
+                if last_inbound.elapsed() > pong_deadline {
+                    debug!(
+                        elapsed_secs = last_inbound.elapsed().as_secs(),
+                        "vless websocket pong deadline exceeded; closing session"
+                    );
+                    break;
+                }
                 let _ = outbound_ctrl_tx.send(T::ping_msg()).await;
             }
         }
@@ -187,16 +196,11 @@ async fn run_vless_relay<T: WsSocket>(
         UpstreamSession::Udp(_) | UpstreamSession::None => {},
     }
 
-    // Always abort the upstream→client task on cleanup. For TCP/MUX we just
-    // shut the upstream socket above so the reader self-exits in microseconds
-    // anyway; for UDP there is no shutdown so awaiting the JoinHandle would
-    // hang forever (the reader sits on `socket.recv` indefinitely). The
-    // `client_closed` branch already aborted; the previous `else` branch
-    // awaited and was the source of the leak we are fixing here.
+    // `state.upstream_to_client` is `AbortOnDrop`, so dropping `state` at
+    // function exit cancels the task. We don't await it: for TCP/MUX the
+    // reader self-exits in microseconds anyway after the upstream shutdown
+    // above, and for UDP awaiting would hang forever on `socket.recv`.
     let _ = client_closed;
-    if let Some(task) = state.upstream_to_client.take() {
-        task.abort();
-    }
     if let Some(guard) = state.upstream_guard.take() {
         guard.finish();
     }
@@ -443,7 +447,7 @@ where
     let metrics = Arc::clone(&server.metrics);
     let user_id = user.label_arc();
     let protocol = route.protocol;
-    state.upstream_to_client = Some(tokio::spawn(async move {
+    state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_upstream_to_client(
             upstream_reader,
             tx,
@@ -454,7 +458,7 @@ where
             user_id,
         )
         .await
-    }));
+    })));
     server
         .metrics
         .record_tcp_authenticated_session(user.label_arc(), route.protocol);

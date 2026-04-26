@@ -21,6 +21,7 @@ use tracing::{info, warn};
 
 use crate::config::Config;
 
+mod abort;
 mod auth;
 mod bootstrap;
 mod connect;

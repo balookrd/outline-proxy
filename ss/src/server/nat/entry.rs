@@ -11,6 +11,7 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use tokio::{net::UdpSocket, sync::Mutex};
 
+use crate::server::abort::AbortOnDrop;
 use crate::{
     clock,
     crypto::UdpCipherMode,
@@ -67,14 +68,6 @@ pub(crate) struct ActiveSession {
     pub(crate) session: UdpCipherMode,
 }
 
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
 pub(crate) struct NatEntry {
     socket: Arc<UdpSocket>,
     /// The currently active client session: where to deliver upstream responses
@@ -90,7 +83,7 @@ pub(crate) struct NatEntry {
     /// Unix timestamp (seconds) of the last datagram in either direction, for idle eviction.
     last_active_secs: Arc<AtomicU64>,
     /// Dropped when the entry is evicted, which aborts the background reader task.
-    _reader: AbortOnDrop,
+    _reader: AbortOnDrop<()>,
 }
 
 impl NatEntry {
@@ -106,7 +99,7 @@ impl NatEntry {
             active,
             user_counters,
             last_active_secs,
-            _reader: AbortOnDrop(reader),
+            _reader: AbortOnDrop::new(reader),
         })
     }
 
