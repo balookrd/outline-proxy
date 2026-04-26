@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::Notify,
+};
 
 use crate::{
     crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
@@ -17,6 +20,19 @@ use crate::{
 };
 
 use super::scratch::ScratchBuf;
+
+/// Outcome of [`relay_upstream_to_client`]. Distinguishes the natural
+/// upstream-EOF path from a caller-requested cancellation (used by
+/// session-resumption to harvest the still-live upstream reader for
+/// parking).
+pub(in crate::server) enum UpstreamRelayOutcome<R> {
+    /// The upstream half-closed naturally (read returned `0`) or the sink
+    /// errored. The reader has been consumed and is not returned.
+    Closed,
+    /// The caller fired the `cancel` notify before the upstream EOF.
+    /// Returns the still-live reader for hand-off.
+    Cancelled(R),
+}
 
 /// Destination for encrypted upstream bytes, parameterised by transport.
 pub(in crate::server) trait UpstreamSink: Send {
@@ -43,7 +59,8 @@ pub(in crate::server) async fn relay_upstream_to_client<R, S>(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     user_id: Arc<str>,
-) -> Result<()>
+    cancel: Option<Arc<Notify>>,
+) -> Result<UpstreamRelayOutcome<R>>
 where
     R: AsyncRead + Unpin,
     S: UpstreamSink,
@@ -56,30 +73,49 @@ where
     loop {
         buffer.clear();
         buffer.reserve(MAX_CHUNK_SIZE);
-        let read = upstream_reader
-            .read_buf(&mut *buffer)
-            .await
-            .context("failed to read from upstream")?;
-        if read == 0 {
-            if !saw_payload {
-                sink.on_eof_before_payload();
+        // Cancel arm: when no cancel is registered we substitute a future
+        // that never resolves, so the select degenerates to the legacy
+        // single-arm read.
+        let cancelled = async {
+            match cancel.as_deref() {
+                Some(notify) => notify.notified().await,
+                None => std::future::pending::<()>().await,
             }
-            break;
-        }
-        if !saw_payload {
-            saw_payload = true;
-            sink.on_first_payload(read);
-        }
+        };
+        tokio::select! {
+            biased;
+            _ = cancelled => {
+                // The sink is intentionally NOT closed: the caller is
+                // about to hand the reader off to a new transport stream
+                // that will install a fresh encryptor and wire its own
+                // sink. Closing here would push a benign EOF the client
+                // might race against the resume.
+                return Ok(UpstreamRelayOutcome::Cancelled(upstream_reader));
+            }
+            read_result = upstream_reader.read_buf(&mut *buffer) => {
+                let read = read_result.context("failed to read from upstream")?;
+                if read == 0 {
+                    if !saw_payload {
+                        sink.on_eof_before_payload();
+                    }
+                    break;
+                }
+                if !saw_payload {
+                    saw_payload = true;
+                    sink.on_first_payload(read);
+                }
 
-        target_to_client.increment(read as u64);
-        encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
-        let ciphertext = out_buf.split().freeze();
-        sink.on_chunk_encrypted(read, ciphertext.len());
-        sink.send_ciphertext(ciphertext).await?;
+                target_to_client.increment(read as u64);
+                encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
+                let ciphertext = out_buf.split().freeze();
+                sink.on_chunk_encrypted(read, ciphertext.len());
+                sink.send_ciphertext(ciphertext).await?;
+            }
+        }
     }
 
     sink.close().await;
-    Ok(())
+    Ok(UpstreamRelayOutcome::Closed)
 }
 
 /// Relay decrypted client bytes to the upstream after the shadowsocks handshake.

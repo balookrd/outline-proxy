@@ -40,7 +40,9 @@ pub(in crate::server) use raw_quic::{
     serve_raw_ss_oversize_records, serve_raw_ss_quic_datagrams,
     serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
 };
-pub(in crate::server) use tcp::{WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection};
+pub(in crate::server) use tcp::{
+    ResumeContext, WsTcpRouteCtx, WsTcpServerCtx, handle_tcp_h3_connection,
+};
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 
@@ -50,6 +52,7 @@ pub(super) async fn tcp_websocket_upgrade(
     OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
+    headers: HeaderMap,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
@@ -69,16 +72,25 @@ pub(super) async fn tcp_websocket_upgrade(
     let session = server
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
-    ws.on_upgrade(move |socket| async move {
+    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result = tcp::handle_tcp_connection(socket, server, route_ctx).await;
+        let result = tcp::handle_tcp_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "tcp");
-    })
+    });
+    // The `ResumeContext` was moved into the upgrade closure, so we re-
+    // parse the header set here to attach the response side. This is
+    // strictly cheaper than threading a clone through the upgrade
+    // future, and the lookup is on a 0-or-1 element span.
+    let response_resume =
+        ResumeContext::from_request_headers(&headers, &state.services.orphan_registry);
+    response_resume.issue_session_header(response.headers_mut());
+    response
 }
 
 pub(super) async fn vless_websocket_upgrade(

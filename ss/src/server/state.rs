@@ -85,6 +85,7 @@ impl Services {
             dns_cache: Arc::clone(&dns_cache),
             prefer_ipv4_upstream,
             outbound_ipv6: outbound_ipv6.clone(),
+            orphan_registry: Arc::clone(&orphan_registry),
         });
         let udp_server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),

@@ -39,7 +39,7 @@ use super::super::{
         UdpServerCtx, VlessQuicConn, VlessWsRouteCtx, VlessWsServerCtx, WsTcpRouteCtx,
         WsTcpServerCtx, classify_accept_bi, finish_ws_session, handle_raw_ss_quic_stream,
         handle_raw_vless_quic_stream, handle_raw_vless_quic_stream_with_prefix,
-        handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
+        ResumeContext, handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
         is_handshake_rejected, is_normal_h3_shutdown, serve_raw_vless_oversize_records,
         serve_raw_vless_quic_datagrams,
     },
@@ -652,8 +652,19 @@ async fn handle_h3_request(
         return Ok(());
     }
 
+    // Resume negotiation. Parse `X-Outline-*` headers up-front (cheap)
+    // so we can both echo the assigned Session ID in the upgrade
+    // response and pass the request side into the TCP relay path.
+    let resume = if ctx.tcp_paths.contains(ws_req.path.as_str()) {
+        ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
+    } else {
+        ResumeContext::default()
+    };
+    let mut response = build_extended_connect_response(None, None);
+    resume.issue_session_header(response.headers_mut());
+
     stream
-        .send_response(build_extended_connect_response(None, None))
+        .send_response(response)
         .await
         .context("failed to send HTTP/3 websocket response")?;
 
@@ -679,7 +690,8 @@ async fn handle_h3_request(
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         };
-        let result = handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx).await;
+        let result =
+            handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx, resume).await;
         finish_ws_session(session, result, "tcp");
     } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
         let routes_snap = ctx.routes.load();

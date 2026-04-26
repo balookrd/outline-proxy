@@ -23,9 +23,8 @@ impl SessionId {
     /// Draws a fresh identifier from the supplied CSPRNG.
     pub(crate) fn random(rng: &SystemRandom) -> std::io::Result<Self> {
         let mut bytes = [0u8; 16];
-        rng.fill(&mut bytes).map_err(|_| {
-            std::io::Error::new(std::io::ErrorKind::Other, "csprng failure minting session id")
-        })?;
+        rng.fill(&mut bytes)
+            .map_err(|_| std::io::Error::other("csprng failure minting session id"))?;
         Ok(Self(bytes))
     }
 
@@ -41,7 +40,7 @@ impl SessionId {
     }
 
     /// Lowercase 32-hex-char representation suitable for HTTP headers.
-    pub(crate) fn to_hex(&self) -> String {
+    pub(crate) fn to_hex(self) -> String {
         let mut out = String::with_capacity(Self::HEX_LEN);
         for byte in &self.0 {
             out.push(hex_nibble(byte >> 4));

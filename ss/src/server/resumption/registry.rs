@@ -47,6 +47,10 @@ impl ResumeMiss {
 
 pub(crate) enum ResumeOutcome {
     Hit(Parked),
+    /// Resume failed; the inner reason is observable via metrics but
+    /// callers do not currently switch on it (the only behavioural
+    /// difference between miss reasons is the metric reason label).
+    #[allow(dead_code)]
     Miss(ResumeMiss),
 }
 
