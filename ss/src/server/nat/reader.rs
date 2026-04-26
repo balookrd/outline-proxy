@@ -43,6 +43,8 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         next_packet_id,
     } = ctx;
 
+    let user_id = user.id_arc();
+    let user_counters = metrics.user_counters(&user_id);
     let mut buf = vec![0u8; MAX_UDP_PAYLOAD_SIZE];
     loop {
         let (n, source) = match socket.recv_from(&mut buf).await {
@@ -94,9 +96,8 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         }
 
         let protocol = sender.protocol();
-        let user_id = user.id_arc();
-        metrics.record_udp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", n);
-        metrics.record_udp_response_datagrams(user_id, protocol, 1);
+        user_counters.udp_out(protocol).increment(n as u64);
+        metrics.record_udp_response_datagrams(Arc::clone(&user_id), protocol, 1);
         if sender.send_bytes(Bytes::from(ciphertext)).await {
             // Only a delivered response resets the idle timer. Otherwise a
             // chatty upstream pointed at a dead client would hold the NAT

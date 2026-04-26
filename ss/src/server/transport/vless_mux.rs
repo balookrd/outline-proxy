@@ -287,6 +287,8 @@ async fn run_tcp_reader<Msg>(
 where
     Msg: Send + 'static,
 {
+    let user_counters = metrics.user_counters(&user);
+    let target_to_client = user_counters.tcp_out(protocol);
     let mut buf = vec![0_u8; 16 * 1024];
     let mut frame_buf = BytesMut::with_capacity(16 * 1024 + 16);
     loop {
@@ -298,7 +300,7 @@ where
                 break;
             },
         };
-        metrics.record_tcp_payload_bytes(Arc::clone(&user), protocol, "target_to_client", read);
+        target_to_client.increment(read as u64);
         frame_buf.reserve(read + 16);
         encode_frame(
             &mut frame_buf,
@@ -406,6 +408,8 @@ async fn run_udp_reader<Msg>(
 where
     Msg: Send + 'static,
 {
+    let user_counters = metrics.user_counters(&user);
+    let target_to_client = user_counters.udp_out(protocol);
     let mut buf = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
     let mut frame_buf = BytesMut::with_capacity(MAX_UDP_PAYLOAD_SIZE + 32);
     loop {
@@ -419,7 +423,7 @@ where
         if read == 0 {
             continue;
         }
-        metrics.record_udp_payload_bytes(Arc::clone(&user), protocol, "target_to_client", read);
+        target_to_client.increment(read as u64);
         let src = TargetAddr::Socket(from);
         frame_buf.reserve(read + 32);
         encode_frame(

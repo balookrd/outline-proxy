@@ -486,6 +486,8 @@ async fn relay_vless_upstream_to_client<Msg>(
 where
     Msg: Send + 'static,
 {
+    let user_counters = metrics.user_counters(&user_id);
+    let target_to_client = user_counters.tcp_out(protocol);
     let mut buffer = vec![0_u8; 16 * 1024];
     loop {
         let read = upstream_reader
@@ -495,7 +497,7 @@ where
         if read == 0 {
             break;
         }
-        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
+        target_to_client.increment(read as u64);
         tx.send(make_binary(Bytes::copy_from_slice(&buffer[..read])))
             .await
             .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;

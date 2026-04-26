@@ -19,13 +19,27 @@ const VARIANTS: usize = Protocol::VARIANTS_COUNT;
 pub struct PerUserCounters {
     tcp_payload_client_to_target: [Counter; VARIANTS],
     tcp_payload_target_to_client: [Counter; VARIANTS],
+    udp_payload_target_to_client: [Counter; VARIANTS],
 }
 
 impl PerUserCounters {
     pub(super) fn new(recorder: &PrometheusRecorder, user_id: Arc<str>) -> Self {
         with_local_recorder(recorder, || Self {
-            tcp_payload_client_to_target: build_tcp_payload(&user_id, "client_to_target"),
-            tcp_payload_target_to_client: build_tcp_payload(&user_id, "target_to_client"),
+            tcp_payload_client_to_target: build_payload_array(
+                "outline_ss_tcp_payload_bytes_total",
+                &user_id,
+                "client_to_target",
+            ),
+            tcp_payload_target_to_client: build_payload_array(
+                "outline_ss_tcp_payload_bytes_total",
+                &user_id,
+                "target_to_client",
+            ),
+            udp_payload_target_to_client: build_payload_array(
+                "outline_ss_udp_payload_bytes_total",
+                &user_id,
+                "target_to_client",
+            ),
         })
     }
 
@@ -38,13 +52,22 @@ impl PerUserCounters {
     pub fn tcp_out(&self, protocol: Protocol) -> &Counter {
         &self.tcp_payload_target_to_client[protocol.as_index()]
     }
+
+    #[inline]
+    pub fn udp_out(&self, protocol: Protocol) -> &Counter {
+        &self.udp_payload_target_to_client[protocol.as_index()]
+    }
 }
 
-fn build_tcp_payload(user_id: &Arc<str>, direction: &'static str) -> [Counter; VARIANTS] {
+fn build_payload_array(
+    name: &'static str,
+    user_id: &Arc<str>,
+    direction: &'static str,
+) -> [Counter; VARIANTS] {
     std::array::from_fn(|i| {
         let protocol = Protocol::from_index(i);
         counter!(
-            "outline_ss_tcp_payload_bytes_total",
+            name,
             "user"      => Arc::clone(user_id),
             "protocol"  => protocol.as_str(),
             "direction" => direction,
