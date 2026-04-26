@@ -215,6 +215,7 @@ mod tests {
             method: CipherKind::Chacha20IetfPoly1305,
             access_key: Default::default(),
             tuning: super::super::TuningProfile::LARGE,
+            session_resumption: Default::default(),
         }
     }
 

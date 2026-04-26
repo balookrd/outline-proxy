@@ -36,6 +36,7 @@ mod nat;
 mod periodic;
 mod relay;
 mod replay;
+mod resumption;
 mod scratch;
 mod services;
 mod setup;

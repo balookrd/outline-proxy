@@ -78,6 +78,7 @@ async fn plain_shadowsocks_udp_reuses_nat_entry_after_client_reconnect() -> Resu
             ),
             relay_semaphore: None,
         },
+        None,
     ));
     let ctx = SsUdpCtx { users, services };
     let server =

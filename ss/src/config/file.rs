@@ -35,6 +35,8 @@ pub(super) struct FileConfig {
     pub control: Option<ControlFileConfig>,
     #[serde(default)]
     pub dashboard: Option<DashboardFileConfig>,
+    #[serde(default)]
+    pub session_resumption: Option<SessionResumptionSection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -143,6 +145,21 @@ pub(super) struct DashboardInstanceFileConfig {
     pub control_url: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+}
+
+/// `[session_resumption]` block. All fields are optional; absence keeps
+/// the feature disabled. See `docs/SESSION-RESUMPTION.md` for semantics
+/// and recommended values.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SessionResumptionSection {
+    pub enabled: Option<bool>,
+    pub orphan_ttl_tcp_secs: Option<u64>,
+    pub orphan_ttl_udp_secs: Option<u64>,
+    pub orphan_per_user_cap: Option<usize>,
+    pub orphan_global_cap: Option<usize>,
+    pub udp_orphan_backbuf_bytes: Option<usize>,
+    pub udp_orphan_total_budget_bytes: Option<usize>,
 }
 
 pub(super) fn load_file_config(path: &Path) -> Result<FileConfig> {

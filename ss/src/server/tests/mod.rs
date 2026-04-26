@@ -57,6 +57,7 @@ fn build_test_state(
             replay_store: super::replay::ReplayStore::new(std::time::Duration::from_secs(300), 0),
             relay_semaphore: None,
         },
+        None,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
@@ -307,6 +308,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         method: CipherKind::Chacha20IetfPoly1305,
         access_key: Default::default(),
         tuning: Default::default(),
+        session_resumption: Default::default(),
         config_path: None,
         control: None,
         dashboard: None,

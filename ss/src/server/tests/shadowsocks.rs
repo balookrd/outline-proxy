@@ -55,6 +55,7 @@ async fn plain_shadowsocks_tcp_relay_smoke() -> Result<()> {
             ),
             relay_semaphore: None,
         },
+        None,
     ));
     let ctx = SsTcpCtx { users, services };
     let server =
@@ -118,6 +119,7 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
             ),
             relay_semaphore: None,
         },
+        None,
     ));
     let ctx = SsUdpCtx { users, services };
     let server =
@@ -182,6 +184,7 @@ async fn plain_shadowsocks_tcp_invalid_probe_sinks_then_closes() -> Result<()> {
             ),
             relay_semaphore: None,
         },
+        None,
     ));
     let ctx = SsTcpCtx { users, services };
     let server =

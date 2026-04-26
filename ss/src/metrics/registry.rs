@@ -137,4 +137,24 @@ pub(super) fn register_descriptions() {
         "outline_ss_maintenance_task_panics_total",
         "Background maintenance tasks that panicked and triggered server shutdown."
     );
+    describe_counter!(
+        "outline_ss_orphan_park_total",
+        "Sessions moved into the cross-transport resumption orphan registry, by kind."
+    );
+    describe_counter!(
+        "outline_ss_orphan_resume_hit_total",
+        "Successful cross-transport session resumes, by parked-payload kind."
+    );
+    describe_counter!(
+        "outline_ss_orphan_resume_miss_total",
+        "Failed cross-transport session resumes, by reason."
+    );
+    describe_counter!(
+        "outline_ss_orphan_evicted_total",
+        "Orphan entries evicted before being resumed, by kind and reason."
+    );
+    describe_gauge!(
+        "outline_ss_orphan_current",
+        "Currently parked orphan sessions awaiting cross-transport resumption, by kind."
+    );
 }
