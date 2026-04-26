@@ -20,7 +20,7 @@ use tokio::{
     net::UdpSocket,
     time::{Duration, timeout},
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
@@ -230,7 +230,7 @@ async fn handle_tcp(
 ) -> Result<()> {
     let target = request.target.clone();
     let target_display = target.display_host_port();
-    info!(user = user.label(), target = %target_display, "vless raw-quic tcp target");
+    debug!(user = user.label(), target = %target_display, "vless raw-quic tcp target");
 
     let connect_started = std::time::Instant::now();
     let upstream = match connect_tcp_target(
@@ -367,7 +367,7 @@ async fn handle_udp(
 ) -> Result<()> {
     let target = request.target.clone();
     let target_display = target.display_host_port();
-    info!(user = user.label(), target = %target_display, "vless raw-quic udp target");
+    debug!(user = user.label(), target = %target_display, "vless raw-quic udp target");
 
     let resolved =
         resolve_udp_target(server.dns_cache.as_ref(), &target, server.prefer_ipv4_upstream)
