@@ -9,7 +9,7 @@ use tokio::time::sleep;
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::UdpSessionTransport;
+use outline_transport::{AbortOnDrop, UdpSessionTransport};
 use socks5_proto::TargetAddr;
 use outline_uplink::{TransportKind, UplinkCandidate, UplinkManager};
 
@@ -55,14 +55,24 @@ impl TunUdpEngine {
                     }
                     CloseWork::Direct { flow, reason } => {
                         tokio::spawn(async move {
-                            let flow = flow.lock().await;
-                            flow._reader.abort();
+                            // The reader task is wrapped in `AbortOnDrop`,
+                            // so simply releasing the last reference
+                            // tears it down — `flow._reader` aborts via
+                            // its `Drop` impl when this `Arc` is dropped
+                            // and no other task can reach it (we hold
+                            // the only outstanding `Arc` after the map
+                            // removed its entry).
+                            let (created_at, _alive_until_end) = {
+                                let guard = flow.lock().await;
+                                (guard.created_at, ())
+                            };
                             metrics::record_tun_flow_closed(
                                 metrics::DIRECT_GROUP_LABEL,
                                 metrics::DIRECT_UPLINK_LABEL,
                                 reason,
-                                Instant::now().saturating_duration_since(flow.created_at),
+                                Instant::now().saturating_duration_since(created_at),
                             );
+                            drop(flow);
                         });
                     }
                 }
@@ -98,6 +108,22 @@ impl TunUdpEngine {
             .inner
             .next_flow_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        // Spawn the reader before inserting into the flow table so the
+        // task is owned by the flow state from the very first moment it
+        // is reachable. Eviction / close paths drop the state, the
+        // `AbortOnDrop` field cancels the reader, and the `Arc<UdpSessionTransport>`
+        // it captured is released — closing the upstream socket promptly
+        // even when the peer goes silent and `read_packet` would
+        // otherwise block forever.
+        let reader_task = self.spawn_flow_reader(
+            key.clone(),
+            flow_id,
+            Arc::clone(&transport),
+            candidate.index,
+            manager.clone(),
+        );
+
         let state = UdpFlowState {
             id: flow_id,
             transport: Arc::clone(&transport),
@@ -107,6 +133,7 @@ impl TunUdpEngine {
             manager: manager.clone(),
             created_at: now,
             last_seen: now,
+            _reader_task: Some(reader_task),
         };
 
         let mut evicted_flow = None;
@@ -158,13 +185,6 @@ impl TunUdpEngine {
             remote = %format!("{}:{}", key.remote_ip, key.remote_port),
             "created TUN UDP flow"
         );
-        self.spawn_flow_reader(
-            key,
-            flow_id,
-            Arc::clone(&transport),
-            candidate.index,
-            manager.clone(),
-        );
 
         Ok((flow_id, transport, candidate.index, Arc::from(candidate.uplink.name.as_str())))
     }
@@ -176,9 +196,9 @@ impl TunUdpEngine {
         transport: Arc<UdpSessionTransport>,
         uplink_index: usize,
         manager: UplinkManager,
-    ) {
+    ) -> AbortOnDrop {
         let engine = self.clone();
-        tokio::spawn(async move {
+        AbortOnDrop::new(tokio::spawn(async move {
             let result = async {
                 loop {
                     if super::should_migrate_flow(&manager, uplink_index).await {
@@ -244,7 +264,7 @@ impl TunUdpEngine {
                 );
             }
             engine.close_flow_if_current(&key, flow_id, close_reason).await;
-        });
+        }))
     }
 
     pub(super) async fn close_flow_if_current(

@@ -418,7 +418,7 @@ async fn connect_h3_connection(
         target: "outline_transport::conn_life",
         id, peer = %peer, mode = "h3", "h3 connection opened"
     );
-    let driver_task = AbortOnDrop(tokio::spawn(async move {
+    let driver_task = AbortOnDrop::new(tokio::spawn(async move {
         let err = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         if let Some(cache_key) = cache_key {
             h3_registry().invalidate_if_current(&cache_key, id).await;
