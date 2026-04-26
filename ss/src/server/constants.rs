@@ -39,6 +39,16 @@ pub(super) const SS_TCP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 // 300 s client timeout and low enough that even a Ping lost to transient packet
 // loss is recovered before the timer fires.
 pub(super) const WS_TCP_KEEPALIVE_PING_INTERVAL_SECS: u64 = 60;
+/// If no inbound WS frame (Pong, Binary, Ping or Close) is observed for
+/// `WS_TCP_KEEPALIVE_PING_INTERVAL_SECS * WS_PONG_DEADLINE_MULTIPLIER`
+/// seconds, the relay tears down the session. This catches silently-dead
+/// clients (mobile in tunnel, NAT-rebind, ISP black-hole) much faster
+/// than the underlying TCP/QUIC keepalive — the latter can take minutes
+/// or never fire — preventing UDP-upstream sockets and 64 KiB reader
+/// buffers from being held by half-dead sessions for the full transport
+/// idle window. A multiplier of 3 means we tolerate two missed pongs
+/// before declaring the peer gone.
+pub(super) const WS_PONG_DEADLINE_MULTIPLIER: u32 = 3;
 pub(super) const TCP_HAPPY_EYEBALLS_DELAY_MS: u64 = 250;
 
 pub(super) const UDP_MAX_CONCURRENT_RELAY_TASKS: usize = 256;

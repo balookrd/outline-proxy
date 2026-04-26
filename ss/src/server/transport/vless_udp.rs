@@ -13,7 +13,10 @@ use crate::{
 };
 
 use super::{
-    super::{connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE, nat::bind_nat_udp_socket},
+    super::{
+        abort::AbortOnDrop, connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE,
+        nat::bind_nat_udp_socket,
+    },
     vless::{UpstreamSession, VlessRelayState, VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx},
 };
 
@@ -85,7 +88,7 @@ where
     let user_id = user.label_arc();
     let protocol = route.protocol;
     let reader_socket = Arc::clone(&socket);
-    state.upstream_to_client = Some(tokio::spawn(async move {
+    state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
             tx,
@@ -96,7 +99,7 @@ where
             user_id,
         )
         .await
-    }));
+    })));
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Udp(Arc::clone(&socket));

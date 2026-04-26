@@ -10,7 +10,6 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UdpSocket, tcp::OwnedWriteHalf},
     sync::mpsc,
-    task::JoinHandle,
 };
 use tracing::{debug, warn};
 
@@ -29,6 +28,7 @@ use crate::{
 };
 
 use super::super::{
+    abort::AbortOnDrop,
     connect::{connect_tcp_target, resolve_udp_target},
     constants::MAX_UDP_PAYLOAD_SIZE,
     dns_cache::DnsCache,
@@ -63,7 +63,10 @@ pub(super) struct MuxState {
 
 struct MuxSubConn {
     kind: SubConnKind,
-    reader_task: Option<JoinHandle<()>>,
+    /// Held only for its `Drop`: `AbortOnDrop` cancels the reader task
+    /// when the `MuxSubConn` is removed from the map (or the whole
+    /// `MuxState` drops). Underscore-prefixed because nothing reads it.
+    _reader_task: Option<AbortOnDrop<()>>,
 }
 
 enum SubConnKind {
@@ -85,27 +88,15 @@ impl MuxState {
     }
 
     pub async fn shutdown(&mut self) {
+        // Drain shuts down each TCP write half gracefully so the upstream
+        // reader sees EOF; the `AbortOnDrop` guard inside each `MuxSubConn`
+        // cancels the reader task on drop. The natural `MuxState` drop
+        // would do the same on every other exit path (?-return, panic).
         for (_, mut sub) in self.sub_conns.drain() {
             if let SubConnKind::Tcp(mut w) = sub.kind {
                 let _ = w.shutdown().await;
             }
-            if let Some(task) = sub.reader_task.take() {
-                task.abort();
-            }
-        }
-    }
-}
-
-impl Drop for MuxState {
-    /// Safety net: cancel every sub-connection reader on every exit path,
-    /// including `?`-returns and panics. UDP sub-conns block on
-    /// `socket.recv` with no shutdown signal, and dropping a `JoinHandle`
-    /// does NOT cancel the underlying task.
-    fn drop(&mut self) {
-        for (_, mut sub) in self.sub_conns.drain() {
-            if let Some(task) = sub.reader_task.take() {
-                task.abort();
-            }
+            // sub.reader_task drops here → AbortOnDrop fires.
         }
     }
 }
@@ -281,7 +272,10 @@ where
 
     state.sub_conns.insert(
         session_id,
-        MuxSubConn { kind: SubConnKind::Tcp(writer), reader_task: Some(reader_task) },
+        MuxSubConn {
+            kind: SubConnKind::Tcp(writer),
+            _reader_task: Some(AbortOnDrop::new(reader_task)),
+        },
     );
     Ok(())
 }
@@ -395,7 +389,7 @@ where
         session_id,
         MuxSubConn {
             kind: SubConnKind::Udp { socket: Arc::clone(&socket), default_target },
-            reader_task: Some(reader_task),
+            _reader_task: Some(AbortOnDrop::new(reader_task)),
         },
     );
 
@@ -508,9 +502,7 @@ async fn finish_sub(state: &mut MuxState, session_id: u16) {
         if let SubConnKind::Tcp(mut w) = sub.kind {
             let _ = w.shutdown().await;
         }
-        if let Some(task) = sub.reader_task.take() {
-            task.abort();
-        }
+        // Dropping `sub` aborts its reader_task via AbortOnDrop.
     }
 }
 
