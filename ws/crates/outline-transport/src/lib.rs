@@ -127,7 +127,8 @@ pub(crate) use outline_net::{bind_addr_for, bind_udp_socket};
 use std::net::SocketAddr;
 use ws_stream::H1WsStream;
 
-pub(crate) use guards::{AbortOnDrop, TransportConnectGuard};
+pub use guards::AbortOnDrop;
+pub(crate) use guards::TransportConnectGuard;
 pub(crate) use ws_stream::SharedConnectionHealth;
 
 /// Local wrapper around `outline_net::connect_tcp_socket` that layers the

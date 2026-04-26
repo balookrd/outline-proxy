@@ -29,6 +29,14 @@ use tracing::debug;
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
 use crate::{AbortOnDrop, TransportOperation, WsClosed, WsTransportStream};
 
+/// Default idle watchdog for WS transports. If no inbound frame arrives
+/// within this window the reader tears the session down — the only way
+/// to detect a silently-dead peer (mobile in tunnel, NAT rebind, ISP
+/// black-hole) before the underlying TCP/QUIC keepalive fires, which
+/// can take minutes or never. Mirrors the value already used by the
+/// VLESS WS path and the SS WS reader.
+pub(crate) const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
 // ── Writer task ────────────────────────────────────────────────────────────
 
 /// Spawn the WS writer task: drains `ctrl_rx` (Pings/Pongs/Close) with
@@ -72,14 +80,14 @@ fn spawn_ws_writer(
             }
         }
     });
-    (AbortOnDrop(task), data_tx, ctrl_tx, stream)
+    (AbortOnDrop::new(task), data_tx, ctrl_tx, stream)
 }
 
 fn spawn_keepalive(
     ctrl_tx: mpsc::Sender<Message>,
     interval: Duration,
 ) -> AbortOnDrop {
-    AbortOnDrop(tokio::spawn(async move {
+    AbortOnDrop::new(tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.tick().await; // skip the immediate tick
         loop {
@@ -260,10 +268,18 @@ impl DatagramChannel for WsDatagramChannel {
 
 /// Build a [`WsDatagramChannel`] from a WS stream. Spawns the writer task
 /// (ctrl-priority biased select on Pings) and a reader task that forwards
-/// each `Message::Binary` payload as a single datagram. `keepalive` of
-/// `None` disables outbound Pings.
+/// each `Message::Binary` payload as a single datagram.
+///
+/// `idle_timeout` of `Some(d)` tears the session down if no inbound frame
+/// (Binary, Ping, Pong, Close) arrives within `d` — silently-dead servers
+/// (mobile in tunnel, NAT rebind, ISP black-hole) otherwise hold the WS
+/// reader on `stream.next()` indefinitely, pinning the underlying
+/// TCP/QUIC socket and 64 KiB stream buffers. `None` disables the
+/// watchdog (used in tests). `keepalive` of `None` disables outbound
+/// Pings.
 pub fn from_ws_datagrams(
     ws_stream: WsTransportStream,
+    idle_timeout: Option<Duration>,
     keepalive: Option<Duration>,
 ) -> WsDatagramChannel {
     let (writer_task, data_tx, ctrl_tx, mut stream) = spawn_ws_writer(ws_stream);
@@ -272,7 +288,22 @@ pub fn from_ws_datagrams(
     let reader_ctrl_tx = ctrl_tx.clone();
     let reader_task = tokio::spawn(async move {
         loop {
-            let msg = match stream.next().await {
+            let next = match idle_timeout {
+                Some(d) => match timeout(d, stream.next()).await {
+                    Err(_) => {
+                        let _ = downlink_tx
+                            .send(Err(anyhow!(
+                                "ws upstream read idle for {}s on datagram channel",
+                                d.as_secs(),
+                            )))
+                            .await;
+                        return;
+                    }
+                    Ok(item) => item,
+                },
+                None => stream.next().await,
+            };
+            let msg = match next {
                 None => return,
                 Some(Ok(m)) => m,
                 Some(Err(e)) => {
@@ -309,7 +340,7 @@ pub fn from_ws_datagrams(
         data_tx,
         downlink_rx: Mutex::new(downlink_rx),
         _writer_task: writer_task,
-        _reader_task: AbortOnDrop(reader_task),
+        _reader_task: AbortOnDrop::new(reader_task),
         _keepalive_task: keepalive_task,
     }
 }

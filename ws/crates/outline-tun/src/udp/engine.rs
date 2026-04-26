@@ -14,7 +14,7 @@ use tracing::info;
 
 use crate::atomic_counter::CounterU64;
 use outline_metrics as metrics;
-use outline_transport::is_dropped_oversized_udp_error;
+use outline_transport::{AbortOnDrop, is_dropped_oversized_udp_error};
 use crate::{SharedTunWriter, TunRoute, TunRouting};
 use socks5_proto::TargetAddr;
 use super::lifecycle::CloseWork;
@@ -254,7 +254,7 @@ impl TunUdpEngine {
         let writer = self.inner.writer.clone();
         let reader_key = key.clone();
         let direct_flows = Arc::clone(&self.inner.direct_flows);
-        let reader = tokio::spawn(async move {
+        let reader = AbortOnDrop::new(tokio::spawn(async move {
             let mut buf = vec![0u8; 65_535];
             loop {
                 let (len, src_addr) = match reader_sock.recv_from(&mut buf).await {
@@ -290,7 +290,7 @@ impl TunUdpEngine {
                 // then per-flow Mutex — does not block other flows' I/O.
                 bump_last_seen_if_current(&direct_flows, &reader_key, flow_id).await;
             }
-        });
+        }));
 
         self.inner.direct_flows.write().await.insert(
             key,

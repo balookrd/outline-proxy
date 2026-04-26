@@ -6,7 +6,19 @@ use outline_metrics::{
     record_upstream_transport,
 };
 
-pub(crate) struct AbortOnDrop(pub(crate) JoinHandle<()>);
+/// `JoinHandle` newtype that aborts the task on `Drop`.
+///
+/// Tokio's bare `JoinHandle` only detaches the task on drop — it keeps
+/// running. For tasks whose lifetime should be bounded by the owning
+/// struct (UDP relay readers, NAT entry pumps, per-connection reader
+/// loops) that detachment is a leak vector: any early `?`-return or
+/// panic in the parent silently orphans the task, and the task then
+/// keeps holding sockets, buffers and `Arc`-shared state for as long as
+/// it can find anything to await on (UDP `recv` waits forever).
+///
+/// Stash one of these in a struct field and the field's natural drop
+/// runs `abort()` on every exit path — no manual cleanup needed.
+pub struct AbortOnDrop(JoinHandle<()>);
 
 impl Drop for AbortOnDrop {
     fn drop(&mut self) {
@@ -15,7 +27,7 @@ impl Drop for AbortOnDrop {
 }
 
 impl AbortOnDrop {
-    pub(super) fn new(handle: JoinHandle<()>) -> Self {
+    pub fn new(handle: JoinHandle<()>) -> Self {
         Self(handle)
     }
 }

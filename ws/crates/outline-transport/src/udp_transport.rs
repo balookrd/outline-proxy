@@ -16,7 +16,7 @@ use shadowsocks_crypto::{
 use shadowsocks_crypto::CipherKind;
 use crate::config::WsTransportMode;
 use crate::frame_io::DatagramChannel;
-use crate::frame_io_ws::from_ws_datagrams;
+use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
 use super::{DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
 
@@ -76,8 +76,11 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Result<Self> {
-        let channel: Arc<dyn DatagramChannel> =
-            Arc::new(from_ws_datagrams(ws_stream, keepalive_interval));
+        let channel: Arc<dyn DatagramChannel> = Arc::new(from_ws_datagrams(
+            ws_stream,
+            Some(WS_READ_IDLE_TIMEOUT),
+            keepalive_interval,
+        ));
         Self::from_channel(channel, cipher, password, source)
     }
 

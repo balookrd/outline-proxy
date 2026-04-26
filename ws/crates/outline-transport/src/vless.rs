@@ -40,6 +40,7 @@ use url::Url;
 use crate::{
     AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
     WsTransportStream, config::WsTransportMode, connect_websocket_with_source,
+    frame_io_ws::WS_READ_IDLE_TIMEOUT,
 };
 
 const VLESS_VERSION: u8 = 0x00;
@@ -51,11 +52,6 @@ const VLESS_ATYP_DOMAIN: u8 = 0x02;
 const VLESS_ATYP_IPV6: u8 = 0x03;
 
 const MAX_VLESS_UDP_PAYLOAD: usize = 64 * 1024;
-
-/// Mirror of the idle timeout used by the SS WebSocket reader. Matches the
-/// SOCKS idle-watcher so both defences fire at the same time when the
-/// upstream is truly dead.
-const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Parse a VLESS UUID in hex/dashed form into 16 raw bytes.
 pub fn parse_uuid(input: &str) -> Result<[u8; 16]> {
@@ -318,9 +314,12 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
     ) -> Self {
-        let chan: Arc<dyn crate::frame_io::DatagramChannel> = Arc::new(
-            crate::frame_io_ws::from_ws_datagrams(ws_stream, keepalive_interval),
-        );
+        let chan: Arc<dyn crate::frame_io::DatagramChannel> =
+            Arc::new(crate::frame_io_ws::from_ws_datagrams(
+                ws_stream,
+                Some(WS_READ_IDLE_TIMEOUT),
+                keepalive_interval,
+            ));
         Self::from_channel(chan, uuid, target, source)
     }
 
@@ -728,7 +727,7 @@ fn spawn_vless_udp_janitor(
     interval: Duration,
     mut close_rx: watch::Receiver<bool>,
 ) -> AbortOnDrop {
-    AbortOnDrop(tokio::spawn(async move {
+    AbortOnDrop::new(tokio::spawn(async move {
         let mut ticker = tokio::time::interval(interval);
         ticker.tick().await; // consume the immediate tick
         loop {
@@ -772,7 +771,7 @@ fn spawn_vless_udp_session_reader(
     downlink_tx: mpsc::Sender<Result<Bytes>>,
     mut close_rx: watch::Receiver<bool>,
 ) -> AbortOnDrop {
-    AbortOnDrop(tokio::spawn(async move {
+    AbortOnDrop::new(tokio::spawn(async move {
         // Pre-build the SOCKS5 wire prefix for this session's target —
         // every downlink datagram carries the same one.
         let prefix = match target.to_wire_bytes() {

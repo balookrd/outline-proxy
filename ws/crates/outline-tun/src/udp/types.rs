@@ -6,9 +6,8 @@ use std::time::{Duration, Instant};
 
 use tokio::net::UdpSocket;
 use tokio::sync::{Mutex, RwLock};
-use tokio::task::JoinHandle;
 
-use outline_transport::UdpSessionTransport;
+use outline_transport::{AbortOnDrop, UdpSessionTransport};
 use crate::utils::maybe_shrink_hash_map;
 use crate::wire::IpVersion;
 use outline_uplink::UplinkManager;
@@ -43,6 +42,18 @@ pub(super) struct UdpFlowState {
     pub(super) manager: UplinkManager,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
+    /// Reader pump for this flow's upstream-to-client direction.
+    /// `AbortOnDrop` ensures that when the flow is removed from the
+    /// table (idle eviction, global switch, error close, send failure)
+    /// the reader stops on its own drop — the `Arc<UdpSessionTransport>`
+    /// it captured is then released, the underlying transport's own
+    /// `Drop` runs, and the upstream UDP socket / TCP / QUIC connection
+    /// is closed promptly. Without this, the reader would block on
+    /// `transport.read_packet().await` indefinitely (UDP/quinn have no
+    /// shutdown signal that fires when the peer goes silent), pinning
+    /// the socket and tracker buffers for the full transport idle
+    /// window — minutes, or never if keepalive is off.
+    pub(super) _reader_task: Option<AbortOnDrop>,
 }
 
 /// Flow map: `RwLock` on the map itself, `Arc<Mutex<_>>` per flow.
@@ -58,7 +69,11 @@ pub(super) type FlowTable = Arc<RwLock<HashMap<UdpFlowKey, Arc<Mutex<UdpFlowStat
 pub(super) struct DirectUdpFlowState {
     pub(super) id: u64,
     pub(super) socket: Arc<UdpSocket>,
-    pub(super) _reader: JoinHandle<()>,
+    /// Reader task for inbound datagrams on `socket`. `AbortOnDrop`
+    /// cancels it on every removal path of the flow entry (idle
+    /// eviction, write-side error, engine teardown), releasing the
+    /// captured `Arc<UdpSocket>` so the kernel reclaims the FD.
+    pub(super) _reader: AbortOnDrop,
     pub(super) created_at: Instant,
     pub(super) last_seen: Instant,
 }
