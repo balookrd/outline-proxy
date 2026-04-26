@@ -745,6 +745,60 @@ async fn ss_resume_after_ttl_expiry_falls_through_to_fresh() -> Result<()> {
 }
 
 #[tokio::test]
+async fn ss_udp_resume_across_h1_to_h2_transport_switch() -> Result<()> {
+    // Cross-transport variant of `ss_udp_resume_hit_reattaches_parked_nat_entry`:
+    // park the SS-UDP NAT entry on an HTTP/1 stream, then resume it
+    // through an HTTP/2 (RFC 8441) Extended CONNECT stream. The
+    // upstream NAT entry must be re-pointed at the H2 sender — no
+    // fresh ephemeral port allocation.
+    //
+    // This is the original motivating scenario for the whole feature
+    // (intermittent UDP path between two VMs forces clients to drop
+    // QUIC / H3 and fall back to TCP-based H2 transport while the
+    // session continues).
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|_| {}).await?;
+
+    // Session #1 over HTTP/1.
+    let (mut h1_socket, h1_issued) = connect_ws_h1(server.listen_addr, "/udp", None, true).await?;
+    let session_id = h1_issued
+        .ok_or_else(|| anyhow::anyhow!("HTTP/1 SS-UDP server didn't mint Session ID"))?;
+    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    plaintext.extend_from_slice(b"udp-h1");
+    let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+    h1_socket.send(WsMessage::Binary(ciphertext.into())).await?;
+    let _ = expect_binary_reply(&mut h1_socket).await?;
+    assert_eq!(sources.lock().await.len(), 1);
+
+    h1_socket.close(None).await?;
+    drop(h1_socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // Session #2 over HTTP/2 on the same /udp path.
+    let (mut h2_socket, h2_outcome) =
+        connect_ws_h2(server.listen_addr, "/udp", Some(session_id), true).await?;
+    assert!(
+        h2_outcome.issued_session_id.is_some(),
+        "H2 SS-UDP reply must still echo a Session ID even on resume"
+    );
+
+    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    plaintext.extend_from_slice(b"udp-h2");
+    let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+    h2_socket.send(WsMessage::Binary(ciphertext.into())).await?;
+    let _ = expect_binary_reply(&mut h2_socket).await?;
+
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "ss-udp resume across H1→H2 must reuse the parked NAT entry — fresh source port indicates miss"
+    );
+
+    h2_socket.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn ss_udp_resume_hit_reattaches_parked_nat_entry() -> Result<()> {
     // SS UDP through WebSocket: each client packet is an independent
     // SS-AEAD-encrypted datagram carrying its own target inline. The
