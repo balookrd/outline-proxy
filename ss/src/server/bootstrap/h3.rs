@@ -390,17 +390,11 @@ async fn handle_raw_vless_connection(
             StreamKind::Oversize => {
                 let stream = Arc::new(OversizeStream::from_accept_validated(send, recv));
                 let installed = conn_state.oversize_slot.install(stream);
-                let server = Arc::clone(&ctx.vless_server);
                 let state_for_pump = Arc::clone(&conn_state);
                 tokio::spawn(async move {
                     let _permit = stream_permit;
                     if let Err(error) =
-                        serve_raw_vless_oversize_records(
-                            installed,
-                            server,
-                            state_for_pump,
-                        )
-                        .await
+                        serve_raw_vless_oversize_records(installed, state_for_pump).await
                     {
                         debug!(?error, "vless raw-quic oversize-record pump terminated");
                     }
