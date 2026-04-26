@@ -81,7 +81,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tracing::{debug, warn};
 use url::Url;
 
-use crate::resumption::SessionId;
+// Re-export resumption surface so callers in outline-uplink (and any
+// future user) can reach `SessionId`, `global_resume_cache`, and friends
+// without taking a direct dependency on the inner module path.
+pub use resumption::{ResumeCache, SessionId, global_resume_cache};
 
 // Upper bound for the HTTP/1.1 WebSocket handshake (TCP connect + TLS +
 // HTTP upgrade).  Unlike h2/h3 there is no shared pool to get stuck in, but
