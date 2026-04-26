@@ -34,12 +34,18 @@ pub(crate) fn supports_transport_for_scope(
 
 pub(crate) fn selection_health(
     status: &UplinkStatus,
+    uplink: &Uplink,
     transport: TransportKind,
     now: Instant,
     scope: RoutingScope,
 ) -> bool {
     match scope {
-        RoutingScope::Global => effective_health(status, TransportKind::Tcp, now),
+        RoutingScope::Global => {
+            effective_health(status, TransportKind::Tcp, now)
+                && (!uplink.supports_udp()
+                    || status.udp.healthy != Some(false)
+                        && !cooldown_active(status, TransportKind::Udp, now))
+        },
         _ => effective_health(status, transport, now),
     }
 }
