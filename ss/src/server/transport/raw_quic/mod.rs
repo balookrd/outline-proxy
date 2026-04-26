@@ -10,7 +10,7 @@ mod ss;
 mod vless;
 
 pub(in crate::server) use oversize::{
-    OVERSIZE_STREAM_MAGIC, OversizeStream, StreamKind, classify_accept_bi,
+    OVERSIZE_STREAM_MAGIC, OversizeStream, OversizeStreamSlot, StreamKind, classify_accept_bi,
 };
 pub(in crate::server) use ss::{
     RawQuicSsCtx, SsQuicConn, handle_raw_ss_quic_stream, handle_raw_ss_quic_stream_with_prefix,

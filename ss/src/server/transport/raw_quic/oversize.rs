@@ -22,6 +22,8 @@
 //! width / ordering MUST be made on both sides simultaneously and bump
 //! the ALPN version.
 
+use std::sync::Arc;
+
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -147,6 +149,35 @@ impl OversizeStream {
         let mut send = self.send.lock().await;
         let _ = send.finish();
         Ok(())
+    }
+}
+
+/// Connection-level slot that lazy-holds the oversize-record stream
+/// once either side opens it. Idempotent install — first writer wins,
+/// subsequent calls return the already-stored handle so both halves of
+/// the connection observe the same stream regardless of who opened
+/// first.
+#[derive(Default)]
+pub struct OversizeStreamSlot {
+    inner: parking_lot::Mutex<Option<Arc<OversizeStream>>>,
+}
+
+impl OversizeStreamSlot {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn install(&self, stream: Arc<OversizeStream>) -> Arc<OversizeStream> {
+        let mut guard = self.inner.lock();
+        if let Some(existing) = guard.as_ref() {
+            return Arc::clone(existing);
+        }
+        *guard = Some(Arc::clone(&stream));
+        stream
+    }
+
+    pub fn get(&self) -> Option<Arc<OversizeStream>> {
+        self.inner.lock().as_ref().map(Arc::clone)
     }
 }
 

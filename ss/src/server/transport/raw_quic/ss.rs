@@ -36,30 +36,14 @@ pub(in crate::server) struct RawQuicSsCtx {
 /// oversize-record stream so server→client oversized SS-UDP packets
 /// can fall back to it instead of being dropped.
 pub(in crate::server) struct SsQuicConn {
-    oversize_stream: parking_lot::Mutex<Option<Arc<super::OversizeStream>>>,
+    pub(in crate::server) oversize_slot: super::OversizeStreamSlot,
 }
 
 impl SsQuicConn {
     pub(in crate::server) fn new() -> Self {
         Self {
-            oversize_stream: parking_lot::Mutex::new(None),
+            oversize_slot: super::OversizeStreamSlot::new(),
         }
-    }
-
-    pub(in crate::server) fn install_oversize_stream(
-        &self,
-        stream: Arc<super::OversizeStream>,
-    ) -> Arc<super::OversizeStream> {
-        let mut guard = self.oversize_stream.lock();
-        if let Some(existing) = guard.as_ref() {
-            return Arc::clone(existing);
-        }
-        *guard = Some(Arc::clone(&stream));
-        stream
-    }
-
-    pub(in crate::server) fn oversize_stream(&self) -> Option<Arc<super::OversizeStream>> {
-        self.oversize_stream.lock().as_ref().map(Arc::clone)
     }
 }
 
@@ -372,7 +356,7 @@ impl ResponseSender for QuicSsResponseSender {
                 debug!(len = data.len(), "ss raw-quic oversize response on legacy ALPN, dropping");
                 return false;
             }
-            let stream = match conn_state.oversize_stream() {
+            let stream = match conn_state.oversize_slot.get() {
                 Some(stream) => stream,
                 None => {
                     let pair = match connection.open_bi().await {
@@ -384,7 +368,7 @@ impl ResponseSender for QuicSsResponseSender {
                     };
                     let (send, recv) = pair;
                     let stream = Arc::new(super::OversizeStream::from_local_open(send, recv));
-                    conn_state.install_oversize_stream(stream)
+                    conn_state.oversize_slot.install(stream)
                 }
             };
             if let Err(error) = stream.send_record(&data).await {
