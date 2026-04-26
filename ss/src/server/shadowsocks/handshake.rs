@@ -15,6 +15,7 @@ use crate::{
 };
 
 use super::super::constants::SS_TCP_HANDSHAKE_TIMEOUT_SECS;
+use super::super::scratch::ScratchBuf;
 
 pub(in crate::server) struct SsHandshakeOutcome {
     pub(in crate::server) user: UserKey,
@@ -29,7 +30,7 @@ pub(in crate::server) async fn ss_tcp_handshake<R: AsyncRead + Unpin>(
     peer_addr: Option<SocketAddr>,
 ) -> Result<Option<SsHandshakeOutcome>> {
     let mut decryptor = AeadStreamDecryptor::new(users.clone());
-    let mut plaintext_buffer = Vec::with_capacity(MAX_CHUNK_SIZE);
+    let mut plaintext_buffer = ScratchBuf::take();
 
     loop {
         let buffered_before = decryptor.buffered_data().len();
@@ -122,7 +123,7 @@ pub(in crate::server) async fn ss_tcp_handshake<R: AsyncRead + Unpin>(
         return Ok(Some(SsHandshakeOutcome {
             user,
             target,
-            initial_payload: plaintext_buffer,
+            initial_payload: plaintext_buffer.into_inner(),
             decryptor,
         }));
     }

@@ -16,6 +16,8 @@ use crate::{
     metrics::{Metrics, Protocol},
 };
 
+use super::scratch::ScratchBuf;
+
 /// Destination for encrypted upstream bytes, parameterised by transport.
 pub(in crate::server) trait UpstreamSink: Send {
     /// Forward a ciphertext chunk to the client.
@@ -48,14 +50,14 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(protocol);
-    let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
+    let mut buffer = ScratchBuf::take();
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
     loop {
         buffer.clear();
         buffer.reserve(MAX_CHUNK_SIZE);
         let read = upstream_reader
-            .read_buf(&mut buffer)
+            .read_buf(&mut *buffer)
             .await
             .context("failed to read from upstream")?;
         if read == 0 {
@@ -108,7 +110,7 @@ where
             .context("failed to write initial payload to upstream")?;
     }
 
-    let mut plaintext = Vec::with_capacity(MAX_CHUNK_SIZE);
+    let mut plaintext = ScratchBuf::take();
     loop {
         decryptor.ciphertext_buffer_mut().reserve(MAX_CHUNK_SIZE);
         let read = client_reader

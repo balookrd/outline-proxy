@@ -35,6 +35,7 @@ mod nat;
 mod periodic;
 mod relay;
 mod replay;
+mod scratch;
 mod services;
 mod setup;
 mod shadowsocks;
