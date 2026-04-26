@@ -186,6 +186,8 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .row { border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: 0; }
 .uplink-cell { display: flex; align-items: center; gap: 8px; font-weight: 500; }
+.role-cell { display: grid; gap: 2px; min-width: 0; }
+.switch-reason { color: var(--muted); font-size: 11px; line-height: 1.25; overflow-wrap: anywhere; }
 .status-pill { min-height: 26px; display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 0 10px; font-size: 11px; font-weight: 760; background: var(--gray-soft); color: var(--muted); }
 .status-pill.good { background: var(--green-soft); color: var(--green-strong); }
 .status-pill.warn { background: var(--amber-soft); color: #b45309; }
@@ -407,6 +409,20 @@ function uplinkRole(u) {
   if (u.active_udp) parts.push("udp");
   return parts.length ? parts.join(", ") : "standby";
 }
+function switchReasons(u) {
+  const reasons = [];
+  if (u.active_global && u.active_global_reason) reasons.push(`global: ${u.active_global_reason}`);
+  if (u.active_tcp && u.active_tcp_reason) reasons.push(`tcp: ${u.active_tcp_reason}`);
+  if (u.active_udp && u.active_udp_reason) reasons.push(`udp: ${u.active_udp_reason}`);
+  return [...new Set(reasons)];
+}
+function uplinkRoleCell(u) {
+  const reasons = switchReasons(u);
+  const detail = reasons.length
+    ? `<span class="switch-reason">${escapeHtml(reasons.join(" · "))}</span>`
+    : "";
+  return `<div class="role-cell"><span>${escapeHtml(uplinkRole(u))}</span>${detail}</div>`;
+}
 function summaryCards(stats) {
   return [
     { label: "Total Instances", value: stats.totalInstances, icon: "▣", tone: "" },
@@ -521,7 +537,7 @@ function render() {
           <div><span class="status-pill ${rowTone}">${label}</span></div>
           <div class="${uplink.tcp_healthy === false ? "muted-cell" : ""}">${uplink.tcp_healthy === false ? "down" : "ok"}</div>
           <div class="${uplink.udp_healthy === false ? "muted-cell" : ""}">${uplink.udp_healthy === false ? "down" : "ok"}</div>
-          <div class="muted-cell">${escapeHtml(uplinkRole(uplink))}</div>
+          <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
           <div>${rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}</div>`;
         if (rowTone !== "good") {
           row.querySelector("button").addEventListener("click", ev => { ev.stopPropagation(); activateEntries([entry]); });

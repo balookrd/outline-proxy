@@ -1,7 +1,7 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
@@ -86,8 +86,12 @@ impl UplinkManager {
         // [`confirm_runtime_failover_uplink`] — only update sticky routes.
         let owns_active = !(self.strict_global_active_uplink() && self.inner.probe.enabled());
         if owns_active {
-            self.set_active_uplink_index_for_transport(transport, uplink_index)
-                .await;
+            self.set_active_uplink_index_for_transport(
+                transport,
+                uplink_index,
+                "successful selection",
+            )
+            .await;
         }
         self.store_sticky_route(&routing_key, uplink_index).await;
         // Successful end-to-end connect on this uplink is strong evidence the
@@ -353,12 +357,8 @@ impl UplinkManager {
                 // to cooldown-based gating so that failures can still cause a switch.
                 let probe_healthy = if self.inner.probe.enabled() {
                     match gate_transport {
-                        TransportKind::Tcp => {
-                            candidate.status.tcp.healthy != Some(false)
-                        },
-                        TransportKind::Udp => {
-                            candidate.status.udp.healthy != Some(false)
-                        },
+                        TransportKind::Tcp => candidate.status.tcp.healthy != Some(false),
+                        TransportKind::Udp => candidate.status.udp.healthy != Some(false),
                     }
                 } else {
                     true
@@ -429,12 +429,8 @@ impl UplinkManager {
                                 || (b_weight == active_weight && b.index < active_index);
                             higher_priority
                                 && match gate_transport {
-                                    TransportKind::Tcp => {
-                                        b.status.tcp.healthy == Some(true)
-                                    },
-                                    TransportKind::Udp => {
-                                        b.status.udp.healthy == Some(true)
-                                    },
+                                    TransportKind::Tcp => b.status.tcp.healthy == Some(true),
+                                    TransportKind::Udp => b.status.udp.healthy == Some(true),
                                 }
                         })
                         .max_by(|a, b| {
@@ -448,12 +444,8 @@ impl UplinkManager {
                     let best_is_stable = best.is_none_or(|b| {
                         let min = self.inner.probe.min_failures as u32;
                         let consecutive = match gate_transport {
-                            TransportKind::Tcp => {
-                                b.status.tcp.consecutive_successes
-                            },
-                            TransportKind::Udp => {
-                                b.status.udp.consecutive_successes
-                            },
+                            TransportKind::Tcp => b.status.tcp.consecutive_successes,
+                            TransportKind::Udp => b.status.udp.consecutive_successes,
                         };
                         consecutive >= min
                     });
@@ -491,13 +483,18 @@ impl UplinkManager {
         // penalties are ignored to preserve the intent that strict-mode
         // selection is EWMA-driven.
         if switching_from_cooldown {
-            candidates
-                .sort_by(|left, right| self.failover_order(left, right, gate_transport, now));
+            candidates.sort_by(|left, right| self.failover_order(left, right, gate_transport, now));
         }
 
         if commit_selection {
             let selected = candidates[0].index;
-            self.set_active_uplink_index_for_transport(transport, selected).await;
+            let reason = match (current_active, switching_from_cooldown) {
+                (None, _) => "initial selection",
+                (Some(_), true) => "failover: active unhealthy or in cooldown",
+                (Some(_), false) => "auto-failback to higher priority uplink",
+            };
+            self.set_active_uplink_index_for_transport(transport, selected, reason)
+                .await;
             let key = strict_route_key(transport, self.inner.load_balancing.routing_scope);
             self.store_sticky_route(&key, selected).await;
             return vec![UplinkCandidate {
@@ -563,18 +560,27 @@ impl UplinkManager {
         self.inner.sticky_routes.write().await.clear();
 
         if self.strict_global_active_uplink() {
-            self.set_active_uplink_index_for_transport(TransportKind::Tcp, index)
+            self.set_active_uplink_index_for_transport(TransportKind::Tcp, index, "manual switch")
                 .await;
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 Some(t) => {
-                    self.set_active_uplink_index_for_transport(t, index).await;
+                    self.set_active_uplink_index_for_transport(t, index, "manual switch")
+                        .await;
                 },
                 None => {
-                    self.set_active_uplink_index_for_transport(TransportKind::Tcp, index)
-                        .await;
-                    self.set_active_uplink_index_for_transport(TransportKind::Udp, index)
-                        .await;
+                    self.set_active_uplink_index_for_transport(
+                        TransportKind::Tcp,
+                        index,
+                        "manual switch",
+                    )
+                    .await;
+                    self.set_active_uplink_index_for_transport(
+                        TransportKind::Udp,
+                        index,
+                        "manual switch",
+                    )
+                    .await;
                 },
             }
         }
@@ -617,16 +623,33 @@ impl UplinkManager {
         &self,
         transport: TransportKind,
         uplink_index: usize,
+        reason: impl Into<String>,
     ) {
+        let reason = reason.into();
         if self.strict_global_active_uplink() {
-            self.inner.active_uplinks.write().await.global = Some(uplink_index);
+            let mut active = self.inner.active_uplinks.write().await;
+            let changed = active.global != Some(uplink_index);
+            active.global = Some(uplink_index);
+            if changed || active.global_reason.is_none() || reason == "manual switch" {
+                active.global_reason = Some(reason.clone());
+            }
         } else if self.strict_per_uplink_active_uplink() {
             match transport {
                 TransportKind::Tcp => {
-                    self.inner.active_uplinks.write().await.tcp = Some(uplink_index);
+                    let mut active = self.inner.active_uplinks.write().await;
+                    let changed = active.tcp != Some(uplink_index);
+                    active.tcp = Some(uplink_index);
+                    if changed || active.tcp_reason.is_none() || reason == "manual switch" {
+                        active.tcp_reason = Some(reason.clone());
+                    }
                 },
                 TransportKind::Udp => {
-                    self.inner.active_uplinks.write().await.udp = Some(uplink_index);
+                    let mut active = self.inner.active_uplinks.write().await;
+                    let changed = active.udp != Some(uplink_index);
+                    active.udp = Some(uplink_index);
+                    if changed || active.udp_reason.is_none() || reason == "manual switch" {
+                        active.udp_reason = Some(reason.clone());
+                    }
                 },
             }
         }

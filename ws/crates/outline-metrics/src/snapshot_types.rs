@@ -21,10 +21,13 @@ pub struct UplinkManagerSnapshot {
     pub routing_scope: String,
     pub auto_failback: bool,
     pub global_active_uplink: Option<String>,
+    pub global_active_reason: Option<String>,
     /// Active uplink for TCP in per_uplink routing scope.
     pub tcp_active_uplink: Option<String>,
+    pub tcp_active_reason: Option<String>,
     /// Active uplink for UDP in per_uplink routing scope.
     pub udp_active_uplink: Option<String>,
+    pub udp_active_reason: Option<String>,
     pub uplinks: Vec<UplinkSnapshot>,
     pub sticky_routes: Vec<StickyRouteSnapshot>,
 }

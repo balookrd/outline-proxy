@@ -14,8 +14,8 @@ pub use reporting::{deduplicate_attempted_uplink_names, log_uplink_summary};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{Result, bail};
-use tokio::sync::{Notify, RwLock, Semaphore, watch};
+use anyhow::{bail, Result};
+use tokio::sync::{watch, Notify, RwLock, Semaphore};
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 
@@ -44,8 +44,13 @@ impl UplinkManager {
             let already_selected = if self.strict_global_active_uplink() {
                 self.global_active_uplink_index().await.is_some()
             } else {
-                self.active_uplink_index_for_transport(TransportKind::Tcp).await.is_some()
-                    || self.active_uplink_index_for_transport(TransportKind::Udp).await.is_some()
+                self.active_uplink_index_for_transport(TransportKind::Tcp)
+                    .await
+                    .is_some()
+                    || self
+                        .active_uplink_index_for_transport(TransportKind::Udp)
+                        .await
+                        .is_some()
             };
             if !already_selected {
                 self.probe_all().await;
@@ -131,10 +136,16 @@ impl UplinkManager {
         let find = |name: Option<String>| -> Option<usize> {
             name.and_then(|n| uplinks.iter().position(|u| u.name == n))
         };
+        let initial_global = find(initial_global_active);
+        let initial_tcp = find(initial_tcp_active);
+        let initial_udp = find(initial_udp_active);
         let active_uplinks = RwLock::new(ActiveUplinks {
-            global: find(initial_global_active),
-            tcp: find(initial_tcp_active),
-            udp: find(initial_udp_active),
+            global: initial_global,
+            global_reason: initial_global.map(|_| "restored from state".to_string()),
+            tcp: initial_tcp,
+            tcp_reason: initial_tcp.map(|_| "restored from state".to_string()),
+            udp: initial_udp,
+            udp_reason: initial_udp.map(|_| "restored from state".to_string()),
         });
         Ok(Self {
             inner: Arc::new(UplinkManagerInner {

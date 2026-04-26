@@ -720,7 +720,7 @@ async fn runtime_failover_does_not_promote_global_active_when_probe_enabled() {
     // (the operator/probe own that bit), so we set it directly to mirror the
     // post-dispatch state this test cares about.
     manager
-        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0)
+        .set_active_uplink_index_for_transport(TransportKind::Tcp, 0, "test seed")
         .await;
     manager
         .confirm_runtime_failover_uplink(TransportKind::Tcp, Some(&target), 1)

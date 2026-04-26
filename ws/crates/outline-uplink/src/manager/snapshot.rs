@@ -1,7 +1,7 @@
 use tokio::time::Instant;
 
-use super::super::selection::{effective_latency, selection_score};
 use super::super::config::UplinkTransport;
+use super::super::selection::{effective_latency, selection_score};
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
@@ -15,8 +15,11 @@ impl UplinkManager {
         let statuses = self.inner.snapshot_statuses();
         let active = self.inner.active_uplinks.read().await;
         let global_active_index = active.global;
+        let global_active_reason = active.global_reason.clone();
         let tcp_active_index = active.tcp;
+        let tcp_active_reason = active.tcp_reason.clone();
         let udp_active_index = active.udp;
+        let udp_active_reason = active.udp_reason.clone();
         drop(active);
 
         let mut uplinks = Vec::with_capacity(self.inner.uplinks.len());
@@ -52,13 +55,21 @@ impl UplinkManager {
                 group: self.inner.group_name.clone(),
                 transport: uplink.transport.to_string(),
                 tcp_ws_mode: match uplink.transport {
-                    UplinkTransport::Ws => uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_ws_mode.to_string()),
-                    UplinkTransport::Vless => uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string()),
+                    UplinkTransport::Ws => {
+                        uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_ws_mode.to_string())
+                    },
+                    UplinkTransport::Vless => {
+                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string())
+                    },
                     UplinkTransport::Shadowsocks => None,
                 },
                 udp_ws_mode: match uplink.transport {
-                    UplinkTransport::Ws => uplink.udp_ws_url.as_ref().map(|_| uplink.udp_ws_mode.to_string()),
-                    UplinkTransport::Vless => uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string()),
+                    UplinkTransport::Ws => {
+                        uplink.udp_ws_url.as_ref().map(|_| uplink.udp_ws_mode.to_string())
+                    },
+                    UplinkTransport::Vless => {
+                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string())
+                    },
                     UplinkTransport::Shadowsocks => None,
                 },
                 weight: uplink.weight,
@@ -160,8 +171,11 @@ impl UplinkManager {
             routing_scope: routing_scope_name(self.inner.load_balancing.routing_scope).to_string(),
             auto_failback: self.inner.load_balancing.auto_failback,
             global_active_uplink,
+            global_active_reason,
             tcp_active_uplink,
+            tcp_active_reason,
             udp_active_uplink,
+            udp_active_reason,
             uplinks,
             sticky_routes,
         }
