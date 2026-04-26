@@ -63,11 +63,10 @@ pub(super) async fn tcp_websocket_upgrade(
         .unwrap_or_else(empty_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
-    let session = state
-        .services
+    let server = Arc::clone(&state.services.tcp_server);
+    let session = server
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
-    let server = Arc::clone(&state.services.tcp_server);
     ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -101,11 +100,10 @@ pub(super) async fn vless_websocket_upgrade(
         .unwrap_or_else(empty_vless_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
-    let session = state
-        .services
+    let server = Arc::clone(&state.services.vless_server);
+    let session = server
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
-    let server = Arc::clone(&state.services.vless_server);
     ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
@@ -191,11 +189,10 @@ pub(super) async fn udp_websocket_upgrade(
         .unwrap_or_else(empty_transport_route);
     drop(routes_snap);
     debug!(?method, ?version, path = %path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
-    let session = state
-        .services
+    let server = Arc::clone(&state.services.udp_server);
+    let session = server
         .metrics
         .open_websocket_session(Transport::Udp, protocol);
-    let server = Arc::clone(&state.services.udp_server);
     ws.on_upgrade(move |socket| async move {
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),

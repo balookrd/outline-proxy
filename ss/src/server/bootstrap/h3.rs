@@ -188,7 +188,6 @@ fn bind_h3_udp_socket(
 
 struct H3ConnectionCtx {
     routes: RoutesSnapshot,
-    services: Arc<Services>,
     auth: Arc<AuthPolicy>,
     tcp_paths: Arc<BTreeSet<String>>,
     udp_paths: Arc<BTreeSet<String>>,
@@ -283,7 +282,6 @@ pub(in crate::server) async fn serve_h3_server(
         };
         let ctx = Arc::new(H3ConnectionCtx {
             routes: Arc::clone(&routes),
-            services: Arc::clone(&services),
             auth: Arc::clone(&auth),
             tcp_paths: Arc::clone(&tcp_paths),
             udp_paths: Arc::clone(&udp_paths),
@@ -669,7 +667,7 @@ async fn handle_h3_request(
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming tcp websocket upgrade");
         let session = ctx
-            .services
+            .tcp_server
             .metrics
             .open_websocket_session(Transport::Tcp, Protocol::Http3);
         let route_ctx = WsTcpRouteCtx {
@@ -690,7 +688,7 @@ async fn handle_h3_request(
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming udp websocket upgrade");
         let session = ctx
-            .services
+            .udp_server
             .metrics
             .open_websocket_session(Transport::Udp, Protocol::Http3);
         let route_ctx = Arc::new(UdpRouteCtx {
@@ -711,7 +709,7 @@ async fn handle_h3_request(
         drop(routes_snap);
         debug!(method = "CONNECT", version = "HTTP/3", path = %ws_req.path, candidates = ?route.candidate_users, "incoming vless websocket upgrade");
         let session = ctx
-            .services
+            .vless_server
             .metrics
             .open_websocket_session(Transport::Tcp, Protocol::Http3);
         let route_ctx = VlessWsRouteCtx {

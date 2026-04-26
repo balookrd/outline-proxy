@@ -47,15 +47,12 @@ pub(super) struct UdpServices {
 }
 
 /// Process-wide services shared by every transport handler.
+///
+/// Each `*ServerCtx` already holds the shared `metrics` / `dns_cache` /
+/// `outbound_ipv6` / `prefer_ipv4_upstream` it needs, so callers reach those
+/// through the matching ctx (e.g. `services.tcp_server.metrics`) instead of
+/// keeping a second copy on `Services`.
 pub(super) struct Services {
-    pub(super) metrics: Arc<Metrics>,
-    pub(super) dns_cache: Arc<DnsCache>,
-    pub(super) prefer_ipv4_upstream: bool,
-    pub(super) outbound_ipv6: Option<Arc<OutboundIpv6>>,
-    pub(super) udp: UdpServices,
-    /// Pre-built per-process transport contexts. Each `Arc::clone` on these is
-    /// one refcount bump instead of allocating a fresh struct + cloning four
-    /// inner `Arc`s on every WebSocket upgrade.
     pub(super) tcp_server: Arc<WsTcpServerCtx>,
     pub(super) udp_server: Arc<UdpServerCtx>,
     pub(super) vless_server: Arc<VlessWsServerCtx>,
@@ -77,24 +74,19 @@ impl Services {
         });
         let udp_server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),
-            nat_table: Arc::clone(&udp.nat_table),
-            replay_store: Arc::clone(&udp.replay_store),
+            nat_table: udp.nat_table,
+            replay_store: udp.replay_store,
             dns_cache: Arc::clone(&dns_cache),
             prefer_ipv4_upstream,
-            relay_semaphore: udp.relay_semaphore.clone(),
+            relay_semaphore: udp.relay_semaphore,
         });
         let vless_server = Arc::new(VlessWsServerCtx {
-            metrics: Arc::clone(&metrics),
-            dns_cache: Arc::clone(&dns_cache),
-            prefer_ipv4_upstream,
-            outbound_ipv6: outbound_ipv6.clone(),
-        });
-        Self {
             metrics,
             dns_cache,
             prefer_ipv4_upstream,
             outbound_ipv6,
-            udp,
+        });
+        Self {
             tcp_server,
             udp_server,
             vless_server,
