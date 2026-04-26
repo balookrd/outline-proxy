@@ -184,6 +184,7 @@ fn load_balancing_config_from_group(section: &UplinkGroupSection) -> Result<outl
         failure_penalty_halflife_secs: section.failure_penalty_halflife_secs,
         h3_downgrade_secs: section.h3_downgrade_secs,
         udp_ws_keepalive_secs: section.udp_ws_keepalive_secs,
+        tcp_ws_keepalive_secs: section.tcp_ws_keepalive_secs,
         tcp_ws_standby_keepalive_secs: section.tcp_ws_standby_keepalive_secs,
         tcp_active_keepalive_secs: section.tcp_active_keepalive_secs,
         auto_failback: section.auto_failback,

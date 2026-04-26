@@ -215,6 +215,7 @@ pub(super) struct UplinkGroupSection {
     #[serde(alias = "mode_downgrade_secs")]
     pub(super) h3_downgrade_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
+    pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,
@@ -308,6 +309,7 @@ pub(super) struct LoadBalancingSection {
     #[serde(alias = "mode_downgrade_secs")]
     pub(super) h3_downgrade_secs: Option<u64>,
     pub(super) udp_ws_keepalive_secs: Option<u64>,
+    pub(super) tcp_ws_keepalive_secs: Option<u64>,
     pub(super) tcp_ws_standby_keepalive_secs: Option<u64>,
     pub(super) tcp_active_keepalive_secs: Option<u64>,
     pub(super) auto_failback: Option<bool>,

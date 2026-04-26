@@ -41,6 +41,13 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
             .and_then(|l| l.udp_ws_keepalive_secs)
             .map(Duration::from_secs)
             .or(Some(Duration::from_secs(60))),
+        // Default: 60 s — WS Ping on idle VLESS-over-WS TCP sessions to keep
+        // NAT/middleboxes warm.  SS-over-WS does not use this (mid-session
+        // Pings break upstream SS framing); set to 0 to disable for VLESS too.
+        tcp_ws_keepalive_interval: {
+            let secs = lb.and_then(|l| l.tcp_ws_keepalive_secs).unwrap_or(60);
+            if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
+        },
         // Default: 20 s — sends a WebSocket Ping on each idle warm-standby TCP
         // socket to keep connections alive through NAT/firewall idle-timeout
         // windows.  outline-ss-server handles WS Ping/Pong correctly.

@@ -222,6 +222,12 @@ pub struct LoadBalancingConfig {
     /// Interval at which WS ping frames are sent on idle UDP data-path connections
     /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
     pub udp_ws_keepalive_interval: Option<Duration>,
+    /// Interval at which WS ping frames are sent on idle TCP data-path connections.
+    /// Currently wired only for VLESS-over-WS — Shadowsocks-over-WS upstreams
+    /// reject mid-session WS Pings (they corrupt the SS framing state), so SS
+    /// uses application-level `tcp_active_keepalive_interval` instead. None
+    /// disables the WS-level keepalive on the active VLESS TCP session.
+    pub tcp_ws_keepalive_interval: Option<Duration>,
     /// How often to ping warm-standby TCP pool connections to keep them alive through
     /// NAT/firewall idle timeouts. Runs in addition to the 15-second validation cycle.
     /// None disables the extra keepalive loop (validation every 15 s still runs).

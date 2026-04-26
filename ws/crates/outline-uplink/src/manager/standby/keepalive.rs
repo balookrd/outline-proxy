@@ -27,7 +27,7 @@ impl<'a> StandbyCtx<'a> {
         if self.desired == 0 {
             return;
         }
-        if self.uplink.transport != UplinkTransport::Ws {
+        if !matches!(self.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return;
         }
 
