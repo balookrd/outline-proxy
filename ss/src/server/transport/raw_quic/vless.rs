@@ -6,17 +6,14 @@
 //! Phase 2 (UDP via QUIC datagrams; MUX is intentionally not supported on raw
 //! QUIC since QUIC streams *are* the multiplex).
 
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::{AtomicU32, Ordering},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicU32, Ordering},
 };
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{BufMut, BytesMut};
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UdpSocket,
@@ -42,7 +39,7 @@ use super::super::super::{
 /// upstream socket.
 pub(in crate::server) struct VlessQuicConn {
     next_session: AtomicU32,
-    sessions: RwLock<HashMap<u32, Arc<VlessUdpSession>>>,
+    sessions: DashMap<u32, Arc<VlessUdpSession>>,
     /// Connection-level oversize-record stream, lazy-installed when
     /// either the client opens it (peer accept_bi path) or the server
     /// itself needs to send an oversized response (server-initiated
@@ -61,7 +58,7 @@ impl VlessQuicConn {
     pub(in crate::server) fn new() -> Self {
         Self {
             next_session: AtomicU32::new(1),
-            sessions: RwLock::new(HashMap::new()),
+            sessions: DashMap::new(),
             oversize_slot: super::OversizeStreamSlot::new(),
         }
     }
@@ -71,15 +68,15 @@ impl VlessQuicConn {
     }
 
     fn register(&self, id: u32, session: Arc<VlessUdpSession>) {
-        self.sessions.write().insert(id, session);
+        self.sessions.insert(id, session);
     }
 
     fn unregister(&self, id: u32) {
-        self.sessions.write().remove(&id);
+        self.sessions.remove(&id);
     }
 
     fn lookup(&self, id: u32) -> Option<Arc<VlessUdpSession>> {
-        self.sessions.read().get(&id).cloned()
+        self.sessions.get(&id).map(|entry| Arc::clone(entry.value()))
     }
 }
 
