@@ -661,6 +661,8 @@ async fn handle_h3_request(
     // intended registry.
     let resume = if ctx.tcp_paths.contains(ws_req.path.as_str()) {
         ResumeContext::from_request_headers(request.headers(), &ctx.tcp_server.orphan_registry)
+    } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
+        ResumeContext::from_request_headers(request.headers(), &ctx.udp_server.orphan_registry)
     } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
         ResumeContext::from_request_headers(request.headers(), &ctx.vless_server.orphan_registry)
     } else {
@@ -718,7 +720,8 @@ async fn handle_h3_request(
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
         });
-        let result = handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx).await;
+        let result =
+            handle_udp_h3_connection(socket, Arc::clone(&ctx.udp_server), route_ctx, resume).await;
         finish_ws_session(session, result, "udp");
     } else if ctx.vless_paths.contains(ws_req.path.as_str()) {
         let routes_snap = ctx.routes.load();

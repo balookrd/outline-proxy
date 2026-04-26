@@ -208,6 +208,7 @@ pub(super) async fn udp_websocket_upgrade(
     OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
+    headers: HeaderMap,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
@@ -228,16 +229,26 @@ pub(super) async fn udp_websocket_upgrade(
     let session = server
         .metrics
         .open_websocket_session(Transport::Udp, protocol);
-    ws.on_upgrade(move |socket| async move {
+    let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let issued_for_response = resume.issued_session_id;
+    let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
         });
-        let result = udp::handle_udp_connection(socket, server, route_ctx).await;
+        let result = udp::handle_udp_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "udp");
-    })
+    });
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response
+            .headers_mut()
+            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+    }
+    response
 }
 
 pub(super) fn finish_ws_session(

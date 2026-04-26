@@ -94,6 +94,7 @@ impl Services {
             dns_cache: Arc::clone(&dns_cache),
             prefer_ipv4_upstream,
             relay_semaphore: udp.relay_semaphore,
+            orphan_registry: Arc::clone(&orphan_registry),
         });
         let vless_server = Arc::new(VlessWsServerCtx {
             metrics,

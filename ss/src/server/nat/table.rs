@@ -114,6 +114,17 @@ impl NatTable {
         })
     }
 
+    /// Returns the existing NAT entry for `key` if one is registered;
+    /// `None` otherwise. Unlike [`Self::get_or_create`] this never
+    /// allocates a fresh socket, so it is the right primitive for the
+    /// SS-UDP-over-WS resume / park paths that only want to inspect
+    /// already-live state.
+    pub(crate) fn try_get(&self, key: &NatKey) -> Option<Arc<NatEntry>> {
+        self.entries
+            .get(key)
+            .and_then(|cell| cell.get().cloned())
+    }
+
     /// Returns the existing NAT entry for `key`, or creates a new one: binds a
     /// UDP socket, applies `fwmark` if set, and starts a background reader task
     /// that delivers upstream responses to the registered client session.
