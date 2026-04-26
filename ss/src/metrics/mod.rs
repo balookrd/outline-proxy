@@ -4,10 +4,12 @@ mod process_memory;
 mod registry;
 mod render;
 mod sampler;
+mod user_counters;
 
 pub use guards::{TcpUpstreamGuard, WebSocketSessionGuard};
 pub use labels::{DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
+pub use user_counters::PerUserCounters;
 
 use std::{
     sync::{
@@ -32,6 +34,7 @@ pub struct Metrics {
     pub(super) client_active_ttl_secs: u64,
     pub(super) process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
     pub(super) client_last_seen: DashMap<Arc<str>, AtomicI64>,
+    pub(super) user_counters_cache: DashMap<Arc<str>, Arc<PerUserCounters>>,
     pub(super) recorder: PrometheusRecorder,
     pub(super) handle: PrometheusHandle,
 }
@@ -48,6 +51,7 @@ impl Metrics {
             client_active_ttl_secs: config.tuning.client_active_ttl_secs,
             process_memory_snapshot: RwLock::new(process_memory::sample()),
             client_last_seen: DashMap::new(),
+            user_counters_cache: DashMap::new(),
             recorder,
             handle,
         });
@@ -230,6 +234,21 @@ impl Metrics {
         });
     }
 
+    /// Returns pre-resolved per-user counter handles, creating them on first
+    /// access.  Use this to avoid `counter!()` lookups and `Arc::clone(&user)`
+    /// in hot relay loops — resolve once per session, then call
+    /// `.tcp_out(protocol).increment(n)` in the loop.
+    pub fn user_counters(&self, user: &Arc<str>) -> Arc<PerUserCounters> {
+        if let Some(existing) = self.user_counters_cache.get(user) {
+            return Arc::clone(existing.value());
+        }
+        let counters = self
+            .user_counters_cache
+            .entry(Arc::clone(user))
+            .or_insert_with(|| Arc::new(PerUserCounters::new(&self.recorder, Arc::clone(user))));
+        Arc::clone(counters.value())
+    }
+
     pub fn record_tcp_payload_bytes(
         &self,
         user: impl Into<Arc<str>>,
@@ -409,6 +428,8 @@ fn bool_label(value: bool) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::config::Config;
 
     use super::{DisconnectReason, Metrics, Protocol, Transport};
@@ -495,5 +516,32 @@ mod tests {
         assert!(rendered.contains("outline_ss_process_virtual_top_mapping_size_bytes"));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_virtual_top_mapping_gap_bytes"));
+    }
+
+    #[test]
+    fn user_counters_cache_returns_same_handles() {
+        let metrics = Metrics::new(&test_config());
+        let user: Arc<str> = Arc::from("default");
+        let first = metrics.user_counters(&user);
+        let second = metrics.user_counters(&user);
+        assert!(Arc::ptr_eq(&first, &second), "cache must return the same Arc");
+    }
+
+    #[test]
+    fn user_counters_increments_visible_in_render() {
+        let metrics = Metrics::new(&test_config());
+        let user: Arc<str> = Arc::from("alice");
+        metrics.record_client_session(Arc::clone(&user), Protocol::Http3, Transport::Tcp);
+        let counters = metrics.user_counters(&user);
+        counters.tcp_in(Protocol::Http3).increment(100);
+        counters.tcp_out(Protocol::Http3).increment(250);
+
+        let rendered = metrics.render_prometheus();
+        assert!(rendered.contains(
+            "outline_ss_tcp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"client_to_target\"} 100"
+        ));
+        assert!(rendered.contains(
+            "outline_ss_tcp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"target_to_client\"} 250"
+        ));
     }
 }

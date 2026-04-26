@@ -27,6 +27,7 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
                 gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(1.0);
             } else {
                 metrics.client_last_seen.remove(user);
+                metrics.user_counters_cache.remove(user);
             }
         }
     });

@@ -46,6 +46,8 @@ where
     R: AsyncRead + Unpin,
     S: UpstreamSink,
 {
+    let user_counters = metrics.user_counters(&user_id);
+    let target_to_client = user_counters.tcp_out(protocol);
     let mut buffer = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
@@ -67,7 +69,7 @@ where
             sink.on_first_payload(read);
         }
 
-        metrics.record_tcp_payload_bytes(Arc::clone(&user_id), protocol, "target_to_client", read);
+        target_to_client.increment(read as u64);
         encryptor.encrypt_chunk(&buffer, &mut out_buf)?;
         let ciphertext = out_buf.split().freeze();
         sink.on_chunk_encrypted(read, ciphertext.len());
@@ -96,13 +98,10 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let user_counters = metrics.user_counters(&user_id);
+    let client_to_target = user_counters.tcp_in(protocol);
     if !initial_payload.is_empty() {
-        metrics.record_tcp_payload_bytes(
-            Arc::clone(&user_id),
-            protocol,
-            "client_to_target",
-            initial_payload.len(),
-        );
+        client_to_target.increment(initial_payload.len() as u64);
         upstream_writer
             .write_all(&initial_payload)
             .await
@@ -125,12 +124,7 @@ where
             Err(error) => return Err(anyhow!(error)),
         }
         if !plaintext.is_empty() {
-            metrics.record_tcp_payload_bytes(
-                Arc::clone(&user_id),
-                protocol,
-                "client_to_target",
-                plaintext.len(),
-            );
+            client_to_target.increment(plaintext.len() as u64);
             upstream_writer
                 .write_all(&plaintext)
                 .await
