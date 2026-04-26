@@ -18,7 +18,8 @@ mod session_id;
 pub(super) use config::ResumptionConfig;
 #[allow(unused_imports)]
 pub(super) use parked::{
-    Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedTcp, ParkedVlessMux, TcpProtocolContext,
+    Parked, ParkedMuxSubConn, ParkedMuxSubKind, ParkedTcp, ParkedVlessMux, ParkedVlessUdpSingle,
+    TcpProtocolContext,
 };
 #[allow(unused_imports)]
 pub(super) use registry::{OrphanRegistry, ResumeMiss, ResumeOutcome};

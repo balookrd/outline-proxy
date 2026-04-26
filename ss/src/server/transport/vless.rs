@@ -26,7 +26,10 @@ use super::{
             WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
         },
         dns_cache::DnsCache,
-        resumption::{OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
+        resumption::{
+            OrphanRegistry, Parked, ParkedTcp, ParkedVlessUdpSingle, ResumeOutcome, SessionId,
+            TcpProtocolContext,
+        },
         scratch::TcpRelayBuf,
     },
     sink,
@@ -37,17 +40,22 @@ use super::{
     ws_writer,
 };
 
-/// Outcome of [`relay_vless_upstream_to_client`]. Mirrors the SS-WS path's
-/// `UpstreamRelayOutcome` but typed for the VLESS relay's reader. Made
-/// `pub(super)` so the UDP and Mux helper modules can construct the
-/// `Closed` variant when wrapping their own relay task return values
-/// into the unified [`VlessRelayTaskOutput`] type.
+/// Outcome of [`relay_vless_upstream_to_client`] (TCP) and the
+/// `vless_udp` / `vless_mux` helpers. Made `pub(super)` so the UDP
+/// and Mux modules can construct the cancel variants when wrapping
+/// their own relay task return values into [`VlessRelayTaskOutput`].
 pub(super) enum VlessRelayOutcome {
     /// Upstream EOF or sink error; reader is consumed.
     Closed,
-    /// Caller fired the cancel notify; reader is returned for hand-off
-    /// into the orphan registry.
+    /// TCP cancel: the caller fired the notify; the harvested
+    /// `OwnedReadHalf` is returned for hand-off into the orphan
+    /// registry.
     Cancelled(tokio::net::tcp::OwnedReadHalf),
+    /// UDP cancel: nothing to harvest because the `Arc<UdpSocket>`
+    /// already lives in `UpstreamSession::Udp`. The variant exists so
+    /// the park path can tell "we asked it to stop" from "the upstream
+    /// EOF'd on its own".
+    UdpCancelled,
 }
 
 const MAX_VLESS_HEADER_BUFFER: usize = 512;
@@ -119,20 +127,20 @@ pub(super) struct VlessRelayState {
     pub(super) user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
     pub(super) udp_client_buffer: BytesMut,
-    /// Notify used to ask the spawned relay task (TCP path only) to stop
-    /// and return its reader half on park-on-drop. `None` for the UDP
-    /// and Mux paths, which take the legacy abort-on-drop teardown.
-    relay_cancel: Option<Arc<Notify>>,
-    /// Human-readable target host:port of the active TCP upstream. Only
-    /// populated on the TCP path; used for logging and to populate the
-    /// `ParkedTcp::target_display` field on park.
-    upstream_target_display: Option<Arc<str>>,
+    /// Notify used to ask the spawned relay task (TCP / UDP single
+    /// path) to stop and (for TCP) hand over its read half on
+    /// park-on-drop. `None` for the Mux path, which uses per-sub-conn
+    /// notifies threaded through `MuxState`.
+    pub(super) relay_cancel: Option<Arc<Notify>>,
+    /// Human-readable target host:port of the active upstream. Used
+    /// for logging and to populate `target_display` fields on park.
+    pub(super) upstream_target_display: Option<Arc<str>>,
     /// Session ID we minted at WS-Upgrade time and surfaced via
     /// `X-Outline-Session`. Used as the registry key on park.
-    issued_session_id: Option<SessionId>,
+    pub(super) issued_session_id: Option<SessionId>,
     /// Session ID the client offered for resumption. Consumed (`take()`)
-    /// on the first authenticated VLESS-TCP frame.
-    pending_resume_request: Option<SessionId>,
+    /// on the first authenticated VLESS-TCP / VLESS-UDP / VLESS-MUX frame.
+    pub(super) pending_resume_request: Option<SessionId>,
 }
 
 pub(super) struct VlessWsOutbound<'a, Msg> {
@@ -345,9 +353,99 @@ async fn try_park_vless_on_drop(
     };
     match state.upstream {
         UpstreamSession::Tcp(_) => try_park_vless_tcp(state, server, route, session_id).await,
+        UpstreamSession::Udp(_) => try_park_vless_udp_single(state, server, route, session_id).await,
         UpstreamSession::Mux(_) => try_park_vless_mux(state, server, route, session_id).await,
-        UpstreamSession::Udp(_) | UpstreamSession::None => false,
+        UpstreamSession::None => false,
     }
+}
+
+/// Atomic park of a single-target VLESS-UDP-over-WS session. Consumes
+/// the `Arc<UdpSocket>` from `state.upstream` and inserts a
+/// [`Parked::VlessUdpSingle`] entry. The reader task is asked to stop
+/// via `cancel.notify_one()` (it acknowledges with
+/// [`VlessRelayOutcome::UdpCancelled`]); the socket itself rides into
+/// the registry untouched.
+async fn try_park_vless_udp_single(
+    state: &mut VlessRelayState,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+    session_id: SessionId,
+) -> bool {
+    let socket = match std::mem::replace(&mut state.upstream, UpstreamSession::None) {
+        UpstreamSession::Udp(socket) => socket,
+        other => {
+            // Shouldn't happen given the caller's match.
+            state.upstream = other;
+            return false;
+        },
+    };
+    let Some(cancel) = state.relay_cancel.take() else {
+        return false;
+    };
+    let Some(task) = state.upstream_to_client.take() else {
+        return false;
+    };
+    cancel.notify_one();
+    match task.into_inner().await {
+        Ok(Ok(VlessRelayOutcome::UdpCancelled)) => {},
+        Ok(Ok(VlessRelayOutcome::Closed)) => return false,
+        Ok(Ok(VlessRelayOutcome::Cancelled(_))) => {
+            // Reserved for the TCP harvest path; should never fire here.
+            return false;
+        },
+        Ok(Err(error)) => {
+            debug!(?error, "vless udp relay task errored before park; not parking");
+            return false;
+        },
+        Err(join_error) => {
+            warn!(?join_error, "vless udp relay task panicked during harvest");
+            return false;
+        },
+    }
+    let user = match state.authenticated_user.take() {
+        Some(user) => user,
+        None => return false,
+    };
+    let user_counters = match state.user_counters.take() {
+        Some(c) => c,
+        None => return false,
+    };
+    let target_display = state
+        .upstream_target_display
+        .take()
+        .unwrap_or_else(|| Arc::from("?"));
+    // Drain the partial-frame buffer into the parked entry; replace
+    // with an empty buffer so the relay state stays consistent for the
+    // (unused) post-park bookkeeping.
+    let udp_client_buffer = std::mem::take(&mut state.udp_client_buffer);
+    let owner = user.label_arc();
+    // We don't have a `TargetAddr` to hand back — `request.target` was
+    // consumed in `establish_vless_udp_upstream`. Reconstruct from the
+    // socket's connected peer for a faithful `target` field.
+    let target = match socket.peer_addr() {
+        Ok(addr) => crate::protocol::TargetAddr::Socket(addr),
+        Err(_) => crate::protocol::TargetAddr::Domain(target_display.to_string(), 0),
+    };
+    let parked = ParkedVlessUdpSingle {
+        socket: Arc::clone(&socket),
+        target,
+        target_display,
+        protocol: route.protocol,
+        owner: Arc::clone(&owner),
+        user: user.clone(),
+        user_counters,
+        udp_client_buffer,
+    };
+    debug!(
+        user = %owner,
+        path = %route.path,
+        "parking vless udp single upstream into orphan registry",
+    );
+    server
+        .orphan_registry
+        .park(session_id, Parked::VlessUdpSingle(parked));
+    state.authenticated_user = Some(user);
+    true
 }
 
 async fn try_park_vless_tcp(
@@ -366,6 +464,12 @@ async fn try_park_vless_tcp(
     let reader = match task.into_inner().await {
         Ok(Ok(VlessRelayOutcome::Cancelled(reader))) => reader,
         Ok(Ok(VlessRelayOutcome::Closed)) => return false,
+        Ok(Ok(VlessRelayOutcome::UdpCancelled)) => {
+            // Should never fire on the TCP harvest path — the UDP
+            // variant is reserved for `try_park_vless_udp_single`.
+            // Treat as "not parking" to be safe.
+            return false;
+        },
         Ok(Err(error)) => {
             debug!(?error, "vless relay task errored before park; not parking");
             return false;
@@ -691,14 +795,16 @@ where
                 }
                 return Ok(());
             },
-            Parked::Tcp(_) => {
+            other => {
                 warn!(
                     user = user.label(),
                     path = %route.path,
-                    "rejecting vless mux resume: parked entry is single-target VLESS-TCP, not mux"
+                    parked_kind = other.kind(),
+                    "rejecting vless mux resume: parked entry is not a mux"
                 );
                 return Err(VlessFrameError::Fatal(anyhow!(
-                    "cross-shape resume rejected: parked session is not a mux"
+                    "cross-shape resume rejected: parked session kind is {}, not mux",
+                    other.kind(),
                 )));
             },
         }
