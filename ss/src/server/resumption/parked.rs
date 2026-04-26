@@ -1,12 +1,16 @@
 //! Parked upstream state that is reattached to a resuming client stream.
 //!
-//! Two variants are implemented today:
+//! Three variants are implemented today:
 //! - `Tcp` — single-target SS-over-WS or single-target VLESS-over-WS.
+//! - `VlessUdpSingle` — single-target VLESS-UDP-over-WS, where one
+//!   `UdpSocket` is pinned to one upstream target for the lifetime of
+//!   the WS stream.
 //! - `VlessMux` — atomic park of an entire VLESS mux session, including
 //!   every TCP and UDP sub-connection multiplexed inside it.
 //!
-//! UDP-only single-target and raw-QUIC variants are out of scope for
-//! the current revision but slot into the same enum.
+//! Direct SS-UDP and SS-over-raw-QUIC are non-goals per the spec; the
+//! SS-UDP-over-WS variant requires NAT-table API changes and is left
+//! for a follow-up revision.
 
 use std::{
     collections::HashMap,
@@ -23,12 +27,13 @@ use tokio::net::{
 use crate::{
     crypto::UserKey,
     metrics::{PerUserCounters, Protocol, TcpUpstreamGuard},
-    protocol::vless::VlessUser,
+    protocol::{TargetAddr, vless::VlessUser},
 };
 
 /// Variant-erased payload of a parked session entry.
 pub(crate) enum Parked {
     Tcp(ParkedTcp),
+    VlessUdpSingle(ParkedVlessUdpSingle),
     VlessMux(ParkedVlessMux),
 }
 
@@ -37,6 +42,7 @@ impl Parked {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Tcp(_) => "tcp",
+            Self::VlessUdpSingle(_) => "vless_udp_single",
             Self::VlessMux(_) => "vless_mux",
         }
     }
@@ -44,7 +50,7 @@ impl Parked {
     /// All kind labels the registry can produce. Used by the sweeper to
     /// refresh per-kind gauges after evictions.
     pub(crate) fn all_kinds() -> &'static [&'static str] {
-        &["tcp", "vless_mux"]
+        &["tcp", "vless_udp_single", "vless_mux"]
     }
 }
 
@@ -149,4 +155,41 @@ pub(crate) enum ParkedMuxSubKind {
         socket: Arc<UdpSocket>,
         default_target: SocketAddr,
     },
+}
+
+/// Single-target VLESS UDP session over WebSocket. The whole upstream
+/// is one connected `UdpSocket` plus the partial 2-byte-length-prefixed
+/// frame buffer that was being decoded when the WS stream dropped.
+///
+/// No back-buffer for upstream-bound packets is kept while parked:
+/// the kernel UDP receive buffer fills, and overflow packets drop
+/// silently. UDP is loss-tolerant by design; a future revision can
+/// add an in-process ring buffer per the spec's
+/// `udp_orphan_backbuf_bytes` knob.
+pub(crate) struct ParkedVlessUdpSingle {
+    pub(crate) socket: Arc<UdpSocket>,
+    /// Target the socket is `connect()`ed to. Stored as the original
+    /// `TargetAddr` (host:port, possibly a domain) so the logging at
+    /// resume time still shows the human form.
+    #[allow(dead_code)]
+    pub(crate) target: TargetAddr,
+    /// Display string for the target — cheaper than re-formatting.
+    pub(crate) target_display: Arc<str>,
+    /// Protocol (HTTP/1, HTTP/2, HTTP/3) of the original session;
+    /// informational only.
+    #[allow(dead_code)]
+    pub(crate) protocol: Protocol,
+    pub(crate) owner: Arc<str>,
+    /// VLESS user identity. Unlike the SS-TCP path we do not need a
+    /// full `crypto::UserKey` here — VLESS doesn't encrypt the relay
+    /// payload — but keeping the original `VlessUser` lets the resume
+    /// path log/account against the same identity without re-running
+    /// UUID match against the route.
+    pub(crate) user: VlessUser,
+    pub(crate) user_counters: Arc<PerUserCounters>,
+    /// Partially-decoded inbound 2-byte-length-prefixed buffer. Carrying
+    /// it across the park preserves any half-frame the client already
+    /// pushed before disconnect; without this the resume would have to
+    /// re-buffer it from scratch on the new stream.
+    pub(crate) udp_client_buffer: BytesMut,
 }

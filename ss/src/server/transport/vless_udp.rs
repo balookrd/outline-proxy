@@ -2,7 +2,10 @@ use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{BufMut, Bytes, BytesMut};
-use tokio::{net::UdpSocket, sync::mpsc};
+use tokio::{
+    net::UdpSocket,
+    sync::{Notify, mpsc},
+};
 use tracing::{info, warn};
 
 use crate::{
@@ -14,12 +17,16 @@ use crate::{
 
 use super::{
     super::{
-        abort::AbortOnDrop, connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE,
-        nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
+        abort::AbortOnDrop,
+        connect::resolve_udp_target,
+        constants::MAX_UDP_PAYLOAD_SIZE,
+        nat::bind_nat_udp_socket,
+        resumption::{Parked, ParkedVlessUdpSingle, ResumeOutcome},
+        scratch::UdpRecvBuf,
     },
     vless::{
-        UpstreamSession, VlessFrameError, VlessRelayState, VlessWsOutbound, VlessWsRouteCtx,
-        VlessWsServerCtx,
+        UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState, VlessWsOutbound,
+        VlessWsRouteCtx, VlessWsServerCtx,
     },
 };
 
@@ -38,6 +45,97 @@ where
 {
     let target = request.target.clone();
     let target_display = target.display_host_port();
+
+    // Resume attempt: re-attach a parked single-target VLESS-UDP
+    // session before doing any DNS / bind work. The target sent in
+    // this VLESS request is intentionally ignored on a hit — by spec
+    // the parked target is authoritative.
+    let user_id_for_resume = user.label_arc();
+    if let Some(resume_id) = state.pending_resume_request.take()
+        && let ResumeOutcome::Hit(parked_kind) =
+            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+    {
+        match parked_kind {
+            Parked::VlessUdpSingle(parked) => {
+                info!(
+                    user = user.label(),
+                    path = %route.path,
+                    target = %parked.target_display,
+                    "vless udp single upstream resumed from orphan registry"
+                );
+                outbound
+                    .data_tx
+                    .send((outbound.make_binary)(Bytes::from_static(&[
+                        vless::VERSION,
+                        0x00,
+                    ])))
+                    .await
+                    .map_err(|error| {
+                        anyhow!("failed to queue vless udp response header on resume: {error}")
+                    })?;
+
+                let socket = Arc::clone(&parked.socket);
+                let tx = outbound.data_tx.clone();
+                let metrics = Arc::clone(&server.metrics);
+                let user_id = parked.user.label_arc();
+                let protocol = route.protocol;
+                let cancel = Arc::new(Notify::new());
+                let cancel_for_task = Arc::clone(&cancel);
+                state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+                    relay_vless_udp_upstream_to_client(
+                        socket,
+                        tx,
+                        outbound.make_binary,
+                        outbound.make_close,
+                        metrics,
+                        protocol,
+                        user_id,
+                        Some(cancel_for_task),
+                    )
+                    .await
+                })));
+                state.relay_cancel = Some(cancel);
+                state.user_counters = Some(parked.user_counters);
+                state.upstream_target_display = Some(parked.target_display);
+                state.udp_client_buffer = parked.udp_client_buffer;
+                state.authenticated_user = Some(parked.user);
+                state.upstream = UpstreamSession::Udp(parked.socket);
+
+                // Forward any payload that piggy-backed on the resume
+                // request frame.
+                let leftover = state.header_buffer.split_off(request.consumed);
+                state.header_buffer.clear();
+                if !leftover.is_empty()
+                    && let UpstreamSession::Udp(socket) = &state.upstream
+                {
+                    let leftover_bytes = Bytes::from(leftover);
+                    forward_vless_udp_client_frames(
+                        &mut state.udp_client_buffer,
+                        &leftover_bytes,
+                        socket.as_ref(),
+                        state.user_counters.as_deref(),
+                        route.protocol,
+                        &route.path,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            },
+            other => {
+                warn!(
+                    user = user.label(),
+                    path = %route.path,
+                    parked_kind = other.kind(),
+                    "rejecting vless udp resume: parked entry is not single-target VLESS-UDP"
+                );
+                return Err(VlessFrameError::Fatal(anyhow!(
+                    "cross-shape resume rejected: parked session kind is {}, not vless_udp_single",
+                    other.kind(),
+                )));
+            },
+        }
+    }
+
     info!(user = user.label(), path = %route.path, target = %target_display, "vless udp target");
 
     let resolved = match resolve_udp_target(
@@ -93,10 +191,11 @@ where
     let user_id = user.label_arc();
     let protocol = route.protocol;
     let reader_socket = Arc::clone(&socket);
-    // The relay-task return type is unified across the VLESS variants
-    // (TCP, UDP, Mux) as `VlessRelayTaskOutput`. UDP never resumes, so
-    // the inner future's `Result<()>` is wrapped into the `Closed`
-    // outcome — the natural reading is "no harvested reader to hand off".
+    // Cancel-notify is registered unconditionally so park-on-drop can
+    // ask the reader to stop and (for UDP) signal `UdpCancelled`. When
+    // resumption is disabled the notify is simply never fired.
+    let cancel = Arc::new(Notify::new());
+    let cancel_for_task = Arc::clone(&cancel);
     state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
@@ -106,10 +205,12 @@ where
             metrics,
             protocol,
             user_id,
+            Some(cancel_for_task),
         )
         .await
-        .map(|()| super::vless::VlessRelayOutcome::Closed)
     })));
+    state.relay_cancel = Some(cancel);
+    state.upstream_target_display = Some(Arc::from(target_display.as_str()));
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Udp(Arc::clone(&socket));
@@ -202,7 +303,8 @@ async fn relay_vless_udp_upstream_to_client<Msg>(
     metrics: Arc<Metrics>,
     protocol: Protocol,
     user_id: Arc<str>,
-) -> Result<()>
+    cancel: Option<Arc<Notify>>,
+) -> Result<VlessRelayOutcome>
 where
     Msg: Send + 'static,
 {
@@ -210,22 +312,40 @@ where
     let target_to_client = user_counters.udp_out(protocol);
     let mut buffer = UdpRecvBuf::take();
     loop {
-        let read = match socket.recv(&mut buffer).await {
-            Ok(n) => n,
-            Err(error) => {
-                let _ = tx.send(make_close()).await;
-                return Err(error).context("failed to read from vless udp upstream");
-            },
+        let cancelled = async {
+            match cancel.as_deref() {
+                Some(notify) => notify.notified().await,
+                None => std::future::pending::<()>().await,
+            }
         };
-        if read == 0 {
-            continue;
+        tokio::select! {
+            biased;
+            _ = cancelled => {
+                // Park: the `Arc<UdpSocket>` already lives in
+                // `UpstreamSession::Udp` so the caller can move it into
+                // the orphan registry. We do not push a Close frame —
+                // a resume would race against it.
+                return Ok(VlessRelayOutcome::UdpCancelled);
+            }
+            recv_result = socket.recv(&mut buffer) => {
+                let read = match recv_result {
+                    Ok(n) => n,
+                    Err(error) => {
+                        let _ = tx.send(make_close()).await;
+                        return Err(error).context("failed to read from vless udp upstream");
+                    },
+                };
+                if read == 0 {
+                    continue;
+                }
+                target_to_client.increment(read as u64);
+                let mut framed = BytesMut::with_capacity(2 + read);
+                framed.put_u16(read as u16);
+                framed.extend_from_slice(&buffer[..read]);
+                tx.send(make_binary(framed.freeze())).await.map_err(|error| {
+                    anyhow!("failed to queue vless udp websocket frame: {error}")
+                })?;
+            }
         }
-        target_to_client.increment(read as u64);
-        let mut framed = BytesMut::with_capacity(2 + read);
-        framed.put_u16(read as u16);
-        framed.extend_from_slice(&buffer[..read]);
-        tx.send(make_binary(framed.freeze()))
-            .await
-            .map_err(|error| anyhow!("failed to queue vless udp websocket frame: {error}"))?;
     }
 }
