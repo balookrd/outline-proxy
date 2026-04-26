@@ -1270,6 +1270,7 @@ dependencies = [
  "md-5",
  "metrics",
  "metrics-exporter-prometheus",
+ "metrics-util",
  "mimalloc",
  "parking_lot",
  "proptest",

@@ -1,14 +1,17 @@
+use std::time::Duration;
+
 use metrics::{describe_counter, describe_gauge, describe_histogram};
 use metrics_exporter_prometheus::{
     Matcher, PrometheusBuilder, PrometheusHandle, PrometheusRecorder,
 };
+use metrics_util::MetricKindMask;
 
 const TCP_CONNECT_BUCKETS: &[f64] =
     &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
 
-pub(super) fn build_recorder() -> (PrometheusRecorder, PrometheusHandle) {
+pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, PrometheusHandle) {
     let recorder = PrometheusBuilder::new()
         .set_buckets_for_metric(
             Matcher::Full("outline_ss_tcp_upstream_connect_duration_seconds".into()),
@@ -25,6 +28,7 @@ pub(super) fn build_recorder() -> (PrometheusRecorder, PrometheusHandle) {
             WS_SESSION_BUCKETS,
         )
         .expect("invalid WebSocket session bucket config")
+        .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
         .build_recorder();
     let handle = recorder.handle();
     (recorder, handle)
