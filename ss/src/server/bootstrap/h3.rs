@@ -40,7 +40,8 @@ use super::super::{
         WsTcpServerCtx, classify_accept_bi, finish_ws_session, handle_raw_ss_quic_stream,
         handle_raw_vless_quic_stream, handle_raw_vless_quic_stream_with_prefix,
         handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
-        is_normal_h3_shutdown, serve_raw_vless_oversize_records, serve_raw_vless_quic_datagrams,
+        is_handshake_rejected, is_normal_h3_shutdown, serve_raw_vless_oversize_records,
+        serve_raw_vless_quic_datagrams,
     },
 };
 use super::tls::load_h3_tls_config;
@@ -421,7 +422,11 @@ async fn handle_raw_vless_connection(
                         .await
                         && !is_normal_h3_shutdown(&error)
                     {
-                        warn!(?error, "vless raw-quic stream terminated with error");
+                        if is_handshake_rejected(&error) {
+                            debug!(?error, "vless raw-quic handshake rejected (probe-sinked)");
+                        } else {
+                            warn!(?error, "vless raw-quic stream terminated with error");
+                        }
                     }
                 });
             }
@@ -521,7 +526,11 @@ async fn handle_raw_ss_connection(
                         .await
                         && !is_normal_h3_shutdown(&error)
                     {
-                        warn!(?error, "ss raw-quic stream terminated with error");
+                        if is_handshake_rejected(&error) {
+                            debug!(?error, "ss raw-quic handshake rejected (probe-sinked)");
+                        } else {
+                            warn!(?error, "ss raw-quic stream terminated with error");
+                        }
                     }
                 });
             }

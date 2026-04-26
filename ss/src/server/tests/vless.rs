@@ -367,13 +367,19 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
 }
 
 /// Active-probe regression: a VLESS request with the wrong version byte
-/// must be answered with a graceful WebSocket Close frame, not an abrupt
-/// channel drop.  Pre-fix the writer task exited silently on parser error,
-/// leaving the peer with an unsignalled FIN/RST that probes can use to
-/// fingerprint VLESS apart from a benign WebSocket endpoint (which always
-/// terminates with an RFC 6455 Close).  Mirrors the SS auth-failure path.
+/// must be answered with a graceful WebSocket Close frame, AND the close
+/// must arrive only after the probe-resistance sink has held the
+/// connection open for the handshake-equivalent timeout (or the byte
+/// cap).  Pre-fix the writer task exited silently on parser error and
+/// the peer saw an instant FIN/RST — a sharp signature that distinguishes
+/// VLESS from a benign WebSocket endpoint and from a stalled SS-AEAD
+/// handshake.  We override the sink timeout to ~250 ms so the test runs
+/// in seconds rather than 30 s.
 #[tokio::test]
-async fn vless_websocket_invalid_version_replies_with_close_frame() -> Result<()> {
+async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
+    let _guard = super::super::transport::sink::TestTimeoutOverride::set(
+        std::time::Duration::from_millis(250),
+    );
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -423,18 +429,117 @@ async fn vless_websocket_invalid_version_replies_with_close_frame() -> Result<()
     probe.extend_from_slice(&443_u16.to_be_bytes());
     probe.push(0x01);
     probe.extend_from_slice(&[127, 0, 0, 1]);
+    let send_at = std::time::Instant::now();
     socket.send(WsMessage::Binary(probe.into())).await?;
 
     let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
         .await
         .map_err(|_| anyhow::anyhow!("timeout waiting for vless close frame"))?;
+    let close_after = send_at.elapsed();
     match next {
         Some(Ok(WsMessage::Close(_))) => {},
         other => anyhow::bail!(
             "expected graceful Close frame on invalid vless version, got: {other:?}"
         ),
     }
+    // Sink timeout was set to 250 ms; allow plenty of slack but require
+    // the close arrived strictly *after* the sink held us — a regression
+    // to instant-close would land here under ~50 ms.
+    assert!(
+        close_after >= std::time::Duration::from_millis(150),
+        "close arrived after only {close_after:?}, sink-mode appears to have been bypassed"
+    );
 
     server.abort();
     Ok(())
 }
+
+/// Companion regression: when a probe sprays more than the sink byte cap,
+/// the close arrives well before the timeout — the cap must short-circuit
+/// the sink so a flooding probe cannot pin server resources for the full
+/// handshake-equivalent window.
+#[tokio::test]
+async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
+    // Long timeout so the only way the close can come back quickly is via
+    // the byte cap; if the cap is broken the test would either hang for
+    // 30 s (production timeout) or fail the elapsed-time assertion.
+    let _guard = super::super::transport::sink::TestTimeoutOverride::set(
+        std::time::Duration::from_secs(30),
+    );
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let (mut socket, _) = connect_async(format!("ws://{listen_addr}/vless")).await?;
+
+    let mut probe = Vec::new();
+    probe.push(0x01);
+    probe.extend_from_slice(&[0_u8; 16]);
+    probe.push(0);
+    probe.push(COMMAND_TCP);
+    probe.extend_from_slice(&443_u16.to_be_bytes());
+    probe.push(0x01);
+    probe.extend_from_slice(&[127, 0, 0, 1]);
+    socket.send(WsMessage::Binary(probe.into())).await?;
+
+    // Spam well past the 64 KiB cap so the sink trips on bytes, not time.
+    let junk = bytes::Bytes::from(vec![0_u8; 16 * 1024]);
+    let send_at = std::time::Instant::now();
+    for _ in 0..6 {
+        socket.send(WsMessage::Binary(junk.clone())).await?;
+    }
+
+    let next = tokio::time::timeout(std::time::Duration::from_secs(10), socket.next())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for vless close frame"))?;
+    let elapsed = send_at.elapsed();
+    match next {
+        Some(Ok(WsMessage::Close(_))) => {},
+        other => anyhow::bail!("expected Close frame after byte-cap, got: {other:?}"),
+    }
+    // Cap is 64 KiB; allow up to 10 s of slack for slow CI but hard-cut at
+    // production timeout (30 s) — anything longer is a broken cap.
+    assert!(
+        elapsed < std::time::Duration::from_secs(20),
+        "byte cap did not short-circuit; close arrived after {elapsed:?}"
+    );
+
+    server.abort();
+    Ok(())
+}
+

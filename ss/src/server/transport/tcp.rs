@@ -49,6 +49,7 @@ use super::super::constants::{
 };
 use super::super::dns_cache::DnsCache;
 use super::super::scratch::ScratchBuf;
+use super::sink;
 use super::ws_socket::{AxumWs, H3Ws, WsFrame, WsSocket};
 use super::ws_writer;
 
@@ -186,15 +187,31 @@ async fn run_tcp_relay<T: WsSocket>(
                             // send code 1013 "Try Again Later".  Any other error
                             // (auth failure, protocol error) is terminal — send a
                             // generic close so the client can fail fast.
-                            let close_msg = match &frame_err {
-                                FrameError::UpstreamConnectFailed(_) => T::close_try_again_msg(),
-                                FrameError::Fatal(_) => T::close_msg(),
+                            //
+                            // For Fatal failures we also drain inbound traffic to
+                            // /dev/null until the handshake-equivalent timeout (or
+                            // the byte cap) before closing.  Without the sink an
+                            // active probe could fingerprint SS by timing the close
+                            // against the AEAD-block boundary; sinking matches the
+                            // VLESS path and a stalled-handshake response shape.
+                            let (close_msg, sinked) = match &frame_err {
+                                FrameError::UpstreamConnectFailed(_) => {
+                                    (T::close_try_again_msg(), false)
+                                },
+                                FrameError::Fatal(_) => {
+                                    sink::sink_ws::<T>(&mut reader).await;
+                                    (T::close_msg(), true)
+                                },
                             };
                             let _ = outbound_ctrl_tx.send(close_msg).await;
                             drop(outbound_ctrl_tx);
                             drop(outbound_data_tx);
                             let _ = writer_task.await;
-                            return Err(frame_err.into_inner());
+                            let mut error = frame_err.into_inner();
+                            if sinked {
+                                error = error.context(sink::HandshakeRejectedMarker);
+                            }
+                            return Err(error);
                         }
                     },
                     WsFrame::Close => {

@@ -149,3 +149,66 @@ async fn plain_shadowsocks_udp_relay_smoke() -> Result<()> {
     let _ = server.await;
     Ok(())
 }
+
+/// Active-probe regression for the plain-TCP SS listener. Pre-fix the
+/// listener immediately closed the connection on a failed AEAD
+/// handshake, which let an active probe distinguish SS from any
+/// stalled-handshake protocol by timing. The plain-TCP path now sinks
+/// the socket until the handshake-equivalent timeout (overridden to
+/// ~250 ms here so the test is fast) before closing — the probe
+/// observes a stalled connection regardless of what bytes it sent.
+#[tokio::test]
+async fn plain_shadowsocks_tcp_invalid_probe_sinks_then_closes() -> Result<()> {
+    let _guard = super::super::transport::sink::TestTimeoutOverride::set(
+        std::time::Duration::from_millis(250),
+    );
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let users = build_users(&config)?;
+    let metrics = Metrics::new(&config);
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let services = Arc::new(Services::new(
+        metrics,
+        dns_cache,
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+    ));
+    let ctx = SsTcpCtx { users, services };
+    let server =
+        tokio::spawn(
+            async move { serve_ss_tcp_listener(listener, ctx, ShutdownSignal::never()).await },
+        );
+
+    let mut client = TcpStream::connect(listen_addr).await?;
+    // 64 random bytes — nowhere near matching any user's AEAD.
+    let probe: [u8; 64] = std::array::from_fn(|i| i as u8 ^ 0xa5);
+    let send_at = std::time::Instant::now();
+    client.write_all(&probe).await?;
+
+    // Read until EOF or until the time bound trips. A pre-fix listener
+    // would have returned EOF in single-digit milliseconds.
+    let mut buf = [0_u8; 1024];
+    let read_result =
+        tokio::time::timeout(std::time::Duration::from_secs(5), client.read(&mut buf)).await;
+    let elapsed = send_at.elapsed();
+    let n = read_result.map_err(|_| anyhow::anyhow!("ss probe read timed out"))??;
+    assert_eq!(n, 0, "expected EOF (n=0) from sinked SS connection, got {n} bytes");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(150),
+        "EOF arrived after only {elapsed:?}, sink-mode appears to have been bypassed"
+    );
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
+}

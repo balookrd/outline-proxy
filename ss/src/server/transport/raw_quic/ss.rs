@@ -25,6 +25,7 @@ use super::super::super::{
     relay::{UpstreamSink, relay_client_to_upstream, relay_upstream_to_client},
     shadowsocks::{SsUdpClientId, SsUdpCtx, handle_ss_udp_packet, ss_tcp_handshake},
     state::Services,
+    transport::sink,
 };
 
 pub(in crate::server) struct RawQuicSsCtx {
@@ -76,6 +77,9 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
     let outcome = run_stream(&mut send, &mut recv, prefix, &ctx).await;
     let outcome_for_metrics = match &outcome {
         Ok(()) => crate::metrics::DisconnectReason::Normal,
+        Err(error) if sink::is_handshake_rejected(error) => {
+            crate::metrics::DisconnectReason::HandshakeRejected
+        },
         Err(_) => crate::metrics::DisconnectReason::Error,
     };
     session.finish(outcome_for_metrics);
@@ -105,7 +109,15 @@ async fn run_stream(
     };
     let Some(handshake) = outcome else {
         debug!("ss raw-quic stream closed before handshake completed");
-        return Ok(());
+        // Probe-resistance: same as the plain-TCP path — sink any further
+        // bytes from the peer until the handshake-equivalent timeout (or
+        // the byte cap) instead of hanging up immediately, so an active
+        // probe cannot fingerprint SS by the close timing. We return an
+        // Err carrying [`HandshakeRejectedMarker`] so the session guard
+        // attributes the close to `DisconnectReason::HandshakeRejected`.
+        sink::sink_async_read(recv).await;
+        return Err(anyhow!("ss raw-quic handshake rejected")
+            .context(sink::HandshakeRejectedMarker));
     };
 
     let target_display = handshake.target.display_host_port();
