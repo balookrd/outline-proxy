@@ -18,7 +18,11 @@
 //! `Resume: <hex>` (resume request); negotiation of the response side
 //! is read straight off the upgrade response.
 
+use std::collections::HashMap;
 use std::fmt;
+use std::sync::OnceLock;
+
+use parking_lot::Mutex;
 
 /// Server-minted opaque token identifying a resumable session.
 ///
@@ -103,6 +107,70 @@ pub const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
 /// the server has assigned to the just-established session.
 pub const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
 
+/// Process-wide cache of the last server-issued [`SessionId`] for each
+/// logical uplink. Callers (the warm-standby refill, fresh dials in
+/// `connect_tcp_ws_fresh`, the probe path that wants to opt-in) read
+/// the cached ID before dialing and write the new ID returned in the
+/// upgrade response.
+///
+/// The cache is intentionally last-write-wins per key. Multiple
+/// concurrent dials to the same uplink will overwrite each other's
+/// entries; on a parking-storm, only the most recently dialed session
+/// is reachable by ID, the others are simply un-resumable. This is an
+/// acceptable simplification for the motivating scenario (intermittent
+/// QUIC↔TCP path flap on a small number of uplinks); a more
+/// fine-grained scheme (per-stream, per-route) can layer on top later
+/// without breaking this API.
+#[derive(Default)]
+pub struct ResumeCache {
+    inner: Mutex<HashMap<String, SessionId>>,
+}
+
+impl ResumeCache {
+    pub fn new_uninit() -> Self {
+        Self { inner: Mutex::new(HashMap::new()) }
+    }
+
+    /// Returns the last cached Session ID for `key`, if any.
+    pub fn get(&self, key: &str) -> Option<SessionId> {
+        self.inner.lock().get(key).copied()
+    }
+
+    /// Stores `id` under `key`. Overwrites any previous value.
+    pub fn store(&self, key: impl Into<String>, id: SessionId) {
+        self.inner.lock().insert(key.into(), id);
+    }
+
+    /// Convenience: stores the issued ID when present, no-op otherwise.
+    /// Returned by the WebSocket transports as `Option<SessionId>`.
+    pub fn store_if_issued(&self, key: impl Into<String>, issued: Option<SessionId>) {
+        if let Some(id) = issued {
+            self.store(key, id);
+        }
+    }
+
+    /// Removes the cached ID for `key`. Useful when the caller learns
+    /// the parked session is gone (e.g. server returned a fresh ID
+    /// after we presented a now-expired one).
+    pub fn forget(&self, key: &str) {
+        self.inner.lock().remove(key);
+    }
+
+    /// Test/diagnostic accessor. Returns the number of cached entries.
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.inner.lock().len()
+    }
+}
+
+/// Returns the process-wide [`ResumeCache`]. Initialised on first
+/// access. All callers sharing the same `outline-transport` crate
+/// instance see the same cache.
+pub fn global_resume_cache() -> &'static ResumeCache {
+    static CACHE: OnceLock<ResumeCache> = OnceLock::new();
+    CACHE.get_or_init(ResumeCache::default)
+}
+
 const fn hex_nibble(n: u8) -> char {
     match n {
         0..=9 => (b'0' + n) as char,
@@ -154,5 +222,44 @@ mod tests {
         assert!(debug.starts_with("SessionId("));
         assert!(debug.contains("abababab"));
         assert!(!debug.contains(&id.to_hex()));
+    }
+
+    #[test]
+    fn resume_cache_round_trip() {
+        let cache = ResumeCache::new_uninit();
+        let id = SessionId::from_bytes([0x42; 16]);
+        assert!(cache.get("uplink-a").is_none());
+        cache.store("uplink-a", id);
+        assert_eq!(cache.get("uplink-a"), Some(id));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn resume_cache_overwrites_per_key() {
+        let cache = ResumeCache::new_uninit();
+        let a = SessionId::from_bytes([0x01; 16]);
+        let b = SessionId::from_bytes([0x02; 16]);
+        cache.store("uplink-x", a);
+        cache.store("uplink-x", b);
+        assert_eq!(cache.get("uplink-x"), Some(b));
+        assert_eq!(cache.len(), 1);
+    }
+
+    #[test]
+    fn resume_cache_forget_removes_entry() {
+        let cache = ResumeCache::new_uninit();
+        cache.store("uplink-y", SessionId::from_bytes([7; 16]));
+        cache.forget("uplink-y");
+        assert!(cache.get("uplink-y").is_none());
+        assert_eq!(cache.len(), 0);
+    }
+
+    #[test]
+    fn store_if_issued_skips_none() {
+        let cache = ResumeCache::new_uninit();
+        cache.store_if_issued("uplink-z", None);
+        assert_eq!(cache.len(), 0);
+        cache.store_if_issued("uplink-z", Some(SessionId::from_bytes([9; 16])));
+        assert_eq!(cache.len(), 1);
     }
 }

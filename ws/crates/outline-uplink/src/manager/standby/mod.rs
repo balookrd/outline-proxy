@@ -12,7 +12,8 @@ use tracing::debug;
 use outline_metrics as metrics;
 use outline_transport::{
     TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, WsTransportStream,
-    connect_shadowsocks_udp_with_source, connect_websocket_with_source,
+    connect_shadowsocks_udp_with_source, connect_websocket_with_resume,
+    connect_websocket_with_source, global_resume_cache,
 };
 
 use crate::config::UplinkTransport;
@@ -21,6 +22,14 @@ use crate::utils::maybe_shrink_vecdeque;
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
 const WARM_STANDBY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Composes the cache key used by the cross-transport resumption
+/// helpers in [`outline_transport::global_resume_cache`]. The form
+/// `<uplink_name>#<transport>` keeps TCP and UDP entries separate so
+/// the next TCP reconnect cannot pick up a UDP-session ID by accident.
+pub(super) fn resume_cache_key(uplink_name: &str, transport: &str) -> String {
+    format!("{uplink_name}#{transport}")
+}
 
 impl UplinkManager {
     /// Returns the effective TCP dial mode for `index`, falling back to H2
@@ -138,18 +147,28 @@ impl UplinkManager {
             anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name)
         })?;
         let started = Instant::now();
-        let ws = connect_websocket_with_source(
+        // Cross-transport session resumption: present the last Session
+        // ID this uplink received so an outline-ss-rust server with the
+        // feature enabled can re-attach to a still-parked upstream.
+        // Cache key is the uplink's display name — unique within a
+        // group, stable across reconnects. The store-if-issued at the
+        // bottom records the new ID for the next reconnect.
+        let resume_key = resume_cache_key(&candidate.uplink.name, "tcp");
+        let resume_request = global_resume_cache().get(&resume_key);
+        let ws = connect_websocket_with_resume(
             cache,
             url,
             mode,
             candidate.uplink.fwmark,
             candidate.uplink.ipv6_first,
             source,
+            resume_request,
         )
         .await
         .with_context(|| TransportOperation::Connect {
             target: format!("to {}", url),
         })?;
+        global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
         // ping/pong times.
