@@ -15,7 +15,7 @@ use crate::{
 use super::{
     super::{
         abort::AbortOnDrop, connect::resolve_udp_target, constants::MAX_UDP_PAYLOAD_SIZE,
-        nat::bind_nat_udp_socket,
+        nat::bind_nat_udp_socket, scratch::UdpRecvBuf,
     },
     vless::{UpstreamSession, VlessRelayState, VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx},
 };
@@ -198,7 +198,7 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.udp_out(protocol);
-    let mut buffer = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
+    let mut buffer = UdpRecvBuf::take();
     loop {
         let read = match socket.recv(&mut buffer).await {
             Ok(n) => n,

@@ -33,6 +33,7 @@ use super::super::{
     constants::MAX_UDP_PAYLOAD_SIZE,
     dns_cache::DnsCache,
     nat::bind_nat_udp_socket,
+    scratch::{TcpRelayBuf, UdpRecvBuf},
 };
 
 /// Maximum number of concurrent mux sub-connections per VLESS session.
@@ -294,10 +295,10 @@ where
 {
     let user_counters = metrics.user_counters(&user);
     let target_to_client = user_counters.tcp_out(protocol);
-    let mut buf = vec![0_u8; 16 * 1024];
+    let mut buf = TcpRelayBuf::take();
     let mut frame_buf = BytesMut::with_capacity(16 * 1024 + 16);
     loop {
-        let read = match reader.read(&mut buf).await {
+        let read = match reader.read(&mut *buf).await {
             Ok(0) => break,
             Ok(n) => n,
             Err(error) => {
@@ -415,10 +416,10 @@ where
 {
     let user_counters = metrics.user_counters(&user);
     let target_to_client = user_counters.udp_out(protocol);
-    let mut buf = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
+    let mut buf = UdpRecvBuf::take();
     let mut frame_buf = BytesMut::with_capacity(MAX_UDP_PAYLOAD_SIZE + 32);
     loop {
-        let (read, from) = match socket.recv_from(&mut buf).await {
+        let (read, from) = match socket.recv_from(&mut *buf).await {
             Ok(v) => v,
             Err(error) => {
                 debug!(session_id, error = %error, "mux udp recv error");
