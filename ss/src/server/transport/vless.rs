@@ -36,6 +36,30 @@ use super::{
 
 const MAX_VLESS_HEADER_BUFFER: usize = 512;
 
+/// Failure modes returned by [`handle_vless_binary_frame`] and the upstream
+/// establishers. [`run_vless_relay`] matches on this to decide whether to
+/// send the client a "try again" close frame (RFC 6455 code 1013) — so the
+/// client can retry on the same or a different uplink — or a plain close
+/// for terminal errors (parser/auth/protocol). Mirrors `tcp::FrameError`.
+pub(super) enum VlessFrameError {
+    UpstreamConnectFailed(anyhow::Error),
+    Fatal(anyhow::Error),
+}
+
+impl VlessFrameError {
+    fn into_inner(self) -> anyhow::Error {
+        match self {
+            Self::UpstreamConnectFailed(e) | Self::Fatal(e) => e,
+        }
+    }
+}
+
+impl From<anyhow::Error> for VlessFrameError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Fatal(e)
+    }
+}
+
 pub(in crate::server) struct VlessWsServerCtx {
     pub(in crate::server) metrics: Arc<Metrics>,
     pub(in crate::server) dns_cache: Arc<DnsCache>,
@@ -74,10 +98,8 @@ pub(super) struct VlessRelayState {
 
 pub(super) struct VlessWsOutbound<'a, Msg> {
     pub(super) data_tx: &'a mpsc::Sender<Msg>,
-    pub(super) ctrl_tx: &'a mpsc::Sender<Msg>,
     pub(super) make_binary: fn(Bytes) -> Msg,
     pub(super) make_close: fn() -> Msg,
-    pub(super) make_try_again_close: fn() -> Msg,
 }
 
 impl VlessRelayState {
@@ -138,25 +160,36 @@ async fn run_vless_relay<T: WsSocket>(
                 last_inbound = std::time::Instant::now();
                 match T::classify(msg) {
                     WsFrame::Binary(data) => {
-                        if let Err(error) = handle_vless_binary_frame(
+                        if let Err(frame_err) = handle_vless_binary_frame(
                             &mut state,
                             data,
                             server,
                             route,
                             VlessWsOutbound {
                                 data_tx: &outbound_data_tx,
-                                ctrl_tx: &outbound_ctrl_tx,
                                 make_binary: T::binary_msg,
                                 make_close: T::close_msg,
-                                make_try_again_close: T::close_try_again_msg,
                             },
                         )
                         .await
                         {
+                            // Mirror the SS path: send a graceful WS close
+                            // frame before tearing the channels down.  Without
+                            // this the writer task exits silently and the peer
+                            // sees an abrupt TCP/QUIC RST instead of an RFC
+                            // 6455 close — a sharp signature for active probes
+                            // that distinguishes VLESS from a benign WS peer.
+                            let close_msg = match &frame_err {
+                                VlessFrameError::UpstreamConnectFailed(_) => {
+                                    T::close_try_again_msg()
+                                },
+                                VlessFrameError::Fatal(_) => T::close_msg(),
+                            };
+                            let _ = outbound_ctrl_tx.send(close_msg).await;
                             drop(outbound_ctrl_tx);
                             drop(outbound_data_tx);
                             let _ = writer_task.await;
-                            return Err(error);
+                            return Err(frame_err.into_inner());
                         }
                     },
                     WsFrame::Close => {
@@ -217,7 +250,7 @@ async fn handle_vless_binary_frame<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-) -> Result<()>
+) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
@@ -238,7 +271,7 @@ where
         },
         UpstreamSession::Udp(socket) => {
             let socket = Arc::clone(socket);
-            return forward_vless_udp_client_frames(
+            forward_vless_udp_client_frames(
                 &mut state.udp_client_buffer,
                 &data,
                 socket.as_ref(),
@@ -246,7 +279,8 @@ where
                 route.protocol,
                 &route.path,
             )
-            .await;
+            .await?;
+            return Ok(());
         },
         UpstreamSession::Mux(mux) => {
             let mux_server = MuxServerCtx {
@@ -259,7 +293,7 @@ where
                 protocol: route.protocol,
                 path: Arc::clone(&route.path),
             };
-            return vless_mux::handle_client_bytes(
+            vless_mux::handle_client_bytes(
                 mux,
                 &data,
                 &mux_server,
@@ -267,7 +301,8 @@ where
                 outbound.data_tx,
                 outbound.make_binary,
             )
-            .await;
+            .await?;
+            return Ok(());
         },
         UpstreamSession::None => {},
     }
@@ -279,17 +314,19 @@ where
         Ok(None) => {
             if state.header_buffer.len() > MAX_VLESS_HEADER_BUFFER {
                 warn!(path = %route.path, buffered = state.header_buffer.len(), "vless parse error: request header too large");
-                return Err(anyhow!("vless request header too large"));
+                return Err(VlessFrameError::Fatal(anyhow!("vless request header too large")));
             }
             return Ok(());
         },
         Err(vless::VlessError::UnsupportedCommand(command)) => {
             warn!(path = %route.path, command, "unsupported vless command");
-            return Err(anyhow!("unsupported vless command {command:#x}"));
+            return Err(VlessFrameError::Fatal(anyhow!(
+                "unsupported vless command {command:#x}"
+            )));
         },
         Err(error) => {
             warn!(path = %route.path, error = %error, "vless parse error");
-            return Err(anyhow!(error));
+            return Err(VlessFrameError::Fatal(anyhow!(error)));
         },
     };
 
@@ -311,7 +348,9 @@ where
                 candidates = ?route.candidate_users,
                 "rejected vless user"
             );
-            return Err(anyhow!("unknown vless user {masked}"));
+            return Err(VlessFrameError::Fatal(anyhow!(
+                "unknown vless user {masked}"
+            )));
         },
     };
 
@@ -336,7 +375,7 @@ async fn establish_vless_mux_upstream<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-) -> Result<()>
+) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
@@ -388,7 +427,7 @@ async fn establish_vless_tcp_upstream<Msg>(
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,
     outbound: VlessWsOutbound<'_, Msg>,
-) -> Result<()>
+) -> Result<(), VlessFrameError>
 where
     Msg: Send + 'static,
 {
@@ -430,10 +469,11 @@ where
                 error = %error,
                 "vless upstream connect failed; sending try-again close to client"
             );
-            let _ = outbound.ctrl_tx.send((outbound.make_try_again_close)()).await;
-            return Err(anyhow::Error::msg(format!("{error:#}"))
-                .context(format!("failed to connect to {target_display}"))
-                .context("vless upstream tcp connect failed"));
+            return Err(VlessFrameError::UpstreamConnectFailed(
+                anyhow::Error::msg(format!("{error:#}"))
+                    .context(format!("failed to connect to {target_display}"))
+                    .context("vless upstream tcp connect failed"),
+            ));
         },
     };
 

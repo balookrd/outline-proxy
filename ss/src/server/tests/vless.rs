@@ -365,3 +365,76 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+/// Active-probe regression: a VLESS request with the wrong version byte
+/// must be answered with a graceful WebSocket Close frame, not an abrupt
+/// channel drop.  Pre-fix the writer task exited silently on parser error,
+/// leaving the peer with an unsignalled FIN/RST that probes can use to
+/// fingerprint VLESS apart from a benign WebSocket endpoint (which always
+/// terminates with an RFC 6455 Close).  Mirrors the SS auth-failure path.
+#[tokio::test]
+async fn vless_websocket_invalid_version_replies_with_close_frame() -> Result<()> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from("/vless"),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(std::time::Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(std::time::Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(
+                std::time::Duration::from_secs(300),
+                0,
+            ),
+            relay_semaphore: None,
+        },
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth);
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let (mut socket, _) = connect_async(format!("ws://{listen_addr}/vless")).await?;
+
+    let mut probe = Vec::new();
+    probe.push(0x01); // wrong VLESS version — parser bails on InvalidVersion
+    probe.extend_from_slice(&[0_u8; 16]);
+    probe.push(0); // opt_len
+    probe.push(COMMAND_TCP);
+    probe.extend_from_slice(&443_u16.to_be_bytes());
+    probe.push(0x01);
+    probe.extend_from_slice(&[127, 0, 0, 1]);
+    socket.send(WsMessage::Binary(probe.into())).await?;
+
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), socket.next())
+        .await
+        .map_err(|_| anyhow::anyhow!("timeout waiting for vless close frame"))?;
+    match next {
+        Some(Ok(WsMessage::Close(_))) => {},
+        other => anyhow::bail!(
+            "expected graceful Close frame on invalid vless version, got: {other:?}"
+        ),
+    }
+
+    server.abort();
+    Ok(())
+}
