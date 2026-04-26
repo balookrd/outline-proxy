@@ -21,13 +21,13 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
         counter!("outline_ss_metrics_scrapes_total").increment(1);
         gauge!("outline_ss_uptime_seconds").set(metrics.started_at.elapsed().as_secs_f64());
         for (user, seen_at) in &seen_snapshot {
-            let active = if *seen_at > 0 && now.saturating_sub(*seen_at) <= ttl {
-                1.0
+            let active = *seen_at > 0 && now.saturating_sub(*seen_at) <= ttl;
+            if active {
+                gauge!("outline_ss_client_active", "user" => Arc::clone(user)).set(1.0);
+                gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(1.0);
             } else {
-                0.0
-            };
-            gauge!("outline_ss_client_active", "user" => Arc::clone(user)).set(active);
-            gauge!("outline_ss_client_up", "user" => Arc::clone(user)).set(active);
+                metrics.client_last_seen.remove(user);
+            }
         }
     });
 

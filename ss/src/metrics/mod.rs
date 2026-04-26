@@ -14,7 +14,7 @@ use std::{
         Arc,
         atomic::{AtomicI64, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use dashmap::DashMap;
@@ -38,7 +38,8 @@ pub struct Metrics {
 
 impl Metrics {
     pub fn new(config: &Config) -> Arc<Self> {
-        let (recorder, handle) = registry::build_recorder();
+        let idle_timeout = Duration::from_secs(config.tuning.client_active_ttl_secs);
+        let (recorder, handle) = registry::build_recorder(idle_timeout);
         let metrics = Arc::new(Self {
             started_at: Instant::now(),
             method: config.method.as_str().to_owned(),
