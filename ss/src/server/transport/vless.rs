@@ -12,7 +12,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    metrics::{Metrics, Protocol, TcpUpstreamGuard, Transport},
+    metrics::{Metrics, PerUserCounters, Protocol, TcpUpstreamGuard, Transport},
     outbound::OutboundIpv6,
     protocol::vless::{self, VlessCommand, VlessUser, mask_uuid},
 };
@@ -60,6 +60,7 @@ pub(super) struct VlessRelayState {
     pub(super) upstream: UpstreamSession,
     pub(super) upstream_to_client: Option<tokio::task::JoinHandle<Result<()>>>,
     pub(super) authenticated_user: Option<VlessUser>,
+    pub(super) user_counters: Option<Arc<PerUserCounters>>,
     upstream_guard: Option<TcpUpstreamGuard>,
     pub(super) udp_client_buffer: BytesMut,
 }
@@ -79,8 +80,22 @@ impl VlessRelayState {
             upstream: UpstreamSession::None,
             upstream_to_client: None,
             authenticated_user: None,
+            user_counters: None,
             upstream_guard: None,
             udp_client_buffer: BytesMut::new(),
+        }
+    }
+}
+
+impl Drop for VlessRelayState {
+    /// Safety net: cancel the upstream→client relay task on every exit
+    /// path (clean break, `?`-return, panic). UDP relay tasks otherwise
+    /// block indefinitely inside `socket.recv` because UDP has no
+    /// shutdown, and dropping a `JoinHandle` does NOT cancel the task.
+    /// `MuxState` has its own `Drop` that aborts each sub-conn reader.
+    fn drop(&mut self) {
+        if let Some(task) = self.upstream_to_client.take() {
+            task.abort();
         }
     }
 }
@@ -172,12 +187,15 @@ async fn run_vless_relay<T: WsSocket>(
         UpstreamSession::Udp(_) | UpstreamSession::None => {},
     }
 
-    if client_closed {
-        if let Some(task) = state.upstream_to_client.take() {
-            task.abort();
-        }
-    } else if let Some(task) = state.upstream_to_client.take() {
-        task.await.context("vless upstream relay task join failed")??;
+    // Always abort the upstream→client task on cleanup. For TCP/MUX we just
+    // shut the upstream socket above so the reader self-exits in microseconds
+    // anyway; for UDP there is no shutdown so awaiting the JoinHandle would
+    // hang forever (the reader sits on `socket.recv` indefinitely). The
+    // `client_closed` branch already aborted; the previous `else` branch
+    // awaited and was the source of the leak we are fixing here.
+    let _ = client_closed;
+    if let Some(task) = state.upstream_to_client.take() {
+        task.abort();
     }
     if let Some(guard) = state.upstream_guard.take() {
         guard.finish();
@@ -204,13 +222,8 @@ where
 
     match &mut state.upstream {
         UpstreamSession::Tcp(writer) => {
-            if let Some(user) = &state.authenticated_user {
-                server.metrics.record_tcp_payload_bytes(
-                    user.label_arc(),
-                    route.protocol,
-                    "client_to_target",
-                    data.len(),
-                );
+            if let Some(counters) = &state.user_counters {
+                counters.tcp_in(route.protocol).increment(data.len() as u64);
             }
             writer
                 .write_all(&data)
@@ -224,9 +237,8 @@ where
                 &mut state.udp_client_buffer,
                 &data,
                 socket.as_ref(),
-                &server.metrics,
+                state.user_counters.as_deref(),
                 route.protocol,
-                state.authenticated_user.as_ref(),
                 &route.path,
             )
             .await;
@@ -331,7 +343,9 @@ where
         .await
         .map_err(|error| anyhow!("failed to queue vless mux response header: {error}"))?;
 
-    let mut mux = MuxState::new(user.clone());
+    let user_counters = server.metrics.user_counters(&user.label_arc());
+    let mut mux = MuxState::new(user.clone(), Arc::clone(&user_counters));
+    state.user_counters = Some(user_counters);
     state.authenticated_user = Some(user);
 
     let leftover = state.header_buffer.split_off(request.consumed);
@@ -449,6 +463,7 @@ where
             .metrics
             .open_tcp_upstream_connection(user.label_arc(), route.protocol),
     );
+    state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Tcp(writer);
 
@@ -457,13 +472,8 @@ where
     if !leftover.is_empty()
         && let UpstreamSession::Tcp(writer) = &mut state.upstream
     {
-        if let Some(user) = &state.authenticated_user {
-            server.metrics.record_tcp_payload_bytes(
-                user.label_arc(),
-                route.protocol,
-                "client_to_target",
-                leftover.len(),
-            );
+        if let Some(counters) = &state.user_counters {
+            counters.tcp_in(route.protocol).increment(leftover.len() as u64);
         }
         writer
             .write_all(&leftover)

@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{Metrics, Protocol},
+    metrics::{Metrics, PerUserCounters, Protocol},
     outbound::OutboundIpv6,
     protocol::vless::{self, VlessUser},
 };
@@ -97,6 +97,7 @@ where
         )
         .await
     }));
+    state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Udp(Arc::clone(&socket));
 
@@ -108,9 +109,8 @@ where
             &mut state.udp_client_buffer,
             &leftover_bytes,
             socket.as_ref(),
-            &server.metrics,
+            state.user_counters.as_deref(),
             route.protocol,
-            state.authenticated_user.as_ref(),
             &route.path,
         )
         .await?;
@@ -139,9 +139,8 @@ pub(super) async fn forward_vless_udp_client_frames(
     buffer: &mut BytesMut,
     data: &Bytes,
     socket: &UdpSocket,
-    metrics: &Metrics,
+    user_counters: Option<&PerUserCounters>,
     protocol: Protocol,
-    user: Option<&VlessUser>,
     path: &str,
 ) -> Result<()> {
     buffer.extend_from_slice(data);
@@ -162,13 +161,8 @@ pub(super) async fn forward_vless_udp_client_frames(
         }
         let _ = buffer.split_to(2);
         let payload = buffer.split_to(len).freeze();
-        if let Some(user) = user {
-            metrics.record_udp_payload_bytes(
-                user.label_arc(),
-                protocol,
-                "client_to_target",
-                payload.len(),
-            );
+        if let Some(counters) = user_counters {
+            counters.udp_in(protocol).increment(payload.len() as u64);
         }
         match socket.send(&payload).await {
             Ok(sent) if sent == payload.len() => {},

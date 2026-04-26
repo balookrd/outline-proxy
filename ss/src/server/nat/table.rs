@@ -174,6 +174,7 @@ impl NatTable {
             },
         };
 
+        let user_counters = metrics.user_counters(&key.user_id);
         let reader_task = tokio::spawn(nat_reader_task(NatReaderCtx {
             socket: Arc::clone(&socket),
             active: Arc::clone(&active),
@@ -181,11 +182,12 @@ impl NatTable {
             target: key.target,
             server_session_id,
             metrics: Arc::clone(&metrics),
+            user_counters: Arc::clone(&user_counters),
             last_active: Arc::clone(&last_active_secs),
             next_packet_id: Arc::clone(&next_packet_id),
         }));
 
-        let entry = NatEntry::new(socket, active, last_active_secs, reader_task);
+        let entry = NatEntry::new(socket, active, user_counters, last_active_secs, reader_task);
         debug!(
             user = %key.user_id,
             target = %key.target,

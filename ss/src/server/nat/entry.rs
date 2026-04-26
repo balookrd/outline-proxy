@@ -11,7 +11,11 @@ use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use tokio::{net::UdpSocket, sync::Mutex};
 
-use crate::{clock, crypto::UdpCipherMode, metrics::Protocol};
+use crate::{
+    clock,
+    crypto::UdpCipherMode,
+    metrics::{PerUserCounters, Protocol},
+};
 
 /// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
 /// resolved upstream address) triple.
@@ -79,6 +83,10 @@ pub(crate) struct NatEntry {
     /// the NAT socket — and therefore the source port and server_session_id —
     /// survives client session changes.
     active: Arc<Mutex<Option<ActiveSession>>>,
+    /// Pre-resolved per-user metrics counters, shared with the reader task.
+    /// Lets the per-datagram client→upstream and upstream→client paths skip the
+    /// `counter!()` registry lookup and the per-call `Arc<str>` clone.
+    user_counters: Arc<PerUserCounters>,
     /// Unix timestamp (seconds) of the last datagram in either direction, for idle eviction.
     last_active_secs: Arc<AtomicU64>,
     /// Dropped when the entry is evicted, which aborts the background reader task.
@@ -89,15 +97,21 @@ impl NatEntry {
     pub(crate) fn new(
         socket: Arc<UdpSocket>,
         active: Arc<Mutex<Option<ActiveSession>>>,
+        user_counters: Arc<PerUserCounters>,
         last_active_secs: Arc<AtomicU64>,
         reader: tokio::task::JoinHandle<()>,
     ) -> Arc<Self> {
         Arc::new(Self {
             socket,
             active,
+            user_counters,
             last_active_secs,
             _reader: AbortOnDrop(reader),
         })
+    }
+
+    pub(crate) fn user_counters(&self) -> &PerUserCounters {
+        &self.user_counters
     }
 
     /// Set the active client session that should receive upstream responses,

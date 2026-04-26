@@ -16,7 +16,7 @@ use tracing::{debug, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{Metrics, Protocol, Transport},
+    metrics::{Metrics, PerUserCounters, Protocol, Transport},
     outbound::OutboundIpv6,
     protocol::{
         TargetAddr,
@@ -58,6 +58,7 @@ pub(super) struct MuxState {
     sub_conns: HashMap<u16, MuxSubConn>,
     buffer: BytesMut,
     user: VlessUser,
+    user_counters: Arc<PerUserCounters>,
 }
 
 struct MuxSubConn {
@@ -74,11 +75,12 @@ enum SubConnKind {
 }
 
 impl MuxState {
-    pub fn new(user: VlessUser) -> Self {
+    pub fn new(user: VlessUser, user_counters: Arc<PerUserCounters>) -> Self {
         Self {
             sub_conns: HashMap::new(),
             buffer: BytesMut::new(),
             user,
+            user_counters,
         }
     }
 
@@ -87,6 +89,20 @@ impl MuxState {
             if let SubConnKind::Tcp(mut w) = sub.kind {
                 let _ = w.shutdown().await;
             }
+            if let Some(task) = sub.reader_task.take() {
+                task.abort();
+            }
+        }
+    }
+}
+
+impl Drop for MuxState {
+    /// Safety net: cancel every sub-connection reader on every exit path,
+    /// including `?`-returns and panics. UDP sub-conns block on
+    /// `socket.recv` with no shutdown signal, and dropping a `JoinHandle`
+    /// does NOT cancel the underlying task.
+    fn drop(&mut self) {
+        for (_, mut sub) in self.sub_conns.drain() {
             if let Some(task) = sub.reader_task.take() {
                 task.abort();
             }
@@ -248,12 +264,7 @@ where
     if let Some(initial) = initial
         && !initial.is_empty()
     {
-        server.metrics.record_tcp_payload_bytes(
-            state.user.label_arc(),
-            route.protocol,
-            "client_to_target",
-            initial.len(),
-        );
+        state.user_counters.tcp_in(route.protocol).increment(initial.len() as u64);
         writer
             .write_all(&initial)
             .await
@@ -391,7 +402,7 @@ where
     if let Some(payload) = initial
         && !payload.is_empty()
     {
-        send_udp_payload(&socket, &payload, default_target, &server.metrics, route.protocol, &state.user).await;
+        send_udp_payload(&socket, &payload, default_target, &state.user_counters, route.protocol).await;
     }
     Ok(())
 }
@@ -465,12 +476,7 @@ async fn handle_keep(
 
     match &mut sub.kind {
         SubConnKind::Tcp(writer) => {
-            server.metrics.record_tcp_payload_bytes(
-                state.user.label_arc(),
-                route.protocol,
-                "client_to_target",
-                payload.len(),
-            );
+            state.user_counters.tcp_in(route.protocol).increment(payload.len() as u64);
             if let Err(error) = writer.write_all(&payload).await {
                 debug!(session_id = meta.session_id, error = %error, "mux tcp upstream write error");
                 finish_sub(state, meta.session_id).await;
@@ -487,7 +493,7 @@ async fn handle_keep(
                 },
                 None => *default_target,
             };
-            send_udp_payload(socket, &payload, dst, &server.metrics, route.protocol, &state.user).await;
+            send_udp_payload(socket, &payload, dst, &state.user_counters, route.protocol).await;
         },
     }
     Ok(())
@@ -512,16 +518,10 @@ async fn send_udp_payload(
     socket: &UdpSocket,
     payload: &[u8],
     dst: SocketAddr,
-    metrics: &Metrics,
+    user_counters: &PerUserCounters,
     protocol: Protocol,
-    user: &VlessUser,
 ) {
-    metrics.record_udp_payload_bytes(
-        user.label_arc(),
-        protocol,
-        "client_to_target",
-        payload.len(),
-    );
+    user_counters.udp_in(protocol).increment(payload.len() as u64);
     if let Err(error) = socket.send_to(payload, dst).await {
         debug!(%dst, error = %error, "mux udp send_to failed");
     }

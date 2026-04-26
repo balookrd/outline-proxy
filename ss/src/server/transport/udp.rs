@@ -185,12 +185,10 @@ where
         );
         return Ok(());
     }
-    server.metrics.record_udp_payload_bytes(
-        Arc::clone(&user_id),
-        route.protocol,
-        "client_to_target",
-        payload.len(),
-    );
+    entry
+        .user_counters()
+        .udp_in(route.protocol)
+        .increment(payload.len() as u64);
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         server.metrics.record_udp_request(
             Arc::clone(&user_id),
