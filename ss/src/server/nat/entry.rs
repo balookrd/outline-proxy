@@ -66,6 +66,12 @@ impl UdpResponseSender {
 pub(crate) struct ActiveSession {
     pub(crate) sender: UdpResponseSender,
     pub(crate) session: UdpCipherMode,
+    /// Identifies the registering WS-stream so a resumption-driven
+    /// `detach_session_for_stream` only clears the slot when we are
+    /// still the registered owner — not when a newer stream has
+    /// already taken over (e.g. concurrent reconnect by the same
+    /// user). Allocated by the relay code once per stream lifetime.
+    pub(crate) stream_id: u64,
 }
 
 pub(crate) struct NatEntry {
@@ -110,8 +116,34 @@ impl NatEntry {
     /// Set the active client session that should receive upstream responses,
     /// along with the `UdpCipherMode` used to encrypt them. The previous session
     /// (if any) is replaced; its channel may be closed.
-    pub(crate) async fn register_session(&self, sender: UdpResponseSender, session: UdpCipherMode) {
-        *self.active.lock().await = Some(ActiveSession { sender, session });
+    ///
+    /// `stream_id` identifies the registering WS-stream (or
+    /// shadowsocks plain-UDP session). It is matched by
+    /// [`Self::detach_session_for_stream`] so a stream's park-on-drop
+    /// only clears the slot when we are still the registered owner.
+    pub(crate) async fn register_session(
+        &self,
+        sender: UdpResponseSender,
+        session: UdpCipherMode,
+        stream_id: u64,
+    ) {
+        *self.active.lock().await = Some(ActiveSession { sender, session, stream_id });
+    }
+
+    /// Atomically clears the active session slot iff its `stream_id`
+    /// matches `expected`. Returns `true` on detach. Used by the
+    /// SS-UDP-over-WS park path to release the entry's response sender
+    /// without disrupting other streams that may have taken over
+    /// in the meantime.
+    pub(crate) async fn detach_session_for_stream(&self, expected: u64) -> bool {
+        let mut guard = self.active.lock().await;
+        match guard.as_ref() {
+            Some(active) if active.stream_id == expected => {
+                *guard = None;
+                true
+            },
+            _ => false,
+        }
     }
 
     /// Reset the idle-eviction timer.  Call after every successful outbound send.

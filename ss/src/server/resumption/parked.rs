@@ -28,6 +28,7 @@ use crate::{
     crypto::UserKey,
     metrics::{PerUserCounters, Protocol, TcpUpstreamGuard},
     protocol::{TargetAddr, vless::VlessUser},
+    server::nat::NatKey,
 };
 
 /// Variant-erased payload of a parked session entry.
@@ -35,6 +36,7 @@ pub(crate) enum Parked {
     Tcp(ParkedTcp),
     VlessUdpSingle(ParkedVlessUdpSingle),
     VlessMux(ParkedVlessMux),
+    SsUdpStream(ParkedSsUdpStream),
 }
 
 impl Parked {
@@ -44,13 +46,14 @@ impl Parked {
             Self::Tcp(_) => "tcp",
             Self::VlessUdpSingle(_) => "vless_udp_single",
             Self::VlessMux(_) => "vless_mux",
+            Self::SsUdpStream(_) => "ss_udp_stream",
         }
     }
 
     /// All kind labels the registry can produce. Used by the sweeper to
     /// refresh per-kind gauges after evictions.
     pub(crate) fn all_kinds() -> &'static [&'static str] {
-        &["tcp", "vless_udp_single", "vless_mux"]
+        &["tcp", "vless_udp_single", "vless_mux", "ss_udp_stream"]
     }
 }
 
@@ -192,4 +195,32 @@ pub(crate) struct ParkedVlessUdpSingle {
     /// pushed before disconnect; without this the resume would have to
     /// re-buffer it from scratch on the new stream.
     pub(crate) udp_client_buffer: BytesMut,
+}
+
+/// Park bundle for a single SS-UDP-over-WebSocket stream. The
+/// underlying `NatEntry` records live in the process-wide `NatTable`
+/// and continue to age normally — `Parked::SsUdpStream` only keeps
+/// the *list of NAT keys* that this stream had registered as the
+/// active outbound responder, plus the owner identity used for the
+/// authenticate-then-resume check.
+///
+/// Park behaviour: for each key, the relay called
+/// `entry.detach_session_for_stream(stream_id)` so upstream-bound
+/// packets fall on the floor while no client is attached.
+/// Resume behaviour: on the next authenticated packet, the relay
+/// calls `entry.register_session(new_sender, session, new_stream_id)`
+/// for each preserved key — re-pointing the NAT entry's sender slot
+/// at the new client without re-binding the UDP socket.
+pub(crate) struct ParkedSsUdpStream {
+    /// NAT keys the original stream was the registered owner of.
+    /// Stored as a `Vec` (insertion order, possible duplicates after
+    /// dedup) — the full `HashSet`-style guarantee is maintained at
+    /// build time.
+    pub(crate) nat_keys: Vec<NatKey>,
+    pub(crate) owner: Arc<str>,
+    /// Protocol of the original session. Informational only; the
+    /// resume side discovers its own protocol from the new
+    /// `UdpResponseSender`.
+    #[allow(dead_code)]
+    pub(crate) protocol: Protocol,
 }

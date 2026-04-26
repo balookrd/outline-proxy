@@ -126,6 +126,7 @@ impl OrphanRegistry {
             Parked::Tcp(tcp) => Arc::clone(&tcp.owner),
             Parked::VlessUdpSingle(udp) => Arc::clone(&udp.owner),
             Parked::VlessMux(mux) => Arc::clone(&mux.owner),
+            Parked::SsUdpStream(stream) => Arc::clone(&stream.owner),
         };
         let deadline = Instant::now() + self.ttl_for_kind(kind);
 

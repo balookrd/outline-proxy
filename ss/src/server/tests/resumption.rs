@@ -51,7 +51,7 @@ use super::super::{
 };
 use super::{sample_config, sample_config_with_users};
 use crate::config::UserEntry;
-use crate::crypto::{AeadStreamEncryptor, UserKey};
+use crate::crypto::{AeadStreamEncryptor, UserKey, encrypt_udp_packet};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::{
     TargetAddr,
@@ -740,6 +740,63 @@ async fn ss_resume_after_ttl_expiry_falls_through_to_fresh() -> Result<()> {
         2,
         "expired entry must be ignored and the relay must open a fresh upstream"
     );
+    socket2.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ss_udp_resume_hit_reattaches_parked_nat_entry() -> Result<()> {
+    // SS UDP through WebSocket: each client packet is an independent
+    // SS-AEAD-encrypted datagram carrying its own target inline. The
+    // server lazy-creates one NAT entry per `(user, fwmark, target)`
+    // and registers this WS stream as the active outbound responder.
+    // On resume, every NAT key the parked stream owned is re-pointed
+    // at the new sender — without re-binding any upstream socket.
+    //
+    // The probe is the upstream socket's view of unique source
+    // addresses: one parked NAT entry stays at cardinality 1 across
+    // the reconnect, while a missed resume would cause the server to
+    // bind a fresh ephemeral socket on the second packet (cardinality
+    // 2).
+    let (target_addr, sources) = spawn_echo_udp_target().await?;
+    let (server, user) = spawn_ss_resumption_server(|_| {}).await?;
+
+    // ── Session #1: dial /udp, push one encrypted datagram, expect
+    //               an encrypted reply back. ──────────────────────
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/udp", None, true).await?;
+    let session_id = issued
+        .ok_or_else(|| anyhow::anyhow!("ss-udp server didn't mint Session ID"))?;
+
+    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    plaintext.extend_from_slice(b"udp1");
+    let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+    socket.send(WsMessage::Binary(ciphertext.into())).await?;
+
+    let _reply = expect_binary_reply(&mut socket).await?;
+    assert_eq!(sources.lock().await.len(), 1);
+
+    socket.close(None).await?;
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // ── Session #2: resume. Server's `attempt_ss_udp_resume` must
+    //               re-point the parked NAT entry at the new
+    //               outbound channel before this packet is sent
+    //               upstream — so the source port stays the same. ──
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/udp", Some(session_id), true).await?;
+    let mut plaintext = TargetAddr::Socket(target_addr).encode()?;
+    plaintext.extend_from_slice(b"udp2");
+    let ciphertext = encrypt_udp_packet(&user, &plaintext)?;
+    socket2.send(WsMessage::Binary(ciphertext.into())).await?;
+    let _reply = expect_binary_reply(&mut socket2).await?;
+
+    assert_eq!(
+        sources.lock().await.len(),
+        1,
+        "ss-udp resume must reuse the parked NAT entry — exactly one upstream source observed"
+    );
+
     socket2.close(None).await?;
     Ok(())
 }
