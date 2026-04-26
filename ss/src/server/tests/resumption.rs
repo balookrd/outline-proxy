@@ -54,7 +54,10 @@ use crate::crypto::{AeadStreamEncryptor, UserKey};
 use crate::metrics::{Metrics, Transport};
 use crate::protocol::{
     TargetAddr,
-    vless::{COMMAND_TCP, VERSION as VLESS_VERSION, VlessUser, parse_uuid},
+    vless::{COMMAND_MUX, COMMAND_TCP, VERSION as VLESS_VERSION, VlessUser, parse_uuid},
+    vless_mux::{
+        Network as MuxNetwork, OPTION_DATA, ParsedFrame, SessionStatus, encode_frame, parse_frame,
+    },
 };
 
 // ── Mock upstream ─────────────────────────────────────────────────────────────
@@ -394,6 +397,100 @@ fn vless_tcp_request(
     Ok(Bytes::from(request))
 }
 
+/// Builds the VLESS handshake bytes for the MUX command. Per mux.cool
+/// the request target is the literal `v1.mux.cool` with port 0 — real
+/// sub-connection targets ride inside the mux frames that follow.
+fn vless_mux_request(uuid: &str) -> Result<Bytes> {
+    let mut request = Vec::with_capacity(48);
+    request.push(VLESS_VERSION);
+    request.extend_from_slice(&parse_uuid(uuid)?);
+    request.push(0);
+    request.push(COMMAND_MUX);
+    request.extend_from_slice(&0_u16.to_be_bytes()); // port = 0
+    request.push(0x02); // atype: domain
+    let domain = b"v1.mux.cool";
+    request.push(domain.len() as u8);
+    request.extend_from_slice(domain);
+    Ok(Bytes::from(request))
+}
+
+/// Builds a mux New frame for `session_id` targeting `target` with an
+/// initial TCP payload. Used by the mux resumption test to open
+/// sub-connections inside an established VLESS-mux session.
+fn vless_mux_new_tcp_frame(session_id: u16, target: SocketAddr, payload: &[u8]) -> Bytes {
+    let mut buf = BytesMut::new();
+    let target_addr = TargetAddr::Socket(target);
+    encode_frame(
+        &mut buf,
+        session_id,
+        SessionStatus::New,
+        OPTION_DATA,
+        Some(MuxNetwork::Tcp),
+        Some(&target_addr),
+        Some(payload),
+    );
+    buf.freeze()
+}
+
+/// Builds a mux Keep frame carrying additional payload on an existing
+/// sub-connection. The target field is omitted because the
+/// sub-connection's destination was already pinned at New time.
+fn vless_mux_keep_frame(session_id: u16, payload: &[u8]) -> Bytes {
+    let mut buf = BytesMut::new();
+    encode_frame(
+        &mut buf,
+        session_id,
+        SessionStatus::Keep,
+        OPTION_DATA,
+        None,
+        None,
+        Some(payload),
+    );
+    buf.freeze()
+}
+
+/// Reads mux frames off the WebSocket until it has captured one
+/// inbound frame for each requested `expected_session` ID. Returns a
+/// map from session_id to the frame's data payload.
+///
+/// The caller must specify exactly which session IDs to wait for —
+/// the test treats arrival order as undefined because two upstream
+/// echoes race on independent TCP sockets.
+async fn collect_mux_keep_payloads<S>(
+    socket: &mut S,
+    expected: &[u16],
+) -> Result<std::collections::HashMap<u16, Vec<u8>>>
+where
+    S: futures_util::Stream<
+            Item = Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
+        > + Unpin,
+{
+    let mut payloads: std::collections::HashMap<u16, Vec<u8>> =
+        std::collections::HashMap::new();
+    while !expected.iter().all(|id| payloads.contains_key(id)) {
+        let bytes = expect_binary_reply(socket).await?;
+        let ParsedFrame { meta, data, consumed } = parse_frame(&bytes)?
+            .ok_or_else(|| anyhow::anyhow!("incomplete mux frame in WS message"))?;
+        if consumed != bytes.len() {
+            // The server's encode_frame writes one frame per ws-binary
+            // message in this codepath; if that ever stops being true
+            // the test will flag it loudly.
+            bail!(
+                "expected exactly one mux frame per WS binary message, got {consumed} of {} bytes",
+                bytes.len()
+            );
+        }
+        if meta.status == SessionStatus::Keep
+            && let Some(payload) = data
+            && expected.contains(&meta.session_id)
+            && !payloads.contains_key(&meta.session_id)
+        {
+            payloads.insert(meta.session_id, payload.to_vec());
+        }
+    }
+    Ok(payloads)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -580,6 +677,84 @@ async fn ss_resume_after_ttl_expiry_falls_through_to_fresh() -> Result<()> {
         2,
         "expired entry must be ignored and the relay must open a fresh upstream"
     );
+    socket2.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn vless_mux_resume_hit_preserves_all_sub_conns() -> Result<()> {
+    // Two independent TCP echo targets behind two separate mux
+    // sub-connections. After park + resume both sub-conns must still
+    // route to their original upstream — neither target's accept
+    // counter should grow on the second WS session.
+    let (target_a, accepts_a) = spawn_echo_target().await?;
+    let (target_b, accepts_b) = spawn_echo_target().await?;
+    let (server, _user) = spawn_vless_resumption_server().await?;
+    let uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+    // ── Session #1: open mux with sub-conns 1 and 2 ────────────────
+    let (mut socket, issued) = connect_ws_h1(server.listen_addr, "/vless", None, true).await?;
+    let session_id = issued
+        .ok_or_else(|| anyhow::anyhow!("VLESS mux server didn't mint Session ID"))?;
+
+    // Combine the VLESS mux handshake with two mux New frames in a
+    // single WS binary message, matching the smoke test's pattern.
+    let mut handshake = BytesMut::from(vless_mux_request(uuid)?.as_ref());
+    handshake.extend_from_slice(&vless_mux_new_tcp_frame(1, target_a, b"a-ping1"));
+    handshake.extend_from_slice(&vless_mux_new_tcp_frame(2, target_b, b"b-ping1"));
+    socket.send(WsMessage::Binary(handshake.freeze())).await?;
+
+    // First binary reply is the VLESS handshake response.
+    let response_header = expect_binary_reply(&mut socket).await?;
+    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+
+    // Each upstream echoes its payload back — collect by session ID
+    // (order is undefined since sub-conns race independently).
+    let echoes = collect_mux_keep_payloads(&mut socket, &[1, 2]).await?;
+    assert_eq!(echoes[&1], b"a-ping1");
+    assert_eq!(echoes[&2], b"b-ping1");
+    assert_eq!(accepts_a.load(Ordering::SeqCst), 1);
+    assert_eq!(accepts_b.load(Ordering::SeqCst), 1);
+
+    socket.close(None).await?;
+    drop(socket);
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    // ── Session #2: resume the mux atomically. Both sub-conns must
+    //               still be routed to their original targets. ────
+    let (mut socket2, _) =
+        connect_ws_h1(server.listen_addr, "/vless", Some(session_id), true).await?;
+    socket2
+        .send(WsMessage::Binary(vless_mux_request(uuid)?))
+        .await?;
+    let response_header = expect_binary_reply(&mut socket2).await?;
+    assert_eq!(response_header.as_ref(), &[VLESS_VERSION, 0x00]);
+
+    // Probe the resumed sub-conns with fresh Keep payloads. The
+    // server should forward each into the parked upstream, and the
+    // upstream should echo it straight back.
+    socket2
+        .send(WsMessage::Binary(vless_mux_keep_frame(1, b"a-ping2")))
+        .await?;
+    socket2
+        .send(WsMessage::Binary(vless_mux_keep_frame(2, b"b-ping2")))
+        .await?;
+    let echoes = collect_mux_keep_payloads(&mut socket2, &[1, 2]).await?;
+    assert_eq!(echoes[&1], b"a-ping2");
+    assert_eq!(echoes[&2], b"b-ping2");
+
+    // Critical assertion: no fresh upstream connects on resume.
+    assert_eq!(
+        accepts_a.load(Ordering::SeqCst),
+        1,
+        "mux resume must reuse parked TCP sub-conn for target A"
+    );
+    assert_eq!(
+        accepts_b.load(Ordering::SeqCst),
+        1,
+        "mux resume must reuse parked TCP sub-conn for target B"
+    );
+
     socket2.close(None).await?;
     Ok(())
 }
