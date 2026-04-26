@@ -1611,7 +1611,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"tcp\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_tcp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
           "legendFormat": "{{short_instance}} {{user}} client tcp {{direction}}",
           "range": true,
           "refId": "A"
@@ -1707,7 +1707,7 @@
       "targets": [
         {
           "editorMode": "code",
-          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_client_payload_bytes_total{instance=~\"$instance\",user=~\"$user\",transport=\"udp\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
+          "expr": "sum by (short_instance, user, direction) (label_replace(rate(outline_ss_udp_payload_bytes_total{instance=~\"$instance\",user=~\"$user\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")) * 8",
           "legendFormat": "{{short_instance}} {{user}} client udp {{direction}}",
           "range": true,
           "refId": "A"

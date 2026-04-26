@@ -240,16 +240,8 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_payload_bytes_total",
-                "user"      => Arc::clone(&user),
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
-            )
-            .increment(bytes as u64);
-            counter!(
-                "outline_ss_client_payload_bytes_total",
                 "user"      => user,
                 "protocol"  => protocol.as_str(),
-                "transport" => Transport::Tcp.as_str(),
                 "direction" => direction
             )
             .increment(bytes as u64);
@@ -293,16 +285,8 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_payload_bytes_total",
-                "user"      => Arc::clone(&user),
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
-            )
-            .increment(bytes as u64);
-            counter!(
-                "outline_ss_client_payload_bytes_total",
                 "user"      => user,
                 "protocol"  => protocol.as_str(),
-                "transport" => Transport::Udp.as_str(),
                 "direction" => direction
             )
             .increment(bytes as u64);
@@ -487,7 +471,8 @@ mod tests {
         assert!(rendered.contains("transport=\"tcp\",protocol=\"http2\""));
         assert!(rendered.contains("user=\"default\",protocol=\"http2\""));
         assert!(rendered.contains("outline_ss_tcp_upstream_connect_duration_seconds_bucket"));
-        assert!(rendered.contains("outline_ss_client_payload_bytes_total"));
+        assert!(rendered.contains("outline_ss_tcp_payload_bytes_total"));
+        assert!(rendered.contains("outline_ss_udp_payload_bytes_total"));
         assert!(rendered.contains("outline_ss_client_sessions_total"));
         assert!(rendered.contains("outline_ss_client_last_seen_seconds"));
         assert!(rendered.contains("outline_ss_client_active"));
@@ -496,7 +481,7 @@ mod tests {
         assert!(rendered.contains(
             "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
         ));
-        assert!(rendered.contains("transport=\"udp\",direction=\"target_to_client\""));
+        assert!(rendered.contains("direction=\"target_to_client\""));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         #[cfg(target_os = "linux")]
