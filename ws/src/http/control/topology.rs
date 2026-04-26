@@ -20,8 +20,11 @@ pub(crate) struct ControlGroupTopology {
     routing_scope: String,
     auto_failback: bool,
     global_active_uplink: Option<String>,
+    global_active_reason: Option<String>,
     tcp_active_uplink: Option<String>,
+    tcp_active_reason: Option<String>,
     udp_active_uplink: Option<String>,
+    udp_active_reason: Option<String>,
     uplinks: Vec<ControlUplinkTopology>,
 }
 
@@ -45,8 +48,11 @@ struct ControlUplinkTopology {
     udp_healthy: Option<bool>,
     last_error: Option<String>,
     active_global: bool,
+    active_global_reason: Option<String>,
     active_tcp: bool,
+    active_tcp_reason: Option<String>,
     active_udp: bool,
+    active_udp_reason: Option<String>,
 }
 
 fn effective_mode(
@@ -77,7 +83,9 @@ pub(crate) struct ControlSummaryResponse {
     pub(crate) active_udp: usize,
 }
 
-pub(crate) fn build_instance_topology(snapshots: &[UplinkManagerSnapshot]) -> ControlInstanceTopology {
+pub(crate) fn build_instance_topology(
+    snapshots: &[UplinkManagerSnapshot],
+) -> ControlInstanceTopology {
     ControlInstanceTopology {
         groups: snapshots.iter().map(build_group_topology).collect(),
     }
@@ -91,8 +99,11 @@ fn build_group_topology(snapshot: &UplinkManagerSnapshot) -> ControlGroupTopolog
         routing_scope: snapshot.routing_scope.clone(),
         auto_failback: snapshot.auto_failback,
         global_active_uplink: snapshot.global_active_uplink.clone(),
+        global_active_reason: snapshot.global_active_reason.clone(),
         tcp_active_uplink: snapshot.tcp_active_uplink.clone(),
+        tcp_active_reason: snapshot.tcp_active_reason.clone(),
         udp_active_uplink: snapshot.udp_active_uplink.clone(),
+        udp_active_reason: snapshot.udp_active_reason.clone(),
         uplinks: snapshot
             .uplinks
             .iter()
@@ -105,22 +116,12 @@ fn build_uplink_topology(
     snapshot: &UplinkManagerSnapshot,
     uplink: &UplinkSnapshot,
 ) -> ControlUplinkTopology {
-    let tcp_downgrade_active = uplink
-        .h3_tcp_downgrade_until_ms
-        .is_some_and(|ms| ms > 0);
-    let udp_downgrade_active = uplink
-        .h3_udp_downgrade_until_ms
-        .is_some_and(|ms| ms > 0);
-    let tcp_ws_mode_effective = effective_mode(
-        &uplink.transport,
-        uplink.tcp_ws_mode.as_deref(),
-        tcp_downgrade_active,
-    );
-    let udp_ws_mode_effective = effective_mode(
-        &uplink.transport,
-        uplink.udp_ws_mode.as_deref(),
-        udp_downgrade_active,
-    );
+    let tcp_downgrade_active = uplink.h3_tcp_downgrade_until_ms.is_some_and(|ms| ms > 0);
+    let udp_downgrade_active = uplink.h3_udp_downgrade_until_ms.is_some_and(|ms| ms > 0);
+    let tcp_ws_mode_effective =
+        effective_mode(&uplink.transport, uplink.tcp_ws_mode.as_deref(), tcp_downgrade_active);
+    let udp_ws_mode_effective =
+        effective_mode(&uplink.transport, uplink.udp_ws_mode.as_deref(), udp_downgrade_active);
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),
@@ -136,8 +137,18 @@ fn build_uplink_topology(
         udp_healthy: uplink.udp_healthy,
         last_error: uplink.last_error.clone(),
         active_global: snapshot.global_active_uplink.as_deref() == Some(uplink.name.as_str()),
+        active_global_reason: (snapshot.global_active_uplink.as_deref()
+            == Some(uplink.name.as_str()))
+        .then(|| snapshot.global_active_reason.clone())
+        .flatten(),
         active_tcp: snapshot.tcp_active_uplink.as_deref() == Some(uplink.name.as_str()),
+        active_tcp_reason: (snapshot.tcp_active_uplink.as_deref() == Some(uplink.name.as_str()))
+            .then(|| snapshot.tcp_active_reason.clone())
+            .flatten(),
         active_udp: snapshot.udp_active_uplink.as_deref() == Some(uplink.name.as_str()),
+        active_udp_reason: (snapshot.udp_active_uplink.as_deref() == Some(uplink.name.as_str()))
+            .then(|| snapshot.udp_active_reason.clone())
+            .flatten(),
     }
 }
 

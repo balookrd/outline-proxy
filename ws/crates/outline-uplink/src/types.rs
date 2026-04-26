@@ -1,12 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
+use tokio::sync::{watch, Mutex, Notify, RwLock, Semaphore};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
@@ -62,10 +62,13 @@ impl std::fmt::Debug for UplinkManager {
 pub(crate) struct ActiveUplinks {
     /// Global active index (used in `strict_global_active` mode).
     pub(crate) global: Option<usize>,
+    pub(crate) global_reason: Option<String>,
     /// Per-transport TCP active index (used in `strict_per_uplink` mode).
     pub(crate) tcp: Option<usize>,
+    pub(crate) tcp_reason: Option<String>,
     /// Per-transport UDP active index (used in `strict_per_uplink` mode).
     pub(crate) udp: Option<usize>,
+    pub(crate) udp_reason: Option<String>,
 }
 
 pub(crate) struct UplinkManagerInner {
@@ -177,7 +180,6 @@ impl UplinkStatus {
             TransportKind::Udp => &self.udp,
         }
     }
-
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -236,7 +238,6 @@ impl fmt::Display for RoutingKey {
 // imports keep working.
 pub use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnapshot};
 
-
 /// Deque guarded by an async `Mutex` that also maintains an `AtomicUsize`
 /// length counter. The counter is refreshed on `Drop` of the lock guard so
 /// observers that only need a size hint (e.g. `/metrics` scrapes) can read
@@ -248,11 +249,17 @@ pub(crate) struct TrackedDeque {
 
 impl TrackedDeque {
     pub(crate) fn new() -> Self {
-        Self { deque: Mutex::new(VecDeque::new()), len: AtomicUsize::new(0) }
+        Self {
+            deque: Mutex::new(VecDeque::new()),
+            len: AtomicUsize::new(0),
+        }
     }
 
     pub(crate) async fn lock(&self) -> TrackedDequeGuard<'_> {
-        TrackedDequeGuard { guard: self.deque.lock().await, len: &self.len }
+        TrackedDequeGuard {
+            guard: self.deque.lock().await,
+            len: &self.len,
+        }
     }
 
     pub(crate) fn len_hint(&self) -> usize {
