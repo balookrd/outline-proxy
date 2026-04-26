@@ -32,6 +32,7 @@ use super::super::super::{
     connect::{connect_tcp_target, resolve_udp_target},
     constants::{MAX_UDP_PAYLOAD_SIZE, SS_TCP_HANDSHAKE_TIMEOUT_SECS},
     nat::bind_nat_udp_socket,
+    scratch::{TcpRelayBuf, UdpRecvBuf},
     transport::VlessWsServerCtx,
 };
 
@@ -299,9 +300,9 @@ async fn handle_tcp(
     }
 
     let upload = async {
-        let mut buf = vec![0_u8; 16 * 1024];
+        let mut buf = TcpRelayBuf::take();
         loop {
-            let n = match recv.read(&mut buf).await {
+            let n = match recv.read(&mut *buf).await {
                 Ok(Some(n)) => n,
                 Ok(None) => break,
                 Err(error) => {
@@ -322,10 +323,10 @@ async fn handle_tcp(
     };
 
     let download = async {
-        let mut buf = vec![0_u8; 16 * 1024];
+        let mut buf = TcpRelayBuf::take();
         loop {
             let n = up_reader
-                .read(&mut buf)
+                .read(&mut *buf)
                 .await
                 .context("failed to read upstream tcp")?;
             if n == 0 {
@@ -420,9 +421,9 @@ async fn handle_udp(
     let conn_state_for_reader = Arc::clone(conn_state);
     let socket_for_reader = Arc::clone(&socket);
     let reader_task = tokio::spawn(async move {
-        let mut buf = vec![0_u8; MAX_UDP_PAYLOAD_SIZE];
+        let mut buf = UdpRecvBuf::take();
         loop {
-            let n = match socket_for_reader.recv(&mut buf).await {
+            let n = match socket_for_reader.recv(&mut *buf).await {
                 Ok(n) => n,
                 Err(error) => {
                     debug!(?error, session_id, "vless raw-quic udp upstream recv failed");

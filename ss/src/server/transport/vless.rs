@@ -26,6 +26,7 @@ use super::{
             WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
         },
         dns_cache::DnsCache,
+        scratch::TcpRelayBuf,
     },
     vless_mux::{self, MuxRouteCtx, MuxServerCtx, MuxState},
     vless_udp::{self, forward_vless_udp_client_frames},
@@ -502,10 +503,10 @@ where
 {
     let user_counters = metrics.user_counters(&user_id);
     let target_to_client = user_counters.tcp_out(protocol);
-    let mut buffer = vec![0_u8; 16 * 1024];
+    let mut buffer = TcpRelayBuf::take();
     loop {
         let read = upstream_reader
-            .read(&mut buffer)
+            .read(&mut *buffer)
             .await
             .context("failed to read from vless upstream")?;
         if read == 0 {
