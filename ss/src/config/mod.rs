@@ -14,7 +14,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::ConfigArgs;
-use file::{FileConfig, default_config_path_if_exists, load_file_config};
+use file::{FileConfig, SessionResumptionSection, default_config_path_if_exists, load_file_config};
 
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
@@ -158,6 +158,66 @@ pub struct Config {
     /// with any per-field overrides from `[tuning]` applied on top. Validated
     /// at config load time.
     pub tuning: TuningProfile,
+    /// Resolved cross-transport session-resumption knobs. Defaults to
+    /// disabled; opt in via `[session_resumption]` in the config file.
+    /// See `docs/SESSION-RESUMPTION.md`.
+    pub session_resumption: SessionResumptionConfig,
+}
+
+/// Public snapshot of the `[session_resumption]` config. Mirrors
+/// `SessionResumptionSection` but with all fields resolved to concrete
+/// values (defaults applied).
+#[derive(Debug, Clone)]
+pub struct SessionResumptionConfig {
+    pub enabled: bool,
+    pub orphan_ttl_tcp_secs: u64,
+    pub orphan_ttl_udp_secs: u64,
+    pub orphan_per_user_cap: usize,
+    pub orphan_global_cap: usize,
+    pub udp_orphan_backbuf_bytes: usize,
+    pub udp_orphan_total_budget_bytes: usize,
+}
+
+impl Default for SessionResumptionConfig {
+    fn default() -> Self {
+        // Mirrors `docs/SESSION-RESUMPTION.md`. Disabled by default.
+        Self {
+            enabled: false,
+            orphan_ttl_tcp_secs: 30,
+            orphan_ttl_udp_secs: 30,
+            orphan_per_user_cap: 4,
+            orphan_global_cap: 10_000,
+            udp_orphan_backbuf_bytes: 64 * 1024,
+            udp_orphan_total_budget_bytes: 512 * 1024 * 1024,
+        }
+    }
+}
+
+impl SessionResumptionConfig {
+    fn from_section(section: SessionResumptionSection) -> Self {
+        let defaults = Self::default();
+        Self {
+            enabled: section.enabled.unwrap_or(defaults.enabled),
+            orphan_ttl_tcp_secs: section
+                .orphan_ttl_tcp_secs
+                .unwrap_or(defaults.orphan_ttl_tcp_secs),
+            orphan_ttl_udp_secs: section
+                .orphan_ttl_udp_secs
+                .unwrap_or(defaults.orphan_ttl_udp_secs),
+            orphan_per_user_cap: section
+                .orphan_per_user_cap
+                .unwrap_or(defaults.orphan_per_user_cap),
+            orphan_global_cap: section
+                .orphan_global_cap
+                .unwrap_or(defaults.orphan_global_cap),
+            udp_orphan_backbuf_bytes: section
+                .udp_orphan_backbuf_bytes
+                .unwrap_or(defaults.udp_orphan_backbuf_bytes),
+            udp_orphan_total_budget_bytes: section
+                .udp_orphan_total_budget_bytes
+                .unwrap_or(defaults.udp_orphan_total_budget_bytes),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -309,6 +369,9 @@ impl AppMode {
                 .unwrap_or(CipherKind::Chacha20IetfPoly1305),
             access_key: access_key.clone(),
             tuning,
+            session_resumption: SessionResumptionConfig::from_section(
+                file.session_resumption.unwrap_or_default(),
+            ),
         };
         config.validate()?;
 

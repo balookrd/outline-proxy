@@ -11,6 +11,7 @@ use crate::{clock, config::Config, metrics::Metrics, outbound::OutboundIpv6};
 use super::{
     constants::{
         DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS, NAT_EVICTION_INTERVAL_SECS,
+        ORPHAN_SWEEP_INTERVAL_SECS,
     },
     services::Built,
     shutdown::{ShutdownSender, ShutdownSignal},
@@ -93,6 +94,36 @@ pub(super) fn spawn_maintenance(
                         biased;
                         _ = sd.cancelled() => break,
                         _ = interval.tick() => source.refresh(),
+                    }
+                }
+            },
+        );
+    }
+
+    // Cross-transport orphan-registry sweep. Cheap when the registry is
+    // disabled (early-return inside `sweep_expired`).
+    {
+        let registry = Arc::clone(&built.services.orphan_registry);
+        let mut sd = shutdown.clone();
+        spawn_supervised(
+            "orphan_sweep",
+            Arc::clone(&built.services.tcp_server.metrics),
+            Arc::clone(&shutdown_sender),
+            async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(ORPHAN_SWEEP_INTERVAL_SECS));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = sd.cancelled() => break,
+                        _ = interval.tick() => {
+                            let purged = registry.sweep_expired();
+                            if purged > 0 {
+                                debug!(purged, "swept expired orphan-registry entries");
+                            }
+                        }
                     }
                 }
             },

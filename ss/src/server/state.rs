@@ -11,6 +11,7 @@ use crate::{
 
 use super::nat::NatTable;
 use super::replay::ReplayStore;
+use super::resumption::OrphanRegistry;
 use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx};
 
 use super::dns_cache::DnsCache;
@@ -56,16 +57,29 @@ pub(super) struct Services {
     pub(super) tcp_server: Arc<WsTcpServerCtx>,
     pub(super) udp_server: Arc<UdpServerCtx>,
     pub(super) vless_server: Arc<VlessWsServerCtx>,
+    /// Cross-transport session-resumption registry. Always present; if
+    /// resumption is disabled the registry is a no-op (see
+    /// [`OrphanRegistry::enabled`]). Keeping the field unconditional avoids
+    /// `Option` plumbing through every relay path.
+    pub(super) orphan_registry: Arc<OrphanRegistry>,
 }
 
 impl Services {
+    /// Constructs the shared services bundle. Pass `None` for
+    /// `orphan_registry` in tests / setups that do not exercise
+    /// session-resumption — a permanently disabled (no-op) registry will
+    /// be substituted.
     pub(super) fn new(
         metrics: Arc<Metrics>,
         dns_cache: Arc<DnsCache>,
         prefer_ipv4_upstream: bool,
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
         udp: UdpServices,
+        orphan_registry: Option<Arc<OrphanRegistry>>,
     ) -> Self {
+        let orphan_registry = orphan_registry.unwrap_or_else(|| {
+            Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics)))
+        });
         let tcp_server = Arc::new(WsTcpServerCtx {
             metrics: Arc::clone(&metrics),
             dns_cache: Arc::clone(&dns_cache),
@@ -90,6 +104,7 @@ impl Services {
             tcp_server,
             udp_server,
             vless_server,
+            orphan_registry,
         }
     }
 }

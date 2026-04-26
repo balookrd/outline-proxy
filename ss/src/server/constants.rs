@@ -82,3 +82,9 @@ pub(super) const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 // Period at which the background task sweeps idle NAT entries and stale
 // replay-filter sessions.
 pub(super) const NAT_EVICTION_INTERVAL_SECS: u64 = 60;
+
+// How often the orphan-registry sweeper wakes to evict TTL-expired parked
+// sessions. The TTL itself (per-kind) lives on the resumption config; this
+// only bounds the lag between a deadline passing and the entry being
+// reclaimed. Five seconds matches `docs/SESSION-RESUMPTION.md`.
+pub(super) const ORPHAN_SWEEP_INTERVAL_SECS: u64 = 5;

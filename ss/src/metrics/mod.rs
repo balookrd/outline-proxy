@@ -413,6 +413,50 @@ impl Metrics {
         });
     }
 
+    // ── Session-resumption metrics ─────────────────────────────────────────────
+
+    /// Counts a session that was just moved into the orphan registry. The
+    /// `kind` label matches `Parked::kind()` (`tcp`, `udp_single`, etc.).
+    pub fn record_orphan_parked(&self, kind: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_orphan_park_total", "kind" => kind).increment(1);
+        });
+    }
+
+    /// Counts a successful resume. `kind` is the orphan's payload kind.
+    pub fn record_orphan_resume_hit(&self, kind: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_orphan_resume_hit_total", "kind" => kind).increment(1);
+        });
+    }
+
+    /// Counts a failed resume attempt by reason (`unknown`, `disabled`).
+    pub fn record_orphan_resume_miss(&self, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_orphan_resume_miss_total", "reason" => reason).increment(1);
+        });
+    }
+
+    /// Counts an eviction from the orphan registry by reason
+    /// (`ttl_expired`, `per_user_cap`, `global_cap`).
+    pub fn record_orphan_evicted(&self, kind: &'static str, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_orphan_evicted_total",
+                "kind"   => kind,
+                "reason" => reason
+            )
+            .increment(1);
+        });
+    }
+
+    /// Sets the gauge tracking the current count of parked entries by kind.
+    pub fn set_orphan_current(&self, kind: &'static str, count: f64) {
+        with_local_recorder(&self.recorder, || {
+            gauge!("outline_ss_orphan_current", "kind" => kind).set(count);
+        });
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────────
 
     pub fn render_prometheus(&self) -> String {
@@ -469,6 +513,7 @@ mod tests {
             method: crate::config::CipherKind::Chacha20IetfPoly1305,
             access_key: Default::default(),
             tuning: Default::default(),
+            session_resumption: Default::default(),
             config_path: None,
             control: None,
             dashboard: None,

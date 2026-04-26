@@ -17,6 +17,7 @@ use super::{
     dns_cache::DnsCache,
     nat::NatTable,
     replay::ReplayStore,
+    resumption::{OrphanRegistry, ResumptionConfig},
     setup::{
         UserRoute, VlessUserRoute, build_transport_route_map, build_user_routes,
         build_vless_transport_route_map, build_vless_user_routes, user_keys,
@@ -91,6 +92,8 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     } else {
         Some(Arc::new(Semaphore::new(config.tuning.udp_max_concurrent_relay_tasks)))
     };
+    let resumption_cfg = ResumptionConfig::from(&config.session_resumption);
+    let orphan_registry = Arc::new(OrphanRegistry::new(resumption_cfg, Arc::clone(&metrics)));
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
@@ -101,6 +104,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
             replay_store,
             relay_semaphore: udp_relay_semaphore,
         },
+        Some(orphan_registry),
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::clone(&auth_users),

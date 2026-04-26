@@ -431,6 +431,7 @@ mod tests {
             method: CipherKind::Chacha20IetfPoly1305,
             access_key: Default::default(),
             tuning: Default::default(),
+            session_resumption: Default::default(),
             config_path: None,
             control: None,
             dashboard: None,
