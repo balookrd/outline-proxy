@@ -319,10 +319,19 @@ async fn run_vless_relay<T: WsSocket>(
     Ok(())
 }
 
-/// Attempts to move the live VLESS-TCP upstream into the orphan registry.
+/// Attempts to move the live VLESS upstream into the orphan registry.
 /// Returns `true` iff the upstream was parked; on `false` the caller
-/// performs the legacy shutdown. Only the single-target TCP path is
-/// eligible — UDP, Mux and unauthenticated sessions always fall through.
+/// performs the legacy shutdown.
+///
+/// Two upstream shapes are eligible:
+/// - **Single-target TCP** (`UpstreamSession::Tcp`): the same hand-off
+///   as the SS-WS path, parked under [`Parked::Tcp`].
+/// - **VLESS mux** (`UpstreamSession::Mux`): every sub-connection is
+///   harvested and packed into a single [`Parked::VlessMux`] entry —
+///   atomic park, by-design no partial-resume.
+///
+/// UDP single-target sessions and unauthenticated sessions still fall
+/// through to the legacy shutdown path.
 async fn try_park_vless_on_drop(
     state: &mut VlessRelayState,
     server: &VlessWsServerCtx,
@@ -334,9 +343,19 @@ async fn try_park_vless_on_drop(
     let Some(session_id) = state.issued_session_id else {
         return false;
     };
-    if !matches!(state.upstream, UpstreamSession::Tcp(_)) {
-        return false;
+    match state.upstream {
+        UpstreamSession::Tcp(_) => try_park_vless_tcp(state, server, route, session_id).await,
+        UpstreamSession::Mux(_) => try_park_vless_mux(state, server, route, session_id).await,
+        UpstreamSession::Udp(_) | UpstreamSession::None => false,
     }
+}
+
+async fn try_park_vless_tcp(
+    state: &mut VlessRelayState,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+    session_id: SessionId,
+) -> bool {
     let Some(cancel) = state.relay_cancel.take() else {
         return false;
     };
@@ -406,6 +425,62 @@ async fn try_park_vless_on_drop(
     // the next client stream re-runs UUID match against the route's
     // user list. Restore on the relay state so the caller's cleanup
     // drops it normally.
+    state.authenticated_user = Some(user);
+    true
+}
+
+/// Atomic VLESS-mux park. Replaces `state.upstream` with `None`,
+/// harvests every sub-connection's reader half (for TCP) or socket
+/// reference (for UDP), and inserts the whole bundle as a single
+/// [`Parked::VlessMux`] entry. Empty muxes are not parked — there is
+/// no useful state left to reattach.
+async fn try_park_vless_mux(
+    state: &mut VlessRelayState,
+    server: &VlessWsServerCtx,
+    route: &VlessWsRouteCtx,
+    session_id: SessionId,
+) -> bool {
+    let mux = match std::mem::replace(&mut state.upstream, UpstreamSession::None) {
+        UpstreamSession::Mux(mux) => mux,
+        other => {
+            // Should not happen given the caller's match, but keep the
+            // cleanup honest by restoring whatever we found.
+            state.upstream = other;
+            return false;
+        },
+    };
+    if !mux.is_parkable() {
+        // No live sub-conns — restore as None (already done) and let
+        // the caller's legacy path handle the rest.
+        return false;
+    }
+    let Some(user) = state.authenticated_user.take() else {
+        // No authenticated user means we never finished the handshake;
+        // mux state is bogus.
+        return false;
+    };
+    let owner = user.label_arc();
+    let parked = mux
+        .harvest_into_parked(Arc::clone(&owner), route.protocol)
+        .await;
+    if parked.sub_conns.is_empty() {
+        // All sub-conns failed to harvest (cancel races / reader
+        // panics). Nothing worth the registry slot.
+        state.authenticated_user = Some(user);
+        return false;
+    }
+    debug!(
+        user = %owner,
+        path = %route.path,
+        sub_conns = parked.sub_conns.len(),
+        "parking vless mux upstream into orphan registry",
+    );
+    server
+        .orphan_registry
+        .park(session_id, Parked::VlessMux(parked));
+    // Mirror the TCP path's restoration so the caller sees a still-
+    // populated `authenticated_user` for any post-park bookkeeping
+    // (e.g. session-finish guards). The cloned `Arc<str>` is cheap.
     state.authenticated_user = Some(user);
     true
 }
@@ -545,6 +620,90 @@ async fn establish_vless_mux_upstream<Msg>(
 where
     Msg: Send + 'static,
 {
+    // Resume attempt: if the client offered a Session ID and the
+    // registry has a parked VLESS-mux entry for this user, re-attach
+    // every sub-connection atomically. The mux's request frame
+    // arrives over the WS frame stream, so any leftover bytes after
+    // the VLESS handshake are routed into the resumed mux just like
+    // a fresh one.
+    let user_id_for_resume = user.label_arc();
+    if let Some(resume_id) = state.pending_resume_request.take()
+        && let ResumeOutcome::Hit(parked_kind) =
+            server.orphan_registry.take_for_resume(resume_id, &user_id_for_resume)
+    {
+        match parked_kind {
+            Parked::VlessMux(parked) => {
+                let sub_count = parked.sub_conns.len();
+                info!(
+                    user = user.label(),
+                    path = %route.path,
+                    sub_conns = sub_count,
+                    "vless mux session resumed from orphan registry",
+                );
+                outbound
+                    .data_tx
+                    .send((outbound.make_binary)(Bytes::from_static(&[
+                        vless::VERSION,
+                        0x00,
+                    ])))
+                    .await
+                    .map_err(|error| {
+                        anyhow!("failed to queue vless mux response header on resume: {error}")
+                    })?;
+
+                let mux = vless_mux::attach_parked(
+                    parked,
+                    outbound.data_tx.clone(),
+                    outbound.make_binary,
+                    Arc::clone(&server.metrics),
+                    route.protocol,
+                );
+                state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
+                state.authenticated_user = Some(user);
+                state.upstream = UpstreamSession::Mux(mux);
+
+                // Forward any post-handshake bytes carried by the
+                // current frame into the freshly-attached mux.
+                let leftover = state.header_buffer.split_off(request.consumed);
+                state.header_buffer.clear();
+                if !leftover.is_empty()
+                    && let UpstreamSession::Mux(mux) = &mut state.upstream
+                {
+                    let mux_server = MuxServerCtx {
+                        dns_cache: Arc::clone(&server.dns_cache),
+                        prefer_ipv4_upstream: server.prefer_ipv4_upstream,
+                        outbound_ipv6: server.outbound_ipv6.clone(),
+                        metrics: Arc::clone(&server.metrics),
+                    };
+                    let mux_route = MuxRouteCtx {
+                        protocol: route.protocol,
+                        path: Arc::clone(&route.path),
+                    };
+                    vless_mux::handle_client_bytes(
+                        mux,
+                        &leftover,
+                        &mux_server,
+                        &mux_route,
+                        outbound.data_tx,
+                        outbound.make_binary,
+                    )
+                    .await?;
+                }
+                return Ok(());
+            },
+            Parked::Tcp(_) => {
+                warn!(
+                    user = user.label(),
+                    path = %route.path,
+                    "rejecting vless mux resume: parked entry is single-target VLESS-TCP, not mux"
+                );
+                return Err(VlessFrameError::Fatal(anyhow!(
+                    "cross-shape resume rejected: parked session is not a mux"
+                )));
+            },
+        }
+    }
+
     info!(user = user.label(), path = %route.path, "vless mux session (xudp)");
 
     outbound

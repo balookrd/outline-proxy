@@ -124,6 +124,7 @@ impl OrphanRegistry {
         let kind = parked.kind();
         let owner = match &parked {
             Parked::Tcp(tcp) => Arc::clone(&tcp.owner),
+            Parked::VlessMux(mux) => Arc::clone(&mux.owner),
         };
         let deadline = Instant::now() + self.ttl_for_kind(kind);
 

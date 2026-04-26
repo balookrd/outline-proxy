@@ -1,21 +1,35 @@
 //! Parked upstream state that is reattached to a resuming client stream.
 //!
-//! Only the TCP variant is implemented for the MVP. UDP / VLESS-mux /
-//! raw-QUIC variants are added in subsequent stages but live in the same
-//! enum so that the registry interface does not change.
+//! Two variants are implemented today:
+//! - `Tcp` — single-target SS-over-WS or single-target VLESS-over-WS.
+//! - `VlessMux` — atomic park of an entire VLESS mux session, including
+//!   every TCP and UDP sub-connection multiplexed inside it.
+//!
+//! UDP-only single-target and raw-QUIC variants are out of scope for
+//! the current revision but slot into the same enum.
 
-use std::sync::Arc;
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+};
 
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use bytes::BytesMut;
+use tokio::net::{
+    UdpSocket,
+    tcp::{OwnedReadHalf, OwnedWriteHalf},
+};
 
 use crate::{
     crypto::UserKey,
     metrics::{PerUserCounters, Protocol, TcpUpstreamGuard},
+    protocol::vless::VlessUser,
 };
 
 /// Variant-erased payload of a parked session entry.
 pub(crate) enum Parked {
     Tcp(ParkedTcp),
+    VlessMux(ParkedVlessMux),
 }
 
 impl Parked {
@@ -23,13 +37,14 @@ impl Parked {
     pub(crate) fn kind(&self) -> &'static str {
         match self {
             Self::Tcp(_) => "tcp",
+            Self::VlessMux(_) => "vless_mux",
         }
     }
 
     /// All kind labels the registry can produce. Used by the sweeper to
     /// refresh per-kind gauges after evictions.
     pub(crate) fn all_kinds() -> &'static [&'static str] {
-        &["tcp"]
+        &["tcp", "vless_mux"]
     }
 }
 
@@ -88,4 +103,50 @@ pub(crate) struct ParkedTcp {
     pub(crate) protocol_context: TcpProtocolContext,
     pub(crate) user_counters: Arc<PerUserCounters>,
     pub(crate) upstream_guard: TcpUpstreamGuard,
+}
+
+/// Atomic park of a VLESS mux session. The whole multiplex — every
+/// TCP and UDP sub-connection inside it — is preserved as a single
+/// unit; partial resume is not supported.
+///
+/// At park time each sub-connection's reader task has been cancelled
+/// and its harvested half (TCP reader / UDP socket reference) lives
+/// under [`ParkedMuxSubConn::kind`]. On resume the relay code re-
+/// spawns one reader task per sub-connection against the new client
+/// stream's outbound channel, restoring the multiplex without
+/// reopening any upstream socket.
+pub(crate) struct ParkedVlessMux {
+    pub(crate) sub_conns: HashMap<u16, ParkedMuxSubConn>,
+    /// Partially-parsed mux frame buffer. Carrying it across the park
+    /// preserves any half-decoded inbound frame the client already
+    /// sent before the WebSocket dropped — without this the resume
+    /// would have to re-buffer the partial frame from scratch.
+    pub(crate) buffer: BytesMut,
+    pub(crate) user: VlessUser,
+    pub(crate) owner: Arc<str>,
+    /// Protocol of the original session (HTTP/1, HTTP/2, HTTP/3).
+    /// Currently informational only; the resume path discovers its
+    /// own protocol from the new client stream.
+    #[allow(dead_code)]
+    pub(crate) protocol: Protocol,
+    pub(crate) user_counters: Arc<PerUserCounters>,
+}
+
+/// One entry in a parked mux's `sub_conns` map. Mirrors the live
+/// `MuxSubConn` shape but with the reader-task replaced by its
+/// harvested handle (`OwnedReadHalf` for TCP, `Arc<UdpSocket>` for
+/// UDP — already shared, so no harvest required).
+pub(crate) struct ParkedMuxSubConn {
+    pub(crate) kind: ParkedMuxSubKind,
+}
+
+pub(crate) enum ParkedMuxSubKind {
+    Tcp {
+        writer: OwnedWriteHalf,
+        reader: OwnedReadHalf,
+    },
+    Udp {
+        socket: Arc<UdpSocket>,
+        default_target: SocketAddr,
+    },
 }
