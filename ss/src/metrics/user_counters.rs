@@ -19,6 +19,7 @@ const VARIANTS: usize = Protocol::VARIANTS_COUNT;
 pub struct PerUserCounters {
     tcp_payload_client_to_target: [Counter; VARIANTS],
     tcp_payload_target_to_client: [Counter; VARIANTS],
+    udp_payload_client_to_target: [Counter; VARIANTS],
     udp_payload_target_to_client: [Counter; VARIANTS],
 }
 
@@ -34,6 +35,11 @@ impl PerUserCounters {
                 "outline_ss_tcp_payload_bytes_total",
                 &user_id,
                 "target_to_client",
+            ),
+            udp_payload_client_to_target: build_payload_array(
+                "outline_ss_udp_payload_bytes_total",
+                &user_id,
+                "client_to_target",
             ),
             udp_payload_target_to_client: build_payload_array(
                 "outline_ss_udp_payload_bytes_total",
@@ -51,6 +57,11 @@ impl PerUserCounters {
     #[inline]
     pub fn tcp_out(&self, protocol: Protocol) -> &Counter {
         &self.tcp_payload_target_to_client[protocol.as_index()]
+    }
+
+    #[inline]
+    pub fn udp_in(&self, protocol: Protocol) -> &Counter {
+        &self.udp_payload_client_to_target[protocol.as_index()]
     }
 
     #[inline]

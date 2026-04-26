@@ -14,6 +14,7 @@ use std::sync::{
 use anyhow::{Context, Result, anyhow};
 use bytes::{BufMut, BytesMut};
 use dashmap::DashMap;
+use metrics::Counter;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::UdpSocket,
@@ -51,7 +52,11 @@ pub(in crate::server) struct VlessQuicConn {
 
 struct VlessUdpSession {
     socket: Arc<UdpSocket>,
-    user_label: Arc<str>,
+    /// Pre-resolved client→target byte counter for this session's user.
+    /// Holding the resolved [`Counter`] handle lets the per-datagram spawn
+    /// task (and the oversize-record router) increment without an
+    /// `Arc::clone(&user_label)` or a `counter!()` registry lookup.
+    udp_in: Counter,
 }
 
 impl VlessQuicConn {
@@ -379,11 +384,16 @@ async fn handle_udp(
     let socket = Arc::new(socket);
 
     let session_id = conn_state.allocate_session();
+    let udp_in = server
+        .metrics
+        .user_counters(&user.label_arc())
+        .udp_in(Protocol::QuicRaw)
+        .clone();
     conn_state.register(
         session_id,
         Arc::new(VlessUdpSession {
             socket: Arc::clone(&socket),
-            user_label: user.label_arc(),
+            udp_in,
         }),
     );
 
@@ -540,11 +550,7 @@ async fn handle_udp(
 /// Route one inbound `[session_id_4B || payload]` record into the
 /// matching session's upstream UDP socket. Identical dispatch logic
 /// to the datagram pump — both sources route by the same prefix.
-async fn route_vless_udp_record(
-    record: bytes::Bytes,
-    server: &VlessWsServerCtx,
-    conn_state: &VlessQuicConn,
-) {
+async fn route_vless_udp_record(record: bytes::Bytes, conn_state: &VlessQuicConn) {
     if record.len() < 4 {
         warn!(len = record.len(), "vless raw-quic oversize record too short, dropping");
         return;
@@ -563,12 +569,7 @@ async fn route_vless_udp_record(
         debug!(session_id, ?error, "vless raw-quic upstream send failed (oversize record)");
         return;
     }
-    server.metrics.record_udp_payload_bytes(
-        Arc::clone(&session.user_label),
-        Protocol::QuicRaw,
-        "client_to_target",
-        payload.len(),
-    );
+    session.udp_in.increment(payload.len() as u64);
 }
 
 /// Pump task for the inbound side of the connection-level oversize
@@ -577,14 +578,13 @@ async fn route_vless_udp_record(
 /// stream.
 pub(in crate::server) async fn serve_raw_vless_oversize_records(
     stream: Arc<super::OversizeStream>,
-    server: Arc<VlessWsServerCtx>,
     conn_state: Arc<VlessQuicConn>,
 ) -> Result<()> {
     debug!("raw VLESS QUIC oversize-record pump started");
     loop {
         match stream.recv_record().await {
             Ok(Some(record)) => {
-                route_vless_udp_record(record, &server, &conn_state).await;
+                route_vless_udp_record(record, &conn_state).await;
             }
             Ok(None) => return Ok(()),
             Err(error) => return Err(error.context("vless raw-quic oversize-record read failed")),
@@ -631,20 +631,14 @@ pub(in crate::server) async fn serve_raw_vless_quic_datagrams(
             warn!(session_id, len = payload_len, "vless raw-quic datagram exceeds max payload");
             continue;
         }
-        let metrics = Arc::clone(&server.metrics);
-        let user_label = Arc::clone(&session.user_label);
+        let counter = session.udp_in.clone();
         let socket = Arc::clone(&session.socket);
         tokio::spawn(async move {
             if let Err(error) = socket.send(&payload).await {
                 debug!(session_id, ?error, "vless raw-quic upstream send failed");
                 return;
             }
-            metrics.record_udp_payload_bytes(
-                user_label,
-                Protocol::QuicRaw,
-                "client_to_target",
-                payload_len,
-            );
+            counter.increment(payload_len as u64);
         });
     }
 }
