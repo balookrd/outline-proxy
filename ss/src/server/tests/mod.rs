@@ -30,6 +30,7 @@ mod auth;
 mod h3;
 mod nat;
 mod raw_quic;
+mod resumption;
 mod shadowsocks;
 mod vless;
 mod websocket;

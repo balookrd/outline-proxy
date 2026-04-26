@@ -73,6 +73,12 @@ pub(super) async fn tcp_websocket_upgrade(
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    // The `Option<SessionId>` is `Copy`, so save the issued ID by value
+    // before moving `resume` into the upgrade closure. This MUST be the
+    // same ID the relay later parks under — re-parsing the headers
+    // would mint a different ID and silently desynchronise the
+    // wire-side response from the server-side park lookup.
+    let issued_for_response = resume.issued_session_id;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
@@ -83,13 +89,13 @@ pub(super) async fn tcp_websocket_upgrade(
         let result = tcp::handle_tcp_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "tcp");
     });
-    // The `ResumeContext` was moved into the upgrade closure, so we re-
-    // parse the header set here to attach the response side. This is
-    // strictly cheaper than threading a clone through the upgrade
-    // future, and the lookup is on a 0-or-1 element span.
-    let response_resume =
-        ResumeContext::from_request_headers(&headers, &state.services.orphan_registry);
-    response_resume.issue_session_header(response.headers_mut());
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response
+            .headers_mut()
+            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+    }
     response
 }
 
@@ -120,6 +126,11 @@ pub(super) async fn vless_websocket_upgrade(
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    // Save the minted ID by value (`Copy`) so we can attach the
+    // `X-Outline-Session` response header without re-parsing headers
+    // and minting a fresh, mismatched ID. See the matching note in
+    // `tcp_websocket_upgrade`.
+    let issued_for_response = resume.issued_session_id;
     let mut response = ws.on_upgrade(move |socket| async move {
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
@@ -130,9 +141,13 @@ pub(super) async fn vless_websocket_upgrade(
         let result = vless::handle_vless_connection(socket, server, route_ctx, resume).await;
         finish_ws_session(session, result, "vless");
     });
-    let response_resume =
-        ResumeContext::from_request_headers(&headers, &state.services.orphan_registry);
-    response_resume.issue_session_header(response.headers_mut());
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response
+            .headers_mut()
+            .insert(tcp::SESSION_RESPONSE_HEADER, value);
+    }
     response
 }
 
