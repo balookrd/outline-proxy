@@ -482,7 +482,7 @@ async fn global_scope_prioritizes_tcp_quality_over_udp_quality() {
 }
 
 #[tokio::test]
-async fn global_scope_keeps_udp_on_tcp_selected_uplink() {
+async fn global_scope_switches_udp_away_from_tcp_selected_uplink_when_udp_is_down() {
     let mut config = lb();
     config.mode = LoadBalancingMode::ActivePassive;
     config.routing_scope = RoutingScope::Global;
@@ -504,7 +504,82 @@ async fn global_scope_keeps_udp_on_tcp_selected_uplink() {
 
     let udp_target = TargetAddr::IpV4("1.1.1.1".parse().unwrap(), 53);
     let udp_candidates = manager.udp_candidates(Some(&udp_target)).await;
-    assert_eq!(udp_candidates[0].uplink.name, "primary");
+    assert_eq!(udp_candidates[0].uplink.name, "backup");
+}
+
+#[tokio::test]
+async fn global_scope_switches_when_active_udp_probe_is_unhealthy() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        ProbeConfig {
+            interval: Duration::from_secs(30),
+            timeout: Duration::from_secs(5),
+            max_concurrent: 1,
+            max_dials: 1,
+            min_failures: 1,
+            attempts: 1,
+            ws: WsProbeConfig { enabled: true },
+            http: None,
+            dns: None,
+            tcp: None,
+        },
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_udp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 60).await;
+    set_udp_status(&manager, 1, true, 60).await;
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "primary");
+
+    set_udp_status(&manager, 0, false, 20).await;
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(second[0].uplink.name, "backup");
+}
+
+#[tokio::test]
+async fn global_scope_switches_when_active_udp_runtime_cooldown_is_active() {
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            make_uplink("primary", "wss://primary.example.com/tcp"),
+            make_uplink("backup", "wss://backup.example.com/tcp"),
+        ],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 20).await;
+    set_udp_status(&manager, 0, true, 20).await;
+    set_tcp_status(&manager, 1, true, 60).await;
+    set_udp_status(&manager, 1, true, 60).await;
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let first = manager.tcp_candidates(&target).await;
+    assert_eq!(first[0].uplink.name, "primary");
+
+    manager.inner.with_status_mut(0, |status| {
+        status.udp.cooldown_until = Some(Instant::now() + Duration::from_secs(10));
+    });
+
+    let second = manager.tcp_candidates(&target).await;
+    assert_eq!(second[0].uplink.name, "backup");
 }
 
 // When probe is disabled, the global scope falls back to cooldown-based gating:

@@ -18,6 +18,29 @@ fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
     right_weight.partial_cmp(&left_weight).unwrap_or(Ordering::Equal)
 }
 
+fn transport_reason_label(transport: TransportKind) -> &'static str {
+    match transport {
+        TransportKind::Tcp => "TCP",
+        TransportKind::Udp => "UDP",
+    }
+}
+
+fn transport_failover_detail(
+    status: &super::super::types::UplinkStatus,
+    transport: TransportKind,
+    now: Instant,
+    include_probe_health: bool,
+) -> Option<String> {
+    let label = transport_reason_label(transport);
+    if include_probe_health && status.of(transport).healthy == Some(false) {
+        Some(format!("{label} probe marked active unhealthy"))
+    } else if cooldown_active(status, transport, now) {
+        Some(format!("{label} runtime cooldown active"))
+    } else {
+        None
+    }
+}
+
 impl UplinkManager {
     pub async fn tcp_candidates(&self, target: &TargetAddr) -> Vec<UplinkCandidate> {
         if self.strict_active_uplink_for(TransportKind::Tcp) {
@@ -146,7 +169,8 @@ impl UplinkManager {
             .enumerate()
             .filter(|(_, u)| supports_transport_for_scope(u, transport, scope))
             .any(|(index, _)| {
-                selection_health(&self.inner.read_status(index), transport, now, scope)
+                let status = self.inner.read_status(index);
+                selection_health(&status, &self.inner.uplinks[index], transport, now, scope)
             })
     }
 
@@ -264,7 +288,7 @@ impl UplinkManager {
                 CandidateState {
                     index,
                     uplink: uplink.clone(),
-                    healthy: selection_health(&status, transport, now, scope),
+                    healthy: selection_health(&status, uplink, transport, now, scope),
                     score: selection_score(
                         &status,
                         uplink.weight,
@@ -275,6 +299,33 @@ impl UplinkManager {
                     ),
                     status,
                 }
+            })
+            .collect()
+    }
+
+    fn strict_active_failure_details(
+        &self,
+        candidate: &CandidateState,
+        gate_transport: TransportKind,
+        now: Instant,
+    ) -> Vec<String> {
+        let include_probe_health = self.inner.probe.enabled();
+        let mut transports = vec![gate_transport];
+        if self.inner.load_balancing.routing_scope == RoutingScope::Global
+            && candidate.uplink.supports_udp()
+            && gate_transport != TransportKind::Udp
+        {
+            transports.push(TransportKind::Udp);
+        }
+        transports
+            .into_iter()
+            .filter_map(|transport| {
+                transport_failover_detail(
+                    &candidate.status,
+                    transport,
+                    now,
+                    include_probe_health,
+                )
             })
             .collect()
     }
@@ -340,6 +391,7 @@ impl UplinkManager {
         let gate_transport =
             strict_gate_transport(self.inner.load_balancing.routing_scope, transport);
         let mut switching_from_cooldown = false;
+        let mut failover_reason: Option<String> = None;
         if let Some(active_index) = current_active {
             let active_failed = failed_active_index.is_some_and(|index| index == active_index);
             if let Some(candidate) =
@@ -355,11 +407,12 @@ impl UplinkManager {
                 // When probe is disabled, runtime failures do set tcp_healthy = Some(false),
                 // but that field is not used for the switch decision — instead we fall back
                 // to cooldown-based gating so that failures can still cause a switch.
+                let active_failure_details =
+                    self.strict_active_failure_details(candidate, gate_transport, now);
                 let probe_healthy = if self.inner.probe.enabled() {
-                    match gate_transport {
-                        TransportKind::Tcp => candidate.status.tcp.healthy != Some(false),
-                        TransportKind::Udp => candidate.status.udp.healthy != Some(false),
-                    }
+                    !active_failure_details
+                        .iter()
+                        .any(|detail| detail.contains("probe marked active unhealthy"))
                 } else {
                     true
                 };
@@ -374,7 +427,7 @@ impl UplinkManager {
                 {
                     probe_healthy
                 } else {
-                    probe_healthy && !cooldown_active(&candidate.status, gate_transport, now)
+                    probe_healthy && active_failure_details.is_empty()
                 };
                 if should_keep && !active_failed {
                     // When auto_failback is disabled (default), never switch away
@@ -469,10 +522,28 @@ impl UplinkManager {
                     // Active uplink is unhealthy or on cooldown — switch with
                     // penalty-aware re-sort to avoid oscillating back immediately.
                     switching_from_cooldown = true;
+                    let gate_label = transport_reason_label(gate_transport);
+                    let mut details = vec![if active_failed {
+                        format!("failover: {gate_label} runtime failure on active uplink")
+                    } else {
+                        active_failure_details.first().cloned()
+                            .map(|detail| format!("failover: {detail}"))
+                            .unwrap_or_else(|| {
+                                format!("failover: {gate_label} active gate rejected current uplink")
+                            })
+                    }];
+                    for detail in active_failure_details.iter().skip(1) {
+                        details.push(detail.clone());
+                    }
+                    failover_reason = Some(details.join("; "));
                 }
             } else {
                 // Active uplink no longer in the candidate set — re-select.
                 switching_from_cooldown = true;
+                failover_reason = Some(format!(
+                    "failover: active uplink no longer supports {}",
+                    transport_reason_label(gate_transport)
+                ));
             }
         }
 
@@ -490,8 +561,10 @@ impl UplinkManager {
             let selected = candidates[0].index;
             let reason = match (current_active, switching_from_cooldown) {
                 (None, _) => "initial selection",
-                (Some(_), true) => "failover: active unhealthy or in cooldown",
                 (Some(_), false) => "auto-failback to higher priority uplink",
+                (Some(_), true) => failover_reason
+                    .as_deref()
+                    .unwrap_or("failover: active unhealthy or in cooldown"),
             };
             self.set_active_uplink_index_for_transport(transport, selected, reason)
                 .await;

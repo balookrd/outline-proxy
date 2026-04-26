@@ -152,7 +152,7 @@ tun2udp + tun2tcp"]
 - routing scope:
   - `per_flow`: decisions are made independently per routing key / target
   - `per_uplink`: one active uplink is shared process-wide per transport (`tcp` and `udp`); in `active_passive` mode the pinned TCP and UDP uplinks do not expire with `sticky_ttl`, established SOCKS TCP tunnels stay pinned to the uplink that completed setup while non-migratable flows that still depend on the older active uplink may be reselected or closed after a switch, and penalty history is not folded into the strict per-transport score
-  - `global`: one shared process-wide active uplink is used for new user traffic across both `tcp` and `udp`; selection is intentionally biased toward TCP health and TCP score so UDP quality has only weak influence on which uplink becomes globally active, the active global uplink does not expire with `sticky_ttl`, strict active selection now stays pinned until the current global uplink enters cooldown, penalty history is not folded into the strict global score, and TUN flows that remain pinned to an older uplink after a global switch are actively closed so they reconnect through the new global uplink
+  - `global`: one shared process-wide active uplink is used for new user traffic across both `tcp` and `udp`; selection is intentionally biased toward TCP score, but a UDP-capable active uplink is considered failed when its UDP probe marks it unhealthy or its UDP runtime cooldown is active, the active global uplink does not expire with `sticky_ttl`, penalty history is not folded into the strict global score, and TUN flows that remain pinned to an older uplink after a global switch are actively closed so they reconnect through the new global uplink
 - per-uplink static `weight`
 - RTT EWMA scoring
 - failure penalty model with decay
@@ -890,7 +890,7 @@ Routing scope behavior:
 
 - `per_flow`: different targets can choose different uplinks
 - `per_uplink`: one selected uplink is shared per transport, so TCP and UDP may still use different uplinks; in `active_passive` mode each transport keeps its own pinned active uplink until failover or explicit reselection, and penalties no longer bias the strict transport score
-- `global`: one selected uplink is shared across all new user traffic until failover or explicit reselection, with TCP health and TCP score taking priority over UDP quality; in this mode strict selection stays pinned to the current active uplink until it enters cooldown, penalties no longer bias the strict global score, and UDP traffic no longer falls through to a backup uplink while the current global uplink is still the active TCP choice
+- `global`: one selected uplink is shared across all new user traffic until failover or explicit reselection. TCP score still takes priority for ranking, but UDP-capable active uplinks must also keep UDP healthy: a UDP probe failure or UDP runtime cooldown can trigger a global failover. Penalties no longer bias the strict global score.
 
 **Auto-failback behavior:** controlled by `load_balancing.auto_failback` (default `false`).
 
