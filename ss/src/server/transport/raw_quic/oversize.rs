@@ -22,7 +22,7 @@
 //! width / ordering MUST be made on both sides simultaneously and bump
 //! the ALPN version.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
@@ -159,7 +159,7 @@ impl OversizeStream {
 /// first.
 #[derive(Default)]
 pub struct OversizeStreamSlot {
-    inner: parking_lot::Mutex<Option<Arc<OversizeStream>>>,
+    inner: OnceLock<Arc<OversizeStream>>,
 }
 
 impl OversizeStreamSlot {
@@ -168,16 +168,14 @@ impl OversizeStreamSlot {
     }
 
     pub fn install(&self, stream: Arc<OversizeStream>) -> Arc<OversizeStream> {
-        let mut guard = self.inner.lock();
-        if let Some(existing) = guard.as_ref() {
-            return Arc::clone(existing);
-        }
-        *guard = Some(Arc::clone(&stream));
-        stream
+        // Race loser's `stream` is dropped here, which closes the
+        // redundant bidi pair — same behaviour as the prior Mutex.
+        let mut slot = Some(stream);
+        Arc::clone(self.inner.get_or_init(|| slot.take().expect("first call")))
     }
 
     pub fn get(&self) -> Option<Arc<OversizeStream>> {
-        self.inner.lock().as_ref().map(Arc::clone)
+        self.inner.get().map(Arc::clone)
     }
 }
 
