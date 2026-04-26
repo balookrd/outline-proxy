@@ -119,6 +119,7 @@ mod tls;
 pub mod vless;
 // Note: protocol-agnostic socket helpers now live in the `outline-net` crate.
 mod url_utils;
+mod ws_mode_cache;
 mod ws_stream;
 
 use dns::resolve_server_addr;
@@ -205,6 +206,7 @@ pub async fn gc_shared_connections() {
     crate::h3::gc_shared_h3_connections().await;
     #[cfg(feature = "quic")]
     crate::quic::gc_shared_quic_connections().await;
+    ws_mode_cache::gc().await;
 }
 
 pub async fn connect_websocket_with_source(
@@ -215,6 +217,16 @@ pub async fn connect_websocket_with_source(
     ipv6_first: bool,
     source: &'static str,
 ) -> Result<WsTransportStream> {
+    let requested = mode;
+    let mode = ws_mode_cache::effective_mode(url, mode).await;
+    if mode != requested {
+        debug!(
+            url = %url,
+            requested_mode = %requested,
+            selected_mode = %mode,
+            "ws transport mode clamped by downgrade cache"
+        );
+    }
     match mode {
         WsTransportMode::Http1 => {
             let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
@@ -233,6 +245,7 @@ pub async fn connect_websocket_with_source(
                     fallback = "http1",
                     "h2 websocket connect failed, falling back"
                 );
+                ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
                 let ws_stream = connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
                 Ok(WsTransportStream::new_http1(ws_stream))
@@ -251,6 +264,7 @@ pub async fn connect_websocket_with_source(
                     fallback = "h2",
                     "h3 websocket connect failed, falling back"
                 );
+                ws_mode_cache::record_failure(url, WsTransportMode::H3).await;
                 match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
@@ -263,6 +277,7 @@ pub async fn connect_websocket_with_source(
                             fallback = "http1",
                             "h2 websocket connect failed after h3 fallback, falling back"
                         );
+                        ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
                         let ws_stream =
                             connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
@@ -274,6 +289,7 @@ pub async fn connect_websocket_with_source(
         #[cfg(not(feature = "h3"))]
         WsTransportMode::H3 => {
             warn!(url = %url, "H3 requested but compiled without h3 feature, falling back to h2");
+            ws_mode_cache::record_failure(url, WsTransportMode::H3).await;
             match connect_websocket_h2(cache, url, fwmark, ipv6_first, source).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
@@ -281,6 +297,7 @@ pub async fn connect_websocket_with_source(
                 },
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
+                    ws_mode_cache::record_failure(url, WsTransportMode::H2).await;
                     let ws_stream =
                         connect_websocket_http1(cache, url, fwmark, ipv6_first, source).await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
