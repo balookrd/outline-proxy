@@ -96,16 +96,16 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         "socket tcp starting upstream connect"
     );
     let upstream_stream = match connect_tcp_target(
-        ctx.services.dns_cache.as_ref(),
+        ctx.services.tcp_server.dns_cache.as_ref(),
         &handshake.target,
         handshake.user.fwmark(),
-        ctx.services.prefer_ipv4_upstream,
-        ctx.services.outbound_ipv6.as_deref(),
+        ctx.services.tcp_server.prefer_ipv4_upstream,
+        ctx.services.tcp_server.outbound_ipv6.as_deref(),
     )
     .await
     {
         Ok(stream) => {
-            ctx.services.metrics.record_tcp_connect(
+            ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "success",
@@ -114,7 +114,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             stream
         },
         Err(error) => {
-            ctx.services.metrics.record_tcp_connect(
+            ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
                 "error",
@@ -152,7 +152,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         peer_addr,
         target: target_display,
     };
-    let relay_metrics = ctx.services.metrics.clone();
+    let relay_metrics = ctx.services.tcp_server.metrics.clone();
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = tokio::spawn(async move {
         super::super::relay::relay_upstream_to_client(
@@ -166,10 +166,12 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         .await
     });
     ctx.services
+        .tcp_server
         .metrics
         .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
     let upstream_guard = ctx
         .services
+        .tcp_server
         .metrics
         .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
 
@@ -178,7 +180,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         handshake.decryptor,
         handshake.initial_payload,
         upstream_writer,
-        ctx.services.metrics.clone(),
+        ctx.services.tcp_server.metrics.clone(),
         Protocol::Socket,
         user_id,
     )

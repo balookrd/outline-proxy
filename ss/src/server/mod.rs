@@ -132,7 +132,7 @@ pub async fn run(config: Config) -> Result<()> {
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,
         prefer_ipv4_upstream = config.prefer_ipv4_upstream,
-        outbound_ipv6 = ?built.services.outbound_ipv6.as_deref().map(|o| o.to_string()),
+        outbound_ipv6 = ?built.services.tcp_server.outbound_ipv6.as_deref().map(|o| o.to_string()),
         "websocket shadowsocks server listening",
     );
 
@@ -182,7 +182,7 @@ pub async fn run(config: Config) -> Result<()> {
     }
     if let Some(metrics_listener) = bound.metrics_listener {
         let metrics_app =
-            build_metrics_app(built.services.metrics.clone(), config.metrics_path.clone());
+            build_metrics_app(built.services.tcp_server.metrics.clone(), config.metrics_path.clone());
         let shutdown = shutdown_signal.clone();
         tasks.spawn(async move {
             serve_metrics_listener(metrics_listener, metrics_app, shutdown).await

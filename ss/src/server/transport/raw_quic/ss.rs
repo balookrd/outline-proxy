@@ -69,6 +69,7 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
 ) -> Result<()> {
     let session = ctx
         .services
+        .tcp_server
         .metrics
         .open_websocket_session(crate::metrics::Transport::Tcp, Protocol::QuicRaw);
 
@@ -112,16 +113,16 @@ async fn run_stream(
     info!(user = handshake.user.id(), target = %target_display, "ss raw-quic upstream connect");
 
     let upstream_stream = match connect_tcp_target(
-        ctx.services.dns_cache.as_ref(),
+        ctx.services.tcp_server.dns_cache.as_ref(),
         &handshake.target,
         handshake.user.fwmark(),
-        ctx.services.prefer_ipv4_upstream,
-        ctx.services.outbound_ipv6.as_deref(),
+        ctx.services.tcp_server.prefer_ipv4_upstream,
+        ctx.services.tcp_server.outbound_ipv6.as_deref(),
     )
     .await
     {
         Ok(stream) => {
-            ctx.services.metrics.record_tcp_connect(
+            ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::QuicRaw,
                 "success",
@@ -130,7 +131,7 @@ async fn run_stream(
             stream
         },
         Err(error) => {
-            ctx.services.metrics.record_tcp_connect(
+            ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::QuicRaw,
                 "error",
@@ -158,7 +159,7 @@ async fn run_stream(
         user_id: Arc::clone(&user_id),
         target: target_display,
     };
-    let metrics = ctx.services.metrics.clone();
+    let metrics = ctx.services.tcp_server.metrics.clone();
     let relay_user_id = Arc::clone(&user_id);
     let upstream_to_client = async move {
         relay_upstream_to_client(
@@ -172,10 +173,12 @@ async fn run_stream(
         .await
     };
     ctx.services
+        .tcp_server
         .metrics
         .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::QuicRaw);
     let upstream_guard = ctx
         .services
+        .tcp_server
         .metrics
         .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::QuicRaw);
 
@@ -184,7 +187,7 @@ async fn run_stream(
         handshake.decryptor,
         handshake.initial_payload,
         upstream_writer,
-        ctx.services.metrics.clone(),
+        ctx.services.tcp_server.metrics.clone(),
         Protocol::QuicRaw,
         Arc::clone(&user_id),
     );

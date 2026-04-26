@@ -90,7 +90,7 @@ pub(in super::super) async fn serve_ss_udp_socket(
                     "socket udp received encrypted datagram"
                 );
                 if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                    ctx.services.metrics.record_udp_relay_drop(
+                    ctx.services.udp_server.metrics.record_udp_relay_drop(
                         Transport::Udp,
                         Protocol::Socket,
                         "concurrency_limit",
@@ -162,10 +162,11 @@ where
     };
     let user_id = packet.user.id_arc();
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
-        match ctx.services.udp.replay_store.check_and_mark(csid, pid) {
+        match ctx.services.udp_server.replay_store.check_and_mark(csid, pid) {
             ReplayCheck::Fresh => {},
             ReplayCheck::Replay => {
                 ctx.services
+                    .udp_server
                     .metrics
                     .record_udp_replay_dropped(Arc::clone(&user_id), protocol);
                 warn!(
@@ -178,6 +179,7 @@ where
             },
             ReplayCheck::StoreFull => {
                 ctx.services
+                    .udp_server
                     .metrics
                     .record_udp_replay_store_full_dropped(Arc::clone(&user_id), protocol);
                 warn!(
@@ -196,6 +198,7 @@ where
     let payload = &packet.payload[consumed..];
     let target_display = target.display_host_port();
     ctx.services
+        .udp_server
         .metrics
         .record_client_last_seen(Arc::clone(&user_id));
     debug!(
@@ -207,7 +210,7 @@ where
     );
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
-        ctx.services.metrics.record_udp_oversized_datagram_dropped(
+        ctx.services.udp_server.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
             protocol,
             "client_to_target",
@@ -220,7 +223,7 @@ where
             max_udp_payload_bytes = MAX_UDP_PAYLOAD_SIZE,
             "dropping oversized socket udp datagram before upstream send"
         );
-        ctx.services.metrics.record_udp_request(
+        ctx.services.udp_server.metrics.record_udp_request(
             Arc::clone(&user_id),
             protocol,
             "error",
@@ -230,9 +233,9 @@ where
     }
 
     let resolved = resolve_udp_target(
-        ctx.services.dns_cache.as_ref(),
+        ctx.services.udp_server.dns_cache.as_ref(),
         &target,
-        ctx.services.prefer_ipv4_upstream,
+        ctx.services.udp_server.prefer_ipv4_upstream,
     )
     .await?;
     debug!(
@@ -259,13 +262,13 @@ where
     };
     let entry = ctx
         .services
-        .udp
+        .udp_server
         .nat_table
         .get_or_create(
             nat_key,
             &packet.user,
             packet.session.clone(),
-            Arc::clone(&ctx.services.metrics),
+            Arc::clone(&ctx.services.udp_server.metrics),
         )
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
@@ -274,7 +277,7 @@ where
         .register_session(make_sender(), packet.session.clone())
         .await;
 
-    ctx.services.metrics.record_udp_payload_bytes(
+    ctx.services.udp_server.metrics.record_udp_payload_bytes(
         Arc::clone(&user_id),
         protocol,
         "client_to_target",
@@ -288,7 +291,7 @@ where
         "socket udp relaying datagram to upstream"
     );
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
-        ctx.services.metrics.record_udp_request(
+        ctx.services.udp_server.metrics.record_udp_request(
             Arc::clone(&user_id),
             protocol,
             "error",
@@ -297,7 +300,7 @@ where
         return Err(error).with_context(|| format!("failed to send UDP datagram to {resolved}"));
     }
     entry.touch();
-    ctx.services.metrics.record_udp_request(
+    ctx.services.udp_server.metrics.record_udp_request(
         user_id,
         protocol,
         "success",

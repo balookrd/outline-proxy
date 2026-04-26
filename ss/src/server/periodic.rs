@@ -27,7 +27,7 @@ pub(super) fn spawn_maintenance(
         let mut sd = shutdown.clone();
         spawn_supervised(
             "wall_clock_tick",
-            Arc::clone(&built.services.metrics),
+            Arc::clone(&built.services.tcp_server.metrics),
             Arc::clone(&shutdown_sender),
             async move {
                 let mut interval = tokio::time::interval(Duration::from_secs(1));
@@ -45,13 +45,13 @@ pub(super) fn spawn_maintenance(
 
     // NAT entry eviction + replay-filter sweep.
     {
-        let nat_table = Arc::clone(&built.services.udp.nat_table);
-        let replay = Arc::clone(&built.services.udp.replay_store);
-        let metrics = Arc::clone(&built.services.metrics);
+        let nat_table = Arc::clone(&built.services.udp_server.nat_table);
+        let replay = Arc::clone(&built.services.udp_server.replay_store);
+        let metrics = Arc::clone(&built.services.udp_server.metrics);
         let mut sd = shutdown.clone();
         spawn_supervised(
             "nat_eviction",
-            Arc::clone(&built.services.metrics),
+            Arc::clone(&built.services.udp_server.metrics),
             Arc::clone(&shutdown_sender),
             async move {
                 let mut interval =
@@ -76,13 +76,13 @@ pub(super) fn spawn_maintenance(
     }
 
     // Outbound IPv6 interface re-enumeration (interface mode only).
-    if let Some(OutboundIpv6::Interface(source)) = built.services.outbound_ipv6.as_deref() {
+    if let Some(OutboundIpv6::Interface(source)) = built.services.tcp_server.outbound_ipv6.as_deref() {
         let source = Arc::clone(source);
         let period = Duration::from_secs(config.outbound_ipv6_refresh_secs);
         let mut sd = shutdown.clone();
         spawn_supervised(
             "ipv6_refresh",
-            Arc::clone(&built.services.metrics),
+            Arc::clone(&built.services.tcp_server.metrics),
             Arc::clone(&shutdown_sender),
             async move {
                 let mut interval = tokio::time::interval(period);
@@ -101,11 +101,11 @@ pub(super) fn spawn_maintenance(
 
     // DNS cache stale-grace sweep.
     {
-        let dns_cache = Arc::clone(&built.services.dns_cache);
+        let dns_cache = Arc::clone(&built.services.tcp_server.dns_cache);
         let mut sd = shutdown.clone();
         spawn_supervised(
             "dns_cache_sweep",
-            Arc::clone(&built.services.metrics),
+            Arc::clone(&built.services.tcp_server.metrics),
             shutdown_sender,
             async move {
                 let mut interval =
