@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::{Result, anyhow};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tracing::debug;
 
@@ -89,41 +89,35 @@ pub(super) struct UdpResponse {
     pub(super) uplink_name: Arc<str>,
 }
 
-/// Interior of [`AssocGroupMap`], held under a single mutex so that inserting
-/// a context and spawning its downlink task are always an atomic operation.
-/// The invariant "every entry in `map` has exactly one task in `tasks`" is
-/// maintained under a single lock acquisition, eliminating the window that
-/// existed when the two fields were guarded by separate mutexes.
-struct AssocGroupMapInner {
-    map: HashMap<String, GroupUdpContext>,
-    tasks: JoinSet<()>,
-}
-
 /// Per-association map of group-name → per-group UDP context, plus the
 /// downlink tasks spawned for each active group. Owned exclusively by one
 /// UDP associate session; not shared with other associations or the global
 /// [`UplinkRegistry`].
+///
+/// Split locks: `map` is an `RwLock` so the hot fast path (group already
+/// resolved) takes a read-lock without contending with other senders, and
+/// `tasks` is a separate `Mutex` touched only on first-use spawn and on
+/// shutdown. The invariant "every entry in `map` has exactly one task in
+/// `tasks`" is preserved by always taking the locks in the order
+/// `map` (write) → `tasks` when inserting.
 pub(super) struct AssocGroupMap {
-    inner: Mutex<AssocGroupMapInner>,
+    map: RwLock<HashMap<String, GroupUdpContext>>,
+    tasks: Mutex<JoinSet<()>>,
 }
 
 impl AssocGroupMap {
     pub(super) fn new() -> Arc<Self> {
         Arc::new(Self {
-            inner: Mutex::new(AssocGroupMapInner {
-                map: HashMap::new(),
-                tasks: JoinSet::new(),
-            }),
+            map: RwLock::new(HashMap::new()),
+            tasks: Mutex::new(JoinSet::new()),
         })
     }
 
     /// Close every group's active transport; abort spawned downlink tasks.
     /// Called once on association shutdown.
     pub(super) async fn shutdown(&self, reason: &'static str) {
-        let mut inner = self.inner.lock().await;
-        inner.tasks.abort_all();
-        let map = std::mem::take(&mut inner.map);
-        drop(inner);
+        self.tasks.lock().expect("AssocGroupMap tasks poisoned").abort_all();
+        let map = std::mem::take(&mut *self.map.write().expect("AssocGroupMap map poisoned"));
         for (_, ctx) in map {
             close_active_udp_transport(&ctx.active, reason).await;
         }
@@ -145,15 +139,16 @@ pub(super) async fn resolve_group_context(
     group_name: &str,
     responses: &mpsc::Sender<UdpResponse>,
 ) -> Result<GroupUdpContext> {
-    // Fast path: context already exists.
+    // Fast path: context already exists. Read-lock keeps concurrent senders
+    // for the same (or different) groups from serializing on a single mutex.
     {
-        let inner = registry_groups.inner.lock().await;
-        if let Some(ctx) = inner.map.get(group_name) {
+        let map = registry_groups.map.read().expect("AssocGroupMap map poisoned");
+        if let Some(ctx) = map.get(group_name) {
             return Ok(ctx.clone());
         }
     }
 
-    // Slow path: build a new transport outside the lock (async I/O).
+    // Slow path: build a new transport outside any lock (async I/O).
     let manager = registry
         .group_by_name(group_name)
         .ok_or_else(|| anyhow!("uplink group \"{group_name}\" is not configured"))?
@@ -166,28 +161,33 @@ pub(super) async fn resolve_group_context(
         group_name: Arc::from(group_name),
     };
 
-    // Re-acquire the lock. Insert the context and spawn the downlink task
-    // atomically so no caller ever sees a map entry without a running task.
+    // Insert the context and spawn the downlink task atomically: take the map
+    // write-lock first, then the tasks lock under it, so no caller ever sees a
+    // map entry without a running task. Locking order is always map → tasks.
     let (result, duplicate_transport) = {
-        let mut inner = registry_groups.inner.lock().await;
-        if let Some(existing) = inner.map.get(group_name) {
+        let mut map = registry_groups.map.write().expect("AssocGroupMap map poisoned");
+        if let Some(existing) = map.get(group_name) {
             // Lost the race — another caller inserted while we were building.
             // Return their context; close our duplicate transport after unlock.
             (existing.clone(), Some(active))
         } else {
-            inner.map.insert(group_name.to_string(), ctx.clone());
+            map.insert(group_name.to_string(), ctx.clone());
             let task_ctx = ctx.clone();
             let task_responses = responses.clone();
             let group_label = group_name.to_string();
-            inner.tasks.spawn(async move {
-                if let Err(error) = run_group_downlink(task_ctx, task_responses).await {
-                    debug!(
-                        group = %group_label,
-                        error = %format!("{error:#}"),
-                        "UDP group downlink task exited"
-                    );
-                }
-            });
+            registry_groups
+                .tasks
+                .lock()
+                .expect("AssocGroupMap tasks poisoned")
+                .spawn(async move {
+                    if let Err(error) = run_group_downlink(task_ctx, task_responses).await {
+                        debug!(
+                            group = %group_label,
+                            error = %format!("{error:#}"),
+                            "UDP group downlink task exited"
+                        );
+                    }
+                });
             (ctx, None)
         }
     };
