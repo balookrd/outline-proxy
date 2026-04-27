@@ -156,8 +156,7 @@ pub(in crate::proxy) async fn serve_udp_in_tcp(
         let write_tx_direct = write_tx.clone();
         let direct_downlink = async move {
             let Some(sock) = direct_socket else {
-                std::future::pending::<()>().await;
-                unreachable!()
+                return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
             let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
