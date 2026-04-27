@@ -9,6 +9,16 @@
 //!
 //! Entries are written only after AEAD verification, so spoofed datagrams with
 //! random salts cannot poison the cache.
+//!
+//! ## Sharding
+//!
+//! The cache is sharded into [`SHARD_COUNT`] independent LRU partitions keyed
+//! by an FNV-1a mix of `(user_index, salt[..8])`. A single global mutex would
+//! serialize every UDP datagram across all worker threads — at high pps the
+//! lock itself becomes the bottleneck even though each critical section is
+//! tiny. Splitting reduces contention by `SHARD_COUNT`× without changing the
+//! external API. `SHARD_COUNT` is a power of two so the modulo selection
+//! folds to a bitmask.
 
 use std::{num::NonZeroUsize, sync::Arc};
 
@@ -25,6 +35,12 @@ const MAX_SALT_LEN: usize = 32;
 /// every active session for a multi-tenant deployment without unbounded
 /// growth. At ~256 B/entry this is ~4 MB of resident memory.
 const DEFAULT_SESSION_KEY_CACHE_CAPACITY: usize = 16_384;
+
+/// Number of independent LRU shards. Power of two so `% SHARD_COUNT` folds to
+/// a bitmask. 16 is a sweet spot: enough to defuse contention even on dual-
+/// socket boxes, small enough to keep per-shard LRU eviction cheap and the
+/// total memory overhead negligible.
+const SHARD_COUNT: usize = 16;
 
 #[derive(Hash, Eq, PartialEq, Clone, Copy)]
 struct CacheKey {
@@ -51,13 +67,24 @@ impl CacheKey {
 /// Thread-safe bounded LRU cache of derived session keys. Cloning the
 /// `Arc<LessSafeKey>` is a refcount bump; the wrapped `UnboundKey` is read-only
 /// and shareable across threads.
+///
+/// Internally split into [`SHARD_COUNT`] LRU partitions, each guarded by its
+/// own [`parking_lot::Mutex`]. The total capacity is divided evenly between
+/// shards (rounded up). Lookups and inserts pick a shard via FNV-1a over
+/// `(user_index, salt[..8])` so the same `(user, salt)` always hits the same
+/// shard.
 pub struct SessionKeyCache {
-    inner: Mutex<LruCache<CacheKey, Arc<LessSafeKey>>>,
+    shards: Box<[Mutex<LruCache<CacheKey, Arc<LessSafeKey>>>]>,
 }
 
 impl SessionKeyCache {
-    pub fn new(capacity: NonZeroUsize) -> Self {
-        Self { inner: Mutex::new(LruCache::new(capacity)) }
+    pub fn new(total_capacity: NonZeroUsize) -> Self {
+        // Round up so `total_capacity = 1` still gives every shard an entry
+        // worth of headroom rather than a degenerate zero-cap LRU.
+        let per_shard = total_capacity.get().div_ceil(SHARD_COUNT).max(1);
+        let cap = NonZeroUsize::new(per_shard).expect("per-shard capacity > 0");
+        let shards: Vec<_> = (0..SHARD_COUNT).map(|_| Mutex::new(LruCache::new(cap))).collect();
+        Self { shards: shards.into_boxed_slice() }
     }
 
     pub fn with_default_capacity() -> Self {
@@ -67,27 +94,53 @@ impl SessionKeyCache {
         )
     }
 
+    /// Pick the shard for a given cache key. Folds `user_index` together with
+    /// the first 8 salt bytes via FNV-1a; the 8-byte prefix is enough to
+    /// distinguish SS-2022 8-byte session IDs as well as scattered legacy
+    /// 16/32-byte salts.
+    #[inline]
+    fn shard_for(&self, key: &CacheKey) -> &Mutex<LruCache<CacheKey, Arc<LessSafeKey>>> {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+        let mut h = FNV_OFFSET;
+        for b in (key.user_index as u64).to_le_bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        let prefix_len = (key.salt_len as usize).min(8);
+        for &b in &key.salt[..prefix_len] {
+            h ^= b as u64;
+            h = h.wrapping_mul(FNV_PRIME);
+        }
+        // SHARD_COUNT is a power of two — `& (N - 1)` is the modulo.
+        &self.shards[(h as usize) & (SHARD_COUNT - 1)]
+    }
+
     pub fn get(&self, user_index: usize, salt: &[u8]) -> Option<Arc<LessSafeKey>> {
         let key = CacheKey::new(user_index, salt)?;
-        self.inner.lock().get(&key).cloned()
+        self.shard_for(&key).lock().get(&key).cloned()
     }
 
     pub fn insert(&self, user_index: usize, salt: &[u8], value: Arc<LessSafeKey>) {
         let Some(key) = CacheKey::new(user_index, salt) else {
             return;
         };
-        self.inner.lock().put(key, value);
+        self.shard_for(&key).lock().put(key, value);
     }
 
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
-        self.inner.lock().len()
+        self.shards.iter().map(|s| s.lock().len()).sum()
     }
 }
 
 impl std::fmt::Debug for SessionKeyCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SessionKeyCache").field("len", &self.inner.lock().len()).finish()
+        let total: usize = self.shards.iter().map(|s| s.lock().len()).sum();
+        f.debug_struct("SessionKeyCache")
+            .field("shards", &SHARD_COUNT)
+            .field("len", &total)
+            .finish()
     }
 }
 
@@ -127,11 +180,24 @@ mod tests {
 
     #[test]
     fn capacity_is_enforced() {
-        let cache = SessionKeyCache::new(NonZeroUsize::new(2).unwrap());
-        cache.insert(0, b"a", dummy_key());
-        cache.insert(1, b"b", dummy_key());
-        cache.insert(2, b"c", dummy_key());
-        assert_eq!(cache.len(), 2);
+        // Per-shard cap = ceil(total / SHARD_COUNT). Insert far more than
+        // `total_capacity` distinct (user, salt) pairs and verify the
+        // aggregate population never exceeds the per-shard cap × shards.
+        // Distribution between shards is hash-determined; what matters is
+        // that no shard grows unbounded.
+        let total_capacity = NonZeroUsize::new(64).unwrap();
+        let cache = SessionKeyCache::new(total_capacity);
+        let per_shard_cap = total_capacity.get().div_ceil(SHARD_COUNT).max(1);
+        let upper_bound = per_shard_cap * SHARD_COUNT;
+        for i in 0u64..1024 {
+            cache.insert(i as usize, &i.to_be_bytes(), dummy_key());
+        }
+        assert!(
+            cache.len() <= upper_bound,
+            "len={} exceeds upper_bound={}",
+            cache.len(),
+            upper_bound
+        );
     }
 
     #[test]
