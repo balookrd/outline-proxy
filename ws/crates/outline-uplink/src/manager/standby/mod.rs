@@ -234,22 +234,37 @@ impl UplinkManager {
                 let resume_key = resume_cache_key(&uplink.name, "tcp");
                 let resume_request = global_resume_cache().get(&resume_key);
                 let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
-                let (w, r, issued) = outline_transport::connect_vless_tcp_quic_with_resume(
-                    cache,
-                    url,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
-                    uuid,
-                    target,
-                    lifetime,
-                    resume_id_bytes.as_ref(),
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("vless quic to {}", url),
-                })?;
-                global_resume_cache().store_if_issued(resume_key, issued);
+                let (w, r, issued_rx) =
+                    outline_transport::connect_vless_tcp_quic_with_resume(
+                        cache,
+                        url,
+                        uplink.fwmark,
+                        uplink.ipv6_first,
+                        source,
+                        uuid,
+                        target,
+                        lifetime,
+                        resume_id_bytes.as_ref(),
+                    )
+                    .await
+                    .with_context(|| TransportOperation::Connect {
+                        target: format!("vless quic to {}", url),
+                    })?;
+                // The dial returns before the server's handshake response
+                // is read — saves one full RTT on every cold dial. The
+                // reader fires `issued_rx` from inside its first
+                // `read_chunk` call once the response addons have been
+                // parsed; we forward the result into the global resume
+                // cache asynchronously so this dial path stays
+                // non-blocking. If the connection dies before any
+                // payload arrives, `issued_rx` resolves to `Err(_)` and
+                // we simply don't update the cache, which is correct —
+                // a session ID we never observed is not worth storing.
+                tokio::spawn(async move {
+                    if let Ok(issued) = issued_rx.await {
+                        global_resume_cache().store_if_issued(resume_key, issued);
+                    }
+                });
                 (
                     outline_transport::TcpWriter::Vless(w),
                     outline_transport::TcpReader::Vless(r),

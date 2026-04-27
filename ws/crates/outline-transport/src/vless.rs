@@ -33,7 +33,7 @@ use parking_lot::Mutex as SyncMutex;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
 use socks5_proto::TargetAddr;
-use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
 use tracing::debug;
 use url::Url;
 
@@ -299,12 +299,14 @@ pub struct VlessTcpReader {
     source: Box<dyn crate::frame_io::FrameSource>,
     pending_header: bool,
     header_buf: Vec<u8>,
-    /// Tail of the first response frame that arrived together with the
-    /// VLESS response header — populated by
-    /// [`Self::read_handshake_response`] when the caller eagerly
-    /// consumes the header before its first `read_chunk`. Drained on
-    /// the next `read_chunk` call.
-    pending_payload: Option<Vec<u8>>,
+    /// Optional one-shot sink that receives the parsed `SESSION_ID`
+    /// opcode (or `None` on a feature-disabled server) the moment the
+    /// VLESS response header is first read. Used by resumption-aware
+    /// callers (raw-QUIC dial path) to stash the freshly issued Session
+    /// ID in the global ResumeCache without blocking the dial on a
+    /// server round-trip — the dial returns immediately and the sink
+    /// fires lazily on the first inbound frame.
+    session_id_sink: Option<oneshot::Sender<Option<SessionId>>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -317,55 +319,28 @@ impl VlessTcpReader {
             source,
             pending_header: true,
             header_buf: Vec::new(),
-            pending_payload: None,
+            session_id_sink: None,
             _lifetime: lifetime,
         }
     }
 
-    /// Eagerly read and parse the VLESS response header, returning any
-    /// `SESSION_ID` Addons opcode the server emitted. Should be
-    /// awaited at most once, before any `read_chunk` call, so that the
-    /// caller can stash the assigned Session ID in its
-    /// `ResumeCache` for the next reconnect.
-    ///
-    /// On a feature-disabled server the response carries the legacy
-    /// `[VERSION, 0x00]` two-byte preamble; this method returns
-    /// `Ok(None)` and drops the caller back into the standard
-    /// read-chunk flow.
-    ///
-    /// If the first frame already carries payload after the header,
-    /// the tail is stashed inside the reader and re-emitted from the
-    /// next `read_chunk` call — no bytes are lost.
-    pub async fn read_handshake_response(&mut self) -> Result<Option<SessionId>> {
-        if !self.pending_header {
-            return Ok(None);
-        }
-        loop {
-            let bytes = match self.source.recv_frame().await? {
-                None => return Err(anyhow::Error::from(WsClosed)),
-                Some(b) => b,
-            };
-            self.header_buf.extend_from_slice(&bytes);
-            if self.header_buf.len() < 2 {
-                continue;
-            }
-            let version = self.header_buf[0];
-            if version != VLESS_VERSION {
-                bail!("vless bad response version {version:#x}");
-            }
-            let addons_len = self.header_buf[1] as usize;
-            let need = 2 + addons_len;
-            if self.header_buf.len() < need {
-                continue;
-            }
-            let session_id = parse_response_addons_session_id(&self.header_buf[2..need]);
-            let tail = self.header_buf.split_off(need);
-            self.header_buf.clear();
-            self.pending_header = false;
-            if !tail.is_empty() {
-                self.pending_payload = Some(tail);
-            }
-            return Ok(session_id);
+    /// Same as [`Self::with_source`] but installs a one-shot sink that
+    /// fires with the server-assigned `SESSION_ID` (or `None`) the
+    /// moment the response header is parsed by the first
+    /// [`Self::read_chunk`] call. Lets the dial path return without
+    /// waiting for the server's handshake response — saves one full
+    /// RTT per VLESS-TCP-over-QUIC dial.
+    pub fn with_source_and_resume_sink(
+        source: Box<dyn crate::frame_io::FrameSource>,
+        lifetime: Arc<UpstreamTransportGuard>,
+        sink: oneshot::Sender<Option<SessionId>>,
+    ) -> Self {
+        Self {
+            source,
+            pending_header: true,
+            header_buf: Vec::new(),
+            session_id_sink: Some(sink),
+            _lifetime: lifetime,
         }
     }
 
@@ -376,11 +351,6 @@ impl VlessTcpReader {
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
-        // First drain any payload tail stashed by an eager
-        // `read_handshake_response` call.
-        if let Some(payload) = self.pending_payload.take() {
-            return Ok(payload);
-        }
         loop {
             let bytes = match self.source.recv_frame().await? {
                 None => return Err(anyhow::Error::from(WsClosed)),
@@ -399,6 +369,14 @@ impl VlessTcpReader {
                 let need = 2 + addons_len;
                 if self.header_buf.len() < need {
                     continue;
+                }
+                // Resumption-aware reader: pull SESSION_ID out of the
+                // response Addons block and notify the dial-side sink.
+                // Non-resumption readers skip this — the sink is None.
+                if let Some(sink) = self.session_id_sink.take() {
+                    let session_id =
+                        parse_response_addons_session_id(&self.header_buf[2..need]);
+                    let _ = sink.send(session_id);
                 }
                 let tail = self.header_buf.split_off(need);
                 self.header_buf.clear();
