@@ -48,6 +48,22 @@ const VLESS_VERSION: u8 = 0x00;
 const VLESS_CMD_TCP: u8 = 0x01;
 const VLESS_CMD_UDP: u8 = 0x02;
 
+/// VLESS Addons opcode: client advertises resumption support.
+/// Length 1, value `0x01`.
+const ADDON_TAG_RESUME_CAPABLE: u8 = 0x10;
+/// VLESS Addons opcode: client requests resumption of the named
+/// Session ID. Length 16.
+const ADDON_TAG_RESUME_ID: u8 = 0x11;
+/// Server response opcode: assigned Session ID. Length 16. Tag is the
+/// same as `RESUME_CAPABLE` but lives in the response Addons block,
+/// per docs/SESSION-RESUMPTION.md.
+const ADDON_TAG_SESSION_ID: u8 = 0x10;
+/// Server response opcode: outcome of a resume attempt. Length 1.
+/// Tag is the same as `RESUME_ID` but lives in the response Addons
+/// block.
+#[allow(dead_code)]
+const ADDON_TAG_RESUME_RESULT: u8 = 0x11;
+
 const VLESS_ATYP_IPV4: u8 = 0x01;
 const VLESS_ATYP_DOMAIN: u8 = 0x02;
 const VLESS_ATYP_IPV6: u8 = 0x03;
@@ -91,19 +107,83 @@ fn hex_val(byte: u8) -> Result<u8> {
 /// that bypass the WebSocket layer (raw QUIC) can write it directly to
 /// the underlying control stream.
 pub fn build_vless_udp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_UDP, target)
+    build_request_header(uuid, VLESS_CMD_UDP, target, &[])
 }
 
 /// Build the standard VLESS TCP request header. Same exposure rationale.
 pub fn build_vless_tcp_request_header(uuid: &[u8; 16], target: &TargetAddr) -> Vec<u8> {
-    build_request_header(uuid, VLESS_CMD_TCP, target)
+    build_request_header(uuid, VLESS_CMD_TCP, target, &[])
 }
 
-fn build_request_header(uuid: &[u8; 16], command: u8, target: &TargetAddr) -> Vec<u8> {
-    let mut out = Vec::with_capacity(1 + 16 + 1 + 1 + 2 + 1 + 256);
+/// Build a VLESS TCP request header with the resumption Addons opcodes
+/// populated. `resume_capable=true` advertises support so a feature-
+/// enabled server mints a Session ID; `resume_id` (when set) asks the
+/// server to re-attach a parked upstream. Used by the raw-QUIC client
+/// path; WS-based callers get the same result via the
+/// `X-Outline-*` HTTP headers.
+pub fn build_vless_tcp_request_header_with_resume(
+    uuid: &[u8; 16],
+    target: &TargetAddr,
+    resume_capable: bool,
+    resume_id: Option<&[u8; 16]>,
+) -> Vec<u8> {
+    let addons = encode_request_addons(resume_capable, resume_id);
+    build_request_header(uuid, VLESS_CMD_TCP, target, &addons)
+}
+
+fn encode_request_addons(resume_capable: bool, resume_id: Option<&[u8; 16]>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(if resume_capable { 3 } else { 0 } + if resume_id.is_some() { 18 } else { 0 });
+    if resume_capable {
+        out.push(ADDON_TAG_RESUME_CAPABLE);
+        out.push(1);
+        out.push(0x01);
+    }
+    if let Some(id) = resume_id {
+        out.push(ADDON_TAG_RESUME_ID);
+        out.push(16);
+        out.extend_from_slice(id);
+    }
+    out
+}
+
+/// Walk a server response Addons block and pull out the assigned
+/// `SESSION_ID` opcode (`0x10`, length 16). Returns `None` if the
+/// block is empty / unknown tags only / a feature-disabled server
+/// emitted the legacy zero-length Addons. The `RESUME_RESULT` opcode
+/// is recognised but currently discarded — callers infer hit/miss
+/// from observable side-effects (counter on the upstream target).
+fn parse_response_addons_session_id(block: &[u8]) -> Option<SessionId> {
+    let mut i = 0;
+    while i + 2 <= block.len() {
+        let tag = block[i];
+        let len = block[i + 1] as usize;
+        let value_start = i + 2;
+        let value_end = value_start + len;
+        if value_end > block.len() {
+            return None;
+        }
+        let value = &block[value_start..value_end];
+        if tag == ADDON_TAG_SESSION_ID
+            && let Ok(arr) = <[u8; 16]>::try_from(value)
+        {
+            return Some(SessionId::from_bytes(arr));
+        }
+        i = value_end;
+    }
+    None
+}
+
+fn build_request_header(
+    uuid: &[u8; 16],
+    command: u8,
+    target: &TargetAddr,
+    addons: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + 16 + 1 + addons.len() + 1 + 2 + 1 + 256);
     out.push(VLESS_VERSION);
     out.extend_from_slice(uuid);
-    out.push(0x00); // addons_len
+    out.push(addons.len() as u8); // addons_len
+    out.extend_from_slice(addons);
     out.push(command);
     match target {
         TargetAddr::IpV4(addr, port) => {
@@ -146,7 +226,27 @@ impl VlessTcpWriter {
         target: &TargetAddr,
         lifetime: Arc<UpstreamTransportGuard>,
     ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_TCP, target);
+        let header = build_request_header(uuid, VLESS_CMD_TCP, target, &[]);
+        Self {
+            sink: Some(sink),
+            pending_header: Some(header),
+            _lifetime: lifetime,
+        }
+    }
+
+    /// Same as [`Self::with_sink`] but emits a populated Addons block
+    /// carrying `RESUME_CAPABLE` and (optionally) `RESUME_ID`. Used by
+    /// raw-QUIC callers — WS callers reach the same negotiation via
+    /// HTTP headers in `connect_websocket_with_resume`.
+    pub fn with_sink_and_resume(
+        sink: Box<dyn crate::frame_io::FrameSink>,
+        uuid: &[u8; 16],
+        target: &TargetAddr,
+        lifetime: Arc<UpstreamTransportGuard>,
+        resume_id: Option<&[u8; 16]>,
+    ) -> Self {
+        let header =
+            build_vless_tcp_request_header_with_resume(uuid, target, true, resume_id);
         Self {
             sink: Some(sink),
             pending_header: Some(header),
@@ -199,6 +299,12 @@ pub struct VlessTcpReader {
     source: Box<dyn crate::frame_io::FrameSource>,
     pending_header: bool,
     header_buf: Vec<u8>,
+    /// Tail of the first response frame that arrived together with the
+    /// VLESS response header — populated by
+    /// [`Self::read_handshake_response`] when the caller eagerly
+    /// consumes the header before its first `read_chunk`. Drained on
+    /// the next `read_chunk` call.
+    pending_payload: Option<Vec<u8>>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -211,7 +317,55 @@ impl VlessTcpReader {
             source,
             pending_header: true,
             header_buf: Vec::new(),
+            pending_payload: None,
             _lifetime: lifetime,
+        }
+    }
+
+    /// Eagerly read and parse the VLESS response header, returning any
+    /// `SESSION_ID` Addons opcode the server emitted. Should be
+    /// awaited at most once, before any `read_chunk` call, so that the
+    /// caller can stash the assigned Session ID in its
+    /// `ResumeCache` for the next reconnect.
+    ///
+    /// On a feature-disabled server the response carries the legacy
+    /// `[VERSION, 0x00]` two-byte preamble; this method returns
+    /// `Ok(None)` and drops the caller back into the standard
+    /// read-chunk flow.
+    ///
+    /// If the first frame already carries payload after the header,
+    /// the tail is stashed inside the reader and re-emitted from the
+    /// next `read_chunk` call — no bytes are lost.
+    pub async fn read_handshake_response(&mut self) -> Result<Option<SessionId>> {
+        if !self.pending_header {
+            return Ok(None);
+        }
+        loop {
+            let bytes = match self.source.recv_frame().await? {
+                None => return Err(anyhow::Error::from(WsClosed)),
+                Some(b) => b,
+            };
+            self.header_buf.extend_from_slice(&bytes);
+            if self.header_buf.len() < 2 {
+                continue;
+            }
+            let version = self.header_buf[0];
+            if version != VLESS_VERSION {
+                bail!("vless bad response version {version:#x}");
+            }
+            let addons_len = self.header_buf[1] as usize;
+            let need = 2 + addons_len;
+            if self.header_buf.len() < need {
+                continue;
+            }
+            let session_id = parse_response_addons_session_id(&self.header_buf[2..need]);
+            let tail = self.header_buf.split_off(need);
+            self.header_buf.clear();
+            self.pending_header = false;
+            if !tail.is_empty() {
+                self.pending_payload = Some(tail);
+            }
+            return Ok(session_id);
         }
     }
 
@@ -222,6 +376,11 @@ impl VlessTcpReader {
     }
 
     pub async fn read_chunk(&mut self) -> Result<Vec<u8>> {
+        // First drain any payload tail stashed by an eager
+        // `read_handshake_response` call.
+        if let Some(payload) = self.pending_payload.take() {
+            return Ok(payload);
+        }
         loop {
             let bytes = match self.source.recv_frame().await? {
                 None => return Err(anyhow::Error::from(WsClosed)),
@@ -336,7 +495,7 @@ impl VlessUdpTransport {
         target: &TargetAddr,
         source: &'static str,
     ) -> Self {
-        let header = build_request_header(uuid, VLESS_CMD_UDP, target);
+        let header = build_request_header(uuid, VLESS_CMD_UDP, target, &[]);
         Self {
             chan,
             pending_header: SyncMutex::new(Some(header)),
@@ -888,7 +1047,7 @@ mod tests {
     fn request_header_ipv4_tcp() {
         let uuid = parse_uuid("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let target = TargetAddr::IpV4(std::net::Ipv4Addr::new(1, 2, 3, 4), 443);
-        let hdr = build_request_header(&uuid, VLESS_CMD_TCP, &target);
+        let hdr = build_request_header(&uuid, VLESS_CMD_TCP, &target, &[]);
         assert_eq!(hdr[0], 0x00);
         assert_eq!(&hdr[1..17], &uuid);
         assert_eq!(hdr[17], 0x00);
@@ -902,7 +1061,7 @@ mod tests {
     fn request_header_domain_udp() {
         let uuid = parse_uuid("550e8400-e29b-41d4-a716-446655440000").unwrap();
         let target = TargetAddr::Domain("example.com".into(), 80);
-        let hdr = build_request_header(&uuid, VLESS_CMD_UDP, &target);
+        let hdr = build_request_header(&uuid, VLESS_CMD_UDP, &target, &[]);
         assert_eq!(hdr[18], VLESS_CMD_UDP);
         assert_eq!(&hdr[19..21], &80u16.to_be_bytes());
         assert_eq!(hdr[21], VLESS_ATYP_DOMAIN);
