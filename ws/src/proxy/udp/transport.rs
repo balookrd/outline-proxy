@@ -22,13 +22,11 @@ pub(super) async fn select_udp_transport(
 ) -> Result<ActiveUdpTransport> {
     let mut last_error = None;
     let strict_transport = uplinks.strict_active_uplink_for(TransportKind::Udp);
-    let candidates = uplinks.udp_candidates(target).await;
-    let iter = if strict_transport {
-        candidates.into_iter().take(1).collect::<Vec<_>>()
-    } else {
-        candidates
-    };
-    for candidate in iter {
+    let mut candidates = uplinks.udp_candidates(target).await;
+    if strict_transport {
+        candidates.truncate(1);
+    }
+    for candidate in candidates {
         match uplinks.acquire_udp_standby_or_connect(&candidate, "socks_udp").await {
             Ok(transport) => {
                 uplinks

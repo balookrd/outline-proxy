@@ -60,17 +60,15 @@ pub async fn serve_tcp_connect(
         let chunk0_attempt_timeout = uplinks.load_balancing().tcp_chunk0_failover_timeout;
         let mut tried_indexes = HashSet::new();
         loop {
-            let candidates = uplinks.tcp_candidates(&target).await;
-            let iter = if strict_transport {
-                candidates.into_iter().take(1).collect::<Vec<_>>()
-            } else {
-                candidates
-            };
-            if iter.is_empty() {
+            let mut candidates = uplinks.tcp_candidates(&target).await;
+            if strict_transport {
+                candidates.truncate(1);
+            }
+            if candidates.is_empty() {
                 break;
             }
             let mut progressed = false;
-            for candidate in iter {
+            for candidate in candidates {
                 if strict_transport && !tried_indexes.insert(candidate.index) {
                     continue;
                 }
