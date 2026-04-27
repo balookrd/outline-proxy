@@ -272,11 +272,22 @@ let autoRefreshEnabled = (() => {
 let listLoaded = false;
 const instanceTimers = new Map();
 const inflight = new Map();
+function loadCollapsed(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch (_) { return new Set(); }
+}
+function saveCollapsed(key, set) {
+  try { localStorage.setItem(key, JSON.stringify(Array.from(set))); } catch (_) {}
+}
 const state = {
   order: [],
   instances: new Map(),
-  collapsedInstances: new Set(),
-  collapsedGroups: new Set(),
+  collapsedInstances: loadCollapsed("dashboard-collapsed-instances"),
+  collapsedGroups: loadCollapsed("dashboard-collapsed-groups"),
   listError: null,
   lastUpdated: null,
 };
@@ -629,11 +640,13 @@ function toggleAutoRefresh() {
 function toggleInstance(name) {
   if (state.collapsedInstances.has(name)) state.collapsedInstances.delete(name);
   else state.collapsedInstances.add(name);
+  saveCollapsed("dashboard-collapsed-instances", state.collapsedInstances);
   render();
 }
 function toggleGroup(key) {
   if (state.collapsedGroups.has(key)) state.collapsedGroups.delete(key);
   else state.collapsedGroups.add(key);
+  saveCollapsed("dashboard-collapsed-groups", state.collapsedGroups);
   render();
 }
 async function loadInstanceList() {
