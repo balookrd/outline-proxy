@@ -26,9 +26,10 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use parking_lot::Mutex as SyncMutex;
+use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -673,7 +674,13 @@ impl Default for VlessUdpMuxLimits {
 pub struct VlessUdpSessionMux {
     dial: VlessUdpSessionDialer,
     limits: VlessUdpMuxLimits,
-    sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    /// Hot map of `target → session`. Read on every `send_packet` /
+    /// `read_packet`; writes happen only on session open / eviction
+    /// / janitor pass / close. An [`SyncRwLock`] lets concurrent
+    /// senders to *different* targets run their fast-path lookups in
+    /// parallel — a plain mutex would serialize every UDP datagram
+    /// across all worker threads even when the map is unchanged.
+    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
     downlink_tx: mpsc::Sender<Result<Bytes>>,
     downlink_rx: AsyncMutex<mpsc::Receiver<Result<Bytes>>>,
     close_signal: watch::Sender<bool>,
@@ -698,20 +705,42 @@ struct VlessUdpSessionDialer {
 
 struct VlessUdpSessionEntry {
     transport: Arc<VlessUdpWsTransport>,
-    /// `parking_lot::Mutex` — touched on every send/read for LRU/idle
-    /// bookkeeping; a sync mutex avoids dragging the tokio scheduler into
-    /// the hot path for what is literally a timestamp write.
-    last_use: SyncMutex<Instant>,
+    /// Wall-clock origin for `last_use_ns`. Captured once at session
+    /// creation; the entry's lifespan is bounded by
+    /// `VlessUdpMuxLimits::session_idle_timeout` (60 s default), so the
+    /// `u64` ns counter has decades of headroom regardless of process
+    /// uptime.
+    created: Instant,
+    /// Nanoseconds since `created` of the last send/read on this
+    /// session. Updated lock-free on every `send_packet` / inbound
+    /// datagram (the hot path); read by the LRU eviction scan and the
+    /// idle-session janitor. Replaces a per-entry mutex that was
+    /// acquired twice (set + read) on every UDP datagram.
+    last_use_ns: AtomicU64,
     _reader_task: AbortOnDrop,
 }
 
 impl VlessUdpSessionEntry {
+    fn new(transport: Arc<VlessUdpWsTransport>, reader_task: AbortOnDrop) -> Self {
+        Self {
+            transport,
+            created: Instant::now(),
+            last_use_ns: AtomicU64::new(0),
+            _reader_task: reader_task,
+        }
+    }
+
     fn touch(&self) {
-        *self.last_use.lock() = Instant::now();
+        // Saturate at u64::MAX rather than wrapping — we'd lose ordering
+        // for the LRU comparator otherwise. With a 60 s idle timeout the
+        // counter never gets near saturation in practice.
+        let ns = u64::try_from(self.created.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        self.last_use_ns.store(ns, Ordering::Relaxed);
     }
 
     fn last_use(&self) -> Instant {
-        *self.last_use.lock()
+        let ns = self.last_use_ns.load(Ordering::Relaxed);
+        self.created + Duration::from_nanos(ns)
     }
 }
 
@@ -754,8 +783,8 @@ impl VlessUdpSessionMux {
     ) -> Self {
         let (close_signal, _close_rx) = watch::channel(false);
         let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(256);
-        let sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>> =
-            Arc::new(SyncMutex::new(HashMap::new()));
+        let sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>> =
+            Arc::new(SyncRwLock::new(HashMap::new()));
         let janitor_task = limits.session_idle_timeout.map(|idle_timeout| {
             spawn_vless_udp_janitor(
                 Arc::clone(&sessions),
@@ -809,7 +838,7 @@ impl VlessUdpSessionMux {
     pub async fn close(&self) -> Result<()> {
         self.close_signal.send_replace(true);
         let sessions = {
-            let mut guard = self.sessions.lock();
+            let mut guard = self.sessions.write();
             std::mem::take(&mut *guard)
         };
         for (_, entry) in sessions {
@@ -820,14 +849,16 @@ impl VlessUdpSessionMux {
 
     #[cfg(test)]
     pub(crate) fn session_count(&self) -> usize {
-        self.sessions.lock().len()
+        self.sessions.read().len()
     }
 
     async fn session_for(&self, target: &TargetAddr) -> Result<Arc<VlessUdpSessionEntry>> {
-        // Fast path: session exists. Refresh its last_use stamp so that a
-        // hot destination is never evicted by the LRU cap.
+        // Fast path: session exists. Concurrent senders to *different*
+        // targets share a read guard so they don't serialize through a
+        // single writer queue, and `entry.touch()` updates the LRU
+        // timestamp lock-free via a relaxed atomic store.
         {
-            let guard = self.sessions.lock();
+            let guard = self.sessions.read();
             if let Some(entry) = guard.get(target) {
                 entry.touch();
                 return Ok(Arc::clone(entry));
@@ -858,17 +889,13 @@ impl VlessUdpSessionMux {
             self.downlink_tx.clone(),
             self.close_signal.subscribe(),
         );
-        let entry = Arc::new(VlessUdpSessionEntry {
-            transport,
-            last_use: SyncMutex::new(Instant::now()),
-            _reader_task: reader_task,
-        });
+        let entry = Arc::new(VlessUdpSessionEntry::new(transport, reader_task));
         enum SlowPathOutcome {
             DuplicateDial(Arc<VlessUdpSessionEntry>),
             Inserted(Option<Arc<VlessUdpSessionEntry>>),
         }
         let outcome = {
-            let mut guard = self.sessions.lock();
+            let mut guard = self.sessions.write();
             if let Some(existing) = guard.get(target) {
                 let existing = Arc::clone(existing);
                 existing.touch();
@@ -918,7 +945,7 @@ fn evict_lru_session(
 }
 
 fn spawn_vless_udp_janitor(
-    sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
     idle_timeout: Duration,
     interval: Duration,
     mut close_rx: watch::Receiver<bool>,
@@ -936,15 +963,40 @@ fn spawn_vless_udp_janitor(
             }
             let now = Instant::now();
             let expired: Vec<Arc<VlessUdpSessionEntry>> = {
-                let mut guard = sessions.lock();
-                let keys: Vec<TargetAddr> = guard
-                    .iter()
-                    .filter(|(_, entry)| {
-                        now.saturating_duration_since(entry.last_use()) >= idle_timeout
-                    })
-                    .map(|(k, _)| k.clone())
-                    .collect();
-                keys.into_iter().filter_map(|k| guard.remove(&k)).collect()
+                // Two-phase scan: walk under a cheap read lock to find
+                // candidates, then acquire the write lock briefly to
+                // remove them. A single write-locked pass would block
+                // every send_packet for the full O(N) scan.
+                let candidates: Vec<TargetAddr> = {
+                    let read_guard = sessions.read();
+                    read_guard
+                        .iter()
+                        .filter(|(_, entry)| {
+                            now.saturating_duration_since(entry.last_use()) >= idle_timeout
+                        })
+                        .map(|(k, _)| k.clone())
+                        .collect()
+                };
+                if candidates.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut guard = sessions.write();
+                    candidates
+                        .into_iter()
+                        .filter_map(|k| {
+                            // Re-check the staleness predicate under the
+                            // write lock — a sender may have touched the
+                            // entry between the read-side scan and now.
+                            // Skip if it has, so an active session never
+                            // gets accidentally evicted by the janitor.
+                            guard.get(&k).filter(|entry| {
+                                now.saturating_duration_since(entry.last_use())
+                                    >= idle_timeout
+                            })?;
+                            guard.remove(&k)
+                        })
+                        .collect()
+                }
             };
             if !expired.is_empty() {
                 debug!(
