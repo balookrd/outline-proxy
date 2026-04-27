@@ -21,7 +21,7 @@
 //! receive side, matching the server's `lookup` miss behaviour. This
 //! keeps cleanup races benign.
 
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
@@ -54,10 +54,14 @@ const PER_SESSION_DOWNLINK_CAP: usize = 256;
 /// while holding the lock.
 pub(crate) struct VlessUdpDemuxer {
     sessions: Arc<Mutex<hashbrown::HashMap<u32, mpsc::Sender<Bytes>>>>,
-    /// Strong handle to the parent connection. Held so the demuxer can
-    /// lazy-open the oversize-record stream on first oversize send,
-    /// without taking the connection as an arg on every call.
-    conn: Arc<SharedQuicConnection>,
+    /// Weak back-handle to the parent connection. A strong Arc would
+    /// cycle with `SharedQuicConnection.vless_udp_demuxer:
+    /// OnceCell<Arc<VlessUdpDemuxer>>` — neither side would ever drop
+    /// after the last external user released its Arc. The dominant
+    /// leak in probe-driven QUIC traffic, where a fresh connection is
+    /// built per probe and discarded on completion. Upgrade locally
+    /// for any operation that needs a strong handle.
+    conn: Weak<SharedQuicConnection>,
     /// Set to `true` exactly once via compare_exchange when the
     /// oversize-record reader task is first spawned. Guards against
     /// two concurrent senders both spawning a reader for the same
@@ -81,10 +85,18 @@ impl VlessUdpDemuxer {
         let sessions: Arc<Mutex<hashbrown::HashMap<u32, mpsc::Sender<Bytes>>>> =
             Arc::new(Mutex::new(hashbrown::HashMap::new()));
         let sessions_for_task = Arc::clone(&sessions);
-        let conn_for_task = Arc::clone(&conn);
+        // Weak so the reader task does not keep the connection alive
+        // after every external user released their Arc; combined with
+        // the Weak in `conn` it lets `SharedQuicConnection::Drop` run
+        // at idle-timeout instead of leaking forever.
+        let conn_weak_for_task = Arc::downgrade(&conn);
         let reader_task = AbortOnDrop::new(tokio::spawn(async move {
             loop {
-                let datagram = match conn_for_task.raw_connection().read_datagram().await {
+                let Some(conn_arc) = conn_weak_for_task.upgrade() else {
+                    return;
+                };
+                let result = conn_arc.raw_connection().read_datagram().await;
+                let datagram = match result {
                     Ok(d) => d,
                     Err(quinn::ConnectionError::ApplicationClosed(_))
                     | Err(quinn::ConnectionError::ConnectionClosed(_))
@@ -96,6 +108,7 @@ impl VlessUdpDemuxer {
                         return;
                     }
                 };
+                drop(conn_arc);
                 if datagram.len() < SESSION_ID_BYTES {
                     debug!(len = datagram.len(), "vless quic datagram too short, dropping");
                     continue;
@@ -125,7 +138,7 @@ impl VlessUdpDemuxer {
         }));
         let demuxer = Arc::new(Self {
             sessions,
-            conn: Arc::clone(&conn),
+            conn: Arc::downgrade(&conn),
             oversize_reader_spawned: AtomicBool::new(false),
             _reader_task: reader_task,
             _oversize_reader_task: Mutex::new(None),
@@ -136,9 +149,9 @@ impl VlessUdpDemuxer {
         // the stream first (typical for proxy traffic where DNS /
         // video responses are large but client queries are small).
         if conn.supports_oversize_stream() {
-            let demuxer_for_accept = Arc::clone(&demuxer);
+            let demuxer_weak_for_accept = Arc::downgrade(&demuxer);
             let task = AbortOnDrop::new(tokio::spawn(async move {
-                demuxer_for_accept.run_accept_bi_pump().await;
+                Self::run_accept_bi_pump(demuxer_weak_for_accept).await;
             }));
             *demuxer._oversize_accept_task.lock() = Some(task);
         }
@@ -150,10 +163,21 @@ impl VlessUdpDemuxer {
     /// `install_accepted_oversize_stream`) and spawns the record
     /// reader. A non-magic stream from the server is unexpected for
     /// our protocols and is logged and dropped.
-    async fn run_accept_bi_pump(self: Arc<Self>) {
-        let raw = self.conn.raw_connection();
+    ///
+    /// Takes `Weak<Self>` rather than `Arc<Self>` so the spawned task
+    /// does not keep the demuxer alive past the connection's lifetime
+    /// (the demuxer would in turn keep this very task alive via
+    /// `_oversize_accept_task`, a self-cycle).
+    async fn run_accept_bi_pump(weak_self: Weak<Self>) {
         loop {
-            let (_send, mut recv) = match raw.accept_bi().await {
+            let Some(this) = weak_self.upgrade() else {
+                return;
+            };
+            let Some(conn) = this.conn.upgrade() else {
+                return;
+            };
+            let pair_result = conn.raw_connection().accept_bi().await;
+            let (_send, mut recv) = match pair_result {
                 Ok(pair) => pair,
                 Err(_) => return,
             };
@@ -172,8 +196,8 @@ impl VlessUdpDemuxer {
             // (we sent oversize first), the install is a no-op and
             // the redundant peer-opened pair is dropped.
             let stream = OversizeStream::from_accept_validated(_send, recv);
-            let installed = self.conn.install_accepted_oversize_stream(stream);
-            self.spawn_oversize_reader_if_needed(installed);
+            let installed = conn.install_accepted_oversize_stream(stream);
+            this.spawn_oversize_reader_if_needed(installed);
         }
     }
 
@@ -181,17 +205,27 @@ impl VlessUdpDemuxer {
     /// oversize stream if no reader has yet been spawned. Used by
     /// both `ensure_oversize_stream` (local-open path) and
     /// `run_accept_bi_pump` (peer-open path).
+    ///
+    /// The spawned task captures `Weak<Self>` rather than `Arc<Self>`
+    /// to avoid a self-cycle through `_oversize_reader_task` —
+    /// otherwise the demuxer would never drop after external users
+    /// release their Arcs.
     fn spawn_oversize_reader_if_needed(self: &Arc<Self>, stream: Arc<OversizeStream>) {
         if self
             .oversize_reader_spawned
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            let demuxer = Arc::clone(self);
+            let demuxer_weak = Arc::downgrade(self);
             let task = AbortOnDrop::new(tokio::spawn(async move {
                 loop {
                     match stream.recv_record().await {
-                        Ok(Some(record)) => demuxer.route_record(record),
+                        Ok(Some(record)) => {
+                            let Some(demuxer) = demuxer_weak.upgrade() else {
+                                return;
+                            };
+                            demuxer.route_record(record);
+                        }
                         Ok(None) => {
                             debug!("vless oversize stream EOF");
                             return;
@@ -243,9 +277,15 @@ impl VlessUdpDemuxer {
     /// concurrent callers and the accept_bi pump share the same
     /// compare_exchange flag so the reader is spawned at most once.
     /// Returns `Err` if the negotiated ALPN does not support oversize
-    /// records or `open_bi` fails.
+    /// records, the parent connection has been dropped, or `open_bi`
+    /// fails.
     pub(crate) async fn ensure_oversize_stream(self: &Arc<Self>) -> Result<Arc<OversizeStream>> {
-        let stream = self.conn.ensure_oversize_stream().await?;
+        let conn = self
+            .conn
+            .upgrade()
+            .ok_or_else(|| anyhow!("vless quic parent connection dropped"))?;
+        let stream = conn.ensure_oversize_stream().await?;
+        drop(conn);
         self.spawn_oversize_reader_if_needed(Arc::clone(&stream));
         Ok(stream)
     }

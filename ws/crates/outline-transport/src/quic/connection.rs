@@ -206,3 +206,15 @@ impl crate::shared_cache::CachedEntry for SharedQuicConnection {
         self.is_open()
     }
 }
+
+impl Drop for SharedQuicConnection {
+    fn drop(&mut self) {
+        // Send CONNECTION_CLOSE so peer-side state — and the demuxer's
+        // parked `read_datagram` / `accept_bi` tasks (which now hold
+        // only `Weak` back-refs) — wake immediately, instead of waiting
+        // out the 30 s idle timeout configured in
+        // `quic_client_config`. No-op if the connection is already
+        // closed by the peer or by an earlier call.
+        self.connection.close(0u32.into(), b"shared connection dropped");
+    }
+}
