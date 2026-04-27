@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tracing::{debug, warn};
@@ -39,8 +39,15 @@ pub(super) struct Phase1Params<'a> {
 pub(super) struct DeferredFailure {
     pub index: usize,
     pub uplink: Arc<str>,
-    pub error: String,
+    pub error: anyhow::Error,
 }
+
+/// Hard cap on the number of deferred chunk-0 failures retained per session.
+/// Bounds memory in pathological deployments with hundreds of uplinks where
+/// every candidate stalls before the first response byte; once exceeded the
+/// oldest record is dropped (its uplink is still listed via `tried_indexes`,
+/// it just won't be back-attributed if a later uplink succeeds).
+pub(super) const DEFERRED_PHASE1_FAILURES_CAP: usize = 10;
 
 /// Waits for the first upstream response chunk while forwarding client data,
 /// transparently failing over to alternative uplinks (and replaying buffered
@@ -66,7 +73,8 @@ pub(super) async fn try_uplinks(
         timeouts,
     } = *params;
     let mut client_half_closed = false;
-    let mut deferred_phase1_failures: Vec<DeferredFailure> = Vec::new();
+    let mut deferred_phase1_failures: VecDeque<DeferredFailure> =
+        VecDeque::with_capacity(DEFERRED_PHASE1_FAILURES_CAP);
     // Counts transparent same-uplink retries after a chunk-0 WS reset.
     // Reset to 0 whenever we switch to a different uplink.
     let mut rst_retries_on_current_uplink: u8 = 0;
@@ -123,16 +131,15 @@ pub(super) async fn try_uplinks(
                 for DeferredFailure { index, uplink, error } in
                     deferred_phase1_failures.drain(..)
                 {
-                    let deferred_error = anyhow!(error.clone());
-                    uplinks
-                        .report_runtime_failure(index, TransportKind::Tcp, &deferred_error)
-                        .await;
                     debug!(
                         uplink = %uplink,
-                        error = %error,
+                        error = %format!("{error:#}"),
                         recovered_via = %active.name,
                         "recorded deferred TCP chunk-0 runtime failure after successful failover"
                     );
+                    uplinks
+                        .report_runtime_failure(index, TransportKind::Tcp, &error)
+                        .await;
                 }
                 return Ok(Some(chunk));
             }
@@ -250,11 +257,8 @@ pub(super) async fn try_uplinks(
                 }
 
                 // ── Cross-uplink failover ─────────────────────────────────────
-                deferred_phase1_failures.push(DeferredFailure {
-                    index: active.index,
-                    uplink: Arc::clone(&active.name),
-                    error: error_text,
-                });
+                let failed_index = active.index;
+                let failed_uplink = Arc::clone(&active.name);
 
                 match failover_to_next_candidate(uplinks, active, target, tried_indexes).await? {
                     FailoverStep::NoCandidate => {
@@ -262,6 +266,14 @@ pub(super) async fn try_uplinks(
                             .context("no alternative uplink available for chunk-0 failover"));
                     },
                     FailoverStep::Switched => {
+                        if deferred_phase1_failures.len() == DEFERRED_PHASE1_FAILURES_CAP {
+                            deferred_phase1_failures.pop_front();
+                        }
+                        deferred_phase1_failures.push_back(DeferredFailure {
+                            index: failed_index,
+                            uplink: failed_uplink,
+                            error: phase1_error,
+                        });
                         rst_retries_on_current_uplink = 0;
                         replay_after_failover(active, replay, client_half_closed).await?;
                         // Fall through → loop restarts with the new uplink.
