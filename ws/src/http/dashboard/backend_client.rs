@@ -15,6 +15,7 @@ use http::{Method, Request, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::client::conn::http1;
 use hyper_util::rt::TokioIo;
+use outline_transport::AbortOnDrop;
 use rustls::pki_types::ServerName;
 use rustls::{ClientConfig, RootCertStore};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -119,9 +120,14 @@ where
     let (mut sender, conn) = http1::handshake(TokioIo::new(io))
         .await
         .context("HTTP/1 handshake with control API failed")?;
-    tokio::spawn(async move {
+    // Bound the conn driver to this function's scope. Without it, peers
+    // that ignore `Connection: close` (or merely delay the FIN) leave
+    // the spawned task parked on `conn.await`, holding the TLS+TCP
+    // socket as ESTABLISHED — every dashboard refresh leaks one FD per
+    // such peer until ulimit triggers.
+    let _driver = AbortOnDrop::new(tokio::spawn(async move {
         let _ = conn.await;
-    });
+    }));
     let response = sender
         .send_request(request)
         .await
