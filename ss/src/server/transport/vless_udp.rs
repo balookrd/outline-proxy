@@ -21,12 +21,12 @@ use super::{
         connect::resolve_udp_target,
         constants::MAX_UDP_PAYLOAD_SIZE,
         nat::bind_nat_udp_socket,
-        resumption::{Parked, ParkedVlessUdpSingle, ResumeOutcome},
+        resumption::{Parked, ResumeOutcome},
         scratch::UdpRecvBuf,
     },
     vless::{
-        UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState, VlessWsOutbound,
-        VlessWsRouteCtx, VlessWsServerCtx,
+        UdpUpstream, UpstreamSession, VlessFrameError, VlessRelayOutcome, VlessRelayState,
+        VlessWsOutbound, VlessWsRouteCtx, VlessWsServerCtx,
     },
 };
 
@@ -74,16 +74,16 @@ where
                         anyhow!("failed to queue vless udp response header on resume: {error}")
                     })?;
 
-                let socket = Arc::clone(&parked.socket);
+                let reader_socket = Arc::clone(&parked.socket);
                 let tx = outbound.data_tx.clone();
                 let metrics = Arc::clone(&server.metrics);
                 let user_id = parked.user.label_arc();
                 let protocol = route.protocol;
                 let cancel = Arc::new(Notify::new());
                 let cancel_for_task = Arc::clone(&cancel);
-                state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+                let reader_task = AbortOnDrop::new(tokio::spawn(async move {
                     relay_vless_udp_upstream_to_client(
-                        socket,
+                        reader_socket,
                         tx,
                         outbound.make_binary,
                         outbound.make_close,
@@ -93,27 +93,31 @@ where
                         Some(cancel_for_task),
                     )
                     .await
-                })));
-                state.relay_cancel = Some(cancel);
+                }));
                 state.user_counters = Some(parked.user_counters);
-                state.upstream_target_display = Some(parked.target_display);
-                state.udp_client_buffer = parked.udp_client_buffer;
                 state.authenticated_user = Some(parked.user);
-                state.upstream = UpstreamSession::Udp(parked.socket);
+                state.upstream = UpstreamSession::Udp(UdpUpstream {
+                    socket: parked.socket,
+                    reader_task,
+                    cancel,
+                    target_display: parked.target_display,
+                    client_buffer: parked.udp_client_buffer,
+                });
 
                 // Forward any payload that piggy-backed on the resume
                 // request frame.
                 let leftover = state.header_buffer.split_off(request.consumed);
                 state.header_buffer.clear();
+                let counters = state.user_counters.as_deref();
                 if !leftover.is_empty()
-                    && let UpstreamSession::Udp(socket) = &state.upstream
+                    && let UpstreamSession::Udp(udp) = &mut state.upstream
                 {
                     let leftover_bytes = Bytes::from(leftover);
                     forward_vless_udp_client_frames(
-                        &mut state.udp_client_buffer,
+                        &mut udp.client_buffer,
                         &leftover_bytes,
-                        socket.as_ref(),
-                        state.user_counters.as_deref(),
+                        udp.socket.as_ref(),
+                        counters,
                         route.protocol,
                         &route.path,
                     )
@@ -196,7 +200,7 @@ where
     // resumption is disabled the notify is simply never fired.
     let cancel = Arc::new(Notify::new());
     let cancel_for_task = Arc::clone(&cancel);
-    state.upstream_to_client = Some(AbortOnDrop::new(tokio::spawn(async move {
+    let reader_task = AbortOnDrop::new(tokio::spawn(async move {
         relay_vless_udp_upstream_to_client(
             reader_socket,
             tx,
@@ -208,22 +212,29 @@ where
             Some(cancel_for_task),
         )
         .await
-    })));
-    state.relay_cancel = Some(cancel);
-    state.upstream_target_display = Some(Arc::from(target_display.as_str()));
+    }));
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
-    state.upstream = UpstreamSession::Udp(Arc::clone(&socket));
+    state.upstream = UpstreamSession::Udp(UdpUpstream {
+        socket,
+        reader_task,
+        cancel,
+        target_display: Arc::from(target_display.as_str()),
+        client_buffer: BytesMut::new(),
+    });
 
     let leftover = state.header_buffer.split_off(request.consumed);
     state.header_buffer.clear();
-    if !leftover.is_empty() {
+    let counters = state.user_counters.as_deref();
+    if !leftover.is_empty()
+        && let UpstreamSession::Udp(udp) = &mut state.upstream
+    {
         let leftover_bytes = Bytes::from(leftover);
         forward_vless_udp_client_frames(
-            &mut state.udp_client_buffer,
+            &mut udp.client_buffer,
             &leftover_bytes,
-            socket.as_ref(),
-            state.user_counters.as_deref(),
+            udp.socket.as_ref(),
+            counters,
             route.protocol,
             &route.path,
         )
