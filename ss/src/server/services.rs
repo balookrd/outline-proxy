@@ -9,7 +9,7 @@ use crate::{
     config::Config,
     crypto::UserKey,
     metrics::{Metrics, Transport},
-    outbound::{InterfaceSource, OutboundIpv6},
+    outbound::{self, InterfaceSource, OutboundIpv6},
 };
 
 use super::{
@@ -68,6 +68,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
     } else {
         None
     };
+    let outbound_ipv6 = outbound_ipv6.and_then(probe_or_disable);
     let nat_table = NatTable::with_outbound_ipv6(
         Duration::from_secs(config.tuning.udp_nat_idle_timeout_secs),
         outbound_ipv6.clone(),
@@ -123,4 +124,54 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         services,
         auth,
     })
+}
+
+/// Verify outbound IPv6 actually works by probing the configured source. On
+/// success returns the input unchanged; on failure logs a `WARN` and returns
+/// `None` so the rest of the process runs as if no outbound IPv6 were
+/// configured. An empty interface pool is treated as transient (e.g. SLAAC
+/// not yet up): we keep the source wired and let the periodic refresh pick
+/// addresses up later.
+fn probe_or_disable(out: Arc<OutboundIpv6>) -> Option<Arc<OutboundIpv6>> {
+    const ATTEMPTS: u32 = 3;
+    const TIMEOUT: Duration = Duration::from_secs(3);
+
+    match outbound::probe(&out, outbound::DEFAULT_PROBE_TARGET, ATTEMPTS, TIMEOUT) {
+        outbound::ProbeOutcome::Ok { source } => {
+            tracing::info!(
+                outbound = %out,
+                %source,
+                target = %outbound::DEFAULT_PROBE_TARGET,
+                "outbound IPv6 startup probe succeeded",
+            );
+            Some(out)
+        },
+        outbound::ProbeOutcome::EmptyPool => {
+            tracing::warn!(
+                outbound = %out,
+                "outbound IPv6 source has no addresses yet; keeping it enabled, \
+                 the periodic refresh will pick addresses up when they appear",
+            );
+            Some(out)
+        },
+        outbound::ProbeOutcome::AllFailed(errors) => {
+            let summary: Vec<String> = errors
+                .iter()
+                .map(|(src, e)| match src {
+                    Some(s) => format!("{s} -> {e}"),
+                    None => format!("(no source) -> {e}"),
+                })
+                .collect();
+            tracing::warn!(
+                outbound = %out,
+                target = %outbound::DEFAULT_PROBE_TARGET,
+                attempts = errors.len(),
+                failures = ?summary,
+                "outbound IPv6 startup probe failed for all attempts; disabling \
+                 random outbound IPv6 source — upstream connections will use the \
+                 kernel default source",
+            );
+            None
+        },
+    }
 }
