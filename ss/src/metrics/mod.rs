@@ -249,6 +249,7 @@ impl Metrics {
         Arc::clone(counters.value())
     }
 
+    #[allow(dead_code)]
     pub fn record_tcp_payload_bytes(
         &self,
         user: impl Into<Arc<str>>,
@@ -294,6 +295,7 @@ impl Metrics {
         });
     }
 
+    #[allow(dead_code)]
     pub fn record_udp_payload_bytes(
         &self,
         user: impl Into<Arc<str>>,

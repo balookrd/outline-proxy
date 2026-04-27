@@ -26,7 +26,6 @@ use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, anyhow, bail};
 use bytes::Bytes;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 
 /// Magic prefix written by whichever side opens the oversize-record
@@ -145,6 +144,7 @@ impl OversizeStream {
     }
 
     /// Best-effort write-side close.
+    #[allow(dead_code)]
     pub async fn close(&self) -> Result<()> {
         let mut send = self.send.lock().await;
         let _ = send.finish();

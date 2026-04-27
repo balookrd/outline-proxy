@@ -48,6 +48,7 @@ impl SsQuicConn {
     }
 }
 
+#[allow(dead_code)]
 pub(in crate::server) async fn handle_raw_ss_quic_stream(
     send: quinn::SendStream,
     recv: quinn::RecvStream,

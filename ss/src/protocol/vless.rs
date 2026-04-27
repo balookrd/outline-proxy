@@ -43,6 +43,7 @@ pub const ADDON_TAG_RESUME_RESULT: u8 = 0x11;
 /// [`ADDON_TAG_RESUME_RESULT`] so callers can plumb the same byte from
 /// the registry's `ResumeMiss` to the response addon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum AddonResumeResult {
     Hit = 0x00,
     MissExpired = 0x01,
