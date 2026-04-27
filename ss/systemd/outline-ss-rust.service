@@ -15,6 +15,15 @@ ExecStart=/usr/local/bin/outline-ss-rust --config /etc/outline-ss-rust/config.to
 Restart=on-failure
 RestartSec=3
 
+# Graceful shutdown bound. The relay's HTTP listeners cap their own drain at
+# HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS (10 s); this gives systemd a slightly
+# wider window to collect the process before falling back to SIGKILL, instead
+# of the 90 s default that makes `systemctl restart` look hung when long-lived
+# WebSocket tunnels keep connection tasks alive.
+TimeoutStopSec=20s
+KillMode=mixed
+SendSIGKILL=yes
+
 # Keep logs in journald.
 StandardOutput=journal
 StandardError=journal

@@ -19,8 +19,8 @@ use crate::{
 use super::super::{
     connect::configure_tcp_stream,
     constants::{
-        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS, TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
-        TLS_MAX_CONCURRENT_CONNECTIONS,
+        H2_KEEPALIVE_INTERVAL_SECS, H2_KEEPALIVE_TIMEOUT_SECS,
+        HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS, TLS_MAX_CONCURRENT_CONNECTIONS,
     },
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
@@ -90,10 +90,12 @@ pub(in crate::server) async fn serve_listener(
             warn!(?error, "failed to configure accepted http connection");
         }
     });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("server exited unexpectedly")
+    let serve = async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await
+    };
+    drain_axum_serve(serve, "plain tcp").await
 }
 
 pub(in crate::server) async fn serve_metrics_listener(
@@ -101,10 +103,35 @@ pub(in crate::server) async fn serve_metrics_listener(
     app: Router,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move { shutdown.cancelled().await })
-        .await
-        .context("metrics server exited unexpectedly")
+    let serve = async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown.cancelled().await })
+            .await
+    };
+    drain_axum_serve(serve, "metrics").await
+}
+
+// hyper's graceful_shutdown holds the per-connection task open for the full
+// lifetime of any upgraded WebSocket stream, so without a cap the listener
+// future never resolves on SIGTERM. After `shutdown` fires we wait at most
+// `HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS` for in-flight connections to finish,
+// then drop the future to abort remaining hyper connection tasks.
+async fn drain_axum_serve<F>(serve: F, label: &'static str) -> Result<()>
+where
+    F: std::future::Future<Output = std::io::Result<()>>,
+{
+    let drain_timeout = Duration::from_secs(HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    match tokio::time::timeout(drain_timeout, serve).await {
+        Ok(result) => result.with_context(|| format!("{label} server exited unexpectedly")),
+        Err(_) => {
+            warn!(
+                listener = label,
+                timeout_secs = HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+                "connections did not drain within shutdown timeout; aborting"
+            );
+            Ok(())
+        },
+    }
 }
 
 async fn serve_tls_listener(
@@ -199,14 +226,14 @@ async fn serve_tls_listener(
         });
     }
 
-    let drain_timeout = Duration::from_secs(TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
+    let drain_timeout = Duration::from_secs(HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
     let drain =
         tokio::time::timeout(drain_timeout, async { while tasks.join_next().await.is_some() {} })
             .await;
     if drain.is_err() {
         warn!(
             remaining = tasks.len(),
-            timeout_secs = TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
+            timeout_secs = HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
             "TLS connections did not drain within shutdown timeout; aborting"
         );
         tasks.shutdown().await;

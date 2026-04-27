@@ -9,9 +9,13 @@ pub(super) const H2_KEEPALIVE_TIMEOUT_SECS: u64 = 20;
 // Cap on concurrent active TLS connections (handshake + established). Matches
 // the plain-TCP shadowsocks cap so a TLS listener cannot spawn unbounded tasks.
 pub(super) const TLS_MAX_CONCURRENT_CONNECTIONS: usize = 4_096;
-// How long the TLS listener waits for in-flight connections to finish after
-// the shutdown signal fires before forcibly aborting remaining tasks.
-pub(super) const TLS_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
+// How long an HTTP listener (plain TCP, TLS, metrics) waits for in-flight
+// connections to finish after the shutdown signal fires before forcibly
+// aborting them. Required because hyper's graceful shutdown keeps the
+// per-connection task alive for the full lifetime of upgraded WebSocket
+// streams; without this cap the process never exits on SIGTERM and systemd
+// has to SIGKILL after the unit's TimeoutStopSec.
+pub(super) const HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 10;
 
 pub(super) const H3_QUIC_IDLE_TIMEOUT_SECS: u64 = 120;
 pub(super) const H3_QUIC_PING_INTERVAL_SECS: u64 = 10;
