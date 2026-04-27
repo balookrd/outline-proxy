@@ -83,54 +83,59 @@ pub(in crate::server) async fn serve_tcp_listener(
 pub(in crate::server) async fn serve_listener(
     listener: TcpListener,
     app: Router,
-    mut shutdown: ShutdownSignal,
+    shutdown: ShutdownSignal,
 ) -> Result<()> {
     let listener = listener.tap_io(|stream| {
         if let Err(error) = configure_tcp_stream(stream) {
             warn!(?error, "failed to configure accepted http connection");
         }
     });
-    let serve = async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await
-    };
-    drain_axum_serve(serve, "plain tcp").await
+    let mut shutdown_for_graceful = shutdown.clone();
+    let serve = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown_for_graceful.cancelled().await });
+    drain_axum_serve(async move { serve.await }, shutdown, "plain tcp").await
 }
 
 pub(in crate::server) async fn serve_metrics_listener(
     listener: TcpListener,
     app: Router,
-    mut shutdown: ShutdownSignal,
+    shutdown: ShutdownSignal,
 ) -> Result<()> {
-    let serve = async move {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(async move { shutdown.cancelled().await })
-            .await
-    };
-    drain_axum_serve(serve, "metrics").await
+    let mut shutdown_for_graceful = shutdown.clone();
+    let serve = axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown_for_graceful.cancelled().await });
+    drain_axum_serve(async move { serve.await }, shutdown, "metrics").await
 }
 
 // hyper's graceful_shutdown holds the per-connection task open for the full
 // lifetime of any upgraded WebSocket stream, so without a cap the listener
 // future never resolves on SIGTERM. After `shutdown` fires we wait at most
 // `HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS` for in-flight connections to finish,
-// then drop the future to abort remaining hyper connection tasks.
-async fn drain_axum_serve<F>(serve: F, label: &'static str) -> Result<()>
+// then drop the serve future to abort remaining hyper connection tasks.
+async fn drain_axum_serve<F>(
+    serve: F,
+    mut shutdown: ShutdownSignal,
+    label: &'static str,
+) -> Result<()>
 where
     F: std::future::Future<Output = std::io::Result<()>>,
 {
     let drain_timeout = Duration::from_secs(HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS);
-    match tokio::time::timeout(drain_timeout, serve).await {
-        Ok(result) => result.with_context(|| format!("{label} server exited unexpectedly")),
-        Err(_) => {
+    let drain_deadline = async move {
+        shutdown.cancelled().await;
+        tokio::time::sleep(drain_timeout).await;
+    };
+    tokio::select! {
+        biased;
+        result = serve => result.with_context(|| format!("{label} server exited unexpectedly")),
+        _ = drain_deadline => {
             warn!(
                 listener = label,
                 timeout_secs = HTTP_GRACEFUL_SHUTDOWN_TIMEOUT_SECS,
                 "connections did not drain within shutdown timeout; aborting"
             );
             Ok(())
-        },
+        }
     }
 }
 
