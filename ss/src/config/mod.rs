@@ -30,6 +30,7 @@ pub enum H3Alpn {
     Ss,
 }
 
+#[allow(dead_code)]
 impl H3Alpn {
     pub const fn wire_bytes(self) -> &'static [u8] {
         match self {
@@ -418,6 +419,7 @@ impl Config {
         self.h3_cert_path.is_some() && self.h3_key_path.is_some()
     }
 
+    #[allow(dead_code)]
     pub fn h3_alpn_enabled(&self, alpn: H3Alpn) -> bool {
         self.h3_alpn.contains(&alpn)
     }

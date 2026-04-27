@@ -95,6 +95,7 @@ pub(in crate::server) struct RawQuicVlessRouteCtx {
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
 }
 
+#[allow(dead_code)]
 pub(in crate::server) async fn handle_raw_vless_quic_stream(
     send: quinn::SendStream,
     recv: quinn::RecvStream,
@@ -155,7 +156,7 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
 }
 
 async fn run_stream(
-    mut send: quinn::SendStream,
+    send: quinn::SendStream,
     mut recv: quinn::RecvStream,
     prefix: Vec<u8>,
     server: &VlessWsServerCtx,
@@ -257,7 +258,7 @@ async fn run_stream(
 
 async fn handle_tcp(
     mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
+    recv: quinn::RecvStream,
     mut header_buf: Vec<u8>,
     request: vless::VlessRequest,
     user: VlessUser,
@@ -272,7 +273,7 @@ async fn handle_tcp(
     // resume_result)` tuple. Resume hits skip `connect_tcp_target`
     // entirely; misses fall through to the legacy connect path.
     let user_label = user.label_arc();
-    let (mut up_reader, mut up_writer, upstream_guard, resume_result) = match try_attach_parked_tcp(
+    let (up_reader, mut up_writer, upstream_guard, resume_result) = match try_attach_parked_tcp(
         server,
         &user_label,
         resume.requested_resume,
@@ -521,6 +522,7 @@ async fn write_vless_tcp_response_header(
 
 // ── Relay tasks (with cancel-on-client-EOF) ─────────────────────────────
 
+#[allow(dead_code)]
 enum UploadOutcome {
     /// Upload finished due to client EOF (`recv` returned `None`). The
     /// upstream writer half is returned for potential park-on-drop;
@@ -848,7 +850,7 @@ pub(in crate::server) async fn serve_raw_vless_oversize_records(
 pub(in crate::server) async fn serve_raw_vless_quic_datagrams(
     connection: Arc<quinn::Connection>,
     conn_state: Arc<VlessQuicConn>,
-    server: Arc<VlessWsServerCtx>,
+    _server: Arc<VlessWsServerCtx>,
 ) -> Result<()> {
     debug!(remote = %connection.remote_address(), "raw VLESS QUIC datagram pump started");
     loop {

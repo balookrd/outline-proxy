@@ -7,7 +7,7 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::Semaphore,
 };
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::{
     crypto::{AeadStreamEncryptor, UserKey},
