@@ -33,7 +33,7 @@ use parking_lot::Mutex as SyncMutex;
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
 use socks5_proto::TargetAddr;
-use tokio::sync::{Mutex, mpsc, watch};
+use tokio::sync::{Mutex as AsyncMutex, mpsc, watch};
 use tracing::debug;
 use url::Url;
 
@@ -292,12 +292,12 @@ pub fn vless_tcp_pair_from_ws(
 /// works identically over WS Binary frames or QUIC datagrams.
 pub struct VlessUdpTransport {
     chan: Arc<dyn crate::frame_io::DatagramChannel>,
-    pending_header: Mutex<Option<Vec<u8>>>,
+    pending_header: SyncMutex<Option<Vec<u8>>>,
     /// Reader-side state. Single mutex covers both the in-progress
     /// reassembly buffer and the "saw response header yet?" flag — they
     /// are touched together and `read_packet` is serialized by the caller
     /// (one outstanding read at a time per session).
-    recv_state: Mutex<VlessUdpRecvState>,
+    recv_state: SyncMutex<VlessUdpRecvState>,
     _lifetime: Arc<UpstreamTransportGuard>,
 }
 
@@ -338,8 +338,8 @@ impl VlessUdpTransport {
         let header = build_request_header(uuid, VLESS_CMD_UDP, target);
         Self {
             chan,
-            pending_header: Mutex::new(Some(header)),
-            recv_state: Mutex::new(VlessUdpRecvState {
+            pending_header: SyncMutex::new(Some(header)),
+            recv_state: SyncMutex::new(VlessUdpRecvState {
                 pending_header: true,
                 buf: BytesMut::new(),
             }),
@@ -375,7 +375,7 @@ impl VlessUdpTransport {
             });
         }
         let mut frame: Vec<u8> = {
-            let mut header = self.pending_header.lock().await;
+            let mut header = self.pending_header.lock();
             header.take().unwrap_or_default()
         };
         let need = 2 + payload.len();
@@ -391,7 +391,7 @@ impl VlessUdpTransport {
             // touching the wire — handles the (uncommon) case of a single
             // underlying datagram carrying multiple len-prefixed records.
             {
-                let mut state = self.recv_state.lock().await;
+                let mut state = self.recv_state.lock();
                 if !state.pending_header
                     && let Some(payload) = try_split_packet(&mut state.buf)?
                 {
@@ -403,7 +403,7 @@ impl VlessUdpTransport {
                 .recv_datagram()
                 .await?
                 .ok_or_else(|| anyhow::Error::from(WsClosed))?;
-            let mut state = self.recv_state.lock().await;
+            let mut state = self.recv_state.lock();
             state.buf.extend_from_slice(&next);
             if state.pending_header {
                 if state.buf.len() < 2 {
@@ -492,9 +492,9 @@ impl Default for VlessUdpMuxLimits {
 pub struct VlessUdpSessionMux {
     dial: VlessUdpSessionDialer,
     limits: VlessUdpMuxLimits,
-    sessions: Arc<Mutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
     downlink_tx: mpsc::Sender<Result<Bytes>>,
-    downlink_rx: Mutex<mpsc::Receiver<Result<Bytes>>>,
+    downlink_rx: AsyncMutex<mpsc::Receiver<Result<Bytes>>>,
     close_signal: watch::Sender<bool>,
     _janitor_task: Option<AbortOnDrop>,
     _lifetime: Arc<UpstreamTransportGuard>,
@@ -573,8 +573,8 @@ impl VlessUdpSessionMux {
     ) -> Self {
         let (close_signal, _close_rx) = watch::channel(false);
         let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(256);
-        let sessions: Arc<Mutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>> =
+            Arc::new(SyncMutex::new(HashMap::new()));
         let janitor_task = limits.session_idle_timeout.map(|idle_timeout| {
             spawn_vless_udp_janitor(
                 Arc::clone(&sessions),
@@ -597,7 +597,7 @@ impl VlessUdpSessionMux {
             limits,
             sessions,
             downlink_tx,
-            downlink_rx: Mutex::new(downlink_rx),
+            downlink_rx: AsyncMutex::new(downlink_rx),
             close_signal,
             _janitor_task: janitor_task,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
@@ -628,7 +628,7 @@ impl VlessUdpSessionMux {
     pub async fn close(&self) -> Result<()> {
         self.close_signal.send_replace(true);
         let sessions = {
-            let mut guard = self.sessions.lock().await;
+            let mut guard = self.sessions.lock();
             std::mem::take(&mut *guard)
         };
         for (_, entry) in sessions {
@@ -638,15 +638,15 @@ impl VlessUdpSessionMux {
     }
 
     #[cfg(test)]
-    pub(crate) async fn session_count(&self) -> usize {
-        self.sessions.lock().await.len()
+    pub(crate) fn session_count(&self) -> usize {
+        self.sessions.lock().len()
     }
 
     async fn session_for(&self, target: &TargetAddr) -> Result<Arc<VlessUdpSessionEntry>> {
         // Fast path: session exists. Refresh its last_use stamp so that a
         // hot destination is never evicted by the LRU cap.
         {
-            let guard = self.sessions.lock().await;
+            let guard = self.sessions.lock();
             if let Some(entry) = guard.get(target) {
                 entry.touch();
                 return Ok(Arc::clone(entry));
@@ -682,36 +682,47 @@ impl VlessUdpSessionMux {
             last_use: SyncMutex::new(Instant::now()),
             _reader_task: reader_task,
         });
-        let evicted = {
-            let mut guard = self.sessions.lock().await;
+        enum SlowPathOutcome {
+            DuplicateDial(Arc<VlessUdpSessionEntry>),
+            Inserted(Option<Arc<VlessUdpSessionEntry>>),
+        }
+        let outcome = {
+            let mut guard = self.sessions.lock();
             if let Some(existing) = guard.get(target) {
                 let existing = Arc::clone(existing);
                 existing.touch();
-                drop(guard);
+                SlowPathOutcome::DuplicateDial(existing)
+            } else {
+                let evicted = if guard.len() >= self.limits.max_sessions {
+                    // LRU eviction: scan for the oldest last_use stamp. Linear
+                    // but `max_sessions` is small (256 by default) and this
+                    // only runs on session churn, not per-packet.
+                    evict_lru_session(&mut guard)
+                } else {
+                    None
+                };
+                guard.insert(target.clone(), Arc::clone(&entry));
+                SlowPathOutcome::Inserted(evicted)
+            }
+        };
+        match outcome {
+            SlowPathOutcome::DuplicateDial(existing) => {
                 // Duplicate dial: let the loser's transport drop — its reader
                 // task aborts with the Arc and its WS sink closes on Drop.
                 let _ = entry.transport.close().await;
-                return Ok(existing);
+                Ok(existing)
             }
-            let evicted = if guard.len() >= self.limits.max_sessions {
-                // LRU eviction: scan for the oldest last_use stamp. Linear
-                // but `max_sessions` is small (256 by default) and this
-                // only runs on session churn, not per-packet.
-                evict_lru_session(&mut guard)
-            } else {
-                None
-            };
-            guard.insert(target.clone(), Arc::clone(&entry));
-            evicted
-        };
-        if let Some(victim) = evicted {
-            debug!(
-                target: "outline_transport::vless",
-                "vless udp mux at max_sessions, evicted LRU session to make room"
-            );
-            let _ = victim.transport.close().await;
+            SlowPathOutcome::Inserted(evicted) => {
+                if let Some(victim) = evicted {
+                    debug!(
+                        target: "outline_transport::vless",
+                        "vless udp mux at max_sessions, evicted LRU session to make room"
+                    );
+                    let _ = victim.transport.close().await;
+                }
+                Ok(entry)
+            }
         }
-        Ok(entry)
     }
 }
 
@@ -726,7 +737,7 @@ fn evict_lru_session(
 }
 
 fn spawn_vless_udp_janitor(
-    sessions: Arc<Mutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    sessions: Arc<SyncMutex<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
     idle_timeout: Duration,
     interval: Duration,
     mut close_rx: watch::Receiver<bool>,
@@ -744,7 +755,7 @@ fn spawn_vless_udp_janitor(
             }
             let now = Instant::now();
             let expired: Vec<Arc<VlessUdpSessionEntry>> = {
-                let mut guard = sessions.lock().await;
+                let mut guard = sessions.lock();
                 let keys: Vec<TargetAddr> = guard
                     .iter()
                     .filter(|(_, entry)| {
