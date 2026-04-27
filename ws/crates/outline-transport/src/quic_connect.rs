@@ -76,11 +76,15 @@ pub async fn connect_vless_tcp_quic(
 /// always emitted so a feature-enabled server mints a Session ID for
 /// the next reconnect, even on a fresh dial.
 ///
-/// Returns `(writer, reader, Option<SessionId>)`. The third element is
-/// the Session ID the server assigned via the response Addons (empty
-/// on a feature-disabled server). Internally the request header is
-/// flushed eagerly so the server can echo a response before the
-/// caller pushes any payload.
+/// Returns `(writer, reader, Receiver<Option<SessionId>>)`. The dial
+/// returns *without* waiting for the server's handshake response — the
+/// VLESS request header is flushed eagerly so the server sees it, but
+/// parsing the response addons is deferred to the first `read_chunk`
+/// call on the reader. The third tuple element is a one-shot receiver
+/// that fires with the assigned Session ID (or `None` on a
+/// feature-disabled server) once the reader has consumed the response
+/// header. Saves one full RTT compared to a blocking handshake read,
+/// which dominated cold-dial latency for short-lived TCP flows.
 #[allow(clippy::too_many_arguments)]
 pub async fn connect_vless_tcp_quic_with_resume(
     cache: &DnsCache,
@@ -92,7 +96,11 @@ pub async fn connect_vless_tcp_quic_with_resume(
     target: &TargetAddr,
     lifetime: Arc<UpstreamTransportGuard>,
     resume_id: Option<&[u8; 16]>,
-) -> Result<(VlessTcpWriter, VlessTcpReader, Option<SessionId>)> {
+) -> Result<(
+    VlessTcpWriter,
+    VlessTcpReader,
+    tokio::sync::oneshot::Receiver<Option<SessionId>>,
+)> {
     let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_VLESS)
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
@@ -104,20 +112,23 @@ pub async fn connect_vless_tcp_quic_with_resume(
         Arc::clone(&lifetime),
         resume_id,
     );
-    let mut reader = VlessTcpReader::with_source(Box::new(source_io), lifetime);
-    // Flush the request header (with addons) immediately so the server
-    // can read it, look up the parked upstream and write back a
-    // response carrying the assigned Session ID. `send_chunk(&[])`
-    // bundles only the pending header into the frame.
+    let (id_tx, id_rx) = tokio::sync::oneshot::channel();
+    let reader = VlessTcpReader::with_source_and_resume_sink(
+        Box::new(source_io),
+        lifetime,
+        id_tx,
+    );
+    // Fire-and-forget flush of the request header. This is a local
+    // socket write — it does NOT round-trip to the server. The server
+    // will act on the header (resume lookup / minting a Session ID)
+    // and write back its response asynchronously; we'll see that
+    // response on the next `read_chunk` call, which fires the
+    // `id_rx` receiver returned to the caller.
     writer
         .send_chunk(&[])
         .await
         .context("vless raw-quic resume: header flush failed")?;
-    let session_id = reader
-        .read_handshake_response()
-        .await
-        .context("vless raw-quic resume: handshake response read failed")?;
-    Ok((writer, reader, session_id))
+    Ok((writer, reader, id_rx))
 }
 
 /// Open one VLESS UDP session to `target` over a shared `vless`-ALPN
