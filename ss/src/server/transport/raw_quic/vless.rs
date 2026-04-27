@@ -95,32 +95,11 @@ pub(in crate::server) struct RawQuicVlessRouteCtx {
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
 }
 
-#[allow(dead_code)]
-pub(in crate::server) async fn handle_raw_vless_quic_stream(
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
-    server: Arc<VlessWsServerCtx>,
-    route: Arc<RawQuicVlessRouteCtx>,
-    connection: Arc<quinn::Connection>,
-    conn_state: Arc<VlessQuicConn>,
-) -> Result<()> {
-    handle_raw_vless_quic_stream_with_prefix(
-        send,
-        recv,
-        Vec::new(),
-        server,
-        route,
-        connection,
-        conn_state,
-    )
-    .await
-}
-
-/// Same as [`handle_raw_vless_quic_stream`] but accepts a `prefix` of
-/// bytes already read off the recv stream by the caller (typically the
-/// 8 bytes peeked to disambiguate the oversize-record magic from a
-/// VLESS request header). The handler treats those bytes as the first
-/// chunk of the inbound stream.
+/// Handles a raw VLESS-over-QUIC stream, accepting a `prefix` of bytes
+/// already read off the recv stream by the caller (typically the 8 bytes
+/// peeked to disambiguate the oversize-record magic from a VLESS request
+/// header). The handler treats those bytes as the first chunk of the
+/// inbound stream.
 pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
     send: quinn::SendStream,
     recv: quinn::RecvStream,
@@ -522,16 +501,13 @@ async fn write_vless_tcp_response_header(
 
 // ── Relay tasks (with cancel-on-client-EOF) ─────────────────────────────
 
-#[allow(dead_code)]
 enum UploadOutcome {
     /// Upload finished due to client EOF (`recv` returned `None`). The
     /// upstream writer half is returned for potential park-on-drop;
     /// the cancel notify has already been fired so the download task
-    /// will harvest its reader half.
+    /// will harvest its reader half. Other termination paths (write
+    /// errors, recv errors) propagate as `Err(_)` from `run_upload`.
     ClientEofWriter(OwnedWriteHalf),
-    /// Any other termination — error, write failure, etc. The writer
-    /// is shut down inside the task so downstream cleanup is a no-op.
-    Drained,
 }
 
 async fn run_upload(

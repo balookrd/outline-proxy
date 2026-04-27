@@ -143,13 +143,6 @@ impl OversizeStream {
         Ok(Some(Bytes::from(buf)))
     }
 
-    /// Best-effort write-side close.
-    #[allow(dead_code)]
-    pub async fn close(&self) -> Result<()> {
-        let mut send = self.send.lock().await;
-        let _ = send.finish();
-        Ok(())
-    }
 }
 
 /// Connection-level slot that lazy-holds the oversize-record stream

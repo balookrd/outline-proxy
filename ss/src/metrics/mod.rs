@@ -249,26 +249,6 @@ impl Metrics {
         Arc::clone(counters.value())
     }
 
-    #[allow(dead_code)]
-    pub fn record_tcp_payload_bytes(
-        &self,
-        user: impl Into<Arc<str>>,
-        protocol: Protocol,
-        direction: &'static str,
-        bytes: usize,
-    ) {
-        let user: Arc<str> = user.into();
-        with_local_recorder(&self.recorder, || {
-            counter!(
-                "outline_ss_tcp_payload_bytes_total",
-                "user"      => user,
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
-            )
-            .increment(bytes as u64);
-        });
-    }
-
     pub fn record_udp_request(
         &self,
         user: impl Into<Arc<str>>,
@@ -292,26 +272,6 @@ impl Metrics {
                 "result"   => result
             )
             .record(duration_seconds);
-        });
-    }
-
-    #[allow(dead_code)]
-    pub fn record_udp_payload_bytes(
-        &self,
-        user: impl Into<Arc<str>>,
-        protocol: Protocol,
-        direction: &'static str,
-        bytes: usize,
-    ) {
-        let user: Arc<str> = user.into();
-        with_local_recorder(&self.recorder, || {
-            counter!(
-                "outline_ss_udp_payload_bytes_total",
-                "user"      => user,
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
-            )
-            .increment(bytes as u64);
         });
     }
 
@@ -529,8 +489,6 @@ mod tests {
         metrics.record_websocket_binary_frame(Transport::Tcp, Protocol::Http2, "in", 123);
         metrics.record_tcp_authenticated_session("default", Protocol::Http2);
         metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
-        metrics.record_tcp_payload_bytes("default", Protocol::Http2, "client_to_target", 32);
-        metrics.record_udp_payload_bytes("default", Protocol::Http2, "target_to_client", 16);
         metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
         metrics.record_client_session("default", Protocol::Http2, Transport::Udp);
         session.finish(DisconnectReason::Normal);
@@ -540,8 +498,6 @@ mod tests {
         assert!(rendered.contains("transport=\"tcp\",protocol=\"http2\""));
         assert!(rendered.contains("user=\"default\",protocol=\"http2\""));
         assert!(rendered.contains("outline_ss_tcp_upstream_connect_duration_seconds_bucket"));
-        assert!(rendered.contains("outline_ss_tcp_payload_bytes_total"));
-        assert!(rendered.contains("outline_ss_udp_payload_bytes_total"));
         assert!(rendered.contains("outline_ss_client_sessions_total"));
         assert!(rendered.contains("outline_ss_client_last_seen_seconds"));
         assert!(rendered.contains("outline_ss_client_active"));
@@ -550,7 +506,6 @@ mod tests {
         assert!(rendered.contains(
             "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
         ));
-        assert!(rendered.contains("direction=\"target_to_client\""));
         #[cfg(target_os = "linux")]
         assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
         #[cfg(target_os = "linux")]
