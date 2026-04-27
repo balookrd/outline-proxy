@@ -2,9 +2,9 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use lru::LruCache;
-use tracing::{debug, warn};
 
 use crate::proxy::ProxyConfig;
+use crate::proxy::dispatcher::apply_fallback_strategy;
 use outline_routing::{RouteDecision, RouteTarget};
 use outline_uplink::{TransportKind, UplinkRegistry};
 use socks5_proto::TargetAddr;
@@ -71,46 +71,12 @@ pub(super) async fn classify_decision(
     primary: RouteTarget,
     fallback: Option<RouteTarget>,
 ) -> UdpPacketRoute {
-    let as_route = |target: RouteTarget| match target {
+    apply_fallback_strategy(registry, primary, fallback, TransportKind::Udp, |t| match t {
         RouteTarget::Direct => UdpPacketRoute::Direct,
         RouteTarget::Drop => UdpPacketRoute::Drop,
         RouteTarget::Group(name) => UdpPacketRoute::Tunnel(name),
-    };
-    // Fallback applies when the primary is a group whose UDP pool has no
-    // healthy uplinks at resolve time; Direct/Drop primaries are terminal.
-    if let RouteTarget::Group(ref name) = primary {
-        let manager = registry.group_by_name(name);
-        if manager.is_none() {
-            // Unknown group — routing table referenced a group that was not
-            // found in the registry. Honour the declared fallback before
-            // falling back to the default (a declared fallback is an
-            // explicit escape hatch the user wrote; using it first is safer
-            // than silently substituting the default).
-            if let Some(fb) = fallback {
-                warn!(
-                    group = %name,
-                    fallback = ?fb,
-                    "UDP route: unknown group, using declared fallback"
-                );
-                return as_route(fb);
-            }
-            warn!(
-                group = %name,
-                default = registry.default_group_name(),
-                "UDP route: unknown group and no fallback; dispatching to default"
-            );
-            return UdpPacketRoute::Tunnel(registry.default_group_name().into());
-        }
-        let manager = manager.unwrap();
-        if manager.has_any_healthy(TransportKind::Udp).await {
-            return as_route(primary);
-        }
-        if let Some(fb) = fallback {
-            debug!(primary = %name, fallback = ?fb, "UDP route: primary group unhealthy, using fallback");
-            return as_route(fb);
-        }
-    }
-    as_route(primary)
+    })
+    .await
 }
 
 /// Returns `true` when a per-association direct UDP socket must be pre-allocated.

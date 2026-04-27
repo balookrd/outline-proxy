@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use tokio::net::TcpStream;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_routing::{RouteDecision, RouteTarget};
+use outline_routing::RouteTarget;
 use socks5_proto::{SocksRequest, TargetAddr, negotiate};
 use outline_uplink::{TransportKind, UplinkManager, UplinkRegistry};
 
@@ -94,46 +94,76 @@ async fn resolve_dispatch(
     target: &TargetAddr,
     transport: TransportKind,
 ) -> Route {
-    if let Some(router) = config.router.as_ref() {
-        let decision = router.resolve(target).await;
-        return resolve_decision(registry, decision, transport, config.direct_fwmark).await;
-    }
-
-    Route::Group {
-        name: registry.default_group_name().into(),
-        manager: registry.default_group(),
-    }
-}
-
-async fn resolve_decision(
-    registry: &UplinkRegistry,
-    decision: RouteDecision,
-    transport: TransportKind,
-    direct_fwmark: Option<u32>,
-) -> Route {
-    let primary = resolve_single_target(registry, &decision.primary, direct_fwmark);
-    if matches!(primary, Route::Group { ref manager, .. } if !manager.has_any_healthy(transport).await)
-        && let Some(fb) = decision.fallback
-    {
-        debug!(primary = ?decision.primary, fallback = ?fb, "primary target unhealthy, using fallback");
-        return resolve_single_target(registry, &fb, direct_fwmark);
-    }
-    primary
-}
-
-fn resolve_single_target(
-    registry: &UplinkRegistry,
-    target: &RouteTarget,
-    direct_fwmark: Option<u32>,
-) -> Route {
-    match target {
-        RouteTarget::Direct => Route::Direct { fwmark: direct_fwmark },
-        RouteTarget::Drop => Route::Drop,
-        RouteTarget::Group(name) => {
-            let manager = registry
-                .group_by_name(name)
-                .unwrap_or_else(|| registry.default_group());
-            Route::Group { name: name.clone(), manager }
+    let Some(router) = config.router.as_ref() else {
+        return Route::Group {
+            name: registry.default_group_name().into(),
+            manager: registry.default_group(),
+        };
+    };
+    let decision = router.resolve(target).await;
+    let direct_fwmark = config.direct_fwmark;
+    apply_fallback_strategy(
+        registry,
+        decision.primary,
+        decision.fallback,
+        transport,
+        |t| match t {
+            RouteTarget::Direct => Route::Direct { fwmark: direct_fwmark },
+            RouteTarget::Drop => Route::Drop,
+            RouteTarget::Group(name) => {
+                let manager = registry
+                    .group_by_name(&name)
+                    .unwrap_or_else(|| registry.default_group());
+                Route::Group { name, manager }
+            },
         },
+    )
+    .await
+}
+
+/// Apply primary→fallback selection against live uplink-group health.
+///
+/// Shared by TCP dispatch and per-packet UDP routing.
+///
+/// - `Direct`/`Drop` primaries are terminal — fallback is ignored.
+/// - Unknown group: prefer the *declared* fallback over silently
+///   substituting the default — a declared fallback is an explicit user
+///   escape hatch.
+/// - Known group with no healthy uplinks of `transport`: use declared
+///   fallback if present, otherwise stay on the primary.
+pub(super) async fn apply_fallback_strategy<R, F>(
+    registry: &UplinkRegistry,
+    primary: RouteTarget,
+    fallback: Option<RouteTarget>,
+    transport: TransportKind,
+    to_route: F,
+) -> R
+where
+    F: Fn(RouteTarget) -> R,
+{
+    if let RouteTarget::Group(ref name) = primary {
+        match registry.group_by_name(name) {
+            None => {
+                if let Some(fb) = fallback {
+                    warn!(group = %name, fallback = ?fb, "unknown group, using declared fallback");
+                    return to_route(fb);
+                }
+                warn!(
+                    group = %name,
+                    default = registry.default_group_name(),
+                    "unknown group and no fallback; dispatching to default"
+                );
+                return to_route(RouteTarget::Group(registry.default_group_name().into()));
+            },
+            Some(manager) => {
+                if !manager.has_any_healthy(transport).await
+                    && let Some(fb) = fallback
+                {
+                    debug!(primary = %name, fallback = ?fb, "primary group unhealthy, using fallback");
+                    return to_route(fb);
+                }
+            },
+        }
     }
+    to_route(primary)
 }

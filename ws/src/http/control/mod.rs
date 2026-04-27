@@ -203,8 +203,11 @@ mod tests {
             routing_scope: "per_uplink".to_string(),
             auto_failback: false,
             global_active_uplink: Some("uplink-01".to_string()),
+            global_active_reason: None,
             tcp_active_uplink: Some("uplink-02".to_string()),
+            tcp_active_reason: None,
             udp_active_uplink: Some("uplink-01".to_string()),
+            udp_active_reason: None,
             uplinks: vec![
                 UplinkSnapshot {
                     index: 0,
