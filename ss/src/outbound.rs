@@ -373,6 +373,83 @@ pub(crate) fn set_ipv6_freebind<T>(_socket: &T) -> std::io::Result<()> {
     Ok(())
 }
 
+// ── Startup connectivity probe ───────────────────────────────────────────────
+
+/// Default destination for the startup IPv6 reachability probe — Cloudflare's
+/// public anycast resolver `2606:4700:4700::1111` on port 443. Picked because
+/// it answers TCP-SYN reliably, has low latency from most networks, and is not
+/// behind any path that filters non-browser User-Agents.
+pub(crate) const DEFAULT_PROBE_TARGET: std::net::SocketAddrV6 = std::net::SocketAddrV6::new(
+    Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111),
+    443,
+    0,
+    0,
+);
+
+/// Result of [`probe`] — describes why outbound IPv6 should (or should not) be
+/// disabled on startup.
+#[derive(Debug)]
+pub(crate) enum ProbeOutcome {
+    /// At least one random source address successfully completed a TCP SYN to
+    /// the probe target. Outbound IPv6 stays enabled.
+    Ok { source: Ipv6Addr },
+    /// All attempts failed. The wrapped errors are returned for logging; the
+    /// caller should disable outbound IPv6.
+    AllFailed(Vec<(Option<Ipv6Addr>, std::io::Error)>),
+    /// The configured source has no usable addresses (interface mode with an
+    /// empty pool). Caller should keep outbound IPv6 wired up so it picks up
+    /// addresses on the next refresh, but log a warning.
+    EmptyPool,
+}
+
+/// Probe outbound IPv6 reachability by binding a TCP socket to a random source
+/// address from `out` and connecting to `target`. Up to `attempts` random
+/// sources are tried; the first success short-circuits. Each attempt has its
+/// own `timeout`. Sync — meant to run inside `services::build()` before the
+/// runtime starts accepting traffic.
+pub(crate) fn probe(
+    out: &OutboundIpv6,
+    target: std::net::SocketAddrV6,
+    attempts: u32,
+    timeout: std::time::Duration,
+) -> ProbeOutcome {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+
+    let mut errors = Vec::new();
+    for _ in 0..attempts.max(1) {
+        let source = match out.random_addr() {
+            Ok(Some(addr)) => addr,
+            Ok(None) => return ProbeOutcome::EmptyPool,
+            Err(error) => {
+                errors.push((None, error));
+                continue;
+            },
+        };
+
+        let socket = match Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP)) {
+            Ok(s) => s,
+            Err(error) => {
+                errors.push((Some(source), error));
+                continue;
+            },
+        };
+        if let Err(error) = set_ipv6_freebind(&socket) {
+            errors.push((Some(source), error));
+            continue;
+        }
+        let bind = std::net::SocketAddrV6::new(source, 0, 0, 0);
+        if let Err(error) = socket.bind(&SockAddr::from(bind)) {
+            errors.push((Some(source), error));
+            continue;
+        }
+        match socket.connect_timeout(&SockAddr::from(target), timeout) {
+            Ok(()) => return ProbeOutcome::Ok { source },
+            Err(error) => errors.push((Some(source), error)),
+        }
+    }
+    ProbeOutcome::AllFailed(errors)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
