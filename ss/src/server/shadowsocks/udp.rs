@@ -7,7 +7,7 @@ use tokio::net::UdpSocket;
 use tracing::{debug, warn};
 
 use crate::{
-    crypto::{CryptoError, UserKey, decrypt_udp_packet, diagnose_udp_packet},
+    crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
     metrics::{Protocol, Transport},
     protocol::parse_target_addr,
 };
@@ -147,8 +147,13 @@ where
     F: FnOnce() -> UdpResponseSender,
 {
     let started_at = std::time::Instant::now();
-    let packet = match decrypt_udp_packet(ctx.users.as_ref(), &data) {
-        Ok(packet) => packet,
+    let packet = match decrypt_udp_packet_with_hint(
+        ctx.users.as_ref(),
+        &data,
+        None,
+        Some(ctx.services.udp_server.session_key_cache.as_ref()),
+    ) {
+        Ok((packet, _)) => packet,
         Err(CryptoError::UnknownUser) => {
             debug!(
                 client = %client_id,
