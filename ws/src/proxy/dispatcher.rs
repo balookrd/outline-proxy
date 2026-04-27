@@ -156,8 +156,17 @@ where
                 return to_route(RouteTarget::Group(registry.default_group_name().into()));
             },
             Some(manager) => {
-                if !manager.has_any_healthy(transport).await
-                    && let Some(fb) = fallback
+                // Short-circuit on `fallback.is_none()` BEFORE running the
+                // health probe. `has_any_healthy` walks every uplink in the
+                // group under per-uplink `parking_lot::Mutex`es and clones
+                // each `UplinkStatus`; when there is no declared fallback
+                // the result cannot change the decision, so the work is
+                // pure overhead. UDP is the hot caller — this runs on
+                // *every* datagram via `resolve_udp_packet_route` /
+                // `classify_decision`, even after the per-association
+                // route cache hit.
+                if let Some(fb) = fallback
+                    && !manager.has_any_healthy(transport).await
                 {
                     debug!(primary = %name, fallback = ?fb, "primary group unhealthy, using fallback");
                     return to_route(fb);
