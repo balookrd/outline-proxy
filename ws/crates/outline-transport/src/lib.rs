@@ -172,7 +172,7 @@ pub use udp_transport::{
 #[cfg(feature = "quic")]
 pub use quic_connect::{
     connect_ss_tcp_quic, connect_ss_udp_quic, connect_vless_tcp_quic,
-    connect_vless_udp_session_quic,
+    connect_vless_tcp_quic_with_resume, connect_vless_udp_session_quic,
 };
 #[cfg(feature = "quic")]
 pub use vless_quic_mux::VlessUdpQuicMux;

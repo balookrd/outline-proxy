@@ -34,6 +34,7 @@ use url::Url;
 use crate::frame_io_quic::{QuicDatagramChannel, open_quic_frame_pair};
 use crate::quic::vless_udp::VlessUdpQuicSession;
 use crate::quic::{ALPN_SS, ALPN_VLESS, SharedQuicConnection, connect_quic_uplink};
+use crate::resumption::SessionId;
 use crate::tcp_transport::{
     QuicTcpReader, QuicTcpWriter, TcpShadowsocksReader, TcpShadowsocksWriter,
 };
@@ -63,6 +64,60 @@ pub async fn connect_vless_tcp_quic(
         VlessTcpWriter::with_sink(Box::new(sink), uuid, target, Arc::clone(&lifetime));
     let reader = VlessTcpReader::with_source(Box::new(source_io), lifetime);
     Ok((writer, reader))
+}
+
+/// Same as [`connect_vless_tcp_quic`] but participates in cross-transport
+/// session resumption per the VLESS Addons opcodes specified in
+/// `docs/SESSION-RESUMPTION.md`.
+///
+/// `resume_id` (when set) is encoded into the request header's Addons
+/// block under tag `0x11 RESUME_ID`, asking the server to re-attach a
+/// parked TCP upstream. `RESUME_CAPABLE` (tag `0x10`, value `0x01`) is
+/// always emitted so a feature-enabled server mints a Session ID for
+/// the next reconnect, even on a fresh dial.
+///
+/// Returns `(writer, reader, Option<SessionId>)`. The third element is
+/// the Session ID the server assigned via the response Addons (empty
+/// on a feature-disabled server). Internally the request header is
+/// flushed eagerly so the server can echo a response before the
+/// caller pushes any payload.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_vless_tcp_quic_with_resume(
+    cache: &DnsCache,
+    url: &Url,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    source: &'static str,
+    uuid: &[u8; 16],
+    target: &TargetAddr,
+    lifetime: Arc<UpstreamTransportGuard>,
+    resume_id: Option<&[u8; 16]>,
+) -> Result<(VlessTcpWriter, VlessTcpReader, Option<SessionId>)> {
+    let conn = connect_quic_uplink(cache, url, fwmark, ipv6_first, source, ALPN_VLESS)
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+    let (sink, source_io) = open_quic_frame_pair(&conn).await?;
+    let mut writer = VlessTcpWriter::with_sink_and_resume(
+        Box::new(sink),
+        uuid,
+        target,
+        Arc::clone(&lifetime),
+        resume_id,
+    );
+    let mut reader = VlessTcpReader::with_source(Box::new(source_io), lifetime);
+    // Flush the request header (with addons) immediately so the server
+    // can read it, look up the parked upstream and write back a
+    // response carrying the assigned Session ID. `send_chunk(&[])`
+    // bundles only the pending header into the frame.
+    writer
+        .send_chunk(&[])
+        .await
+        .context("vless raw-quic resume: header flush failed")?;
+    let session_id = reader
+        .read_handshake_response()
+        .await
+        .context("vless raw-quic resume: handshake response read failed")?;
+    Ok((writer, reader, session_id))
 }
 
 /// Open one VLESS UDP session to `target` over a shared `vless`-ALPN

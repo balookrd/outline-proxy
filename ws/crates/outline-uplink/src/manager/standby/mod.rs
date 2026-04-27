@@ -216,7 +216,15 @@ impl UplinkManager {
                     .vless_id
                     .as_ref()
                     .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
-                let (w, r) = outline_transport::connect_vless_tcp_quic(
+                // Cross-transport resumption shares the `#tcp` cache
+                // slot between VLESS-TCP-WS and VLESS-TCP-raw-QUIC
+                // dials of the same uplink — server-side both park
+                // under `Parked::Tcp(Vless)`, so one Session ID is
+                // valid through either transport.
+                let resume_key = resume_cache_key(&uplink.name, "tcp");
+                let resume_request = global_resume_cache().get(&resume_key);
+                let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
+                let (w, r, issued) = outline_transport::connect_vless_tcp_quic_with_resume(
                     cache,
                     url,
                     uplink.fwmark,
@@ -225,11 +233,13 @@ impl UplinkManager {
                     uuid,
                     target,
                     lifetime,
+                    resume_id_bytes.as_ref(),
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
                     target: format!("vless quic to {}", url),
                 })?;
+                global_resume_cache().store_if_issued(resume_key, issued);
                 (
                     outline_transport::TcpWriter::Vless(w),
                     outline_transport::TcpReader::Vless(r),
