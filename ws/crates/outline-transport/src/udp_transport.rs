@@ -18,7 +18,11 @@ use crate::config::WsTransportMode;
 use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
-use super::{DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_source};
+use super::{
+    DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_resume,
+    connect_websocket_with_source,
+};
+use crate::resumption::SessionId;
 
 const MAX_UDP_SOCKET_PACKET_SIZE: usize = 65_507;
 
@@ -153,6 +157,48 @@ impl UdpWsTransport {
             .await
             .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)
+    }
+
+    /// Same as [`Self::connect`] but participates in cross-transport
+    /// session resumption: presents `resume_request` (if any) on the
+    /// upgrade as `X-Outline-Resume`, and returns the Session ID the
+    /// server assigned via `X-Outline-Session` so the caller can stash
+    /// it for the next reconnect.
+    ///
+    /// Returns `(transport, Option<SessionId>)` — the second tuple
+    /// element is `Some` iff the server's WS Upgrade response carried
+    /// `X-Outline-Session`. A feature-disabled server will leave it
+    /// `None`, in which case the caller behaves like `connect()`.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_with_resume(
+        cache: &DnsCache,
+        url: &Url,
+        mode: WsTransportMode,
+        cipher: CipherKind,
+        password: &str,
+        fwmark: Option<u32>,
+        ipv6_first: bool,
+        source: &'static str,
+        keepalive_interval: Option<Duration>,
+        resume_request: Option<SessionId>,
+    ) -> Result<(Self, Option<SessionId>)> {
+        let ws_stream = connect_websocket_with_resume(
+            cache,
+            url,
+            mode,
+            fwmark,
+            ipv6_first,
+            source,
+            resume_request,
+        )
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        // Snapshot the Session ID before consuming the stream — the
+        // SS-encryption layer doesn't need it but the caller does.
+        let issued = ws_stream.issued_session_id();
+        let transport =
+            Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)?;
+        Ok((transport, issued))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {

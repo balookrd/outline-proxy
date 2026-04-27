@@ -427,7 +427,13 @@ impl UplinkManager {
                 }
             }
         }
-        let transport = UdpWsTransport::connect(
+        // Cross-transport session resumption for SS-UDP-over-WS.
+        // Mirrors the TCP path's ResumeCache wiring; the cache key
+        // distinguishes TCP and UDP slots so a TCP-side reconnect
+        // doesn't steal the UDP-side Session ID and vice versa.
+        let udp_resume_key = resume_cache_key(&candidate.uplink.name, "udp");
+        let udp_resume_request = global_resume_cache().get(&udp_resume_key);
+        let (transport, udp_issued) = UdpWsTransport::connect_with_resume(
             cache,
             udp_ws_url,
             mode,
@@ -437,9 +443,11 @@ impl UplinkManager {
             candidate.uplink.ipv6_first,
             source,
             self.inner.load_balancing.udp_ws_keepalive_interval,
+            udp_resume_request,
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", udp_ws_url) })?;
+        global_resume_cache().store_if_issued(udp_resume_key, udp_issued);
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
         Ok(UdpSessionTransport::Ss(transport))
