@@ -11,6 +11,8 @@
 //! tell which one actually broke the session, so attribution is suppressed
 //! entirely and only a warning is logged.
 
+use std::collections::VecDeque;
+
 use tracing::warn;
 
 use outline_uplink::{TransportKind, UplinkManager};
@@ -25,7 +27,7 @@ pub(super) async fn attribute_terminal_chunk0_failure(
     uplinks: &UplinkManager,
     active: &ActiveTcpUplink,
     phase1_error: &anyhow::Error,
-    deferred_failures: &[DeferredFailure],
+    deferred_failures: &VecDeque<DeferredFailure>,
     attempted_uplinks: &[&str],
     error_text: &str,
 ) {
