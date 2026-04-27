@@ -139,7 +139,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             return Err(error).with_context(|| format!("failed to connect to {target_display}"));
         },
     };
-    info!(
+    debug!(
         peer_addr = ?peer_addr,
         user = handshake.user.id(),
         fwmark = ?handshake.user.fwmark(),
