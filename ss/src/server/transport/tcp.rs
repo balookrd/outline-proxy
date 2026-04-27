@@ -637,7 +637,7 @@ where
                 return Err(FrameError::UpstreamConnectFailed(connect_err));
             },
         };
-        info!(
+        debug!(
             user = user.id(),
             fwmark = ?user.fwmark(),
             path = %route.path,
