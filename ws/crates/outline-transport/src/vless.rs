@@ -34,7 +34,7 @@ use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::{BufMut, Bytes, BytesMut};
 use socks5_proto::TargetAddr;
-use tokio::sync::{Mutex as AsyncMutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, OnceCell, mpsc, oneshot, watch};
 use tracing::debug;
 use url::Url;
 
@@ -674,13 +674,17 @@ impl Default for VlessUdpMuxLimits {
 pub struct VlessUdpSessionMux {
     dial: VlessUdpSessionDialer,
     limits: VlessUdpMuxLimits,
-    /// Hot map of `target → session`. Read on every `send_packet` /
-    /// `read_packet`; writes happen only on session open / eviction
-    /// / janitor pass / close. An [`SyncRwLock`] lets concurrent
+    /// Hot map of `target → slot`. Each slot wraps a
+    /// [`tokio::sync::OnceCell`] that is lazy-filled by the first
+    /// `session_for` call to dial that target — concurrent callers
+    /// for the same target await the same future via
+    /// `OnceCell::get_or_try_init`, so a burst of UDP datagrams to a
+    /// fresh CDN edge triggers exactly one WS Upgrade instead of N
+    /// parallel handshakes that race and discard losers (the
+    /// "thundering herd" pattern). An [`SyncRwLock`] lets concurrent
     /// senders to *different* targets run their fast-path lookups in
-    /// parallel — a plain mutex would serialize every UDP datagram
-    /// across all worker threads even when the map is unchanged.
-    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    /// parallel.
+    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>>>,
     downlink_tx: mpsc::Sender<Result<Bytes>>,
     downlink_rx: AsyncMutex<mpsc::Receiver<Result<Bytes>>>,
     close_signal: watch::Sender<bool>,
@@ -744,6 +748,37 @@ impl VlessUdpSessionEntry {
     }
 }
 
+/// Wrapper that lets `OnceCell::get_or_try_init` serialize concurrent
+/// dial attempts for the same `TargetAddr`. The cell is empty while
+/// the first dial is in flight; subsequent callers `await` the same
+/// future and re-emerge with the populated [`VlessUdpSessionEntry`].
+///
+/// `created` is captured at slot insertion so the LRU comparator and
+/// idle-session janitor have a meaningful "age" for in-flight slots
+/// whose `cell` has not been populated yet.
+struct VlessUdpSessionSlot {
+    cell: OnceCell<Arc<VlessUdpSessionEntry>>,
+    created: Instant,
+}
+
+impl VlessUdpSessionSlot {
+    fn new() -> Self {
+        Self { cell: OnceCell::new(), created: Instant::now() }
+    }
+
+    fn entry(&self) -> Option<&Arc<VlessUdpSessionEntry>> {
+        self.cell.get()
+    }
+
+    /// Effective LRU stamp. Falls back to slot creation time for
+    /// in-flight (cell-empty) slots so the eviction scan still has a
+    /// totally-ordered key over the whole map; populated slots use
+    /// the entry's lock-free atomic stamp.
+    fn last_use(&self) -> Instant {
+        self.cell.get().map(|e| e.last_use()).unwrap_or(self.created)
+    }
+}
+
 impl VlessUdpSessionMux {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -783,7 +818,7 @@ impl VlessUdpSessionMux {
     ) -> Self {
         let (close_signal, _close_rx) = watch::channel(false);
         let (downlink_tx, downlink_rx) = mpsc::channel::<Result<Bytes>>(256);
-        let sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>> =
+        let sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>>> =
             Arc::new(SyncRwLock::new(HashMap::new()));
         let janitor_task = limits.session_idle_timeout.map(|idle_timeout| {
             spawn_vless_udp_janitor(
@@ -841,111 +876,149 @@ impl VlessUdpSessionMux {
             let mut guard = self.sessions.write();
             std::mem::take(&mut *guard)
         };
-        for (_, entry) in sessions {
-            let _ = entry.transport.close().await;
+        for (_, slot) in sessions {
+            // In-flight slots have no transport yet; their first
+            // `read_packet` after dial sees `close_signal=true` via the
+            // session-reader task and exits, and the dial future itself
+            // is dropped together with the last `Arc<VlessUdpSessionSlot>`
+            // reference we just released by clearing the map.
+            if let Some(entry) = slot.entry() {
+                let _ = entry.transport.close().await;
+            }
         }
         Ok(())
     }
 
     #[cfg(test)]
     pub(crate) fn session_count(&self) -> usize {
-        self.sessions.read().len()
+        // Count only populated slots so test assertions match the
+        // "open WS sessions" intuition; in-flight slots are visible
+        // through the public API only as in-progress `session_for`
+        // futures, not as completed sessions.
+        self.sessions.read().values().filter(|s| s.entry().is_some()).count()
     }
 
     async fn session_for(&self, target: &TargetAddr) -> Result<Arc<VlessUdpSessionEntry>> {
-        // Fast path: session exists. Concurrent senders to *different*
-        // targets share a read guard so they don't serialize through a
-        // single writer queue, and `entry.touch()` updates the LRU
-        // timestamp lock-free via a relaxed atomic store.
+        // Fast path: populated slot for this target. Concurrent senders
+        // to *different* targets share a read guard so they don't
+        // serialize, and `entry.touch()` updates the LRU timestamp
+        // lock-free via a relaxed atomic store.
         {
             let guard = self.sessions.read();
-            if let Some(entry) = guard.get(target) {
+            if let Some(slot) = guard.get(target)
+                && let Some(entry) = slot.entry()
+            {
                 entry.touch();
                 return Ok(Arc::clone(entry));
             }
         }
-        // Slow path: dial outside the lock, then insert — if a concurrent
-        // caller won the race, discard ours and reuse theirs.
-        let transport = Arc::new(
-            VlessUdpWsTransport::connect(
-                &self.dial.dns_cache,
-                &self.dial.url,
-                self.dial.mode,
-                &self.dial.uuid,
-                target,
-                self.dial.fwmark,
-                self.dial.ipv6_first,
-                self.dial.source,
-                self.dial.keepalive_interval,
-            )
-            .await
-            .with_context(|| TransportOperation::Connect {
-                target: format!("vless udp session to {target}"),
-            })?,
-        );
-        let reader_task = spawn_vless_udp_session_reader(
-            Arc::clone(&transport),
-            target.clone(),
-            self.downlink_tx.clone(),
-            self.close_signal.subscribe(),
-        );
-        let entry = Arc::new(VlessUdpSessionEntry::new(transport, reader_task));
-        enum SlowPathOutcome {
-            DuplicateDial(Arc<VlessUdpSessionEntry>),
-            Inserted(Option<Arc<VlessUdpSessionEntry>>),
-        }
-        let outcome = {
+        // Slow path: get-or-create the slot, then `OnceCell::get_or_try_init`
+        // serializes the dial. Only the first concurrent caller actually
+        // runs the WS upgrade; the rest await the same future and emerge
+        // with the same `Arc<VlessUdpSessionEntry>`. If the future errors,
+        // the cell stays empty and the next call retries.
+        let (slot, evicted) = {
             let mut guard = self.sessions.write();
+            // Re-check (TOCTOU) before allocating a fresh slot.
             if let Some(existing) = guard.get(target) {
-                let existing = Arc::clone(existing);
-                existing.touch();
-                SlowPathOutcome::DuplicateDial(existing)
+                (Arc::clone(existing), None)
             } else {
                 let evicted = if guard.len() >= self.limits.max_sessions {
-                    // LRU eviction: scan for the oldest last_use stamp. Linear
-                    // but `max_sessions` is small (256 by default) and this
-                    // only runs on session churn, not per-packet.
-                    evict_lru_session(&mut guard)
+                    // LRU eviction. Skip in-flight slots — abandoning their
+                    // shared dial future would force every blocked waiter
+                    // to restart with a fresh handshake.
+                    evict_lru_populated_session(&mut guard)
                 } else {
                     None
                 };
-                guard.insert(target.clone(), Arc::clone(&entry));
-                SlowPathOutcome::Inserted(evicted)
+                let slot = Arc::new(VlessUdpSessionSlot::new());
+                guard.insert(target.clone(), Arc::clone(&slot));
+                (slot, evicted)
             }
         };
-        match outcome {
-            SlowPathOutcome::DuplicateDial(existing) => {
-                // Duplicate dial: let the loser's transport drop — its reader
-                // task aborts with the Arc and its WS sink closes on Drop.
-                let _ = entry.transport.close().await;
-                Ok(existing)
+        if let Some(victim) = evicted {
+            debug!(
+                target: "outline_transport::vless",
+                "vless udp mux at max_sessions, evicted LRU session to make room"
+            );
+            let _ = victim.transport.close().await;
+        }
+        let dial_outcome = slot
+            .cell
+            .get_or_try_init(|| async {
+                let transport = Arc::new(
+                    VlessUdpWsTransport::connect(
+                        &self.dial.dns_cache,
+                        &self.dial.url,
+                        self.dial.mode,
+                        &self.dial.uuid,
+                        target,
+                        self.dial.fwmark,
+                        self.dial.ipv6_first,
+                        self.dial.source,
+                        self.dial.keepalive_interval,
+                    )
+                    .await
+                    .with_context(|| TransportOperation::Connect {
+                        target: format!("vless udp session to {target}"),
+                    })?,
+                );
+                let reader_task = spawn_vless_udp_session_reader(
+                    Arc::clone(&transport),
+                    target.clone(),
+                    self.downlink_tx.clone(),
+                    self.close_signal.subscribe(),
+                );
+                Ok::<_, anyhow::Error>(Arc::new(VlessUdpSessionEntry::new(
+                    transport,
+                    reader_task,
+                )))
+            })
+            .await;
+        match dial_outcome {
+            Ok(entry) => {
+                entry.touch();
+                Ok(Arc::clone(entry))
             }
-            SlowPathOutcome::Inserted(evicted) => {
-                if let Some(victim) = evicted {
-                    debug!(
-                        target: "outline_transport::vless",
-                        "vless udp mux at max_sessions, evicted LRU session to make room"
-                    );
-                    let _ = victim.transport.close().await;
+            Err(error) => {
+                // Best-effort cleanup: drop the failed slot from the map
+                // so a fresh `session_for` allocates a new one rather
+                // than retrying through this still-empty cell. If a
+                // concurrent caller already replaced the slot we leave
+                // theirs alone (Arc::ptr_eq guard).
+                let mut guard = self.sessions.write();
+                if let Some(existing) = guard.get(target)
+                    && Arc::ptr_eq(existing, &slot)
+                {
+                    guard.remove(target);
                 }
-                Ok(entry)
+                Err(error)
             }
         }
     }
 }
 
-fn evict_lru_session(
-    guard: &mut HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>,
+/// Pick the LRU populated slot. In-flight (cell-empty) slots are
+/// skipped because evicting them would cancel the shared dial future
+/// and force every blocked `session_for` waiter to retry from scratch.
+/// In the pathological case where every slot is in-flight at once, no
+/// eviction happens and the map briefly exceeds `max_sessions`; this
+/// resolves on its own as soon as one of the dials completes.
+fn evict_lru_populated_session(
+    guard: &mut HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>,
 ) -> Option<Arc<VlessUdpSessionEntry>> {
     let oldest_key = guard
         .iter()
-        .min_by_key(|(_, entry)| entry.last_use())
+        .filter(|(_, slot)| slot.entry().is_some())
+        .min_by_key(|(_, slot)| slot.last_use())
         .map(|(k, _)| k.clone())?;
-    guard.remove(&oldest_key)
+    let slot = guard.remove(&oldest_key)?;
+    // `entry()` is `Some` here by construction (filter above).
+    slot.entry().map(Arc::clone)
 }
 
 fn spawn_vless_udp_janitor(
-    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionEntry>>>>,
+    sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>>>,
     idle_timeout: Duration,
     interval: Duration,
     mut close_rx: watch::Receiver<bool>,
@@ -971,8 +1044,16 @@ fn spawn_vless_udp_janitor(
                     let read_guard = sessions.read();
                     read_guard
                         .iter()
-                        .filter(|(_, entry)| {
-                            now.saturating_duration_since(entry.last_use()) >= idle_timeout
+                        .filter(|(_, slot)| {
+                            // Use `slot.last_use()` so the predicate is
+                            // uniform: populated slots use the entry's
+                            // atomic stamp, empty (in-flight) slots use
+                            // `created`. An in-flight slot whose dial has
+                            // been hanging for `idle_timeout` is almost
+                            // certainly stuck — evicting it cancels the
+                            // dial future and lets the next caller try
+                            // afresh, preferable to indefinite blockage.
+                            now.saturating_duration_since(slot.last_use()) >= idle_timeout
                         })
                         .map(|(k, _)| k.clone())
                         .collect()
@@ -989,11 +1070,15 @@ fn spawn_vless_udp_janitor(
                             // entry between the read-side scan and now.
                             // Skip if it has, so an active session never
                             // gets accidentally evicted by the janitor.
-                            guard.get(&k).filter(|entry| {
-                                now.saturating_duration_since(entry.last_use())
+                            guard.get(&k).filter(|slot| {
+                                now.saturating_duration_since(slot.last_use())
                                     >= idle_timeout
                             })?;
-                            guard.remove(&k)
+                            // `entry()` returns `None` for in-flight slots —
+                            // we still want them evicted (the dial future
+                            // dies with the last Arc), but there's no
+                            // transport to close.
+                            guard.remove(&k).and_then(|s| s.entry().map(Arc::clone))
                         })
                         .collect()
                 }
@@ -1097,5 +1182,37 @@ mod tests {
         assert_eq!(hdr[21], VLESS_ATYP_DOMAIN);
         assert_eq!(hdr[22], 11);
         assert_eq!(&hdr[23..23 + 11], b"example.com");
+    }
+
+    #[test]
+    fn vless_udp_session_slot_empty_uses_created_for_lru() {
+        // The LRU comparator and idle-session janitor both call
+        // `slot.last_use()`. For in-flight (cell-empty) slots that
+        // must fall back to `created` so the comparator has a totally-
+        // ordered key — otherwise `min_by_key` would compare an
+        // `Option<Instant>` and skip empty slots, but the predicate
+        // for the janitor must still expire stuck dials.
+        let slot = VlessUdpSessionSlot::new();
+        assert!(slot.entry().is_none(), "freshly built slot is empty");
+        assert_eq!(
+            slot.last_use(),
+            slot.created,
+            "empty slot's LRU stamp falls back to creation time"
+        );
+    }
+
+    #[test]
+    fn evict_lru_populated_session_skips_in_flight_slots() {
+        // Only populated slots are eligible for eviction — abandoning
+        // an in-flight dial would cancel the shared OnceCell future
+        // and force every blocked `session_for` waiter to restart.
+        // The eviction scan must filter `entry().is_some()` first.
+        let mut map: HashMap<TargetAddr, Arc<VlessUdpSessionSlot>> = HashMap::new();
+        let target = TargetAddr::IpV4(std::net::Ipv4Addr::new(1, 2, 3, 4), 443);
+        map.insert(target.clone(), Arc::new(VlessUdpSessionSlot::new()));
+
+        let evicted = evict_lru_populated_session(&mut map);
+        assert!(evicted.is_none(), "in-flight slot must not be evicted");
+        assert_eq!(map.len(), 1, "in-flight slot stays in the map");
     }
 }
