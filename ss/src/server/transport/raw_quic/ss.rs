@@ -48,21 +48,12 @@ impl SsQuicConn {
     }
 }
 
-#[allow(dead_code)]
-pub(in crate::server) async fn handle_raw_ss_quic_stream(
-    send: quinn::SendStream,
-    recv: quinn::RecvStream,
-    ctx: Arc<RawQuicSsCtx>,
-) -> Result<()> {
-    handle_raw_ss_quic_stream_with_prefix(send, recv, Vec::new(), ctx).await
-}
-
-/// Same as [`handle_raw_ss_quic_stream`] but accepts a `prefix` of
-/// bytes already read off the recv stream by the caller (typically
-/// the 8 bytes peeked to disambiguate the oversize-record magic from
-/// an SS-TCP request stream's salt). The handler chains the prefix
-/// onto the recv side via tokio's read-chain so the SS-AEAD decryptor
-/// sees the original byte stream.
+/// Handles a raw SS-over-QUIC stream, accepting a `prefix` of bytes
+/// already read off the recv stream by the caller (typically the 8 bytes
+/// peeked to disambiguate the oversize-record magic from an SS-TCP
+/// request stream's salt). The handler chains the prefix onto the recv
+/// side via tokio's read-chain so the SS-AEAD decryptor sees the
+/// original byte stream.
 pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
     mut send: quinn::SendStream,
     mut recv: quinn::RecvStream,

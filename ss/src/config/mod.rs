@@ -30,16 +30,7 @@ pub enum H3Alpn {
     Ss,
 }
 
-#[allow(dead_code)]
 impl H3Alpn {
-    pub const fn wire_bytes(self) -> &'static [u8] {
-        match self {
-            Self::H3 => b"h3",
-            Self::Vless => b"vless",
-            Self::Ss => b"ss",
-        }
-    }
-
     /// All ALPN identifiers the server should advertise for this
     /// protocol, in preference order (MTU-aware sibling first when
     /// applicable). Newer clients negotiate the MTU-aware variant
@@ -51,25 +42,6 @@ impl H3Alpn {
             Self::H3 => &[b"h3"],
             Self::Vless => &[b"vless-mtu", b"vless"],
             Self::Ss => &[b"ss-mtu", b"ss"],
-        }
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::H3 => "h3",
-            Self::Vless => "vless",
-            Self::Ss => "ss",
-        }
-    }
-
-    /// Returns `true` if the negotiated ALPN bytes denote the
-    /// MTU-aware sibling for this protocol (e.g. `vless-mtu` for
-    /// `Self::Vless`). Always `false` for `Self::H3`.
-    pub fn is_mtu_variant(self, negotiated: &[u8]) -> bool {
-        match self {
-            Self::H3 => false,
-            Self::Vless => negotiated == b"vless-mtu",
-            Self::Ss => negotiated == b"ss-mtu",
         }
     }
 
@@ -417,11 +389,6 @@ impl Config {
 
     pub fn h3_enabled(&self) -> bool {
         self.h3_cert_path.is_some() && self.h3_key_path.is_some()
-    }
-
-    #[allow(dead_code)]
-    pub fn h3_alpn_enabled(&self, alpn: H3Alpn) -> bool {
-        self.h3_alpn.contains(&alpn)
     }
 
     pub fn tcp_tls_enabled(&self) -> bool {
