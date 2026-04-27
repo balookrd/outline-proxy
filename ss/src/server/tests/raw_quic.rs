@@ -118,6 +118,7 @@ fn build_services(metrics: Arc<Metrics>) -> Arc<Services> {
             relay_semaphore: None,
         },
         None,
+        16,
     ))
 }
 

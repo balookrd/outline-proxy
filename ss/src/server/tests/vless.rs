@@ -64,6 +64,7 @@ async fn vless_websocket_tcp_relay_smoke() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
@@ -142,6 +143,7 @@ async fn vless_websocket_udp_relay_smoke() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
@@ -227,6 +229,7 @@ async fn vless_websocket_accepts_large_initial_frame() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice())))),
@@ -306,6 +309,7 @@ async fn vless_websocket_mux_tcp_relay_smoke() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -412,6 +416,7 @@ async fn vless_websocket_invalid_version_sinks_then_closes() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
@@ -499,6 +504,7 @@ async fn vless_websocket_probe_sink_byte_cap_short_circuits() -> Result<()> {
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(

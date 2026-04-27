@@ -51,8 +51,7 @@ use super::super::resumption::{
     OrphanRegistry, Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext,
 };
 use super::super::constants::{
-    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
-    WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
+    WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER, WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
 };
 use super::super::dns_cache::DnsCache;
 use super::super::scratch::ScratchBuf;
@@ -70,6 +69,11 @@ pub(in crate::server) struct WsTcpServerCtx {
     /// when resumption is disabled in config the registry is a no-op
     /// and adds no overhead to the TCP path.
     pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
+    /// Per-session bounded mpsc capacity for the upstream-reader →
+    /// WS-writer fan-in. Resolved from `tuning.ws_data_channel_capacity`
+    /// so deployments can trade memory for video throughput headroom
+    /// without code changes.
+    pub(in crate::server) ws_data_channel_capacity: usize,
 }
 
 /// Per-path state for a single TCP WebSocket session.
@@ -218,7 +222,8 @@ async fn run_tcp_relay<T: WsSocket>(
     resume: ResumeContext,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
-    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
+    let (outbound_data_tx, outbound_data_rx) =
+        mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,

@@ -106,6 +106,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
             relay_semaphore: udp_relay_semaphore,
         },
         Some(orphan_registry),
+        config.tuning.ws_data_channel_capacity,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::clone(&auth_users),

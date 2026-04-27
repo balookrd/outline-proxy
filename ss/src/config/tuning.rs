@@ -60,6 +60,18 @@ pub struct TuningProfile {
     /// rotating `client_session_id` on every packet to inflate memory between
     /// eviction sweeps. `0` disables the cap.
     pub udp_replay_max_sessions: usize,
+    /// Per-session bounded mpsc capacity for the WebSocket writer fan-in
+    /// (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer
+    /// for UDP relay).
+    ///
+    /// Each in-flight `Bytes` pins a 16 KiB upstream chunk (TCP) or up to
+    /// MAX_UDP_PAYLOAD_SIZE (UDP), so the worst-case per-session residency
+    /// is `ws_data_channel_capacity × 16 KiB` for TCP. Sized too low, the
+    /// upstream reader stalls on `tx.send().await` whenever the WS writer
+    /// momentarily lags — visible as video stutter / failure to buffer.
+    /// Sized too high, hundreds of concurrent sessions can pin hundreds of
+    /// MiB of resident memory on the relay path.
+    pub ws_data_channel_capacity: usize,
 }
 
 impl TuningProfile {
@@ -79,6 +91,10 @@ impl TuningProfile {
         udp_nat_idle_timeout_secs: 120,
         udp_max_concurrent_relay_tasks: 1_024,
         udp_replay_max_sessions: 16_384,
+        // Memory-conscious deployments keep this small at the cost of a
+        // tighter throughput ceiling per session — fine for scenarios
+        // with hundreds of low-bitrate sessions.
+        ws_data_channel_capacity: 16,
     };
 
     /// Balanced profile for typical deployments.
@@ -97,6 +113,10 @@ impl TuningProfile {
         udp_nat_idle_timeout_secs: 240,
         udp_max_concurrent_relay_tasks: 2_048,
         udp_replay_max_sessions: 65_536,
+        // 64 chunks × 16 KiB ≈ 1 MiB worst-case per-session in-flight.
+        // Restores the throughput headroom video clients need to keep
+        // their playback buffer healthy without starving the WS writer.
+        ws_data_channel_capacity: 64,
     };
 
     /// Maximum-throughput profile for single-tenant, high-bandwidth-delay-product links.
@@ -115,6 +135,11 @@ impl TuningProfile {
         udp_nat_idle_timeout_secs: 300,
         udp_max_concurrent_relay_tasks: 4_096,
         udp_replay_max_sessions: 262_144,
+        // 128 chunks × 16 KiB ≈ 2 MiB worst-case per-session in-flight.
+        // Sized for high-bandwidth-delay-product links where short WS
+        // writer stalls would otherwise back-pressure the upstream
+        // reader and visibly stutter HD video / large file downloads.
+        ws_data_channel_capacity: 128,
     };
 
     pub(super) fn validate(&self) -> Result<()> {
@@ -195,6 +220,10 @@ impl TuningProfile {
         // `udp_max_concurrent_relay_tasks == 0` is a valid opt-out.
         // `udp_replay_max_sessions == 0` is a valid opt-out.
 
+        if self.ws_data_channel_capacity == 0 {
+            bail!("tuning.ws_data_channel_capacity must be > 0");
+        }
+
         Ok(())
     }
 
@@ -241,6 +270,9 @@ impl TuningProfile {
         if let Some(v) = o.udp_replay_max_sessions {
             self.udp_replay_max_sessions = v;
         }
+        if let Some(v) = o.ws_data_channel_capacity {
+            self.ws_data_channel_capacity = v;
+        }
     }
 }
 
@@ -284,6 +316,8 @@ pub struct TuningOverrides {
     pub udp_max_concurrent_relay_tasks: Option<usize>,
     #[serde(default)]
     pub udp_replay_max_sessions: Option<usize>,
+    #[serde(default)]
+    pub ws_data_channel_capacity: Option<usize>,
 }
 
 #[cfg(test)]
@@ -329,5 +363,24 @@ mod tests {
         tuning.h3_connection_window_bytes = (u32::MAX as u64) + 1;
         let error = tuning.validate().unwrap_err().to_string();
         assert!(error.contains("h3_connection_window_bytes"));
+    }
+
+    #[test]
+    fn rejects_zero_ws_data_channel_capacity() {
+        let mut tuning = TuningProfile::LARGE;
+        tuning.ws_data_channel_capacity = 0;
+        let error = tuning.validate().unwrap_err().to_string();
+        assert!(error.contains("ws_data_channel_capacity"));
+    }
+
+    #[test]
+    fn ws_data_channel_capacity_override_applies() {
+        let mut tuning = TuningPreset::Small.preset();
+        assert_eq!(tuning.ws_data_channel_capacity, 16);
+        tuning.apply_overrides(&TuningOverrides {
+            ws_data_channel_capacity: Some(96),
+            ..TuningOverrides::default()
+        });
+        assert_eq!(tuning.ws_data_channel_capacity, 96);
     }
 }

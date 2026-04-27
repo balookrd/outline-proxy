@@ -232,6 +232,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `tuning.udp_nat_idle_timeout_secs` | How long a UDP NAT entry is kept alive after the last outbound datagram (default depends on profile; `300` on `large`) |
 | `tuning.udp_max_concurrent_relay_tasks` | Process-wide cap on in-flight UDP relay tasks across all WebSocket sessions. `0` disables the global cap |
 | `tuning.udp_replay_max_sessions` | Maximum concurrent SS-2022 anti-replay session windows (default depends on profile; `262144` on `large`). Packets bearing a new `client_session_id` are dropped once the cap is reached, bounding memory against a client that rotates session IDs to inflate the store. `0` disables the cap |
+| `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (in chunks) for the WebSocket writer fan-in (upstream-reader → WS-writer for TCP relay, NAT-reader → WS-writer for UDP relay). Defaults: `16` / `64` / `128` for `small` / `medium` / `large`. Sized too low and a momentary WS writer stall back-pressures the upstream read, visible as video buffer underrun; sized too high inflates worst-case per-session memory residency (`capacity × 16 KiB` for TCP). Tune up for high-bandwidth single-tenant deployments, down for memory-constrained hosts with many concurrent sessions |
 | `tuning.h2_*` / `tuning.h3_*` | Fine-grained H2/H3 flow-control windows, stream limits and socket buffers — see `TuningProfile` in `src/config/mod.rs` |
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |

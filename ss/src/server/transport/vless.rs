@@ -22,7 +22,7 @@ use super::{
         abort::AbortOnDrop,
         connect::connect_tcp_target,
         constants::{
-            WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
+            WS_CTRL_CHANNEL_CAPACITY, WS_PONG_DEADLINE_MULTIPLIER,
             WS_TCP_KEEPALIVE_PING_INTERVAL_SECS,
         },
         dns_cache::DnsCache,
@@ -92,6 +92,11 @@ pub(in crate::server) struct VlessWsServerCtx {
     /// Cross-transport session-resumption registry. No-op when disabled
     /// in config.
     pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
+    /// Per-session bounded mpsc capacity for the upstream-reader →
+    /// WS-writer fan-in. Resolved from `tuning.ws_data_channel_capacity`
+    /// — sized too low and a momentary WS writer stall back-pressures
+    /// the upstream TCP read, visible as video buffer underrun.
+    pub(in crate::server) ws_data_channel_capacity: usize,
 }
 
 pub(in crate::server) struct VlessWsRouteCtx {
@@ -201,7 +206,8 @@ async fn run_vless_relay<T: WsSocket>(
     resume: ResumeContext,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
-    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
+    let (outbound_data_tx, outbound_data_rx) =
+        mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
     let writer_task = tokio::spawn(ws_writer::run_ws_writer::<T>(
         writer,

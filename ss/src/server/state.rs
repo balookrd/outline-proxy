@@ -79,6 +79,7 @@ impl Services {
         outbound_ipv6: Option<Arc<OutboundIpv6>>,
         udp: UdpServices,
         orphan_registry: Option<Arc<OrphanRegistry>>,
+        ws_data_channel_capacity: usize,
     ) -> Self {
         let orphan_registry = orphan_registry.unwrap_or_else(|| {
             Arc::new(OrphanRegistry::new_disabled(Arc::clone(&metrics)))
@@ -89,6 +90,7 @@ impl Services {
             prefer_ipv4_upstream,
             outbound_ipv6: outbound_ipv6.clone(),
             orphan_registry: Arc::clone(&orphan_registry),
+            ws_data_channel_capacity,
         });
         let udp_server = Arc::new(UdpServerCtx {
             metrics: Arc::clone(&metrics),
@@ -99,6 +101,7 @@ impl Services {
             relay_semaphore: udp.relay_semaphore,
             orphan_registry: Arc::clone(&orphan_registry),
             session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
+            ws_data_channel_capacity,
         });
         let vless_server = Arc::new(VlessWsServerCtx {
             metrics,
@@ -106,6 +109,7 @@ impl Services {
             prefer_ipv4_upstream,
             outbound_ipv6,
             orphan_registry: Arc::clone(&orphan_registry),
+            ws_data_channel_capacity,
         });
         Self {
             tcp_server,
