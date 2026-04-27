@@ -94,7 +94,8 @@ async fn handle_request(request: Request<Incoming>, state: DashboardState) -> Da
             "image/png",
             Bytes::from_static(include_bytes!("outline-logo.png")),
         ),
-        (&Method::GET, "/dashboard/api/topology") => api::handle_topology(state).await,
+        (&Method::GET, "/dashboard/api/instances") => api::handle_instances(state).await,
+        (&Method::GET, "/dashboard/api/topology") => api::handle_topology(request, state).await,
         (&Method::POST, "/dashboard/api/activate") => api::handle_activate(request, state).await,
         (&Method::GET, "/dashboard/api/uplinks")
         | (&Method::POST, "/dashboard/api/uplinks")
