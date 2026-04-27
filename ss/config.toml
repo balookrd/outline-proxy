@@ -149,3 +149,7 @@ ws_path_udp = "/dave/udp"
 # udp_replay_max_sessions = 262144       # SS-2022 anti-replay session cap; 0 disables
 # h3_udp_socket_buffer_bytes = 33554432
 # h3_max_concurrent_bidi_streams = 4096
+# ws_data_channel_capacity = 128         # per-session WS writer queue depth (chunks);
+                                         # raise to absorb upstream-vs-WS write
+                                         # speed mismatches under bursty video,
+                                         # lower to cap per-session memory.

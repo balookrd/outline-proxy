@@ -234,6 +234,7 @@ cargo release-musl-armv7
 | `tuning.udp_nat_idle_timeout_secs` | Время жизни UDP NAT-записи после последней исходящей датаграммы (значение по умолчанию зависит от профиля; `300` для `large`) |
 | `tuning.udp_max_concurrent_relay_tasks` | Глобальный cap на число одновременных UDP-relay-тасков по всем WebSocket-сессиям. `0` отключает cap |
 | `tuning.udp_replay_max_sessions` | Максимум одновременных SS-2022 anti-replay окон (по умолчанию зависит от профиля; `262144` для `large`). Пакеты с новым `client_session_id` отбрасываются при достижении лимита — это ограничивает память от клиента, который вращает session ID, раздувая стор. `0` отключает cap |
+| `tuning.ws_data_channel_capacity` | Per-session bounded mpsc capacity (в чанках) для WS-writer fan-in (upstream-reader → WS-writer для TCP-relay, NAT-reader → WS-writer для UDP-relay). Дефолты: `16` / `64` / `128` для `small` / `medium` / `large`. Слишком маленькое значение приводит к back-pressure от WS-writer'а на upstream-чтение при кратковременных задержках записи — видно как буферный underrun у видеоплеера; слишком большое — раздувает worst-case per-session residency (`capacity × 16 KiB` для TCP). Поднимайте для high-bandwidth single-tenant деплоев, снижайте для memory-constrained хостов со многими сессиями |
 | `tuning.h2_*` / `tuning.h3_*` | Тонкие настройки flow-control windows, лимитов стримов и сокет-буферов — см. `TuningProfile` в `src/config/mod.rs` |
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |

@@ -71,16 +71,9 @@ pub(super) const MAX_UDP_DATAGRAM_SIZE: usize = 65_535;
 pub(super) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 pub(super) const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
 
-// Bounded mpsc capacities for the per-session WebSocket writer fan-in.
-//
-// Data capacity used to be 64; lowered to 16 because each in-flight `Bytes`
-// pins its backing allocation (typically a 64 KiB recv buffer slice or a
-// 16 KiB upstream chunk). With ~hundreds of active VLESS sessions the
-// channel-sitting backpressure was holding hundreds of MiB across the
-// process even when pipelines were healthy. 16 still gives ~4× the burst
-// absorption of TCP's typical write-window for the proxy hop, while
-// capping per-session channel residency to a few hundred KiB.
-pub(super) const WS_DATA_CHANNEL_CAPACITY: usize = 16;
+// Bounded mpsc capacity for the per-session WebSocket writer's control fan-in
+// (Pong / Close frames). Data fan-in capacity is configurable per deployment
+// via `tuning.ws_data_channel_capacity` — see `crate::config::TuningProfile`.
 pub(super) const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 
 // Period at which the background task sweeps idle NAT entries and stale

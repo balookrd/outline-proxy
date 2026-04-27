@@ -59,6 +59,7 @@ fn build_test_state(
             relay_semaphore: None,
         },
         None,
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),

@@ -25,7 +25,7 @@ use crate::{
 use super::super::connect::resolve_udp_target;
 use super::super::constants::{
     MAX_UDP_PAYLOAD_SIZE, UDP_CACHED_USER_INDEX_EMPTY, UDP_MAX_CONCURRENT_RELAY_TASKS,
-    WS_CTRL_CHANNEL_CAPACITY, WS_DATA_CHANNEL_CAPACITY,
+    WS_CTRL_CHANNEL_CAPACITY,
 };
 use super::super::dns_cache::DnsCache;
 use super::super::resumption::{
@@ -64,6 +64,10 @@ pub(in crate::server) struct UdpServerCtx {
     /// key schedule; on a hit, the per-packet derivation collapses into a
     /// hashmap lookup.
     pub(in crate::server) session_key_cache: Arc<SessionKeyCache>,
+    /// Per-session bounded mpsc capacity for the NAT-reader → WS-writer
+    /// fan-in. Resolved from `tuning.ws_data_channel_capacity` so the
+    /// same knob governs both TCP and UDP relay backpressure.
+    pub(in crate::server) ws_data_channel_capacity: usize,
 }
 
 /// Per-path state for a single UDP WebSocket session.
@@ -392,7 +396,8 @@ async fn run_udp_relay<T: WsSocket>(
     resume: ResumeContext,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
-    let (outbound_data_tx, outbound_data_rx) = mpsc::channel::<T::Msg>(WS_DATA_CHANNEL_CAPACITY);
+    let (outbound_data_tx, outbound_data_rx) =
+        mpsc::channel::<T::Msg>(server.ws_data_channel_capacity);
     let (outbound_ctrl_tx, outbound_ctrl_rx) = mpsc::channel::<T::Msg>(WS_CTRL_CHANNEL_CAPACITY);
     let session = UdpSessionState {
         session_recorded: Arc::new(AtomicBool::new(false)),

@@ -185,6 +185,7 @@ async fn spawn_test_server(
             relay_semaphore: None,
         },
         Some(orphan_registry),
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
@@ -752,6 +753,7 @@ async fn spawn_raw_quic_vless_resumption_server() -> Result<(
             relay_semaphore: None,
         },
         Some(orphan_registry),
+        16,
     ));
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
