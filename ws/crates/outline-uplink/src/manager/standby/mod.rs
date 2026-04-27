@@ -114,6 +114,16 @@ impl UplinkManager {
         ) {
             return None;
         }
+        // The pool is never refilled when the effective TCP mode is raw
+        // QUIC (refill returns early), so the lookup would always come
+        // back empty. Skip it to avoid the per-call pool lock and the
+        // bogus `miss` counter inflation against a pool that cannot
+        // produce a stream by design.
+        if self.effective_tcp_ws_mode(candidate.index).await
+            == outline_transport::WsTransportMode::Quic
+        {
+            return None;
+        }
         let ctx = self.standby_ctx(candidate.index, TransportKind::Tcp).await;
         ctx.try_take_alive(&candidate.uplink.name).await
     }
