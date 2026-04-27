@@ -265,17 +265,31 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 </div>
 <script>
 const refreshMs = __DASHBOARD_REFRESH_MS__;
-let timer = null;
-let autoRefreshEnabled = true;
-const state = { instances: [], collapsedInstances: new Set(), collapsedGroups: new Set(), errors: [] };
+let autoRefreshEnabled = (() => {
+  try { return localStorage.getItem("dashboard-auto-refresh") !== "off"; }
+  catch (_) { return true; }
+})();
+let listLoaded = false;
+const instanceTimers = new Map();
+const inflight = new Map();
+const state = {
+  order: [],
+  instances: new Map(),
+  collapsedInstances: new Set(),
+  collapsedGroups: new Set(),
+  listError: null,
+  lastUpdated: null,
+};
+function instancesArray() { return state.order.map(name => state.instances.get(name)).filter(Boolean); }
 
 function healthy(u) { return u.tcp_healthy !== false && u.udp_healthy !== false; }
 function isActive(u) { return Boolean(u.active_global || u.active_tcp || u.active_udp); }
 function computeStats() {
-  const healthyInstances = state.instances.filter(i => i.ok).length;
-  const totalInstances = state.instances.length;
+  const list = instancesArray();
+  const healthyInstances = list.filter(i => i.ok).length;
+  const totalInstances = list.length;
   let totalGroups = 0, activeUplinks = 0, inactiveUplinks = 0;
-  for (const inst of state.instances) {
+  for (const inst of list) {
     for (const g of inst.groups || []) {
       totalGroups += 1;
       for (const u of g.uplinks || []) {
@@ -443,53 +457,70 @@ function renderSummary(stats) {
       <div class="summary-icon ${c.tone}">${c.icon}</div>
     </article>`).join("");
 }
-function rebuild(raw) {
-  state.instances = [];
-  state.errors = [];
-  for (const inst of raw.instances) {
-    if (!inst.ok) {
-      state.errors.push(inst.name + ": " + inst.error);
-      state.instances.push({ name: inst.name, ok: false, error: inst.error, groups: [] });
-      continue;
-    }
-    const groups = inst.topology?.instance?.groups || [];
-    state.instances.push({ name: inst.name, ok: true, error: null, groups });
+function applyInstanceView(inst) {
+  const prev = state.instances.get(inst.name) || {};
+  if (!inst.ok) {
+    state.instances.set(inst.name, {
+      name: inst.name, ok: false, error: inst.error || "instance unavailable",
+      groups: prev.groups || [], updatedAt: Date.now(), loading: false,
+    });
+    return;
   }
+  const groups = inst.topology?.instance?.groups || [];
+  state.instances.set(inst.name, {
+    name: inst.name, ok: true, error: null, groups,
+    updatedAt: Date.now(), loading: false,
+  });
+  state.lastUpdated = Date.now();
 }
 function renderErrors() {
   const box = document.getElementById("errors");
-  box.innerHTML = state.errors.map(e => `<div class="error">${escapeHtml(e)}</div>`).join("");
+  const errs = [];
+  if (state.listError) errs.push(state.listError);
+  box.innerHTML = errs.map(e => `<div class="error">${escapeHtml(e)}</div>`).join("");
 }
-function render() {
-  renderErrors();
-  const stats = computeStats();
-  renderSummary(stats);
-  const root = document.getElementById("groups");
-  root.innerHTML = "";
-  for (const instance of state.instances) {
-    const panel = document.createElement("article");
-    const collapsed = state.collapsedInstances.has(instance.name);
-    panel.className = "instance-panel" + (collapsed ? " collapsed" : "");
-    const groups = instance.groups || [];
-    const tone = statusTone(instance.ok, groups);
-    panel.innerHTML = `
-      <header class="instance-panel-header">
-        <div class="status-dot ${tone}"></div>
-        <div class="panel-title">
-          <strong>${escapeHtml(instance.name)}</strong>
-          <span class="status-pill ${tone}">${statusLabel(tone)}</span>
-        </div>
-        <span class="collapse-chev">⌃</span>
-      </header>`;
-    panel.querySelector(".instance-panel-header").addEventListener("click", () => toggleInstance(instance.name));
-    if (!instance.ok) {
-      const body = document.createElement("div");
-      body.className = "instance-panel-body";
-      body.innerHTML = `<div class="error">${escapeHtml(instance.error || "instance недоступен")}</div>`;
-      panel.appendChild(body);
-      root.appendChild(panel);
-      continue;
-    }
+function renderInstancePanel(instance) {
+  const panel = document.createElement("article");
+  const collapsed = state.collapsedInstances.has(instance.name);
+  panel.className = "instance-panel" + (collapsed ? " collapsed" : "");
+  panel.dataset.instance = instance.name;
+  const groups = instance.groups || [];
+  const tone = instance.ok === null ? "warn" : statusTone(instance.ok, groups);
+  const stamp = instance.updatedAt
+    ? new Date(instance.updatedAt).toLocaleTimeString()
+    : "—";
+  const loadingTag = instance.loading
+    ? `<span class="status-pill" style="margin-left:6px">updating…</span>`
+    : "";
+  panel.innerHTML = `
+    <header class="instance-panel-header">
+      <div class="status-dot ${tone}"></div>
+      <div class="panel-title">
+        <strong>${escapeHtml(instance.name)}</strong>
+        <span class="status-pill ${tone}">${instance.ok === null ? "Loading" : statusLabel(tone)}</span>
+        ${loadingTag}
+      </div>
+      <span class="subtitle" style="margin-right:8px">↻ ${stamp}</span>
+      <span class="collapse-chev">⌃</span>
+    </header>`;
+  panel.querySelector(".instance-panel-header").addEventListener("click", () => toggleInstance(instance.name));
+  if (instance.ok === false) {
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="error">${escapeHtml(instance.error || "instance недоступен")}</div>`;
+    panel.appendChild(body);
+    return panel;
+  }
+  if (instance.ok === null) {
+    const body = document.createElement("div");
+    body.className = "instance-panel-body";
+    body.innerHTML = `<div class="subtitle">Loading topology…</div>`;
+    panel.appendChild(body);
+    return panel;
+  }
+  return renderInstanceBody(panel, instance, groups);
+}
+function renderInstanceBody(panel, instance, groups) {
     const body = document.createElement("div");
     body.className = "instance-panel-body";
     body.innerHTML = `<div class="section-title">Uplink Groups</div>`;
@@ -547,10 +578,21 @@ function render() {
       body.appendChild(groupEl);
     }
     panel.appendChild(body);
-    root.appendChild(panel);
+    return panel;
+}
+function render() {
+  renderErrors();
+  const stats = computeStats();
+  renderSummary(stats);
+  const root = document.getElementById("groups");
+  root.innerHTML = "";
+  for (const instance of instancesArray()) {
+    root.appendChild(renderInstancePanel(instance));
   }
-  const now = new Date().toLocaleTimeString();
-  document.getElementById("updatedAtInline").textContent = now;
+  const stamp = state.lastUpdated
+    ? new Date(state.lastUpdated).toLocaleTimeString()
+    : "—";
+  document.getElementById("updatedAtInline").textContent = stamp;
   renderRefreshButton();
 }
 function renderRefreshButton() {
@@ -560,16 +602,29 @@ function renderRefreshButton() {
   btn.setAttribute("aria-pressed", String(autoRefreshEnabled));
   label.textContent = autoRefreshEnabled ? "Auto" : "Paused";
 }
-function stopAutoRefresh() { if (timer !== null) { clearInterval(timer); timer = null; } }
-function startAutoRefresh() {
-  stopAutoRefresh();
+function stopInstanceTimer(name) {
+  const t = instanceTimers.get(name);
+  if (t !== undefined) { clearInterval(t); instanceTimers.delete(name); }
+}
+function startInstanceTimer(name) {
+  stopInstanceTimer(name);
   if (!autoRefreshEnabled) return;
-  timer = setInterval(() => load().catch(err => { state.errors = [String(err)]; render(); }), refreshMs);
+  const id = setInterval(() => loadInstance(name), refreshMs);
+  instanceTimers.set(name, id);
+}
+function stopAllInstanceTimers() {
+  for (const name of Array.from(instanceTimers.keys())) stopInstanceTimer(name);
+}
+function startAllInstanceTimers() {
+  if (!autoRefreshEnabled) return;
+  for (const name of state.order) startInstanceTimer(name);
 }
 function toggleAutoRefresh() {
   autoRefreshEnabled = !autoRefreshEnabled;
+  try { localStorage.setItem("dashboard-auto-refresh", autoRefreshEnabled ? "on" : "off"); } catch (_) {}
   renderRefreshButton();
-  startAutoRefresh();
+  if (autoRefreshEnabled) startAllInstanceTimers();
+  else stopAllInstanceTimers();
 }
 function toggleInstance(name) {
   if (state.collapsedInstances.has(name)) state.collapsedInstances.delete(name);
@@ -581,11 +636,50 @@ function toggleGroup(key) {
   else state.collapsedGroups.add(key);
   render();
 }
-async function load() {
-  const res = await fetch("/dashboard/api/topology", { cache: "no-store" });
+async function loadInstanceList() {
+  const res = await fetch("/dashboard/api/instances", { cache: "no-store" });
+  if (!res.ok) throw new Error(`instances: HTTP ${res.status}`);
   const raw = await res.json();
-  rebuild(raw);
+  const names = (raw.instances || []).map(i => i.name);
+  const seen = new Set(names);
+  for (const old of Array.from(state.instances.keys())) {
+    if (!seen.has(old)) { state.instances.delete(old); stopInstanceTimer(old); }
+  }
+  state.order = names;
+  for (const name of names) {
+    if (!state.instances.has(name)) {
+      state.instances.set(name, { name, ok: null, error: null, groups: [], updatedAt: null, loading: true });
+    }
+  }
+  state.listError = null;
+  listLoaded = true;
   render();
+  for (const name of names) {
+    loadInstance(name);
+    startInstanceTimer(name);
+  }
+}
+async function loadInstance(name) {
+  if (inflight.get(name)) return;
+  inflight.set(name, true);
+  const cur = state.instances.get(name);
+  if (cur) { cur.loading = true; render(); }
+  try {
+    const url = `/dashboard/api/topology?instance=${encodeURIComponent(name)}`;
+    const res = await fetch(url, { cache: "no-store" });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      applyInstanceView({ name, ok: false, error: `HTTP ${res.status}${text ? ": " + text : ""}` });
+    } else {
+      const view = await res.json();
+      applyInstanceView(view);
+    }
+  } catch (err) {
+    applyInstanceView({ name, ok: false, error: String(err) });
+  } finally {
+    inflight.delete(name);
+    render();
+  }
 }
 async function activateEntries(entries) {
   const targets = entries.map(e => ({ instance: e.instance, group: e.group, uplink: e.uplink.name }));
@@ -594,7 +688,8 @@ async function activateEntries(entries) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ targets, transport: "both" })
   });
-  await load();
+  const touched = new Set(entries.map(e => e.instance));
+  await Promise.all(Array.from(touched).map(name => loadInstance(name)));
 }
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -622,8 +717,11 @@ document.getElementById("themeToggle").addEventListener("click", () => {
 });
 document.getElementById("refreshBtn").addEventListener("click", toggleAutoRefresh);
 renderRefreshButton();
-load().catch(err => { state.errors = [String(err)]; render(); });
-startAutoRefresh();
+loadInstanceList().catch(err => {
+  state.listError = "instances: " + String(err);
+  render();
+  setTimeout(() => loadInstanceList().catch(() => {}), refreshMs);
+});
 </script>
 </body>
 </html>

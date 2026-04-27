@@ -15,9 +15,14 @@ use super::response::{json_error, json_response, DashboardResponse};
 use super::DashboardState;
 
 #[derive(Debug, Serialize)]
-struct DashboardTopologyResponse {
+struct DashboardInstancesResponse {
     refresh_interval_secs: u64,
-    instances: Vec<DashboardInstanceView>,
+    instances: Vec<DashboardInstanceMeta>,
+}
+
+#[derive(Debug, Serialize)]
+struct DashboardInstanceMeta {
+    name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,33 +33,54 @@ struct DashboardInstanceView {
     error: Option<String>,
 }
 
-pub async fn handle_topology(state: DashboardState) -> DashboardResponse {
-    let mut instances = Vec::with_capacity(state.instances.len());
-    for instance in &state.instances {
-        let view = match fetch_instance_topology(instance, state.request_timeout_secs).await {
-            Ok(topology) => DashboardInstanceView {
-                name: instance.name.clone(),
-                ok: true,
-                topology: Some(topology),
-                error: None,
-            },
-            Err(error) => DashboardInstanceView {
-                name: instance.name.clone(),
-                ok: false,
-                topology: None,
-                error: Some(format!("{error:#}")),
-            },
-        };
-        instances.push(view);
-    }
-
+pub async fn handle_instances(state: DashboardState) -> DashboardResponse {
+    let instances = state
+        .instances
+        .iter()
+        .map(|i| DashboardInstanceMeta { name: i.name.clone() })
+        .collect();
     json_response(
         StatusCode::OK,
-        &DashboardTopologyResponse {
+        &DashboardInstancesResponse {
             refresh_interval_secs: state.refresh_interval_secs,
             instances,
         },
     )
+}
+
+pub async fn handle_topology(
+    request: Request<Incoming>,
+    state: DashboardState,
+) -> DashboardResponse {
+    let raw_query = request.uri().query().unwrap_or("");
+    let mut name: Option<String> = None;
+    for (k, v) in url::form_urlencoded::parse(raw_query.as_bytes()) {
+        if k == "instance" {
+            name = Some(v.into_owned());
+            break;
+        }
+    }
+    let Some(name) = name else {
+        return json_error(StatusCode::BAD_REQUEST, "missing instance query");
+    };
+    let Some(instance) = state.instances.iter().find(|i| i.name == name) else {
+        return json_error(StatusCode::NOT_FOUND, "unknown instance");
+    };
+    let view = match fetch_instance_topology(instance, state.request_timeout_secs).await {
+        Ok(topology) => DashboardInstanceView {
+            name: instance.name.clone(),
+            ok: true,
+            topology: Some(topology),
+            error: None,
+        },
+        Err(error) => DashboardInstanceView {
+            name: instance.name.clone(),
+            ok: false,
+            topology: None,
+            error: Some(format!("{error:#}")),
+        },
+    };
+    json_response(StatusCode::OK, &view)
 }
 
 #[derive(Debug, Deserialize)]
