@@ -39,8 +39,9 @@ use url::Url;
 
 use crate::{
     AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
-    WsTransportStream, config::WsTransportMode, connect_websocket_with_source,
-    frame_io_ws::WS_READ_IDLE_TIMEOUT,
+    WsTransportStream, config::WsTransportMode, connect_websocket_with_resume,
+    connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT,
+    resumption::SessionId,
 };
 
 const VLESS_VERSION: u8 = 0x00;
@@ -363,6 +364,49 @@ impl VlessUdpTransport {
             .await
             .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         Ok(Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval))
+    }
+
+    /// Same as [`Self::connect`] but participates in cross-transport
+    /// session resumption: presents `resume_request` (if any) as the
+    /// `X-Outline-Resume` header on the WebSocket Upgrade and surfaces
+    /// the Session ID the server assigned via `X-Outline-Session` so
+    /// the caller can stash it for the next reconnect.
+    ///
+    /// Returns `(transport, Option<SessionId>)`. Today's only
+    /// production caller of single-target VLESS UDP is the probe path;
+    /// regular VLESS UDP traffic is multiplexed through
+    /// [`VlessUdpSessionMux`], which doesn't yet participate in
+    /// resumption.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn connect_with_resume(
+        cache: &DnsCache,
+        url: &Url,
+        mode: WsTransportMode,
+        uuid: &[u8; 16],
+        target: &TargetAddr,
+        fwmark: Option<u32>,
+        ipv6_first: bool,
+        source: &'static str,
+        keepalive_interval: Option<Duration>,
+        resume_request: Option<SessionId>,
+    ) -> Result<(Self, Option<SessionId>)> {
+        let ws_stream = connect_websocket_with_resume(
+            cache,
+            url,
+            mode,
+            fwmark,
+            ipv6_first,
+            source,
+            resume_request,
+        )
+        .await
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
+        // Snapshot the assigned Session ID before the VLESS framing
+        // layer takes ownership of the stream — the SessionId is on
+        // the WS Upgrade response, not on the inner VLESS handshake.
+        let issued = ws_stream.issued_session_id();
+        let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval);
+        Ok((transport, issued))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
