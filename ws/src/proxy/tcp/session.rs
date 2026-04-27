@@ -328,9 +328,7 @@ mod tests {
         let uplink_dropped_clone = std::sync::Arc::clone(&uplink_dropped);
         let uplink = async move {
             let _drop_signal = DropSignal { notify: uplink_dropped_clone };
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
+            std::future::pending::<Result<UplinkOutcome, anyhow::Error>>().await
         };
         let downlink = async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -375,15 +373,11 @@ mod tests {
         let downlink_dropped_clone = std::sync::Arc::clone(&downlink_dropped);
         let uplink = async move {
             let _drop_signal = DropSignal { notify: uplink_dropped_clone };
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::Finished)
+            std::future::pending::<Result<UplinkOutcome, anyhow::Error>>().await
         };
         let downlink = async move {
             let _drop_signal = DropSignal { notify: downlink_dropped_clone };
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
+            std::future::pending::<Result<(), anyhow::Error>>().await
         };
 
         // Activity channel is never signalled, so the watcher must fire and
@@ -461,9 +455,7 @@ mod tests {
             async move { Ok::<UplinkOutcome, anyhow::Error>(UplinkOutcome::CloseSession) };
         let downlink = async move {
             let _drop_signal = DropSignal { notify: downlink_dropped_clone };
-            std::future::pending::<()>().await;
-            #[allow(unreachable_code)]
-            Ok::<(), anyhow::Error>(())
+            std::future::pending::<Result<(), anyhow::Error>>().await
         };
 
         tokio::time::timeout(Duration::from_secs(1), drive_tcp_session_tasks(uplink, downlink, None, Arc::from("test"), Duration::from_secs(30)))

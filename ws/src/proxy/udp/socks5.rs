@@ -207,8 +207,7 @@ pub(in crate::proxy) async fn serve_udp_associate(
         let socket_direct = Arc::clone(&udp_socket);
         let direct_downlink = async move {
             let Some(sock) = direct_socket else {
-                std::future::pending::<()>().await;
-                unreachable!()
+                return std::future::pending::<Result<(), anyhow::Error>>().await;
             };
             let mut buf = vec![0u8; MAX_UDP_RELAY_PACKET_SIZE];
             loop {
