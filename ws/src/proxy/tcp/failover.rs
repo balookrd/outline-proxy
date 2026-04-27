@@ -233,28 +233,16 @@ async fn do_tcp_ss_setup(
 
     let (ws_sink, ws_stream) = ws_stream.split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-    let (mut writer, ctrl_tx) =
+    let (writer, ctrl_tx) =
         TcpShadowsocksWriter::connect(ws_sink, uplink.cipher, &master_key, Arc::clone(&lifetime))
             .await?;
-    let request_salt = writer.request_salt();
-    let reader =
-        TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx)
-            .with_request_salt(request_salt)
-            .with_diag(diag);
-    let target_wire = target.to_wire_bytes()?;
-    writer
-        .send_chunk(&target_wire)
-        .await
-        .context("failed to send target address")?;
-    debug!(
-        uplink = %uplink.name,
-        target = %target,
-        target_wire_len = target_wire.len(),
-        transport = "ws",
-        ss2022 = uplink.cipher.is_ss2022(),
-        "sent initial Shadowsocks target header to uplink"
-    );
-    Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
+    let reader = TcpShadowsocksReader::new(ws_stream, uplink.cipher, &master_key, lifetime, ctrl_tx);
+    let mut writer = TcpWriter::Ws(writer);
+    let reader = TcpReader::Ws(reader)
+        .with_request_salt(writer.request_salt())
+        .with_diag(diag);
+    send_initial_ss_target(&mut writer, uplink, target, "ws").await?;
+    Ok((writer, reader))
 }
 
 async fn do_tcp_ss_setup_socket(
@@ -266,15 +254,25 @@ async fn do_tcp_ss_setup_socket(
     let (reader_half, writer_half) = stream.into_split();
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
-    let mut writer = TcpShadowsocksWriter::connect_socket(
+    let writer = TcpShadowsocksWriter::connect_socket(
         writer_half,
         uplink.cipher,
         &master_key,
         Arc::clone(&lifetime),
     )?;
-    let reader =
-        TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime)
-            .with_request_salt(writer.request_salt());
+    let reader = TcpShadowsocksReader::new_socket(reader_half, uplink.cipher, &master_key, lifetime);
+    let mut writer = TcpWriter::Socket(writer);
+    let reader = TcpReader::Socket(reader).with_request_salt(writer.request_salt());
+    send_initial_ss_target(&mut writer, uplink, target, "socket").await?;
+    Ok((writer, reader))
+}
+
+async fn send_initial_ss_target(
+    writer: &mut TcpWriter,
+    uplink: &outline_uplink::UplinkConfig,
+    target: &TargetAddr,
+    transport: &'static str,
+) -> Result<()> {
     let target_wire = target.to_wire_bytes()?;
     writer
         .send_chunk(&target_wire)
@@ -284,9 +282,9 @@ async fn do_tcp_ss_setup_socket(
         uplink = %uplink.name,
         target = %target,
         target_wire_len = target_wire.len(),
-        transport = "socket",
+        transport = transport,
         ss2022 = uplink.cipher.is_ss2022(),
         "sent initial Shadowsocks target header to uplink"
     );
-    Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader)))
+    Ok(())
 }
