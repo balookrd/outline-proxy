@@ -122,7 +122,7 @@ fn hinted_udp_packet_decrypt_falls_back_to_matching_user() {
     let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
     let ciphertext = encrypt_udp_packet(&users[1], b"udp payload").unwrap();
     let (packet, user_index) =
-        decrypt_udp_packet_with_hint(users.as_ref(), &ciphertext, Some(0)).unwrap();
+        decrypt_udp_packet_with_hint(users.as_ref(), &ciphertext, Some(0), None).unwrap();
 
     assert_eq!(user_index, 1);
     assert_eq!(packet.user.id(), "bob");

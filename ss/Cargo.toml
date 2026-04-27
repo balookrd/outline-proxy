@@ -21,6 +21,7 @@ hyper = { version = "1.8", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "http2", "server", "server-auto", "service", "tokio"] }
 http-body-util = "0.1"
 libc = "0.2"
+lru = "0.18"
 md-5 = "0.10"
 mimalloc = { version = "0.1", default-features = false }
 metrics = "0.24"

@@ -6,7 +6,10 @@ use arc_swap::ArcSwap;
 use tokio::sync::Semaphore;
 
 use crate::{
-    crypto::UserKey, metrics::Metrics, outbound::OutboundIpv6, protocol::vless::VlessUser,
+    crypto::{SessionKeyCache, UserKey},
+    metrics::Metrics,
+    outbound::OutboundIpv6,
+    protocol::vless::VlessUser,
 };
 
 use super::nat::NatTable;
@@ -95,6 +98,7 @@ impl Services {
             prefer_ipv4_upstream,
             relay_semaphore: udp.relay_semaphore,
             orphan_registry: Arc::clone(&orphan_registry),
+            session_key_cache: Arc::new(SessionKeyCache::with_default_capacity()),
         });
         let vless_server = Arc::new(VlessWsServerCtx {
             metrics,

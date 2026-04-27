@@ -13,7 +13,9 @@ use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
 
 use crate::{
-    crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
+    crypto::{
+        CryptoError, SessionKeyCache, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet,
+    },
     metrics::{Metrics, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{NatKey, NatTable, UdpResponseSender},
@@ -57,6 +59,11 @@ pub(in crate::server) struct UdpServerCtx {
     /// the set of active NAT keys on disconnect and re-attach them
     /// to a resuming stream.
     pub(in crate::server) orphan_registry: Arc<OrphanRegistry>,
+    /// Bounded LRU mapping `(user_index, salt) -> derived AEAD key`. Read on
+    /// every UDP datagram before falling back to blake3/HKDF + ring's AES-GCM
+    /// key schedule; on a hit, the per-packet derivation collapses into a
+    /// hashmap lookup.
+    pub(in crate::server) session_key_cache: Arc<SessionKeyCache>,
 }
 
 /// Per-path state for a single UDP WebSocket session.
@@ -191,7 +198,12 @@ where
         index => Some(index),
     };
     let (packet, user_index) =
-        match decrypt_udp_packet_with_hint(route.users.as_ref(), &data, preferred_user_index) {
+        match decrypt_udp_packet_with_hint(
+            route.users.as_ref(),
+            &data,
+            preferred_user_index,
+            Some(server.session_key_cache.as_ref()),
+        ) {
             Ok(result) => result,
             Err(CryptoError::UnknownUser) => {
                 debug!(
