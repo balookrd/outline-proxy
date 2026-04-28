@@ -24,10 +24,6 @@ pub fn deduplicate_attempted_uplink_names<'a>(
     seen
 }
 
-pub fn log_uplink_summary(manager: &UplinkManager) {
-    log_uplink_summary_named(manager, "default");
-}
-
 pub fn log_uplink_summary_named(manager: &UplinkManager, group: &str) {
     info!(
         group,

@@ -11,7 +11,7 @@ mod sticky;
 mod test_helpers;
 
 pub(crate) use reporting::log_uplink_summary_named;
-pub use reporting::{deduplicate_attempted_uplink_names, log_uplink_summary};
+pub use reporting::deduplicate_attempted_uplink_names;
 
 use std::collections::HashMap;
 use std::sync::Arc;
