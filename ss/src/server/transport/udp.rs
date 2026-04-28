@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
@@ -7,7 +7,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::extract::ws::WebSocket;
 use bytes::Bytes;
 use futures_util::{FutureExt, StreamExt, future::BoxFuture, stream::FuturesUnordered};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::Mutex;
 use sockudo_ws::{Http3 as H3Transport, Stream as H3Stream, WebSocketStream as H3WebSocketStream};
 use tokio::sync::{Semaphore, mpsc};
 use tracing::{debug, info, warn};
@@ -94,8 +94,11 @@ struct UdpSessionState {
     nat_keys: Arc<Mutex<Vec<NatKey>>>,
     /// User the stream authenticated as (set once on the first
     /// successful AEAD decrypt). Captured early so park-on-drop can
-    /// stash it as the parked entry's owner.
-    authenticated_user_id: Arc<RwLock<Option<Arc<str>>>>,
+    /// stash it as the parked entry's owner. `OnceLock` keeps the
+    /// per-datagram read on the hot path lock-free (plain atomic
+    /// acquire load); the one-time write CAS is taken at most once
+    /// per stream.
+    authenticated_user_id: Arc<OnceLock<Arc<str>>>,
     /// Session ID the client offered for resumption, parsed at
     /// WS-Upgrade. Consumed (`take()`) on the first authenticated
     /// datagram by the resume path; subsequent datagrams see `None`
@@ -226,15 +229,12 @@ where
         };
     session.cached_user_index.store(user_index, Ordering::Relaxed);
     let user_id = packet.user.id_arc();
-    // Capture the authenticated user id once. Subsequent datagrams in
-    // the same stream skip the write-lock fast-path because the value
-    // is already populated.
-    if session.authenticated_user_id.read().is_none() {
-        let mut guard = session.authenticated_user_id.write();
-        if guard.is_none() {
-            *guard = Some(Arc::clone(&user_id));
-        }
-    }
+    // Capture the authenticated user id once. Subsequent datagrams
+    // hit the lock-free `OnceLock::get_or_init` fast path: a single
+    // atomic acquire load with no Arc clone when already populated.
+    session
+        .authenticated_user_id
+        .get_or_init(|| Arc::clone(&user_id));
     if let Some((csid, pid)) = replay::replay_key(&packet.session, packet.packet_id) {
         match server.replay_store.check_and_mark(csid, pid) {
             ReplayCheck::Fresh => {},
@@ -404,7 +404,7 @@ async fn run_udp_relay<T: WsSocket>(
         cached_user_index: Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY)),
         stream_id: next_ss_udp_stream_id(),
         nat_keys: Arc::new(Mutex::new(Vec::new())),
-        authenticated_user_id: Arc::new(RwLock::new(None)),
+        authenticated_user_id: Arc::new(OnceLock::new()),
         pending_resume_request: Arc::new(Mutex::new(resume.requested_resume)),
         issued_session_id: resume.issued_session_id,
         resume_attempted: Arc::new(AtomicBool::new(false)),
@@ -537,9 +537,8 @@ async fn park_ss_udp_stream_on_drop(
     if !server.orphan_registry.enabled() {
         return;
     }
-    let owner = match session.authenticated_user_id.read().clone() {
-        Some(owner) => owner,
-        None => return, // Stream never authenticated — nothing to park.
+    let Some(owner) = session.authenticated_user_id.get().map(Arc::clone) else {
+        return; // Stream never authenticated — nothing to park.
     };
     let nat_keys: Vec<NatKey> = std::mem::take(&mut *session.nat_keys.lock());
     if nat_keys.is_empty() {
