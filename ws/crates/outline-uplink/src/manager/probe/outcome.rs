@@ -131,6 +131,27 @@ impl UplinkManager {
                 H3DowngradeTrigger::ProbeTransportFailure,
             );
         }
+        // The probe layer reports a "silent" downgrade when it succeeded but
+        // the underlying dial was clamped/fallen-back below the requested
+        // mode (host-level `ws_mode_cache` or inline H3→H2/H1 retry inside
+        // `connect_websocket_with_resume`). Without this, `tcp_ok=true`
+        // would mask the fact that H3 is unreachable, leaving
+        // `effective_*_ws_mode` stuck on H3 forever while every actual probe
+        // and user dial silently rides H2.
+        if let Some(requested) = result.tcp_downgraded_from {
+            self.extend_h3_downgrade(
+                index,
+                TransportKind::Tcp,
+                H3DowngradeTrigger::SilentTransportFallback(requested),
+            );
+        }
+        if let Some(requested) = result.udp_downgraded_from {
+            self.extend_h3_downgrade(
+                index,
+                TransportKind::Udp,
+                H3DowngradeTrigger::SilentTransportFallback(requested),
+            );
+        }
         if needs_h3_tcp_recovery {
             h3_tcp_recovery.push((index, uplink.clone()));
         }

@@ -29,7 +29,7 @@ pub(super) async fn run_ws_probe(
     fwmark: Option<u32>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
-) -> Result<()> {
+) -> Result<Option<WsTransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     // Verify WebSocket connectivity only — TCP connect + TLS + HTTP upgrade.
     // Many servers do not respond to WebSocket ping control frames (they expect
@@ -40,6 +40,7 @@ pub(super) async fn run_ws_probe(
         .with_context(|| TransportOperation::Connect {
             target: format!("WebSocket probe to {url}"),
         })?;
+    let downgraded_from = ws_stream.downgraded_from();
 
     debug!(
         uplink = %uplink_name,
@@ -58,7 +59,7 @@ pub(super) async fn run_ws_probe(
             "probe websocket close returned error during teardown"
         );
     }
-    Ok(())
+    Ok(downgraded_from)
 }
 
 /// Connectivity-only probe over raw QUIC: opens (or reuses) a per-ALPN
@@ -76,7 +77,7 @@ pub(super) async fn run_quic_handshake_probe(
     fwmark: Option<u32>,
     ipv6_first: bool,
     dial_limit: Arc<Semaphore>,
-) -> Result<()> {
+) -> Result<Option<WsTransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let alpn: &'static [u8] = match uplink_transport {
         UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
@@ -106,7 +107,9 @@ pub(super) async fn run_quic_handshake_probe(
         url = %url,
         "raw-QUIC probe connected, releasing"
     );
-    Ok(())
+    // Raw QUIC bypasses the WS layer entirely; no `ws_mode_cache` clamp
+    // can apply here, so we never report a downgrade from this probe.
+    Ok(None)
 }
 
 #[cfg(not(feature = "quic"))]
@@ -120,7 +123,7 @@ pub(super) async fn run_quic_handshake_probe(
     _fwmark: Option<u32>,
     _ipv6_first: bool,
     _dial_limit: Arc<Semaphore>,
-) -> Result<()> {
+) -> Result<Option<WsTransportMode>> {
     Err(anyhow!(
         "WsTransportMode::Quic requested but binary was built without the `quic` feature"
     ))
@@ -130,7 +133,7 @@ pub(super) async fn run_tcp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
-) -> Result<()> {
+) -> Result<Option<WsTransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .tcp_addr
@@ -144,14 +147,14 @@ pub(super) async fn run_tcp_socket_probe(
         "probe_tcp",
     )
     .await?;
-    Ok(())
+    Ok(None)
 }
 
 pub(super) async fn run_udp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
-) -> Result<()> {
+) -> Result<Option<WsTransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .udp_addr
@@ -165,5 +168,5 @@ pub(super) async fn run_udp_socket_probe(
         "probe_udp",
     )
     .await?;
-    Ok(())
+    Ok(None)
 }
