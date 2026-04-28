@@ -184,6 +184,18 @@ impl UplinkManager {
         // ping/pong times.
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
             .await;
+        // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
+        // or inline H3→H2/H1 fallback inside `connect_websocket_with_resume`)
+        // into the per-uplink `h3_downgrade_until` window. Without this,
+        // `effective_tcp_ws_mode` keeps reporting H3 while every actual dial
+        // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
+        if let Some(requested) = ws.downgraded_from() {
+            self.note_silent_transport_fallback(
+                candidate.index,
+                TransportKind::Tcp,
+                requested,
+            );
+        }
         Ok(ws)
     }
 
@@ -419,6 +431,22 @@ impl UplinkManager {
                 );
                 return Ok(UdpSessionTransport::VlessQuic(hybrid));
             }
+            // Hook fired the first time the mux observes a transport-level
+            // H3→H2/H1 downgrade on a per-target dial. The mux latches on
+            // the first call so a burst of fresh sessions during the same
+            // outage doesn't spam the uplink-manager. Mirrors the QUIC-mux
+            // `on_fallback` wiring above so both pivots flow through the
+            // same per-uplink `h3_downgrade_until` window.
+            let manager = self.clone();
+            let index = candidate.index;
+            let on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
+                Arc::new(move |requested: outline_transport::WsTransportMode| {
+                    manager.note_silent_transport_fallback(
+                        index,
+                        TransportKind::Udp,
+                        requested,
+                    );
+                });
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
                 udp_ws_url.clone(),
@@ -429,7 +457,8 @@ impl UplinkManager {
                 source,
                 self.inner.load_balancing.udp_ws_keepalive_interval,
                 self.inner.load_balancing.vless_udp_mux_limits,
-            );
+            )
+            .with_on_downgrade(Some(on_downgrade));
             return Ok(UdpSessionTransport::Vless(mux));
         }
 
@@ -508,7 +537,7 @@ impl UplinkManager {
         // doesn't steal the UDP-side Session ID and vice versa.
         let udp_resume_key = resume_cache_key(&candidate.uplink.name, "udp");
         let udp_resume_request = global_resume_cache().get(&udp_resume_key);
-        let (transport, udp_issued) = UdpWsTransport::connect_with_resume(
+        let (transport, udp_issued, udp_downgraded_from) = UdpWsTransport::connect_with_resume(
             cache,
             udp_ws_url,
             mode,
@@ -525,6 +554,16 @@ impl UplinkManager {
         global_resume_cache().store_if_issued(udp_resume_key, udp_issued);
         self.report_connection_latency(candidate.index, TransportKind::Udp, started.elapsed())
             .await;
+        // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
+        // or inline H3→H2/H1 fallback) into the per-uplink window so
+        // `effective_udp_ws_mode` reflects reality on subsequent dials.
+        if let Some(requested) = udp_downgraded_from {
+            self.note_silent_transport_fallback(
+                candidate.index,
+                TransportKind::Udp,
+                requested,
+            );
+        }
         Ok(UdpSessionTransport::Ss(transport))
     }
 
