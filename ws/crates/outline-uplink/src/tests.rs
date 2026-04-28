@@ -1316,3 +1316,222 @@ fn deduplicate_attempted_uplink_names_includes_current_when_not_seen() {
     );
     assert_eq!(result, vec!["nuxt", "aeza"]);
 }
+
+// ── Silent transport fallback wiring ────────────────────────────────────────
+// These cover the uplink-side cross-crate wiring of the
+// `WsTransportStream::downgraded_from()` machinery added in earlier commits:
+// after a fresh-dial / refill / probe path observes a host-level
+// `ws_mode_cache` clamp, it calls `note_silent_transport_fallback`, which must
+// flip `effective_*_ws_mode` to H2 — but only for Ws/Vless uplinks whose
+// configured dial mode is H3 or Quic. The transport-crate unit tests prove the
+// marker propagates; these tests prove the manager honours it correctly across
+// transport kinds and uplink kinds.
+
+fn make_ws_uplink_with_modes(
+    name: &str,
+    url: &str,
+    tcp_mode: WsTransportMode,
+    udp_mode: WsTransportMode,
+) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Ws,
+        tcp_ws_url: Some(Url::parse(url).unwrap()),
+        tcp_ws_mode: tcp_mode,
+        udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
+        udp_ws_mode: udp_mode,
+        vless_ws_url: None,
+        vless_ws_mode: WsTransportMode::Http1,
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+    }
+}
+
+fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_ws_mode: WsTransportMode::Http1,
+        udp_ws_url: None,
+        udp_ws_mode: WsTransportMode::Http1,
+        vless_ws_url: Some(Url::parse(url).unwrap()),
+        vless_ws_mode: WsTransportMode::H3,
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: Some([0u8; 16]),
+    }
+}
+
+fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Shadowsocks,
+        tcp_ws_url: None,
+        tcp_ws_mode: WsTransportMode::H3,
+        udp_ws_url: None,
+        udp_ws_mode: WsTransportMode::H3,
+        vless_ws_url: None,
+        vless_ws_mode: WsTransportMode::Http1,
+        tcp_addr: Some("127.0.0.1:9000".parse().unwrap()),
+        udp_addr: Some("127.0.0.1:9001".parse().unwrap()),
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: None,
+    }
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_clamps_effective_tcp_ws_mode_to_h2() {
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_ws_uplink_with_modes(
+            "primary",
+            "wss://primary.example.com/tcp",
+            WsTransportMode::H3,
+            WsTransportMode::Http1,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H3);
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, WsTransportMode::H3);
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H2);
+    // UDP polosa is independent — only TCP got the marker.
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::Http1);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_clamps_effective_udp_ws_mode_to_h2() {
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_ws_uplink_with_modes(
+            "primary",
+            "wss://primary.example.com/tcp",
+            WsTransportMode::Http1,
+            WsTransportMode::H3,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Udp, WsTransportMode::H3);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::H2);
+    // TCP polosa is untouched.
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::Http1);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_works_for_vless_uplink() {
+    // VLESS uplinks share the same `vless_ws_mode` for both TCP and UDP, so a
+    // TCP-side marker only flips the TCP polosa — `effective_udp_ws_mode` stays
+    // on H3 until UDP also reports its own downgrade.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_vless_h3_uplink("vless1", "wss://vless.example.com/v")],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H3);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::H3);
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, WsTransportMode::H3);
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H2);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::H3);
+
+    manager.note_silent_transport_fallback(0, TransportKind::Udp, WsTransportMode::H3);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::H2);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_is_noop_for_shadowsocks_uplink() {
+    // The h3_downgrade guard explicitly excludes plain Shadowsocks uplinks
+    // (they don't carry a WS layer). A misrouted call must not produce any
+    // observable change in the effective mode.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_shadowsocks_uplink("ss")],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, WsTransportMode::H3);
+    manager.note_silent_transport_fallback(0, TransportKind::Udp, WsTransportMode::H3);
+    // The configured mode field is just a slot; for Shadowsocks transports
+    // `effective_*_ws_mode` returns whatever was configured, with the
+    // downgrade window suppressed by the guard.
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H3);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::H3);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_is_noop_when_mode_is_not_advanced() {
+    // The guard also suppresses the window when the configured mode is below
+    // H3/Quic — there is nothing to "downgrade from". A spurious call from a
+    // mis-wired callsite must not park the uplink at a mode lower than asked.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_ws_uplink_with_modes(
+            "h2_only",
+            "wss://h2.example.com/tcp",
+            WsTransportMode::H2,
+            WsTransportMode::Http1,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, WsTransportMode::H3);
+    manager.note_silent_transport_fallback(0, TransportKind::Udp, WsTransportMode::H3);
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H2);
+    assert_eq!(manager.effective_udp_ws_mode(0).await, WsTransportMode::Http1);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_marker_expires_after_window() {
+    // After the configured `h3_downgrade_duration` elapses, `effective_*_ws_mode`
+    // must return the originally-requested mode again so a recovered H3 path
+    // is actually exercised on the next dial cycle.
+    let mut config = lb();
+    config.h3_downgrade_duration = Duration::from_millis(50);
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_ws_uplink_with_modes(
+            "primary",
+            "wss://primary.example.com/tcp",
+            WsTransportMode::H3,
+            WsTransportMode::Http1,
+        )],
+        probe_disabled(),
+        config,
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, WsTransportMode::H3);
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H2);
+
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert_eq!(manager.effective_tcp_ws_mode(0).await, WsTransportMode::H3);
+}
