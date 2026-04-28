@@ -256,18 +256,28 @@ pub async fn connect_websocket_with_resume(
             "ws transport mode clamped by downgrade cache"
         );
     }
+    // Stamp the originally-requested mode when the dial path ended up at a
+    // lower mode than asked for (either via the host-level `ws_mode_cache`
+    // clamp or via an inline H3→H2/H1 fallback below). Uplink-manager
+    // callers inspect `WsTransportStream::downgraded_from()` and mirror the
+    // downgrade into their per-uplink `h3_downgrade_until` window so
+    // routing/metrics see a consistent state.
+    let downgrade_marker = |actual: WsTransportMode| -> Option<WsTransportMode> {
+        if actual != requested { Some(requested) } else { None }
+    };
     match mode {
         WsTransportMode::Http1 => {
             let (ws_stream, issued) =
                 connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                     .await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
-            Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
+            Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                .with_downgraded_from(downgrade_marker(WsTransportMode::Http1)))
         },
         WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
-                Ok(stream)
+                Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
             },
             Err(h2_error) => {
                 warn!(
@@ -281,14 +291,15 @@ pub async fn connect_websocket_with_resume(
                     connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                         .await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
+                Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                    .with_downgraded_from(downgrade_marker(WsTransportMode::Http1)))
             },
         },
         #[cfg(feature = "h3")]
         WsTransportMode::H3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
-                Ok(stream)
+                Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H3)))
             },
             Err(h3_error) => {
                 warn!(
@@ -301,7 +312,7 @@ pub async fn connect_websocket_with_resume(
                 match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
-                        Ok(stream)
+                        Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
                     },
                     Err(h2_error) => {
                         warn!(
@@ -315,7 +326,8 @@ pub async fn connect_websocket_with_resume(
                             connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                                 .await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
+                        Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                            .with_downgraded_from(downgrade_marker(WsTransportMode::Http1)))
                     },
                 }
             },
@@ -327,7 +339,7 @@ pub async fn connect_websocket_with_resume(
             match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
-                    Ok(stream)
+                    Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
                 },
                 Err(h2_error) => {
                     warn!(url = %url, error = %format!("{h2_error:#}"), fallback = "http1", "h2 websocket connect failed, falling back");
@@ -336,7 +348,8 @@ pub async fn connect_websocket_with_resume(
                         connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                             .await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(WsTransportStream::new_http1_with_session(ws_stream, issued))
+                    Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                        .with_downgraded_from(downgrade_marker(WsTransportMode::Http1)))
                 },
             }
         },

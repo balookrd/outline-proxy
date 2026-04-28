@@ -353,7 +353,11 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         let (ws, issued_session_id) = conn
             .open_websocket(server_name, server_port, path, self.resume_request)
             .await?;
-        Ok(WsTransportStream::H3 { inner: ws, issued_session_id })
+        Ok(WsTransportStream::H3 {
+            inner: ws,
+            issued_session_id,
+            downgraded_from: None,
+        })
     }
 }
 

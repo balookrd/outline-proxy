@@ -323,6 +323,7 @@ impl SharedH2Connection {
         Ok(WsTransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
             issued_session_id,
+            downgraded_from: None,
         })
     }
 }
