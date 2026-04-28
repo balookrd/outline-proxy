@@ -287,3 +287,64 @@ async fn dial_at_requested_mode_carries_no_downgrade_marker() {
     assert!(matches!(stream, WsTransportStream::H2 { .. }));
     assert_eq!(stream.downgraded_from(), None);
 }
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
+    use crate::vless::{VlessUdpDowngradeNotifier, VlessUdpSessionMux};
+    use socks5_proto::TargetAddr;
+    use std::net::Ipv4Addr;
+
+    // Pre-populate the per-host clamp so any H3 dial against this URL is
+    // silently routed to H2 inside `connect_websocket_with_resume`. The mux
+    // should observe `downgraded_from = Some(H3)` on its first per-target
+    // dial and fire the hook exactly once.
+    let server = TestH2Server::start().await;
+    let url = server.url();
+    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let observed_mode = Arc::new(parking_lot::Mutex::new(None::<WsTransportMode>));
+    let counter_for_hook = Arc::clone(&counter);
+    let observed_for_hook = Arc::clone(&observed_mode);
+    let hook: VlessUdpDowngradeNotifier = Arc::new(move |requested: WsTransportMode| {
+        counter_for_hook.fetch_add(1, Ordering::SeqCst);
+        *observed_for_hook.lock() = Some(requested);
+    });
+
+    let mux = VlessUdpSessionMux::new(
+        Arc::new(DnsCache::default()),
+        url,
+        WsTransportMode::H3,
+        [0u8; 16],
+        None,
+        false,
+        "test_vless_downgrade",
+        None,
+    )
+    .with_on_downgrade(Some(hook));
+
+    let target1 = TargetAddr::IpV4(Ipv4Addr::new(127, 0, 0, 1), 9999);
+    let _ = mux.session_for(&target1).await;
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "hook must fire once on the first downgraded dial"
+    );
+    assert_eq!(
+        *observed_mode.lock(),
+        Some(WsTransportMode::H3),
+        "hook must receive the originally-requested mode, not the dialed one"
+    );
+
+    // Latch: a second per-target dial during the same outage window must
+    // not refire the hook (otherwise we'd spam the uplink-manager every
+    // time a UDP burst opens fresh sessions).
+    let target2 = TargetAddr::IpV4(Ipv4Addr::new(127, 0, 0, 1), 9998);
+    let _ = mux.session_for(&target2).await;
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "hook must latch — only fire once per mux instance"
+    );
+}

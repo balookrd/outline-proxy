@@ -181,7 +181,8 @@ pub use vless_quic_mux::VlessUdpQuicMux;
 #[cfg(feature = "quic")]
 pub use vless_udp_hybrid::{FallbackNotifier, VlessUdpHybridMux, WsFallbackFactory};
 pub use vless::{
-    VlessTcpReader, VlessTcpWriter, VlessUdpMuxLimits, VlessUdpSessionMux, VlessUdpWsTransport,
+    VlessTcpReader, VlessTcpWriter, VlessUdpDowngradeNotifier, VlessUdpMuxLimits,
+    VlessUdpSessionMux, VlessUdpWsTransport,
 };
 pub use ws_stream::WsTransportStream;
 
