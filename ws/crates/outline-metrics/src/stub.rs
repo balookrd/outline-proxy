@@ -99,6 +99,9 @@ pub fn record_runtime_failure_other_detail(
     _detail: &str,
 ) {
 }
+pub fn normalize_other_runtime_failure_detail(_error_text: &str) -> String {
+    String::new()
+}
 pub fn record_runtime_failure_suppressed(_transport: &'static str, _group: &str, _uplink: &str) {}
 pub fn record_failover(
     _transport: &'static str,

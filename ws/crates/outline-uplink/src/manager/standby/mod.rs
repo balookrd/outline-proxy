@@ -16,7 +16,7 @@ use outline_transport::{
 };
 
 use crate::config::UplinkTransport;
-use crate::utils::maybe_shrink_vecdeque;
+use outline_transport::collections::maybe_shrink_vecdeque;
 
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
@@ -34,20 +34,15 @@ impl UplinkManager {
     /// Returns the effective TCP dial mode for `index`, falling back to H2
     /// when an "advanced" mode (H3 or raw QUIC) has been marked broken by
     /// repeated runtime / dial errors.  Applies to Ws and Vless transports.
-    pub async fn effective_tcp_ws_mode(
-        &self,
-        index: usize,
-    ) -> crate::config::WsTransportMode {
+    pub async fn effective_tcp_ws_mode(&self, index: usize) -> crate::config::WsTransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
         let advanced = matches!(
             configured,
             crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
         );
-        let supports_downgrade = matches!(
-            uplink.transport,
-            UplinkTransport::Ws | UplinkTransport::Vless
-        );
+        let supports_downgrade =
+            matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
         if advanced && supports_downgrade {
             let status = self.inner.read_status(index);
             if status
@@ -73,10 +68,8 @@ impl UplinkManager {
             configured,
             crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
         );
-        let supports_downgrade = matches!(
-            uplink.transport,
-            UplinkTransport::Ws | UplinkTransport::Vless
-        );
+        let supports_downgrade =
+            matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
         if advanced && supports_downgrade {
             let status = self.inner.read_status(index);
             if status
@@ -107,10 +100,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
     ) -> Option<WsTransportStream> {
-        if !matches!(
-            candidate.uplink.transport,
-            UplinkTransport::Ws | UplinkTransport::Vless
-        ) {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return None;
         }
         // The pool is never refilled when the effective TCP mode is raw
@@ -134,10 +124,7 @@ impl UplinkManager {
         source: &'static str,
     ) -> Result<WsTransportStream> {
         let cache = self.inner.dns_cache.as_ref();
-        if !matches!(
-            candidate.uplink.transport,
-            UplinkTransport::Ws | UplinkTransport::Vless
-        ) {
+        if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
         }
         metrics::record_warm_standby_acquire(
@@ -152,9 +139,10 @@ impl UplinkManager {
             mode = %mode,
             "no warm-standby TCP websocket available, dialing on-demand"
         );
-        let url = candidate.uplink.tcp_dial_url().ok_or_else(|| {
-            anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name)
-        })?;
+        let url = candidate
+            .uplink
+            .tcp_dial_url()
+            .ok_or_else(|| anyhow!("uplink {} missing tcp dial URL", candidate.uplink.name))?;
         let started = Instant::now();
         // Cross-transport session resumption: present the last Session
         // ID this uplink received so an outline-ss-rust server with the
@@ -174,9 +162,7 @@ impl UplinkManager {
             resume_request,
         )
         .await
-        .with_context(|| TransportOperation::Connect {
-            target: format!("to {}", url),
-        })?;
+        .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
         global_resume_cache().store_if_issued(resume_key, ws.issued_session_id());
         // Feed the on-demand dial latency into the RTT EWMA so real
         // connection quality is reflected in routing scores, not just probe
@@ -189,11 +175,7 @@ impl UplinkManager {
         // `effective_tcp_ws_mode` keeps reporting H3 while every actual dial
         // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
         if let Some(requested) = ws.downgraded_from() {
-            self.note_silent_transport_fallback(
-                candidate.index,
-                TransportKind::Tcp,
-                requested,
-            );
+            self.note_silent_transport_fallback(candidate.index, TransportKind::Tcp, requested);
         }
         Ok(ws)
     }
@@ -226,9 +208,9 @@ impl UplinkManager {
         use outline_transport::UpstreamTransportGuard;
         let cache = self.inner.dns_cache.as_ref();
         let uplink = &candidate.uplink;
-        let url = uplink.tcp_dial_url().ok_or_else(|| {
-            anyhow!("uplink {} missing dial URL for quic transport", uplink.name)
-        })?;
+        let url = uplink
+            .tcp_dial_url()
+            .ok_or_else(|| anyhow!("uplink {} missing dial URL for quic transport", uplink.name))?;
         let lifetime = UpstreamTransportGuard::new(source, "tcp");
         let started = Instant::now();
         let (writer, reader) = match uplink.transport {
@@ -245,22 +227,21 @@ impl UplinkManager {
                 let resume_key = resume_cache_key(&uplink.name, "tcp");
                 let resume_request = global_resume_cache().get(&resume_key);
                 let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
-                let (w, r, issued_rx) =
-                    outline_transport::connect_vless_tcp_quic_with_resume(
-                        cache,
-                        url,
-                        uplink.fwmark,
-                        uplink.ipv6_first,
-                        source,
-                        uuid,
-                        target,
-                        lifetime,
-                        resume_id_bytes.as_ref(),
-                    )
-                    .await
-                    .with_context(|| TransportOperation::Connect {
-                        target: format!("vless quic to {}", url),
-                    })?;
+                let (w, r, issued_rx) = outline_transport::connect_vless_tcp_quic_with_resume(
+                    cache,
+                    url,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                    uuid,
+                    target,
+                    lifetime,
+                    resume_id_bytes.as_ref(),
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("vless quic to {}", url),
+                })?;
                 // The dial returns before the server's handshake response
                 // is read — saves one full RTT on every cold dial. The
                 // reader fires `issued_rx` from inside its first
@@ -276,11 +257,8 @@ impl UplinkManager {
                         global_resume_cache().store_if_issued(resume_key, issued);
                     }
                 });
-                (
-                    outline_transport::TcpWriter::Vless(w),
-                    outline_transport::TcpReader::Vless(r),
-                )
-            }
+                (outline_transport::TcpWriter::Vless(w), outline_transport::TcpReader::Vless(r))
+            },
             UplinkTransport::Ws => {
                 // Standalone "shadowsocks-over-quic" path uses the
                 // existing WS uplink config: same URL field, but
@@ -306,17 +284,14 @@ impl UplinkManager {
                 w.send_chunk(&target_wire)
                     .await
                     .context("failed to send target address over ss-quic")?;
-                (
-                    outline_transport::TcpWriter::QuicSs(w),
-                    outline_transport::TcpReader::QuicSs(r),
-                )
-            }
+                (outline_transport::TcpWriter::QuicSs(w), outline_transport::TcpReader::QuicSs(r))
+            },
             UplinkTransport::Shadowsocks => {
                 bail!(
                     "uplink {} uses direct shadowsocks transport, not compatible with quic mode",
                     uplink.name
                 );
-            }
+            },
         };
         self.report_connection_latency(candidate.index, TransportKind::Tcp, started.elapsed())
             .await;
@@ -432,11 +407,7 @@ impl UplinkManager {
                 let index = candidate.index;
                 let on_fallback: outline_transport::FallbackNotifier =
                     Arc::new(move |error: &anyhow::Error| {
-                        manager.note_advanced_mode_dial_failure(
-                            index,
-                            TransportKind::Udp,
-                            error,
-                        );
+                        manager.note_advanced_mode_dial_failure(index, TransportKind::Udp, error);
                     });
                 let hybrid = outline_transport::VlessUdpHybridMux::from_quic(
                     quic_mux,
@@ -455,11 +426,7 @@ impl UplinkManager {
             let index = candidate.index;
             let on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
                 Arc::new(move |requested: outline_transport::WsTransportMode| {
-                    manager.note_silent_transport_fallback(
-                        index,
-                        TransportKind::Udp,
-                        requested,
-                    );
+                    manager.note_silent_transport_fallback(index, TransportKind::Udp, requested);
                 });
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),
@@ -532,7 +499,7 @@ impl UplinkManager {
                     )
                     .await;
                     return Ok(UdpSessionTransport::Ss(transport));
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         uplink = %candidate.uplink.name,
@@ -541,13 +508,9 @@ impl UplinkManager {
                         fallback = "ws/h2",
                         "ss raw-QUIC UDP dial failed, falling back to WS over H2"
                     );
-                    self.note_advanced_mode_dial_failure(
-                        candidate.index,
-                        TransportKind::Udp,
-                        &e,
-                    );
+                    self.note_advanced_mode_dial_failure(candidate.index, TransportKind::Udp, &e);
                     mode = self.effective_udp_ws_mode(candidate.index).await;
-                }
+                },
             }
         }
         // Cross-transport session resumption for SS-UDP-over-WS.
@@ -577,11 +540,7 @@ impl UplinkManager {
         // or inline H3→H2/H1 fallback) into the per-uplink window so
         // `effective_udp_ws_mode` reflects reality on subsequent dials.
         if let Some(requested) = udp_downgraded_from {
-            self.note_silent_transport_fallback(
-                candidate.index,
-                TransportKind::Udp,
-                requested,
-            );
+            self.note_silent_transport_fallback(candidate.index, TransportKind::Udp, requested);
         }
         Ok(UdpSessionTransport::Ss(transport))
     }

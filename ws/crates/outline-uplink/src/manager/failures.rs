@@ -5,14 +5,30 @@ use tracing::{debug, warn};
 
 use outline_metrics as metrics;
 
-use super::super::types::{TransportKind, UplinkManager};
-use super::super::utils::{
-    add_penalty, classify_runtime_failure_cause, classify_runtime_failure_signature,
-    current_penalty, mark_probe_wakeup, normalize_other_runtime_failure_detail, update_rtt_ewma,
+use super::super::error_classify::{
+    classify_runtime_failure_cause, classify_runtime_failure_signature,
 };
+use super::super::penalty::{add_penalty, current_penalty, update_rtt_ewma};
+use super::super::types::{TransportKind, UplinkManager};
 use super::h3_downgrade::H3DowngradeTrigger;
 
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
+
+/// Records `now` as the most recent probe wakeup if at least `min_interval`
+/// has elapsed since the previous one.  Returns `true` when the timestamp was
+/// refreshed (caller should fire the wakeup), `false` when the rate-limit
+/// window suppresses it.
+fn mark_probe_wakeup(
+    last_wakeup: &mut Option<Instant>,
+    now: Instant,
+    min_interval: Duration,
+) -> bool {
+    if last_wakeup.is_some_and(|prev| now.duration_since(prev) < min_interval) {
+        return false;
+    }
+    *last_wakeup = Some(now);
+    true
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,7 +127,7 @@ impl UplinkManager {
         let failure_signature = classify_runtime_failure_signature(error);
         let error_text = format!("{error:#}");
         let failure_other_detail = (failure_signature == "other")
-            .then(|| normalize_other_runtime_failure_detail(&error_text));
+            .then(|| metrics::normalize_other_runtime_failure_detail(&error_text));
         let now = Instant::now();
         let uplink_name = self.inner.uplinks[index].name.clone();
         let group_name = self.inner.group_name.clone();
@@ -135,8 +151,7 @@ impl UplinkManager {
         // the configuration where `should_keep` ignores cooldown, so without an
         // explicit health flip the active uplink would never lose its slot
         // until the slow probe cycle catches up.
-        let runtime_health_escalation =
-            probe_enabled && self.strict_global_active_uplink();
+        let runtime_health_escalation = probe_enabled && self.strict_global_active_uplink();
 
         let kind = match transport {
             TransportKind::Tcp => "tcp",
@@ -236,9 +251,10 @@ impl UplinkManager {
                         .map(|v| v.as_millis()),
                     probe_enabled
                         && !already_in_cooldown
-                        && status.tcp.last_probe_wakeup.is_some_and(|t| {
-                            now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL
-                        }),
+                        && status
+                            .tcp
+                            .last_probe_wakeup
+                            .is_some_and(|t| now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL),
                 ),
                 TransportKind::Udp => (
                     status.udp.cooldown_until,
@@ -246,9 +262,10 @@ impl UplinkManager {
                         .map(|v| v.as_millis()),
                     probe_enabled
                         && !already_in_cooldown
-                        && status.udp.last_probe_wakeup.is_some_and(|t| {
-                            now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL
-                        }),
+                        && status
+                            .udp
+                            .last_probe_wakeup
+                            .is_some_and(|t| now.duration_since(t) < PROBE_WAKEUP_MIN_INTERVAL),
                 ),
             }
         };

@@ -1,13 +1,27 @@
 use tokio::time::Instant;
 
-use super::super::config::UplinkTransport;
+use super::super::config::{LoadBalancingMode, RoutingScope, UplinkTransport};
+use super::super::penalty::current_penalty;
 use super::super::selection::{effective_latency, selection_score};
+use super::super::time::duration_to_millis_option;
 use super::super::types::{
     StickyRouteSnapshot, TransportKind, UplinkManager, UplinkManagerSnapshot, UplinkSnapshot,
 };
-use super::super::utils::{
-    current_penalty, duration_to_millis_option, load_balancing_mode_name, routing_scope_name,
-};
+
+fn load_balancing_mode_name(mode: LoadBalancingMode) -> &'static str {
+    match mode {
+        LoadBalancingMode::ActiveActive => "active_active",
+        LoadBalancingMode::ActivePassive => "active_passive",
+    }
+}
+
+fn routing_scope_name(scope: RoutingScope) -> &'static str {
+    match scope {
+        RoutingScope::PerFlow => "per_flow",
+        RoutingScope::PerUplink => "per_uplink",
+        RoutingScope::Global => "global",
+    }
+}
 
 impl UplinkManager {
     pub async fn snapshot(&self) -> UplinkManagerSnapshot {

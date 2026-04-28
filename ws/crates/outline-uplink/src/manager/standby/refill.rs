@@ -9,7 +9,7 @@ use outline_transport::{WsTransportStream, connect_websocket_with_source};
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
-use crate::utils::maybe_shrink_vecdeque;
+use outline_transport::collections::maybe_shrink_vecdeque;
 
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
@@ -67,8 +67,9 @@ impl<'a> StandbyCtx<'a> {
                     Err(_elapsed) => Ok(()), // still open — nothing to read
                     Ok(None) => Err(anyhow::Error::from(StandbyProbeExpected)
                         .context("standby websocket stream ended")),
-                    Ok(Some(Err(e))) => Err(anyhow::Error::from(e)
-                        .context("standby websocket error")),
+                    Ok(Some(Err(e))) => {
+                        Err(anyhow::Error::from(e).context("standby websocket error"))
+                    },
                     Ok(Some(Ok(Message::Close(frame)))) => {
                         Err(anyhow::Error::from(StandbyProbeExpected)
                             .context(format!("standby websocket closed by server: {:?}", frame)))

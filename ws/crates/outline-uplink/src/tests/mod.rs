@@ -13,7 +13,6 @@ use crate::config::{
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
 use crate::types::{PenaltyState, PerTransportStatus, TransportKind, UplinkManager, UplinkStatus};
-use crate::utils::update_rtt_ewma;
 use outline_transport::connect_websocket_with_source;
 use tokio::time::Instant;
 
@@ -39,13 +38,6 @@ fn lb() -> LoadBalancingConfig {
         auto_failback: false,
         vless_udp_mux_limits: VlessUdpMuxLimits::default(),
     }
-}
-
-#[test]
-fn rtt_ewma_smooths_new_samples() {
-    let mut current = Some(Duration::from_millis(100));
-    update_rtt_ewma(&mut current, Some(Duration::from_millis(300)), 0.25);
-    assert_eq!(current, Some(Duration::from_millis(150)));
 }
 
 #[test]
@@ -121,7 +113,8 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
-        vless_id: None,    }
+        vless_id: None,
+    }
 }
 
 async fn start_keepalive_observer() -> (
@@ -301,8 +294,8 @@ async fn global_failover_respects_weight_against_extreme_rtt_gap() {
     .unwrap();
 
     set_tcp_status(&manager, 0, true, 100).await; // primary
-    set_tcp_status(&manager, 1, true, 2).await;   // low (much faster)
-    set_tcp_status(&manager, 2, true, 50).await;  // regular
+    set_tcp_status(&manager, 1, true, 2).await; // low (much faster)
+    set_tcp_status(&manager, 2, true, 50).await; // regular
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let _ = manager.tcp_candidates(&target).await;
@@ -349,8 +342,8 @@ async fn global_failover_prefers_higher_weight_over_better_rtt() {
     .unwrap();
 
     set_tcp_status(&manager, 0, true, 100).await; // primary, 100ms
-    set_tcp_status(&manager, 1, true, 10).await;  // low, 10ms (fastest!)
-    set_tcp_status(&manager, 2, true, 50).await;  // regular, 50ms
+    set_tcp_status(&manager, 1, true, 10).await; // low, 10ms (fastest!)
+    set_tcp_status(&manager, 2, true, 50).await; // regular, 50ms
 
     let target = TargetAddr::Domain("example.com".to_string(), 443);
     let initial = manager.tcp_candidates(&target).await;
@@ -1299,10 +1292,8 @@ async fn standby_tcp_keepalive_sends_ping_and_preserves_pool_entry() {
 fn deduplicate_attempted_uplink_names_preserves_order_without_duplicates() {
     use crate::manager::deduplicate_attempted_uplink_names;
 
-    let result = deduplicate_attempted_uplink_names(
-        ["nuxt", "aeza", "nuxt"].iter().copied(),
-        "aeza",
-    );
+    let result =
+        deduplicate_attempted_uplink_names(["nuxt", "aeza", "nuxt"].iter().copied(), "aeza");
     assert_eq!(result, vec!["nuxt", "aeza"]);
 }
 
@@ -1310,10 +1301,7 @@ fn deduplicate_attempted_uplink_names_preserves_order_without_duplicates() {
 fn deduplicate_attempted_uplink_names_includes_current_when_not_seen() {
     use crate::manager::deduplicate_attempted_uplink_names;
 
-    let result = deduplicate_attempted_uplink_names(
-        ["nuxt"].iter().copied(),
-        "aeza",
-    );
+    let result = deduplicate_attempted_uplink_names(["nuxt"].iter().copied(), "aeza");
     assert_eq!(result, vec!["nuxt", "aeza"]);
 }
 

@@ -1,20 +1,20 @@
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex as SyncMutex;
-use tokio::sync::{watch, Mutex, Notify, RwLock, Semaphore};
+use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
 use outline_transport::WsTransportStream;
 use socks5_proto::TargetAddr;
 
+use super::routing_key::transport_key_prefix;
 use super::state::StateStore;
-use super::utils::transport_key_prefix;
 
 /// Runtime handle for a configured uplink. Cheap to clone (shared `Arc`).
 /// Exists to distinguish a runtime-attached uplink reference from the raw
