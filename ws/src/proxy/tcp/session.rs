@@ -28,7 +28,9 @@ pub(super) enum UplinkOutcome {
     /// tearing down the upstream side eagerly on client EOF is actually
     /// correct).  Not currently emitted from the SOCKS CONNECT path — see the
     /// comment on client EOF in the uplink task for why we now wait for the
-    /// downlink to finish naturally instead.
+    /// downlink to finish naturally instead. Constructed only in tests; the
+    /// production drive loop matches it but never emits it, hence the
+    /// `dead_code` allow.
     #[allow(dead_code)]
     CloseSession,
 }
