@@ -225,7 +225,7 @@ async fn run_udp_probe(
         downgraded_from = downgraded_from.or(marker);
     }
     if let Some(dns_probe) = &probe.dns {
-        let ok = record_attempt(
+        let (ok, marker) = record_attempt(
             group,
             &uplink.name,
             "udp",
@@ -240,6 +240,7 @@ async fn run_udp_probe(
             ),
         )
         .await?;
+        downgraded_from = downgraded_from.or(marker);
         return Ok((ok, true, Some(started.elapsed()), downgraded_from));
     }
     if probe.ws.enabled {
