@@ -12,8 +12,7 @@ use tracing::debug;
 use outline_metrics as metrics;
 use outline_transport::{
     TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, WsTransportStream,
-    connect_shadowsocks_udp_with_source, connect_websocket_with_resume,
-    connect_websocket_with_source, global_resume_cache,
+    connect_shadowsocks_udp_with_source, connect_websocket_with_resume, global_resume_cache,
 };
 
 use crate::config::UplinkTransport;
