@@ -1,0 +1,8 @@
+# Used by tools that respect the `ignore` crate (cargo-machete, ripgrep, fd).
+# Vendored third-party code lives here — its dependency hygiene is the
+# upstream maintainer's responsibility, not ours, and walking these trees
+# from the workspace root drowns the real audit results in noise.
+#
+# Override locally with `rg --no-ignore`, `fd --no-ignore`, or by passing
+# explicit paths to cargo-machete (e.g. `cargo machete vendor/sockudo-ws`).
+*
