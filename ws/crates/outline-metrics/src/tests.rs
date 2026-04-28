@@ -17,8 +17,11 @@ fn empty_snapshot() -> UplinkManagerSnapshot {
         load_balancing_mode: "active_active".to_string(),
         routing_scope: "per_flow".to_string(),
         global_active_uplink: None,
+        global_active_reason: None,
         tcp_active_uplink: None,
+        tcp_active_reason: None,
         udp_active_uplink: None,
+        udp_active_reason: None,
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
         auto_failback: false,
@@ -241,8 +244,11 @@ fn render_prometheus_exports_routing_selection_info() {
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
         global_active_uplink: Some("senko".to_string()),
+        global_active_reason: None,
         tcp_active_uplink: None,
+        tcp_active_reason: None,
         udp_active_uplink: None,
+        udp_active_reason: None,
         uplinks: Vec::new(),
         sticky_routes: Vec::new(),
         auto_failback: false,
@@ -273,8 +279,11 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
         global_active_uplink: Some("senko".to_string()),
+        global_active_reason: None,
         tcp_active_uplink: None,
+        tcp_active_reason: None,
         udp_active_uplink: None,
+        udp_active_reason: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
         auto_failback: false,
@@ -287,8 +296,11 @@ fn render_prometheus_clears_previous_global_active_uplink() {
         load_balancing_mode: "active_passive".to_string(),
         routing_scope: "global".to_string(),
         global_active_uplink: Some("nuxt".to_string()),
+        global_active_reason: None,
         tcp_active_uplink: None,
+        tcp_active_reason: None,
         udp_active_uplink: None,
+        udp_active_reason: None,
         uplinks: vec![snapshot_uplink("senko"), snapshot_uplink("nuxt")],
         sticky_routes: Vec::new(),
         auto_failback: false,
@@ -303,6 +315,7 @@ fn render_prometheus_clears_previous_global_active_uplink() {
     ));
 }
 
+#[cfg(feature = "tun")]
 #[test]
 fn init_exports_zero_value_tun_udp_forward_error_series() {
     let _guard = test_guard();
@@ -352,6 +365,7 @@ fn init_exports_zero_value_tun_udp_forward_error_series() {
     assert!(rendered.contains("outline_ws_rust_tun_ip_fragment_sets_active{ip_family=\"ipv6\"}"));
 }
 
+#[cfg(feature = "tun")]
 #[test]
 fn render_prometheus_exports_ipv6_fragment_activity_counters() {
     let _guard = test_guard();
