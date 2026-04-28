@@ -26,7 +26,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex as SyncMutex, RwLock as SyncRwLock};
@@ -510,11 +510,15 @@ impl VlessUdpTransport {
     /// the Session ID the server assigned via `X-Outline-Session` so
     /// the caller can stash it for the next reconnect.
     ///
-    /// Returns `(transport, Option<SessionId>)`. Today's only
-    /// production caller of single-target VLESS UDP is the probe path;
-    /// regular VLESS UDP traffic is multiplexed through
-    /// [`VlessUdpSessionMux`], which doesn't yet participate in
-    /// resumption.
+    /// Returns `(transport, issued_session_id, downgraded_from)`:
+    /// - `issued_session_id` is `Some` iff the server's WS Upgrade response
+    ///   carried `X-Outline-Session`.
+    /// - `downgraded_from` is `Some(requested_mode)` iff the underlying
+    ///   `connect_websocket_with_resume` produced a stream at a lower mode
+    ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
+    ///   fallback). The `VlessUdpSessionMux` reports this through its
+    ///   `on_downgrade` hook so the uplink-manager mirrors the downgrade
+    ///   into its per-uplink `h3_downgrade_until` window.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_resume(
         cache: &DnsCache,
@@ -527,7 +531,7 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>)> {
+    ) -> Result<(Self, Option<SessionId>, Option<WsTransportMode>)> {
         let ws_stream = connect_websocket_with_resume(
             cache,
             url,
@@ -539,12 +543,13 @@ impl VlessUdpTransport {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        // Snapshot the assigned Session ID before the VLESS framing
-        // layer takes ownership of the stream — the SessionId is on
-        // the WS Upgrade response, not on the inner VLESS handshake.
+        // Snapshot the assigned Session ID and downgrade marker before
+        // the VLESS framing layer takes ownership of the stream — both
+        // sit on the WS Upgrade response, not on the inner VLESS handshake.
         let issued = ws_stream.issued_session_id();
+        let downgraded_from = ws_stream.downgraded_from();
         let transport = Self::from_websocket(ws_stream, uuid, target, source, keepalive_interval);
-        Ok((transport, issued))
+        Ok((transport, issued, downgraded_from))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
@@ -671,6 +676,17 @@ impl Default for VlessUdpMuxLimits {
     }
 }
 
+/// Synchronous callback fired by the mux the first time a per-target dial
+/// silently downgrades from H3 to H2/H1 (host-level `ws_mode_cache` clamp
+/// or inline H3-handshake fallback inside `connect_websocket_with_resume`).
+/// Receives the originally-requested mode so the uplink-manager caller can
+/// record it via `note_silent_transport_fallback`. Distinct from the
+/// QUIC-only `vless_udp_hybrid::FallbackNotifier` which carries an error
+/// (the QUIC dial actually failed); here the dial succeeded but at a lower
+/// mode, so passing the requested mode directly is cleaner than synthesising
+/// an error to extract the mode from.
+pub type VlessUdpDowngradeNotifier = Arc<dyn Fn(WsTransportMode) + Send + Sync>;
+
 pub struct VlessUdpSessionMux {
     dial: VlessUdpSessionDialer,
     limits: VlessUdpMuxLimits,
@@ -699,6 +715,16 @@ pub struct VlessUdpSessionMux {
     close_signal: watch::Sender<bool>,
     _janitor_task: Option<AbortOnDrop>,
     _lifetime: Arc<UpstreamTransportGuard>,
+    /// Optional hook fired the first time a per-target dial returns a
+    /// stream that was silently downgraded from H3 to H2/H1 by the
+    /// transport layer. Latched: subsequent downgraded dials are
+    /// suppressed by `downgrade_reported` so we don't spam the
+    /// uplink-manager once per target. Set via [`Self::with_on_downgrade`].
+    on_downgrade: Option<VlessUdpDowngradeNotifier>,
+    /// Latch for `on_downgrade`: ensures the notifier fires at most once
+    /// per mux instance regardless of how many per-target sessions are
+    /// dialed during the H3 outage.
+    downgrade_reported: AtomicBool,
 }
 
 /// Captured connection parameters used to dial a new per-target VLESS UDP
@@ -716,7 +742,7 @@ struct VlessUdpSessionDialer {
     keepalive_interval: Option<Duration>,
 }
 
-struct VlessUdpSessionEntry {
+pub(crate) struct VlessUdpSessionEntry {
     transport: Arc<VlessUdpWsTransport>,
     /// Wall-clock origin for `last_use_ns`. Captured once at session
     /// creation; the entry's lifespan is bounded by
@@ -856,7 +882,22 @@ impl VlessUdpSessionMux {
             close_signal,
             _janitor_task: janitor_task,
             _lifetime: UpstreamTransportGuard::new(source, "udp"),
+            on_downgrade: None,
+            downgrade_reported: AtomicBool::new(false),
         }
+    }
+
+    /// Attach a downgrade-detection hook fired the first time a per-target
+    /// dial returns a stream that was silently downgraded from H3 to H2/H1
+    /// by the transport layer (host-level `ws_mode_cache` clamp or inline
+    /// fallback inside `connect_websocket_with_resume`). Latched: fires at
+    /// most once per mux instance regardless of how many subsequent dials
+    /// also see the downgrade. Without this, `effective_udp_ws_mode` keeps
+    /// reporting H3 in the uplink-manager while every actual session dial
+    /// is silently clamped to H2 — the "vless/ws/h3 stays put" symptom.
+    pub fn with_on_downgrade(mut self, hook: Option<VlessUdpDowngradeNotifier>) -> Self {
+        self.on_downgrade = hook;
+        self
     }
 
     /// Send a SOCKS5-framed UDP payload (`atyp || addr || port || data`).
@@ -908,7 +949,10 @@ impl VlessUdpSessionMux {
         self.sessions.read().values().filter(|s| s.entry().is_some()).count()
     }
 
-    async fn session_for(&self, target: &TargetAddr) -> Result<Arc<VlessUdpSessionEntry>> {
+    pub(crate) async fn session_for(
+        &self,
+        target: &TargetAddr,
+    ) -> Result<Arc<VlessUdpSessionEntry>> {
         // Fast path: populated slot for this target. Concurrent senders
         // to *different* targets share a read guard so they don't
         // serialize, and `entry.touch()` updates the LRU timestamp
@@ -964,24 +1008,39 @@ impl VlessUdpSessionMux {
         let dial_outcome = slot
             .cell
             .get_or_try_init(|| async {
-                let (raw_transport, issued) = VlessUdpWsTransport::connect_with_resume(
-                    &self.dial.dns_cache,
-                    &self.dial.url,
-                    self.dial.mode,
-                    &self.dial.uuid,
-                    &target_for_dial,
-                    self.dial.fwmark,
-                    self.dial.ipv6_first,
-                    self.dial.source,
-                    self.dial.keepalive_interval,
-                    resume_request,
-                )
-                .await
-                .with_context(|| TransportOperation::Connect {
-                    target: format!("vless udp session to {target_for_dial}"),
-                })?;
+                let (raw_transport, issued, downgraded_from) =
+                    VlessUdpWsTransport::connect_with_resume(
+                        &self.dial.dns_cache,
+                        &self.dial.url,
+                        self.dial.mode,
+                        &self.dial.uuid,
+                        &target_for_dial,
+                        self.dial.fwmark,
+                        self.dial.ipv6_first,
+                        self.dial.source,
+                        self.dial.keepalive_interval,
+                        resume_request,
+                    )
+                    .await
+                    .with_context(|| TransportOperation::Connect {
+                        target: format!("vless udp session to {target_for_dial}"),
+                    })?;
                 if let Some(id) = issued {
                     resume_ids_for_dial.write().insert(target_for_dial.clone(), id);
+                }
+                // Mirror a transport-level WS-mode downgrade (clamp or inline
+                // H3→H2/H1 fallback) into the uplink-manager via the latched
+                // hook. The compare_exchange ensures the notifier fires at
+                // most once per mux instance even if multiple per-target
+                // dials race during the same H3 outage window.
+                if let Some(requested) = downgraded_from
+                    && let Some(hook) = self.on_downgrade.as_ref()
+                    && self
+                        .downgrade_reported
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok()
+                {
+                    hook(requested);
                 }
                 let transport = Arc::new(raw_transport);
                 let reader_task = spawn_vless_udp_session_reader(
