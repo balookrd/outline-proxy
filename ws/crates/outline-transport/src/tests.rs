@@ -348,3 +348,58 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
         "hook must latch — only fire once per mux instance"
     );
 }
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
+    use crate::vless::{VlessUdpDowngradeNotifier, VlessUdpSessionMux};
+    use socks5_proto::TargetAddr;
+    use std::net::Ipv4Addr;
+
+    // First downgrade — hook fires, latch flips to true.
+    let server = TestH2Server::start().await;
+    let url = server.url();
+    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_for_hook = Arc::clone(&counter);
+    let hook: VlessUdpDowngradeNotifier = Arc::new(move |_requested: WsTransportMode| {
+        counter_for_hook.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let mux = VlessUdpSessionMux::new(
+        Arc::new(DnsCache::default()),
+        url,
+        WsTransportMode::H3,
+        [0u8; 16],
+        None,
+        false,
+        "test_vless_recovery",
+        None,
+    )
+    .with_on_downgrade(Some(hook));
+
+    let target1 = TargetAddr::IpV4(Ipv4Addr::new(127, 0, 0, 1), 9999);
+    let _ = mux.session_for(&target1).await;
+    assert_eq!(counter.load(Ordering::SeqCst), 1);
+    assert!(mux.downgrade_latch_for_test());
+
+    // Recovery: simulate `downgraded_from = None` by resetting the latch.
+    // The Mux runs this branch automatically whenever a per-target dial
+    // succeeds at the requested mode (real H3 came back); we drive it via
+    // the test-only helper because there's no public API to clear an
+    // entry from `ws_mode_cache` on demand.
+    mux.force_reset_downgrade_latch_for_test();
+    assert!(!mux.downgrade_latch_for_test());
+
+    // A subsequent downgrade during the *same* mux instance must refire
+    // the hook now that the latch has been cleared.
+    let target2 = TargetAddr::IpV4(Ipv4Addr::new(127, 0, 0, 1), 9998);
+    let _ = mux.session_for(&target2).await;
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        2,
+        "after the recovery branch resets the latch, a fresh downgrade must fire the hook again"
+    );
+    assert!(mux.downgrade_latch_for_test());
+}
