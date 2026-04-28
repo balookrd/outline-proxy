@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -88,10 +89,13 @@ struct UdpSessionState {
     /// slots without trampling a concurrently-reconnected stream.
     stream_id: u64,
     /// NAT keys this stream is the active outbound responder of.
-    /// Pushed on every successful `register_session`; drained on
-    /// park-on-drop. Wrapped in a `parking_lot::Mutex` since the hot
-    /// path is per-datagram and async-await isn't needed.
-    nat_keys: Arc<Mutex<Vec<NatKey>>>,
+    /// Inserted on every successful `register_session`; drained on
+    /// park-on-drop. `HashSet` collapses the dedup check into a single
+    /// hash lookup — the previous `Vec<NatKey>` form did a linear
+    /// `contains()` under the lock on every datagram. Wrapped in a
+    /// `parking_lot::Mutex` since the hot path is per-datagram and
+    /// async-await isn't needed.
+    nat_keys: Arc<Mutex<HashSet<NatKey>>>,
     /// User the stream authenticated as (set once on the first
     /// successful AEAD decrypt). Captured early so park-on-drop can
     /// stash it as the parked entry's owner. `OnceLock` keeps the
@@ -172,12 +176,7 @@ async fn attempt_ss_udp_resume(
         }
     }
     if reattached > 0 {
-        let mut guard = session.nat_keys.lock();
-        for key in keys_for_self {
-            if !guard.contains(&key) {
-                guard.push(key);
-            }
-        }
+        session.nat_keys.lock().extend(keys_for_self);
         info!(
             user = %user_id,
             path,
@@ -332,16 +331,13 @@ where
         )
         .await;
     // Track the NAT key as one this stream owns, for park-on-drop.
-    {
-        let mut guard = session.nat_keys.lock();
-        if !guard.contains(&nat_key_for_session(&user_id, packet.user.fwmark(), resolved)) {
-            guard.push(NatKey {
-                user_id: Arc::clone(&user_id),
-                fwmark: packet.user.fwmark(),
-                target: resolved,
-            });
-        }
-    }
+    // `HashSet::insert` is a no-op on duplicates and avoids the linear
+    // scan that the prior `Vec` form paid on every datagram.
+    session.nat_keys.lock().insert(NatKey {
+        user_id: Arc::clone(&user_id),
+        fwmark: packet.user.fwmark(),
+        target: resolved,
+    });
 
     if payload.len() > MAX_UDP_PAYLOAD_SIZE {
         server.metrics.record_udp_oversized_datagram_dropped(
@@ -403,7 +399,7 @@ async fn run_udp_relay<T: WsSocket>(
         session_recorded: Arc::new(AtomicBool::new(false)),
         cached_user_index: Arc::new(AtomicUsize::new(UDP_CACHED_USER_INDEX_EMPTY)),
         stream_id: next_ss_udp_stream_id(),
-        nat_keys: Arc::new(Mutex::new(Vec::new())),
+        nat_keys: Arc::new(Mutex::new(HashSet::new())),
         authenticated_user_id: Arc::new(OnceLock::new()),
         pending_resume_request: Arc::new(Mutex::new(resume.requested_resume)),
         issued_session_id: resume.issued_session_id,
@@ -540,7 +536,7 @@ async fn park_ss_udp_stream_on_drop(
     let Some(owner) = session.authenticated_user_id.get().map(Arc::clone) else {
         return; // Stream never authenticated — nothing to park.
     };
-    let nat_keys: Vec<NatKey> = std::mem::take(&mut *session.nat_keys.lock());
+    let nat_keys: HashSet<NatKey> = std::mem::take(&mut *session.nat_keys.lock());
     if nat_keys.is_empty() {
         return;
     }
@@ -595,14 +591,4 @@ pub(in crate::server) async fn handle_udp_h3_connection(
     resume: ResumeContext,
 ) -> Result<()> {
     run_udp_relay::<H3Ws>(H3Ws(socket), server, route, resume).await
-}
-
-/// Helper that returns a `NatKey` triple under a single ergonomic
-/// call site — saves a few lines in the hot per-datagram path.
-fn nat_key_for_session(user_id: &Arc<str>, fwmark: Option<u32>, target: std::net::SocketAddr) -> NatKey {
-    NatKey {
-        user_id: Arc::clone(user_id),
-        fwmark,
-        target,
-    }
 }
