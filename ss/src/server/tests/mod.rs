@@ -1,18 +1,11 @@
-use std::{
-    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
-    sync::Arc,
-};
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::http::header;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, UdpSocket},
-};
+use tokio::net::UdpSocket;
 
-use super::connect::{connect_tcp_addrs, connect_tcp_target, sort_addrs_for_happy_eyeballs};
 use super::nat::NatTable;
 use super::setup::{UserRoute, build_vless_transport_route_map};
 use super::state::{RoutesSnapshot, UserKeySlice};
@@ -27,6 +20,8 @@ use crate::protocol::TargetAddr;
 use arc_swap::ArcSwap;
 
 mod auth;
+mod connect;
+mod dns_cache;
 mod h3;
 mod nat;
 mod raw_quic;
@@ -67,205 +62,6 @@ fn build_test_state(
         http_root_realm: http_root_realm.into(),
     });
     (routes, services, auth)
-}
-
-#[tokio::test]
-async fn tcp_ipv6_loopback_smoke() -> Result<()> {
-    let listener = match TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).await {
-        Ok(listener) => listener,
-        Err(error) if ipv6_unavailable(&error) => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    let addr = listener.local_addr()?;
-
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await?;
-        let mut buf = [0_u8; 4];
-        stream.read_exact(&mut buf).await?;
-        stream.write_all(b"pong").await?;
-        Result::<_, anyhow::Error>::Ok(buf)
-    });
-
-    let target = TargetAddr::Socket(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())));
-    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let mut client = connect_tcp_target(dns_cache.as_ref(), &target, None, false, None).await?;
-    client.write_all(b"ping").await?;
-
-    let mut reply = [0_u8; 4];
-    client.read_exact(&mut reply).await?;
-
-    assert_eq!(&reply, b"pong");
-    assert_eq!(server.await??, *b"ping");
-    Ok(())
-}
-
-#[test]
-fn tcp_connect_order_interleaves_ipv4_and_ipv6() {
-    let ordered = sort_addrs_for_happy_eyeballs(
-        &[
-            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
-            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),
-            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
-            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
-            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
-        ],
-        false,
-    );
-
-    assert_eq!(
-        ordered,
-        vec![
-            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 1], 443)),
-            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 10), 443)),
-            SocketAddr::from(([2001, 0xdb8, 0, 0, 0, 0, 0, 2], 443)),
-            SocketAddr::from((Ipv4Addr::new(203, 0, 113, 11), 443)),
-        ]
-    );
-}
-
-#[test]
-fn dns_cache_returns_fresh_entries_and_expires() {
-    let cache = DnsCache::new(std::time::Duration::from_millis(5));
-    let resolved = SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 53));
-    let entry: Arc<[SocketAddr]> = Arc::from(vec![resolved].into_boxed_slice());
-
-    cache.store("dns.google", 53, false, entry);
-    assert_eq!(cache.lookup_one("dns.google", 53, false), Some(resolved));
-
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    assert_eq!(cache.lookup_one("dns.google", 53, false), None);
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn dns_cache_singleflight_coalesces_concurrent_misses() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    let cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let invocations = Arc::new(AtomicUsize::new(0));
-    let barrier = Arc::new(tokio::sync::Barrier::new(16));
-
-    let resolved: Arc<[SocketAddr]> =
-        Arc::from(vec![SocketAddr::from((Ipv4Addr::new(10, 0, 0, 1), 443))].into_boxed_slice());
-
-    let mut handles = Vec::new();
-    for _ in 0..16 {
-        let cache = Arc::clone(&cache);
-        let invocations = Arc::clone(&invocations);
-        let barrier = Arc::clone(&barrier);
-        let resolved = Arc::clone(&resolved);
-        handles.push(tokio::spawn(async move {
-            barrier.wait().await;
-            cache
-                .resolve_or_join("slow.example", 443, false, |cache| {
-                    let invocations = Arc::clone(&invocations);
-                    let resolved = Arc::clone(&resolved);
-                    async move {
-                        invocations.fetch_add(1, Ordering::SeqCst);
-                        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                        cache.store("slow.example", 443, false, Arc::clone(&resolved));
-                        Ok(resolved)
-                    }
-                })
-                .await
-                .expect("resolve succeeds")
-        }));
-    }
-
-    for handle in handles {
-        let addrs = handle.await.expect("task joins");
-        assert_eq!(addrs.as_ref(), resolved.as_ref());
-    }
-
-    assert_eq!(invocations.load(Ordering::SeqCst), 1, "loader must run once");
-}
-
-#[tokio::test]
-async fn dns_cache_singleflight_propagates_errors() {
-    let cache = DnsCache::new(std::time::Duration::from_secs(30));
-    let err = cache
-        .resolve_or_join(
-            "fail.example",
-            443,
-            false,
-            |_| async move { Err(anyhow::anyhow!("boom")) },
-        )
-        .await
-        .unwrap_err();
-    assert!(format!("{err:#}").contains("boom"));
-
-    let resolved: Arc<[SocketAddr]> =
-        Arc::from(vec![SocketAddr::from((Ipv4Addr::new(10, 0, 0, 2), 1))].into_boxed_slice());
-    let resolved2 = Arc::clone(&resolved);
-    let ok = cache
-        .resolve_or_join("fail.example", 443, false, move |_| {
-            let resolved2 = Arc::clone(&resolved2);
-            async move { Ok(resolved2) }
-        })
-        .await
-        .expect("second call succeeds");
-    assert_eq!(ok.as_ref(), resolved.as_ref());
-}
-
-#[tokio::test]
-async fn tcp_connect_tries_next_resolved_address() -> Result<()> {
-    let blocked_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let blocked_addr = blocked_listener.local_addr()?;
-    drop(blocked_listener);
-
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    let addr = listener.local_addr()?;
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await?;
-        let mut buf = [0_u8; 4];
-        stream.read_exact(&mut buf).await?;
-        stream.write_all(b"pong").await?;
-        Result::<_, anyhow::Error>::Ok(buf)
-    });
-
-    let mut client = connect_tcp_addrs(&[blocked_addr, addr], None, None).await?;
-    client.write_all(b"ping").await?;
-
-    let mut reply = [0_u8; 4];
-    client.read_exact(&mut reply).await?;
-
-    assert_eq!(&reply, b"pong");
-    assert_eq!(server.await??, *b"ping");
-    Ok(())
-}
-
-#[tokio::test]
-async fn udp_ipv6_loopback_smoke() -> Result<()> {
-    let echo = match UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await {
-        Ok(s) => s,
-        Err(error) if ipv6_unavailable(&error) => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    let echo_addr = echo.local_addr()?;
-    let server = tokio::spawn(async move {
-        let mut buf = [0_u8; 64];
-        let (read, peer) = echo.recv_from(&mut buf).await?;
-        echo.send_to(&buf[..read], peer).await?;
-        Result::<_, anyhow::Error>::Ok(buf[..read].to_vec())
-    });
-
-    let client = UdpSocket::bind((Ipv6Addr::LOCALHOST, 0)).await?;
-    client.send_to(b"ping", echo_addr).await?;
-    let mut buf = [0_u8; 64];
-    let (read, source) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), client.recv_from(&mut buf))
-            .await??;
-
-    assert_eq!(source.ip(), Ipv6Addr::LOCALHOST);
-    assert_eq!(&buf[..read], b"ping");
-    assert_eq!(server.await??, b"ping");
-    Ok(())
-}
-
-fn ipv6_unavailable(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::AddrNotAvailable | std::io::ErrorKind::Unsupported
-    )
 }
 
 fn sample_config(listen: SocketAddr) -> Config {

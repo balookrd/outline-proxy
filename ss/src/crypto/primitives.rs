@@ -115,3 +115,7 @@ impl hkdf::KeyType for HkdfLen {
         self.0
     }
 }
+
+#[cfg(test)]
+#[path = "tests/primitives.rs"]
+mod tests;
