@@ -16,7 +16,6 @@ outline-metrics = { path = "../outline-metrics", default-features = false }
 outline-ss2022 = { path = "../outline-ss2022" }
 outline-transport = { path = "../outline-transport" }
 parking_lot = "0.12"
-rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 shadowsocks-crypto = { path = "../shadowsocks-crypto" }
 socks5-proto = { path = "../socks5-proto" }
