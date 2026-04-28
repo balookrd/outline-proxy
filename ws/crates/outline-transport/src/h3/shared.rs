@@ -325,7 +325,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         "h3"
     }
 
-    fn try_all_dns_addrs(&self) -> bool {
+    fn multi_address_failover_enabled(&self) -> bool {
         true
     }
 
