@@ -17,7 +17,7 @@ pub(in crate::server) fn ensure_rustls_provider_installed() {
     });
 }
 
-pub(super) fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
+pub(in crate::server) fn load_h3_tls_config(config: &Config) -> Result<rustls::ServerConfig> {
     let cert_path = config
         .h3_cert_path
         .as_deref()
