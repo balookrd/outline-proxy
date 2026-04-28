@@ -113,6 +113,8 @@ pub mod quic;
 mod quic_connect;
 #[cfg(feature = "quic")]
 mod vless_quic_mux;
+#[cfg(feature = "quic")]
+mod vless_udp_hybrid;
 pub mod frame_io;
 #[cfg(feature = "quic")]
 mod frame_io_quic;
@@ -176,6 +178,8 @@ pub use quic_connect::{
 };
 #[cfg(feature = "quic")]
 pub use vless_quic_mux::VlessUdpQuicMux;
+#[cfg(feature = "quic")]
+pub use vless_udp_hybrid::{FallbackNotifier, VlessUdpHybridMux, WsFallbackFactory};
 pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpMuxLimits, VlessUdpSessionMux, VlessUdpWsTransport,
 };

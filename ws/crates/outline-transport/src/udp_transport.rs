@@ -315,10 +315,12 @@ impl UdpWsTransport {
 pub enum UdpSessionTransport {
     Ss(UdpWsTransport),
     Vless(crate::vless::VlessUdpSessionMux),
-    /// VLESS UDP over raw QUIC — multiple targets multiplexed on a
-    /// shared QUIC connection by server-allocated `session_id`.
+    /// VLESS UDP over raw QUIC, wrapped in a hybrid envelope that pivots
+    /// to WS over H2 if the QUIC path fails before any session succeeds.
+    /// Multiple targets are multiplexed on a shared QUIC connection by
+    /// server-allocated `session_id` while QUIC is active.
     #[cfg(feature = "quic")]
-    VlessQuic(crate::vless_quic_mux::VlessUdpQuicMux),
+    VlessQuic(crate::vless_udp_hybrid::VlessUdpHybridMux),
 }
 
 impl UdpSessionTransport {

@@ -368,7 +368,7 @@ impl UplinkManager {
             let mode = self.effective_udp_ws_mode(candidate.index).await;
             #[cfg(feature = "quic")]
             if mode == outline_transport::WsTransportMode::Quic {
-                let mux = outline_transport::VlessUdpQuicMux::new(
+                let quic_mux = outline_transport::VlessUdpQuicMux::new(
                     Arc::clone(&self.inner.dns_cache),
                     udp_ws_url.clone(),
                     uuid,
@@ -377,7 +377,47 @@ impl UplinkManager {
                     source,
                     self.inner.load_balancing.vless_udp_mux_limits,
                 );
-                return Ok(UdpSessionTransport::VlessQuic(mux));
+                // WS fallback factory: same uplink parameters as the QUIC
+                // mux, but mode forced to H2 — the H3-downgrade window
+                // recorded by the on_fallback callback below makes any
+                // fresh WS dial during the cooldown skip H3 anyway, so
+                // hard-coding H2 here keeps the post-fallback path
+                // deterministic instead of racing the cache update.
+                let dns_cache = Arc::clone(&self.inner.dns_cache);
+                let ws_url = udp_ws_url.clone();
+                let fwmark = candidate.uplink.fwmark;
+                let ipv6_first = candidate.uplink.ipv6_first;
+                let keepalive = self.inner.load_balancing.udp_ws_keepalive_interval;
+                let limits = self.inner.load_balancing.vless_udp_mux_limits;
+                let ws_factory: outline_transport::WsFallbackFactory = Box::new(move || {
+                    VlessUdpSessionMux::new_with_limits(
+                        dns_cache,
+                        ws_url,
+                        outline_transport::WsTransportMode::H2,
+                        uuid,
+                        fwmark,
+                        ipv6_first,
+                        source,
+                        keepalive,
+                        limits,
+                    )
+                });
+                let manager = self.clone();
+                let index = candidate.index;
+                let on_fallback: outline_transport::FallbackNotifier =
+                    Arc::new(move |error: &anyhow::Error| {
+                        manager.note_advanced_mode_dial_failure(
+                            index,
+                            TransportKind::Udp,
+                            error,
+                        );
+                    });
+                let hybrid = outline_transport::VlessUdpHybridMux::from_quic(
+                    quic_mux,
+                    ws_factory,
+                    Some(on_fallback),
+                );
+                return Ok(UdpSessionTransport::VlessQuic(hybrid));
             }
             let mux = VlessUdpSessionMux::new_with_limits(
                 Arc::clone(&self.inner.dns_cache),

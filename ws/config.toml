@@ -226,9 +226,7 @@ password = "Secret0"
 # (default builds). On dial / handshake failure raw-QUIC paths fall back
 # to WS over H2 (with H1 as a further fallback) and open an H3-downgrade
 # window so subsequent dials skip QUIC until the recovery probe confirms
-# QUIC is reachable again. Exception: VLESS-UDP raw-QUIC currently has no
-# fallback — failure surfaces as a normal uplink failure for the
-# classifier.
+# QUIC is reachable again.
 #
 # The dial URL is reused as the QUIC dial target — only host:port matter
 # (path is ignored on raw-QUIC), so any scheme works.
