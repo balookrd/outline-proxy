@@ -685,6 +685,15 @@ pub struct VlessUdpSessionMux {
     /// senders to *different* targets run their fast-path lookups in
     /// parallel.
     sessions: Arc<SyncRwLock<HashMap<TargetAddr, Arc<VlessUdpSessionSlot>>>>,
+    /// Session IDs the server assigned to each per-target VLESS-UDP-WS
+    /// session, keyed by target. On the *next* dial for the same
+    /// target the cached ID is presented as `X-Outline-Resume`, so a
+    /// feature-enabled outline-ss-rust server can re-attach the
+    /// parked `Arc<UdpSocket>` instead of binding a fresh source
+    /// port. The map is intentionally separate from the global
+    /// `outline_transport::ResumeCache` because a single uplink mux
+    /// fans out to many targets and each carries its own Session ID.
+    resume_ids: Arc<SyncRwLock<HashMap<TargetAddr, SessionId>>>,
     downlink_tx: mpsc::Sender<Result<Bytes>>,
     downlink_rx: AsyncMutex<mpsc::Receiver<Result<Bytes>>>,
     close_signal: watch::Sender<bool>,
@@ -841,6 +850,7 @@ impl VlessUdpSessionMux {
             },
             limits,
             sessions,
+            resume_ids: Arc::new(SyncRwLock::new(HashMap::new())),
             downlink_tx,
             downlink_rx: AsyncMutex::new(downlink_rx),
             close_signal,
@@ -943,29 +953,40 @@ impl VlessUdpSessionMux {
             );
             let _ = victim.transport.close().await;
         }
+        // Cross-transport resumption: present the previously-issued
+        // Session ID for this target so a feature-enabled server can
+        // re-attach its parked `Arc<UdpSocket>` instead of binding a
+        // fresh source port. Read under a short shared lock to keep
+        // the slow path's contention narrow.
+        let resume_request = self.resume_ids.read().get(target).copied();
+        let resume_ids_for_dial = Arc::clone(&self.resume_ids);
+        let target_for_dial = target.clone();
         let dial_outcome = slot
             .cell
             .get_or_try_init(|| async {
-                let transport = Arc::new(
-                    VlessUdpWsTransport::connect(
-                        &self.dial.dns_cache,
-                        &self.dial.url,
-                        self.dial.mode,
-                        &self.dial.uuid,
-                        target,
-                        self.dial.fwmark,
-                        self.dial.ipv6_first,
-                        self.dial.source,
-                        self.dial.keepalive_interval,
-                    )
-                    .await
-                    .with_context(|| TransportOperation::Connect {
-                        target: format!("vless udp session to {target}"),
-                    })?,
-                );
+                let (raw_transport, issued) = VlessUdpWsTransport::connect_with_resume(
+                    &self.dial.dns_cache,
+                    &self.dial.url,
+                    self.dial.mode,
+                    &self.dial.uuid,
+                    &target_for_dial,
+                    self.dial.fwmark,
+                    self.dial.ipv6_first,
+                    self.dial.source,
+                    self.dial.keepalive_interval,
+                    resume_request,
+                )
+                .await
+                .with_context(|| TransportOperation::Connect {
+                    target: format!("vless udp session to {target_for_dial}"),
+                })?;
+                if let Some(id) = issued {
+                    resume_ids_for_dial.write().insert(target_for_dial.clone(), id);
+                }
+                let transport = Arc::new(raw_transport);
                 let reader_task = spawn_vless_udp_session_reader(
                     Arc::clone(&transport),
-                    target.clone(),
+                    target_for_dial.clone(),
                     self.downlink_tx.clone(),
                     self.close_signal.subscribe(),
                 );
