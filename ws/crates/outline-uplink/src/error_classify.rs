@@ -217,5 +217,5 @@ pub(crate) fn classify_runtime_failure_signature(error: &Error) -> &'static str 
 }
 
 #[cfg(test)]
-#[path = "tests/error_text.rs"]
+#[path = "tests/error_classify.rs"]
 mod tests;

@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 use outline_metrics as metrics;
 
 use crate::config::UplinkTransport;
-use crate::error_text::StandbyProbeExpected;
+use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
 use crate::utils::maybe_shrink_vecdeque;
 
