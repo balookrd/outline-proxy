@@ -421,6 +421,7 @@ fn init_exports_zero_value_request_and_session_series() {
     ));
 }
 
+#[cfg(feature = "tun")]
 fn metric_value(rendered: &str, metric: &str) -> Option<f64> {
     rendered
         .lines()
