@@ -24,7 +24,7 @@ pub(super) async fn run_tcp_tunnel_probe(
     probe: &TcpProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: WsTransportMode,
-) -> Result<bool> {
+) -> Result<(bool, Option<WsTransportMode>)> {
     let target = if let Ok(ip) = probe.host.parse::<IpAddr>() {
         match ip {
             IpAddr::V4(v4) => TargetAddr::IpV4(v4, probe.port),
@@ -39,7 +39,7 @@ pub(super) async fn run_tcp_tunnel_probe(
     // the upstream stream. SS-AEAD requires it.
     let needs_socks5_target = uplink.transport != UplinkTransport::Vless;
     let target_wire = target.to_wire_bytes()?;
-    let (mut writer, mut reader) = connect_probe_tcp(
+    let (mut writer, mut reader, downgraded_from) = connect_probe_tcp(
         cache,
         uplink,
         &target,
@@ -64,7 +64,7 @@ pub(super) async fn run_tcp_tunnel_probe(
     .await;
 
     close_probe_tcp_writer(&uplink.name, "tcp", &mut writer).await;
-    result
+    result.map(|ok| (ok, downgraded_from))
 }
 
 /// I/O half of the TCP-tunnel probe: drives the connected (writer, reader)

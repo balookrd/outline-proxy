@@ -48,13 +48,13 @@ pub(crate) async fn probe_uplink(
     effective_tcp_mode: crate::config::WsTransportMode,
     effective_udp_mode: crate::config::WsTransportMode,
 ) -> Result<ProbeOutcome> {
-    let (tcp_ok, tcp_latency) = timeout(
+    let (tcp_ok, tcp_latency, tcp_downgraded_from) = timeout(
         probe.timeout,
         run_tcp_probe(cache, group, uplink, probe, Arc::clone(&dial_limit), effective_tcp_mode),
     )
     .await
     .map_err(|_| anyhow!("tcp probe timed out after {:?}", probe.timeout))??;
-    let (udp_ok, udp_applicable, udp_latency) = timeout(
+    let (udp_ok, udp_applicable, udp_latency, udp_downgraded_from) = timeout(
         probe.timeout,
         run_udp_probe(cache, group, uplink, probe, dial_limit, effective_udp_mode),
     )
@@ -67,6 +67,8 @@ pub(crate) async fn probe_uplink(
         udp_applicable,
         tcp_latency,
         udp_latency,
+        tcp_downgraded_from,
+        udp_downgraded_from,
     })
 }
 
@@ -77,8 +79,9 @@ async fn run_tcp_probe(
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: crate::config::WsTransportMode,
-) -> Result<(bool, Option<Duration>)> {
+) -> Result<(bool, Option<Duration>, Option<WsTransportMode>)> {
     let started = Instant::now();
+    let mut downgraded_from: Option<WsTransportMode> = None;
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
@@ -118,10 +121,11 @@ async fn run_tcp_probe(
                 },
             }
         };
-        record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
+        let marker = record_attempt(group, &uplink.name, "tcp", "ws", ws_attempt).await?;
+        downgraded_from = downgraded_from.or(marker);
     }
     if let Some(http_probe) = &probe.http {
-        let ok = record_attempt(
+        let (ok, marker) = record_attempt(
             group,
             &uplink.name,
             "tcp",
@@ -136,10 +140,11 @@ async fn run_tcp_probe(
             ),
         )
         .await?;
-        return Ok((ok, Some(started.elapsed())));
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
     }
     if let Some(tcp_probe) = &probe.tcp {
-        let ok = record_attempt(
+        let (ok, marker) = record_attempt(
             group,
             &uplink.name,
             "tcp",
@@ -154,12 +159,13 @@ async fn run_tcp_probe(
             ),
         )
         .await?;
-        return Ok((ok, Some(started.elapsed())));
+        downgraded_from = downgraded_from.or(marker);
+        return Ok((ok, Some(started.elapsed()), downgraded_from));
     }
     if probe.ws.enabled {
-        return Ok((true, Some(started.elapsed())));
+        return Ok((true, Some(started.elapsed()), downgraded_from));
     }
-    Ok((true, None))
+    Ok((true, None, downgraded_from))
 }
 
 async fn run_udp_probe(
@@ -169,12 +175,13 @@ async fn run_udp_probe(
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: crate::config::WsTransportMode,
-) -> Result<(bool, bool, Option<Duration>)> {
+) -> Result<(bool, bool, Option<Duration>, Option<WsTransportMode>)> {
     if !uplink.supports_udp() {
-        return Ok((false, false, None));
+        return Ok((false, false, None, None));
     }
 
     let started = Instant::now();
+    let mut downgraded_from: Option<WsTransportMode> = None;
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
@@ -214,7 +221,8 @@ async fn run_udp_probe(
                 },
             }
         };
-        record_attempt(group, &uplink.name, "udp", "ws", ws_attempt).await?;
+        let marker = record_attempt(group, &uplink.name, "udp", "ws", ws_attempt).await?;
+        downgraded_from = downgraded_from.or(marker);
     }
     if let Some(dns_probe) = &probe.dns {
         let ok = record_attempt(
@@ -232,10 +240,10 @@ async fn run_udp_probe(
             ),
         )
         .await?;
-        return Ok((ok, true, Some(started.elapsed())));
+        return Ok((ok, true, Some(started.elapsed()), downgraded_from));
     }
     if probe.ws.enabled {
-        return Ok((true, true, Some(started.elapsed())));
+        return Ok((true, true, Some(started.elapsed()), downgraded_from));
     }
-    Ok((true, true, None))
+    Ok((true, true, None, downgraded_from))
 }

@@ -23,7 +23,7 @@ pub(super) async fn run_http_probe(
     probe: &HttpProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_tcp_mode: WsTransportMode,
-) -> Result<bool> {
+) -> Result<(bool, Option<WsTransportMode>)> {
     if probe.url.scheme() != "http" {
         bail!("only http:// probe URLs are currently supported");
     }
@@ -62,7 +62,7 @@ pub(super) async fn run_http_probe(
     // the SOCKS5 wire form as the first decrypted bytes, so it still gets it.
     let needs_socks5_target = uplink.transport != UplinkTransport::Vless;
     let target_wire = target.to_wire_bytes()?;
-    let (mut writer, mut reader) = connect_probe_tcp(
+    let (mut writer, mut reader, downgraded_from) = connect_probe_tcp(
         cache,
         uplink,
         &target,
@@ -93,7 +93,7 @@ pub(super) async fn run_http_probe(
         "closing probe transport after HTTP probe"
     );
     close_probe_tcp_writer(&uplink.name, "http", &mut writer).await;
-    result
+    result.map(|ok| (ok, downgraded_from))
 }
 
 /// I/O half of the HTTP probe: drives the already-connected (writer, reader)

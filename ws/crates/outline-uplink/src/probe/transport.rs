@@ -24,9 +24,16 @@ use outline_transport::{
 use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
 
 /// Connects a probe's Shadowsocks TCP stream (WebSocket or direct socket) and
-/// returns the framed writer/reader halves.  `source` is the connect-source
-/// tag that propagates into transport metrics and trace spans; `probe_label`
-/// is used only to build human-readable error contexts.
+/// returns the framed writer/reader halves plus a downgrade marker.  `source`
+/// is the connect-source tag that propagates into transport metrics and trace
+/// spans; `probe_label` is used only to build human-readable error contexts.
+///
+/// The third tuple element is `Some(requested_mode)` iff the underlying
+/// `connect_websocket_with_source` returned a stream at a lower mode than
+/// asked for (host-level `ws_mode_cache` clamp or inline H3→H2/H1 fallback).
+/// The probe orchestrator surfaces this through `ProbeOutcome` so the
+/// uplink-manager can mirror the downgrade into its per-uplink window even
+/// though the probe itself succeeded.
 pub(super) async fn connect_probe_tcp(
     cache: &DnsCache,
     uplink: &UplinkConfig,
@@ -35,7 +42,7 @@ pub(super) async fn connect_probe_tcp(
     probe_label: &str,
     effective_tcp_mode: WsTransportMode,
     dial_limit: Arc<Semaphore>,
-) -> Result<(TcpWriter, TcpReader)> {
+) -> Result<(TcpWriter, TcpReader, Option<WsTransportMode>)> {
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let _permit = dial_limit
@@ -71,7 +78,9 @@ pub(super) async fn connect_probe_tcp(
                 .with_context(|| TransportOperation::Connect {
                     target: format!("{probe_label} vless quic for uplink {}", uplink.name),
                 })?;
-                Ok((TcpWriter::Vless(w), TcpReader::Vless(r)))
+                // Raw QUIC bypasses the WS layer, so there is no
+                // `ws_mode_cache` clamp to surface here.
+                Ok((TcpWriter::Vless(w), TcpReader::Vless(r), None))
             }
             UplinkTransport::Ws => {
                 let (w, r) = outline_transport::connect_ss_tcp_quic(
@@ -90,7 +99,7 @@ pub(super) async fn connect_probe_tcp(
                 })?;
                 let request_salt = w.request_salt();
                 let r = r.with_request_salt(request_salt);
-                Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r)))
+                Ok((TcpWriter::QuicSs(w), TcpReader::QuicSs(r), None))
             }
             _ => unreachable!(),
         };
@@ -113,6 +122,7 @@ pub(super) async fn connect_probe_tcp(
             .with_context(|| TransportOperation::Connect {
                 target: format!("{probe_label} websocket for uplink {}", uplink.name),
             })?;
+            let downgraded_from = ws_stream.downgraded_from();
             let shared_conn_info = ws_stream.shared_connection_info();
             let (ws_sink, ws_stream) = ws_stream.split();
             let (writer, ctrl_tx) = TcpShadowsocksWriter::connect(
@@ -138,7 +148,7 @@ pub(super) async fn connect_probe_tcp(
             )
             .with_request_salt(request_salt)
             .with_diag(diag);
-            Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader)))
+            Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader), downgraded_from))
         },
         UplinkTransport::Vless => {
             let ws_stream = connect_websocket_with_source(
@@ -156,6 +166,7 @@ pub(super) async fn connect_probe_tcp(
             .with_context(|| TransportOperation::Connect {
                 target: format!("{probe_label} vless websocket for uplink {}", uplink.name),
             })?;
+            let downgraded_from = ws_stream.downgraded_from();
             let shared_conn_info = ws_stream.shared_connection_info();
             let uuid = uplink
                 .vless_id
@@ -175,7 +186,7 @@ pub(super) async fn connect_probe_tcp(
                 diag,
                 None,
             );
-            Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader)))
+            Ok((TcpWriter::Vless(writer), TcpReader::Vless(reader), downgraded_from))
         },
         UplinkTransport::Shadowsocks => {
             let stream = connect_shadowsocks_tcp_with_source(
@@ -207,7 +218,8 @@ pub(super) async fn connect_probe_tcp(
                 lifetime,
             )
             .with_request_salt(request_salt);
-            Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader)))
+            // Direct shadowsocks socket has no WS layer to downgrade.
+            Ok((TcpWriter::Socket(writer), TcpReader::Socket(reader), None))
         },
     }
 }

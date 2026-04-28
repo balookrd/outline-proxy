@@ -319,6 +319,16 @@ pub(crate) struct ProbeOutcome {
     pub(crate) udp_applicable: bool,
     pub(crate) tcp_latency: Option<Duration>,
     pub(crate) udp_latency: Option<Duration>,
+    /// `Some(requested)` when any TCP probe sub-attempt produced a stream
+    /// at a lower mode than asked for (host-level `ws_mode_cache` clamp or
+    /// inline H3→H2/H1 fallback inside `connect_websocket_with_resume`).
+    /// `None` when the dial path matched the requested mode. Surfaced from
+    /// the probe layer so the manager mirrors the downgrade into the
+    /// per-uplink `h3_downgrade_until` window even when the probe itself
+    /// succeeded — without this, `effective_*_ws_mode` would silently lag
+    /// behind the actual transport state.
+    pub(crate) tcp_downgraded_from: Option<crate::config::WsTransportMode>,
+    pub(crate) udp_downgraded_from: Option<crate::config::WsTransportMode>,
 }
 
 #[derive(Clone)]
