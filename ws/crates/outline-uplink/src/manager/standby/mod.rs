@@ -504,6 +504,11 @@ impl UplinkManager {
         let udp_ws_url = candidate.uplink.udp_ws_url.as_ref().ok_or_else(|| {
             anyhow!("udp_ws_url is not configured for uplink {}", candidate.uplink.name)
         })?;
+        // `mode` is only reassigned inside the `#[cfg(feature = "quic")]`
+        // block below, so without the feature `mut` is technically unneeded —
+        // but stripping `mut` would break the quic build. Suppress the
+        // warning instead of duplicating the binding under cfg.
+        #[cfg_attr(not(feature = "quic"), allow(unused_mut))]
         let mut mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
         #[cfg(feature = "quic")]
