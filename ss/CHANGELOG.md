@@ -50,6 +50,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Migrated the metrics stack to `metrics` and `metrics-exporter-prometheus`.
 - Decoupled UDP NAT internals from transport-specific response handling.
 - Continued hot-path optimization work across DNS cache, crypto, route maps, and metrics labels to reduce allocations and lock contention, including a cached monotonic clock (shared atomic) and read-locked fast paths for NAT entry lookup and replay-window checks.
+- Sharded the SS-2022 UDP session-key cache into 16 independent LRU partitions keyed by an FNV-1a mix of `(user_index, salt[..8])`. The previous single-mutex LRU serialized every UDP datagram across all worker threads — at thousands of packets per second the lock acquire itself surfaced as decrypt-path jitter, with back-to-back hits on unrelated `(user, salt)` pairs blocking each other. Lookups and inserts now touch only one shard, dropping the contention floor by 16× without any change to the public API; the configured total capacity is divided evenly between shards (rounded up).
 - Unified parts of server logging and general internal naming for clarity.
 - Reduced TCP upstream connect timeout from 10s to 5s.
 - Relaxed systemd sandbox to allow `AF_NETLINK` so `getifaddrs` works for outbound IPv6 interface selection.
@@ -69,6 +70,7 @@ Changes after `v1.0.2` (2026-04-12):
 - Fixed config validation so `h3_max_concurrent_uni_streams` must be non-zero.
 - Fixed `outbound_ipv6_interface` to bind to the addresses actually assigned to the interface instead of random hosts inside their /64, so inbound return traffic works under ordinary SLAAC/DHCPv6 without AnyIP routes or NDP proxying. Pairs with kernel privacy extensions (`use_tempaddr=2`) for per-connection source rotation.
 - Fixed VLESS over HTTP/3: the H3 router never inspected the VLESS path set, so Extended CONNECT requests to any configured `vless_ws_path` were answered with 404. VLESS is now routed on H3 with parity to Axum (TCP, UDP, mux.cool/XUDP).
+- Fixed the HTTP listener drain timer firing 10 s after startup regardless of any shutdown signal. The previous attempt to bound `axum::serve` shutdown wrapped the entire serve future in a `tokio::time::timeout`, so plain HTTP and metrics listeners died on every fresh start with `connections did not drain within shutdown timeout` in the journal. The drain bound now races the serve future against a `shutdown.cancelled().then(sleep(10s))` future, so the 10-second cap only applies after `SIGTERM`/`SIGINT` actually fires.
 
 ## 1.0.2 - 2026-04-12
 
