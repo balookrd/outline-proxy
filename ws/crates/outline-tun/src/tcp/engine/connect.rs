@@ -132,7 +132,26 @@ async fn connect_tcp_uplink(
     {
         let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
         if mode == outline_transport::WsTransportMode::Quic {
-            return uplinks.connect_tcp_quic_fresh(candidate, target, "tun_tcp").await;
+            match uplinks.connect_tcp_quic_fresh(candidate, target, "tun_tcp").await {
+                Ok(pair) => return Ok(pair),
+                Err(e) => {
+                    warn!(
+                        uplink = %candidate.uplink.name,
+                        target = %target,
+                        error = %format!("{e:#}"),
+                        fallback = "ws/h2",
+                        "raw-QUIC TCP dial failed, falling back to WS over H2"
+                    );
+                    uplinks.note_advanced_mode_dial_failure(
+                        candidate.index,
+                        TransportKind::Tcp,
+                        &e,
+                    );
+                    // Fall through to the WS path below; effective_tcp_ws_mode
+                    // will now return H2 for the rest of the downgrade window,
+                    // and connect_websocket_with_source handles H2 → H1.
+                }
+            }
         }
     }
 
