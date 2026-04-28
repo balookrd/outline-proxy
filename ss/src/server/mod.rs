@@ -26,6 +26,7 @@ mod auth;
 mod bootstrap;
 mod connect;
 mod constants;
+mod h3;
 #[cfg(feature = "control")]
 mod control;
 #[cfg(feature = "control")]
@@ -58,9 +59,10 @@ use self::{
 
 use self::{
     bootstrap::{
-        build_app, build_metrics_app, ensure_rustls_provider_installed, serve_h3_server,
-        serve_metrics_listener, serve_tcp_listener,
+        build_app, build_metrics_app, ensure_rustls_provider_installed, serve_metrics_listener,
+        serve_tcp_listener,
     },
+    h3::serve_h3_server,
     setup::{describe_user_routes, describe_vless_user_routes},
     shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},

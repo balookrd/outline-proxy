@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, UdpSocket};
 
 use crate::config::Config;
 
-use super::bootstrap::build_h3_server;
+use super::h3::build_h3_server;
 
 pub(super) struct Bound {
     pub(super) listener: Option<TcpListener>,
