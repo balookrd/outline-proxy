@@ -4,30 +4,30 @@
 
 Этот changelog подготовлен ретроспективно по git-тегам и истории коммитов репозитория. Он фиксирует пользовательские и эксплуатационные изменения, а не перечисляет каждый отдельный коммит.
 
-В репозитории также есть rolling-тег `nightly`, но верхний раздел ниже описывает текущее состояние ветки после `v1.1.0`, а не изменяемый тег.
+В репозитории также есть rolling-тег `nightly`, но верхний раздел ниже описывает текущее состояние ветки после `v1.2.0`, а не изменяемый тег.
 
 ---
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
 
-## [Unreleased] - изменения после `v1.1.0` (по состоянию на 2026-04-24)
+## [Unreleased] - изменения после `v1.2.0` (по состоянию на 2026-04-28)
 
 ### Добавлено
 
-- Возобновление сессии между транспортами — клиентская сторона, end-to-end. Запросы WebSocket Upgrade поверх HTTP/1.1, HTTP/2 и HTTP/3 несут `X-Outline-Resume-Capable: 1`, чтобы сервер outline-ss-rust с включённой соответствующей фичей сгенерировал Session ID и вернул его в `X-Outline-Session`. ID становится доступен через `WsTransportStream::issued_session_id()` и кэшируется в process-wide `ResumeCache` по имени аплинка. При следующем on-demand TCP-WebSocket dial (`connect_tcp_ws_fresh` — fresh dial, pool пуст) кэшированный ID отправляется как `X-Outline-Resume: <hex>`, чтобы сервер переcадил клиента на припаркованный upstream и пропустил connect к таргету. Resume opt-in на проводе (серверы без фичи игнорируют заголовки) и без overhead'а при отключённом. Refill warm-standby-пула намеренно НЕ участвует в кэшировании — пуловые коннекты обезличены; только acquire-on-demand dial'ы несут resume-токен. Новая функция `connect_websocket_with_resume` экспонирует низкоуровневый примитив для вызывающего кода с явным управлением. Формат — `docs/SESSION-RESUMPTION.md` в outline-ss-rust.
-- Raw QUIC транспорт (`*_ws_mode = "quic"`): VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket и без HTTP/3. ALPN per-connection выбирает протокол (`vless`, `ss`, `h3`); парный листенер — в outline-ss-rust. Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. VLESS-UDP использует per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм. SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами. Без fallback by design — провал dial / handshake помечает аплинк недоступным.
-- В правилах `[[route]]` кроме `file` теперь принимается список `files = [..., ...]`; все пути мерджатся в CIDR-набор правила, и за каждым отдельно следит hot-reload. Удобно, когда IPv4 и IPv6 GeoIP-фиды лежат в разных файлах.
-- HTTP-поверхность разделена на независимые плоскости метрик и управления; control plane теперь требует bearer-аутентификацию и включается отдельной Cargo-фичей.
-- Добавлен `POST /switch` для ручного переключения активного аплинка.
-- Добавлено ограничение числа соединений через `Semaphore`, чтобы защищать процесс при всплесках подключений.
-- Добавлено graceful shutdown для фоновых циклов управления аплинками.
-- Расширена диагностика: в `session_death` теперь попадает адрес цели, транспортные read-диагностики прокинуты в TUN и TCP probe paths, а HTTP-эндпоинты control/metrics получили счётчики запросов.
-- В userspace-стек TUN добавлены TCP keepalive-пробы, чтобы обнаруживать мёртвых пиров вместо зависших established-сессий.
-- WebSocket Close-код `1013` теперь считается retryable-сигналом, наравне с TCP RST.
-- Продолжено разделение на workspace-crates: вынесены отдельные crate'ы для transport, uplink management, TUN, routing, metrics, Shadowsocks crypto и SOCKS5 primitives. `outline-transport` дополнительно разнесён на `outline-net` + `outline-ss2022`.
-- Добавлен встроенный multi-instance дашборд по адресу `/dashboard` под Cargo-фичей `dashboard`. Процесс дашборда хранит per-instance control-токены на серверной стороне и проксирует `/control/topology` и `/control/activate` к каждой instance. Поддерживаются `http://` и `https://` control endpoints, сохраняется URL-префикс для инстансов за reverse proxy, добавлен настраиваемый `dashboard.request_timeout_secs`.
-- UI дашборда: instance-centric раскладка, панель настроек балансировки по группам, тематизированный sidebar с тёмной палитрой по умолчанию и рантайм-переключателем light/dark (браузерный `theme-color` следует за активной темой).
-- Добавлен packaged Grafana-дашборд control plane (`grafana/dashboard/outline-ws-uplinks.json`) и integration guide в `grafana/README.md`.
+- Raw QUIC транспорт (`*_ws_mode = "quic"`): VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket и без HTTP/3. ALPN per-connection выбирает протокол (`vless`, `ss`, `h3`); парный листенер — в outline-ss-rust. Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. VLESS-UDP использует per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм; SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами. URL для дайла переиспользуется как QUIC dial target — берётся только `host:port`, путь игнорируется.
+- Raw-QUIC oversize stream-fallback. Новые ALPN `vless-mtu` / `ss-mtu` несут UDP-датаграммы, превысившие лимит QUIC-датаграммы, поверх server-initiated bidi (`accept_bi`), чтобы патологически большие UDP-пакеты по-прежнему ехали по raw-QUIC, а не молча дропались. Стартовый QUIC `initial_mtu` поднят до 1400, чтобы типичный UDP-трафик оставался на быстром пути датаграмм.
+- Fallback raw-QUIC при дайле. На отказ dial / handshake raw-QUIC теперь падает на WS over H2 (с дальнейшим H1) и открывает единое окно mode-downgrade — следующие дайлы пропускают QUIC, пока recovery-проба не подтвердит, что QUIC снова доступен. Покрытие: VLESS-TCP, VLESS-UDP, SS-TCP, SS-UDP. Заменяет прежнее поведение "no fallback by design".
+- VLESS-UDP hybrid mux: оборачивает raw-QUIC mux в тонкий конверт, который при первом провале дайла переключается на WS over H2, вызывает `note_advanced_mode_dial_failure` (открывает cooldown) и проксирует входящие датаграммы из активного inner mux. Залипший флаг `quic_succeeded_once` не даёт схлопнуться в WS, если QUIC-сессия уже успешно установилась — рантайм-ошибки на работающей QUIC-сессии по-прежнему пробрасываются как обычный сбой.
+- Возобновление сессии между транспортами — клиентская сторона, end-to-end, по **всем** транспортам и режимам аплинков:
+  - TCP over WebSocket (HTTP/1.1, HTTP/2, HTTP/3): запросы WebSocket Upgrade несут `X-Outline-Resume-Capable: 1`; сервер возвращает Session ID в `X-Outline-Session`, клиент кладёт его в process-wide `ResumeCache` по имени аплинка. На следующем on-demand TCP-WebSocket dial (`connect_tcp_ws_fresh` — fresh dial, пул пуст) кэшированный ID отправляется как `X-Outline-Resume: <hex>`, чтобы сервер переcадил клиента на припаркованный upstream и пропустил connect к таргету.
+  - SS-UDP-WS: тот же набор заголовков на on-demand UDP-WebSocket dial'ах, ключ — имя аплинка в том же `ResumeCache`.
+  - VLESS-TCP over raw QUIC: resume-токены передаются через VLESS Addons opcodes на connect-bidi (без HTTP-заголовков на QUIC-пути).
+  - VLESS-UDP-WS / VLESS-UDP-QUIC: каждая per-target сессия внутри `VlessUdpSessionMux` несёт свой Session ID (`HashMap<TargetAddr, SessionId>` на mux), так что mux, фанящий к N таргетам, может возобновить N припаркованных upstream'ов независимо.
+  - Refill warm-standby-пула остаётся обезличенным — пуловые коннекты не идентифицируются, resume-токен несут только acquire-on-demand dial'ы.
+  - Resume opt-in на проводе (серверы без фичи игнорируют заголовки / опкоды) и без overhead'а при отключённом. Формат — `docs/SESSION-RESUMPTION.md` в outline-ss-rust.
+- Улучшения встроенного дашборда: per-instance топология теперь грузится асинхронно и обновляется независимо; состояние свёрнутых панелей сохраняется в `localStorage`, переживая refresh; причины переключения аплинков выводятся inline; колонки encapsulation + transport stack показывают активный H3/QUIC auto-downgrade с одного взгляда; редактор аплинков отдаёт `vless_ws_url` / `vless_ws_mode`, чтобы VLESS-аплинки можно было создавать и редактировать из UI; страница uplinks дашборда теперь работает с канонической схемой `[[outline.uplinks]]` для CRUD.
+- Глобальный failover теперь учитывает UDP probe / runtime health на UDP-capable активных аплинках: чисто-UDP сбой может триггернуть глобальный failover, даже если TCP score выглядит нормально.
+- `tcp_ws_mode` / `udp_ws_mode` / `vless_ws_mode` теперь принимают `h1` как алиас к `http1` — и в TOML-конфиге, и в парсинге CLI / env-vars, в одном ряду с короткими `h2` / `h3` / `quic`.
 
 ### Изменено
 
@@ -44,15 +44,53 @@
   vless_ws_mode = "h2"
   ```
   Без alias / silent fallback; `transport = "ws"` и `transport = "shadowsocks"` не затронуты.
+- `h3_downgrade_secs` (принимается также как `mode_downgrade_secs`) теперь управляет окном даунгрейда и для H3, и для raw-QUIC на аплинках `transport = "ws"` и `transport = "vless"`. И ошибка приложения H3, и провал dial / handshake raw-QUIC открывают одно и то же per-uplink окно; следующие дайлы любого продвинутого режима откладываются на WS-over-H2 до истечения таймера.
+- Ручное переключение аплинков (`POST /switch`, `POST /control/activate`, клик в дашборде) больше не откатывается на первом рантайм-сбое; выбранный аплинк остаётся запиненным, а рантайм-ошибки эскалируются через стандартный классификатор, а не молча возвращаются к предыдущему выбору. Все счётчики метрик сбрасываются на manual switch — свежезапиненный аплинк стартует с чистым окном здоровья.
+- Hot path VLESS UDP session-mux переехал с `tokio::Mutex` на `parking_lot::RwLock` с атомарным `last_use`; per-destination dial — single-flight через `OnceCell`, чтобы не получалось stampede, когда сразу много flow'ов идут к одному дестинейшну.
+- Routing fast path пропускает per-packet `has_any_healthy`, если ни одно правило не задаёт fallback-таргет.
+- Refill standby полностью пропускает поиск в TCP-пуле, если эффективный режим dial — raw QUIC (где per-connection пула нет).
+- Внутренний clean-up: `tcp/connect` шарит общий SS target-header send между путями; flow-таблица `tun/tcp` переехала в `DashMap` с отдельным `FlowScheduler`; H2/H3 dial-скелет унифицирован за одной associated-type-чертой `WsDialer`; route TCP/UDP fallback использует общий `apply_fallback_strategy`.
+
+### Исправлено
+
+- Дашборд: per-instance hyper connection driver теперь аборитится при завершении proxy task — закрывает протечку control-API сокета, копившуюся при churn инстансов.
+- Raw QUIC: разорван цикл Arc в `VlessUdpDemuxer`, удерживавший probe-driven QUIC-коннекты живыми после завершения пробы; пробы больше не пинят коннекты дольше их естественной жизни.
+- TUN: дайлы raw-QUIC TCP, инициированные из TUN-flow, теперь так же падают на WS over H2, как и со стороны SOCKS5; до этого provision raw-QUIC из TUN сразу убивал flow.
+- TUN/transport: закрыт VLESS UDP socket leak, проявлявшийся как растущий FD count под нагрузкой — добавлены `AbortOnDrop` на per-target session task и строгий WS pong deadline.
+- TCP failover: deferred phase-1 failures сохраняют исходную error-цепочку — реальная причина (например, ошибка TLS handshake внутри открытия H2-стрима) больше не глотается обёрткой "phase-1 failed".
+- VLESS probes: HTTP / TCP-tunnel пробы больше не предпендят SOCKS5 target prefix к payload'у пробы; DNS-проба и WS-handshake-проба обе диспатчатся через raw-QUIC путь, если у аплинка `vless_ws_mode = "quic"`.
+- Routing engine: build-зависимости `outline-routing::compile_routing_table` подтянуты — хелпер собирается с `tokio` rt/time только как dev-deps.
+
+## [1.2.0] - 2026-04-24
+
+### Добавлено
+
+- VLESS-over-WebSocket аплинки (`transport = "vless"`). Аутентификация — одно поле `vless_id` (UUID) вместо Shadowsocks cipher / password; общая WSS dial-инфраструктура с `transport = "ws"`. VLESS UDP едет per-destination session-mux'ом (одна WSS-сессия на target внутри аплинка), ограниченным `vless_udp_max_sessions`, idle-evict через `vless_udp_session_idle_secs`, с настраиваемой каденцией LRU-evictor'а (`vless_udp_janitor_interval_secs`). Подключена реальная VLESS DNS data-path проба наряду с уже существующими WS / HTTP пробами.
+- Встроенный multi-instance дашборд по адресу `/dashboard`, под Cargo-фичей `dashboard`. Процесс дашборда хранит per-instance control-токены на серверной стороне и проксирует `/control/topology` и `/control/activate` к каждому инстансу. Поддерживаются `http://` и `https://` control endpoints, сохраняется URL-префикс для инстансов за reverse proxy, есть настраиваемый `dashboard.request_timeout_secs`. UI инстанс-центричный, с панелью настроек балансировки по группам, тематизированным sidebar'ом с тёмной палитрой по умолчанию и рантайм-переключателем light/dark (браузерный `theme-color` следует за активной темой), и отдельной страницей конфигурации аплинков, выполняющей CRUD через `POST /control/uplinks` + `POST /control/apply` (hot-swap). (Прежний прототип Grafana-дашборда control plane снят с поставки в пользу in-process UI.)
+- Независимая HTTP control plane. Мутирующие эндпоинты (`/switch`, `/control/topology`, `/control/summary`, `/control/activate`, `/control/uplinks`, `/control/apply`) живут на отдельном listener'е, защищены обязательной bearer-аутентификацией и отдельной Cargo-фичей; `/metrics` сохраняет read-only роль.
+- `POST /switch` для ручного переключения активного аплинка, плюс `POST /control/activate` (JSON body) для click-пути дашборда.
+- В правилах `[[route]]` кроме `file` теперь принимается список `files = [..., ...]`; все пути мерджатся в CIDR-набор правила, и за каждым отдельно следит hot-reload. Удобно, когда IPv4 и IPv6 GeoIP-фиды лежат в разных файлах.
+- Ограничение числа соединений через семафор на SOCKS5 accept-loop и на HTTP-listener'ах — чтобы защищать процесс при всплесках подключений.
+- Graceful shutdown для фоновых циклов управления аплинками; in-flight соединения отменяются на SIGTERM, рестарт поднимается быстрее.
+- Расширена диагностика: в `session_death` теперь попадает адрес цели, транспортные read-диагностики прокинуты в TUN и TCP probe paths, а HTTP-эндпоинты control/metrics получили счётчики запросов.
+- В userspace-стек TUN добавлены TCP keepalive-пробы, чтобы обнаруживать мёртвых пиров вместо зависших established-сессий.
+- WebSocket Close-код `1013` (`Try Again Later`) теперь считается retryable-сигналом, наравне с TCP RST.
+- Продолжено разделение на workspace-crates: вынесены отдельные crate'ы для transport, uplink management, TUN, routing, metrics, Shadowsocks crypto и SOCKS5 primitives. `outline-transport` дополнительно разнесён на `outline-net` + `outline-ss2022`.
+- CLI-флаг `--migrate-config` для one-shot in-place миграции legacy top-level uplink-ключей в каноническую форму `[outline]`; обычный путь старта тоже авто-мигрирует с deprecation-предупреждением.
+
+### Изменено
+
+- TOML — единственный поддерживаемый формат конфигурации; YAML-loader и примерные YAML-файлы удалены.
 - Переработаны внутренности configuration, bootstrap, proxy, UDP, metrics и TUN под workspace-структуру и более мелкие сфокусированные модули.
 - Снижены накладные расходы hot path за счёт менее аллокационного DNS cache, boxed AEAD-вариантов, более точечных блокировок статусов аплинков, неблокирующего `AsyncFd` для TUN, меньшего heap churn в UDP/TCP путях, UDP send без мьютекса, SACK scoreboard без клонирования на каждый ACK, выноса sticky-route pruning с connect hot path, коалесинга `/metrics` scrape'ов и lock-free чтения standby-пула.
 - WebSocket read idle timeout поднят со 120s до 300s, чтобы длинные периоды без ответа (например, пока модель «думает») не выбивали здоровые сессии.
 - Ограничена конкурентность HTTP control/metrics-плоскостей и добавлены bounds на SOCKS5 handshake — чтобы уменьшить DoS surface.
+- systemd unit переведён с `DynamicUser=true` на фиксированного системного пользователя `outline-ws`, чтобы state-файлы сохраняли стабильного владельца между рестартами; install-скрипт теперь создаёт пользователя и writable state-каталог.
 - Внутренние зависимости переведены на прямое использование workspace-crates вместо фасадов и алиасов корневого crate.
 
 ### Устарело
 
-- Плоская форма конфига аплинков (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) признана устаревшей; каноническая форма теперь вложена под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая форма по-прежнему принимается и логирует deprecation-предупреждение на старте. Примеры конфигов и README обновлены под новую форму.
+- Плоская форма конфига аплинков (top-level `tcp_ws_url` / `[probe]` / `[[uplinks]]` / `[load_balancing]`) признана устаревшей; каноническая форма теперь вложена под `[outline]` (`[[outline.uplinks]]`, `[outline.probe]`, `[outline.load_balancing]`). Старая форма по-прежнему принимается, авто-мигрируется на старте и логирует deprecation-предупреждение. Примеры конфигов и README обновлены под новую форму.
 
 ### Исправлено
 
@@ -64,6 +102,7 @@
 - Phase-1 выбор аплинка больше не штрафует аплинк, если недоступна сама цель.
 - Исправлены подписи чипов load-balancing в дашборде — теперь они соответствуют реальным вариантам enum'а балансировки.
 - Исправлен учёт keepalive в SOCKS idle-таймауте: keepalive-трафик корректно отодвигает выселение сессии по idle на стороне SOCKS.
+- Загрузка конфигурации теперь корректно фолбэчит в read-only режим, когда целевой каталог недоступен на запись (например, `/etc/` под `ProtectSystem=strict`); в лог идёт предупреждение, процесс продолжает работу без персистентности.
 
 ## [1.1.0] - 2026-04-17
 

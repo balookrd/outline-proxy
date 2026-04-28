@@ -29,7 +29,7 @@ At a high level, the process does five jobs:
 
 1. Accepts local SOCKS5 and optional TUN traffic.
 2. Selects the best available uplink using health probes, EWMA RTT scoring, sticky routing, hysteresis, penalties, and warm standby.
-3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback, to a raw QUIC uplink (`quic`, no fallback — pairs with the matching ALPN-keyed listener on the server), or to a direct Shadowsocks socket / VLESS-over-WebSocket uplink.
+3. Connects to an Outline WebSocket transport using the requested mode (`http1`, `h2`, or `h3`) with automatic fallback, to a raw QUIC uplink (`quic`; pairs with the matching ALPN-keyed listener on the server, falls back to WS over H2 → H1 on dial / handshake failure), or to a direct Shadowsocks socket / VLESS-over-WebSocket uplink.
 4. Encrypts payloads using Shadowsocks AEAD, or frames them as VLESS with UUID auth, before sending them upstream.
 5. Exposes Prometheus metrics for runtime, uplink, probe, TUN, and `tun2tcp` behavior.
 
@@ -125,13 +125,14 @@ tun2udp + tun2tcp"]
 - HTTP/1.1 Upgrade
 - RFC 8441 WebSocket over HTTP/2
 - RFC 9220 WebSocket over HTTP/3 / QUIC
-- raw QUIC (per-ALPN, no WebSocket / no HTTP/3): selected via `*_ws_mode = "quic"`. ALPN `vless` carries VLESS-TCP (one bidi per session) and VLESS-UDP (per-target control bidi + datagrams demuxed by 4-byte server-allocated `session_id`). ALPN `ss` carries Shadowsocks-TCP (one bidi per session) and Shadowsocks-UDP (1 datagram = 1 SS-AEAD packet, RFC 9221). Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection. No fallback — dial / handshake failure marks the uplink down.
+- raw QUIC (per-ALPN, no WebSocket / no HTTP/3): selected via `*_ws_mode = "quic"`. ALPN `vless` carries VLESS-TCP (one bidi per session) and VLESS-UDP (per-target control bidi + datagrams demuxed by 4-byte server-allocated `session_id`). ALPN `ss` carries Shadowsocks-TCP (one bidi per session) and Shadowsocks-UDP (1 datagram = 1 SS-AEAD packet, RFC 9221). Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection. Auxiliary ALPNs `vless-mtu` / `ss-mtu` carry oversized UDP packets that exceed the QUIC datagram limit on a server-initiated bidi. On dial / handshake failure, raw-QUIC paths fall back to WS over H2 (then H1) and open the H3-downgrade window so subsequent dials skip QUIC until the recovery probe confirms QUIC is reachable again.
 - direct Shadowsocks TCP/UDP socket uplinks
 - VLESS-over-WebSocket uplinks (`transport = "vless"`, UUID auth, shared WSS dial path with `websocket`, per-destination UDP session-mux bounded by `vless_udp_max_sessions`)
-- transport fallback (WS modes only):
+- transport fallback:
   - `h3 -> h2 -> http1`
   - `h2 -> http1`
-  - `quic` has no fallback by design
+  - `quic -> h2 -> http1` on dial / handshake failure, with a per-uplink mode-downgrade window (governed by `h3_downgrade_secs`, also accepted as `mode_downgrade_secs`) so subsequent dials skip QUIC until the recovery probe confirms it again
+- cross-transport client-side session resumption: WebSocket Upgrades carry `X-Outline-Resume-Capable: 1`; the server-issued `X-Outline-Session` ID is cached per uplink (and per (uplink, target) inside the VLESS UDP mux) and presented as `X-Outline-Resume: <hex>` on the next on-demand dial so a feature-enabled outline-ss-rust server can re-attach the parked upstream and skip the connect-to-target. Covers TCP-WS, SS-UDP-WS, VLESS-TCP raw QUIC (via Addons opcodes), and VLESS-UDP raw QUIC. Opt-in on the wire and zero-overhead when the server doesn't support it.
 
 ### Encryption
 
@@ -209,7 +210,9 @@ The project is intentionally practical, but there are still boundaries:
 - [`src/config/`](src/config) - configuration loading, schema, and validated types
 - [`src/proxy/`](src/proxy) - SOCKS5 TCP/UDP ingress handlers (dispatcher, TCP failover, UDP relay)
 - [`crates/outline-uplink/`](crates/outline-uplink) - uplink selection, probing, failover, and standby management
-- [`crates/outline-transport/`](crates/outline-transport) - WebSocket, HTTP/2, HTTP/3, and direct Shadowsocks transports
+- [`crates/outline-transport/`](crates/outline-transport) - WebSocket / HTTP-2 / HTTP-3 / raw-QUIC / VLESS / direct-Shadowsocks transports + the cross-transport `ResumeCache`
+- [`crates/outline-net/`](crates/outline-net) - DNS cache and shared net plumbing extracted from `outline-transport`
+- [`crates/outline-ss2022/`](crates/outline-ss2022) - Shadowsocks 2022 framing helpers
 - [`crates/outline-tun/`](crates/outline-tun) - stateful TUN relay engines (TCP and UDP)
 - [`crates/shadowsocks-crypto/`](crates/shadowsocks-crypto) - AEAD crypto helpers for Shadowsocks
 - [`crates/outline-metrics/`](crates/outline-metrics) - Prometheus metrics registration and session/transport snapshots
@@ -650,7 +653,9 @@ weight = 0.5
 # bypass the WebSocket layer entirely and ride VLESS framing directly on
 # QUIC bidi streams (TCP) and datagrams (UDP, prefixed with the
 # server-allocated 4-byte session_id). Only host:port from the URL is
-# used. No fallback — dial failure marks the uplink down.
+# used. On dial / handshake failure raw-QUIC paths fall back to WS over
+# H2 (then H1) and open the H3-downgrade window so subsequent dials skip
+# QUIC until the recovery probe confirms it again.
 [[outline.uplinks]]
 name = "vless-quic"
 group = "main"
@@ -693,7 +698,7 @@ via = "main"
 
 - `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
-- `tcp_ws_mode` / `udp_ws_mode` accept `http1`, `h2`, or `h3` and are only used with `transport = "websocket"`.
+- `tcp_ws_mode` / `udp_ws_mode` (`transport = "ws"`) and `vless_ws_mode` (`transport = "vless"`) accept `http1` (alias `h1`), `h2`, `h3`, or `quic`. Modes `http1` / `h2` / `h3` ride a WebSocket Upgrade over the matching HTTP version (with automatic `h3 → h2 → http1` fallback for WS modes); `quic` selects raw QUIC framing on ALPN `vless` (for VLESS) or `ss` (for Shadowsocks-over-WS) with `quic → h2 → http1` dial-time fallback.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
@@ -706,7 +711,7 @@ via = "main"
 - `[outline.load_balancing] auto_failback` (default `false`): controls whether the proxy proactively returns traffic to a recovered higher-priority uplink.
   - `false` (default): the active uplink is replaced **only when it fails**. Once on a backup, the proxy stays there until the backup itself fails — no automatic return to primary. Recommended for production use to prevent unnecessary connection disruption.
   - `true`: when the current active is healthy and a candidate with a **higher `weight`** (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA RTT: this prevents spurious switches under load, when the active uplink's EWMA temporarily inflates due to slow connections while an idle backup looks better by latency. Failback always moves toward higher weight (`1.0 → 1.5 → 2.0`): switching to a lower-weight uplink via auto_failback is not possible — that requires a probe-confirmed failover.
-- `h3_downgrade_secs` (per-group, default `60`): how long an uplink that experienced an H3 application-level error (e.g. `H3_INTERNAL_ERROR`) stays in H2 fallback mode before H3 is retried. Set to `0` to disable automatic H3 downgrade.
+- `h3_downgrade_secs` (per-group, default `60`, also accepted as `mode_downgrade_secs`): how long an uplink that experienced a failure on its advanced mode — H3 application-level error (e.g. `H3_INTERNAL_ERROR`) **or** raw-QUIC dial / handshake failure — stays in H2 fallback mode before the original mode is retried. Applies to both `transport = "ws"` and `transport = "vless"`. Set to `0` to disable automatic downgrade.
 - `state_path` (optional): path to a TOML file where the active-uplink selection is persisted across restarts. Defaults to the config file path with the extension replaced by `.state.toml` (e.g. `config.toml` → `config.state.toml`). If the file cannot be written (e.g. config lives in a read-only `/etc/` directory under `ProtectSystem=strict`), the process logs a warning at startup and continues without persistence. The bundled systemd units set `STATE_PATH=/var/lib/outline-ws-rust/state.toml` so the state lands in the writable state directory. Only the active-uplink selection is persisted (by uplink name); EWMA and penalty values are not — they are re-established within one probe cycle after restart.
 - Uplink groups (`[[uplink_group]]`) each hold their own probe loop, standby pool, sticky-routes store, active-uplink state, and load-balancing policy — groups are fully isolated at runtime.
 - `[outline.probe]` acts as a template: each group inherits it, and `[uplink_group.probe]` overrides individual fields per group. Probe sub-tables (`ws`/`http`/`dns`/`tcp`) are replaced wholesale — if a group sets `[uplink_group.probe.http]`, the template's `[outline.probe.http]` is dropped for that group.
@@ -826,13 +831,25 @@ Use when the upstream supports RFC 8441 Extended CONNECT for WebSockets.
 
 Use when the upstream supports RFC 9220 and QUIC/UDP is available end to end.
 
+### Raw QUIC
+
+Use when the upstream runs the matching raw-QUIC listener (outline-ss-rust `transport::raw_quic`). Selected per uplink via `tcp_ws_mode = "quic"` / `udp_ws_mode = "quic"` (for `transport = "ws"`) or `vless_ws_mode = "quic"` (for `transport = "vless"`). The path skips WebSocket and HTTP/3 framing entirely:
+
+- VLESS-TCP / SS-TCP — one QUIC bidi stream per session.
+- VLESS-UDP — per-target control bidi (server returns a 4-byte `session_id`) plus connection-level datagram demux.
+- SS-UDP — 1 QUIC datagram = 1 SS-AEAD packet (RFC 9221).
+- ALPNs `vless-mtu` / `ss-mtu` — auxiliary stream-fallback for oversized UDP payloads that exceed the QUIC datagram limit.
+- Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection.
+- Only `host:port` from the dial URL is used; the path is ignored.
+
 Recommended operator stance:
 
 - prefer `http1` as a conservative baseline
 - enable `h2` only when the reverse proxy and origin are known-good for RFC 8441
 - enable `h3` only when QUIC is explicitly supported and reachable
+- enable `quic` only when the matching outline-ss-rust raw-QUIC listener is reachable end to end
 
-**Shared QUIC endpoint:** H3 connections that do not use a per-uplink `fwmark` share a single UDP socket per address family (one for IPv4, one for IPv6). This means N warm-standby H3 connections do not open N UDP sockets. Connections that require a specific `fwmark` still use their own dedicated socket because the mark must be applied before the first `sendmsg`.
+**Shared QUIC endpoint:** H3 and raw-QUIC connections that do not use a per-uplink `fwmark` share a single UDP socket per address family (one for IPv4, one for IPv6). This means N warm-standby connections do not open N UDP sockets. Connections that require a specific `fwmark` still use their own dedicated socket because the mark must be applied before the first `sendmsg`.
 
 QUIC keep-alive pings are sent every 10 seconds to prevent NAT mapping expiry and to allow the server to detect dead connections without waiting for the full idle timeout.
 
@@ -840,19 +857,22 @@ Runtime fallback behavior:
 
 - requested `h3` tries `h3`, then `h2`, then `http1`
 - requested `h2` tries `h2`, then `http1`
+- requested `quic` tries raw QUIC, then WS over `h2`, then WS over `http1` on dial / handshake failure
 
-**H3 runtime downgrade:** when any TCP runtime failure occurs on an H3-configured uplink (connection reset, stream error, QUIC transport error, `H3_INTERNAL_ERROR`, timeout, or any other upstream TCP failure), the uplink automatically falls back to H2 for new TCP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds). After the downgrade window expires, H3 is retried by the next real connection. This prevents reconnect storms where every new flow establishes an H3 connection only to have it fail shortly after.
+**Mode downgrade window:** when an "advanced mode" failure (H3 application-level error such as `H3_INTERNAL_ERROR`, **or** a raw-QUIC dial / handshake failure) occurs on an uplink that requested H3 or QUIC, the uplink automatically falls back to H2 for new TCP and UDP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds; also accepted as `mode_downgrade_secs`). After the window expires, the original mode is retried by the next real connection. This prevents reconnect storms where every new flow establishes a QUIC / H3 connection only to have it fail shortly after.
 
-The same downgrade is also triggered by TCP probe failures on H3 uplinks, preventing probe-driven flapping in `active_passive + global` mode: without this, intermittent H3 probe pass/fail alternation would cause a failover switch every probe cycle.
+The same downgrade is also triggered by TCP probe failures on H3 / QUIC uplinks, preventing probe-driven flapping in `active_passive + global` mode: without this, intermittent advanced-mode probe pass/fail alternation would cause a failover switch every probe cycle.
 
 Probe behavior during a downgrade window:
-- Probes use `effective_tcp_ws_mode`, which returns H2 while `h3_tcp_downgrade_until` is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3.
-- A successful probe during the window does **not** clear `h3_tcp_downgrade_until`. H3 recovery is tested naturally once the timer expires and the next real connection attempts H3. If that attempt fails, the timer is reset.
+- Probes use `effective_tcp_ws_mode` / `effective_udp_ws_mode`, which return H2 while the downgrade timer is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3 / QUIC.
+- A successful probe during the window does **not** clear the downgrade timer. Recovery is tested naturally once the timer expires and the next real connection attempts the original mode. If that attempt fails, the timer is reset.
 
 Scoring during a downgrade window (`per_flow` scope):
-- While `h3_tcp_downgrade_until` is active, the uplink's effective latency score has `failure_penalty_max` added on top of the normal failure penalty. This prevents `active_active + per_flow` flows from switching back to the primary uplink while it is operating in H2 fallback mode: as the normal failure penalty decays, the extra downgrade penalty keeps the primary's score unfavorable until the window closes.
+- While the downgrade timer is active, the uplink's effective latency score has `failure_penalty_max` added on top of the normal failure penalty. This prevents `active_active + per_flow` flows from switching back to the primary uplink while it is operating in H2 fallback mode: as the normal failure penalty decays, the extra downgrade penalty keeps the primary's score unfavorable until the window closes.
 
-Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 downgrade, new standby slots are filled using H2.
+Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 or QUIC→H2 downgrade, new standby slots are filled using H2.
+
+**VLESS-UDP raw-QUIC hybrid mux:** because VLESS-UDP raw-QUIC sessions dial lazily on the first packet, the SS-style "try QUIC at acquire time, fall back if that fails" pattern doesn't apply directly. Instead, the VLESS-UDP path is wrapped in a hybrid mux that owns both a QUIC inner mux and a WS-over-H2 inner mux: it dials QUIC first, and on first-dial failure pivots to WS, calls `note_advanced_mode_dial_failure` to start the cooldown, and proxies downlink datagrams from whichever inner mux is currently active. A latched `quic_succeeded_once` flag prevents collapse to WS once a QUIC session has actually completed — runtime errors on a working QUIC session still propagate as real failures.
 
 **Transport handshake timeouts:** every WebSocket connect path enforces an upper bound so that a silently-broken or black-holed server cannot stall new sessions for minutes while keeping the uplink nominally "healthy".
 
@@ -1266,7 +1286,7 @@ The unit includes:
 - journald logging
 - elevated `LimitNOFILE`
 - `LimitSTACK=8M` to avoid oversized anonymous thread-stack reservations
-- `DynamicUser=true` — no manual user creation needed
+- a fixed `outline-ws` system user / group (provisioned by `install.sh`) so state files keep a stable owner across restarts and `StateDirectory=outline-ws-rust/_default` lands on a writable, unit-managed path
 - `CAP_NET_ADMIN` for `fwmark`; remove if `fwmark` is not used
 - `PrivateDevices=false` — required for TUN mode; harmless if TUN is not used
 - conservative systemd hardening flags
