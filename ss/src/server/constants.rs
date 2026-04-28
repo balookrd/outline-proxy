@@ -71,6 +71,14 @@ pub(super) const MAX_UDP_DATAGRAM_SIZE: usize = 65_535;
 pub(super) const MAX_UDP_PAYLOAD_SIZE: usize = 65_507;
 pub(super) const UDP_CACHED_USER_INDEX_EMPTY: usize = usize::MAX;
 
+// Bounded LRU mapping `peer_addr -> user_index`, queried before each TCP
+// handshake to skip the O(N) AEAD-decryption probe when we already saw this
+// peer authenticate against a known user. ~4k entries cover the active
+// keep-alive set of a multi-tenant deployment without unbounded growth; a
+// stale entry (cipher mismatch, user removed, list reorder) self-heals on the
+// next successful scan because we record the freshly observed user index.
+pub(super) const TCP_PEER_USER_CACHE_CAPACITY: usize = 4_096;
+
 // Bounded mpsc capacity for the per-session WebSocket writer's control fan-in
 // (Pong / Close frames). Data fan-in capacity is configurable per deployment
 // via `tuning.ws_data_channel_capacity` — see `crate::config::TuningProfile`.

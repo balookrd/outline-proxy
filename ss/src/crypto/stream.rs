@@ -28,6 +28,10 @@ pub struct StreamResponseContext {
 
 struct ActiveStream {
     user: UserKey,
+    /// Position of [`Self::user`] inside the original `users` slice. Exposed
+    /// via [`AeadStreamDecryptor::user_index`] so the server can record a
+    /// per-peer hint for the next handshake.
+    user_index: usize,
     key: LessSafeKey,
     nonce_counter: u64,
     mode: ActiveStreamMode,
@@ -49,6 +53,11 @@ pub struct AeadStreamDecryptor {
     users: Arc<[UserKey]>,
     buffer: BytesMut,
     active: Option<ActiveStream>,
+    /// Optional last-seen user index from the per-peer cache. When set, the
+    /// candidate scan tries this index first; on AEAD failure (stale hint,
+    /// cipher mismatch, user reorder) the scan falls through to the full
+    /// loop so correctness is unaffected.
+    user_hint: Option<usize>,
 }
 
 impl fmt::Debug for AeadStreamDecryptor {
@@ -66,7 +75,22 @@ impl AeadStreamDecryptor {
             users,
             buffer: BytesMut::new(),
             active: None,
+            user_hint: None,
         }
+    }
+
+    /// Sets a candidate user index to try first at the next handshake.
+    /// Out-of-bounds or otherwise unfit hints are silently ignored — the
+    /// full scan still runs.
+    pub fn set_user_hint(&mut self, hint: Option<usize>) {
+        self.user_hint = hint.filter(|&idx| idx < self.users.len());
+    }
+
+    /// Returns the position of the authenticated user inside the `users`
+    /// slice handed to [`Self::new`], or `None` if the handshake has not
+    /// completed.
+    pub fn user_index(&self) -> Option<usize> {
+        self.active.as_ref().map(|active| active.user_index)
     }
 
     pub fn feed_ciphertext(&mut self, data: &[u8]) {
@@ -166,74 +190,27 @@ impl AeadStreamDecryptor {
         }
 
         let mut any_candidate = false;
-        for user in self.users.iter() {
-            if user.cipher().is_2022() {
-                let salt_len = user.cipher().salt_len();
-                if self.buffer.len() < salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN {
-                    continue;
-                }
-                any_candidate = true;
 
-                // Stack buffer — avoids a heap allocation for every candidate
-                // that fails AEAD verification.
-                let mut encrypted_fixed = [0u8; SS2022_REQUEST_FIXED_CIPHERTEXT_LEN];
-                encrypted_fixed.copy_from_slice(
-                    &self.buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN],
-                );
-                let less_safe =
-                    build_session_key(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
-                if let Ok(header) = try_open_fixed_header(
-                    &less_safe,
-                    nonce_zero(),
-                    &mut encrypted_fixed,
-                    SS2022_REQUEST_FIXED_HEADER_LEN,
-                ) {
-                    let header_len = validate_ss2022_request_fixed_header(header)?;
-                    // One allocation per successful handshake — unavoidable.
-                    let request_salt: Arc<[u8]> = Arc::from(&self.buffer[..salt_len]);
-                    self.buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
-                    self.active = Some(ActiveStream {
-                        user: user.clone(),
-                        key: less_safe,
-                        nonce_counter: 1,
-                        mode: ActiveStreamMode::Ss2022 {
-                            request_salt,
-                            header_parsed: false,
-                            pending_header_len: Some(header_len),
-                            pending_chunk_len: None,
-                        },
-                    });
-                    return Ok(());
-                }
-            } else {
-                let salt_len = user.cipher().salt_len();
-                if self.buffer.len() < salt_len + 2 + TAG_LEN {
-                    continue;
-                }
-                any_candidate = true;
+        // Try the cached hint first when present. A hit here turns N HKDF +
+        // AEAD probes into 1; on miss we fall through to the full scan.
+        if let Some(hint) = self.user_hint
+            && let Some(user) = self.users.get(hint)
+        {
+            match Self::try_user(&mut self.buffer, user, hint, &mut self.active)? {
+                CandidateOutcome::Authenticated => return Ok(()),
+                CandidateOutcome::Probed => any_candidate = true,
+                CandidateOutcome::TooShort => {},
+            }
+        }
 
-                // Stack buffer — avoids a heap allocation for every candidate
-                // that fails AEAD verification.
-                let mut candidate = [0u8; 2 + TAG_LEN];
-                candidate.copy_from_slice(&self.buffer[salt_len..salt_len + 2 + TAG_LEN]);
-                let less_safe =
-                    build_session_key(user.cipher(), user.master_key(), &self.buffer[..salt_len])?;
-                if let Ok(plaintext_len) =
-                    try_open_fixed_header(&less_safe, nonce_zero(), &mut candidate, 2)
-                {
-                    let chunk_len =
-                        u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
-                    if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
-                        self.buffer.advance(salt_len);
-                        self.active = Some(ActiveStream {
-                            user: user.clone(),
-                            key: less_safe,
-                            nonce_counter: 0,
-                            mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
-                        });
-                        return Ok(());
-                    }
-                }
+        for (idx, user) in self.users.iter().enumerate() {
+            if Some(idx) == self.user_hint {
+                continue;
+            }
+            match Self::try_user(&mut self.buffer, user, idx, &mut self.active)? {
+                CandidateOutcome::Authenticated => return Ok(()),
+                CandidateOutcome::Probed => any_candidate = true,
+                CandidateOutcome::TooShort => {},
             }
         }
 
@@ -243,6 +220,100 @@ impl AeadStreamDecryptor {
             Ok(())
         }
     }
+
+    /// Tries to authenticate the buffered handshake bytes against `user`. On
+    /// success, populates `active` and returns [`CandidateOutcome::Authenticated`].
+    /// On failure, leaves the buffer untouched and returns whether the
+    /// candidate could be tested ([`CandidateOutcome::Probed`]) or simply did
+    /// not have enough bytes available yet ([`CandidateOutcome::TooShort`]).
+    fn try_user(
+        buffer: &mut BytesMut,
+        user: &UserKey,
+        user_index: usize,
+        active: &mut Option<ActiveStream>,
+    ) -> Result<CandidateOutcome, CryptoError> {
+        if user.cipher().is_2022() {
+            let salt_len = user.cipher().salt_len();
+            if buffer.len() < salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN {
+                return Ok(CandidateOutcome::TooShort);
+            }
+
+            // Stack buffer — avoids a heap allocation for every candidate
+            // that fails AEAD verification.
+            let mut encrypted_fixed = [0u8; SS2022_REQUEST_FIXED_CIPHERTEXT_LEN];
+            encrypted_fixed.copy_from_slice(
+                &buffer[salt_len..salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN],
+            );
+            let less_safe =
+                build_session_key(user.cipher(), user.master_key(), &buffer[..salt_len])?;
+            if let Ok(header) = try_open_fixed_header(
+                &less_safe,
+                nonce_zero(),
+                &mut encrypted_fixed,
+                SS2022_REQUEST_FIXED_HEADER_LEN,
+            ) {
+                let header_len = validate_ss2022_request_fixed_header(header)?;
+                // One allocation per successful handshake — unavoidable.
+                let request_salt: Arc<[u8]> = Arc::from(&buffer[..salt_len]);
+                buffer.advance(salt_len + SS2022_REQUEST_FIXED_CIPHERTEXT_LEN);
+                *active = Some(ActiveStream {
+                    user: user.clone(),
+                    user_index,
+                    key: less_safe,
+                    nonce_counter: 1,
+                    mode: ActiveStreamMode::Ss2022 {
+                        request_salt,
+                        header_parsed: false,
+                        pending_header_len: Some(header_len),
+                        pending_chunk_len: None,
+                    },
+                });
+                return Ok(CandidateOutcome::Authenticated);
+            }
+        } else {
+            let salt_len = user.cipher().salt_len();
+            if buffer.len() < salt_len + 2 + TAG_LEN {
+                return Ok(CandidateOutcome::TooShort);
+            }
+
+            // Stack buffer — avoids a heap allocation for every candidate
+            // that fails AEAD verification.
+            let mut candidate = [0u8; 2 + TAG_LEN];
+            candidate.copy_from_slice(&buffer[salt_len..salt_len + 2 + TAG_LEN]);
+            let less_safe =
+                build_session_key(user.cipher(), user.master_key(), &buffer[..salt_len])?;
+            if let Ok(plaintext_len) =
+                try_open_fixed_header(&less_safe, nonce_zero(), &mut candidate, 2)
+            {
+                let chunk_len = u16::from_be_bytes([plaintext_len[0], plaintext_len[1]]) as usize;
+                if chunk_len <= LEGACY_MAX_CHUNK_SIZE {
+                    buffer.advance(salt_len);
+                    *active = Some(ActiveStream {
+                        user: user.clone(),
+                        user_index,
+                        key: less_safe,
+                        nonce_counter: 0,
+                        mode: ActiveStreamMode::Legacy { pending_chunk_len: None },
+                    });
+                    return Ok(CandidateOutcome::Authenticated);
+                }
+            }
+        }
+        Ok(CandidateOutcome::Probed)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CandidateOutcome {
+    /// AEAD verification succeeded, `active` is now populated.
+    Authenticated,
+    /// Candidate had enough buffered bytes to attempt verification but the
+    /// AEAD did not match. Used to distinguish "all configured keys
+    /// rejected" (`UnknownUser`) from "still buffering more bytes".
+    Probed,
+    /// Not enough buffered bytes yet for this cipher's salt + fixed header.
+    /// The decryptor will retry on the next `feed_ciphertext` call.
+    TooShort,
 }
 
 pub struct AeadStreamEncryptor {

@@ -96,6 +96,8 @@ Instead, the server identifies the user by successfully decrypting:
 
 Because users may have different ciphers, the decryptor iterates across the per-path candidate set and attempts the correct cipher for each user independently.
 
+To skip that O(N) AEAD probe at handshake time when the same client reconnects, each TCP/H3 route owns a bounded LRU mapping `peer_addr -> user_index`. The cache is populated only after a successful AEAD verification, so a spoofed source address cannot redirect another peer's hint, and a stale hint (cipher mismatch, user removed, list reorder) self-heals on the next full scan. The TLS path injects `ConnectInfo<SocketAddr>` per accepted connection so the upgrade handler keys the same cache.
+
 ## TCP Data Path
 
 ```mermaid

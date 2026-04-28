@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{Router, routing::any, serve::ListenerExt};
@@ -91,7 +91,10 @@ pub(in crate::server) async fn serve_listener(
         }
     });
     let mut shutdown_for_graceful = shutdown.clone();
-    let serve = axum::serve(listener, app)
+    // `into_make_service_with_connect_info::<SocketAddr>()` injects a
+    // `ConnectInfo<SocketAddr>` extension into every request so the
+    // TCP-WS upgrade handler can key the per-route peer-user hint cache.
+    let serve = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
         .with_graceful_shutdown(async move { shutdown_for_graceful.cancelled().await });
     drain_axum_serve(async move { serve.await }, shutdown, "plain tcp").await
 }
@@ -210,7 +213,12 @@ async fn serve_tls_listener(
             };
 
             let io = TokioIo::new(tls_stream);
-            let service = TowerToHyperService::new(app);
+            // Inject `ConnectInfo<SocketAddr>` so the TCP-WS upgrade
+            // handler can key the per-route peer-user hint cache the
+            // same way the plain (non-TLS) path does.
+            let app_with_addr =
+                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let service = TowerToHyperService::new(app_with_addr);
             let builder = build_http_server_builder(&profile);
             let conn = builder.serve_connection_with_upgrades(io, service);
             tokio::pin!(conn);

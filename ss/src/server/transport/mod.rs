@@ -4,12 +4,12 @@ use super::auth::{
     parse_failed_root_auth_attempts, parse_root_http_auth_password, password_matches_any_user,
 };
 
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Body,
     extract::{
-        OriginalUri, State,
+        ConnectInfo, OriginalUri, State,
         ws::{WebSocketUpgrade, rejection::WebSocketUpgradeRejection},
     },
     http::{HeaderMap, Method, StatusCode, Version},
@@ -53,6 +53,7 @@ pub(super) async fn tcp_websocket_upgrade(
     method: Method,
     version: Version,
     headers: HeaderMap,
+    connect_info: ConnectInfo<SocketAddr>,
 ) -> Response {
     let ws: WebSocketUpgrade = match ws {
         Ok(ws) => ws,
@@ -73,6 +74,7 @@ pub(super) async fn tcp_websocket_upgrade(
         .metrics
         .open_websocket_session(Transport::Tcp, protocol);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
+    let ConnectInfo(peer_addr) = connect_info;
     // The `Option<SessionId>` is `Copy`, so save the issued ID by value
     // before moving `resume` into the upgrade closure. This MUST be the
     // same ID the relay later parks under — re-parsing the headers
@@ -85,8 +87,10 @@ pub(super) async fn tcp_websocket_upgrade(
             protocol,
             path,
             candidate_users: Arc::clone(&route.candidate_users),
+            peer_user_cache: Arc::clone(&route.peer_user_cache),
         };
-        let result = tcp::handle_tcp_connection(socket, server, route_ctx, resume).await;
+        let result =
+            tcp::handle_tcp_connection(socket, server, route_ctx, resume, Some(peer_addr)).await;
         finish_ws_session(session, result, "tcp");
     });
     if let Some(id) = issued_for_response

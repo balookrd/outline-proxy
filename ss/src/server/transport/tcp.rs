@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow};
@@ -82,6 +83,11 @@ pub(in crate::server) struct WsTcpRouteCtx {
     pub(in crate::server) protocol: Protocol,
     pub(in crate::server) path: Arc<str>,
     pub(in crate::server) candidate_users: Arc<[Arc<str>]>,
+    /// Per-route LRU consulted at handshake time to skip linear AEAD probing
+    /// when the same `peer_addr` previously authenticated against a known
+    /// user. Cloned from [`crate::server::state::TransportRoute`] so all
+    /// connections on the path share one cache.
+    pub(in crate::server) peer_user_cache: Arc<crate::server::peer_user_cache::PeerUserCache>,
 }
 
 /// Per-request resumption negotiation state, parsed once at WS Upgrade
@@ -172,6 +178,11 @@ struct WsTcpRelayState {
     /// the first authenticated frame; on resume hit it points at parked
     /// state, on miss it is dropped and a fresh upstream is established.
     pending_resume_request: Option<SessionId>,
+    /// Becomes true after the first successful AEAD decrypt has populated
+    /// `route.peer_user_cache` for this `peer_addr`. Subsequent frames skip
+    /// the cache write to avoid hammering the LRU mutex on every binary
+    /// frame of an established session.
+    peer_user_cache_recorded: bool,
 }
 
 struct WsTcpFrameOutput<'a, Msg> {
@@ -192,6 +203,7 @@ impl WsTcpRelayState {
             upstream_target_display: None,
             issued_session_id: resume.issued_session_id,
             pending_resume_request: resume.requested_resume,
+            peer_user_cache_recorded: false,
         }
     }
 }
@@ -220,6 +232,7 @@ async fn run_tcp_relay<T: WsSocket>(
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
     resume: ResumeContext,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<()> {
     let (mut reader, writer) = socket.split_io();
     let (outbound_data_tx, outbound_data_rx) =
@@ -235,6 +248,14 @@ async fn run_tcp_relay<T: WsSocket>(
     ));
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
+    // Try last-seen user first when this peer reconnects: cache hit avoids
+    // O(N) HKDF + AEAD probes at handshake. The decryptor self-heals on a
+    // stale hint by falling through to the full scan.
+    if let Some(addr) = peer_addr
+        && let Some(hint) = route.peer_user_cache.lookup(addr)
+    {
+        decryptor.set_user_hint(Some(hint));
+    }
     let mut plaintext_buffer = ScratchBuf::take();
     let mut state = WsTcpRelayState::new(resume);
     let mut client_closed = false;
@@ -276,6 +297,7 @@ async fn run_tcp_relay<T: WsSocket>(
                             data,
                             server,
                             route,
+                            peer_addr,
                             WsTcpFrameOutput {
                                 data_tx: &outbound_data_tx,
                                 make_binary: T::binary_msg,
@@ -476,6 +498,7 @@ async fn try_park_on_drop(
     true
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_tcp_binary_frame<Msg>(
     state: &mut WsTcpRelayState,
     decryptor: &mut AeadStreamDecryptor,
@@ -483,6 +506,7 @@ async fn handle_tcp_binary_frame<Msg>(
     data: Bytes,
     server: &WsTcpServerCtx,
     route: &WsTcpRouteCtx,
+    peer_addr: Option<SocketAddr>,
     outbound: WsTcpFrameOutput<'_, Msg>,
 ) -> Result<(), FrameError>
 where
@@ -509,6 +533,18 @@ where
             )));
         },
         Err(error) => return Err(FrameError::Fatal(anyhow!(error))),
+    }
+
+    // Back-fill the per-route hint as soon as authentication succeeds, so
+    // the *next* connection from this peer skips the candidate scan. The
+    // flag avoids re-locking the LRU shard on every subsequent binary
+    // frame of an established session.
+    if !state.peer_user_cache_recorded
+        && let Some(addr) = peer_addr
+        && let Some(idx) = decryptor.user_index()
+    {
+        route.peer_user_cache.record(addr, idx);
+        state.peer_user_cache_recorded = true;
     }
 
     if state.upstream_writer.is_none() {
@@ -721,8 +757,9 @@ pub(super) async fn handle_tcp_connection(
     server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
     resume: ResumeContext,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<()> {
-    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume).await
+    run_tcp_relay::<AxumWs>(AxumWs(socket), &server, &route, resume, peer_addr).await
 }
 
 pub(in crate::server) async fn handle_tcp_h3_connection(
@@ -730,6 +767,7 @@ pub(in crate::server) async fn handle_tcp_h3_connection(
     server: Arc<WsTcpServerCtx>,
     route: WsTcpRouteCtx,
     resume: ResumeContext,
+    peer_addr: Option<SocketAddr>,
 ) -> Result<()> {
-    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume).await
+    run_tcp_relay::<H3Ws>(H3Ws(socket), &server, &route, resume, peer_addr).await
 }
