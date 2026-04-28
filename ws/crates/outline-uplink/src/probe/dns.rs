@@ -27,7 +27,7 @@ pub(super) async fn run_dns_probe(
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
     effective_udp_mode: WsTransportMode,
-) -> Result<bool> {
+) -> Result<(bool, Option<WsTransportMode>)> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
 
@@ -38,7 +38,7 @@ pub(super) async fn run_dns_probe(
             let mut payload = dns_server.to_wire_bytes()?;
             payload.extend_from_slice(&query);
 
-            let transport = {
+            let (transport, downgraded_from) = {
                 let _permit =
                     dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
                 match uplink.transport {
@@ -49,7 +49,7 @@ pub(super) async fn run_dns_probe(
                         if effective_udp_mode == WsTransportMode::Quic {
                             #[cfg(feature = "quic")]
                             {
-                                connect_ss_udp_quic(
+                                let t = connect_ss_udp_quic(
                                     cache,
                                     udp_ws_url,
                                     uplink.fwmark,
@@ -64,7 +64,10 @@ pub(super) async fn run_dns_probe(
                                         "DNS probe raw-QUIC for uplink {}",
                                         uplink.name
                                     ),
-                                })?
+                                })?;
+                                // Raw QUIC bypasses WS — no `ws_mode_cache`
+                                // clamp can apply.
+                                (t, None)
                             }
                             #[cfg(not(feature = "quic"))]
                             {
@@ -74,7 +77,13 @@ pub(super) async fn run_dns_probe(
                                 ));
                             }
                         } else {
-                            UdpWsTransport::connect(
+                            // Use `connect_with_resume(..., resume_request=None)`
+                            // to surface the downgrade marker the same way as
+                            // the fresh-dial path. DNS probes do not
+                            // participate in cross-transport session
+                            // resumption, so the SessionId tuple element is
+                            // discarded.
+                            let (t, _issued, downgraded) = UdpWsTransport::connect_with_resume(
                                 cache,
                                 udp_ws_url,
                                 effective_udp_mode,
@@ -84,11 +93,13 @@ pub(super) async fn run_dns_probe(
                                 uplink.ipv6_first,
                                 "probe_dns",
                                 None,
+                                None,
                             )
                             .await
                             .with_context(|| TransportOperation::Connect {
                                 target: format!("DNS probe websocket for uplink {}", uplink.name),
-                            })?
+                            })?;
+                            (t, downgraded)
                         }
                     },
                     UplinkTransport::Shadowsocks => {
@@ -108,12 +119,13 @@ pub(super) async fn run_dns_probe(
                                 uplink.name
                             ),
                         })?;
-                        UdpWsTransport::from_socket(
+                        let t = UdpWsTransport::from_socket(
                             socket,
                             uplink.cipher,
                             &uplink.password,
                             "probe_dns",
-                        )?
+                        )?;
+                        (t, None)
                     },
                     UplinkTransport::Vless => unreachable!(),
                 }
@@ -151,7 +163,7 @@ pub(super) async fn run_dns_probe(
                     "probe transport close returned error during teardown"
                 );
             }
-            result
+            result.map(|ok| (ok, downgraded_from))
         },
         UplinkTransport::Vless => {
             let udp_ws_url = uplink.vless_ws_url.as_ref().ok_or_else(|| {
@@ -216,7 +228,8 @@ pub(super) async fn run_dns_probe(
                             "probe transport close returned error during teardown"
                         );
                     }
-                    return result;
+                    // Raw QUIC bypasses WS — no `ws_mode_cache` clamp can apply.
+                    return result.map(|ok| (ok, None));
                 }
                 #[cfg(not(feature = "quic"))]
                 {
@@ -227,10 +240,14 @@ pub(super) async fn run_dns_probe(
                 }
             }
 
-            let transport = {
+            // Use `connect_with_resume(..., None)` so the WS-mode downgrade
+            // marker propagates the same way as the SS branch above. DNS
+            // probes do not participate in cross-transport session
+            // resumption — the SessionId tuple element is discarded.
+            let (transport, downgraded_from) = {
                 let _permit =
                     dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
-                VlessUdpWsTransport::connect(
+                let (t, _issued, downgraded) = VlessUdpWsTransport::connect_with_resume(
                     cache,
                     udp_ws_url,
                     effective_udp_mode,
@@ -240,11 +257,13 @@ pub(super) async fn run_dns_probe(
                     uplink.ipv6_first,
                     "probe_dns",
                     None,
+                    None,
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
                     target: format!("DNS probe VLESS websocket for uplink {}", uplink.name),
-                })?
+                })?;
+                (t, downgraded)
             };
 
             let result = async {
@@ -278,7 +297,7 @@ pub(super) async fn run_dns_probe(
                     "probe transport close returned error during teardown"
                 );
             }
-            result
+            result.map(|ok| (ok, downgraded_from))
         },
     }
 }
