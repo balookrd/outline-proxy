@@ -52,14 +52,11 @@ outline-routing = { path = "crates/outline-routing" }
 outline-transport = { path = "crates/outline-transport" }
 outline-tun = { path = "crates/outline-tun", default-features = false, optional = true }
 outline-uplink = { path = "crates/outline-uplink", default-features = false }
-parking_lot = "0.12"
-rand = "0.8"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", optional = true }
 shadowsocks-crypto = { path = "crates/shadowsocks-crypto" }
 socks5-proto = { path = "crates/socks5-proto" }
-socket2 = "0.5"
 tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
