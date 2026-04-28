@@ -15,7 +15,7 @@ use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use serde::{Deserialize, Serialize};
 use tokio::fs;
-use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, Value};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 use tracing::{info, warn};
 
 use crate::config::UplinkSection;
@@ -645,13 +645,6 @@ fn json_error_owned(status: StatusCode, message: String) -> ControlResponse {
         error: String,
     }
     json_response(status, &Owned { error: message })
-}
-
-// Compile-time hint: `Array` is exported so downstream tests compile even
-// when toml_edit's re-exports shift between minor versions.
-#[allow(dead_code)]
-fn _toml_edit_array_unused() -> Array {
-    Array::new()
 }
 
 #[cfg(test)]
