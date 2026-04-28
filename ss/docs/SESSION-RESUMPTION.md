@@ -191,15 +191,6 @@ UDP cannot be back-pressured the same way. While the client is gone:
 
 UDP applications using session resumption are expected to be **streaming** workloads (video, large RTP, tunneled QUIC) where datagrams are at or near MTU. A packet-count cap creates wildly different memory budgets for DNS-like vs streaming traffic. A byte cap is uniform.
 
-#### UDP back-buffer policy
-
-| Parameter | Default | Purpose |
-|---|---|---|
-| `udp_orphan_backbuf_bytes` | 65536 | Per-sub-connection back-buffer cap, in bytes |
-| `udp_orphan_total_budget_bytes` | 536870912 (512 MiB) | Global cap across all UDP back-buffers |
-
-When the global budget is exceeded, the registry runs an LRU eviction over UDP entries (`orphan_evicted_oom_total` is incremented) until the budget is satisfied. TCP entries are not touched by this sweep.
-
 ### VLESS mux
 
 VLESS mux carries multiple sub-connections (TCP and UDP) over a single WebSocket frame stream. On disconnect:
@@ -284,7 +275,7 @@ A response of `miss-owner` would reveal that an ID exists but is owned by someon
 
 ### Resource exhaustion
 
-Per-user cap (`orphan_per_user_cap`, default 4) prevents a single user from accumulating sessions. Global LRU eviction at `orphan_global_cap` and `udp_orphan_total_budget_bytes` prevents pathological aggregate consumption.
+Per-user cap (`orphan_per_user_cap`, default 4) prevents a single user from accumulating sessions. Global LRU eviction at `orphan_global_cap` prevents pathological aggregate consumption.
 
 ### Negotiation downgrade
 
@@ -301,8 +292,6 @@ orphan_ttl_tcp_secs = 30
 orphan_ttl_udp_secs = 30
 orphan_per_user_cap = 4
 orphan_global_cap = 10000
-udp_orphan_backbuf_bytes = 65536
-udp_orphan_total_budget_bytes = 536870912
 ```
 
 When `enabled = false`, all `X-Outline-Resume*` headers and VLESS Addons opcodes are ignored on the server side; clients see the same behavior as if talking to an old server.

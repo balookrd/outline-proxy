@@ -56,16 +56,6 @@ impl Ipv6Prefix {
         Ok(Self { network, prefix_len })
     }
 
-    #[allow(dead_code)]
-    pub fn prefix_len(&self) -> u8 {
-        self.prefix_len
-    }
-
-    #[allow(dead_code)]
-    pub fn network(&self) -> Ipv6Addr {
-        self.network
-    }
-
     /// Returns a random IPv6 address from the prefix. The top `prefix_len`
     /// bits are preserved; the remaining host bits are filled with
     /// cryptographically-strong random bytes.
@@ -457,25 +447,25 @@ mod tests {
     #[test]
     fn parses_and_preserves_prefix() {
         let p: Ipv6Prefix = "2001:db8:dead::1/64".parse().unwrap();
-        assert_eq!(p.prefix_len(), 64);
-        assert_eq!(p.network(), "2001:db8:dead::".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(p.to_string(), "2001:db8:dead::/64");
 
+        let expected_net: Ipv6Addr = "2001:db8:dead::".parse().unwrap();
         for _ in 0..64 {
             let a = p.random_addr().unwrap();
-            let net = a.octets();
-            assert_eq!(&net[..8], &p.network().octets()[..8]);
+            assert_eq!(&a.octets()[..8], &expected_net.octets()[..8]);
         }
     }
 
     #[test]
     fn handles_non_byte_aligned_prefix() {
         let p: Ipv6Prefix = "2001:db8::/60".parse().unwrap();
+        let expected_net: Ipv6Addr = "2001:db8::".parse().unwrap();
+        let expected_bits = u128::from_be_bytes(expected_net.octets());
         for _ in 0..32 {
             let a = p.random_addr().unwrap();
             let got = u128::from_be_bytes(a.octets());
-            let expected = u128::from_be_bytes(p.network().octets());
             let mask: u128 = !0u128 << (128 - 60);
-            assert_eq!(got & mask, expected & mask);
+            assert_eq!(got & mask, expected_bits & mask);
         }
     }
 

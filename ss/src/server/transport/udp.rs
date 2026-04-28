@@ -576,7 +576,6 @@ async fn park_ss_udp_stream_on_drop(
         Parked::SsUdpStream(ParkedSsUdpStream {
             nat_keys: keys_to_park,
             owner,
-            protocol: route.protocol,
         }),
     );
 }

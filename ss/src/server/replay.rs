@@ -229,11 +229,6 @@ impl ReplayStore {
         evicted
     }
 
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
-        self.entries.len()
-    }
 }
 
 #[cfg(test)]

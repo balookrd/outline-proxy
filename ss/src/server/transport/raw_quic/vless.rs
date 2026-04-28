@@ -448,7 +448,6 @@ fn try_park_raw_quic_tcp(
         upstream_writer: writer,
         upstream_reader: reader,
         target_display,
-        protocol: Protocol::QuicRaw,
         owner: Arc::clone(&owner),
         // Cross-transport with the WS-side VLESS path is the whole
         // point of resuming raw QUIC: store under the same protocol
