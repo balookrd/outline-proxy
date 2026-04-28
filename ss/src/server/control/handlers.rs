@@ -8,12 +8,12 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::{CipherKind, UserEntry};
 
-use super::manager::{AccessUrlError, UserManager, UserPatch, UserView};
+use super::manager::{AccessUrlError, FieldPatch, UserManager, UserPatch, UserView};
 
 #[derive(Clone)]
 pub(super) struct ControlState {
@@ -91,48 +91,15 @@ pub(super) struct UpdateRequest {
 impl From<UpdateRequest> for UserPatch {
     fn from(req: UpdateRequest) -> Self {
         Self {
-            password: req.password.into_option(),
-            vless_id: req.vless_id.into_option(),
-            method: req.method.into_option(),
-            fwmark: req.fwmark.into_option(),
-            ws_path_tcp: req.ws_path_tcp.into_option(),
-            ws_path_udp: req.ws_path_udp.into_option(),
-            ws_path_vless: req.ws_path_vless.into_option(),
+            password: req.password,
+            vless_id: req.vless_id,
+            method: req.method,
+            fwmark: req.fwmark,
+            ws_path_tcp: req.ws_path_tcp,
+            ws_path_udp: req.ws_path_udp,
+            ws_path_vless: req.ws_path_vless,
             enabled: req.enabled,
         }
-    }
-}
-
-#[derive(Debug)]
-pub(super) enum FieldPatch<T> {
-    Missing,
-    Set(Option<T>),
-}
-
-impl<T> Default for FieldPatch<T> {
-    fn default() -> Self {
-        Self::Missing
-    }
-}
-
-impl<T> FieldPatch<T> {
-    fn into_option(self) -> Option<Option<T>> {
-        match self {
-            Self::Missing => None,
-            Self::Set(value) => Some(value),
-        }
-    }
-}
-
-impl<'de, T> Deserialize<'de> for FieldPatch<T>
-where
-    T: Deserialize<'de>,
-{
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Option::deserialize(deserializer).map(Self::Set)
     }
 }
 
