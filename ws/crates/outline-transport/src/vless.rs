@@ -59,12 +59,6 @@ const ADDON_TAG_RESUME_ID: u8 = 0x11;
 /// same as `RESUME_CAPABLE` but lives in the response Addons block,
 /// per docs/SESSION-RESUMPTION.md.
 const ADDON_TAG_SESSION_ID: u8 = 0x10;
-/// Server response opcode: outcome of a resume attempt. Length 1.
-/// Tag is the same as `RESUME_ID` but lives in the response Addons
-/// block.
-#[allow(dead_code)]
-const ADDON_TAG_RESUME_RESULT: u8 = 0x11;
-
 const VLESS_ATYP_IPV4: u8 = 0x01;
 const VLESS_ATYP_DOMAIN: u8 = 0x02;
 const VLESS_ATYP_IPV6: u8 = 0x03;
