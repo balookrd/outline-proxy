@@ -30,6 +30,7 @@ tokio = { version = "1.44", features = ["fs", "io-util", "macros", "net", "rt", 
 tracing = "0.1"
 
 [dev-dependencies]
+outline-uplink = { path = "../outline-uplink", default-features = false, features = ["test-helpers"] }
 tokio = { version = "1", features = ["test-util"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 url = { version = "2.5", features = ["serde"] }

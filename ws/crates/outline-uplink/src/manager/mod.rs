@@ -6,6 +6,8 @@ mod reporting;
 mod snapshot;
 mod standby;
 mod sticky;
+#[cfg(any(test, feature = "test-helpers"))]
+#[path = "tests/test_helpers.rs"]
 mod test_helpers;
 
 pub(crate) use reporting::log_uplink_summary_named;
