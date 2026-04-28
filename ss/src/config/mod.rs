@@ -125,6 +125,7 @@ pub struct Config {
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,
     pub method: CipherKind,
+    #[cfg_attr(not(feature = "control"), allow(dead_code))]
     pub access_key: AccessKeyConfig,
     /// Resolved tuning knobs (H2/H3 resource limits plus session/NAT timeouts
     /// and global UDP relay cap). Derived from the `tuning_profile` preset
@@ -147,8 +148,6 @@ pub struct SessionResumptionConfig {
     pub orphan_ttl_udp_secs: u64,
     pub orphan_per_user_cap: usize,
     pub orphan_global_cap: usize,
-    pub udp_orphan_backbuf_bytes: usize,
-    pub udp_orphan_total_budget_bytes: usize,
 }
 
 impl Default for SessionResumptionConfig {
@@ -160,8 +159,6 @@ impl Default for SessionResumptionConfig {
             orphan_ttl_udp_secs: 30,
             orphan_per_user_cap: 4,
             orphan_global_cap: 10_000,
-            udp_orphan_backbuf_bytes: 64 * 1024,
-            udp_orphan_total_budget_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -183,12 +180,6 @@ impl SessionResumptionConfig {
             orphan_global_cap: section
                 .orphan_global_cap
                 .unwrap_or(defaults.orphan_global_cap),
-            udp_orphan_backbuf_bytes: section
-                .udp_orphan_backbuf_bytes
-                .unwrap_or(defaults.udp_orphan_backbuf_bytes),
-            udp_orphan_total_budget_bytes: section
-                .udp_orphan_total_budget_bytes
-                .unwrap_or(defaults.udp_orphan_total_budget_bytes),
         }
     }
 }

@@ -47,9 +47,10 @@ impl ResumeMiss {
 
 pub(crate) enum ResumeOutcome {
     Hit(Parked),
-    /// Resume failed; the inner reason is observable via metrics but
-    /// callers do not currently switch on it (the only behavioural
-    /// difference between miss reasons is the metric reason label).
+    /// Resume failed; production callers do not switch on the inner
+    /// reason (the only behavioural difference is the metric label,
+    /// which is recorded inside `take_for_resume`). Tests do match on
+    /// it, hence `dead_code` allow rather than removing the payload.
     #[allow(dead_code)]
     Miss(ResumeMiss),
 }
@@ -383,7 +384,6 @@ mod tests {
             upstream_writer: writer,
             upstream_reader: reader,
             target_display: Arc::from("example.com:443"),
-            protocol: Protocol::Http2,
             owner: Arc::clone(&user_id),
             protocol_context: TcpProtocolContext::Ss(user),
             user_counters: metrics.user_counters(&user_id),

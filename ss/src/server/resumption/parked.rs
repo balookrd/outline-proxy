@@ -26,8 +26,8 @@ use tokio::net::{
 
 use crate::{
     crypto::UserKey,
-    metrics::{PerUserCounters, Protocol, TcpUpstreamGuard},
-    protocol::{TargetAddr, vless::VlessUser},
+    metrics::{PerUserCounters, TcpUpstreamGuard},
+    protocol::vless::VlessUser,
     server::nat::NatKey,
 };
 
@@ -83,7 +83,6 @@ pub(crate) enum TcpProtocolContext {
 
 impl TcpProtocolContext {
     /// Stable label for metrics and structured logs.
-    #[allow(dead_code)]
     pub(crate) fn label(&self) -> &'static str {
         match self {
             Self::Ss(_) => "ss",
@@ -102,10 +101,6 @@ pub(crate) struct ParkedTcp {
     pub(crate) upstream_reader: OwnedReadHalf,
     /// Human-readable target host:port, kept for logging only.
     pub(crate) target_display: Arc<str>,
-    /// Protocol of the original session. Stashed for future log/metric
-    /// dimensioning at resume time; not read by the MVP code path.
-    #[allow(dead_code)]
-    pub(crate) protocol: Protocol,
     pub(crate) owner: Arc<str>,
     /// Per-protocol context preserved across the resume hand-off; see
     /// [`TcpProtocolContext`].
@@ -133,11 +128,6 @@ pub(crate) struct ParkedVlessMux {
     pub(crate) buffer: BytesMut,
     pub(crate) user: VlessUser,
     pub(crate) owner: Arc<str>,
-    /// Protocol of the original session (HTTP/1, HTTP/2, HTTP/3).
-    /// Currently informational only; the resume path discovers its
-    /// own protocol from the new client stream.
-    #[allow(dead_code)]
-    pub(crate) protocol: Protocol,
     pub(crate) user_counters: Arc<PerUserCounters>,
 }
 
@@ -166,22 +156,11 @@ pub(crate) enum ParkedMuxSubKind {
 ///
 /// No back-buffer for upstream-bound packets is kept while parked:
 /// the kernel UDP receive buffer fills, and overflow packets drop
-/// silently. UDP is loss-tolerant by design; a future revision can
-/// add an in-process ring buffer per the spec's
-/// `udp_orphan_backbuf_bytes` knob.
+/// silently. UDP is loss-tolerant by design.
 pub(crate) struct ParkedVlessUdpSingle {
     pub(crate) socket: Arc<UdpSocket>,
-    /// Target the socket is `connect()`ed to. Stored as the original
-    /// `TargetAddr` (host:port, possibly a domain) so the logging at
-    /// resume time still shows the human form.
-    #[allow(dead_code)]
-    pub(crate) target: TargetAddr,
     /// Display string for the target — cheaper than re-formatting.
     pub(crate) target_display: Arc<str>,
-    /// Protocol (HTTP/1, HTTP/2, HTTP/3) of the original session;
-    /// informational only.
-    #[allow(dead_code)]
-    pub(crate) protocol: Protocol,
     pub(crate) owner: Arc<str>,
     /// VLESS user identity. Unlike the SS-TCP path we do not need a
     /// full `crypto::UserKey` here — VLESS doesn't encrypt the relay
@@ -218,9 +197,4 @@ pub(crate) struct ParkedSsUdpStream {
     /// build time.
     pub(crate) nat_keys: Vec<NatKey>,
     pub(crate) owner: Arc<str>,
-    /// Protocol of the original session. Informational only; the
-    /// resume side discovers its own protocol from the new
-    /// `UdpResponseSender`.
-    #[allow(dead_code)]
-    pub(crate) protocol: Protocol,
 }

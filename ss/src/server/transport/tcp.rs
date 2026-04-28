@@ -462,7 +462,6 @@ async fn try_park_on_drop(
         upstream_writer: writer,
         upstream_reader: reader,
         target_display,
-        protocol: route.protocol,
         owner: Arc::clone(&owner),
         protocol_context: TcpProtocolContext::Ss(user),
         user_counters,

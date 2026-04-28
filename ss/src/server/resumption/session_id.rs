@@ -29,12 +29,10 @@ impl SessionId {
     }
 
     /// Constructs from raw bytes. Used by Addons-decoding paths.
-    #[allow(dead_code)]
     pub(crate) fn from_bytes(bytes: [u8; 16]) -> Self {
         Self(bytes)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn as_bytes(&self) -> &[u8; 16] {
         &self.0
     }

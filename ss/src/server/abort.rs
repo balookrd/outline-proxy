@@ -23,16 +23,6 @@ impl<T> AbortOnDrop<T> {
         Self(Some(handle))
     }
 
-    /// Eagerly abort the task. Drop also aborts, so calling this is only
-    /// useful when you want to express the intent at a specific code point
-    /// (e.g. immediately on cleanup, before later async work).
-    #[allow(dead_code)]
-    pub(crate) fn abort(&self) {
-        if let Some(handle) = &self.0 {
-            handle.abort();
-        }
-    }
-
     /// Detaches the underlying `JoinHandle` and suppresses the on-drop
     /// abort. The caller takes responsibility for the task's lifecycle —
     /// typically by `.await`ing it and then handing off any output. Used

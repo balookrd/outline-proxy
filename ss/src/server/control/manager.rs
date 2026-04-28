@@ -7,7 +7,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use arc_swap::ArcSwap;
 use serde::Serialize;
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -32,7 +31,7 @@ use super::super::{
 use super::persist::persist_users;
 
 /// Owns the authoritative user list and publishes derived state via
-/// [`ArcSwap`]. Every mutation takes the single mutex, rebuilds the full route
+/// `ArcSwap`. Every mutation takes the single mutex, rebuilds the full route
 /// maps + auth slice, then publishes them atomically and re-serializes the
 /// config file. Readers on the data plane do a cheap `ArcSwap::load` and
 /// observe either the pre- or post-mutation state — never a mix.
@@ -419,9 +418,4 @@ impl UserPatch {
             entry.enabled = Some(enabled);
         }
     }
-}
-
-#[allow(dead_code)]
-fn _arc_swap_is_used(snapshot: &RoutesSnapshot) {
-    let _ = ArcSwap::load(snapshot);
 }

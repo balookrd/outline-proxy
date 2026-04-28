@@ -26,7 +26,7 @@ use crate::{
     protocol::{
         TargetAddr,
         vless_mux::{
-            self, FrameMeta, MuxError, Network, OPTION_DATA, OPTION_ERROR, ParsedFrame,
+            self, FrameMeta, Network, OPTION_DATA, OPTION_ERROR, ParsedFrame,
             SessionStatus, encode_frame, parse_frame,
         },
         vless::VlessUser,
@@ -182,11 +182,7 @@ impl MuxState {
     /// post-condition becomes "park a possibly-pruned mux". Callers
     /// that need an all-or-nothing guarantee should consult
     /// [`Self::is_parkable`] first.
-    pub async fn harvest_into_parked(
-        mut self,
-        owner: Arc<str>,
-        protocol: Protocol,
-    ) -> ParkedVlessMux {
+    pub async fn harvest_into_parked(mut self, owner: Arc<str>) -> ParkedVlessMux {
         let mut parked_subs = HashMap::with_capacity(self.sub_conns.len());
         for (id, sub) in self.sub_conns.drain() {
             let (kind, task, cancel) = sub.into_parts();
@@ -227,7 +223,6 @@ impl MuxState {
             buffer: self.buffer,
             user: self.user,
             owner,
-            protocol,
             user_counters: self.user_counters,
         }
     }
@@ -830,7 +825,3 @@ where
         .map_err(|_| anyhow!("failed to queue mux End frame"))?;
     Ok(())
 }
-
-// Suppress unused import warnings for items referenced only in future extensions.
-#[allow(dead_code)]
-fn _assert_mux_error(_e: MuxError) {}

@@ -445,18 +445,9 @@ async fn try_park_vless_udp_single(
         },
     };
     let owner = user.label_arc();
-    // We don't have a `TargetAddr` to hand back — `request.target` was
-    // consumed in `establish_vless_udp_upstream`. Reconstruct from the
-    // socket's connected peer for a faithful `target` field.
-    let target = match socket.peer_addr() {
-        Ok(addr) => crate::protocol::TargetAddr::Socket(addr),
-        Err(_) => crate::protocol::TargetAddr::Domain(target_display.to_string(), 0),
-    };
     let parked = ParkedVlessUdpSingle {
         socket: Arc::clone(&socket),
-        target,
         target_display,
-        protocol: route.protocol,
         owner: Arc::clone(&owner),
         user: user.clone(),
         user_counters,
@@ -539,7 +530,6 @@ async fn try_park_vless_tcp(
         upstream_writer: writer,
         upstream_reader: reader,
         target_display,
-        protocol: route.protocol,
         owner: Arc::clone(&owner),
         // VLESS does not encrypt the relay payload, so the parked entry
         // carries no inner crypto context. Resume-attach on the VLESS
@@ -594,9 +584,7 @@ async fn try_park_vless_mux(
         return false;
     };
     let owner = user.label_arc();
-    let parked = mux
-        .harvest_into_parked(Arc::clone(&owner), route.protocol)
-        .await;
+    let parked = mux.harvest_into_parked(Arc::clone(&owner)).await;
     if parked.sub_conns.is_empty() {
         // All sub-conns failed to harvest (cancel races / reader
         // panics). Nothing worth the registry slot.

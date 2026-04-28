@@ -49,6 +49,7 @@ pub fn build_access_key_artifacts(
     Ok(artifacts)
 }
 
+#[cfg_attr(not(feature = "control"), allow(dead_code))]
 pub fn build_access_key_artifacts_for_user(
     config: &Config,
     ak: &AccessKeyConfig,
