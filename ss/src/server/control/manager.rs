@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -381,41 +381,60 @@ impl UserManager {
 }
 
 pub(super) struct UserPatch {
-    pub password: Option<Option<String>>,
-    pub vless_id: Option<Option<String>>,
-    pub method: Option<Option<CipherKind>>,
-    pub fwmark: Option<Option<u32>>,
-    pub ws_path_tcp: Option<Option<String>>,
-    pub ws_path_udp: Option<Option<String>>,
-    pub ws_path_vless: Option<Option<String>>,
+    pub password: FieldPatch<String>,
+    pub vless_id: FieldPatch<String>,
+    pub method: FieldPatch<CipherKind>,
+    pub fwmark: FieldPatch<u32>,
+    pub ws_path_tcp: FieldPatch<String>,
+    pub ws_path_udp: FieldPatch<String>,
+    pub ws_path_vless: FieldPatch<String>,
     pub enabled: Option<bool>,
 }
 
 impl UserPatch {
     fn apply_to(self, entry: &mut UserEntry) {
-        if let Some(password) = self.password {
+        if let FieldPatch::Set(password) = self.password {
             entry.password = password;
         }
-        if let Some(vless_id) = self.vless_id {
+        if let FieldPatch::Set(vless_id) = self.vless_id {
             entry.vless_id = vless_id;
         }
-        if let Some(method) = self.method {
+        if let FieldPatch::Set(method) = self.method {
             entry.method = method;
         }
-        if let Some(fwmark) = self.fwmark {
+        if let FieldPatch::Set(fwmark) = self.fwmark {
             entry.fwmark = fwmark;
         }
-        if let Some(ws_path_tcp) = self.ws_path_tcp {
+        if let FieldPatch::Set(ws_path_tcp) = self.ws_path_tcp {
             entry.ws_path_tcp = ws_path_tcp;
         }
-        if let Some(ws_path_udp) = self.ws_path_udp {
+        if let FieldPatch::Set(ws_path_udp) = self.ws_path_udp {
             entry.ws_path_udp = ws_path_udp;
         }
-        if let Some(ws_path_vless) = self.ws_path_vless {
+        if let FieldPatch::Set(ws_path_vless) = self.ws_path_vless {
             entry.ws_path_vless = ws_path_vless;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);
         }
+    }
+}
+
+#[derive(Debug, Default)]
+pub(super) enum FieldPatch<T> {
+    #[default]
+    Missing,
+    Set(Option<T>),
+}
+
+impl<'de, T> Deserialize<'de> for FieldPatch<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Option::deserialize(deserializer).map(Self::Set)
     }
 }
