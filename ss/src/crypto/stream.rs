@@ -584,3 +584,7 @@ fn encrypt_ss2022_chunk(
     output.extend_from_slice(tag.as_ref());
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/stream.rs"]
+mod tests;

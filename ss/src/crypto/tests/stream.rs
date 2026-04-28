@@ -1,40 +1,13 @@
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
-};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
 
 use bytes::BytesMut;
 use ring::aead::Aad;
 
-use super::{
-    AeadStreamDecryptor, AeadStreamEncryptor, UdpCipherMode, UserKey, decrypt_udp_packet,
-    decrypt_udp_packet_with_hint, encrypt_udp_packet, encrypt_udp_packet_for_response,
-};
-use crate::{config::CipherKind, protocol::TargetAddr};
-
-#[test]
-fn next_stream_nonce_rejects_after_threshold() {
-    use super::error::CryptoError;
-    use super::primitives::{MAX_NONCE_COUNTER, next_stream_nonce};
-
-    let mut counter = MAX_NONCE_COUNTER - 1;
-    assert!(next_stream_nonce(&mut counter).is_ok());
-    assert_eq!(counter, MAX_NONCE_COUNTER);
-    assert!(matches!(next_stream_nonce(&mut counter), Err(CryptoError::NonceExhausted)));
-    // Counter must not advance past the limit on subsequent calls.
-    assert_eq!(counter, MAX_NONCE_COUNTER);
-    assert!(matches!(next_stream_nonce(&mut counter), Err(CryptoError::NonceExhausted)));
-}
-
-fn users(cipher: CipherKind, password_a: &str, password_b: &str) -> Arc<[UserKey]> {
-    Arc::from(
-        vec![
-            UserKey::new("alice", password_a, Some(1001), cipher).unwrap(),
-            UserKey::new("bob", password_b, Some(1002), cipher).unwrap(),
-        ]
-        .into_boxed_slice(),
-    )
-}
+use crate::config::CipherKind;
+use crate::crypto::tests::users;
+use crate::crypto::{AeadStreamDecryptor, AeadStreamEncryptor, UserKey, primitives, ss2022_header};
+use crate::protocol::TargetAddr;
 
 #[test]
 fn roundtrip_chacha20_stream() {
@@ -93,7 +66,7 @@ fn roundtrip_aes128_stream() {
 fn legacy_stream_encryptor_splits_large_responses() {
     let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
     let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
-    let plaintext = vec![0x5a; super::primitives::LEGACY_MAX_CHUNK_SIZE + 10_000];
+    let plaintext = vec![0x5a; primitives::LEGACY_MAX_CHUNK_SIZE + 10_000];
     let mut buf = BytesMut::new();
     encryptor.encrypt_chunk(&plaintext, &mut buf).unwrap();
     let ciphertext = buf.freeze();
@@ -104,30 +77,6 @@ fn legacy_stream_encryptor_splits_large_responses() {
     decryptor.drain_plaintext(&mut decrypted).unwrap();
 
     assert_eq!(decrypted, plaintext);
-}
-
-#[test]
-fn roundtrip_udp_packet() {
-    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
-    let ciphertext = encrypt_udp_packet(&users[1], b"udp payload").unwrap();
-    let packet = decrypt_udp_packet(users.as_ref(), &ciphertext).unwrap();
-
-    assert_eq!(packet.user.id(), "bob");
-    assert_eq!(packet.payload, b"udp payload");
-    assert_eq!(packet.session, UdpCipherMode::Legacy);
-}
-
-#[test]
-fn hinted_udp_packet_decrypt_falls_back_to_matching_user() {
-    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
-    let ciphertext = encrypt_udp_packet(&users[1], b"udp payload").unwrap();
-    let (packet, user_index) =
-        decrypt_udp_packet_with_hint(users.as_ref(), &ciphertext, Some(0), None).unwrap();
-
-    assert_eq!(user_index, 1);
-    assert_eq!(packet.user.id(), "bob");
-    assert_eq!(packet.payload, b"udp payload");
-    assert_eq!(packet.session, UdpCipherMode::Legacy);
 }
 
 #[test]
@@ -163,7 +112,7 @@ fn roundtrip_ss2022_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = super::primitives::build_session_key(
+    let key = primitives::build_session_key(
         CipherKind::Aes128Gcm2022,
         users[0].master_key(),
         &request_salt,
@@ -171,12 +120,12 @@ fn roundtrip_ss2022_tcp_stream() {
     .unwrap();
     let mut nonce_counter = 0;
 
-    let mut fixed_header = Vec::from([super::ss2022_header::SS2022_TCP_REQUEST_TYPE]);
+    let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut fixed_ct,
     )
@@ -188,7 +137,7 @@ fn roundtrip_ss2022_tcp_stream() {
     var_header.push(0xaa);
     let mut var_ct = var_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut var_ct,
     )
@@ -218,7 +167,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = super::primitives::build_session_key(
+    let key = primitives::build_session_key(
         CipherKind::Chacha20Poly13052022,
         users[0].master_key(),
         &request_salt,
@@ -226,12 +175,12 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     .unwrap();
     let mut nonce_counter = 0;
 
-    let mut fixed_header = vec![super::ss2022_header::SS2022_TCP_REQUEST_TYPE];
+    let mut fixed_header = vec![ss2022_header::SS2022_TCP_REQUEST_TYPE];
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut fixed_ct,
     )
@@ -243,7 +192,7 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     var_header.push(0xbb);
     let mut var_ct = var_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut var_ct,
     )
@@ -261,44 +210,6 @@ fn roundtrip_ss2022_chacha_tcp_stream() {
     let mut response = BytesMut::new();
     encryptor.encrypt_chunk(b"pong", &mut response).unwrap();
     assert!(!response.is_empty());
-}
-
-#[test]
-fn encrypts_ss2022_udp_response() {
-    let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
-    let user = UserKey::new("alice", psk, None, CipherKind::Aes128Gcm2022).unwrap();
-    let packet = encrypt_udp_packet_for_response(
-        &user,
-        &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(8, 8, 8, 8), 53))),
-        b"dns",
-        &UdpCipherMode::Aes2022 { client_session_id: [1; 8] },
-        Some([2; 8]),
-        0,
-    )
-    .unwrap();
-    assert!(packet.len() > 16);
-}
-
-#[test]
-fn encrypts_ss2022_chacha_udp_response() {
-    let psk = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
-    let user = UserKey::new("alice", psk, None, CipherKind::Chacha20Poly13052022).unwrap();
-    let packet = encrypt_udp_packet_for_response(
-        &user,
-        &TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 0, 0, 1), 5353))),
-        b"mdns",
-        &UdpCipherMode::Chacha2022 { client_session_id: [3; 8] },
-        Some([4; 8]),
-        0,
-    )
-    .unwrap();
-    assert!(packet.len() > super::primitives::XNONCE_LEN);
-}
-
-#[test]
-fn rejects_bad_ss2022_psk_length() {
-    let error = UserKey::new("alice", "c2hvcnQ=", None, CipherKind::Aes256Gcm2022).unwrap_err();
-    assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
 }
 
 #[test]
@@ -372,7 +283,7 @@ fn stream_user_hint_hit_on_ss2022() {
     let mut request = Vec::new();
     request.extend_from_slice(&request_salt);
 
-    let key = super::primitives::build_session_key(
+    let key = primitives::build_session_key(
         CipherKind::Aes128Gcm2022,
         users[1].master_key(),
         &request_salt,
@@ -380,12 +291,12 @@ fn stream_user_hint_hit_on_ss2022() {
     .unwrap();
     let mut nonce_counter = 0;
 
-    let mut fixed_header = Vec::from([super::ss2022_header::SS2022_TCP_REQUEST_TYPE]);
+    let mut fixed_header = Vec::from([ss2022_header::SS2022_TCP_REQUEST_TYPE]);
     fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
     fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
     let mut fixed_ct = fixed_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut fixed_ct,
     )
@@ -397,7 +308,7 @@ fn stream_user_hint_hit_on_ss2022() {
     var_header.push(0xee);
     let mut var_ct = var_header.clone();
     key.seal_in_place_append_tag(
-        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
         Aad::empty(),
         &mut var_ct,
     )
@@ -442,12 +353,5 @@ proptest::proptest! {
         let _ = decryptor.drain_plaintext(&mut output);
         decryptor.feed_ciphertext(tail);
         let _ = decryptor.drain_plaintext(&mut output);
-    }
-
-    // decrypt_udp_packet on arbitrary bytes must never panic.
-    #[test]
-    fn decrypt_udp_packet_never_panics(input: Vec<u8>) {
-        let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
-        let _ = decrypt_udp_packet(users.as_ref(), &input);
     }
 }

@@ -352,3 +352,7 @@ pub(super) fn decrypt_ss2022_separate_header(
     out.copy_from_slice(&block);
     Ok(out)
 }
+
+#[cfg(test)]
+#[path = "tests/udp.rs"]
+mod tests;

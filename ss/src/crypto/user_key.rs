@@ -161,3 +161,7 @@ fn bytes_to_key(password: &[u8], key_len: usize) -> Result<Vec<u8>, CryptoError>
     key.truncate(key_len);
     Ok(key)
 }
+
+#[cfg(test)]
+#[path = "tests/user_key.rs"]
+mod tests;
