@@ -22,6 +22,7 @@
 //! width / ordering MUST be made on both sides simultaneously and bump
 //! the ALPN version.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use anyhow::{Result, anyhow, bail};
@@ -46,11 +47,13 @@ pub struct OversizeStream {
     recv: Mutex<quinn::RecvStream>,
     /// `true` if the local side opened the stream and has not yet
     /// written the magic prefix — flipped to `false` after the first
-    /// `send_record` call.
-    pending_magic: Mutex<bool>,
+    /// `send_record` call. Access is already serialised by `send`, so
+    /// `Relaxed` ordering is sufficient.
+    pending_magic: AtomicBool,
     /// `true` if the receiver still expects to read the magic prefix
-    /// before any records — flipped to `false` after `validate_magic`.
-    expect_magic: Mutex<bool>,
+    /// before any records — flipped to `false` after the first
+    /// successful magic read. Serialised by `recv`.
+    expect_magic: AtomicBool,
 }
 
 impl OversizeStream {
@@ -60,8 +63,8 @@ impl OversizeStream {
         Self {
             send: Mutex::new(send),
             recv: Mutex::new(recv),
-            pending_magic: Mutex::new(true),
-            expect_magic: Mutex::new(true),
+            pending_magic: AtomicBool::new(true),
+            expect_magic: AtomicBool::new(true),
         }
     }
 
@@ -72,8 +75,8 @@ impl OversizeStream {
         Self {
             send: Mutex::new(send),
             recv: Mutex::new(recv),
-            pending_magic: Mutex::new(true),
-            expect_magic: Mutex::new(false),
+            pending_magic: AtomicBool::new(true),
+            expect_magic: AtomicBool::new(false),
         }
     }
 
@@ -88,11 +91,11 @@ impl OversizeStream {
             );
         }
         let mut send = self.send.lock().await;
-        let mut pending_magic = self.pending_magic.lock().await;
+        let pending_magic = self.pending_magic.load(Ordering::Relaxed);
         let frame_len =
-            if *pending_magic { OVERSIZE_STREAM_MAGIC.len() } else { 0 } + 2 + record.len();
+            if pending_magic { OVERSIZE_STREAM_MAGIC.len() } else { 0 } + 2 + record.len();
         let mut frame = Vec::with_capacity(frame_len);
-        if *pending_magic {
+        if pending_magic {
             frame.extend_from_slice(OVERSIZE_STREAM_MAGIC);
         }
         frame.extend_from_slice(&(record.len() as u16).to_be_bytes());
@@ -100,7 +103,9 @@ impl OversizeStream {
         send.write_all(&frame)
             .await
             .map_err(|e| anyhow!("oversize stream write_all failed: {e}"))?;
-        *pending_magic = false;
+        if pending_magic {
+            self.pending_magic.store(false, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -110,8 +115,7 @@ impl OversizeStream {
     /// record header is read.
     pub async fn recv_record(&self) -> Result<Option<Bytes>> {
         let mut recv = self.recv.lock().await;
-        let mut expect_magic = self.expect_magic.lock().await;
-        if *expect_magic {
+        if self.expect_magic.load(Ordering::Relaxed) {
             let mut magic = [0u8; OVERSIZE_STREAM_MAGIC.len()];
             match recv.read_exact(&mut magic).await {
                 Ok(()) => {},
@@ -123,9 +127,8 @@ impl OversizeStream {
             if &magic != OVERSIZE_STREAM_MAGIC {
                 bail!("oversize stream: bad magic prefix {magic:02x?}");
             }
-            *expect_magic = false;
+            self.expect_magic.store(false, Ordering::Relaxed);
         }
-        drop(expect_magic);
 
         let mut len_buf = [0u8; 2];
         match recv.read_exact(&mut len_buf).await {
