@@ -401,6 +401,20 @@ impl UplinkManager {
                 let ipv6_first = candidate.uplink.ipv6_first;
                 let keepalive = self.inner.load_balancing.udp_ws_keepalive_interval;
                 let limits = self.inner.load_balancing.vless_udp_mux_limits;
+                // Downgrade hook for the post-QUIC WS mux. The factory mints
+                // it at H2 (see comment above), but a stale `ws_mode_cache`
+                // could clamp further to H1 — without this hook that second
+                // step would be invisible to the uplink-manager.
+                let factory_manager = self.clone();
+                let factory_index = candidate.index;
+                let factory_on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
+                    Arc::new(move |requested: outline_transport::WsTransportMode| {
+                        factory_manager.note_silent_transport_fallback(
+                            factory_index,
+                            TransportKind::Udp,
+                            requested,
+                        );
+                    });
                 let ws_factory: outline_transport::WsFallbackFactory = Box::new(move || {
                     VlessUdpSessionMux::new_with_limits(
                         dns_cache,
@@ -413,6 +427,7 @@ impl UplinkManager {
                         keepalive,
                         limits,
                     )
+                    .with_on_downgrade(Some(factory_on_downgrade))
                 });
                 let manager = self.clone();
                 let index = candidate.index;
