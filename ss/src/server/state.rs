@@ -13,6 +13,7 @@ use crate::{
 };
 
 use super::nat::NatTable;
+use super::peer_user_cache::PeerUserCache;
 use super::replay::ReplayStore;
 use super::resumption::OrphanRegistry;
 use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx};
@@ -138,6 +139,11 @@ pub(super) struct AppState {
 pub(super) struct TransportRoute {
     pub(super) users: Arc<[UserKey]>,
     pub(super) candidate_users: Arc<[Arc<str>]>,
+    /// Per-route LRU mapping `peer_addr -> user_index` to skip the O(N)
+    /// AEAD-decryption probe at handshake time. Lives with the route because
+    /// `user_index` is meaningful only against `users`; on any control-plane
+    /// route rebuild the cache is replaced together with `users`.
+    pub(super) peer_user_cache: Arc<PeerUserCache>,
 }
 
 #[derive(Clone)]
@@ -150,6 +156,9 @@ pub(super) fn empty_transport_route() -> Arc<TransportRoute> {
     Arc::new(TransportRoute {
         users: Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
         candidate_users: Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+        peer_user_cache: Arc::new(PeerUserCache::with_capacity(
+            super::constants::TCP_PEER_USER_CACHE_CAPACITY,
+        )),
     })
 }
 

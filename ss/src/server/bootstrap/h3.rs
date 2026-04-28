@@ -545,6 +545,7 @@ async fn handle_h3_connection(
     connection: quinn::Connection,
     ctx: Arc<H3ConnectionCtx>,
 ) -> Result<()> {
+    let peer_addr = connection.remote_address();
     let mut h3_conn: H3Connection<h3_quinn::Connection, Bytes> =
         H3Connection::new(h3_quinn::Connection::new(connection))
             .await
@@ -577,7 +578,7 @@ async fn handle_h3_connection(
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
                     let _stream_permit = stream_permit;
-                    if let Err(error) = handle_h3_request(request, stream, ctx).await
+                    if let Err(error) = handle_h3_request(request, stream, ctx, peer_addr).await
                         && !is_normal_h3_shutdown(&error)
                     {
                         warn!(?error, "HTTP/3 request terminated with error");
@@ -602,6 +603,7 @@ async fn handle_h3_request(
     request: http::Request<()>,
     mut stream: h3::server::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     ctx: Arc<H3ConnectionCtx>,
+    peer_addr: std::net::SocketAddr,
 ) -> Result<()> {
     let path = request.uri().path().to_owned();
 
@@ -697,9 +699,16 @@ async fn handle_h3_request(
             protocol: Protocol::Http3,
             path: Arc::from(ws_req.path.as_str()),
             candidate_users: Arc::clone(&route.candidate_users),
+            peer_user_cache: Arc::clone(&route.peer_user_cache),
         };
-        let result =
-            handle_tcp_h3_connection(socket, Arc::clone(&ctx.tcp_server), route_ctx, resume).await;
+        let result = handle_tcp_h3_connection(
+            socket,
+            Arc::clone(&ctx.tcp_server),
+            route_ctx,
+            resume,
+            Some(peer_addr),
+        )
+        .await;
         finish_ws_session(session, result, "tcp");
     } else if ctx.udp_paths.contains(ws_req.path.as_str()) {
         let routes_snap = ctx.routes.load();

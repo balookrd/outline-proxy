@@ -33,6 +33,7 @@ mod dashboard;
 mod dns_cache;
 mod listeners;
 mod nat;
+mod peer_user_cache;
 mod periodic;
 mod relay;
 mod replay;

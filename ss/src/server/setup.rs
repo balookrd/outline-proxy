@@ -12,6 +12,8 @@ use crate::{
     protocol::vless::VlessUser,
 };
 
+use super::constants::TCP_PEER_USER_CACHE_CAPACITY;
+use super::peer_user_cache::PeerUserCache;
 use super::state::TransportRoute;
 
 /// A user along with the WebSocket paths it is reachable on.
@@ -89,6 +91,9 @@ pub(super) fn build_transport_route_map(
                 Arc::new(TransportRoute {
                     users: Arc::from(path_users.into_boxed_slice()),
                     candidate_users: Arc::from(candidate_users.into_boxed_slice()),
+                    peer_user_cache: Arc::new(PeerUserCache::with_capacity(
+                        TCP_PEER_USER_CACHE_CAPACITY,
+                    )),
                 }),
             )
         })

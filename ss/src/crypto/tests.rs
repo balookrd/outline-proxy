@@ -301,6 +301,119 @@ fn rejects_bad_ss2022_psk_length() {
     assert!(matches!(error, super::CryptoError::InvalidPskLength { .. }));
 }
 
+#[test]
+fn stream_user_hint_hit_authenticates_to_hinted_user() {
+    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+    let mut encryptor = AeadStreamEncryptor::new(&users[1], None).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"hint payload", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    decryptor.set_user_hint(Some(1));
+    decryptor.feed_ciphertext(&ciphertext);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
+    assert_eq!(decryptor.user_index(), Some(1));
+    assert_eq!(plaintext, b"hint payload");
+}
+
+#[test]
+fn stream_stale_user_hint_falls_back_to_correct_user() {
+    let users = users(CipherKind::Aes256Gcm, "secret-a", "secret-b");
+    // Encrypt as bob (index 1) but hint at alice (index 0). The hint must
+    // fail AEAD verification, then the scan must locate bob anyway.
+    let mut encryptor = AeadStreamEncryptor::new(&users[1], None).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"stale hint", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    decryptor.set_user_hint(Some(0));
+    decryptor.feed_ciphertext(&ciphertext);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
+    assert_eq!(decryptor.user_index(), Some(1));
+    assert_eq!(plaintext, b"stale hint");
+}
+
+#[test]
+fn stream_out_of_bounds_user_hint_is_ignored() {
+    let users = users(CipherKind::Chacha20IetfPoly1305, "secret-a", "secret-b");
+    let mut encryptor = AeadStreamEncryptor::new(&users[0], None).unwrap();
+    let mut buf = BytesMut::new();
+    encryptor.encrypt_chunk(b"oob hint", &mut buf).unwrap();
+    let ciphertext = buf.freeze();
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    // Index 9 is out of bounds for a 2-user list. set_user_hint must
+    // silently drop it so the scan still authenticates the right user.
+    decryptor.set_user_hint(Some(9));
+    decryptor.feed_ciphertext(&ciphertext);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.user().map(UserKey::id), Some("alice"));
+    assert_eq!(decryptor.user_index(), Some(0));
+    assert_eq!(plaintext, b"oob hint");
+}
+
+#[test]
+fn stream_user_hint_hit_on_ss2022() {
+    let psk = "MDEyMzQ1Njc4OWFiY2RlZg==";
+    let users = users(CipherKind::Aes128Gcm2022, psk, psk);
+    let request_salt = [9_u8; 16];
+    let target = TargetAddr::Socket(SocketAddr::from((Ipv4Addr::new(1, 1, 1, 1), 443)));
+    let target_bytes = target.encode().unwrap();
+    let mut request = Vec::new();
+    request.extend_from_slice(&request_salt);
+
+    let key = super::primitives::build_session_key(
+        CipherKind::Aes128Gcm2022,
+        users[1].master_key(),
+        &request_salt,
+    )
+    .unwrap();
+    let mut nonce_counter = 0;
+
+    let mut fixed_header = Vec::from([super::ss2022_header::SS2022_TCP_REQUEST_TYPE]);
+    fixed_header.extend_from_slice(&crate::clock::current_unix_secs().to_be_bytes());
+    fixed_header.extend_from_slice(&(target_bytes.len() as u16 + 3).to_be_bytes());
+    let mut fixed_ct = fixed_header.clone();
+    key.seal_in_place_append_tag(
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        Aad::empty(),
+        &mut fixed_ct,
+    )
+    .unwrap();
+    request.extend_from_slice(&fixed_ct);
+
+    let mut var_header = target_bytes.clone();
+    var_header.extend_from_slice(&1_u16.to_be_bytes());
+    var_header.push(0xee);
+    let mut var_ct = var_header.clone();
+    key.seal_in_place_append_tag(
+        super::primitives::next_stream_nonce(&mut nonce_counter).unwrap(),
+        Aad::empty(),
+        &mut var_ct,
+    )
+    .unwrap();
+    request.extend_from_slice(&var_ct);
+
+    let mut decryptor = AeadStreamDecryptor::new(users);
+    decryptor.set_user_hint(Some(1));
+    decryptor.feed_ciphertext(&request);
+    let mut plaintext = Vec::new();
+    decryptor.drain_plaintext(&mut plaintext).unwrap();
+
+    assert_eq!(decryptor.user().map(UserKey::id), Some("bob"));
+    assert_eq!(decryptor.user_index(), Some(1));
+}
+
 proptest::proptest! {
     // Feeding arbitrary bytes to the AEAD decryptor must never panic —
     // it must always either buffer silently or return Err.
