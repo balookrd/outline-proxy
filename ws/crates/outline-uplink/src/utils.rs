@@ -136,11 +136,11 @@ pub(crate) fn mark_probe_wakeup(
 }
 
 pub(crate) fn classify_runtime_failure_cause(error: &anyhow::Error) -> &'static str {
-    crate::error_text::classify_runtime_failure_cause(error)
+    crate::error_classify::classify_runtime_failure_cause(error)
 }
 
 pub(crate) fn classify_runtime_failure_signature(error: &anyhow::Error) -> &'static str {
-    crate::error_text::classify_runtime_failure_signature(error)
+    crate::error_classify::classify_runtime_failure_signature(error)
 }
 
 pub(crate) fn normalize_other_runtime_failure_detail(error_text: &str) -> String {

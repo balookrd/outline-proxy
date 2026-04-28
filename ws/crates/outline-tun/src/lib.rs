@@ -10,7 +10,7 @@ mod classify;
 pub(crate) mod defrag;
 mod device;
 mod engine;
-pub(crate) mod error_text;
+pub(crate) mod error_classify;
 mod frag;
 mod icmp;
 mod routing;

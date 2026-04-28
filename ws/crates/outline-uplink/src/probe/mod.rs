@@ -36,7 +36,7 @@ use super::types::ProbeOutcome;
 pub(crate) use self::http::build_http_probe_request;
 
 pub(crate) fn is_expected_standby_probe_failure(error: &anyhow::Error) -> bool {
-    crate::error_text::is_expected_standby_probe_failure(error)
+    crate::error_classify::is_expected_standby_probe_failure(error)
 }
 
 pub(crate) async fn probe_uplink(

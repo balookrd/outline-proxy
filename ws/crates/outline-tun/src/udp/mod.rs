@@ -40,7 +40,7 @@ use self::types::{UdpFlowKey, UdpFlowState};
 const TUN_FLOW_CLEANUP_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) fn classify_tun_udp_forward_error(error: &anyhow::Error) -> &'static str {
-    crate::error_text::classify_tun_udp_forward_error(error)
+    crate::error_classify::classify_tun_udp_forward_error(error)
 }
 
 fn build_udp_payload(target: &TargetAddr, payload: &[u8]) -> Result<Vec<u8>> {
