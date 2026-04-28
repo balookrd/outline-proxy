@@ -33,7 +33,7 @@ use url::Url;
 
 use crate::frame_io_quic::{QuicDatagramChannel, open_quic_frame_pair};
 use crate::quic::vless_udp::VlessUdpQuicSession;
-use crate::quic::{ALPN_SS, ALPN_VLESS, SharedQuicConnection, connect_quic_uplink};
+use crate::quic::{ALPN_SS, ALPN_VLESS, connect_quic_uplink};
 use crate::resumption::SessionId;
 use crate::tcp_transport::{
     QuicTcpReader, QuicTcpWriter, TcpShadowsocksReader, TcpShadowsocksWriter,
@@ -195,9 +195,4 @@ pub async fn connect_ss_udp_quic(
     let chan: Arc<dyn crate::frame_io::DatagramChannel> =
         Arc::new(QuicDatagramChannel::new(conn));
     UdpWsTransport::from_channel(chan, cipher, password, source)
-}
-
-#[allow(dead_code)]
-pub(crate) fn _shared_conn_typecheck(c: Arc<SharedQuicConnection>) -> Arc<SharedQuicConnection> {
-    c
 }
