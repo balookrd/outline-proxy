@@ -165,10 +165,15 @@ impl UdpWsTransport {
     /// server assigned via `X-Outline-Session` so the caller can stash
     /// it for the next reconnect.
     ///
-    /// Returns `(transport, Option<SessionId>)` — the second tuple
-    /// element is `Some` iff the server's WS Upgrade response carried
-    /// `X-Outline-Session`. A feature-disabled server will leave it
-    /// `None`, in which case the caller behaves like `connect()`.
+    /// Returns `(transport, issued_session_id, downgraded_from)`:
+    /// - `issued_session_id` is `Some` iff the server's WS Upgrade response
+    ///   carried `X-Outline-Session`.
+    /// - `downgraded_from` is `Some(requested_mode)` iff the underlying
+    ///   `connect_websocket_with_resume` produced a stream at a lower mode
+    ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
+    ///   fallback). The uplink-manager caller mirrors this into its
+    ///   per-uplink `h3_downgrade_until` window so routing/metrics see a
+    ///   consistent state.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_resume(
         cache: &DnsCache,
@@ -181,7 +186,7 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>)> {
+    ) -> Result<(Self, Option<SessionId>, Option<WsTransportMode>)> {
         let ws_stream = connect_websocket_with_resume(
             cache,
             url,
@@ -193,12 +198,14 @@ impl UdpWsTransport {
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
-        // Snapshot the Session ID before consuming the stream — the
-        // SS-encryption layer doesn't need it but the caller does.
+        // Snapshot the Session ID and downgrade marker before consuming
+        // the stream — the SS-encryption layer doesn't need either, but
+        // the caller does.
         let issued = ws_stream.issued_session_id();
+        let downgraded_from = ws_stream.downgraded_from();
         let transport =
             Self::from_websocket(ws_stream, cipher, password, source, keepalive_interval)?;
-        Ok((transport, issued))
+        Ok((transport, issued, downgraded_from))
     }
 
     pub async fn send_packet(&self, payload: &[u8]) -> Result<()> {
