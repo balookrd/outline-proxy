@@ -12,7 +12,7 @@ mod transport;
 mod ws;
 
 #[cfg(test)]
-mod test_loopback;
+mod tests;
 
 use std::sync::Arc;
 use std::time::Duration;

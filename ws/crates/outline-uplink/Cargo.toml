@@ -7,6 +7,10 @@ edition = "2024"
 default = ["metrics"]
 metrics = ["outline-metrics/prometheus"]
 quic = ["outline-transport/quic"]
+# Exposes test-only public methods on `UplinkManager` (`new_for_test`,
+# `test_set_tcp_health`, …). Enabled automatically by dependent crates'
+# `[dev-dependencies]` so integration tests can drive uplink state directly.
+test-helpers = []
 
 [dependencies]
 anyhow = "1.0"
