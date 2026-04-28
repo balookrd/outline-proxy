@@ -351,9 +351,6 @@ function protocolLabel(transport) {
   if (v === "shadowsocks" || v === "ws") return "SS";
   return transport ? String(transport) : "—";
 }
-function encapsulationLabel(transport) {
-  return protocolLabel(transport);
-}
 function transportLabel(mode) {
   const v = String(mode || "").toLowerCase();
   if (v === "http1") return "WS/H1";
@@ -363,7 +360,7 @@ function transportLabel(mode) {
   return null;
 }
 function stackLabel(transport, mode) {
-  const enc = encapsulationLabel(transport);
+  const enc = protocolLabel(transport);
   const t = String(transport || "").toLowerCase();
   if (t === "shadowsocks") return "SS/QUIC";
   const tr = transportLabel(mode);
@@ -398,7 +395,7 @@ function protocolPill(uplink) {
   const parts = [];
   if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg));
   if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg));
-  if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(encapsulationLabel(t))}</span>`;
+  if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(protocolLabel(t))}</span>`;
   return `<div class="proto-stack">${parts.join("")}</div>`;
 }
 function activeProtocolChip(group) {
