@@ -6,9 +6,9 @@ mod macros;
 mod probe;
 mod process;
 mod transport;
-mod uplink;
 #[cfg(feature = "tun")]
 mod tun;
+pub(super) mod uplink;
 
 impl Metrics {
     pub(super) fn new() -> Self {

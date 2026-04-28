@@ -3,12 +3,10 @@ use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
 use crate::config::{LoadBalancingMode, RoutingScope};
-use crate::utils::maybe_shrink_hash_map;
+use outline_transport::collections::maybe_shrink_hash_map;
 
 use super::super::selection::score_latency;
-use super::super::types::{
-    CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager,
-};
+use super::super::types::{CandidateState, RoutingKey, StickyRoute, TransportKind, UplinkManager};
 
 /// Lower bound for the background sticky-route prune cadence. Keeps the sweep
 /// bounded when `sticky_ttl` is very small (or zero, which disables per-flow

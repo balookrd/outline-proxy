@@ -3,10 +3,10 @@ use tracing::{debug, warn};
 
 use crate::config::{LoadBalancingConfig, UplinkTransport, WsTransportMode};
 
+use super::super::super::penalty::{add_penalty, update_rtt_ewma};
 use super::super::super::types::{
     PerTransportStatus, ProbeOutcome, TransportKind, Uplink, UplinkManager,
 };
-use super::super::super::utils::{add_penalty, update_rtt_ewma};
 use super::super::h3_downgrade::H3DowngradeTrigger;
 
 fn record_transport_failure(
@@ -182,12 +182,7 @@ impl UplinkManager {
         (refill_tcp, refill_udp)
     }
 
-    pub(super) fn process_probe_err(
-        &self,
-        index: usize,
-        uplink: &Uplink,
-        error: anyhow::Error,
-    ) {
+    pub(super) fn process_probe_err(&self, index: usize, uplink: &Uplink, error: anyhow::Error) {
         let now = Instant::now();
         let min_failures = self.inner.probe.min_failures as u32;
         let load_balancing = self.inner.load_balancing.clone();

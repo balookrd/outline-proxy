@@ -1,21 +1,25 @@
 use std::cmp::Ordering;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingMode, RoutingScope};
 use socks5_proto::TargetAddr;
 
+use super::super::routing_key::{routing_key, strict_route_key};
 use super::super::selection::{
     cooldown_active, cooldown_remaining, score_latency, selection_health, selection_score,
     strict_gate_transport, supports_transport_for_scope,
 };
 use super::super::types::{CandidateState, TransportKind, UplinkCandidate, UplinkManager};
-use super::super::utils::{rightless_bool, routing_key, strict_route_key};
 
 fn higher_weight_first(left_weight: f64, right_weight: f64) -> Ordering {
     right_weight.partial_cmp(&left_weight).unwrap_or(Ordering::Equal)
+}
+
+fn healthy_first(value: bool) -> u8 {
+    if value { 1 } else { 0 }
 }
 
 fn transport_reason_label(transport: TransportKind) -> &'static str {
@@ -192,8 +196,8 @@ impl UplinkManager {
     }
 
     fn primary_order(&self, left: &CandidateState, right: &CandidateState) -> Ordering {
-        rightless_bool(left.healthy)
-            .cmp(&rightless_bool(right.healthy))
+        healthy_first(left.healthy)
+            .cmp(&healthy_first(right.healthy))
             .reverse()
             .then_with(|| {
                 higher_weight_first(
@@ -214,8 +218,8 @@ impl UplinkManager {
     // Same shape as `primary_order` — kept as a separate function for clarity
     // at call sites that explicitly mark the cold-start case.
     fn initial_strict_order(&self, left: &CandidateState, right: &CandidateState) -> Ordering {
-        rightless_bool(left.healthy)
-            .cmp(&rightless_bool(right.healthy))
+        healthy_first(left.healthy)
+            .cmp(&healthy_first(right.healthy))
             .reverse()
             .then_with(|| {
                 higher_weight_first(
@@ -263,8 +267,8 @@ impl UplinkManager {
             now,
             &self.inner.load_balancing,
         );
-        rightless_bool(left.healthy)
-            .cmp(&rightless_bool(right.healthy))
+        healthy_first(left.healthy)
+            .cmp(&healthy_first(right.healthy))
             .reverse()
             .then_with(|| left_remaining.cmp(&right_remaining))
             .then_with(|| {
@@ -329,12 +333,7 @@ impl UplinkManager {
         transports
             .into_iter()
             .filter_map(|transport| {
-                transport_failover_detail(
-                    &candidate.status,
-                    transport,
-                    now,
-                    include_probe_health,
-                )
+                transport_failover_detail(&candidate.status, transport, now, include_probe_health)
             })
             .collect()
     }
@@ -535,10 +534,14 @@ impl UplinkManager {
                     let mut details = vec![if active_failed {
                         format!("failover: {gate_label} runtime failure on active uplink")
                     } else {
-                        active_failure_details.first().cloned()
+                        active_failure_details
+                            .first()
+                            .cloned()
                             .map(|detail| format!("failover: {detail}"))
                             .unwrap_or_else(|| {
-                                format!("failover: {gate_label} active gate rejected current uplink")
+                                format!(
+                                    "failover: {gate_label} active gate rejected current uplink"
+                                )
                             })
                     }];
                     for detail in active_failure_details.iter().skip(1) {

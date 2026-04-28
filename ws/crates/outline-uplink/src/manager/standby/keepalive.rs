@@ -10,7 +10,7 @@ use outline_metrics as metrics;
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
 use crate::probe::is_expected_standby_probe_failure;
-use crate::utils::maybe_shrink_vecdeque;
+use outline_transport::collections::maybe_shrink_vecdeque;
 
 use super::ctx::{STANDBY_WS_PEEK_TIMEOUT, StandbyCtx};
 
@@ -56,8 +56,9 @@ impl<'a> StandbyCtx<'a> {
                 {
                     Err(_elapsed) => Err(anyhow::Error::from(StandbyProbeExpected)
                         .context("standby websocket ping timed out")),
-                    Ok(Err(error)) => Err(anyhow::Error::from(error)
-                        .context("standby websocket ping failed")),
+                    Ok(Err(error)) => {
+                        Err(anyhow::Error::from(error).context("standby websocket ping failed"))
+                    },
                     Ok(Ok(())) => match timeout(STANDBY_WS_PEEK_TIMEOUT, ws.next()).await {
                         Err(_elapsed) => Ok(()), // still open — nothing to read
                         Ok(None) => Err(anyhow::Error::from(StandbyProbeExpected)
@@ -65,13 +66,10 @@ impl<'a> StandbyCtx<'a> {
                         Ok(Some(Err(error))) => {
                             Err(anyhow::Error::from(error).context("standby websocket error"))
                         },
-                        Ok(Some(Ok(Message::Close(frame)))) => {
-                            Err(anyhow::Error::from(StandbyProbeExpected)
-                                .context(format!(
-                                    "standby websocket closed by server: {:?}",
-                                    frame
-                                )))
-                        },
+                        Ok(Some(Ok(Message::Close(frame)))) => Err(anyhow::Error::from(
+                            StandbyProbeExpected,
+                        )
+                        .context(format!("standby websocket closed by server: {:?}", frame))),
                         Ok(Some(Ok(_))) => Ok(()), // control/data frame — still alive
                     },
                 }

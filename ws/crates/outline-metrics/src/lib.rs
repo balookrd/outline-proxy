@@ -31,15 +31,17 @@ mod transport;
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 mod tun;
 
-#[cfg(feature = "prometheus")]
-use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 use prometheus::IntGauge;
+#[cfg(feature = "prometheus")]
+use prometheus::{Gauge, GaugeVec, HistogramVec, IntCounterVec, IntGaugeVec, Registry};
 #[cfg(feature = "prometheus")]
 use std::sync::LazyLock;
 
 #[cfg(feature = "prometheus")]
 pub use self::process::{init, update_process_memory};
+#[cfg(feature = "prometheus")]
+pub use self::registration::uplink::normalize_other_runtime_failure_detail;
 #[cfg(feature = "prometheus")]
 pub use self::session::{SessionTracker, track_session};
 #[cfg(feature = "prometheus")]
@@ -51,9 +53,9 @@ pub use self::transport::{
     record_dropped_oversized_udp_packet, record_failover, record_metrics_http_request,
     record_probe, record_probe_wakeup, record_request, record_runtime_failure,
     record_runtime_failure_cause, record_runtime_failure_other_detail,
-    record_runtime_failure_signature, record_runtime_failure_suppressed,
-    record_transport_connect, record_uplink_selected, record_upstream_transport,
-    record_warm_standby_acquire, record_warm_standby_refill,
+    record_runtime_failure_signature, record_runtime_failure_suppressed, record_transport_connect,
+    record_uplink_selected, record_upstream_transport, record_warm_standby_acquire,
+    record_warm_standby_refill,
 };
 #[cfg(all(feature = "prometheus", feature = "tun"))]
 pub use self::tun::{
