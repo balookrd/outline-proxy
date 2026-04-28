@@ -157,6 +157,19 @@ impl<'a> StandbyCtx<'a> {
 
             match ws {
                 Ok(ws) => {
+                    // Surface a transport-level downgrade observed during
+                    // refill into the per-uplink window so `effective_*_ws_mode`
+                    // converges to the actually-dialable mode before any user
+                    // session even arrives. Without this, the first cold
+                    // refill after restart would silently fill the pool with
+                    // H2 entries while the manager still thought it was on H3.
+                    if let Some(requested) = ws.downgraded_from() {
+                        self.manager.note_silent_transport_fallback(
+                            self.index,
+                            self.transport,
+                            requested,
+                        );
+                    }
                     // H2/H3 connections are shared (one socket per server, N
                     // streams per socket), so pooling them is cheap. When
                     // H2/H3 is configured but the server fell back to Http1,
