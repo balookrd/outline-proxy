@@ -949,6 +949,21 @@ impl VlessUdpSessionMux {
         self.sessions.read().values().filter(|s| s.entry().is_some()).count()
     }
 
+    #[cfg(test)]
+    pub(crate) fn downgrade_latch_for_test(&self) -> bool {
+        self.downgrade_reported.load(Ordering::Acquire)
+    }
+
+    /// Test-only entry point that simulates the latch-reset path the mux
+    /// runs whenever a per-target dial succeeds at the requested mode after
+    /// a previous downgrade. Used by `vless_udp_mux_resets_downgrade_latch_*`
+    /// to drive the recovery branch without standing up a server that can
+    /// alternate between H3-up and H3-down on demand.
+    #[cfg(test)]
+    pub(crate) fn force_reset_downgrade_latch_for_test(&self) {
+        self.downgrade_reported.store(false, Ordering::Release);
+    }
+
     pub(crate) async fn session_for(
         &self,
         target: &TargetAddr,
@@ -1033,14 +1048,31 @@ impl VlessUdpSessionMux {
                 // hook. The compare_exchange ensures the notifier fires at
                 // most once per mux instance even if multiple per-target
                 // dials race during the same H3 outage window.
-                if let Some(requested) = downgraded_from
-                    && let Some(hook) = self.on_downgrade.as_ref()
-                    && self
-                        .downgrade_reported
-                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                        .is_ok()
-                {
-                    hook(requested);
+                //
+                // Reset the latch on the first dial that succeeds at the
+                // requested mode after a previous downgrade — this lets the
+                // hook fire again if H3 recovers and then drops out a second
+                // time during the lifetime of this mux instance.  Without
+                // this the latch would be one-shot for the lifetime of the
+                // process under long-lived muxes, hiding subsequent outages
+                // from the per-uplink window.
+                match downgraded_from {
+                    Some(requested) => {
+                        if let Some(hook) = self.on_downgrade.as_ref()
+                            && self
+                                .downgrade_reported
+                                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                                .is_ok()
+                        {
+                            hook(requested);
+                        }
+                    }
+                    None => {
+                        // Cheap relaxed-style store; racing with a Some-branch
+                        // CAS just means the next downgraded dial flips it
+                        // back to true via the same CAS.
+                        self.downgrade_reported.store(false, Ordering::Release);
+                    }
                 }
                 let transport = Arc::new(raw_transport);
                 let reader_task = spawn_vless_udp_session_reader(
