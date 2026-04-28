@@ -196,21 +196,23 @@ impl UplinkManager {
             .cmp(&rightless_bool(right.healthy))
             .reverse()
             .then_with(|| {
-                left.score
-                    .unwrap_or(Duration::MAX)
-                    .cmp(&right.score.unwrap_or(Duration::MAX))
-            })
-            .then_with(|| {
                 higher_weight_first(
                     self.inner.uplinks[left.index].weight,
                     self.inner.uplinks[right.index].weight,
                 )
+            })
+            .then_with(|| {
+                left.score
+                    .unwrap_or(Duration::MAX)
+                    .cmp(&right.score.unwrap_or(Duration::MAX))
             })
             .then_with(|| left.index.cmp(&right.index))
     }
 
     // Initial strict-mode selection (no previous active): weight before score
     // so that the configured priority signal dominates before any EWMA data.
+    // Same shape as `primary_order` — kept as a separate function for clarity
+    // at call sites that explicitly mark the cold-start case.
     fn initial_strict_order(&self, left: &CandidateState, right: &CandidateState) -> Ordering {
         rightless_bool(left.healthy)
             .cmp(&rightless_bool(right.healthy))
@@ -230,7 +232,14 @@ impl UplinkManager {
     }
 
     // Re-sort after a failed active uplink: prefer candidates whose cooldown
-    // expires soonest, break ties with penalty-aware latency score.
+    // expires soonest, then honour configured priority (`weight`), then break
+    // remaining ties with penalty-aware latency score.
+    //
+    // `weight` is treated as a hard priority — a deliberately downranked
+    // backup must not win failover by virtue of a faster probe RTT alone.
+    // Without this, `score = (EWMA + penalty) / weight` could let a
+    // low-weight, low-EWMA uplink outrank a higher-weight one with similar
+    // health, defeating the operator's intent.
     fn failover_order(
         &self,
         left: &CandidateState,
@@ -259,15 +268,15 @@ impl UplinkManager {
             .reverse()
             .then_with(|| left_remaining.cmp(&right_remaining))
             .then_with(|| {
-                left_score
-                    .unwrap_or(Duration::MAX)
-                    .cmp(&right_score.unwrap_or(Duration::MAX))
-            })
-            .then_with(|| {
                 higher_weight_first(
                     self.inner.uplinks[left.index].weight,
                     self.inner.uplinks[right.index].weight,
                 )
+            })
+            .then_with(|| {
+                left_score
+                    .unwrap_or(Duration::MAX)
+                    .cmp(&right_score.unwrap_or(Duration::MAX))
             })
             .then_with(|| left.index.cmp(&right.index))
     }

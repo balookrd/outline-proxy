@@ -893,14 +893,14 @@ Each uplink has its own:
 - UDP URL and mode
 - cipher and password
 - optional Linux `fwmark`
-- optional relative routing preference via `weight`
+- per-uplink priority via `weight` — treated as a **hard** ordering signal: among healthy candidates the highest weight always wins, regardless of EWMA. Use `weight` to mark backups you do not want the failover/sticky path to drift onto. Equal-weight uplinks are tie-broken by EWMA-derived score (and finally by config index).
 
 Selection pipeline:
 
 1. Health probes update the latest raw RTT and EWMA RTT.
 2. Probe-confirmed failures add a decaying failure penalty. When probes are enabled, runtime failures (e.g. an H3 connection reset under load) do not add a penalty on their own — they only set a temporary cooldown. The penalty is added only when a probe confirms a real failure (`consecutive_failures ≥ min_failures`). This prevents penalty accumulation on a healthy uplink due to transient errors under load.
 3. Effective latency is derived from EWMA RTT plus current penalty.
-4. Final score is `effective_latency / weight`.
+4. Candidates are sorted: healthy first, then by `weight` (higher first), then by `effective_latency / weight`, then by config index. EWMA-derived score only ranks within the **same** weight band — it cannot promote a lower-weight uplink above a higher-weight one.
 5. Sticky routing and hysteresis reduce avoidable switches.
 6. Warm-standby pools reduce connection setup latency.
 
@@ -917,7 +917,7 @@ Routing scope behavior:
 - `false` (default): the active uplink is **only replaced when it fails** (enters cooldown or is no longer healthy). While the active uplink is still healthy, it stays active regardless of whether a higher-priority uplink has recovered. This is the recommended setting for production because it avoids connection disruption caused by proactive primary preference.
 - `true`: when the current active uplink is healthy and a probe-healthy candidate with a higher `weight` (or equal weight and lower config index) exists, the proxy may return traffic to that candidate — but only after the candidate has accumulated `min_failures` consecutive successful probe cycles. Priority is determined by `weight`, not EWMA: this prevents spurious switches under load, when the active uplink's EWMA is temporarily elevated. Failback only moves toward higher weight; switching to a lower-weight uplink requires a probe-confirmed failover.
 
-**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted with penalty-aware scoring (EWMA RTT + decaying failure penalty / weight). This prevents oscillation with three or more uplinks: without penalties, a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed, causing rapid back-and-forth. With penalties, a fresher backup with a higher raw RTT wins over the recently-failed primary until the penalty decays.
+**Penalty-aware failover:** when the current active uplink enters cooldown and the selector must pick a replacement, candidates are re-sorted as: healthy first → cooldown remaining → `weight` (higher first) → penalty-aware EWMA score (`(EWMA + penalty) / weight`) → config index. `weight` is the primary ordering signal so a deliberately downranked backup is not promoted by a faster probe RTT alone; the penalty-aware score still breaks ties within the same weight, preventing oscillation with three or more equal-weight uplinks (without penalties a probe-cleared primary with a better raw EWMA would be selected again immediately even though it just failed).
 
 Runtime failover:
 

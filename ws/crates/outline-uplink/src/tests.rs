@@ -83,6 +83,13 @@ fn probe_disabled() -> ProbeConfig {
     }
 }
 
+fn probe_enabled() -> ProbeConfig {
+    ProbeConfig {
+        ws: WsProbeConfig { enabled: true },
+        ..probe_disabled()
+    }
+}
+
 #[test]
 fn http_probe_uses_head_request() {
     let request = build_http_probe_request("example.com", 80, "/healthz?full=1");
@@ -252,6 +259,169 @@ async fn cold_start_active_passive_prefers_higher_weight_over_better_rtt() {
     let first = manager.tcp_candidates(&target).await;
     assert_eq!(first[0].uplink.name, "heavy");
     assert_eq!(manager.global_active_uplink_index().await, Some(1));
+}
+
+#[tokio::test]
+async fn global_failover_respects_weight_against_extreme_rtt_gap() {
+    // Reproduces the user's observation: a deliberately de-prioritised
+    // uplink (weight=0.1) that happens to also have a much smaller probe
+    // RTT can still take over after the primary fails.
+    //
+    // Uplinks:
+    //   primary  weight=2.0 ewma=100ms — active, fails
+    //   low      weight=0.1 ewma=2ms   — fast LAN-ish backup, deliberately downranked
+    //   regular  weight=1.0 ewma=50ms  — normal backup, wanted as the failover target
+    //
+    // failover_order's primary key is score = (ewma + penalty) / weight:
+    //   low.score     = 2 / 0.1   = 20ms
+    //   regular.score = 50 / 1.0  = 50ms
+    // → low wins by raw score even though regular is a 10x higher-weight candidate.
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            UplinkConfig {
+                weight: 2.0,
+                ..make_uplink("primary", "wss://primary.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 0.1,
+                ..make_uplink("low", "wss://low.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 1.0,
+                ..make_uplink("regular", "wss://regular.example.com/tcp")
+            },
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 100).await; // primary
+    set_tcp_status(&manager, 1, true, 2).await;   // low (much faster)
+    set_tcp_status(&manager, 2, true, 50).await;  // regular
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let _ = manager.tcp_candidates(&target).await;
+
+    // Primary fails — failover should pick "regular" (the deliberately
+    // weighted-up backup), NOT "low" despite its faster RTT.
+    set_tcp_status(&manager, 0, false, 100).await;
+    let after = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        after[0].uplink.name, "regular",
+        "global failover should respect weight as a hard priority, got {}",
+        after[0].uplink.name
+    );
+}
+
+#[tokio::test]
+async fn global_failover_prefers_higher_weight_over_better_rtt() {
+    // Stronger version of the user's report: the low-weight uplink also
+    // has the *lowest* probe RTT.  That's the case the user actually hits
+    // in production — a cheap fast backup link they don't want to fail
+    // over to except as a last resort.
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            UplinkConfig {
+                weight: 2.0,
+                ..make_uplink("primary", "wss://primary.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 0.1,
+                ..make_uplink("low", "wss://low.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 1.0,
+                ..make_uplink("regular", "wss://regular.example.com/tcp")
+            },
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+
+    set_tcp_status(&manager, 0, true, 100).await; // primary, 100ms
+    set_tcp_status(&manager, 1, true, 10).await;  // low, 10ms (fastest!)
+    set_tcp_status(&manager, 2, true, 50).await;  // regular, 50ms
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let initial = manager.tcp_candidates(&target).await;
+    assert_eq!(initial[0].uplink.name, "primary");
+
+    // Primary fails. Among healthy alternatives:
+    //   regular: weight=1.0, ewma=50ms  → score = 50 / 1.0 = 50ms
+    //   low:     weight=0.1, ewma=10ms  → score = 10 / 0.1 = 100ms
+    // We want "regular" — its weight is 10x higher, so a 5x EWMA
+    // disadvantage should still leave it preferred.
+    set_tcp_status(&manager, 0, false, 100).await;
+    let after = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        after[0].uplink.name, "regular",
+        "global failover must prefer higher-weight uplink even when low-weight has better RTT, got {}",
+        after[0].uplink.name
+    );
+}
+
+#[tokio::test]
+async fn global_failover_prefers_higher_weight_uplink() {
+    // Repro for "weight is ignored in global mode": when the active uplink
+    // dies we want the *highest-weight* healthy alternative, not whichever
+    // uplink has slightly lower index or raw RTT.
+    //
+    // Probe is enabled because that is the realistic setup — with probes
+    // disabled, healthy=false alone does not flip the active uplink (only
+    // runtime cooldown does in that mode).
+    let mut config = lb();
+    config.mode = LoadBalancingMode::ActivePassive;
+    config.routing_scope = RoutingScope::Global;
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![
+            UplinkConfig {
+                weight: 2.0,
+                ..make_uplink("primary", "wss://primary.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 0.1,
+                ..make_uplink("low", "wss://low.example.com/tcp")
+            },
+            UplinkConfig {
+                weight: 1.0,
+                ..make_uplink("regular", "wss://regular.example.com/tcp")
+            },
+        ],
+        probe_enabled(),
+        config,
+    )
+    .unwrap();
+
+    // Same RTT across the three uplinks — only weight differs.
+    set_tcp_status(&manager, 0, true, 50).await;
+    set_tcp_status(&manager, 1, true, 50).await;
+    set_tcp_status(&manager, 2, true, 50).await;
+
+    let target = TargetAddr::Domain("example.com".to_string(), 443);
+    let initial = manager.tcp_candidates(&target).await;
+    assert_eq!(initial[0].uplink.name, "primary");
+
+    // Primary dies; expect failover to "regular" (weight=1.0), NOT to
+    // "low" (weight=0.1) even though both are healthy and "low" is at a
+    // lower config index.
+    set_tcp_status(&manager, 0, false, 50).await;
+    let after = manager.tcp_candidates(&target).await;
+    assert_eq!(
+        after[0].uplink.name, "regular",
+        "global failover must prefer higher-weight uplink, got {}",
+        after[0].uplink.name
+    );
 }
 
 #[tokio::test]
