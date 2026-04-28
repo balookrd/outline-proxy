@@ -32,6 +32,14 @@ pub(crate) enum H3DowngradeTrigger<'a> {
     ProbeConnectFailure(&'a anyhow::Error),
     /// Explicit H3 recovery re-probe failed to confirm H3 liveness.
     RecoveryReprobeFail,
+    /// A dial succeeded but at a lower mode than requested — the host-level
+    /// `ws_mode_cache` clamp or inline H3→H2/H1 fallback inside
+    /// `connect_websocket_with_resume` silently produced a downgraded
+    /// stream. Carries the originally-requested mode for the log message.
+    /// Fired from probe / refill / fresh-dial / mux paths so the per-uplink
+    /// `h3_downgrade_until` window stays in sync with the actually-dialable
+    /// transport even when the operation itself reports success.
+    SilentTransportFallback(WsTransportMode),
 }
 
 impl UplinkManager {
@@ -126,6 +134,18 @@ impl UplinkManager {
                     downgrade_secs,
                     "H3 still unreachable, starting downgrade window after recovery probe"
                 ),
+                (H3DowngradeTrigger::SilentTransportFallback(requested), TransportKind::Tcp) => warn!(
+                    uplink = %uplink.name,
+                    requested_mode = %requested,
+                    downgrade_secs,
+                    "TCP dial silently fell back from {requested} via ws_mode_cache, syncing per-uplink downgrade window"
+                ),
+                (H3DowngradeTrigger::SilentTransportFallback(requested), TransportKind::Udp) => warn!(
+                    uplink = %uplink.name,
+                    requested_mode = %requested,
+                    downgrade_secs,
+                    "UDP dial silently fell back from {requested} via ws_mode_cache, syncing per-uplink downgrade window"
+                ),
             }
         } else if matches!(trigger, H3DowngradeTrigger::RecoveryReprobeFail) && advances_deadline {
             debug!(
@@ -148,6 +168,26 @@ impl UplinkManager {
         error: &anyhow::Error,
     ) {
         self.extend_h3_downgrade(index, transport, H3DowngradeTrigger::RuntimeFailure(error));
+    }
+
+    /// Public entry-point for callers that observe a transport-level WS-mode
+    /// downgrade after a *successful* dial — the `ws_mode_cache` clamped the
+    /// requested mode or `connect_websocket_with_resume` ran an inline
+    /// fallback. Distinct from `note_advanced_mode_dial_failure` so the log
+    /// reflects "silent fallback" rather than "runtime error", which makes
+    /// the operational signal accurate when this fires from the probe loop,
+    /// the standby-refill loop, or fresh-dial paths.
+    pub fn note_silent_transport_fallback(
+        &self,
+        index: usize,
+        transport: TransportKind,
+        requested: WsTransportMode,
+    ) {
+        self.extend_h3_downgrade(
+            index,
+            transport,
+            H3DowngradeTrigger::SilentTransportFallback(requested),
+        );
     }
 
     /// Clear the H3 downgrade window for `(index, transport)`.  Called when
