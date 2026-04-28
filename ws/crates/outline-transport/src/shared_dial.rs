@@ -32,7 +32,7 @@ pub(crate) trait WsDialer: 'static {
 
     /// Whether to try every resolved DNS address on failure rather than only
     /// the first.  H3 sets this; H2 currently uses the first address only.
-    fn try_all_dns_addrs(&self) -> bool;
+    fn multi_address_failover_enabled(&self) -> bool;
 
     fn make_key(&self, server_name: &str, server_port: u16, fwmark: Option<u32>) -> Self::Key;
 
@@ -122,7 +122,7 @@ pub(crate) async fn connect_ws_probe<D: WsDialer>(
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Resolve DNS then dial one or all addresses depending on
-/// `dialer.try_all_dns_addrs()`.  Returns the first successful
+/// `dialer.multi_address_failover_enabled()`.  Returns the first successful
 /// `(connection, stream)` pair or a `TransportOperation::Connect` error.
 async fn resolve_and_dial<D: WsDialer>(
     dialer: &D,
@@ -146,7 +146,7 @@ async fn resolve_and_dial<D: WsDialer>(
         }));
     }
 
-    let addrs: &[SocketAddr] = if dialer.try_all_dns_addrs() {
+    let addrs: &[SocketAddr] = if dialer.multi_address_failover_enabled() {
         &server_addrs
     } else {
         &server_addrs[..1]

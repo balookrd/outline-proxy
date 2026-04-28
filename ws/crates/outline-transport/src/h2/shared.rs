@@ -389,7 +389,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         "h2"
     }
 
-    fn try_all_dns_addrs(&self) -> bool {
+    fn multi_address_failover_enabled(&self) -> bool {
         false
     }
 
