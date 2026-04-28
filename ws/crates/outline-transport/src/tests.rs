@@ -239,3 +239,51 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
     assert!(matches!(ws_two, WsTransportStream::H2 { .. }));
     server.wait_for_counts(2, 2).await;
 }
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
+    // Pre-populating the per-host `ws_mode_cache` with an H3 failure forces
+    // `effective_mode` to clamp the next H3 dial down to H2 before any
+    // handshake. The returned stream should carry `downgraded_from = Some(H3)`
+    // so uplink-manager callsites can mirror the downgrade into their
+    // per-uplink window.
+    let server = TestH2Server::start().await;
+    let url = server.url();
+    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+
+    let stream = connect_websocket_with_source(
+        &DnsCache::default(),
+        &url,
+        WsTransportMode::H3,
+        None,
+        false,
+        "test_downgrade_clamp",
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stream, WsTransportStream::H2 { .. }));
+    assert_eq!(stream.downgraded_from(), Some(WsTransportMode::H3));
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn dial_at_requested_mode_carries_no_downgrade_marker() {
+    let server = TestH2Server::start().await;
+    let url = server.url();
+
+    let stream = connect_websocket_with_source(
+        &DnsCache::default(),
+        &url,
+        WsTransportMode::H2,
+        None,
+        false,
+        "test_no_downgrade",
+    )
+    .await
+    .unwrap();
+
+    assert!(matches!(stream, WsTransportStream::H2 { .. }));
+    assert_eq!(stream.downgraded_from(), None);
+}
