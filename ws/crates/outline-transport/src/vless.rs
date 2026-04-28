@@ -940,16 +940,7 @@ impl VlessUdpSessionMux {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn session_count(&self) -> usize {
-        // Count only populated slots so test assertions match the
-        // "open WS sessions" intuition; in-flight slots are visible
-        // through the public API only as in-progress `session_for`
-        // futures, not as completed sessions.
-        self.sessions.read().values().filter(|s| s.entry().is_some()).count()
-    }
-
-    #[cfg(test)]
+    #[cfg(all(test, feature = "metrics"))]
     pub(crate) fn downgrade_latch_for_test(&self) -> bool {
         self.downgrade_reported.load(Ordering::Acquire)
     }
@@ -959,7 +950,7 @@ impl VlessUdpSessionMux {
     /// a previous downgrade. Used by `vless_udp_mux_resets_downgrade_latch_*`
     /// to drive the recovery branch without standing up a server that can
     /// alternate between H3-up and H3-down on demand.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "metrics"))]
     pub(crate) fn force_reset_downgrade_latch_for_test(&self) {
         self.downgrade_reported.store(false, Ordering::Release);
     }
