@@ -48,6 +48,20 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         outline_transport::DEFAULT_DNS_CACHE_TTL,
     ));
 
+    // Wire the per-host `ws_mode_cache` TTL to the configured
+    // `mode_downgrade_secs` (legacy alias `h3_downgrade_secs`). The cache
+    // is keyed by `host:port` and shared across all uplink groups, so we
+    // pick the maximum across groups: if any group asks for a more
+    // conservative window, the global cache must hold at least as long.
+    if let Some(max_ttl) = config
+        .groups
+        .iter()
+        .map(|g| g.load_balancing.mode_downgrade_duration)
+        .max()
+    {
+        outline_transport::init_downgrade_ttl(max_ttl);
+    }
+
     // Hold a clone so `/control/apply` can rebuild the registry against
     // the same on-disk persistence layer.
     #[cfg(feature = "control")]
