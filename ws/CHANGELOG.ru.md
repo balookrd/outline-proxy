@@ -66,6 +66,7 @@
 
 ### Исправлено
 
+- WebSocket-over-h2 диалер слал `:path = //{ws_path}` потому что `H2Dialer::open_on` форматировал `target_uri` как `format!("{scheme}://{auth}/{path}")`, а `websocket_path` уже возвращает ведущий `/`. Серверные axum-роутеры отвергают двойной слэш с 404, что годами маскировалось h1-фолбэком в WS-h2 диспетчере (tungstenite нормализует слэш по дороге на провод). h2-путь теперь конкатенирует без повторного `/`. Виден только на h2-only серверах (RFC 8441 стеки без h1) и всплыл благодаря cross-repo h3→h2 fallback тесту в `outline-ss-rust`.
 - XHTTP h3 stream-one закрывал QUIC-соединение с `H3_NO_ERROR` ещё до того, как через него пройдёт хоть один прикладной байт: единственный `SendRequest` уезжал в `open_h3_stream_one`, дропался на return, а `SendRequest::drop` в крейте h3 делает graceful-close, как только `sender_count` падает в ноль. Зеркалит паттерн packet-up — клонируем перед open-хелпером, оригинал держим живым в driver-task'е. Тот же коммит переносит quinn `Endpoint` в driver-task (прежний `let _endpoint_guard = endpoint;` держал его живым только в скоупе функции, не на время сессии).
 - Дашборд: per-instance hyper connection driver теперь аборитится при завершении proxy task — закрывает протечку control-API сокета, копившуюся при churn инстансов.
 - Raw QUIC: разорван цикл Arc в `VlessUdpDemuxer`, удерживавший probe-driven QUIC-коннекты живыми после завершения пробы; пробы больше не пинят коннекты дольше их естественной жизни.
