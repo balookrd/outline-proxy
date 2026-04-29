@@ -226,6 +226,24 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         );
                     }
                     let mode = vless_mode.unwrap_or_default();
+                    // `xhttp_h3`, `ws_h3` and `quic` all need the
+                    // QUIC + h3 stack that lives behind the optional
+                    // `h3` feature on this binary (it pulls
+                    // `outline-transport/h3` and `outline-uplink/quic`
+                    // transitively). Catch the build-time mismatch at
+                    // config load instead of as a confusing dial-time
+                    // failure deep in the dispatcher.
+                    #[cfg(not(feature = "h3"))]
+                    if matches!(
+                        mode,
+                        TransportMode::XhttpH3 | TransportMode::WsH3 | TransportMode::Quic
+                    ) {
+                        bail!(
+                            "uplink {name}: mode={mode} requires the `h3` feature; \
+                             rebuild with `--features h3` (the default profile already enables it) \
+                             or pick a non-h3 mode"
+                        );
+                    }
                     // Cross-check: the URL field carrying the dial target
                     // must match the chosen mode. Forgetting either is a
                     // common mistake; surface it as a clear error rather

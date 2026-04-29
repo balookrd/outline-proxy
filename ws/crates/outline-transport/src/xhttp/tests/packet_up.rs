@@ -124,6 +124,76 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn xhttp_client_stream_one_round_trip_through_mock_server() -> Result<()> {
+    // Stream-one mock: the server's POST handler captures every
+    // request-body chunk and streams downlink chunks back. No GET
+    // is opened, no `X-Xhttp-Seq` is sent.
+    let captured: Arc<Mutex<CapturedPosts>> = Arc::new(Mutex::new(CapturedPosts::default()));
+    let (down_tx, down_rx) = mpsc::channel::<Bytes>(8);
+    let down_rx = Arc::new(tokio::sync::Mutex::new(Some(down_rx)));
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+
+    let captured_for_server = Arc::clone(&captured);
+    let down_rx_for_server = Arc::clone(&down_rx);
+    let _server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let io = TokioIo::new(stream);
+        let captured = captured_for_server;
+        let down_rx_slot = down_rx_for_server;
+        let svc = service_fn(move |req: Request<Incoming>| {
+            let captured = Arc::clone(&captured);
+            let down_rx_slot = Arc::clone(&down_rx_slot);
+            async move { handle(req, captured, down_rx_slot).await }
+        });
+        let _ = ServerBuilder::new(TokioExecutor::new())
+            .serve_connection(io, svc)
+            .await;
+    });
+
+    // The carrier is selected purely from the URL — no extra
+    // parameter to `connect_xhttp`.
+    let base_url: Url = format!("http://{listen_addr}/xh?mode=stream-one").parse()?;
+    let cache = DnsCache::new(Duration::from_secs(30));
+    let (mut stream, issued) =
+        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH2, None, false, None).await?;
+    assert!(issued.is_none());
+
+    // Push two uplink chunks — they should arrive on the server
+    // request-body in the same order, no seq numbers.
+    stream.send(Message::Binary(Bytes::from_static(b"hello"))).await?;
+    stream.send(Message::Binary(Bytes::from_static(b"world"))).await?;
+    // Push two downlink chunks — they should surface on the
+    // client stream as Binary messages.
+    down_tx.send(Bytes::from_static(b"alpha")).await?;
+    down_tx.send(Bytes::from_static(b"beta")).await?;
+
+    let first = read_binary(&mut stream).await?;
+    assert_eq!(first.as_ref(), b"alpha");
+    let second = read_binary(&mut stream).await?;
+    assert_eq!(second.as_ref(), b"beta");
+
+    // Wait for both uplink chunks to land in the captured store
+    // and assert ordering. Stream-one is a single in-order body,
+    // so the two chunks must be back-to-back.
+    let posts = wait_for_posts(&captured, 2).await;
+    // The mock tagged every stream-one chunk with seq=u64::MAX so
+    // the assertion catches an accidental fall-through to the
+    // packet-up branch.
+    assert!(posts.seqs.iter().all(|&s| s == u64::MAX));
+    assert_eq!(posts.bodies.len(), 2);
+    let combined: Vec<u8> = posts
+        .bodies
+        .iter()
+        .flat_map(|b| b.iter().copied())
+        .collect();
+    assert_eq!(&combined, b"helloworld");
+
+    Ok(())
+}
+
 async fn read_binary<S>(stream: &mut S) -> Result<Bytes>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
@@ -175,8 +245,14 @@ async fn handle(
             .body(body)
             .unwrap());
     }
-    match *req.method() {
-        Method::GET => {
+    let is_stream_one = req
+        .uri()
+        .query()
+        .map(|q| q.split('&').any(|p| p == "mode=stream-one"))
+        .unwrap_or(false);
+    let method = req.method().clone();
+    match (method, is_stream_one) {
+        (Method::GET, _) => {
             // Drain the test-provided downlink channel as the
             // response body — first GET takes the receiver, any
             // subsequent GET sees an empty body.
@@ -196,7 +272,49 @@ async fn handle(
                 .body(body)
                 .unwrap())
         },
-        Method::POST => {
+        (Method::POST, true) => {
+            // Stream-one: take the downlink channel for the
+            // response body, and spawn a task to drain the request
+            // body into `captured.bodies` (one entry per chunk).
+            // No `X-Xhttp-Seq` is involved — the carrier is a
+            // single in-order stream.
+            let receiver = {
+                let mut slot = down_rx_slot.lock().await;
+                slot.take()
+            };
+            let mut req_body = req.into_body();
+            let captured_for_drain = Arc::clone(&captured);
+            tokio::spawn(async move {
+                while let Some(frame) = req_body.frame().await {
+                    let frame = match frame {
+                        Ok(f) => f,
+                        Err(_) => break,
+                    };
+                    if let Ok(data) = frame.into_data() {
+                        if !data.is_empty() {
+                            // Tag stream-one chunks with seq=u64::MAX
+                            // so the test can tell the carrier mode
+                            // apart from packet-up (which numbers
+                            // them 0, 1, …).
+                            captured_for_drain.lock().seqs.push(u64::MAX);
+                            captured_for_drain.lock().bodies.push(data);
+                        }
+                    }
+                }
+            });
+            let body: BoxBody<Bytes, Infallible> = match receiver {
+                Some(rx) => StreamBody::new(stream_chunks(rx))
+                    .map_err(|never: Infallible| match never {})
+                    .boxed(),
+                None => empty_body(),
+            };
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", "text/event-stream")
+                .body(body)
+                .unwrap())
+        },
+        (Method::POST, false) => {
             let seq: u64 = req
                 .headers()
                 .get("x-xhttp-seq")
