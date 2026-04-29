@@ -141,7 +141,7 @@ async fn vless_raw_quic_tcp_relay_smoke() -> Result<()> {
 
     let config = super::sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(VLESS_UUID.into(), None)?;
+    let vless_user = VlessUser::new(VLESS_UUID.into(), std::sync::Arc::from("test"), None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
@@ -326,7 +326,7 @@ async fn vless_raw_quic_udp_relay_smoke() -> Result<()> {
 
     let config = super::sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(VLESS_UUID.into(), None)?;
+    let vless_user = VlessUser::new(VLESS_UUID.into(), std::sync::Arc::from("test"), None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());
@@ -422,7 +422,7 @@ async fn vless_raw_quic_udp_oversize_relay() -> Result<()> {
 
     let config = super::sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new(VLESS_UUID.into(), None)?;
+    let vless_user = VlessUser::new(VLESS_UUID.into(), std::sync::Arc::from("test"), None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());

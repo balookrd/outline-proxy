@@ -93,11 +93,17 @@ pub struct VlessUser {
 }
 
 impl VlessUser {
-    pub fn new(id: String, fwmark: Option<u32>) -> Result<Self, VlessError> {
+    /// Build a VLESS user from its UUID and the human-readable account
+    /// label coming from `config.users[].id` (e.g. `alice-mom`,
+    /// `aeza`). The label is what surfaces in `user="..."` Prometheus
+    /// labels — using the masked UUID instead pollutes the dashboard's
+    /// `User` template variable with two parallel namespaces (raw IDs
+    /// for SS, masked UUIDs for VLESS) that can't be cross-referenced.
+    pub fn new(id: String, label: Arc<str>, fwmark: Option<u32>) -> Result<Self, VlessError> {
         let parsed = parse_uuid(&id)?;
         Ok(Self {
             id: parsed,
-            label: Arc::from(mask_uuid(&parsed)),
+            label,
             fwmark,
         })
     }
