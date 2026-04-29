@@ -32,8 +32,8 @@ use crate::TransportOperation;
 
 use super::{
     INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SEQ_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpTarget,
-    generate_session_id, io_ws_err,
+    RESUME_REQUEST_HEADER, SEQ_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
+    XhttpTarget, generate_session_id, io_ws_err,
 };
 
 /// Same dial budget the h2 path uses — keeps fallback windows
@@ -72,6 +72,7 @@ fn h3_quic_client_config() -> quinn::ClientConfig {
 pub(super) async fn connect_xhttp_h3(
     cache: &DnsCache,
     url: &Url,
+    submode: XhttpSubmode,
     fwmark: Option<u32>,
     ipv6_first: bool,
     resume_request: Option<SessionId>,
@@ -120,24 +121,35 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
 
-        // Open the long-lived GET synchronously so the resume-id
-        // round-trip finishes before the dial returns; the body
-        // drain is then handed off to the driver task.
-        let (issued_session_id, request_stream) =
-            open_h3_get(send_request.clone(), &target, resume_request).await?;
-
-        let driver = tokio::spawn(driver_loop_h3(
-            send_request,
-            target,
-            in_tx,
-            out_rx,
-            request_stream,
-        ));
+        let (issued_session_id, driver) = match submode {
+            XhttpSubmode::PacketUp => {
+                let (issued, request_stream) =
+                    open_h3_get(send_request.clone(), &target, resume_request).await?;
+                let driver = tokio::spawn(driver_loop_h3(
+                    send_request,
+                    target.clone(),
+                    in_tx,
+                    out_rx,
+                    request_stream,
+                ));
+                (issued, driver)
+            },
+            XhttpSubmode::StreamOne => {
+                let (issued, request_stream) =
+                    open_h3_stream_one(send_request, &target, resume_request).await?;
+                let driver = tokio::spawn(driver_loop_h3_stream_one(
+                    in_tx,
+                    out_rx,
+                    request_stream,
+                ));
+                (issued, driver)
+            },
+        };
 
         debug!(
-            %url, %session_id, mode = "xhttp_h3",
+            %url, %session_id, mode = "xhttp_h3", ?submode,
             ?issued_session_id, ?resume_request,
-            "xhttp packet-up h3 session opened"
+            "xhttp h3 session opened"
         );
         Ok::<_, anyhow::Error>((
             XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver)),
@@ -304,10 +316,103 @@ async fn driver_loop_h3(
     debug!("xhttp/h3 driver exiting");
 }
 
-async fn drain_h3_body(
-    mut stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+/// Stream-one carrier on h3: a single bidirectional QUIC stream.
+/// Open synchronously, await response headers, then hand the
+/// stream to the driver task which splits it into send/recv halves
+/// running concurrently.
+async fn open_h3_stream_one(
+    mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
+    target: &XhttpTarget,
+    resume_request: Option<SessionId>,
+) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
+        .version(Version::HTTP_3)
+        .header(RESUME_CAPABLE_HEADER, "1");
+    if let Some(id) = resume_request {
+        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    let req = builder
+        .body(())
+        .context("failed to build xhttp/h3 stream-one request")?;
+    let mut stream = send
+        .send_request(req)
+        .await
+        .map_err(|error| anyhow!(error))
+        .context("xhttp/h3 stream-one send_request failed")?;
+    // Unlike packet-up GET we DO NOT call `finish()` here — the
+    // request body is the live uplink.
+    let resp = stream
+        .recv_response()
+        .await
+        .map_err(|error| anyhow!(error))
+        .context("xhttp/h3 stream-one recv_response failed")?;
+    if !resp.status().is_success() {
+        bail!("xhttp/h3 stream-one returned {}", resp.status());
+    }
+    let issued = resp
+        .headers()
+        .get(SESSION_RESPONSE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(SessionId::parse_hex);
+    Ok((issued, stream))
+}
+
+async fn driver_loop_h3_stream_one(
+    in_tx: mpsc::Sender<Result<Message, WsError>>,
+    mut out_rx: mpsc::Receiver<Message>,
+    stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+) {
+    let (mut send_half, recv_half) = stream.split();
+    // Spawn the response-body drain on the receive half.
+    let drain_in_tx = in_tx.clone();
+    let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
+        if let Err(error) = drain_h3_body(recv_half, &drain_in_tx).await {
+            debug!(?error, "xhttp/h3 stream-one downlink reader exited");
+            let _ = drain_in_tx
+                .send(Err(io_ws_err("xhttp/h3 stream-one downlink ended")))
+                .await;
+        } else {
+            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+        }
+    }));
+    // Uplink pump: every Binary message becomes a body chunk on
+    // the send half. Calling `finish()` at exit closes the request
+    // body cleanly so the server sees EOF and can park or tear down.
+    while let Some(msg) = out_rx.recv().await {
+        match msg {
+            Message::Binary(b) => {
+                if let Err(error) = send_half.send_data(b).await {
+                    debug!(?error, "xhttp/h3 stream-one send_data failed");
+                    break;
+                }
+            },
+            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Text(_) => {
+                let _ = in_tx
+                    .send(Err(io_ws_err("xhttp does not carry text")))
+                    .await;
+                continue;
+            },
+            Message::Close(_) => break,
+            _ => continue,
+        }
+    }
+    let _ = send_half.finish().await;
+    debug!("xhttp/h3 stream-one driver exiting");
+}
+
+/// Generic over the stream type so it works on both the bidi
+/// stream packet-up uses and the receive-half a stream-one split
+/// produces.
+async fn drain_h3_body<S>(
+    mut stream: h3::client::RequestStream<S, Bytes>,
     in_tx: &mpsc::Sender<Result<Message, WsError>>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: h3::quic::RecvStream,
+{
     loop {
         let chunk = match stream.recv_data().await {
             Ok(Some(chunk)) => chunk,

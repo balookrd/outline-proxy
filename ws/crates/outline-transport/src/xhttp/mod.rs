@@ -36,10 +36,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use bytes::Bytes;
 use futures_util::{Sink, Stream};
 use http::{Method, Request, Version};
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use hyper::client::conn::http2;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rand::RngCore;
+use std::convert::Infallible;
 use rustls::pki_types::ServerName;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::OnceLock;
@@ -85,6 +86,67 @@ pub(super) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
 
 /// Cross-transport session resumption: server → client.
 pub(super) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
+
+/// Submode selector. Picked from the dial URL's query string
+/// (`?mode=stream-one` selects stream-one; anything else, including
+/// no query, means packet-up). The mode is not threaded through
+/// the dial-dispatcher signature — instead `connect_xhttp` reads it
+/// off the URL each call, which keeps the caller config minimal:
+/// you write the URL you want and the carrier follows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum XhttpSubmode {
+    #[default]
+    PacketUp,
+    StreamOne,
+}
+
+impl XhttpSubmode {
+    /// Extracts the submode from a `?mode=...` query parameter on
+    /// the dial URL. Accepts both dashed (`stream-one`) and
+    /// underscored (`stream_one`) spellings to match what the server
+    /// accepts. Anything else (or absence) → packet-up.
+    pub fn from_url(url: &Url) -> Self {
+        let Some(query) = url.query() else {
+            return Self::PacketUp;
+        };
+        for pair in query.split('&') {
+            if let Some(value) = pair.strip_prefix("mode=") {
+                return match value {
+                    "stream-one" | "stream_one" => Self::StreamOne,
+                    _ => Self::PacketUp,
+                };
+            }
+        }
+        Self::PacketUp
+    }
+
+    fn append_to_query(&self, base: &str) -> String {
+        match self {
+            Self::PacketUp => base.to_owned(),
+            Self::StreamOne => {
+                if base.contains('?') {
+                    format!("{base}&mode=stream-one")
+                } else {
+                    format!("{base}?mode=stream-one")
+                }
+            },
+        }
+    }
+}
+
+/// Boxed body type used by every XHTTP request the client issues.
+/// Hyper's `SendRequest<B>` is monomorphic in `B`, so we pick a
+/// single `BoxBody` shape that fits the empty-GET / Full-POST /
+/// streaming-POST cases all at once.
+pub(super) type RequestBody = BoxBody<Bytes, Infallible>;
+
+pub(super) fn empty_request_body() -> RequestBody {
+    Empty::<Bytes>::new().boxed()
+}
+
+pub(super) fn full_request_body(payload: Bytes) -> RequestBody {
+    Full::new(payload).boxed()
+}
 
 /// Bounds for the random session id used in `<base>/<id>`. The id is
 /// opaque to the server; we just need it to be wide enough to avoid
@@ -231,14 +293,13 @@ pub(crate) async fn connect_xhttp(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
 ) -> Result<(XhttpStream, Option<SessionId>)> {
+    let submode = XhttpSubmode::from_url(url);
     match mode {
         TransportMode::XhttpH2 => {},
         #[cfg(feature = "h3")]
         TransportMode::XhttpH3 => {
-            // h3 carrier lives in the sibling module so the
-            // quinn / h3 dependencies stay behind the `h3`
-            // feature gate. Returns a fully-wired `XhttpStream`.
-            return h3::connect_xhttp_h3(cache, url, fwmark, ipv6_first, resume_request).await;
+            return h3::connect_xhttp_h3(cache, url, submode, fwmark, ipv6_first, resume_request)
+                .await;
         },
         #[cfg(not(feature = "h3"))]
         TransportMode::XhttpH3 => {
@@ -285,25 +346,41 @@ pub(crate) async fn connect_xhttp(
             session_id: session_id.clone(),
         });
 
-        // Open the GET synchronously so the resume-id round-trip
-        // (X-Outline-Resume on the way out, X-Outline-Session on the
-        // way back) completes before we hand the stream to the
-        // caller. The body drain is then spawned as a sub-task.
-        let (issued_session_id, body) =
-            open_h2_get(send_request.clone(), &target, resume_request).await?;
-
-        let driver = tokio::spawn(driver_loop_h2(
-            send_request,
-            target,
-            in_tx,
-            out_rx,
-            body,
-        ));
+        let (issued_session_id, driver) = match submode {
+            XhttpSubmode::PacketUp => {
+                // Open the GET synchronously so the resume-id
+                // round-trip completes before we hand the stream to
+                // the caller. The body drain is spawned as a
+                // sub-task; POSTs are pipelined per `start_send`.
+                let (issued, body) =
+                    open_h2_get(send_request.clone(), &target, resume_request).await?;
+                let driver = tokio::spawn(driver_loop_h2(
+                    send_request,
+                    target.clone(),
+                    in_tx,
+                    out_rx,
+                    body,
+                ));
+                (issued, driver)
+            },
+            XhttpSubmode::StreamOne => {
+                // Stream-one is a single bidirectional POST: open
+                // it synchronously to read response headers, then
+                // hand the response body and the request-body
+                // sender to the driver.
+                let (issued, body, frame_tx) =
+                    open_h2_stream_one(send_request, &target, resume_request).await?;
+                let driver = tokio::spawn(driver_loop_h2_stream_one(
+                    in_tx, out_rx, body, frame_tx,
+                ));
+                (issued, driver)
+            },
+        };
 
         debug!(
-            %url, %session_id, mode = "xhttp_h2",
+            %url, %session_id, mode = "xhttp_h2", ?submode,
             ?issued_session_id, ?resume_request,
-            "xhttp packet-up session opened"
+            "xhttp session opened"
         );
         Ok::<_, anyhow::Error>((
             XhttpStream {
@@ -329,7 +406,7 @@ pub(crate) async fn connect_xhttp(
 /// what lets the dial path stash the token in the resume cache
 /// before any data flows.
 async fn open_h2_get(
-    mut send: http2::SendRequest<Full<Bytes>>,
+    mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
 ) -> Result<(Option<SessionId>, hyper::body::Incoming)> {
@@ -343,7 +420,7 @@ async fn open_h2_get(
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
     let req = builder
-        .body(Full::<Bytes>::new(Bytes::new()))
+        .body(empty_request_body())
         .context("failed to build xhttp GET request")?;
     send.ready().await.context("xhttp h2 not ready for GET")?;
     let resp = send
@@ -355,6 +432,100 @@ async fn open_h2_get(
     }
     let issued = parse_session_response(resp.headers());
     Ok((issued, resp.into_body()))
+}
+
+/// Stream-one carrier on h2: a single bidirectional POST whose
+/// request body is the uplink and whose response body is the
+/// downlink. The synchronously-built `frame_tx` lets the driver
+/// task feed body chunks into the request stream, while the
+/// returned `Incoming` is consumed by the downlink drain.
+async fn open_h2_stream_one(
+    mut send: http2::SendRequest<RequestBody>,
+    target: &XhttpTarget,
+    resume_request: Option<SessionId>,
+) -> Result<(
+    Option<SessionId>,
+    hyper::body::Incoming,
+    mpsc::Sender<hyper::body::Frame<Bytes>>,
+)> {
+    let (frame_tx, frame_rx) = mpsc::channel::<hyper::body::Frame<Bytes>>(8);
+    let body_stream = futures_util::stream::unfold(frame_rx, |mut rx| async move {
+        rx.recv().await.map(|frame| (Ok::<_, Infallible>(frame), rx))
+    });
+    let body: RequestBody = StreamBody::new(body_stream).boxed();
+
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(target.full_uri_with_submode(XhttpSubmode::StreamOne))
+        .version(Version::HTTP_2)
+        .header(http::header::HOST, target.authority.as_str())
+        .header(RESUME_CAPABLE_HEADER, "1");
+    if let Some(id) = resume_request {
+        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    let req = builder
+        .body(body)
+        .context("failed to build xhttp stream-one request")?;
+    send.ready().await.context("xhttp h2 not ready for stream-one")?;
+    let resp = send
+        .send_request(req)
+        .await
+        .context("xhttp stream-one send_request failed")?;
+    if !resp.status().is_success() {
+        bail!("xhttp stream-one returned {}", resp.status());
+    }
+    let issued = parse_session_response(resp.headers());
+    Ok((issued, resp.into_body(), frame_tx))
+}
+
+async fn driver_loop_h2_stream_one(
+    in_tx: mpsc::Sender<Result<Message, WsError>>,
+    mut out_rx: mpsc::Receiver<Message>,
+    body: hyper::body::Incoming,
+    frame_tx: mpsc::Sender<hyper::body::Frame<Bytes>>,
+) {
+    // Spawn the response-body drain as a sub-task so the uplink
+    // pump below can run concurrently. The shape mirrors
+    // `driver_loop_h2` for packet-up.
+    let drain_in_tx = in_tx.clone();
+    let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
+        if let Err(error) = drain_h2_body(body, &drain_in_tx).await {
+            debug!(?error, "xhttp stream-one downlink reader exited");
+            let _ = drain_in_tx
+                .send(Err(io_ws_err("xhttp stream-one downlink ended")))
+                .await;
+        } else {
+            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
+        }
+    }));
+
+    // Uplink pump: every Message::Binary becomes a body frame on
+    // the request stream. Closing `frame_tx` (we drop it on exit)
+    // ends the request body and lets the server see EOF.
+    while let Some(msg) = out_rx.recv().await {
+        match msg {
+            Message::Binary(b) => {
+                if frame_tx
+                    .send(hyper::body::Frame::data(b))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            },
+            Message::Ping(_) | Message::Pong(_) => continue,
+            Message::Text(_) => {
+                let _ = in_tx
+                    .send(Err(io_ws_err("xhttp does not carry text")))
+                    .await;
+                continue;
+            },
+            Message::Close(_) => break,
+            _ => continue,
+        }
+    }
+    drop(frame_tx);
+    debug!("xhttp stream-one driver exiting");
 }
 
 fn parse_session_response(headers: &http::HeaderMap) -> Option<SessionId> {
@@ -382,6 +553,14 @@ impl XhttpTarget {
             self.scheme, self.authority, self.base_path, self.session_id,
         )
     }
+
+    /// Same as [`Self::full_uri`] but with a `?mode=...` selector
+    /// appended for the stream-one carrier. Packet-up sessions use
+    /// the bare URI (the server defaults to packet-up when the
+    /// query is absent or unrecognised).
+    pub(super) fn full_uri_with_submode(&self, submode: XhttpSubmode) -> String {
+        submode.append_to_query(&self.full_uri())
+    }
 }
 
 async fn h2_handshake(
@@ -389,7 +568,7 @@ async fn h2_handshake(
     host: &str,
     use_tls: bool,
     fwmark: Option<u32>,
-) -> Result<http2::SendRequest<Full<Bytes>>> {
+) -> Result<http2::SendRequest<RequestBody>> {
     let tcp = connect_tcp_socket(addr, fwmark).await?;
     if use_tls {
         let connector = TlsConnector::from(h2_tls_config());
@@ -411,7 +590,7 @@ async fn h2_handshake(
     }
 }
 
-async fn spawn_h2<T>(io: TokioIo<T>) -> Result<http2::SendRequest<Full<Bytes>>>
+async fn spawn_h2<T>(io: TokioIo<T>) -> Result<http2::SendRequest<RequestBody>>
 where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
@@ -483,7 +662,7 @@ impl AsyncWrite for BoxedIo {
 }
 
 async fn driver_loop_h2(
-    send_request: http2::SendRequest<Full<Bytes>>,
+    send_request: http2::SendRequest<RequestBody>,
     target: Arc<XhttpTarget>,
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
@@ -572,7 +751,7 @@ async fn drain_h2_body(
 }
 
 async fn post_one(
-    mut send: http2::SendRequest<Full<Bytes>>,
+    mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     seq: u64,
     payload: Bytes,
@@ -583,7 +762,7 @@ async fn post_one(
         .version(Version::HTTP_2)
         .header(http::header::HOST, target.authority.as_str())
         .header(SEQ_HEADER, seq.to_string())
-        .body(Full::new(payload))
+        .body(full_request_body(payload))
         .context("failed to build xhttp POST request")?;
     let resp = send
         .send_request(req)
