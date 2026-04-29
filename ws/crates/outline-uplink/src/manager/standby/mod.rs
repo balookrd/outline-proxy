@@ -47,7 +47,7 @@ impl UplinkManager {
             let status = self.inner.read_status(index);
             if status
                 .tcp
-                .h3_downgrade_until
+                .mode_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::config::WsTransportMode::H2;
@@ -74,7 +74,7 @@ impl UplinkManager {
             let status = self.inner.read_status(index);
             if status
                 .udp
-                .h3_downgrade_until
+                .mode_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
                 return crate::config::WsTransportMode::H2;
@@ -171,7 +171,7 @@ impl UplinkManager {
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
         // or inline H3→H2/H1 fallback inside `connect_websocket_with_resume`)
-        // into the per-uplink `h3_downgrade_until` window. Without this,
+        // into the per-uplink `mode_downgrade_until` window. Without this,
         // `effective_tcp_ws_mode` keeps reporting H3 while every actual dial
         // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
         if let Some(requested) = ws.downgraded_from() {
@@ -421,7 +421,7 @@ impl UplinkManager {
             // the first call so a burst of fresh sessions during the same
             // outage doesn't spam the uplink-manager. Mirrors the QUIC-mux
             // `on_fallback` wiring above so both pivots flow through the
-            // same per-uplink `h3_downgrade_until` window.
+            // same per-uplink `mode_downgrade_until` window.
             let manager = self.clone();
             let index = candidate.index;
             let on_downgrade: outline_transport::VlessUdpDowngradeNotifier =

@@ -112,7 +112,7 @@ async fn build_manager(
             failure_penalty: Duration::from_millis(500),
             failure_penalty_max: Duration::from_secs(30),
             failure_penalty_halflife: Duration::from_secs(60),
-            h3_downgrade_duration: Duration::from_secs(60),
+            mode_downgrade_duration: Duration::from_secs(60),
             udp_ws_keepalive_interval: None,
             tcp_ws_keepalive_interval: None,
             tcp_ws_standby_keepalive_interval: None,

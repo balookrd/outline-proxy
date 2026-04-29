@@ -30,7 +30,7 @@ fn lb() -> LoadBalancingConfig {
         failure_penalty: Duration::from_millis(500),
         failure_penalty_max: Duration::from_secs(30),
         failure_penalty_halflife: Duration::from_secs(60),
-        h3_downgrade_duration: Duration::from_secs(60),
+        mode_downgrade_duration: Duration::from_secs(60),
         udp_ws_keepalive_interval: None,
         tcp_ws_keepalive_interval: None,
         tcp_ws_standby_keepalive_interval: None,
@@ -1453,7 +1453,7 @@ async fn note_silent_transport_fallback_works_for_vless_uplink() {
 
 #[tokio::test]
 async fn note_silent_transport_fallback_is_noop_for_shadowsocks_uplink() {
-    // The h3_downgrade guard explicitly excludes plain Shadowsocks uplinks
+    // The mode_downgrade guard explicitly excludes plain Shadowsocks uplinks
     // (they don't carry a WS layer). A misrouted call must not produce any
     // observable change in the effective mode.
     let manager = UplinkManager::new_for_test(
@@ -1499,11 +1499,11 @@ async fn note_silent_transport_fallback_is_noop_when_mode_is_not_advanced() {
 
 #[tokio::test]
 async fn note_silent_transport_fallback_marker_expires_after_window() {
-    // After the configured `h3_downgrade_duration` elapses, `effective_*_ws_mode`
+    // After the configured `mode_downgrade_duration` elapses, `effective_*_ws_mode`
     // must return the originally-requested mode again so a recovered H3 path
     // is actually exercised on the next dial cycle.
     let mut config = lb();
-    config.h3_downgrade_duration = Duration::from_millis(50);
+    config.mode_downgrade_duration = Duration::from_millis(50);
     let manager = UplinkManager::new_for_test(
         "test",
         vec![make_ws_uplink_with_modes(

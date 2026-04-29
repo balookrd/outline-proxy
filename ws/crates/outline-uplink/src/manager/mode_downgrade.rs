@@ -1,16 +1,16 @@
 //! Single source of truth for the "advanced WS mode → H2" downgrade window.
 //!
-//! Originally only H3 → H2 (hence the field name `h3_downgrade_until`); now
+//! Originally only H3 → H2 (hence the field name `mode_downgrade_until`); now
 //! also covers raw QUIC → H2 for both Ws and Vless transports.  Four
-//! independent events can (re)set [`PerTransportStatus::h3_downgrade_until`]:
+//! independent events can (re)set [`PerTransportStatus::mode_downgrade_until`]:
 //! runtime traffic failure, probe transport failure, probe connect failure,
 //! and a recovery re-probe that failed to confirm recovery.  All of them go
-//! through [`UplinkManager::extend_h3_downgrade`] so the guard conditions
+//! through [`UplinkManager::extend_mode_downgrade`] so the guard conditions
 //! (Ws/Vless transport, H3-or-Quic dial mode), the "set or extend — never
 //! shorten" rule, and the "log once per window start" rule live in exactly
 //! one place.
 //!
-//! [`PerTransportStatus::h3_downgrade_until`]: crate::types::PerTransportStatus::h3_downgrade_until
+//! [`PerTransportStatus::mode_downgrade_until`]: crate::types::PerTransportStatus::mode_downgrade_until
 
 use tokio::time::Instant;
 use tracing::{debug, warn};
@@ -22,7 +22,7 @@ use super::super::types::{TransportKind, UplinkManager};
 /// Why a downgrade window is being set or extended.  Controls the log
 /// message and level emitted when the call starts a *new* window (silent
 /// when it extends one that is already active).
-pub(crate) enum H3DowngradeTrigger<'a> {
+pub(crate) enum ModeDowngradeTrigger<'a> {
     /// Real traffic observed a transport-level failure on an H3 session.
     RuntimeFailure(&'a anyhow::Error),
     /// Probe task completed but the per-transport check failed
@@ -37,7 +37,7 @@ pub(crate) enum H3DowngradeTrigger<'a> {
     /// `connect_websocket_with_resume` silently produced a downgraded
     /// stream. Carries the originally-requested mode for the log message.
     /// Fired from probe / refill / fresh-dial / mux paths so the per-uplink
-    /// `h3_downgrade_until` window stays in sync with the actually-dialable
+    /// `mode_downgrade_until` window stays in sync with the actually-dialable
     /// transport even when the operation itself reports success.
     SilentTransportFallback(WsTransportMode),
 }
@@ -52,14 +52,14 @@ impl UplinkManager {
     ///
     /// A log line is emitted only when this call *starts* a new window
     /// (previous deadline absent or expired).  Extensions inside an active
-    /// window are silent, except [`H3DowngradeTrigger::RecoveryReprobeFail`]
+    /// window are silent, except [`ModeDowngradeTrigger::RecoveryReprobeFail`]
     /// which still emits a debug breadcrumb when it actually advances the
     /// deadline (preserves the pre-refactor recovery log).
-    pub(crate) fn extend_h3_downgrade(
+    pub(crate) fn extend_mode_downgrade(
         &self,
         index: usize,
         transport: TransportKind,
-        trigger: H3DowngradeTrigger<'_>,
+        trigger: ModeDowngradeTrigger<'_>,
     ) {
         let uplink = &self.inner.uplinks[index];
         if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
@@ -74,10 +74,10 @@ impl UplinkManager {
         }
 
         let now = Instant::now();
-        let duration = self.inner.load_balancing.h3_downgrade_duration;
+        let duration = self.inner.load_balancing.mode_downgrade_duration;
         let new_until = now + duration;
 
-        let prev = self.inner.read_status(index).of(transport).h3_downgrade_until;
+        let prev = self.inner.read_status(index).of(transport).mode_downgrade_until;
         let newly_started = prev.is_none_or(|t| t < now);
         let advances_deadline = prev.is_none_or(|t| t < new_until);
 
@@ -87,67 +87,67 @@ impl UplinkManager {
                     TransportKind::Tcp => &mut status.tcp,
                     TransportKind::Udp => &mut status.udp,
                 };
-                per.h3_downgrade_until = Some(new_until);
+                per.mode_downgrade_until = Some(new_until);
             });
         }
 
         let downgrade_secs = duration.as_secs();
         if newly_started {
             match (&trigger, transport) {
-                (H3DowngradeTrigger::RuntimeFailure(err), TransportKind::Tcp) => warn!(
+                (ModeDowngradeTrigger::RuntimeFailure(err), TransportKind::Tcp) => warn!(
                     uplink = %uplink.name,
                     error = %format!("{err:#}"),
                     downgrade_secs,
                     "H3 TCP runtime error detected, downgrading TCP transport to H2"
                 ),
-                (H3DowngradeTrigger::RuntimeFailure(err), TransportKind::Udp) => warn!(
+                (ModeDowngradeTrigger::RuntimeFailure(err), TransportKind::Udp) => warn!(
                     uplink = %uplink.name,
                     error = %format!("{err:#}"),
                     downgrade_secs,
                     "H3 UDP runtime error detected, downgrading UDP transport to H2"
                 ),
-                (H3DowngradeTrigger::ProbeTransportFailure, TransportKind::Tcp) => warn!(
+                (ModeDowngradeTrigger::ProbeTransportFailure, TransportKind::Tcp) => warn!(
                     uplink = %uplink.name,
                     downgrade_secs,
                     "H3 TCP probe failed, downgrading to H2 for next probe cycle"
                 ),
-                (H3DowngradeTrigger::ProbeTransportFailure, TransportKind::Udp) => warn!(
+                (ModeDowngradeTrigger::ProbeTransportFailure, TransportKind::Udp) => warn!(
                     uplink = %uplink.name,
                     downgrade_secs,
                     "H3 UDP probe failed, downgrading to H2 for next probe cycle"
                 ),
-                (H3DowngradeTrigger::ProbeConnectFailure(err), TransportKind::Tcp) => warn!(
+                (ModeDowngradeTrigger::ProbeConnectFailure(err), TransportKind::Tcp) => warn!(
                     uplink = %uplink.name,
                     error = %format!("{err:#}"),
                     downgrade_secs,
                     "H3 probe connection failed, downgrading TCP to H2"
                 ),
-                (H3DowngradeTrigger::ProbeConnectFailure(err), TransportKind::Udp) => warn!(
+                (ModeDowngradeTrigger::ProbeConnectFailure(err), TransportKind::Udp) => warn!(
                     uplink = %uplink.name,
                     error = %format!("{err:#}"),
                     downgrade_secs,
                     "H3 probe connection failed, downgrading UDP to H2"
                 ),
-                (H3DowngradeTrigger::RecoveryReprobeFail, _) => debug!(
+                (ModeDowngradeTrigger::RecoveryReprobeFail, _) => debug!(
                     uplink = %uplink.name,
                     kind = ?transport,
                     downgrade_secs,
                     "H3 still unreachable, starting downgrade window after recovery probe"
                 ),
-                (H3DowngradeTrigger::SilentTransportFallback(requested), TransportKind::Tcp) => warn!(
+                (ModeDowngradeTrigger::SilentTransportFallback(requested), TransportKind::Tcp) => warn!(
                     uplink = %uplink.name,
                     requested_mode = %requested,
                     downgrade_secs,
                     "TCP dial silently fell back from {requested} via ws_mode_cache, syncing per-uplink downgrade window"
                 ),
-                (H3DowngradeTrigger::SilentTransportFallback(requested), TransportKind::Udp) => warn!(
+                (ModeDowngradeTrigger::SilentTransportFallback(requested), TransportKind::Udp) => warn!(
                     uplink = %uplink.name,
                     requested_mode = %requested,
                     downgrade_secs,
                     "UDP dial silently fell back from {requested} via ws_mode_cache, syncing per-uplink downgrade window"
                 ),
             }
-        } else if matches!(trigger, H3DowngradeTrigger::RecoveryReprobeFail) && advances_deadline {
+        } else if matches!(trigger, ModeDowngradeTrigger::RecoveryReprobeFail) && advances_deadline {
             debug!(
                 uplink = %uplink.name,
                 kind = ?transport,
@@ -167,7 +167,7 @@ impl UplinkManager {
         transport: TransportKind,
         error: &anyhow::Error,
     ) {
-        self.extend_h3_downgrade(index, transport, H3DowngradeTrigger::RuntimeFailure(error));
+        self.extend_mode_downgrade(index, transport, ModeDowngradeTrigger::RuntimeFailure(error));
     }
 
     /// Public entry-point for callers that observe a transport-level WS-mode
@@ -183,19 +183,19 @@ impl UplinkManager {
         transport: TransportKind,
         requested: WsTransportMode,
     ) {
-        self.extend_h3_downgrade(
+        self.extend_mode_downgrade(
             index,
             transport,
-            H3DowngradeTrigger::SilentTransportFallback(requested),
+            ModeDowngradeTrigger::SilentTransportFallback(requested),
         );
     }
 
     /// Clear the H3 downgrade window for `(index, transport)`.  Called when
     /// an explicit H3 recovery re-probe confirms that H3 is back.
-    pub(crate) fn clear_h3_downgrade(&self, index: usize, transport: TransportKind) {
+    pub(crate) fn clear_mode_downgrade(&self, index: usize, transport: TransportKind) {
         self.inner.with_status_mut(index, |status| match transport {
-            TransportKind::Tcp => status.tcp.h3_downgrade_until = None,
-            TransportKind::Udp => status.udp.h3_downgrade_until = None,
+            TransportKind::Tcp => status.tcp.mode_downgrade_until = None,
+            TransportKind::Udp => status.udp.mode_downgrade_until = None,
         });
     }
 }
