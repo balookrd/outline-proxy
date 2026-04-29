@@ -841,3 +841,192 @@ async fn cross_repo_ss_tcp_ws_h3_resume_reattaches_parked_upstream() -> Result<(
     server.abort();
     Ok(())
 }
+
+/// Variant of [`setup_ss_ws_server`] over TLS+TCP only (no QUIC) with
+/// `OrphanRegistry` enabled. Pointing client B at the same `wss://`
+/// URL while no UDP listener exists drives the dispatcher's WS-h3 →
+/// WS-h2 fallback path with the resume token preserved end-to-end.
+async fn setup_ss_ws_h2_tls_server_with_resumption()
+-> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    super::cross_repo_install_test_tls_root_on_client();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+
+    let users = super::user_keys(user_routes.as_ref());
+    let tcp = Arc::new(super::super::build_transport_route_map(
+        user_routes.as_ref(),
+        crate::metrics::Transport::Tcp,
+    ));
+    let udp = Arc::new(super::super::build_transport_route_map(
+        user_routes.as_ref(),
+        crate::metrics::Transport::Udp,
+    ));
+    let vless = Arc::new(super::super::setup::build_vless_transport_route_map(&[]));
+    let xhttp_vless = Arc::new(BTreeMap::new());
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp,
+        udp,
+        vless,
+        xhttp_vless,
+    }));
+    let orphan_registry = Some(Arc::new(OrphanRegistry::new(
+        ResumptionConfig::from(&crate::config::SessionResumptionConfig {
+            enabled: true,
+            orphan_ttl_tcp_secs: 30,
+            orphan_ttl_udp_secs: 30,
+            orphan_per_user_cap: 4,
+            orphan_global_cap: 16,
+        }),
+        Arc::clone(&metrics),
+    )));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        orphan_registry,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(users))),
+        http_root_auth: false,
+        http_root_realm: Arc::from(config.http_root_realm.as_str()),
+    });
+    let app = build_app(routes, services, auth);
+
+    let server_tls = super::cross_repo_test_server_tls_config(&[b"h2", b"http/1.1"]);
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_tls));
+
+    let handle = tokio::spawn(super::cross_repo_serve_axum_with_tls(listener, app, acceptor));
+    Ok((listen_addr, handle))
+}
+
+#[tokio::test]
+async fn cross_repo_ss_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server) = setup_ss_ws_h2_tls_server_with_resumption().await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("wss://localhost:{}/tcp", listen_addr.port()))?;
+
+    let cipher = CipherKind::Chacha20IetfPoly1305;
+    let master_key = cipher
+        .derive_master_key(SS_PASSWORD)
+        .expect("derive_master_key succeeds for chacha20");
+
+    // ── Client A: WsH2 over TLS ───────────────────────────────
+    let stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-ss-fallback-a",
+        None,
+    )
+    .await?;
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+    let (sink_a, stream_a_inner) = stream_a.split();
+    let lifetime_a = UpstreamTransportGuard::new("cross-repo-ss-fallback-a", "ss-ws-h2");
+    let (mut writer_a, ctrl_tx_a) = TcpShadowsocksWriter::connect(
+        sink_a,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+    )
+    .await?;
+    let mut reader_a = TcpShadowsocksReader::new(
+        stream_a_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_a),
+        ctrl_tx_a.clone(),
+    );
+
+    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    first_payload.extend_from_slice(b"ping");
+    writer_a.send_chunk(&first_payload).await?;
+    let reply_a = reader_a.read_chunk().await?;
+    assert_eq!(&reply_a, b"pong");
+
+    let _ = ctrl_tx_a.send(Message::Close(None)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(reader_a);
+    drop(writer_a);
+    drop(ctrl_tx_a);
+    drop(lifetime_a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Client B: WsH3 → 10 s timeout → fallback to WsH2 ──────
+    let stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH3,
+        None,
+        false,
+        "cross-repo-ss-fallback-b",
+        Some(token),
+    )
+    .await?;
+    assert_eq!(
+        stream_b.downgraded_from(),
+        Some(TransportMode::WsH3),
+        "client B should report a downgrade from WsH3",
+    );
+    let _issued_b = stream_b.issued_session_id();
+    let (sink_b, stream_b_inner) = stream_b.split();
+    let lifetime_b = UpstreamTransportGuard::new("cross-repo-ss-fallback-b", "ss-ws-h2");
+    let (mut writer_b, ctrl_tx_b) = TcpShadowsocksWriter::connect(
+        sink_b,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+    )
+    .await?;
+    let mut reader_b = TcpShadowsocksReader::new(
+        stream_b_inner,
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime_b),
+        ctrl_tx_b.clone(),
+    );
+
+    let mut second_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    second_payload.extend_from_slice(b"helo");
+    writer_b.send_chunk(&second_payload).await?;
+    let reply_b = reader_b.read_chunk().await?;
+    assert_eq!(&reply_b, b"ackk", "ss tcp echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(reader_b);
+    drop(writer_b);
+    drop(ctrl_tx_b);
+    drop(lifetime_b);
+    server.abort();
+    Ok(())
+}

@@ -208,18 +208,48 @@ fn test_h3_client_config(cert_der: CertificateDer<'static>) -> Result<quinn::Cli
 /// `outline_transport::install_test_tls_root` — which is
 /// last-writer-wins — pins the same root for every dial in this
 /// process.
+/// Process-wide CA + leaf cert pair reused by every cross-repo
+/// integration test that needs TLS. Split because webpki (used by
+/// `tokio_rustls`) rejects a single self-signed leaf installed as
+/// a trust root with `CaUsedAsEndEntity`; quinn's verifier is
+/// laxer but we want the same fixture to satisfy both.
+///
+/// Tuple shape: `(ca_cert_der, leaf_cert_der, leaf_key_der,
+/// owned_ca_der)`. Server-side `ServerConfig` is built from the
+/// leaf cert + key; the client's trust override is installed with
+/// the CA cert.
 pub(super) fn cross_repo_shared_test_cert()
--> &'static (Vec<u8>, Vec<u8>, CertificateDer<'static>) {
-    static CELL: std::sync::OnceLock<(Vec<u8>, Vec<u8>, CertificateDer<'static>)> =
+-> &'static (Vec<u8>, Vec<u8>, Vec<u8>, CertificateDer<'static>) {
+    static CELL: std::sync::OnceLock<(Vec<u8>, Vec<u8>, Vec<u8>, CertificateDer<'static>)> =
         std::sync::OnceLock::new();
     CELL.get_or_init(|| {
         super::ensure_rustls_provider_installed();
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-            .expect("rcgen self-signed cert");
-        let cert_bytes = cert.cert.der().to_vec();
-        let key_bytes = cert.signing_key.serialize_der();
-        let cert_der = CertificateDer::from(cert_bytes.clone());
-        (cert_bytes, key_bytes, cert_der)
+        // CA: self-signed, marked as a real CA so webpki accepts
+        // it as a trust anchor.
+        let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new())
+            .expect("rcgen CA params");
+        ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+        ca_params
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, "outline-cross-repo-test-ca");
+        let ca_key = rcgen::KeyPair::generate().expect("rcgen CA KeyPair");
+        let ca_cert = ca_params
+            .self_signed(&ca_key)
+            .expect("rcgen CA self-signed");
+        let ca_der = ca_cert.der().to_vec();
+        // Leaf: signed by the CA above, SAN = `localhost`.
+        let leaf_params = rcgen::CertificateParams::new(vec!["localhost".into()])
+            .expect("rcgen leaf params");
+        let leaf_key = rcgen::KeyPair::generate().expect("rcgen leaf KeyPair");
+        let issuer = rcgen::Issuer::from_params(&ca_params, &ca_key);
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &issuer)
+            .expect("rcgen leaf signed by CA");
+        let leaf_der = leaf_cert.der().to_vec();
+        let leaf_key_der = leaf_key.serialize_der();
+        let ca_cert_der = CertificateDer::from(ca_der.clone());
+        let _ = ca_cert; // silence unused warning — kept for clarity
+        (ca_der, leaf_der, leaf_key_der, ca_cert_der)
     })
 }
 
@@ -228,12 +258,12 @@ pub(super) fn cross_repo_shared_test_cert()
 /// the axum-over-TLS test path both consume the config by value,
 /// so each test rebuilds its own from the cached cert/key bytes.
 pub(super) fn cross_repo_test_server_tls_config(alpn: &[&[u8]]) -> rustls::ServerConfig {
-    let (cert_bytes, key_bytes, _) = cross_repo_shared_test_cert();
-    let cert_der = CertificateDer::from(cert_bytes.clone());
+    let (_, leaf_bytes, key_bytes, _) = cross_repo_shared_test_cert();
+    let leaf_der = CertificateDer::from(leaf_bytes.clone());
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.clone()));
     let mut cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key)
+        .with_single_cert(vec![leaf_der], key)
         .expect("test server tls config");
     cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
     cfg
@@ -246,9 +276,57 @@ pub(super) fn cross_repo_test_server_tls_config(alpn: &[&[u8]]) -> rustls::Serve
 pub(super) fn cross_repo_install_test_tls_root_on_client() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        let (_, _, cert_der) = cross_repo_shared_test_cert();
-        outline_transport::install_test_tls_root(cert_der.clone());
+        let (_, _, _, ca_der) = cross_repo_shared_test_cert();
+        outline_transport::install_test_tls_root(ca_der.clone());
     });
+}
+
+/// Minimal axum-over-TLS serve loop for cross-repo fallback tests.
+/// Mirrors `crate::server::bootstrap::axum::serve_tls_listener` in
+/// shape but skips the production hardening (semaphores, JoinSet
+/// drain, TuningProfile windows) — tests don't need any of that
+/// and dragging the prod helper through `pub(in crate::server)`
+/// would be more invasive than it's worth. RFC 8441 (WebSocket
+/// over h2) needs `enable_connect_protocol` on the h2 builder, so
+/// the h2-TLS path mounts the same WS upgrade route as plain TCP.
+pub(super) async fn cross_repo_serve_axum_with_tls(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    acceptor: tokio_rustls::TlsAcceptor,
+) -> anyhow::Result<()> {
+    use hyper_util::{
+        rt::{TokioExecutor, TokioIo, TokioTimer},
+        server::conn::auto,
+        service::TowerToHyperService,
+    };
+    use std::net::SocketAddr;
+
+    loop {
+        let (tcp, peer_addr): (_, SocketAddr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let acceptor = acceptor.clone();
+        let app = app.clone();
+        tokio::spawn(async move {
+            let tls = match acceptor.accept(tcp).await {
+                Ok(s) => s,
+                Err(_) => return,
+            };
+            // Inject `ConnectInfo<SocketAddr>` so the WS upgrade
+            // handler keys the same per-route peer-user cache the
+            // production listener uses.
+            let app_with_addr =
+                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let svc = TowerToHyperService::new(app_with_addr);
+            let mut builder = auto::Builder::new(TokioExecutor::new());
+            builder
+                .http2()
+                .timer(TokioTimer::new())
+                .enable_connect_protocol();
+            let _ = builder.serve_connection_with_upgrades(TokioIo::new(tls), svc).await;
+        });
+    }
 }
 
 fn write_test_h2_tls_cert()

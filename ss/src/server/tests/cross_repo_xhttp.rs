@@ -56,7 +56,7 @@ use super::super::setup::{VlessXhttpUserRoute, build_xhttp_vless_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
 use super::super::transport::XhttpRegistry;
-use super::super::{DnsCache, serve_h3_server};
+use super::super::{DnsCache, build_app, serve_h3_server};
 use super::sample_config;
 use super::xhttp::{
     TEST_UUID, build_vless_tcp_handshake, setup_xhttp_server,
@@ -534,6 +534,159 @@ async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Re
     // Target is irrelevant on the resume path; the server uses
     // the parked writer/reader and never re-resolves. `helo`
     // distinguishes the upstream's two reads.
+    let handshake_b = build_vless_tcp_handshake(upstream_addr, b"helo")?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
+    let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
+    assert_eq!(&received_b[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(stream_b);
+    server.abort();
+    Ok(())
+}
+
+/// Spins up an axum-over-TLS server (no h3 / no QUIC listener) with
+/// XHTTP routes and a real `OrphanRegistry`. The dial URL is the
+/// same `https://localhost:port/xh` for both carriers — there's
+/// just no UDP listener on that port, so a client `XhttpH3` attempt
+/// fails (10 s connect timeout) and the dispatcher falls back to
+/// `XhttpH2` over TLS+TCP, which the axum app does answer.
+async fn setup_xhttp_h2_tls_server_with_resumption(
+    base_path: &'static str,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
+    super::cross_repo_install_test_tls_root_on_client();
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let xhttp_routes = Arc::new(build_xhttp_vless_route_map(&[VlessXhttpUserRoute {
+        user: vless_user,
+        xhttp_path: Arc::from(base_path),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: xhttp_routes,
+    }));
+    let orphan_registry = Some(Arc::new(resumption::OrphanRegistry::new(
+        resumption::ResumptionConfig::from(&crate::config::SessionResumptionConfig {
+            enabled: true,
+            orphan_ttl_tcp_secs: 30,
+            orphan_ttl_udp_secs: 30,
+            orphan_per_user_cap: 4,
+            orphan_global_cap: 16,
+        }),
+        Arc::clone(&metrics),
+    )));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        orphan_registry,
+        16,
+    ));
+    let xhttp_registry = Arc::clone(&services.xhttp_registry);
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth);
+
+    let server_tls = super::cross_repo_test_server_tls_config(&[b"h2", b"http/1.1"]);
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_tls));
+
+    let handle = tokio::spawn(super::cross_repo_serve_axum_with_tls(listener, app, acceptor));
+    Ok((listen_addr, handle, xhttp_registry))
+}
+
+#[tokio::test]
+async fn cross_repo_xhttp_h3_to_h2_fallback_with_resume_token() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    // Server has no UDP listener — only axum-TLS over TCP.
+    let (listen_addr, server, registry) =
+        setup_xhttp_h2_tls_server_with_resumption("/xh").await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("https://localhost:{}/xh", listen_addr.port()))?;
+
+    // ── Client A: XhttpH2 over TLS, captures the resume token ──
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH2,
+        None,
+        false,
+        "cross-repo-xhttp-fallback-a",
+        None,
+    )
+    .await?;
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    let handshake_a = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    // The XHTTP client crate has no public FIN signal; drive the
+    // uplink-EOF straight on the registry session so the relay
+    // exits cleanly and the cleanup path parks the live upstream.
+    let session = registry
+        .first_session()
+        .ok_or_else(|| anyhow::anyhow!("session A missing from registry"))?;
+    session.close_uplink();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(stream_a);
+
+    // ── Client B: XhttpH3 → 10 s QUIC connect timeout (no UDP
+    //    listener) → dispatcher falls back to XhttpH2 with the
+    //    same `X-Outline-Resume` header → server reattaches ──
+    let mut stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        None,
+        false,
+        "cross-repo-xhttp-fallback-b",
+        Some(token),
+    )
+    .await?;
+    assert_eq!(
+        stream_b.downgraded_from(),
+        Some(TransportMode::XhttpH3),
+        "client B should report a downgrade from XhttpH3 to XhttpH2",
+    );
+    let _issued_b = stream_b.issued_session_id();
+
     let handshake_b = build_vless_tcp_handshake(upstream_addr, b"helo")?;
     stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
     let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
