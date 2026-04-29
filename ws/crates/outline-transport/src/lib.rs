@@ -195,6 +195,11 @@ pub use vless::{
 // the SS QUIC dialers — re-exporting it spares callers from depending
 // on the `socks5-proto` workspace crate directly.
 pub use socks5_proto::TargetAddr;
+
+// `CipherKind` is the input type for `TcpShadowsocksReader/Writer`
+// constructors — re-exporting it spares callers from depending on
+// the `shadowsocks-crypto` workspace crate directly.
+pub use shadowsocks_crypto::CipherKind;
 pub use ws_stream::TransportStream;
 
 // TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums
