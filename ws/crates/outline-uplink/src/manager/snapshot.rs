@@ -73,7 +73,7 @@ impl UplinkManager {
                         uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_ws_mode.to_string())
                     },
                     UplinkTransport::Vless => {
-                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string())
+                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_mode.to_string())
                     },
                     UplinkTransport::Shadowsocks => None,
                 },
@@ -82,7 +82,7 @@ impl UplinkManager {
                         uplink.udp_ws_url.as_ref().map(|_| uplink.udp_ws_mode.to_string())
                     },
                     UplinkTransport::Vless => {
-                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_ws_mode.to_string())
+                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_mode.to_string())
                     },
                     UplinkTransport::Shadowsocks => None,
                 },

@@ -34,12 +34,12 @@ impl UplinkManager {
     /// Returns the effective TCP dial mode for `index`, falling back to H2
     /// when an "advanced" mode (H3 or raw QUIC) has been marked broken by
     /// repeated runtime / dial errors.  Applies to Ws and Vless transports.
-    pub async fn effective_tcp_ws_mode(&self, index: usize) -> crate::config::WsTransportMode {
+    pub async fn effective_tcp_ws_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
         let advanced = matches!(
             configured,
-            crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
+            crate::config::TransportMode::WsH3 | crate::config::TransportMode::Quic
         );
         let supports_downgrade =
             matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
@@ -50,7 +50,7 @@ impl UplinkManager {
                 .mode_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
-                return crate::config::WsTransportMode::H2;
+                return crate::config::TransportMode::WsH2;
             }
         }
         configured
@@ -61,12 +61,12 @@ impl UplinkManager {
     pub(crate) async fn effective_udp_ws_mode(
         &self,
         index: usize,
-    ) -> crate::config::WsTransportMode {
+    ) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.udp_dial_mode();
         let advanced = matches!(
             configured,
-            crate::config::WsTransportMode::H3 | crate::config::WsTransportMode::Quic
+            crate::config::TransportMode::WsH3 | crate::config::TransportMode::Quic
         );
         let supports_downgrade =
             matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
@@ -77,7 +77,7 @@ impl UplinkManager {
                 .mode_downgrade_until
                 .is_some_and(|t| t > tokio::time::Instant::now())
             {
-                return crate::config::WsTransportMode::H2;
+                return crate::config::TransportMode::WsH2;
             }
         }
         configured
@@ -109,7 +109,7 @@ impl UplinkManager {
         // bogus `miss` counter inflation against a pool that cannot
         // produce a stream by design.
         if self.effective_tcp_ws_mode(candidate.index).await
-            == outline_transport::WsTransportMode::Quic
+            == outline_transport::TransportMode::Quic
         {
             return None;
         }
@@ -353,7 +353,7 @@ impl UplinkManager {
             })?;
             let mode = self.effective_udp_ws_mode(candidate.index).await;
             #[cfg(feature = "quic")]
-            if mode == outline_transport::WsTransportMode::Quic {
+            if mode == outline_transport::TransportMode::Quic {
                 let quic_mux = outline_transport::VlessUdpQuicMux::new(
                     Arc::clone(&self.inner.dns_cache),
                     udp_ws_url.clone(),
@@ -382,7 +382,7 @@ impl UplinkManager {
                 let factory_manager = self.clone();
                 let factory_index = candidate.index;
                 let factory_on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
-                    Arc::new(move |requested: outline_transport::WsTransportMode| {
+                    Arc::new(move |requested: outline_transport::TransportMode| {
                         factory_manager.note_silent_transport_fallback(
                             factory_index,
                             TransportKind::Udp,
@@ -393,7 +393,7 @@ impl UplinkManager {
                     VlessUdpSessionMux::new_with_limits(
                         dns_cache,
                         ws_url,
-                        outline_transport::WsTransportMode::H2,
+                        outline_transport::TransportMode::WsH2,
                         uuid,
                         fwmark,
                         ipv6_first,
@@ -425,7 +425,7 @@ impl UplinkManager {
             let manager = self.clone();
             let index = candidate.index;
             let on_downgrade: outline_transport::VlessUdpDowngradeNotifier =
-                Arc::new(move |requested: outline_transport::WsTransportMode| {
+                Arc::new(move |requested: outline_transport::TransportMode| {
                     manager.note_silent_transport_fallback(index, TransportKind::Udp, requested);
                 });
             let mux = VlessUdpSessionMux::new_with_limits(
@@ -479,7 +479,7 @@ impl UplinkManager {
         let mut mode = self.effective_udp_ws_mode(candidate.index).await;
         let started = Instant::now();
         #[cfg(feature = "quic")]
-        if mode == outline_transport::WsTransportMode::Quic {
+        if mode == outline_transport::TransportMode::Quic {
             match outline_transport::connect_ss_udp_quic(
                 cache,
                 udp_ws_url,

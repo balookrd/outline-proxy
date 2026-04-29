@@ -1,7 +1,7 @@
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::{LoadBalancingConfig, UplinkTransport, WsTransportMode};
+use crate::config::{LoadBalancingConfig, UplinkTransport, TransportMode};
 
 use super::super::super::penalty::{add_penalty, update_rtt_ewma};
 use super::super::super::types::{
@@ -38,14 +38,14 @@ fn record_transport_success(status: &mut PerTransportStatus) {
 
 fn needs_h3_recovery(
     status: &PerTransportStatus,
-    effective_mode: WsTransportMode,
+    effective_mode: TransportMode,
     uplink_transport: UplinkTransport,
-    uplink_ws_mode: WsTransportMode,
+    uplink_ws_mode: TransportMode,
     now: Instant,
 ) -> bool {
-    effective_mode == WsTransportMode::H2
+    effective_mode == TransportMode::WsH2
         && uplink_transport == UplinkTransport::Ws
-        && uplink_ws_mode == WsTransportMode::H3
+        && uplink_ws_mode == TransportMode::WsH3
         && status.mode_downgrade_until.is_some_and(|t| t > now)
 }
 
@@ -56,8 +56,8 @@ impl UplinkManager {
         index: usize,
         uplink: &Uplink,
         result: ProbeOutcome,
-        effective_tcp_mode: WsTransportMode,
-        effective_udp_mode: WsTransportMode,
+        effective_tcp_mode: TransportMode,
+        effective_udp_mode: TransportMode,
         h3_tcp_recovery: &mut Vec<(usize, Uplink)>,
         h3_udp_recovery: &mut Vec<(usize, Uplink)>,
     ) -> (bool, bool) {

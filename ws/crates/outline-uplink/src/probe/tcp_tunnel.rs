@@ -12,7 +12,7 @@ use tracing::debug;
 
 use outline_transport::{DnsCache, TcpReader, TcpWriter};
 
-use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{TargetAddr, TcpProbeConfig, UplinkConfig, UplinkTransport, TransportMode};
 
 use super::metrics::BytesRecorder;
 use super::transport::{close_probe_tcp_writer, connect_probe_tcp};
@@ -23,8 +23,8 @@ pub(super) async fn run_tcp_tunnel_probe(
     uplink: &UplinkConfig,
     probe: &TcpProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: WsTransportMode,
-) -> Result<(bool, Option<WsTransportMode>)> {
+    effective_tcp_mode: TransportMode,
+) -> Result<(bool, Option<TransportMode>)> {
     let target = if let Ok(ip) = probe.host.parse::<IpAddr>() {
         match ip {
             IpAddr::V4(v4) => TargetAddr::IpV4(v4, probe.port),

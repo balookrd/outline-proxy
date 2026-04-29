@@ -1,7 +1,7 @@
 use super::*;
 use shadowsocks_crypto::CipherKind;
 #[cfg(feature = "metrics")]
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 #[cfg(feature = "metrics")]
 use bytes::Bytes;
 #[cfg(feature = "metrics")]
@@ -211,10 +211,10 @@ async fn h2_reuses_shared_connection_for_non_probe_sources() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "test_h2")
+    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "test_h2")
         .await
         .unwrap();
-    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "test_h2")
+    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "test_h2")
         .await
         .unwrap();
 
@@ -229,10 +229,10 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
     let server = TestH2Server::start().await;
     let url = server.url();
 
-    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "probe_ws")
+    let ws_one = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "probe_ws")
         .await
         .unwrap();
-    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, WsTransportMode::H2, None, false, "probe_ws")
+    let ws_two = connect_websocket_with_source(&DnsCache::default(), &url, TransportMode::WsH2, None, false, "probe_ws")
         .await
         .unwrap();
 
@@ -251,12 +251,12 @@ async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
     // per-uplink window.
     let server = TestH2Server::start().await;
     let url = server.url();
-    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
 
     let stream = connect_websocket_with_source(
         &DnsCache::default(),
         &url,
-        WsTransportMode::H3,
+        TransportMode::WsH3,
         None,
         false,
         "test_downgrade_clamp",
@@ -265,7 +265,7 @@ async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
     .unwrap();
 
     assert!(matches!(stream, WsTransportStream::H2 { .. }));
-    assert_eq!(stream.downgraded_from(), Some(WsTransportMode::H3));
+    assert_eq!(stream.downgraded_from(), Some(TransportMode::WsH3));
 }
 
 #[cfg(feature = "metrics")]
@@ -274,16 +274,16 @@ async fn record_success_clears_cache_when_succeeded_meets_or_exceeds_cap() {
     // Use a unique URL per test so the process-global cache map does
     // not bleed state between concurrent tests on the same host:port.
     let url = Url::parse("wss://record-success-meets.test:443/").unwrap();
-    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
     assert_eq!(
-        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
-        WsTransportMode::H2,
+        super::ws_mode_cache::effective_mode(&url, TransportMode::WsH3).await,
+        TransportMode::WsH2,
         "failure must clamp"
     );
-    super::ws_mode_cache::record_success(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_success(&url, TransportMode::WsH3).await;
     assert_eq!(
-        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
-        WsTransportMode::H3,
+        super::ws_mode_cache::effective_mode(&url, TransportMode::WsH3).await,
+        TransportMode::WsH3,
         "successful h3 must drop the clamp so the next dial is not held back"
     );
 }
@@ -292,13 +292,13 @@ async fn record_success_clears_cache_when_succeeded_meets_or_exceeds_cap() {
 #[tokio::test]
 async fn record_success_keeps_cache_when_succeeded_is_below_cap() {
     let url = Url::parse("wss://record-success-below.test:443/").unwrap();
-    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
     // Cap is now H2. A successful Http1 dial does not prove H2/H3 work
     // so the clamp must remain in place.
-    super::ws_mode_cache::record_success(&url, WsTransportMode::Http1).await;
+    super::ws_mode_cache::record_success(&url, TransportMode::WsH1).await;
     assert_eq!(
-        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
-        WsTransportMode::H2,
+        super::ws_mode_cache::effective_mode(&url, TransportMode::WsH3).await,
+        TransportMode::WsH2,
         "an Http1 success must not clear an H2 cap"
     );
 }
@@ -312,7 +312,7 @@ async fn dial_at_requested_mode_carries_no_downgrade_marker() {
     let stream = connect_websocket_with_source(
         &DnsCache::default(),
         &url,
-        WsTransportMode::H2,
+        TransportMode::WsH2,
         None,
         false,
         "test_no_downgrade",
@@ -337,13 +337,13 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
     // dial and fire the hook exactly once.
     let server = TestH2Server::start().await;
     let url = server.url();
-    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
 
     let counter = Arc::new(AtomicUsize::new(0));
-    let observed_mode = Arc::new(parking_lot::Mutex::new(None::<WsTransportMode>));
+    let observed_mode = Arc::new(parking_lot::Mutex::new(None::<TransportMode>));
     let counter_for_hook = Arc::clone(&counter);
     let observed_for_hook = Arc::clone(&observed_mode);
-    let hook: VlessUdpDowngradeNotifier = Arc::new(move |requested: WsTransportMode| {
+    let hook: VlessUdpDowngradeNotifier = Arc::new(move |requested: TransportMode| {
         counter_for_hook.fetch_add(1, Ordering::SeqCst);
         *observed_for_hook.lock() = Some(requested);
     });
@@ -351,7 +351,7 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
     let mux = VlessUdpSessionMux::new(
         Arc::new(DnsCache::default()),
         url,
-        WsTransportMode::H3,
+        TransportMode::WsH3,
         [0u8; 16],
         None,
         false,
@@ -369,7 +369,7 @@ async fn vless_udp_mux_invokes_on_downgrade_hook_after_clamp_and_latches() {
     );
     assert_eq!(
         *observed_mode.lock(),
-        Some(WsTransportMode::H3),
+        Some(TransportMode::WsH3),
         "hook must receive the originally-requested mode, not the dialed one"
     );
 
@@ -395,18 +395,18 @@ async fn vless_udp_mux_resets_downgrade_latch_after_recovery_dial() {
     // First downgrade — hook fires, latch flips to true.
     let server = TestH2Server::start().await;
     let url = server.url();
-    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    super::ws_mode_cache::record_failure(&url, TransportMode::WsH3).await;
 
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_for_hook = Arc::clone(&counter);
-    let hook: VlessUdpDowngradeNotifier = Arc::new(move |_requested: WsTransportMode| {
+    let hook: VlessUdpDowngradeNotifier = Arc::new(move |_requested: TransportMode| {
         counter_for_hook.fetch_add(1, Ordering::SeqCst);
     });
 
     let mux = VlessUdpSessionMux::new(
         Arc::new(DnsCache::default()),
         url,
-        WsTransportMode::H3,
+        TransportMode::WsH3,
         [0u8; 16],
         None,
         false,

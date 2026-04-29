@@ -23,7 +23,7 @@ use tokio::time::{Instant, timeout};
 
 use outline_transport::DnsCache;
 
-use crate::config::{ProbeConfig, UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{ProbeConfig, UplinkConfig, UplinkTransport, TransportMode};
 
 use self::dns::run_dns_probe;
 use self::http::run_http_probe;
@@ -45,8 +45,8 @@ pub(crate) async fn probe_uplink(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::config::WsTransportMode,
-    effective_udp_mode: crate::config::WsTransportMode,
+    effective_tcp_mode: crate::config::TransportMode,
+    effective_udp_mode: crate::config::TransportMode,
 ) -> Result<ProbeOutcome> {
     let (tcp_ok, tcp_latency, tcp_downgraded_from) = timeout(
         probe.timeout,
@@ -78,10 +78,10 @@ async fn run_tcp_probe(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: crate::config::WsTransportMode,
-) -> Result<(bool, Option<Duration>, Option<WsTransportMode>)> {
+    effective_tcp_mode: crate::config::TransportMode,
+) -> Result<(bool, Option<Duration>, Option<TransportMode>)> {
     let started = Instant::now();
-    let mut downgraded_from: Option<WsTransportMode> = None;
+    let mut downgraded_from: Option<TransportMode> = None;
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
@@ -89,7 +89,7 @@ async fn run_tcp_probe(
                     let url = uplink
                         .tcp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    if effective_tcp_mode == WsTransportMode::Quic {
+                    if effective_tcp_mode == TransportMode::Quic {
                         run_quic_handshake_probe(
                             cache,
                             &uplink.name,
@@ -174,14 +174,14 @@ async fn run_udp_probe(
     uplink: &UplinkConfig,
     probe: &ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_udp_mode: crate::config::WsTransportMode,
-) -> Result<(bool, bool, Option<Duration>, Option<WsTransportMode>)> {
+    effective_udp_mode: crate::config::TransportMode,
+) -> Result<(bool, bool, Option<Duration>, Option<TransportMode>)> {
     if !uplink.supports_udp() {
         return Ok((false, false, None, None));
     }
 
     let started = Instant::now();
-    let mut downgraded_from: Option<WsTransportMode> = None;
+    let mut downgraded_from: Option<TransportMode> = None;
     if probe.ws.enabled {
         let ws_attempt = async {
             match uplink.transport {
@@ -189,7 +189,7 @@ async fn run_udp_probe(
                     let url = uplink
                         .udp_dial_url()
                         .ok_or_else(|| anyhow!("uplink {} missing dial URL", uplink.name))?;
-                    if effective_udp_mode == WsTransportMode::Quic {
+                    if effective_udp_mode == TransportMode::Quic {
                         run_quic_handshake_probe(
                             cache,
                             &uplink.name,

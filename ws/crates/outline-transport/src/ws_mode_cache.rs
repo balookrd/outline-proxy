@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 
 /// Default TTL applied when [`init_downgrade_ttl`] has not been called.
 /// Matches the `LoadBalancingConfig::mode_downgrade_duration` default in
@@ -45,18 +45,20 @@ pub fn init_downgrade_ttl(ttl: Duration) {
 
 #[derive(Clone, Copy)]
 struct Entry {
-    max_mode: WsTransportMode,
+    max_mode: TransportMode,
     expires_at: Instant,
 }
 
-fn rank(m: WsTransportMode) -> u8 {
+fn rank(m: TransportMode) -> u8 {
     match m {
-        WsTransportMode::Http1 => 0,
-        WsTransportMode::H2 => 1,
-        WsTransportMode::H3 => 2,
+        TransportMode::WsH1 => 0,
+        TransportMode::WsH2 => 1,
+        TransportMode::WsH3 => 2,
         // Raw QUIC is not part of the WS fallback chain; treated as topmost
-        // so it is never selected by clamping logic here.
-        WsTransportMode::Quic => 3,
+        // so it is never selected by clamping logic here. XHTTP modes share
+        // the same property: they ride their own dial path and never get
+        // clamped against the WS chain.
+        TransportMode::Quic | TransportMode::XhttpH2 | TransportMode::XhttpH3 => 3,
     }
 }
 
@@ -73,7 +75,7 @@ fn cache() -> &'static RwLock<HashMap<String, Entry>> {
 
 /// Clamp the requested mode to the cached max for this host (if any, and not
 /// expired).  Returns the requested mode unchanged when there is no cap.
-pub(crate) async fn effective_mode(url: &Url, requested: WsTransportMode) -> WsTransportMode {
+pub(crate) async fn effective_mode(url: &Url, requested: TransportMode) -> TransportMode {
     let Some(key) = host_key(url) else { return requested };
     let map = cache().read().await;
     let Some(entry) = map.get(&key) else { return requested };
@@ -90,10 +92,10 @@ pub(crate) async fn effective_mode(url: &Url, requested: WsTransportMode) -> WsT
 /// Record that `failed` did not work for this host; future dials are clamped
 /// to the next-lower mode for `DOWNGRADE_TTL`.  No-op for modes outside the
 /// H3/H2 fallback chain.
-pub(crate) async fn record_failure(url: &Url, failed: WsTransportMode) {
+pub(crate) async fn record_failure(url: &Url, failed: TransportMode) {
     let new_max = match failed {
-        WsTransportMode::H3 => WsTransportMode::H2,
-        WsTransportMode::H2 => WsTransportMode::Http1,
+        TransportMode::WsH3 => TransportMode::WsH2,
+        TransportMode::WsH2 => TransportMode::WsH1,
         _ => return,
     };
     let Some(key) = host_key(url) else { return };
@@ -115,7 +117,7 @@ pub(crate) async fn record_failure(url: &Url, failed: WsTransportMode) {
 /// only clear when the entry naturally expires, so concurrent dials
 /// hitting the same host during the recovery window keep clamping to
 /// the lower mode even though h3 / h2 is already healthy again.
-pub(crate) async fn record_success(url: &Url, succeeded: WsTransportMode) {
+pub(crate) async fn record_success(url: &Url, succeeded: TransportMode) {
     let Some(key) = host_key(url) else { return };
     let mut map = cache().write().await;
     if let Some(entry) = map.get(&key)

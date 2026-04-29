@@ -16,7 +16,7 @@ use outline_transport::{
 #[cfg(feature = "quic")]
 use outline_transport::{connect_ss_udp_quic, connect_vless_udp_session_quic};
 
-use crate::config::{DnsProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{DnsProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 
 use super::metrics::BytesRecorder;
 
@@ -26,8 +26,8 @@ pub(super) async fn run_dns_probe(
     uplink: &UplinkConfig,
     probe: &DnsProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_udp_mode: WsTransportMode,
-) -> Result<(bool, Option<WsTransportMode>)> {
+    effective_udp_mode: TransportMode,
+) -> Result<(bool, Option<TransportMode>)> {
     let dns_server = probe.target_addr()?;
     let query = build_dns_query(&probe.name);
 
@@ -46,7 +46,7 @@ pub(super) async fn run_dns_probe(
                         let udp_ws_url = uplink.udp_ws_url.as_ref().ok_or_else(|| {
                             anyhow!("uplink {} has no udp_ws_url for DNS probe", uplink.name)
                         })?;
-                        if effective_udp_mode == WsTransportMode::Quic {
+                        if effective_udp_mode == TransportMode::Quic {
                             #[cfg(feature = "quic")]
                             {
                                 let t = connect_ss_udp_quic(
@@ -73,7 +73,7 @@ pub(super) async fn run_dns_probe(
                             {
                                 let _ = udp_ws_url;
                                 return Err(anyhow!(
-                                    "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+                                    "TransportMode::Quic requested but binary was built without the `quic` feature"
                                 ));
                             }
                         } else {
@@ -173,7 +173,7 @@ pub(super) async fn run_dns_probe(
                 anyhow!("uplink {} has no vless_id for DNS probe", uplink.name)
             })?;
 
-            if effective_udp_mode == WsTransportMode::Quic {
+            if effective_udp_mode == TransportMode::Quic {
                 #[cfg(feature = "quic")]
                 {
                     let session = {
@@ -235,7 +235,7 @@ pub(super) async fn run_dns_probe(
                 {
                     let _ = (udp_ws_url, uuid);
                     return Err(anyhow!(
-                        "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+                        "TransportMode::Quic requested but binary was built without the `quic` feature"
                     ));
                 }
             }

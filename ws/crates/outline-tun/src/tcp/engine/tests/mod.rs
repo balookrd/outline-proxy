@@ -15,7 +15,7 @@ use crate::wire::IpVersion;
 use shadowsocks_crypto::CipherKind;
 use socks5_proto::TargetAddr;
 use outline_uplink::UplinkTransport;
-use outline_transport::WsTransportMode;
+use outline_transport::TransportMode;
 use outline_uplink::UplinkManager;
 use futures_util::StreamExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -1135,11 +1135,11 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             name: "test".to_string(),
             transport: UplinkTransport::Ws,
             tcp_ws_url: Some(tcp_ws_url),
-            tcp_ws_mode: WsTransportMode::Http1,
+            tcp_ws_mode: TransportMode::WsH1,
             udp_ws_url: None,
-            udp_ws_mode: WsTransportMode::Http1,
+            udp_ws_mode: TransportMode::WsH1,
             vless_ws_url: None,
-            vless_ws_mode: WsTransportMode::Http1,
+            vless_mode: TransportMode::WsH1,
             tcp_addr: None,
             udp_addr: None,
             cipher: CipherKind::Chacha20IetfPoly1305,

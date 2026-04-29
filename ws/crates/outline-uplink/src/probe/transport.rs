@@ -21,7 +21,7 @@ use outline_transport::{
     connect_websocket_with_source,
 };
 
-use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 
 /// Connects a probe's Shadowsocks TCP stream (WebSocket or direct socket) and
 /// returns the framed writer/reader halves plus a downgrade marker.  `source`
@@ -40,9 +40,9 @@ pub(super) async fn connect_probe_tcp(
     target: &TargetAddr,
     source: &'static str,
     probe_label: &str,
-    effective_tcp_mode: WsTransportMode,
+    effective_tcp_mode: TransportMode,
     dial_limit: Arc<Semaphore>,
-) -> Result<(TcpWriter, TcpReader, Option<WsTransportMode>)> {
+) -> Result<(TcpWriter, TcpReader, Option<TransportMode>)> {
     let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
     let lifetime = UpstreamTransportGuard::new(source, "tcp");
     let _permit = dial_limit
@@ -51,7 +51,7 @@ pub(super) async fn connect_probe_tcp(
         .expect("probe dial semaphore closed");
 
     #[cfg(feature = "quic")]
-    if effective_tcp_mode == WsTransportMode::Quic
+    if effective_tcp_mode == TransportMode::Quic
         && (uplink.transport == UplinkTransport::Ws
             || uplink.transport == UplinkTransport::Vless)
     {

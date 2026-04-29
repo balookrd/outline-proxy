@@ -327,8 +327,8 @@ pub(crate) struct ProbeOutcome {
     /// per-uplink `mode_downgrade_until` window even when the probe itself
     /// succeeded — without this, `effective_*_ws_mode` would silently lag
     /// behind the actual transport state.
-    pub(crate) tcp_downgraded_from: Option<crate::config::WsTransportMode>,
-    pub(crate) udp_downgraded_from: Option<crate::config::WsTransportMode>,
+    pub(crate) tcp_downgraded_from: Option<crate::config::TransportMode>,
+    pub(crate) udp_downgraded_from: Option<crate::config::TransportMode>,
 }
 
 #[derive(Clone)]

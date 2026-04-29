@@ -40,7 +40,7 @@ use url::Url;
 
 use crate::{
     AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
-    WsTransportStream, config::WsTransportMode, connect_websocket_with_resume,
+    WsTransportStream, config::TransportMode, connect_websocket_with_resume,
     connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT,
     resumption::SessionId,
 };
@@ -484,7 +484,7 @@ impl VlessUdpTransport {
     pub async fn connect(
         cache: &DnsCache,
         url: &Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         uuid: &[u8; 16],
         target: &TargetAddr,
         fwmark: Option<u32>,
@@ -517,7 +517,7 @@ impl VlessUdpTransport {
     pub async fn connect_with_resume(
         cache: &DnsCache,
         url: &Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         uuid: &[u8; 16],
         target: &TargetAddr,
         fwmark: Option<u32>,
@@ -525,7 +525,7 @@ impl VlessUdpTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>, Option<WsTransportMode>)> {
+    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
         let ws_stream = connect_websocket_with_resume(
             cache,
             url,
@@ -679,7 +679,7 @@ impl Default for VlessUdpMuxLimits {
 /// (the QUIC dial actually failed); here the dial succeeded but at a lower
 /// mode, so passing the requested mode directly is cleaner than synthesising
 /// an error to extract the mode from.
-pub type VlessUdpDowngradeNotifier = Arc<dyn Fn(WsTransportMode) + Send + Sync>;
+pub type VlessUdpDowngradeNotifier = Arc<dyn Fn(TransportMode) + Send + Sync>;
 
 pub struct VlessUdpSessionMux {
     dial: VlessUdpSessionDialer,
@@ -728,7 +728,7 @@ pub struct VlessUdpSessionMux {
 struct VlessUdpSessionDialer {
     dns_cache: Arc<DnsCache>,
     url: Url,
-    mode: WsTransportMode,
+    mode: TransportMode,
     uuid: [u8; 16],
     fwmark: Option<u32>,
     ipv6_first: bool,
@@ -813,7 +813,7 @@ impl VlessUdpSessionMux {
     pub fn new(
         dns_cache: Arc<DnsCache>,
         url: Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         uuid: [u8; 16],
         fwmark: Option<u32>,
         ipv6_first: bool,
@@ -837,7 +837,7 @@ impl VlessUdpSessionMux {
     pub fn new_with_limits(
         dns_cache: Arc<DnsCache>,
         url: Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         uuid: [u8; 16],
         fwmark: Option<u32>,
         ipv6_first: bool,

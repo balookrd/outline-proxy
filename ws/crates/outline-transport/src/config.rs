@@ -9,20 +9,34 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "snake_case")]
 #[derive(Default)]
-pub enum WsTransportMode {
+pub enum TransportMode {
+    /// WebSocket over HTTP/1.1 (RFC 6455). Aliases `http1` and `h1`
+    /// remain accepted for backward compatibility with configs
+    /// written before the rename.
     #[default]
-    #[serde(alias = "h1")]
-    Http1,
-    H2,
-    H3,
+    #[serde(alias = "http1", alias = "h1")]
+    WsH1,
+    /// WebSocket over HTTP/2 (RFC 8441). Alias `h2` for compat.
+    #[serde(alias = "h2")]
+    WsH2,
+    /// WebSocket over HTTP/3 (RFC 9220). Alias `h3` for compat.
+    #[serde(alias = "h3")]
+    WsH3,
     /// Raw QUIC: no WebSocket framing, no HTTP/3. Pairs with the
     /// outline-ss-rust server's matching `outline-quic` ALPN. TCP-like
     /// sessions ride a fresh bidi stream; UDP-like sessions use QUIC
     /// datagrams (RFC 9221). Available only when the `quic` feature is
     /// enabled at build time.
     Quic,
+    /// VLESS over XHTTP packet-up, carried on HTTP/2. Pairs with the
+    /// server's `xhttp_path_vless` listener. Useful behind CDNs that
+    /// block WebSocket upgrades.
+    XhttpH2,
+    /// VLESS over XHTTP packet-up, carried on HTTP/3. Same as
+    /// `xhttp_h2` but on the QUIC endpoint.
+    XhttpH3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,16 +55,18 @@ impl ServerAddr {
     }
 }
 
-impl std::str::FromStr for WsTransportMode {
+impl std::str::FromStr for TransportMode {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self> {
         match s {
-            "http1" | "h1" => Ok(Self::Http1),
-            "h2" => Ok(Self::H2),
-            "h3" => Ok(Self::H3),
+            "ws_h1" | "http1" | "h1" => Ok(Self::WsH1),
+            "ws_h2" | "h2" => Ok(Self::WsH2),
+            "ws_h3" | "h3" => Ok(Self::WsH3),
             "quic" => Ok(Self::Quic),
-            _ => bail!("unsupported websocket transport mode: {s}"),
+            "xhttp_h2" => Ok(Self::XhttpH2),
+            "xhttp_h3" => Ok(Self::XhttpH3),
+            _ => bail!("unsupported transport mode: {s}"),
         }
     }
 }
@@ -111,13 +127,15 @@ impl<'de> Deserialize<'de> for ServerAddr {
     }
 }
 
-impl fmt::Display for WsTransportMode {
+impl fmt::Display for TransportMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = match self {
-            Self::Http1 => "http1",
-            Self::H2 => "h2",
-            Self::H3 => "h3",
+            Self::WsH1 => "ws_h1",
+            Self::WsH2 => "ws_h2",
+            Self::WsH3 => "ws_h3",
             Self::Quic => "quic",
+            Self::XhttpH2 => "xhttp_h2",
+            Self::XhttpH3 => "xhttp_h3",
         };
         f.write_str(value)
     }

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use url::Url;
 
-use outline_transport::{ServerAddr, WsTransportMode};
+use outline_transport::{ServerAddr, TransportMode};
 use outline_uplink::UplinkTransport;
 use shadowsocks_crypto::CipherKind;
 
@@ -30,7 +30,7 @@ pub struct Args {
     pub transport: Option<UplinkTransport>,
 
     #[arg(long, env = "OUTLINE_TCP_WS_MODE", help = "http1, h2, or h3")]
-    pub tcp_ws_mode: Option<WsTransportMode>,
+    pub tcp_ws_mode: Option<TransportMode>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
     pub udp_ws_url: Option<Url>,
@@ -42,7 +42,7 @@ pub struct Args {
     pub udp_addr: Option<ServerAddr>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_MODE", help = "http1, h2, or h3")]
-    pub udp_ws_mode: Option<WsTransportMode>,
+    pub udp_ws_mode: Option<TransportMode>,
 
     /// VLESS-only: single WS URL serving both TCP and UDP. Required when
     /// `transport = "vless"`. Mutually exclusive with `tcp_ws_url`/`udp_ws_url`.
@@ -51,7 +51,7 @@ pub struct Args {
 
     /// VLESS-only: WS transport mode (http1, h2, h3, quic).
     #[arg(long, env = "OUTLINE_VLESS_WS_MODE", help = "http1, h2, h3, or quic")]
-    pub vless_ws_mode: Option<WsTransportMode>,
+    pub vless_mode: Option<TransportMode>,
 
     #[arg(long, env = "SHADOWSOCKS_METHOD")]
     pub method: Option<CipherKind>,

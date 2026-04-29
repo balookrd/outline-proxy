@@ -6,7 +6,7 @@ use std::sync::{
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use outline_transport::WsTransportMode;
+use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig, UplinkManager,
     UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
@@ -73,11 +73,11 @@ async fn build_manager(
             name: "test".to_string(),
             transport: UplinkTransport::Ws,
             tcp_ws_url: Some(tcp_ws_url),
-            tcp_ws_mode: WsTransportMode::Http1,
+            tcp_ws_mode: TransportMode::WsH1,
             udp_ws_url,
-            udp_ws_mode: WsTransportMode::Http1,
+            udp_ws_mode: TransportMode::WsH1,
             vless_ws_url: None,
-            vless_ws_mode: WsTransportMode::Http1,
+            vless_mode: TransportMode::WsH1,
             tcp_addr: None,
             udp_addr: None,
             cipher: CipherKind::Chacha20IetfPoly1305,

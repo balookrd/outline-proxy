@@ -5,7 +5,7 @@ use anyhow::Result;
 use serde::Deserialize;
 use url::Url;
 
-pub use outline_transport::{ServerAddr, VlessUdpMuxLimits, WsTransportMode};
+pub use outline_transport::{ServerAddr, VlessUdpMuxLimits, TransportMode};
 pub use shadowsocks_crypto::CipherKind;
 pub use socks5_proto::TargetAddr;
 
@@ -66,17 +66,17 @@ pub struct UplinkConfig {
     /// `transport = "ws"` only. None for vless/shadowsocks.
     pub tcp_ws_url: Option<Url>,
     /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
-    pub tcp_ws_mode: WsTransportMode,
+    pub tcp_ws_mode: TransportMode,
     /// `transport = "ws"` only. None for vless/shadowsocks.
     pub udp_ws_url: Option<Url>,
     /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
-    pub udp_ws_mode: WsTransportMode,
+    pub udp_ws_mode: TransportMode,
     /// `transport = "vless"` only. The VLESS server exposes a single
     /// WS path (`ws_path_vless`) shared by TCP and UDP, so one URL covers
     /// both directions.
     pub vless_ws_url: Option<Url>,
     /// `transport = "vless"` only.
-    pub vless_ws_mode: WsTransportMode,
+    pub vless_mode: TransportMode,
     pub tcp_addr: Option<ServerAddr>,
     pub udp_addr: Option<ServerAddr>,
     pub cipher: CipherKind,
@@ -120,18 +120,18 @@ impl UplinkConfig {
 
     /// WS transport mode for TCP-style sessions, abstracting the
     /// per-transport mode field.
-    pub fn tcp_dial_mode(&self) -> WsTransportMode {
+    pub fn tcp_dial_mode(&self) -> TransportMode {
         match self.transport {
-            UplinkTransport::Vless => self.vless_ws_mode,
+            UplinkTransport::Vless => self.vless_mode,
             _ => self.tcp_ws_mode,
         }
     }
 
     /// WS transport mode for UDP-style sessions, abstracting the
     /// per-transport mode field.
-    pub fn udp_dial_mode(&self) -> WsTransportMode {
+    pub fn udp_dial_mode(&self) -> TransportMode {
         match self.transport {
-            UplinkTransport::Vless => self.vless_ws_mode,
+            UplinkTransport::Vless => self.vless_mode,
             _ => self.udp_ws_mode,
         }
     }

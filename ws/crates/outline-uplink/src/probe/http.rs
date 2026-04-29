@@ -11,7 +11,7 @@ use tracing::debug;
 
 use outline_transport::{DnsCache, TcpReader, TcpWriter};
 
-use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{HttpProbeConfig, TargetAddr, UplinkConfig, UplinkTransport, TransportMode};
 
 use super::metrics::BytesRecorder;
 use super::transport::{close_probe_tcp_writer, connect_probe_tcp};
@@ -22,8 +22,8 @@ pub(super) async fn run_http_probe(
     uplink: &UplinkConfig,
     probe: &HttpProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: WsTransportMode,
-) -> Result<(bool, Option<WsTransportMode>)> {
+    effective_tcp_mode: TransportMode,
+) -> Result<(bool, Option<TransportMode>)> {
     if probe.url.scheme() != "http" {
         bail!("only http:// probe URLs are currently supported");
     }
