@@ -302,7 +302,7 @@ ws_path_vless = "/alice-vless"
 Example client URI for Happ, v2rayNG, or Hiddify:
 
 ```text
-vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#outline-ss-rust-vless
+vless://550e8400-e29b-41d4-a716-446655440000@example.com:443?type=ws&security=tls&path=%2Falice-vless&encryption=none#example:alice
 ```
 
 Keep VLESS and Shadowsocks WebSocket paths distinct. A `[[users]]` entry may have both `password` for Shadowsocks and `vless_id` for VLESS, or only `vless_id` for a VLESS-only user. `users[].ws_path_vless` overrides the top-level `ws_path_vless`.
