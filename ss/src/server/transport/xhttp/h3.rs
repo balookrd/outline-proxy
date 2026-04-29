@@ -549,14 +549,11 @@ fn parse_seq(headers: &HeaderMap) -> Option<u64> {
 }
 
 fn protocol_from_h3_version(version: Version) -> Protocol {
-    if version == Version::HTTP_3 {
-        Protocol::Http3
-    } else {
-        // h3 endpoint should only see HTTP/3, but keep a sane
-        // fallback so the metric isn't mis-labelled if quinn
-        // surprises us.
-        Protocol::Http3
-    }
+    // The h3 listener can only deliver requests on HTTP/3 — both
+    // arms still resolve to `XhttpH3` so the metric stays
+    // unsurprising even if quinn ever surfaces something else.
+    let _ = version;
+    Protocol::XhttpH3
 }
 
 fn apply_response_masquerade(headers: &mut HeaderMap) {

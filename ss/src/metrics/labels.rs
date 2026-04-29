@@ -55,10 +55,18 @@ pub enum Protocol {
     Http3,
     Socket,
     QuicRaw,
+    /// VLESS over XHTTP packet-up / stream-one carried on HTTP/2
+    /// (RFC 7540). Distinct from `Http2` so dashboards can split
+    /// XHTTP traffic from WebSocket-Upgrade traffic on the same
+    /// h2 listener — they share Tcp+TLS+h2 wire shape but have
+    /// very different framing and resumption behaviour.
+    XhttpH2,
+    /// VLESS over XHTTP carried on HTTP/3 (RFC 9114).
+    XhttpH3,
 }
 
 impl Protocol {
-    pub const VARIANTS_COUNT: usize = 5;
+    pub const VARIANTS_COUNT: usize = 7;
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -67,6 +75,8 @@ impl Protocol {
             Self::Http3 => "http3",
             Self::Socket => "socket",
             Self::QuicRaw => "quic",
+            Self::XhttpH2 => "xhttp_h2",
+            Self::XhttpH3 => "xhttp_h3",
         }
     }
 
@@ -77,6 +87,8 @@ impl Protocol {
             Self::Http3 => 2,
             Self::Socket => 3,
             Self::QuicRaw => 4,
+            Self::XhttpH2 => 5,
+            Self::XhttpH3 => 6,
         }
     }
 
@@ -86,7 +98,9 @@ impl Protocol {
             1 => Self::Http2,
             2 => Self::Http3,
             3 => Self::Socket,
-            _ => Self::QuicRaw,
+            4 => Self::QuicRaw,
+            5 => Self::XhttpH2,
+            _ => Self::XhttpH3,
         }
     }
 }

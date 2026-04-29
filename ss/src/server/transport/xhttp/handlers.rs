@@ -478,9 +478,16 @@ fn resolve_route(
 }
 
 fn protocol_from_http_version(version: Version) -> Protocol {
+    // XHTTP is its own protocol family on the metrics dashboard:
+    // map each HTTP version to its XHTTP-flavoured `Protocol`
+    // variant rather than the generic Http2/Http3, so a Grafana
+    // panel can split XHTTP from WebSocket-over-h2/h3 cleanly.
+    // Pre-h2 versions are rejected upstream (stream-one returns
+    // 505, packet-up rejects on hyper); the `Http1` mapping is
+    // an unreachable fallback to keep this function total.
     match version {
-        Version::HTTP_2 => Protocol::Http2,
-        Version::HTTP_3 => Protocol::Http3,
+        Version::HTTP_2 => Protocol::XhttpH2,
+        Version::HTTP_3 => Protocol::XhttpH3,
         _ => Protocol::Http1,
     }
 }

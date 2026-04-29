@@ -176,12 +176,14 @@ impl ResponseSender for XhttpUdpResponseSender {
     }
 
     fn protocol(&self) -> Protocol {
-        // The wire-side carrier is HTTP/2 or HTTP/3 — we lose that
-        // distinction here because the trait does not let us pass
-        // it through. Reporting Http2 as a stable label avoids
-        // metric churn and keeps the cardinality the same as
-        // ws-over-h2.
-        Protocol::Http2
+        // The wire-side carrier is XhttpH2 or XhttpH3 but the trait
+        // does not let us thread that distinction through this
+        // synthesised sender. Pick `XhttpH2` as the conservative
+        // default — it's still distinct from the WS family on
+        // the metrics dashboard, and the SS-UDP-over-XHTTP path
+        // that would actually exercise this codepath does not
+        // exist in this build (XHTTP carries VLESS only).
+        Protocol::XhttpH2
     }
 
     fn app_protocol(&self) -> AppProtocol {
