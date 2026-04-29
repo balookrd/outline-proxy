@@ -61,9 +61,11 @@
 - Routing fast path пропускает per-packet `has_any_healthy`, если ни одно правило не задаёт fallback-таргет.
 - Refill standby полностью пропускает поиск в TCP-пуле, если эффективный режим dial — raw QUIC (где per-connection пула нет).
 - Внутренний clean-up: `tcp/connect` шарит общий SS target-header send между путями; flow-таблица `tun/tcp` переехала в `DashMap` с отдельным `FlowScheduler`; H2/H3 dial-скелет унифицирован за одной associated-type-чертой `WsDialer`; route TCP/UDP fallback использует общий `apply_fallback_strategy`.
+- `outline_transport::install_test_tls_root(CertificateDer)` — тест-only ручка, пинающая кастомный самоподписанный root для XHTTP h2 / h3 dial-путей. Override-слот это `RwLock<Option<…>>` с дефолтом `None`, так что продакшен-вызывающие (которые её не трогают) сохраняют webpki-поведение с одним лишним чтением на dial. Целевой потребитель — cross-repo e2e-тест в `outline-ss-rust`, который поднимает in-process самоподписанный сервер и дёргает его через обычный `connect_websocket_with_resume`.
 
 ### Исправлено
 
+- XHTTP h3 stream-one закрывал QUIC-соединение с `H3_NO_ERROR` ещё до того, как через него пройдёт хоть один прикладной байт: единственный `SendRequest` уезжал в `open_h3_stream_one`, дропался на return, а `SendRequest::drop` в крейте h3 делает graceful-close, как только `sender_count` падает в ноль. Зеркалит паттерн packet-up — клонируем перед open-хелпером, оригинал держим живым в driver-task'е. Тот же коммит переносит quinn `Endpoint` в driver-task (прежний `let _endpoint_guard = endpoint;` держал его живым только в скоупе функции, не на время сессии).
 - Дашборд: per-instance hyper connection driver теперь аборитится при завершении proxy task — закрывает протечку control-API сокета, копившуюся при churn инстансов.
 - Raw QUIC: разорван цикл Arc в `VlessUdpDemuxer`, удерживавший probe-driven QUIC-коннекты живыми после завершения пробы; пробы больше не пинят коннекты дольше их естественной жизни.
 - TUN: дайлы raw-QUIC TCP, инициированные из TUN-flow, теперь так же падают на WS over H2, как и со стороны SOCKS5; до этого provision raw-QUIC из TUN сразу убивал flow.
