@@ -43,6 +43,7 @@ pub(in crate::server) struct UserManager {
     default_ws_path_tcp: String,
     default_ws_path_udp: String,
     default_ws_path_vless: Option<String>,
+    default_xhttp_path_vless: Option<String>,
     access_key_config: crate::config::AccessKeyConfig,
     access_key_base_config: Config,
     // Paths that exist in the startup Axum/H3 routers. Mutations that
@@ -51,6 +52,7 @@ pub(in crate::server) struct UserManager {
     allowed_tcp_paths: BTreeSet<String>,
     allowed_udp_paths: BTreeSet<String>,
     allowed_vless_paths: BTreeSet<String>,
+    allowed_xhttp_paths: BTreeSet<String>,
     config_path: Option<PathBuf>,
 }
 
@@ -72,6 +74,8 @@ pub(super) struct UserView {
     pub ws_path_udp: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ws_path_vless: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_vless: Option<String>,
     pub has_password: bool,
     pub has_vless_id: bool,
 }
@@ -104,6 +108,7 @@ impl From<&UserEntry> for UserView {
             ws_path_tcp: entry.ws_path_tcp.clone(),
             ws_path_udp: entry.ws_path_udp.clone(),
             ws_path_vless: entry.ws_path_vless.clone(),
+            xhttp_path_vless: entry.xhttp_path_vless.clone(),
             has_password: entry.password.is_some(),
             has_vless_id: entry.vless_id.is_some(),
         }
@@ -118,6 +123,7 @@ impl UserManager {
         allowed_tcp_paths: BTreeSet<String>,
         allowed_udp_paths: BTreeSet<String>,
         allowed_vless_paths: BTreeSet<String>,
+        allowed_xhttp_paths: BTreeSet<String>,
     ) -> Self {
         Self {
             inner: Mutex::new(Inner { users: config.users.clone() }),
@@ -127,11 +133,13 @@ impl UserManager {
             default_ws_path_tcp: config.ws_path_tcp.clone(),
             default_ws_path_udp: config.ws_path_udp.clone(),
             default_ws_path_vless: config.ws_path_vless.clone(),
+            default_xhttp_path_vless: config.xhttp_path_vless.clone(),
             access_key_config: config.access_key.clone(),
             access_key_base_config: config.clone(),
             allowed_tcp_paths,
             allowed_udp_paths,
             allowed_vless_paths,
+            allowed_xhttp_paths,
             config_path: config.config_path.clone(),
         }
     }
@@ -341,18 +349,33 @@ impl UserManager {
         }
 
         let mut vless_routes: Vec<VlessUserRoute> = Vec::new();
+        let mut xhttp_routes: Vec<crate::server::setup::VlessXhttpUserRoute> = Vec::new();
         for user in &enabled {
             let Some(vless_id) = &user.vless_id else { continue };
-            let path = user
-                .effective_ws_path_vless(self.default_ws_path_vless.as_deref())
-                .ok_or_else(|| anyhow!("vless user {} missing ws_path_vless", user.id))?;
+            let ws_path = user.effective_ws_path_vless(self.default_ws_path_vless.as_deref());
+            let xhttp_path =
+                user.effective_xhttp_path_vless(self.default_xhttp_path_vless.as_deref());
+            if ws_path.is_none() && xhttp_path.is_none() {
+                bail!(
+                    "vless user {} requires at least ws_path_vless or xhttp_path_vless",
+                    user.id
+                );
+            }
             let vless_user =
                 VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark)
                     .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
-            vless_routes.push(VlessUserRoute {
-                user: vless_user,
-                ws_path: Arc::from(path),
-            });
+            if let Some(path) = ws_path {
+                vless_routes.push(VlessUserRoute {
+                    user: vless_user.clone(),
+                    ws_path: Arc::from(path),
+                });
+            }
+            if let Some(path) = xhttp_path {
+                xhttp_routes.push(crate::server::setup::VlessXhttpUserRoute {
+                    user: vless_user,
+                    xhttp_path: Arc::from(path),
+                });
+            }
         }
 
         let tcp_map: BTreeMap<String, Arc<TransportRoute>> =
@@ -361,6 +384,8 @@ impl UserManager {
             build_transport_route_map(&user_routes, Transport::Udp);
         let vless_map: BTreeMap<String, Arc<VlessTransportRoute>> =
             build_vless_transport_route_map(&vless_routes);
+        let xhttp_map: BTreeMap<String, Arc<VlessTransportRoute>> =
+            crate::server::setup::build_xhttp_vless_route_map(&xhttp_routes);
 
         let auth_keys: Arc<[UserKey]> = Arc::from(
             user_routes
@@ -375,6 +400,7 @@ impl UserManager {
                 tcp: Arc::new(tcp_map),
                 udp: Arc::new(udp_map),
                 vless: Arc::new(vless_map),
+                xhttp_vless: Arc::new(xhttp_map),
             },
             auth_keys,
         ))
@@ -389,6 +415,7 @@ pub(super) struct UserPatch {
     pub ws_path_tcp: FieldPatch<String>,
     pub ws_path_udp: FieldPatch<String>,
     pub ws_path_vless: FieldPatch<String>,
+    pub xhttp_path_vless: FieldPatch<String>,
     pub enabled: Option<bool>,
 }
 
@@ -414,6 +441,9 @@ impl UserPatch {
         }
         if let FieldPatch::Set(ws_path_vless) = self.ws_path_vless {
             entry.ws_path_vless = ws_path_vless;
+        }
+        if let FieldPatch::Set(xhttp_path_vless) = self.xhttp_path_vless {
+            entry.xhttp_path_vless = xhttp_path_vless;
         }
         if let Some(enabled) = self.enabled {
             entry.enabled = Some(enabled);

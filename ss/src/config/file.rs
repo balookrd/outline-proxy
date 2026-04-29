@@ -93,6 +93,11 @@ pub(super) struct WebsocketSection {
     pub tcp_path: Option<String>,
     pub udp_path: Option<String>,
     pub vless_path: Option<String>,
+    /// Base path for VLESS-over-XHTTP packet-up. The server registers
+    /// `<base>/{id}` for every advertised base, where `{id}` is an
+    /// opaque per-session token chosen by the client. Absent (the
+    /// default) disables XHTTP.
+    pub xhttp_vless_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

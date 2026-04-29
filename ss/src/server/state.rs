@@ -16,7 +16,7 @@ use super::nat::NatTable;
 use super::peer_user_cache::PeerUserCache;
 use super::replay::ReplayStore;
 use super::resumption::OrphanRegistry;
-use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx};
+use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry};
 
 use super::dns_cache::DnsCache;
 
@@ -25,6 +25,11 @@ pub(super) struct RouteRegistry {
     pub(super) tcp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) udp: Arc<BTreeMap<String, Arc<TransportRoute>>>,
     pub(super) vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
+    /// XHTTP-VLESS routes, keyed by base path (the `{id}` capture
+    /// is appended at axum/h3 routing time). The route record is
+    /// the same `VlessTransportRoute` used for ws-vless because
+    /// the auth surface is identical — only the carrier differs.
+    pub(super) xhttp_vless: Arc<BTreeMap<String, Arc<VlessTransportRoute>>>,
 }
 
 /// Snapshot of live routing state that control-plane mutations swap atomically.
@@ -66,6 +71,10 @@ pub(super) struct Services {
     /// [`OrphanRegistry::enabled`]). Keeping the field unconditional avoids
     /// `Option` plumbing through every relay path.
     pub(super) orphan_registry: Arc<OrphanRegistry>,
+    /// Per-process XHTTP session registry. Shared between the axum
+    /// (h1/h2) and h3 entry points so a session opened over one
+    /// transport version is not split-brain with the other.
+    pub(super) xhttp_registry: Arc<XhttpRegistry>,
 }
 
 impl Services {
@@ -117,6 +126,7 @@ impl Services {
             udp_server,
             vless_server,
             orphan_registry,
+            xhttp_registry: XhttpRegistry::new(),
         }
     }
 }

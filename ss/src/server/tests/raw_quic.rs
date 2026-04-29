@@ -90,6 +90,7 @@ fn empty_route_registry() -> Arc<ArcSwap<RouteRegistry>> {
         tcp: Arc::new(BTreeMap::new()),
         udp: Arc::new(BTreeMap::new()),
         vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
     }))
 }
 

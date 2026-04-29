@@ -163,6 +163,7 @@ async fn spawn_test_server(
         tcp: tcp_routes,
         udp: udp_routes,
         vless: vless_table,
+        xhttp_vless: Arc::new(std::collections::BTreeMap::new()),
     }));
     let services = Arc::new(Services::new(
         Arc::clone(&metrics),

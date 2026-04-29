@@ -40,7 +40,7 @@ use ctx::MAX_VLESS_HEADER_BUFFER;
 use tcp::{establish_vless_tcp_upstream, shutdown_unparked_tcp, try_park_vless_tcp};
 use udp::try_park_vless_udp_single;
 
-async fn run_vless_relay<T: WsSocket>(
+pub(in crate::server::transport) async fn run_vless_relay<T: WsSocket>(
     socket: T,
     server: &VlessWsServerCtx,
     route: &VlessWsRouteCtx,

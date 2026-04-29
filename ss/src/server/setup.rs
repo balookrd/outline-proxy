@@ -151,17 +151,74 @@ pub(super) fn build_vless_user_routes(config: &Config) -> Result<Arc<[VlessUserR
             .users
             .iter()
             .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
-            .map(|entry| {
-                let (entry, vless_id) = entry;
-                let ws_path = entry
+            // Skip users that only ride raw-quic VLESS or XHTTP and have no
+            // WS path — they belong to those routing tables, not this one.
+            .filter_map(|(entry, vless_id)| {
+                entry
                     .effective_ws_path_vless(config.ws_path_vless.as_deref())
-                    .expect("config validation requires vless path");
+                    .map(|path| (entry, vless_id, path))
+            })
+            .map(|(entry, vless_id, ws_path)| {
                 VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
                     .map(|user| VlessUserRoute { user, ws_path: Arc::from(ws_path) })
             })
             .collect::<Result<Vec<_>, _>>()?
             .into_boxed_slice(),
     ))
+}
+
+#[derive(Clone)]
+pub(super) struct VlessXhttpUserRoute {
+    pub user: VlessUser,
+    pub xhttp_path: Arc<str>,
+}
+
+pub(super) fn build_vless_xhttp_user_routes(
+    config: &Config,
+) -> Result<Arc<[VlessXhttpUserRoute]>> {
+    Ok(Arc::from(
+        config
+            .users
+            .iter()
+            .filter_map(|entry| entry.vless_id.as_ref().map(|vless_id| (entry, vless_id)))
+            .filter_map(|(entry, vless_id)| {
+                entry
+                    .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
+                    .map(|path| (entry, vless_id, path))
+            })
+            .map(|(entry, vless_id, xhttp_path)| {
+                VlessUser::new(vless_id.clone(), Arc::from(entry.id.as_str()), entry.fwmark)
+                    .map(|user| VlessXhttpUserRoute { user, xhttp_path: Arc::from(xhttp_path) })
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .into_boxed_slice(),
+    ))
+}
+
+pub(super) fn build_xhttp_vless_route_map(
+    routes: &[VlessXhttpUserRoute],
+) -> BTreeMap<String, Arc<super::state::VlessTransportRoute>> {
+    let mut grouped = BTreeMap::<String, Vec<VlessUser>>::new();
+    for route in routes {
+        grouped
+            .entry(route.xhttp_path.to_string())
+            .or_default()
+            .push(route.user.clone());
+    }
+    grouped
+        .into_iter()
+        .map(|(path, path_users)| {
+            let candidate_users =
+                path_users.iter().map(|user| user.label_arc()).collect::<Vec<_>>();
+            (
+                path,
+                Arc::new(super::state::VlessTransportRoute {
+                    users: Arc::from(path_users.into_boxed_slice()),
+                    candidate_users: Arc::from(candidate_users.into_boxed_slice()),
+                }),
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

@@ -31,6 +31,7 @@ mod vless_mux;
 mod vless_udp;
 mod ws_socket;
 mod ws_writer;
+mod xhttp;
 
 pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use raw_quic::{
@@ -45,6 +46,9 @@ pub(in crate::server) use tcp::{
 };
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
+pub(in crate::server) use xhttp::{
+    XhttpAxumState, XhttpRegistry, handle_xhttp_h3_request, xhttp_handler,
+};
 
 pub(super) async fn tcp_websocket_upgrade(
     ws: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,

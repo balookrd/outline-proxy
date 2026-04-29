@@ -29,6 +29,7 @@ mod resumption;
 mod shadowsocks;
 mod vless;
 mod websocket;
+mod xhttp;
 
 fn build_test_state(
     user_routes: Arc<[UserRoute]>,
@@ -42,7 +43,13 @@ fn build_test_state(
     let tcp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Tcp));
     let udp = Arc::new(build_transport_route_map(user_routes.as_ref(), Transport::Udp));
     let vless = Arc::new(build_vless_transport_route_map(&[]));
-    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry { tcp, udp, vless }));
+    let xhttp_vless = Arc::new(std::collections::BTreeMap::new());
+    let routes: RoutesSnapshot = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp,
+        udp,
+        vless,
+        xhttp_vless,
+    }));
     let services = Arc::new(Services::new(
         metrics,
         dns_cache,
@@ -76,6 +83,7 @@ fn sample_config(listen: SocketAddr) -> Config {
             ws_path_udp: None,
             vless_id: None,
             ws_path_vless: None,
+            xhttp_path_vless: None,
             enabled: None,
         }],
     )
@@ -100,6 +108,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
         ws_path_vless: None,
+        xhttp_path_vless: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users,

@@ -25,8 +25,8 @@ use super::super::{
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
-        metrics_handler, not_found_handler, root_http_auth_handler, tcp_websocket_upgrade,
-        udp_websocket_upgrade, vless_websocket_upgrade,
+        XhttpAxumState, metrics_handler, not_found_handler, root_http_auth_handler,
+        tcp_websocket_upgrade, udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
     },
 };
 use super::tls::build_tcp_tls_acceptor;
@@ -54,10 +54,33 @@ pub(in crate::server) fn build_app(
     for path in snap.vless.keys() {
         router = router.route(path, any(vless_websocket_upgrade));
     }
+    let xhttp_paths: Vec<String> = snap.xhttp_vless.keys().cloned().collect();
     drop(snap);
 
-    let state = AppState { routes, services, auth };
-    router.fallback(any(not_found_handler)).with_state(state)
+    let state = AppState {
+        routes: Arc::clone(&routes),
+        services: Arc::clone(&services),
+        auth,
+    };
+    let mut app = router.fallback(any(not_found_handler)).with_state(state.clone());
+
+    // XHTTP routes carry their own `XhttpAxumState`, so they have to
+    // be merged in after the main router pins its state. The base
+    // path is captured once per route and the `{id}` segment is
+    // appended for axum to extract.
+    for base in xhttp_paths {
+        let xhttp_state = XhttpAxumState {
+            base_path: Arc::from(base.as_str()),
+            registry: Arc::clone(&services.xhttp_registry),
+            parent: state.clone(),
+        };
+        let route_pattern = format!("{base}/{{id}}");
+        let xhttp_router = Router::new()
+            .route(&route_pattern, any(xhttp_handler))
+            .with_state(xhttp_state);
+        app = app.merge(xhttp_router);
+    }
+    app
 }
 
 pub(in crate::server) fn build_metrics_app(metrics: Arc<Metrics>, metrics_path: String) -> Router {

@@ -12,6 +12,7 @@ fn sample_users() -> Vec<UserEntry> {
             ws_path_udp: None,
             vless_id: None,
             ws_path_vless: None,
+            xhttp_path_vless: None,
             enabled: None,
         },
         UserEntry {
@@ -23,6 +24,7 @@ fn sample_users() -> Vec<UserEntry> {
             ws_path_udp: Some("/bob/udp".to_owned()),
             vless_id: None,
             ws_path_vless: None,
+            xhttp_path_vless: None,
             enabled: Some(false),
         },
     ]

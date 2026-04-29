@@ -23,7 +23,7 @@ use super::super::{
     transport::{
         ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, finish_ws_session,
         handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
-        is_normal_h3_shutdown,
+        handle_xhttp_h3_request, is_normal_h3_shutdown,
     },
 };
 use crate::crypto::UserKey;
@@ -96,6 +96,29 @@ async fn handle_h3_request(
     let path = request.uri().path().to_owned();
 
     if request.method() != Method::CONNECT {
+        // Try XHTTP first: GET/POST on `<base>/<id>` map to the
+        // packet-up handler, where `<base>` is one of the known
+        // xhttp paths. We do this before the plain-HTTP fallback
+        // (auth challenge / 404) because XHTTP shares the GET
+        // method with the root-auth handler, and confusing those
+        // two would either expose the auth challenge to xhttp
+        // clients or eat xhttp upgrade requests.
+        if let Some((base, session_id)) = match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
+            && let Some(route) = ctx.xhttp_vless.get(base.as_ref()).cloned()
+        {
+            return handle_xhttp_h3_request(
+                request,
+                stream,
+                Arc::clone(&ctx.xhttp_registry),
+                Arc::clone(&ctx.vless_server),
+                route,
+                base,
+                session_id,
+                peer_addr,
+            )
+            .await;
+        }
+
         let users_snap = ctx.auth.users.load();
         let response = h3_http_response(
             users_snap.0.as_ref(),
@@ -250,6 +273,27 @@ async fn handle_h3_request(
     }
 
     Ok(())
+}
+
+/// Returns `Some((base, session_id))` if `path` is `<base>/<id>` for
+/// some `base` in `xhttp_paths` and `<id>` is a single non-empty path
+/// segment. Done with a linear scan — `xhttp_paths` is at most a few
+/// entries in any realistic deployment, and the cost is dominated by
+/// the per-request work that follows.
+fn match_xhttp_path(
+    path: &str,
+    xhttp_paths: &std::collections::BTreeSet<String>,
+) -> Option<(std::sync::Arc<str>, String)> {
+    for base in xhttp_paths {
+        if let Some(rest) = path.strip_prefix(base.as_str())
+            && let Some(id) = rest.strip_prefix('/')
+            && !id.is_empty()
+            && !id.contains('/')
+        {
+            return Some((std::sync::Arc::from(base.as_str()), id.to_owned()));
+        }
+    }
+    None
 }
 
 fn h3_http_response(

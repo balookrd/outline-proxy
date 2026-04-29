@@ -19,10 +19,10 @@ use super::{
         H3_MAX_CONCURRENT_CONNECTIONS, H3_MAX_CONCURRENT_STREAMS, H3_MAX_UDP_PAYLOAD_SIZE,
         H3_QUIC_IDLE_TIMEOUT_SECS, H3_QUIC_PING_INTERVAL_SECS,
     },
-    state::{AuthPolicy, RoutesSnapshot, Services},
+    state::{AuthPolicy, RoutesSnapshot, Services, VlessTransportRoute},
     transport::{
         RawQuicSsCtx, RawQuicVlessRouteCtx, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx,
-        is_normal_h3_shutdown,
+        XhttpRegistry, is_normal_h3_shutdown,
     },
 };
 
@@ -177,6 +177,13 @@ struct H3ConnectionCtx {
     tcp_paths: Arc<BTreeSet<String>>,
     udp_paths: Arc<BTreeSet<String>>,
     vless_paths: Arc<BTreeSet<String>>,
+    /// XHTTP-VLESS base paths (without the `{id}` suffix). Lookup
+    /// against the request URI is a longest-prefix scan, so the
+    /// set must not contain entries that prefix one another at a
+    /// segment boundary — config validation enforces uniqueness.
+    xhttp_paths: Arc<BTreeSet<String>>,
+    xhttp_vless: Arc<std::collections::BTreeMap<String, Arc<VlessTransportRoute>>>,
+    xhttp_registry: Arc<XhttpRegistry>,
     ws_config: H3WebSocketConfig,
     tcp_server: Arc<WsTcpServerCtx>,
     udp_server: Arc<UdpServerCtx>,
@@ -214,7 +221,11 @@ pub(in crate::server) async fn serve_h3_server(
         Arc::new(initial.udp.keys().cloned().collect::<BTreeSet<_>>());
     let vless_paths: Arc<BTreeSet<String>> =
         Arc::new(initial.vless.keys().cloned().collect::<BTreeSet<_>>());
+    let xhttp_paths: Arc<BTreeSet<String>> =
+        Arc::new(initial.xhttp_vless.keys().cloned().collect::<BTreeSet<_>>());
+    let xhttp_vless = Arc::clone(&initial.xhttp_vless);
     drop(initial);
+    let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let (endpoint, ws_config) = server.into_parts();
     let tcp_server = Arc::clone(&services.tcp_server);
     let udp_server = Arc::clone(&services.udp_server);
@@ -271,6 +282,9 @@ pub(in crate::server) async fn serve_h3_server(
             tcp_paths: Arc::clone(&tcp_paths),
             udp_paths: Arc::clone(&udp_paths),
             vless_paths: Arc::clone(&vless_paths),
+            xhttp_paths: Arc::clone(&xhttp_paths),
+            xhttp_vless: Arc::clone(&xhttp_vless),
+            xhttp_registry: Arc::clone(&xhttp_registry),
             ws_config: ws_config.clone(),
             tcp_server: Arc::clone(&tcp_server),
             udp_server: Arc::clone(&udp_server),
