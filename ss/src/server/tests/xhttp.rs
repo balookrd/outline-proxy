@@ -42,6 +42,13 @@ const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 async fn setup_xhttp_server(
     base_path: &'static str,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    setup_xhttp_server_with_resumption(base_path, false).await
+}
+
+async fn setup_xhttp_server_with_resumption(
+    base_path: &'static str,
+    resumption: bool,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -57,6 +64,24 @@ async fn setup_xhttp_server(
         vless: Arc::new(BTreeMap::new()),
         xhttp_vless: xhttp_routes,
     }));
+    // Build a real `OrphanRegistry` when resumption is requested so
+    // `from_request_headers` mints a Session ID. Without this the
+    // registry is the disabled stub and the resume round-trip is a
+    // silent no-op (no `X-Outline-Session` ever appears).
+    let orphan_registry = if resumption {
+        Some(Arc::new(super::super::resumption::OrphanRegistry::new(
+            super::super::resumption::ResumptionConfig::from(&crate::config::SessionResumptionConfig {
+                enabled: true,
+                orphan_ttl_tcp_secs: 30,
+                orphan_ttl_udp_secs: 30,
+                orphan_per_user_cap: 4,
+                orphan_global_cap: 16,
+            }),
+            Arc::clone(&metrics),
+        )))
+    } else {
+        None
+    };
     let services = Arc::new(Services::new(
         metrics,
         DnsCache::new(Duration::from_secs(30)),
@@ -67,7 +92,7 @@ async fn setup_xhttp_server(
             replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
             relay_semaphore: None,
         },
-        None,
+        orphan_registry,
         16,
     ));
     let auth = Arc::new(AuthPolicy {
@@ -249,6 +274,64 @@ async fn xhttp_concurrent_get_returns_conflict() -> Result<()> {
     assert_eq!(dup_resp.status(), StatusCode::CONFLICT);
 
     let _first = first_get.await?;
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_resume_capable_get_returns_session_header_and_reattach_keeps_it() -> Result<()> {
+    let (listen_addr, server) = setup_xhttp_server_with_resumption("/xh", true).await?;
+    let client = http_client();
+    let session_id = "resume-session-001";
+    let url = format!("http://{listen_addr}/xh/{session_id}");
+
+    // First GET: client advertises Resume-Capable and the server
+    // mints a Session ID, surfacing it on the response.
+    let first_url = url.clone();
+    let first_client = client.clone();
+    let first_get = tokio::spawn(async move {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&first_url)
+            .header("x-outline-resume-capable", "1")
+            .body(Full::new(Bytes::new()))?;
+        let resp = first_client.request(req).await?;
+        let session = resp
+            .headers()
+            .get("x-outline-session")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        Result::<_, anyhow::Error>::Ok(session)
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let first_session = tokio::time::timeout(Duration::from_secs(5), first_get).await???;
+    let token = first_session.ok_or_else(|| {
+        anyhow!("server did not surface X-Outline-Session on the resume-capable GET")
+    })?;
+    assert_eq!(token.len(), 32, "expected 16-byte hex Session ID");
+
+    // Subsequent POST seq=0 must surface the same token (the
+    // session was created by the GET above and the POST attaches
+    // to it). The client uses this round-trip to confirm both sides
+    // see the same token before sending its first VLESS frame.
+    let post_resp = client
+        .request(
+            Request::builder()
+                .method(Method::POST)
+                .uri(&url)
+                .header("x-xhttp-seq", "0")
+                .body(Full::new(Bytes::from_static(b"x")))?,
+        )
+        .await?;
+    assert_eq!(post_resp.status(), StatusCode::OK);
+    let post_token = post_resp
+        .headers()
+        .get("x-outline-session")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_owned())
+        .ok_or_else(|| anyhow!("POST response missing X-Outline-Session"))?;
+    assert_eq!(post_token, token, "attach POST must surface the same minted token");
+
     server.abort();
     Ok(())
 }
