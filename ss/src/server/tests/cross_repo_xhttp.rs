@@ -461,3 +461,91 @@ async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn cross_repo_xhttp_packet_up_h3_resume_reattaches_parked_upstream() -> Result<()> {
+    // Two-round echo upstream: a successful resume reuses the same
+    // accepted TCP socket, so this future only completes if both
+    // pings land on a single accept.
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server, registry) = setup_xhttp_h3_server("/xh", true).await?;
+
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("https://localhost:{}/xh", listen_addr.port()))?;
+
+    // ── Client A: capability advertise + first round-trip ──────
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        None,
+        false,
+        "cross-repo-xhttp-h3-resume-a",
+        None,
+    )
+    .await?;
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    let handshake_a = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream_a.send(Message::Binary(Bytes::from(handshake_a))).await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    // The XHTTP client crate has no FIN signal on its public
+    // surface, so we drive the uplink-EOF straight on the session
+    // — same trick the h2 resume test uses. The relay sees EOF,
+    // exits, and the cleanup path parks the live upstream into
+    // the orphan registry under `token`.
+    let session = registry
+        .first_session()
+        .ok_or_else(|| anyhow::anyhow!("session A missing from registry"))?;
+    session.close_uplink();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    drop(stream_a);
+
+    // ── Client B: dials with the same token, expects reattach ──
+    let mut stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        None,
+        false,
+        "cross-repo-xhttp-h3-resume-b",
+        Some(token),
+    )
+    .await?;
+    let _issued_b = stream_b.issued_session_id();
+
+    // Target is irrelevant on the resume path; the server uses
+    // the parked writer/reader and never re-resolves. `helo`
+    // distinguishes the upstream's two reads.
+    let handshake_b = build_vless_tcp_handshake(upstream_addr, b"helo")?;
+    stream_b.send(Message::Binary(Bytes::from(handshake_b))).await?;
+    let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
+    assert_eq!(&received_b[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(stream_b);
+    server.abort();
+    Ok(())
+}
