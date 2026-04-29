@@ -18,7 +18,7 @@ use super::super::super::{
 };
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{Metrics, PerUserCounters, Protocol, Transport},
+    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, Transport},
     outbound::OutboundIpv6,
     protocol::{
         TargetAddr,
@@ -161,7 +161,13 @@ where
                     Some(&buf[..read]),
                 );
                 let frame = frame_buf.split().freeze();
-                metrics.record_websocket_binary_frame(Transport::Tcp, protocol, "out", frame.len());
+                metrics.record_websocket_binary_frame(
+                    Transport::Tcp,
+                    protocol,
+                    AppProtocol::Vless,
+                    "out",
+                    frame.len(),
+                );
                 if tx.send(make_binary(frame)).await.is_err() {
                     return MuxReaderHarvest::Closed;
                 }

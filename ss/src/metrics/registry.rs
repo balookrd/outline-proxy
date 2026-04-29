@@ -10,6 +10,13 @@ const TCP_CONNECT_BUCKETS: &[f64] =
     &[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0];
 const UDP_RELAY_BUCKETS: &[f64] = &[0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0];
 const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 14400.0];
+// Power-of-two ladder from 256 B to 64 KiB. The hot regime for diagnosing
+// throughput issues is the 1–16 KiB band: a healthy bulk-relay session
+// concentrates near the upper end (LEGACY_MAX_CHUNK_SIZE = 16383), while a
+// non-batched relay smears down toward TCP-segment size (~1.4 KiB).
+const WS_FRAME_SIZE_BUCKETS: &[f64] = &[
+    256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16384.0, 32768.0, 65536.0,
+];
 
 pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, PrometheusHandle) {
     let recorder = PrometheusBuilder::new()
@@ -28,6 +35,11 @@ pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, Pro
             WS_SESSION_BUCKETS,
         )
         .expect("invalid WebSocket session bucket config")
+        .set_buckets_for_metric(
+            Matcher::Full("outline_ss_websocket_frame_size_bytes".into()),
+            WS_FRAME_SIZE_BUCKETS,
+        )
+        .expect("invalid WebSocket frame size bucket config")
         .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
         .build_recorder();
     let handle = recorder.handle();
@@ -59,6 +71,10 @@ pub(super) fn register_descriptions() {
     describe_counter!(
         "outline_ss_websocket_bytes_total",
         "Encrypted websocket payload bytes transferred."
+    );
+    describe_histogram!(
+        "outline_ss_websocket_frame_size_bytes",
+        "Distribution of binary websocket frame payload sizes by app_protocol/direction."
     );
     describe_counter!(
         "outline_ss_client_sessions_total",

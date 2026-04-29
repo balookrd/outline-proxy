@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 
-use super::{DisconnectReason, Metrics, Protocol, Transport};
+use super::{AppProtocol, DisconnectReason, Metrics, Protocol, Transport};
 
 fn test_config() -> Config {
     Config {
@@ -49,8 +49,18 @@ fn test_config() -> Config {
 #[test]
 fn renders_prometheus_metrics() {
     let metrics = Metrics::new(&test_config());
-    let session = metrics.open_websocket_session(Transport::Tcp, Protocol::Http2);
-    metrics.record_websocket_binary_frame(Transport::Tcp, Protocol::Http2, "in", 123);
+    let session = metrics.open_websocket_session(
+        Transport::Tcp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+    );
+    metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "in",
+        123,
+    );
     metrics.record_tcp_authenticated_session("default", Protocol::Http2);
     metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
     metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
@@ -59,7 +69,9 @@ fn renders_prometheus_metrics() {
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains("outline_ss_websocket_upgrades_total"));
-    assert!(rendered.contains("transport=\"tcp\",protocol=\"http2\""));
+    assert!(rendered.contains("app_protocol=\"shadowsocks\""));
+    assert!(rendered.contains("outline_ss_websocket_frame_size_bytes_bucket"));
+    assert!(rendered.contains("outline_ss_build_info"));
     assert!(rendered.contains("user=\"default\",protocol=\"http2\""));
     assert!(rendered.contains("outline_ss_tcp_upstream_connect_duration_seconds_bucket"));
     assert!(rendered.contains("outline_ss_client_sessions_total"));

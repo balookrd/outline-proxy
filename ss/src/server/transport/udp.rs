@@ -17,7 +17,7 @@ use crate::{
     crypto::{
         CryptoError, SessionKeyCache, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet,
     },
-    metrics::{Metrics, Protocol, Transport},
+    metrics::{AppProtocol, Metrics, Protocol, Transport},
     protocol::parse_target_addr,
     server::nat::{NatKey, NatTable, UdpResponseSender},
     server::replay::{self, ReplayCheck, ReplayStore},
@@ -413,6 +413,7 @@ async fn run_udp_relay<T: WsSocket>(
         server.metrics.clone(),
         Transport::Udp,
         route.protocol,
+        AppProtocol::Shadowsocks,
     ));
 
     let mut loop_result = Ok(());
@@ -430,7 +431,13 @@ async fn run_udp_relay<T: WsSocket>(
                 };
                 match T::classify(frame) {
                     WsFrame::Binary(data) => {
-                        server.metrics.record_websocket_binary_frame(Transport::Udp, route.protocol, "in", data.len());
+                        server.metrics.record_websocket_binary_frame(
+                            Transport::Udp,
+                            route.protocol,
+                            AppProtocol::Shadowsocks,
+                            "in",
+                            data.len(),
+                        );
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
                             server.metrics.record_udp_relay_drop(Transport::Udp, route.protocol, "concurrency_limit");
                             warn!("udp concurrent relay limit reached, dropping datagram");

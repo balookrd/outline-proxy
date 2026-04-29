@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::{
-    metrics::Transport,
+    metrics::{AppProtocol, Transport},
     protocol::vless::{self, VlessCommand, VlessUser, mask_uuid},
 };
 
@@ -57,6 +57,7 @@ async fn run_vless_relay<T: WsSocket>(
         server.metrics.clone(),
         Transport::Tcp,
         route.protocol,
+        AppProtocol::Vless,
     ));
 
     let ping_interval = Duration::from_secs(WS_TCP_KEEPALIVE_PING_INTERVAL_SECS);
@@ -298,9 +299,13 @@ where
     use anyhow::Context;
     use tokio::io::AsyncWriteExt;
 
-    server
-        .metrics
-        .record_websocket_binary_frame(Transport::Tcp, route.protocol, "in", data.len());
+    server.metrics.record_websocket_binary_frame(
+        Transport::Tcp,
+        route.protocol,
+        AppProtocol::Vless,
+        "in",
+        data.len(),
+    );
 
     let counters = state.user_counters.as_deref();
     match &mut state.upstream {

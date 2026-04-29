@@ -17,7 +17,7 @@ use axum::{
 };
 use tracing::{debug, warn};
 
-use crate::metrics::{DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
+use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocketSessionGuard};
 
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
@@ -72,7 +72,7 @@ pub(super) async fn tcp_websocket_upgrade(
     let server = Arc::clone(&state.services.tcp_server);
     let session = server
         .metrics
-        .open_websocket_session(Transport::Tcp, protocol);
+        .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     let ConnectInfo(peer_addr) = connect_info;
     // The `Option<SessionId>` is `Copy`, so save the issued ID by value
@@ -128,7 +128,7 @@ pub(super) async fn vless_websocket_upgrade(
     let server = Arc::clone(&state.services.vless_server);
     let session = server
         .metrics
-        .open_websocket_session(Transport::Tcp, protocol);
+        .open_websocket_session(Transport::Tcp, protocol, AppProtocol::Vless);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     // Save the minted ID by value (`Copy`) so we can attach the
     // `X-Outline-Session` response header without re-parsing headers
@@ -232,7 +232,7 @@ pub(super) async fn udp_websocket_upgrade(
     let server = Arc::clone(&state.services.udp_server);
     let session = server
         .metrics
-        .open_websocket_session(Transport::Udp, protocol);
+        .open_websocket_session(Transport::Udp, protocol, AppProtocol::Shadowsocks);
     let resume = ResumeContext::from_request_headers(&headers, &server.orphan_registry);
     let issued_for_response = resume.issued_session_id;
     let mut response = ws.on_upgrade(move |socket| async move {

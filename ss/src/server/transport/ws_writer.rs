@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tokio::sync::mpsc;
 
-use crate::metrics::{Metrics, Protocol, Transport};
+use crate::metrics::{AppProtocol, Metrics, Protocol, Transport};
 
 use super::ws_socket::WsSocket;
 
@@ -14,6 +14,7 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
     metrics: Arc<Metrics>,
     transport_kind: Transport,
     protocol: Protocol,
+    app_protocol: AppProtocol,
 ) -> Result<()> {
     let result = async {
         let mut ctrl_open = true;
@@ -29,7 +30,7 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                         Some(m) => {
                             if let Some(len) = T::binary_len(&m) {
                                 metrics.record_websocket_binary_frame(
-                                    transport_kind, protocol, "out", len,
+                                    transport_kind, protocol, app_protocol, "out", len,
                                 );
                             }
                             T::send(&mut writer, m).await?;
@@ -42,7 +43,9 @@ pub(super) async fn run_ws_writer<T: WsSocket>(
                     break;
                 };
                 if let Some(len) = T::binary_len(&m) {
-                    metrics.record_websocket_binary_frame(transport_kind, protocol, "out", len);
+                    metrics.record_websocket_binary_frame(
+                        transport_kind, protocol, app_protocol, "out", len,
+                    );
                 }
                 T::send(&mut writer, m).await?;
             }

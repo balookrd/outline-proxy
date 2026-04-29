@@ -7,7 +7,7 @@ mod sampler;
 mod user_counters;
 
 pub use guards::{TcpUpstreamGuard, WebSocketSessionGuard};
-pub use labels::{DisconnectReason, Protocol, Transport};
+pub use labels::{AppProtocol, DisconnectReason, Protocol, Transport};
 pub use process_memory::ProcessMemorySnapshot;
 pub use user_counters::PerUserCounters;
 
@@ -88,18 +88,21 @@ impl Metrics {
         self: &Arc<Self>,
         transport: Transport,
         protocol: Protocol,
+        app_protocol: AppProtocol,
     ) -> WebSocketSessionGuard {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_websocket_upgrades_total",
-                "transport" => transport.as_str(),
-                "protocol"  => protocol.as_str()
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(1);
             gauge!(
                 "outline_ss_active_websocket_sessions",
-                "transport" => transport.as_str(),
-                "protocol"  => protocol.as_str()
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(1.0);
         });
@@ -107,6 +110,7 @@ impl Metrics {
             metrics: self.clone(),
             transport,
             protocol,
+            app_protocol,
             started_at: Instant::now(),
             finished: false,
         }
@@ -150,24 +154,35 @@ impl Metrics {
         &self,
         transport: Transport,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         direction: &'static str,
         bytes: usize,
     ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_websocket_frames_total",
-                "transport" => transport.as_str(),
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "direction"    => direction
             )
             .increment(1);
             counter!(
                 "outline_ss_websocket_bytes_total",
-                "transport" => transport.as_str(),
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "direction"    => direction
             )
             .increment(bytes as u64);
+            histogram!(
+                "outline_ss_websocket_frame_size_bytes",
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "direction"    => direction
+            )
+            .record(bytes as f64);
         });
     }
 

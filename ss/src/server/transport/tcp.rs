@@ -41,7 +41,7 @@ use crate::{
         AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, UserKey,
         diagnose_stream_handshake,
     },
-    metrics::{Metrics, PerUserCounters, Protocol, TcpUpstreamGuard, Transport},
+    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol, TcpUpstreamGuard, Transport},
     outbound::OutboundIpv6,
     protocol::parse_target_addr,
 };
@@ -245,6 +245,7 @@ async fn run_tcp_relay<T: WsSocket>(
         server.metrics.clone(),
         Transport::Tcp,
         route.protocol,
+        AppProtocol::Shadowsocks,
     ));
 
     let mut decryptor = AeadStreamDecryptor::new(route.users.clone());
@@ -514,7 +515,13 @@ where
 {
     server
         .metrics
-        .record_websocket_binary_frame(Transport::Tcp, route.protocol, "in", data.len());
+        .record_websocket_binary_frame(
+            Transport::Tcp,
+            route.protocol,
+            AppProtocol::Shadowsocks,
+            "in",
+            data.len(),
+        );
     decryptor.feed_ciphertext(&data);
     match decryptor.drain_plaintext(plaintext_buffer) {
         Ok(()) => {},

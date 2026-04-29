@@ -13,6 +13,25 @@ impl Transport {
     }
 }
 
+/// Application-layer protocol carried over the websocket/QUIC transport.
+/// Distinguishes the Shadowsocks and VLESS data paths so per-protocol
+/// throughput, frame-size and session metrics can be compared on the
+/// same dashboard.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
+pub enum AppProtocol {
+    Shadowsocks,
+    Vless,
+}
+
+impl AppProtocol {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shadowsocks => "shadowsocks",
+            Self::Vless => "vless",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 pub enum Protocol {
     Http1,
