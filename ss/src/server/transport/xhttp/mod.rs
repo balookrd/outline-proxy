@@ -180,6 +180,16 @@ impl XhttpRegistry {
     pub(in crate::server) fn len(&self) -> usize {
         self.sessions.len()
     }
+
+    /// Returns any one live session in the registry. Tests use this
+    /// to reach into a session whose id was randomly chosen by the
+    /// client crate (no `X-Xhttp-Fin` plumbing on that side yet) so
+    /// they can drive a graceful close via `close_uplink` without
+    /// guessing the path id.
+    #[cfg(test)]
+    pub(in crate::server) fn first_session(&self) -> Option<Arc<XhttpSession>> {
+        self.sessions.iter().next().map(|entry| Arc::clone(entry.value()))
+    }
 }
 
 /// Per-session duplex state. POST/GET handlers and the relay task

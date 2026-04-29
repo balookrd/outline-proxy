@@ -42,13 +42,13 @@ use crate::protocol::vless::{COMMAND_TCP, VERSION, VlessUser, parse_uuid};
 
 const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
-async fn setup_xhttp_server(
+pub(super) async fn setup_xhttp_server(
     base_path: &'static str,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
     setup_xhttp_server_with_resumption(base_path, false).await
 }
 
-async fn setup_xhttp_server_with_resumption(
+pub(super) async fn setup_xhttp_server_with_resumption(
     base_path: &'static str,
     resumption: bool,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
@@ -113,7 +113,7 @@ async fn setup_xhttp_server_with_resumption(
     Ok((listen_addr, handle, xhttp_registry))
 }
 
-fn build_vless_tcp_handshake(target: SocketAddr, payload: &[u8]) -> Result<Vec<u8>> {
+pub(super) fn build_vless_tcp_handshake(target: SocketAddr, payload: &[u8]) -> Result<Vec<u8>> {
     let mut req = Vec::new();
     req.push(VERSION);
     req.extend_from_slice(&parse_uuid(TEST_UUID)?);

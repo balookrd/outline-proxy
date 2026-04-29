@@ -56,6 +56,12 @@ control = []
 proptest = "1.5"
 rcgen = "0.14"
 tokio-tungstenite = "0.28"
+# Cross-repo end-to-end tests dial the real `outline-ws-rust` client
+# against this server (sibling repo, not published). The path dep
+# only kicks in for `cargo test` / `cargo check --tests`; the
+# release binary does not build it.
+outline-transport = { path = "../outline-ws-rust/crates/outline-transport" }
+url = "2.5"
 
 [profile.release]
 opt-level = 3
