@@ -37,6 +37,8 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use tokio::sync::Notify;
 
+use crate::server::resumption::SessionId;
+
 mod duplex;
 mod h3;
 pub(in crate::server) mod handlers;
@@ -100,6 +102,7 @@ impl XhttpRegistry {
         &self,
         session_id: &str,
         data_channel_capacity: usize,
+        issued_resume_id: Option<SessionId>,
     ) -> (Arc<XhttpSession>, bool) {
         let key: Arc<str> = Arc::from(session_id);
         let mut created = false;
@@ -108,7 +111,11 @@ impl XhttpRegistry {
             .entry(Arc::clone(&key))
             .or_insert_with(|| {
                 created = true;
-                Arc::new(XhttpSession::new(Arc::clone(&key), data_channel_capacity))
+                Arc::new(XhttpSession::new(
+                    Arc::clone(&key),
+                    data_channel_capacity,
+                    issued_resume_id,
+                ))
             })
             .value()
             .clone();
@@ -154,6 +161,15 @@ pub(in crate::server) struct XhttpSession {
     last_activity_nanos: AtomicI64,
     created_at: Instant,
     pub(in crate::server) data_channel_capacity: usize,
+    /// Server-issued cross-transport resumption id, minted on the
+    /// first request that creates the session (when the client
+    /// advertised `X-Outline-Resume-Capable` or supplied
+    /// `X-Outline-Resume`). Surfaced back to the client in every
+    /// GET/POST response on this session, so a reconnect-attach
+    /// can pick it up too. `None` when resumption is disabled at
+    /// the server or the client did not opt in. Held by value
+    /// because `SessionId` is `Copy`.
+    pub(in crate::server) issued_resume_id: Option<SessionId>,
 }
 
 pub(in crate::server) struct UplinkState {
@@ -172,7 +188,11 @@ pub(in crate::server) struct DownlinkState {
 }
 
 impl XhttpSession {
-    fn new(id: Arc<str>, data_channel_capacity: usize) -> Self {
+    fn new(
+        id: Arc<str>,
+        data_channel_capacity: usize,
+        issued_resume_id: Option<SessionId>,
+    ) -> Self {
         Self {
             id,
             uplink: Mutex::new(UplinkState {
@@ -194,6 +214,7 @@ impl XhttpSession {
             last_activity_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
             data_channel_capacity,
+            issued_resume_id,
         }
     }
 

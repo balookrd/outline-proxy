@@ -20,7 +20,7 @@ use crate::{
     server::state::VlessTransportRoute,
 };
 
-use super::super::tcp::ResumeContext;
+use super::super::tcp::{ResumeContext, SESSION_RESPONSE_HEADER};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
@@ -63,6 +63,7 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
                 session_id,
                 version,
                 peer_addr,
+                headers,
             )
             .await
         },
@@ -94,10 +95,16 @@ async fn xhttp_h3_get(
     session_id: String,
     version: Version,
     peer_addr: SocketAddr,
+    request_headers: HeaderMap,
 ) -> Result<()> {
     let protocol = protocol_from_h3_version(version);
-    let (session, created) = registry
-        .get_or_create(&session_id, vless_server.ws_data_channel_capacity);
+    let resume_for_create =
+        ResumeContext::from_request_headers(&request_headers, &vless_server.orphan_registry);
+    let (session, created) = registry.get_or_create(
+        &session_id,
+        vless_server.ws_data_channel_capacity,
+        resume_for_create.issued_session_id,
+    );
 
     if created {
         spawn_relay(
@@ -110,7 +117,7 @@ async fn xhttp_h3_get(
                 path: Arc::clone(&base_path),
                 candidate_users: Arc::clone(&route.candidate_users),
             },
-            ResumeContext::default(),
+            resume_for_create,
         );
     }
 
@@ -126,11 +133,17 @@ async fn xhttp_h3_get(
         "xhttp/h3 downlink attached"
     );
 
+    let issued_for_response = session.issued_resume_id;
     let mut response = http::Response::builder()
         .status(StatusCode::OK)
         .body(())
         .context("failed to build xhttp/h3 GET response")?;
     apply_response_masquerade(response.headers_mut());
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
+    }
     if let Err(error) = stream.send_response(response).await {
         session.detach_get();
         return Err(anyhow!(error)).context("failed to send xhttp/h3 GET response head");
@@ -162,8 +175,14 @@ async fn xhttp_h3_post(
     let fin = headers.contains_key(FIN_HEADER);
     let protocol = protocol_from_h3_version(version);
 
+    let resume_for_create =
+        ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
     let (session, created) = if seq == 0 {
-        registry.get_or_create(&session_id, vless_server.ws_data_channel_capacity)
+        registry.get_or_create(
+            &session_id,
+            vless_server.ws_data_channel_capacity,
+            resume_for_create.issued_session_id,
+        )
     } else {
         match registry.get(&session_id) {
             Some(s) => (s, false),
@@ -186,7 +205,7 @@ async fn xhttp_h3_post(
                 path: Arc::clone(&base_path),
                 candidate_users: Arc::clone(&route.candidate_users),
             },
-            ResumeContext::default(),
+            resume_for_create,
         );
     }
 
@@ -247,6 +266,11 @@ async fn xhttp_h3_post(
     }
     if let Some((name, value)) = generate_padding_header() {
         resp_headers.insert(name, value);
+    }
+    if let Some(id) = session.issued_resume_id
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        resp_headers.insert(SESSION_RESPONSE_HEADER, value);
     }
     stream
         .send_response(response)

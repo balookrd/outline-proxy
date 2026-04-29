@@ -24,7 +24,7 @@ use tracing::{debug, warn};
 use crate::metrics::{AppProtocol, Protocol, Transport};
 
 use super::super::super::state::AppState;
-use super::super::tcp::ResumeContext;
+use super::super::tcp::{ResumeContext, SESSION_RESPONSE_HEADER};
 use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
@@ -78,7 +78,7 @@ async fn xhttp_get(
     session_id: String,
     version: Version,
     peer_addr: SocketAddr,
-    _headers: &HeaderMap,
+    headers: &HeaderMap,
 ) -> Response {
     let route = match resolve_route(&state) {
         Some(route) => route,
@@ -92,9 +92,18 @@ async fn xhttp_get(
     };
 
     let protocol = protocol_from_http_version(version);
-    let (session, created) = state
-        .registry
-        .get_or_create(&session_id, state.parent.services.vless_server.ws_data_channel_capacity);
+    // Parse the resume headers up-front so the create branch below
+    // can mint an `issued_session_id` exactly once and stash it in
+    // the session for any subsequent reconnect-attach to read back.
+    let resume_for_create = ResumeContext::from_request_headers(
+        headers,
+        &state.parent.services.vless_server.orphan_registry,
+    );
+    let (session, created) = state.registry.get_or_create(
+        &session_id,
+        state.parent.services.vless_server.ws_data_channel_capacity,
+        resume_for_create.issued_session_id,
+    );
 
     if created {
         spawn_relay(
@@ -107,7 +116,7 @@ async fn xhttp_get(
                 path: Arc::clone(&state.base_path),
                 candidate_users: Arc::clone(&route.candidate_users),
             },
-            ResumeContext::default(),
+            resume_for_create,
         );
     }
 
@@ -123,9 +132,15 @@ async fn xhttp_get(
         "xhttp downlink attached"
     );
 
+    let issued_for_response = session.issued_resume_id;
     let body = build_downlink_body(Arc::clone(&session));
     let mut response = (StatusCode::OK, body).into_response();
     apply_response_masquerade(response.headers_mut());
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
+    }
     response
 }
 
@@ -149,6 +164,17 @@ async fn xhttp_post(
     };
     let protocol = protocol_from_http_version(version);
 
+    // Parse resume headers exactly once. If we end up creating the
+    // session below, the minted `issued_session_id` is stashed in
+    // `XhttpSession` for every later attach to surface in its
+    // response; if we attach to an existing session, this context
+    // is dropped — the resume token has been negotiated already by
+    // whatever request created the session.
+    let resume_for_create = ResumeContext::from_request_headers(
+        &headers,
+        &state.parent.services.vless_server.orphan_registry,
+    );
+
     // Auto-create on seq=0 so a client that POSTs before its GET
     // is allowed to establish the session. Refuse seq>0 against a
     // dead session — at that point the client is replaying old
@@ -157,6 +183,7 @@ async fn xhttp_post(
         state.registry.get_or_create(
             &session_id,
             state.parent.services.vless_server.ws_data_channel_capacity,
+            resume_for_create.issued_session_id,
         )
     } else {
         match state.registry.get(&session_id) {
@@ -180,7 +207,7 @@ async fn xhttp_post(
                 path: Arc::clone(&state.base_path),
                 candidate_users: Arc::clone(&route.candidate_users),
             },
-            ResumeContext::default(),
+            resume_for_create,
         );
     }
 
@@ -217,12 +244,17 @@ async fn xhttp_post(
     }
 
     let mut response = StatusCode::OK.into_response();
-    let headers = response.headers_mut();
+    let resp_headers = response.headers_mut();
     for (name, value) in post_response_headers() {
-        headers.insert(name, value);
+        resp_headers.insert(name, value);
     }
     if let Some((name, value)) = generate_padding_header() {
-        headers.insert(name, value);
+        resp_headers.insert(name, value);
+    }
+    if let Some(id) = session.issued_resume_id
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        resp_headers.insert(SESSION_RESPONSE_HEADER, value);
     }
     response
 }
