@@ -163,6 +163,7 @@ pub(crate) async fn connect_tcp_socket(
 // Config data types reused by callers that construct transport parameters
 // (uplink config loader, CLI args, main-binary schema).
 pub use config::{ServerAddr, TransportMode};
+pub use xhttp::XhttpSubmode;
 
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;
