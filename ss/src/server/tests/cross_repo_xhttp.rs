@@ -27,7 +27,7 @@
 use std::{
     collections::BTreeMap,
     net::{Ipv4Addr, SocketAddr},
-    sync::{Arc, OnceLock},
+    sync::Arc,
     time::Duration,
 };
 
@@ -35,7 +35,6 @@ use anyhow::{Result, bail};
 use arc_swap::ArcSwap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use sockudo_ws::{
     Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
 };
@@ -279,51 +278,7 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
     Ok(())
 }
 
-// ── h3 (TLS+QUIC) cross-repo helpers and tests ──────────────────────────
-
-/// Lazy, process-wide self-signed cert. h3 is TLS-only on both
-/// sides (`https://` mandatory in the client, QUIC always TLS).
-/// Caching the DER bytes lets us hand the same root to the
-/// `outline-transport` test override and to every fresh
-/// `rustls::ServerConfig` (the server-side TLS struct is consumed
-/// by `H3WebSocketServer::bind`, so a new instance is built per
-/// test).
-fn shared_test_cert() -> &'static (Vec<u8>, Vec<u8>, CertificateDer<'static>) {
-    static CELL: OnceLock<(Vec<u8>, Vec<u8>, CertificateDer<'static>)> = OnceLock::new();
-    CELL.get_or_init(|| {
-        super::super::ensure_rustls_provider_installed();
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
-            .expect("rcgen self-signed cert");
-        let cert_bytes = cert.cert.der().to_vec();
-        let key_bytes = cert.signing_key.serialize_der();
-        let cert_der = CertificateDer::from(cert_bytes.clone());
-        (cert_bytes, key_bytes, cert_der)
-    })
-}
-
-fn build_test_server_tls_config(alpn: &[&[u8]]) -> rustls::ServerConfig {
-    let (cert_bytes, key_bytes, _) = shared_test_cert();
-    let cert_der = CertificateDer::from(cert_bytes.clone());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.clone()));
-    let mut cfg = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert_der], key)
-        .expect("test server tls config");
-    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
-    cfg
-}
-
-/// Installs the shared self-signed root into the client's TLS
-/// override slot exactly once per process. Subsequent calls are
-/// no-ops; the override itself is last-writer-wins, so the
-/// `Once` is a defensive measure rather than strict correctness.
-fn ensure_test_tls_installed_on_client() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        let (_, _, cert_der) = shared_test_cert();
-        outline_transport::install_test_tls_root(cert_der.clone());
-    });
-}
+// ── h3 (TLS+QUIC) cross-repo tests ─────────────────────────────────────────
 
 /// Spins up a real server with only an h3 (QUIC) listener — no
 /// axum/h2. URL → `https://localhost:port/<base_path>`. Mirrors
@@ -336,9 +291,9 @@ async fn setup_xhttp_h3_server(
     base_path: &'static str,
     resumption: bool,
 ) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
-    ensure_test_tls_installed_on_client();
+    super::cross_repo_install_test_tls_root_on_client();
     let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let tls_config = build_test_server_tls_config(&[b"h3"]);
+    let tls_config = super::cross_repo_test_server_tls_config(&[b"h3"]);
     let h3_server =
         H3WebSocketServer::<H3Transport>::bind(bind_addr, tls_config, H3WsConfig::default())
             .await?;
