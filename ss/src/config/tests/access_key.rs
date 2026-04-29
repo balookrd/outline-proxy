@@ -24,6 +24,7 @@ fn sample_config() -> Config {
         ws_path_tcp: "/tcp".into(),
         ws_path_udp: "/udp".into(),
         ws_path_vless: Some("/vless path".into()),
+        xhttp_path_vless: None,
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
         users: vec![
@@ -36,6 +37,7 @@ fn sample_config() -> Config {
                 ws_path_udp: Some("/alice/udp".into()),
                 vless_id: None,
                 ws_path_vless: None,
+                xhttp_path_vless: None,
                 enabled: None,
             },
             UserEntry {
@@ -47,6 +49,7 @@ fn sample_config() -> Config {
                 ws_path_udp: None,
                 vless_id: None,
                 ws_path_vless: None,
+                xhttp_path_vless: None,
                 enabled: None,
             },
             UserEntry {
@@ -58,6 +61,7 @@ fn sample_config() -> Config {
                 ws_path_udp: None,
                 vless_id: Some("550e8400-e29b-41d4-a716-446655440000".into()),
                 ws_path_vless: Some("/carol/vless path".into()),
+                xhttp_path_vless: None,
                 enabled: None,
             },
         ],

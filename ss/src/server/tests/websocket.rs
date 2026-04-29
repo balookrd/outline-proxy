@@ -317,6 +317,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 ws_path_udp: Some("/alice-udp".into()),
                 vless_id: None,
                 ws_path_vless: None,
+                xhttp_path_vless: None,
             enabled: None,
             },
             UserEntry {
@@ -328,6 +329,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
                 ws_path_udp: Some("/bob-udp".into()),
                 vless_id: None,
                 ws_path_vless: None,
+                xhttp_path_vless: None,
             enabled: None,
             },
         ],

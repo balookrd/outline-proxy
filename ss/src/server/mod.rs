@@ -99,6 +99,11 @@ pub async fn run(config: Config) -> Result<()> {
     let tcp_paths = built.tcp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let udp_paths = built.udp_routes.keys().cloned().collect::<BTreeSet<_>>();
     let vless_paths = built.vless_routes.keys().cloned().collect::<BTreeSet<_>>();
+    let xhttp_paths = built
+        .xhttp_vless_routes
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
 
     #[cfg(feature = "control")]
     if let Some(control_config) = config.control.clone() {
@@ -109,6 +114,7 @@ pub async fn run(config: Config) -> Result<()> {
             tcp_paths.clone(),
             udp_paths.clone(),
             vless_paths.clone(),
+            xhttp_paths.clone(),
         ));
         control::spawn_control_server(control_config, manager, shutdown_signal.clone());
     }
@@ -129,9 +135,11 @@ pub async fn run(config: Config) -> Result<()> {
         default_tcp_ws_path = %config.ws_path_tcp,
         default_udp_ws_path = %config.ws_path_udp,
         ws_path_vless = ?config.ws_path_vless,
+        xhttp_path_vless = ?config.xhttp_path_vless,
         tcp_ws_paths = ?tcp_paths,
         udp_ws_paths = ?udp_paths,
         vless_paths = ?vless_paths,
+        xhttp_paths = ?xhttp_paths,
         user_routes = ?user_routes,
         vless_user_routes = ?vless_user_routes,
         method = ?config.method,

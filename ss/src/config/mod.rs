@@ -121,6 +121,11 @@ pub struct Config {
     pub ws_path_tcp: String,
     pub ws_path_udp: String,
     pub ws_path_vless: Option<String>,
+    /// Base path under which the server accepts VLESS-over-XHTTP
+    /// packet-up. The actual axum/h3 routes registered are
+    /// `<base>/{id}` for each base; `id` is the opaque session
+    /// token the client picks. None disables XHTTP.
+    pub xhttp_path_vless: Option<String>,
     pub http_root_auth: bool,
     pub http_root_realm: String,
     pub users: Vec<UserEntry>,
@@ -317,6 +322,7 @@ impl AppMode {
                 .or(websocket.udp_path)
                 .unwrap_or_else(|| "/udp".to_owned()),
             ws_path_vless: websocket.vless_path,
+            xhttp_path_vless: websocket.xhttp_vless_path,
             http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm

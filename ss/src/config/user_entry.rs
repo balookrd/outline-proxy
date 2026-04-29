@@ -76,6 +76,12 @@ pub struct UserEntry {
     pub vless_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_path_vless: Option<String>,
+    /// Per-user override of the global `[websocket].xhttp_vless_path`
+    /// base. Defaulting to the global keeps single-tenant configs
+    /// terse; per-user overrides are useful for path-segregated
+    /// deployments behind a CDN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub xhttp_path_vless: Option<String>,
     /// `false` blocks the user without removing their config entry. Absent
     /// in the config means enabled; control-plane mutations write the field
     /// explicitly so on-disk state round-trips unambiguously.
@@ -102,6 +108,13 @@ impl UserEntry {
 
     pub fn effective_ws_path_vless<'a>(&'a self, default: Option<&'a str>) -> Option<&'a str> {
         self.ws_path_vless.as_deref().or(default)
+    }
+
+    pub fn effective_xhttp_path_vless<'a>(
+        &'a self,
+        default: Option<&'a str>,
+    ) -> Option<&'a str> {
+        self.xhttp_path_vless.as_deref().or(default)
     }
 }
 

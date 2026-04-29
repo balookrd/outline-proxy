@@ -90,22 +90,20 @@ impl Config {
                 bail!("user {} ws_path_vless requires vless_id", user.id);
             }
             if user.vless_id.is_some() {
-                match user.effective_ws_path_vless(self.ws_path_vless.as_deref()) {
-                    Some(path) => {
-                        vless_paths.insert(path.to_owned());
-                    },
-                    None => {
-                        // No WebSocket path is fine when raw VLESS-over-QUIC
-                        // is enabled — the user is still reachable on the
-                        // QUIC endpoint via ALPN "vless".
-                        if !self.h3_alpn.contains(&H3Alpn::Vless) {
-                            bail!(
-                                "user {} vless_id requires ws_path_vless (or enable raw \
-                                 VLESS-over-QUIC by adding \"vless\" to [server.h3].alpn)",
-                                user.id
-                            );
-                        }
-                    },
+                let ws_path = user.effective_ws_path_vless(self.ws_path_vless.as_deref());
+                let xhttp_path =
+                    user.effective_xhttp_path_vless(self.xhttp_path_vless.as_deref());
+                let has_raw_quic = self.h3_alpn.contains(&H3Alpn::Vless);
+                if let Some(path) = ws_path {
+                    vless_paths.insert(path.to_owned());
+                }
+                if ws_path.is_none() && xhttp_path.is_none() && !has_raw_quic {
+                    bail!(
+                        "user {} vless_id requires at least one transport: \
+                         ws_path_vless, xhttp_path_vless, or raw VLESS-over-QUIC \
+                         (\"vless\" in [server.h3].alpn)",
+                        user.id
+                    );
                 }
             }
         }
@@ -127,8 +125,51 @@ impl Config {
         if let Some(conflict) = udp_paths.intersection(&vless_paths).next() {
             bail!("udp and vless websocket paths must be distinct, conflict on {}", conflict);
         }
+        let mut xhttp_paths = BTreeSet::new();
+        if let Some(path) = self.xhttp_path_vless.as_deref()
+            && !path.starts_with('/')
+        {
+            bail!("xhttp_path_vless must start with '/'");
+        }
+        if self.xhttp_path_vless.is_some()
+            && self.users.iter().all(|user| user.vless_id.is_none())
+        {
+            bail!("xhttp_path_vless requires at least one [[users]] entry with vless_id");
+        }
+        for user in &self.users {
+            if let Some(path) = user.xhttp_path_vless.as_deref()
+                && !path.starts_with('/')
+            {
+                bail!("user {} xhttp_path_vless must start with '/'", user.id);
+            }
+            if user.xhttp_path_vless.is_some() && user.vless_id.is_none() {
+                bail!("user {} xhttp_path_vless requires vless_id", user.id);
+            }
+            if user.vless_id.is_some()
+                && let Some(path) =
+                    user.effective_xhttp_path_vless(self.xhttp_path_vless.as_deref())
+            {
+                xhttp_paths.insert(path.to_owned());
+            }
+        }
+        if let Some(conflict) = tcp_paths.intersection(&xhttp_paths).next() {
+            bail!("tcp and xhttp paths must be distinct, conflict on {}", conflict);
+        }
+        if let Some(conflict) = udp_paths.intersection(&xhttp_paths).next() {
+            bail!("udp and xhttp paths must be distinct, conflict on {}", conflict);
+        }
+        if let Some(conflict) = vless_paths.intersection(&xhttp_paths).next() {
+            bail!(
+                "vless ws and xhttp paths must be distinct (xhttp adds an `/{{id}}` suffix), \
+                 conflict on {}",
+                conflict,
+            );
+        }
         if self.http_root_auth
-            && (tcp_paths.contains("/") || udp_paths.contains("/") || vless_paths.contains("/"))
+            && (tcp_paths.contains("/")
+                || udp_paths.contains("/")
+                || vless_paths.contains("/")
+                || xhttp_paths.contains("/"))
         {
             bail!("http_root_auth requires all websocket paths to differ from '/'");
         }
