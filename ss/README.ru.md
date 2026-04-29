@@ -23,6 +23,7 @@
 - WebSocket over HTTP/3 — RFC 9220 Extended CONNECT
 - Shadowsocks AEAD (включая SS-2022) поверх WebSocket — TCP и UDP
 - VLESS поверх WebSocket — TCP, UDP и mux.cool с XUDP per-packet addressing (совместимо с xray / Happ / Hiddify)
+- VLESS поверх XHTTP packet-up — long-lived GET + POST'ы с инкрементным seq, X-Padding и SSE-маскировка заголовков; для CDN, блокирующих WebSocket-апгрейд (совместимо с xray / sing-box / Hiddify)
 - Несколько пользователей с независимыми паролями Shadowsocks и/или VLESS UUID
 - Выбор шифра на уровне пользователя
 - Индивидуальные TCP-, UDP- и VLESS-пути WebSocket на пользователя
@@ -56,6 +57,7 @@
 | Дашборд Grafana | Поддерживается | Готовый JSON-дашборд в репозитории |
 | Outline динамические ключи | Поддерживается | `ssconf://` + генерируемый YAML |
 | VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing (совместимо с xray/happ/hiddify), до 8 под-соединений одновременно |
+| VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET + POST'ы с seq-номерами на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер на сервере склеивает out-of-order POST'ы; downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c); `X-Padding` + SSE-style маскировка заголовков (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | VLESS / Shadowsocks raw поверх QUIC | Поддерживается | Без WebSocket / без HTTP/3 framing'а; выбирается по ALPN (`vless`, `ss`) на том же `h3_listen` |
 | Outline management API | Не поддерживается | Только data plane |
@@ -78,6 +80,8 @@ flowchart LR
     VL --> H2
     VL --> H3
     VL --> VLQ["Raw VLESS over QUIC (ALPN vless)"]
+    VL --> XH["XHTTP packet-up (h2/h3)"]
+    XH --> S
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
@@ -239,6 +243,7 @@ cargo release-musl-armv7
 | `ws_path_tcp` | Глобальный TCP WebSocket-путь |
 | `ws_path_udp` | Глобальный UDP WebSocket-путь |
 | `ws_path_vless` | Опциональный VLESS-over-WebSocket путь на основном HTTP/1.1/HTTP/2 слушателе |
+| `xhttp_path_vless` | Опциональный VLESS-over-XHTTP base-путь. Сервер регистрирует `<base>/{id}` для каждого base; `{id}` — opaque per-session токен, выбираемый клиентом. Должен отличаться от `ws_path_vless` |
 | `http_root_auth` | Включить OpenConnect-подобный HTTP Basic challenge на `/`; после 3 неверных паролей сервер отдаёт `403`, а не-корневые пути остаются `404` |
 | `http_root_realm` | Текст в HTTP Basic запросе пароля для `/`; по умолчанию `Authorization required` |
 | `public_host` | Публичный хост для генерации Outline-ключей |
@@ -253,6 +258,7 @@ cargo release-musl-armv7
 | `users[].password` | Опциональный пароль Shadowsocks на пользователя |
 | `users[].vless_id` | Опциональный VLESS UUID на пользователя |
 | `users[].ws_path_vless` | Опциональный VLESS WebSocket-путь на пользователя; при отсутствии используется верхнеуровневый `ws_path_vless` |
+| `users[].xhttp_path_vless` | Опциональный VLESS XHTTP base-путь на пользователя; при отсутствии используется верхнеуровневый `xhttp_path_vless` |
 | `users[].enabled` | Опциональный переключатель. `false` блокирует пользователя (маршруты и аутентификация отключаются), не удаляя запись. По умолчанию `true` |
 | `[control]` | Опциональный HTTP-эндпоинт управления пользователями в рантайме (фича `control`, включена по умолчанию). См. [Управляющий эндпоинт](#управляющий-эндпоинт) |
 | `control.listen` | Адрес сокета управляющего слушателя, например `127.0.0.1:7001`. Отдельный сокет — не выставляйте в публичную сеть |
@@ -278,9 +284,31 @@ ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ws_path_vless = "/alice/vless"
+xhttp_path_vless = "/alice/xh"
 ```
 
 Для `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305` параметр `password` должен содержать base64-кодированный сырой PSK длиной ровно 16, 32 и 32 байта соответственно, например `openssl rand -base64 32`.
+
+### VLESS поверх XHTTP packet-up
+
+Для деплойментов за CDN, блокирующим WebSocket-апгрейд, можно настроить VLESS поверх XHTTP packet-up рядом с WS-путём (или вместо). Сервер регистрирует `<xhttp_path_vless>/{id}` для каждого base; `{id}` — opaque токен, выбираемый клиентом на сессию. Тот же `vless_id` работает на обоих несущих — клиент сам выбирает, на каком пути ему лучше в данный момент.
+
+```toml
+listen = "0.0.0.0:443"
+tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+
+# Опционально: оставляем WS-путь для клиентов на прямых соединениях.
+ws_path_vless = "/vless"
+# Обязательно для XHTTP. Должен отличаться от `ws_path_vless`.
+xhttp_path_vless = "/xh"
+
+[[users]]
+id = "alice"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+```
+
+Динамический генератор access-key выпускает отдельный URI `vless://...?type=xhttp&mode=packet-up&path=...` на пользователя, когда `xhttp_path_vless` установлен. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают этот URI как есть.
 
 ### VLESS поверх WebSocket/TLS
 
