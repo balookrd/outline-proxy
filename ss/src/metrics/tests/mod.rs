@@ -61,6 +61,8 @@ fn renders_prometheus_metrics() {
         "in",
         123,
     );
+    metrics.record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Shadowsocks);
+    metrics.observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, 7);
     metrics.record_tcp_authenticated_session("default", Protocol::Http2);
     metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
     metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
@@ -71,6 +73,8 @@ fn renders_prometheus_metrics() {
     assert!(rendered.contains("outline_ss_websocket_upgrades_total"));
     assert!(rendered.contains("app_protocol=\"shadowsocks\""));
     assert!(rendered.contains("outline_ss_websocket_frame_size_bytes_bucket"));
+    assert!(rendered.contains("outline_ss_websocket_pong_deadline_total"));
+    assert!(rendered.contains("outline_ss_ws_data_channel_fill_bucket"));
     assert!(rendered.contains("outline_ss_build_info"));
     assert!(rendered.contains("user=\"default\",protocol=\"http2\""));
     assert!(rendered.contains("outline_ss_tcp_upstream_connect_duration_seconds_bucket"));

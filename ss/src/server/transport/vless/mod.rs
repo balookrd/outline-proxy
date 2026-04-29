@@ -160,6 +160,9 @@ async fn run_vless_relay<T: WsSocket>(
                         elapsed_secs = last_inbound.elapsed().as_secs(),
                         "vless websocket pong deadline exceeded; closing session"
                     );
+                    server
+                        .metrics
+                        .record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Vless);
                     break;
                 }
                 let _ = outbound_ctrl_tx.send(T::ping_msg()).await;
