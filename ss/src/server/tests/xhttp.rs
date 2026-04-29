@@ -34,6 +34,7 @@ use super::super::nat::NatTable;
 use super::super::setup::{VlessXhttpUserRoute, build_xhttp_vless_route_map};
 use super::super::shutdown::ShutdownSignal;
 use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
+use super::super::transport::XhttpRegistry;
 use super::super::{DnsCache, build_app};
 use super::sample_config;
 use crate::metrics::Metrics;
@@ -43,14 +44,14 @@ const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 async fn setup_xhttp_server(
     base_path: &'static str,
-) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
     setup_xhttp_server_with_resumption(base_path, false).await
 }
 
 async fn setup_xhttp_server_with_resumption(
     base_path: &'static str,
     resumption: bool,
-) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
     let config = sample_config(listen_addr);
@@ -97,6 +98,7 @@ async fn setup_xhttp_server_with_resumption(
         orphan_registry,
         16,
     ));
+    let xhttp_registry = Arc::clone(&services.xhttp_registry);
     let auth = Arc::new(AuthPolicy {
         users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
             Vec::<crate::crypto::UserKey>::new().into_boxed_slice(),
@@ -108,7 +110,7 @@ async fn setup_xhttp_server_with_resumption(
     let handle = tokio::spawn(async move {
         serve_listener(listener, app, ShutdownSignal::never()).await
     });
-    Ok((listen_addr, handle))
+    Ok((listen_addr, handle, xhttp_registry))
 }
 
 fn build_vless_tcp_handshake(target: SocketAddr, payload: &[u8]) -> Result<Vec<u8>> {
@@ -166,7 +168,7 @@ async fn xhttp_packet_up_tcp_echo_round_trip() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(got)
     });
 
-    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
     let session_id = "smoke-session-001";
     let url = format!("http://{listen_addr}/xh/{session_id}");
@@ -231,7 +233,7 @@ async fn xhttp_packet_up_tcp_echo_round_trip() -> Result<()> {
 
 #[tokio::test]
 async fn xhttp_post_to_unknown_session_with_seq_above_zero_returns_gone() -> Result<()> {
-    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
     let url = format!("http://{listen_addr}/xh/no-such-session-zzz");
 
@@ -249,7 +251,7 @@ async fn xhttp_post_to_unknown_session_with_seq_above_zero_returns_gone() -> Res
 
 #[tokio::test]
 async fn xhttp_concurrent_get_returns_conflict() -> Result<()> {
-    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
     let session_id = "dup-get-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
@@ -282,7 +284,7 @@ async fn xhttp_concurrent_get_returns_conflict() -> Result<()> {
 
 #[tokio::test]
 async fn xhttp_resume_capable_get_returns_session_header_and_reattach_keeps_it() -> Result<()> {
-    let (listen_addr, server) = setup_xhttp_server_with_resumption("/xh", true).await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server_with_resumption("/xh", true).await?;
     let client = http_client();
     let session_id = "resume-session-001";
     let url = format!("http://{listen_addr}/xh/{session_id}");
@@ -352,7 +354,7 @@ async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(got)
     });
 
-    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     // Drive the request via a direct HTTP/2 handshake so the
     // server actually sees an h2 connection. hyper-util's legacy
     // Client speaks h1 over plain TCP unless TLS-ALPN negotiates
@@ -449,7 +451,7 @@ async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<
         Result::<_, anyhow::Error>::Ok((first, second))
     });
 
-    let (listen_addr, server) = setup_xhttp_server_with_resumption("/xh", true).await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server_with_resumption("/xh", true).await?;
     let client = http_client();
 
     // ── Session A: capability-advertise, run a real handshake,
@@ -611,7 +613,7 @@ async fn xhttp_uplink_reorder_buffers_out_of_order_posts() -> Result<()> {
         Result::<_, anyhow::Error>::Ok(got)
     });
 
-    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
     let session_id = "reorder-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
@@ -666,6 +668,99 @@ async fn xhttp_uplink_reorder_buffers_out_of_order_posts() -> Result<()> {
     let downlink = tokio::time::timeout(Duration::from_secs(5), get_handle).await???;
     assert_eq!(&downlink[..2], &[VERSION, 0x00]);
     assert_eq!(&downlink[2..5], b"ack");
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
+    // Pins the documented "GET dropped mid-flight does not tear
+    // the session down; the next GET on the same path id reads
+    // bytes pushed after the disconnect" contract from xhttp/mod.rs.
+    //
+    // The session is pre-created via the registry so the GET handler
+    // attaches without spawning a relay — that keeps the test focused
+    // on the ring/detach/reattach contract and avoids racing the
+    // VLESS handshake parser, which never sees any bytes here.
+    let (listen_addr, server, registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+    let session_id = "drop-resume-session";
+    let url = format!("http://{listen_addr}/xh/{session_id}");
+    let (session, created) = registry.get_or_create(session_id, 16, None);
+    assert!(created, "registry should mint a fresh session for a new id");
+
+    // ── GET-A: read one downlink chunk, then drop the body ──────
+    let get_a_url = url.clone();
+    let get_a_client = client.clone();
+    let get_a = tokio::spawn(async move {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&get_a_url)
+            .body(Full::new(Bytes::new()))?;
+        let resp = get_a_client.request(req).await?;
+        if resp.status() != StatusCode::OK {
+            bail!("GET-A status {}", resp.status());
+        }
+        let mut body = resp.into_body();
+        let bytes = read_body_until_at_least(&mut body, 5).await?;
+        // `body` is dropped at end of scope, mimicking a CDN
+        // ~100 s cut-off that closes the response stream while
+        // the session is still healthy on the server side.
+        Result::<_, anyhow::Error>::Ok(bytes)
+    });
+    // Give GET-A time to register and attach the downlink slot
+    // before the first push.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    session
+        .push_downlink(Bytes::from_static(b"alpha"))
+        .map_err(|e| anyhow!("push_downlink alpha: {e:?}"))?;
+    let downlink_a = tokio::time::timeout(Duration::from_secs(5), get_a).await???;
+    assert_eq!(&downlink_a[..], b"alpha", "GET-A should observe the first chunk");
+
+    // After the body drop the drain task is parked on
+    // `downlink_notify` — channel-close alone cannot wake it. A
+    // notify with no fresh bytes lets it observe `chunk_tx.is_closed()`
+    // and detach the GET slot without spilling any pending chunks.
+    session.downlink_notify.notify_waiters();
+
+    // ── GET-B: reattach on the same path id and pick up bytes
+    //    that arrived after GET-A's disconnect ───────────────────
+    // Polling absorbs the (small) async window between the
+    // notify_waiters above and the drain task actually completing
+    // its detach — the server returns 409 until then.
+    let mut attempts: u32 = 0;
+    let resp_b = loop {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&url)
+            .body(Full::new(Bytes::new()))?;
+        let resp = client.request(req).await?;
+        match resp.status() {
+            StatusCode::OK => break resp,
+            StatusCode::CONFLICT if attempts < 50 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                continue;
+            },
+            other => bail!("GET-B unexpected status {other} after {attempts} attempts"),
+        }
+    };
+
+    // Push the second chunk after GET-B has attached: this exercises
+    // the "ring delivers fresh bytes through the new GET" half of
+    // the contract. Pushing before would also work (the ring buffers
+    // until a consumer attaches), but ordering it after makes the
+    // assertion below trivially attributable to the new GET.
+    session
+        .push_downlink(Bytes::from_static(b"beta"))
+        .map_err(|e| anyhow!("push_downlink beta: {e:?}"))?;
+
+    let mut body_b = resp_b.into_body();
+    let downlink_b = read_body_until_at_least(&mut body_b, 4).await?;
+    assert_eq!(&downlink_b[..], b"beta", "GET-B should read the post-disconnect chunk");
+    assert!(!session.is_closed(), "session must survive the GET-A disconnect");
 
     server.abort();
     Ok(())
