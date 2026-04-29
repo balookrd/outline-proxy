@@ -150,6 +150,50 @@ impl Metrics {
         });
     }
 
+    /// Counts a websocket session that the server tore down because no
+    /// inbound frame had been seen for `WS_PONG_DEADLINE_MULTIPLIER ×
+    /// WS_TCP_KEEPALIVE_PING_INTERVAL_SECS`. Without this counter
+    /// pong-deadline closures are indistinguishable from peer-initiated
+    /// `DisconnectReason::Normal` in the disconnect histogram, hiding a
+    /// throughput-degrading symptom (server cuts a slow but live client
+    /// because keepalive pings can't traverse a saturated client-side
+    /// TLS write half).
+    pub fn record_pong_deadline_disconnect(
+        &self,
+        transport: Transport,
+        app_protocol: AppProtocol,
+    ) {
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_websocket_pong_deadline_total",
+                "transport"    => transport.as_str(),
+                "app_protocol" => app_protocol.as_str()
+            )
+            .increment(1);
+        });
+    }
+
+    /// Observes the current depth of the upstream→ws-writer mpsc
+    /// channel. Sampled at every `tx.send` call-site so a reader that
+    /// stalls behind the WS-writer shows up as a saturated histogram
+    /// rather than as opaque throughput loss. `used` is
+    /// `tx.max_capacity() - tx.capacity()`.
+    pub fn observe_ws_data_channel_fill(
+        &self,
+        transport: Transport,
+        app_protocol: AppProtocol,
+        used: usize,
+    ) {
+        with_local_recorder(&self.recorder, || {
+            histogram!(
+                "outline_ss_ws_data_channel_fill",
+                "transport"    => transport.as_str(),
+                "app_protocol" => app_protocol.as_str()
+            )
+            .record(used as f64);
+        });
+    }
+
     pub fn record_websocket_binary_frame(
         &self,
         transport: Transport,

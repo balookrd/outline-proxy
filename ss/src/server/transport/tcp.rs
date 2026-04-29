@@ -212,10 +212,22 @@ struct ChannelSink<Msg: Send + 'static> {
     tx: mpsc::Sender<Msg>,
     make_binary: fn(Bytes) -> Msg,
     make_close: fn() -> Msg,
+    metrics: Arc<Metrics>,
 }
 
 impl<Msg: Send + 'static> super::super::relay::UpstreamSink for ChannelSink<Msg> {
     async fn send_ciphertext(&mut self, ciphertext: Bytes) -> Result<()> {
+        // Sample mpsc fill before push: `capacity()` returns the number
+        // of free slots, so `max - capacity` is the live depth. Done
+        // here rather than in the writer task because the writer holds
+        // the receiver, and the sender side is the one that actually
+        // back-pressures upstream reads.
+        let used = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+        self.metrics.observe_ws_data_channel_fill(
+            Transport::Tcp,
+            AppProtocol::Shadowsocks,
+            used,
+        );
         self.tx
             .send((self.make_binary)(ciphertext))
             .await
@@ -366,6 +378,9 @@ async fn run_tcp_relay<T: WsSocket>(
                         elapsed_secs = last_inbound.elapsed().as_secs(),
                         "tcp websocket pong deadline exceeded; closing session"
                     );
+                    server
+                        .metrics
+                        .record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Shadowsocks);
                     break;
                 }
                 // Don't fail the session on a Ping send error — the writer task
@@ -612,6 +627,7 @@ where
             let make_binary = outbound.make_binary;
             let make_close = outbound.make_close;
             let relay_metrics = Arc::clone(&server.metrics);
+            let sink_metrics = Arc::clone(&server.metrics);
             let relay_user_id = Arc::clone(&user_id);
             let protocol = route.protocol;
             let cancel = Arc::new(Notify::new());
@@ -620,7 +636,12 @@ where
             state.upstream_to_client = Some(tokio::spawn(async move {
                 super::super::relay::relay_upstream_to_client(
                     parked_reader,
-                    ChannelSink { tx, make_binary, make_close },
+                    ChannelSink {
+                        tx,
+                        make_binary,
+                        make_close,
+                        metrics: sink_metrics,
+                    },
                     &mut encryptor,
                     relay_metrics,
                     protocol,
@@ -699,6 +720,7 @@ where
         let make_binary = outbound.make_binary;
         let make_close = outbound.make_close;
         let relay_metrics = Arc::clone(&server.metrics);
+        let sink_metrics = Arc::clone(&server.metrics);
         let relay_user_id = Arc::clone(&user_id);
         let protocol = route.protocol;
         // Cancel-notify is registered unconditionally so park-on-drop
@@ -710,7 +732,12 @@ where
         state.upstream_to_client = Some(tokio::spawn(async move {
             super::super::relay::relay_upstream_to_client(
                 upstream_reader,
-                ChannelSink { tx, make_binary, make_close },
+                ChannelSink {
+                    tx,
+                    make_binary,
+                    make_close,
+                    metrics: sink_metrics,
+                },
                 &mut encryptor,
                 relay_metrics,
                 protocol,

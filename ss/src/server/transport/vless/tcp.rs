@@ -391,6 +391,12 @@ where
                     }
                 }
                 target_to_client.increment(total as u64);
+                let used = tx.max_capacity().saturating_sub(tx.capacity());
+                metrics.observe_ws_data_channel_fill(
+                    crate::metrics::Transport::Tcp,
+                    crate::metrics::AppProtocol::Vless,
+                    used,
+                );
                 tx.send(make_binary(Bytes::copy_from_slice(&buffer[..total])))
                     .await
                     .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;

@@ -17,6 +17,12 @@ const WS_SESSION_BUCKETS: &[f64] = &[1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0,
 const WS_FRAME_SIZE_BUCKETS: &[f64] = &[
     256.0, 512.0, 1024.0, 2048.0, 4096.0, 8192.0, 16384.0, 32768.0, 65536.0,
 ];
+// `tuning.ws_data_channel_capacity` defaults to 128 (LARGE) and may be
+// raised to 256/512 in pathological deployments. Buckets cover the
+// full 0..max range with finer granularity near the saturation tail —
+// that is where backpressure-induced stalls become visible.
+const WS_DATA_CHANNEL_FILL_BUCKETS: &[f64] =
+    &[0.0, 8.0, 32.0, 64.0, 96.0, 120.0, 128.0, 192.0, 256.0, 384.0, 512.0];
 
 pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, PrometheusHandle) {
     let recorder = PrometheusBuilder::new()
@@ -40,6 +46,11 @@ pub(super) fn build_recorder(idle_timeout: Duration) -> (PrometheusRecorder, Pro
             WS_FRAME_SIZE_BUCKETS,
         )
         .expect("invalid WebSocket frame size bucket config")
+        .set_buckets_for_metric(
+            Matcher::Full("outline_ss_ws_data_channel_fill".into()),
+            WS_DATA_CHANNEL_FILL_BUCKETS,
+        )
+        .expect("invalid WS data channel fill bucket config")
         .idle_timeout(MetricKindMask::ALL, Some(idle_timeout))
         .build_recorder();
     let handle = recorder.handle();
@@ -75,6 +86,14 @@ pub(super) fn register_descriptions() {
     describe_histogram!(
         "outline_ss_websocket_frame_size_bytes",
         "Distribution of binary websocket frame payload sizes by app_protocol/direction."
+    );
+    describe_counter!(
+        "outline_ss_websocket_pong_deadline_total",
+        "Sessions torn down by the server because no inbound frame arrived within the pong deadline."
+    );
+    describe_histogram!(
+        "outline_ss_ws_data_channel_fill",
+        "Depth of the upstream→ws-writer mpsc channel sampled at every push, by app_protocol/transport."
     );
     describe_counter!(
         "outline_ss_client_sessions_total",
