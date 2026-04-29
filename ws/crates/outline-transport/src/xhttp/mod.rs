@@ -58,13 +58,18 @@ use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::{TransportOperation, connect_tcp_socket};
 
+#[cfg(feature = "h3")]
+mod h3;
+
 #[cfg(test)]
 #[path = "tests/packet_up.rs"]
 mod tests_packet_up;
 
 /// Lower-cased name of the request header carrying the in-order
 /// sequence number for an uplink POST. Mirrors the server constant.
-const SEQ_HEADER: &str = "x-xhttp-seq";
+/// `pub(super)` so the h3 sibling module can reuse the same wire
+/// constant without a copy that could drift out of sync.
+pub(super) const SEQ_HEADER: &str = "x-xhttp-seq";
 
 /// Bounds for the random session id used in `<base>/<id>`. The id is
 /// opaque to the server; we just need it to be wide enough to avoid
@@ -75,13 +80,15 @@ const SESSION_ID_BYTES: usize = 16;
 /// Cap for the per-session inbound (downlink) channel. Frames in
 /// flight are already capped by h2 flow control on the wire; this
 /// is a small in-memory buffer that smooths the gap between the
-/// driver task drain and `Stream::poll_next`.
-const INBOUND_CHANNEL_CAPACITY: usize = 32;
+/// driver task drain and `Stream::poll_next`. `pub(super)` so the
+/// h3 sibling module reuses the same sizing.
+pub(super) const INBOUND_CHANNEL_CAPACITY: usize = 32;
 
 /// Cap for the per-session outbound (uplink) channel. Sized small —
 /// `start_send` simply queues into here, the driver task spawns a
 /// POST per item and h2 enforces flow control end-to-end.
-const OUTBOUND_CHANNEL_CAPACITY: usize = 32;
+/// `pub(super)` for the same reason as the inbound cap.
+pub(super) const OUTBOUND_CHANNEL_CAPACITY: usize = 32;
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
 /// first POST/GET ack. Matches the bound used by the WS h2 dial
@@ -117,6 +124,19 @@ impl XhttpStream {
     /// has closed the outbound channel we surface that as `false`.
     pub fn is_healthy(&self) -> bool {
         !self.outgoing.is_closed()
+    }
+
+    /// Constructor used by the h3 sibling module: it builds the
+    /// driver task and the channel pair on its own and hands the
+    /// finished triple here. Keeps the field-level details of
+    /// `XhttpStream` (closed flag, channel typing) private to this
+    /// module while giving carrier modules a single way in.
+    pub(super) fn from_channels(
+        incoming: mpsc::Receiver<Result<Message, WsError>>,
+        outgoing: mpsc::Sender<Message>,
+        driver: AbortOnDrop,
+    ) -> Self {
+        Self { incoming, outgoing, closed: false, _driver: driver }
     }
 }
 
@@ -180,7 +200,7 @@ impl Sink<Message> for XhttpStream {
     }
 }
 
-fn io_ws_err(msg: &'static str) -> WsError {
+pub(super) fn io_ws_err(msg: &'static str) -> WsError {
     WsError::Io(std::io::Error::other(msg))
 }
 
@@ -195,12 +215,20 @@ pub(crate) async fn connect_xhttp(
     fwmark: Option<u32>,
     ipv6_first: bool,
 ) -> Result<XhttpStream> {
-    if !matches!(mode, TransportMode::XhttpH2) {
-        // XhttpH3 will dial through a dedicated h3 path; until that
-        // lands the dispatcher should not route h3 here. Bail loudly
-        // so the wiring bug is visible instead of silently falling
-        // back.
-        bail!("xhttp h3 client not yet implemented");
+    match mode {
+        TransportMode::XhttpH2 => {},
+        #[cfg(feature = "h3")]
+        TransportMode::XhttpH3 => {
+            // h3 carrier lives in the sibling module so the
+            // quinn / h3 dependencies stay behind the `h3`
+            // feature gate. Returns a fully-wired `XhttpStream`.
+            return h3::connect_xhttp_h3(cache, url, fwmark, ipv6_first).await;
+        },
+        #[cfg(not(feature = "h3"))]
+        TransportMode::XhttpH3 => {
+            bail!("xhttp_h3 requires the `h3` feature at build time");
+        },
+        other => bail!("connect_xhttp called with non-xhttp mode {other}"),
     }
     let host = url
         .host_str()
@@ -262,15 +290,15 @@ fn default_port_for(use_tls: bool) -> u16 {
     if use_tls { 443 } else { 80 }
 }
 
-struct XhttpTarget {
-    scheme: String,
-    authority: String,
-    base_path: String,
-    session_id: String,
+pub(super) struct XhttpTarget {
+    pub(super) scheme: String,
+    pub(super) authority: String,
+    pub(super) base_path: String,
+    pub(super) session_id: String,
 }
 
 impl XhttpTarget {
-    fn full_uri(&self) -> String {
+    pub(super) fn full_uri(&self) -> String {
         format!(
             "{}://{}{}/{}",
             self.scheme, self.authority, self.base_path, self.session_id,
@@ -510,7 +538,7 @@ async fn post_one(
     Ok(())
 }
 
-fn generate_session_id() -> Result<String> {
+pub(super) fn generate_session_id() -> Result<String> {
     let mut raw = [0_u8; SESSION_ID_BYTES];
     rand::thread_rng().fill_bytes(&mut raw);
     // URL-safe alphanumeric. Bias from `% 62` is negligible at
