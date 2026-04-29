@@ -143,7 +143,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
     #[cfg(feature = "h3")]
     {
         let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
-        if mode == outline_transport::WsTransportMode::Quic {
+        if mode == outline_transport::TransportMode::Quic {
             match uplinks
                 .connect_tcp_quic_fresh(candidate, target, "socks_tcp")
                 .await

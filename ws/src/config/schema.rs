@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use url::Url;
 
-use outline_transport::{ServerAddr, WsTransportMode};
+use outline_transport::{ServerAddr, TransportMode};
 use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
 use shadowsocks_crypto::CipherKind;
 
@@ -13,11 +13,11 @@ pub(crate) struct ConfigFile {
     pub(super) socks5: Option<Socks5Section>,
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<WsTransportMode>,
+    pub(super) tcp_ws_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<WsTransportMode>,
+    pub(super) udp_ws_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
-    pub(super) vless_ws_mode: Option<WsTransportMode>,
+    pub(super) vless_mode: Option<TransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
@@ -79,11 +79,11 @@ pub(super) struct Socks5UserSection {
 pub(crate) struct OutlineSection {
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<WsTransportMode>,
+    pub(super) tcp_ws_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<WsTransportMode>,
+    pub(super) udp_ws_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
-    pub(super) vless_ws_mode: Option<WsTransportMode>,
+    pub(super) vless_mode: Option<TransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
@@ -170,11 +170,11 @@ pub(crate) struct UplinkSection {
     pub(crate) name: Option<String>,
     pub(crate) transport: Option<UplinkTransport>,
     pub(crate) tcp_ws_url: Option<Url>,
-    pub(crate) tcp_ws_mode: Option<WsTransportMode>,
+    pub(crate) tcp_ws_mode: Option<TransportMode>,
     pub(crate) udp_ws_url: Option<Url>,
-    pub(crate) udp_ws_mode: Option<WsTransportMode>,
+    pub(crate) udp_ws_mode: Option<TransportMode>,
     pub(crate) vless_ws_url: Option<Url>,
-    pub(crate) vless_ws_mode: Option<WsTransportMode>,
+    pub(crate) vless_mode: Option<TransportMode>,
     pub(crate) tcp_addr: Option<ServerAddr>,
     pub(crate) udp_addr: Option<ServerAddr>,
     pub(crate) method: Option<CipherKind>,

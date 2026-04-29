@@ -19,7 +19,7 @@ mod types;
 pub use config::{
     CipherKind, DnsProbeConfig, HttpProbeConfig, LoadBalancingConfig, LoadBalancingMode,
     ProbeConfig, RoutingScope, ServerAddr, TargetAddr, TcpProbeConfig, UplinkConfig,
-    UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, WsTransportMode,
+    UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, TransportMode,
 };
 #[cfg(test)]
 mod tests;

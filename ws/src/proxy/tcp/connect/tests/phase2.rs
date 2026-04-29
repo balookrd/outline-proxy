@@ -7,7 +7,7 @@ use outline_transport::{
 use outline_uplink::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
     UplinkCandidate, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
-    WsTransportMode,
+    TransportMode,
 };
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -58,11 +58,11 @@ fn make_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Shadowsocks,
         tcp_ws_url: None,
-        tcp_ws_mode: WsTransportMode::Http1,
+        tcp_ws_mode: TransportMode::WsH1,
         udp_ws_url: None,
-        udp_ws_mode: WsTransportMode::Http1,
+        udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
-        vless_ws_mode: WsTransportMode::Http1,
+        vless_mode: TransportMode::WsH1,
         tcp_addr: Some(addr.to_string().parse::<ServerAddr>().unwrap()),
         udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,

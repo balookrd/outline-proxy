@@ -16,7 +16,7 @@ use outline_transport::{
     connect_shadowsocks_udp_with_source, connect_websocket_with_source,
 };
 
-use crate::config::{UplinkConfig, UplinkTransport, WsTransportMode};
+use crate::config::{UplinkConfig, UplinkTransport, TransportMode};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_ws_probe(
@@ -25,11 +25,11 @@ pub(super) async fn run_ws_probe(
     uplink_name: &str,
     transport: &'static str,
     url: &url::Url,
-    mode: WsTransportMode,
+    mode: TransportMode,
     fwmark: Option<u32>,
     dial_limit: Arc<Semaphore>,
     _pong_timeout: Duration,
-) -> Result<Option<WsTransportMode>> {
+) -> Result<Option<TransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     // Verify WebSocket connectivity only — TCP connect + TLS + HTTP upgrade.
     // Many servers do not respond to WebSocket ping control frames (they expect
@@ -64,7 +64,7 @@ pub(super) async fn run_ws_probe(
 
 /// Connectivity-only probe over raw QUIC: opens (or reuses) a per-ALPN
 /// `quinn::Connection` to the uplink and immediately drops it. Mirrors
-/// [`run_ws_probe`] for the `WsTransportMode::Quic` dispatch path, where
+/// [`run_ws_probe`] for the `TransportMode::Quic` dispatch path, where
 /// there is no WebSocket handshake to verify.
 #[cfg(feature = "quic")]
 #[allow(clippy::too_many_arguments)]
@@ -77,7 +77,7 @@ pub(super) async fn run_quic_handshake_probe(
     fwmark: Option<u32>,
     ipv6_first: bool,
     dial_limit: Arc<Semaphore>,
-) -> Result<Option<WsTransportMode>> {
+) -> Result<Option<TransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let alpn: &'static [u8] = match uplink_transport {
         UplinkTransport::Vless => outline_transport::quic::ALPN_VLESS,
@@ -123,9 +123,9 @@ pub(super) async fn run_quic_handshake_probe(
     _fwmark: Option<u32>,
     _ipv6_first: bool,
     _dial_limit: Arc<Semaphore>,
-) -> Result<Option<WsTransportMode>> {
+) -> Result<Option<TransportMode>> {
     Err(anyhow!(
-        "WsTransportMode::Quic requested but binary was built without the `quic` feature"
+        "TransportMode::Quic requested but binary was built without the `quic` feature"
     ))
 }
 
@@ -133,7 +133,7 @@ pub(super) async fn run_tcp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
-) -> Result<Option<WsTransportMode>> {
+) -> Result<Option<TransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .tcp_addr
@@ -154,7 +154,7 @@ pub(super) async fn run_udp_socket_probe(
     cache: &DnsCache,
     uplink: &UplinkConfig,
     dial_limit: Arc<Semaphore>,
-) -> Result<Option<WsTransportMode>> {
+) -> Result<Option<TransportMode>> {
     let _permit = dial_limit.acquire_owned().await.expect("probe dial semaphore closed");
     let addr = uplink
         .udp_addr

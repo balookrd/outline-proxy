@@ -14,7 +14,7 @@ use shadowsocks_crypto::{
     encrypt_udp_packet_2022,
 };
 use shadowsocks_crypto::CipherKind;
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
@@ -145,7 +145,7 @@ impl UdpWsTransport {
     pub async fn connect(
         cache: &DnsCache,
         url: &Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         cipher: CipherKind,
         password: &str,
         fwmark: Option<u32>,
@@ -178,7 +178,7 @@ impl UdpWsTransport {
     pub async fn connect_with_resume(
         cache: &DnsCache,
         url: &Url,
-        mode: WsTransportMode,
+        mode: TransportMode,
         cipher: CipherKind,
         password: &str,
         fwmark: Option<u32>,
@@ -186,7 +186,7 @@ impl UdpWsTransport {
         source: &'static str,
         keepalive_interval: Option<Duration>,
         resume_request: Option<SessionId>,
-    ) -> Result<(Self, Option<SessionId>, Option<WsTransportMode>)> {
+    ) -> Result<(Self, Option<SessionId>, Option<TransportMode>)> {
         let ws_stream = connect_websocket_with_resume(
             cache,
             url,

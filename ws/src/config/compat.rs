@@ -50,7 +50,7 @@ fn top_level_uplink_fields_present(file: &ConfigFile) -> bool {
         || file.udp_ws_url.is_some()
         || file.udp_ws_mode.is_some()
         || file.vless_ws_url.is_some()
-        || file.vless_ws_mode.is_some()
+        || file.vless_mode.is_some()
         || file.tcp_addr.is_some()
         || file.udp_addr.is_some()
         || file.method.is_some()
@@ -70,7 +70,7 @@ fn from_top_level(file: &ConfigFile) -> OutlineSection {
         udp_ws_url: file.udp_ws_url.clone(),
         udp_ws_mode: file.udp_ws_mode,
         vless_ws_url: file.vless_ws_url.clone(),
-        vless_ws_mode: file.vless_ws_mode,
+        vless_mode: file.vless_mode,
         tcp_addr: file.tcp_addr.clone(),
         udp_addr: file.udp_addr.clone(),
         method: file.method,
@@ -91,7 +91,7 @@ fn merge_top_level_into(file: &ConfigFile, outline: OutlineSection) -> OutlineSe
         udp_ws_url: outline.udp_ws_url.or_else(|| file.udp_ws_url.clone()),
         udp_ws_mode: outline.udp_ws_mode.or(file.udp_ws_mode),
         vless_ws_url: outline.vless_ws_url.or_else(|| file.vless_ws_url.clone()),
-        vless_ws_mode: outline.vless_ws_mode.or(file.vless_ws_mode),
+        vless_mode: outline.vless_mode.or(file.vless_mode),
         tcp_addr: outline.tcp_addr.or_else(|| file.tcp_addr.clone()),
         udp_addr: outline.udp_addr.or_else(|| file.udp_addr.clone()),
         method: outline.method.or(file.method),
@@ -122,7 +122,7 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         udp_ws_url: outline.udp_ws_url.clone(),
         udp_ws_mode: outline.udp_ws_mode,
         vless_ws_url: outline.vless_ws_url.clone(),
-        vless_ws_mode: outline.vless_ws_mode,
+        vless_mode: outline.vless_mode,
         tcp_addr: outline.tcp_addr.clone(),
         udp_addr: outline.udp_addr.clone(),
         method: outline.method,
@@ -143,7 +143,7 @@ fn outline_has_inline_uplink_fields(outline: &OutlineSection) -> bool {
         || outline.udp_ws_url.is_some()
         || outline.udp_ws_mode.is_some()
         || outline.vless_ws_url.is_some()
-        || outline.vless_ws_mode.is_some()
+        || outline.vless_mode.is_some()
         || outline.tcp_addr.is_some()
         || outline.udp_addr.is_some()
         || outline.method.is_some()

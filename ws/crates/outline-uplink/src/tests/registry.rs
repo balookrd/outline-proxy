@@ -7,18 +7,18 @@ use crate::config::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, UplinkConfig,
     VlessUdpMuxLimits, WsProbeConfig,
 };
-use crate::config::{CipherKind, UplinkTransport, WsTransportMode};
+use crate::config::{CipherKind, UplinkTransport, TransportMode};
 
 fn make_uplink(name: &str) -> UplinkConfig {
     UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse("wss://127.0.0.1:1/tcp").unwrap()),
-        tcp_ws_mode: WsTransportMode::Http1,
+        tcp_ws_mode: TransportMode::WsH1,
         udp_ws_url: None,
-        udp_ws_mode: WsTransportMode::Http1,
+        udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
-        vless_ws_mode: WsTransportMode::Http1,
+        vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,

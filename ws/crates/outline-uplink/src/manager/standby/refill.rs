@@ -127,7 +127,7 @@ impl<'a> StandbyCtx<'a> {
         // SharedConnectionRegistry); the warm-standby WebSocket pool is
         // not used. Dialing here would just bail in
         // `connect_websocket_with_source`.
-        if self.mode == outline_transport::WsTransportMode::Quic {
+        if self.mode == outline_transport::TransportMode::Quic {
             return;
         }
         let Some(url) = self.url else { return };

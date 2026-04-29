@@ -9,7 +9,7 @@ use url::Url;
 use outline_metrics as metrics;
 use outline_transport::WsTransportStream;
 
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 use crate::types::{TrackedDeque, TransportKind, Uplink, UplinkManager};
 
 pub(super) const STANDBY_WS_PEEK_TIMEOUT: Duration = Duration::from_millis(1);
@@ -39,7 +39,7 @@ pub(super) struct StandbyCtx<'a> {
     pub(super) refill_source: &'static str,
     pub(super) desired: usize,
     pub(super) url: Option<&'a Url>,
-    pub(super) mode: WsTransportMode,
+    pub(super) mode: TransportMode,
 }
 
 impl UplinkManager {
@@ -86,7 +86,7 @@ impl UplinkManager {
 
 impl<'a> StandbyCtx<'a> {
     pub(super) fn mode_is_http1(&self) -> bool {
-        matches!(self.mode, WsTransportMode::Http1)
+        matches!(self.mode, TransportMode::WsH1)
     }
 
     pub(super) fn group(&self) -> &str {

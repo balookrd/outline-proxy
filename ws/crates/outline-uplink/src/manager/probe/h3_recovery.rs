@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
 use super::super::mode_downgrade::ModeDowngradeTrigger;
@@ -33,8 +33,8 @@ impl UplinkManager {
                 // keep the other transport at its native mode (it doesn't
                 // affect the recovery decision but avoids penalising it).
                 let (eff_tcp, eff_udp) = match which {
-                    TransportKind::Tcp => (WsTransportMode::H3, uplink.udp_ws_mode),
-                    TransportKind::Udp => (uplink.tcp_ws_mode, WsTransportMode::H3),
+                    TransportKind::Tcp => (TransportMode::WsH3, uplink.udp_ws_mode),
+                    TransportKind::Udp => (uplink.tcp_ws_mode, TransportMode::WsH3),
                 };
                 let outcome = run_probe_attempt_with_timeout(
                     Arc::clone(&dns_cache),

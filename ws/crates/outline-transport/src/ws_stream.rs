@@ -12,7 +12,7 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 use crate::h3::{
     H3WsStream, sockudo_to_tungstenite_message, sockudo_to_ws_error, tungstenite_to_sockudo_message,
 };
-use crate::config::WsTransportMode;
+use crate::config::TransportMode;
 use crate::resumption::SessionId;
 
 use super::h2::H2WsStream;
@@ -139,19 +139,19 @@ pin_project! {
             inner: H1WsStream,
             activity: H1Activity,
             issued_session_id: Option<SessionId>,
-            downgraded_from: Option<WsTransportMode>,
+            downgraded_from: Option<TransportMode>,
         },
         H2 {
             #[pin]
             inner: H2WsStream,
             issued_session_id: Option<SessionId>,
-            downgraded_from: Option<WsTransportMode>,
+            downgraded_from: Option<TransportMode>,
         },
         H3 {
             #[pin]
             inner: H3WsStream,
             issued_session_id: Option<SessionId>,
-            downgraded_from: Option<WsTransportMode>,
+            downgraded_from: Option<TransportMode>,
         },
     }
 }
@@ -196,12 +196,12 @@ impl WsTransportStream {
         }
     }
 
-    /// Returns the originally-requested `WsTransportMode` when this stream
+    /// Returns the originally-requested `TransportMode` when this stream
     /// was produced by a transport-level fallback (clamp or inline retry),
     /// or `None` when the dial succeeded at the requested mode. Used by
     /// uplink-manager callsites to surface the downgrade in the per-uplink
     /// `mode_downgrade_until` window so routing/metrics see a consistent state.
-    pub fn downgraded_from(&self) -> Option<WsTransportMode> {
+    pub fn downgraded_from(&self) -> Option<TransportMode> {
         match self {
             WsTransportStream::Http1 { downgraded_from, .. } => *downgraded_from,
             WsTransportStream::H2 { downgraded_from, .. } => *downgraded_from,
@@ -213,7 +213,7 @@ impl WsTransportStream {
     /// this stream is the result of a fallback. Chainable; intended to be
     /// called inside `connect_websocket_with_resume` immediately before
     /// returning the stream.
-    pub fn with_downgraded_from(mut self, requested: Option<WsTransportMode>) -> Self {
+    pub fn with_downgraded_from(mut self, requested: Option<TransportMode>) -> Self {
         match &mut self {
             WsTransportStream::Http1 { downgraded_from, .. } => *downgraded_from = requested,
             WsTransportStream::H2 { downgraded_from, .. } => *downgraded_from = requested,

@@ -131,7 +131,7 @@ async fn connect_tcp_uplink(
     #[cfg(feature = "quic")]
     {
         let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
-        if mode == outline_transport::WsTransportMode::Quic {
+        if mode == outline_transport::TransportMode::Quic {
             match uplinks.connect_tcp_quic_fresh(candidate, target, "tun_tcp").await {
                 Ok(pair) => return Ok(pair),
                 Err(e) => {

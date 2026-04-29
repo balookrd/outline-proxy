@@ -12,7 +12,7 @@ use std::time::Duration;
 use outline_routing::{
     RouteRule, RouteTarget, RoutingTable, RoutingTableConfig,
 };
-use outline_transport::WsTransportMode;
+use outline_transport::TransportMode;
 use outline_uplink::{
     LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TransportKind, UplinkConfig,
     UplinkGroupConfig, UplinkRegistry, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
@@ -67,11 +67,11 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
-        tcp_ws_mode: WsTransportMode::Http1,
+        tcp_ws_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&format!("{url}/udp")).unwrap()),
-        udp_ws_mode: WsTransportMode::Http1,
+        udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
-        vless_ws_mode: WsTransportMode::Http1,
+        vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,
         cipher: CipherKind::Chacha20IetfPoly1305,

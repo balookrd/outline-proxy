@@ -6,7 +6,7 @@ use tokio::sync::Semaphore;
 use tokio::time::{Instant, sleep};
 use tracing::{debug, warn};
 
-use crate::config::{ProbeConfig, WsTransportMode};
+use crate::config::{ProbeConfig, TransportMode};
 
 use super::super::super::probe::probe_uplink;
 use super::super::super::selection::cooldown_active;
@@ -33,8 +33,8 @@ pub(super) async fn run_probe_attempt_with_timeout(
     uplink: Uplink,
     probe: ProbeConfig,
     dial_limit: Arc<Semaphore>,
-    effective_tcp_mode: WsTransportMode,
-    effective_udp_mode: WsTransportMode,
+    effective_tcp_mode: TransportMode,
+    effective_udp_mode: TransportMode,
 ) -> Result<ProbeOutcome> {
     let tcp_budget = (probe.ws.enabled || probe.http.is_some() || probe.tcp.is_some()) as u32;
     let udp_budget = (uplink.supports_udp() && (probe.ws.enabled || probe.dns.is_some())) as u32;

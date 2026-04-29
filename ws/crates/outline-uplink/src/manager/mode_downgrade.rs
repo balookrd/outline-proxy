@@ -15,7 +15,7 @@
 use tokio::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::{UplinkTransport, WsTransportMode};
+use crate::config::{UplinkTransport, TransportMode};
 
 use super::super::types::{TransportKind, UplinkManager};
 
@@ -39,7 +39,7 @@ pub(crate) enum ModeDowngradeTrigger<'a> {
     /// Fired from probe / refill / fresh-dial / mux paths so the per-uplink
     /// `mode_downgrade_until` window stays in sync with the actually-dialable
     /// transport even when the operation itself reports success.
-    SilentTransportFallback(WsTransportMode),
+    SilentTransportFallback(TransportMode),
 }
 
 impl UplinkManager {
@@ -69,7 +69,7 @@ impl UplinkManager {
             TransportKind::Tcp => uplink.tcp_dial_mode(),
             TransportKind::Udp => uplink.udp_dial_mode(),
         };
-        if !matches!(ws_mode, WsTransportMode::H3 | WsTransportMode::Quic) {
+        if !matches!(ws_mode, TransportMode::WsH3 | TransportMode::Quic) {
             return;
         }
 
@@ -181,7 +181,7 @@ impl UplinkManager {
         &self,
         index: usize,
         transport: TransportKind,
-        requested: WsTransportMode,
+        requested: TransportMode,
     ) {
         self.extend_mode_downgrade(
             index,
