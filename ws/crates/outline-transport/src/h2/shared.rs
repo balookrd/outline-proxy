@@ -415,7 +415,16 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         path: &str,
     ) -> Result<TransportStream> {
         let scheme = if self.use_tls { "https" } else { "http" };
-        let target_uri = format!("{scheme}://{}/{path}", format_authority(server_name, Some(server_port)));
+        // `websocket_path` always returns a leading `/`, so concatenate
+        // directly — `format!("{scheme}://{}/{path}", …)` would produce
+        // a `//{path}` :path pseudo-header that axum's router rejects
+        // as 404 against a `/vless` route. The h1 fallback masked this
+        // for years because tungstenite normalises the URL itself.
+        let path = if path.is_empty() { "/" } else { path };
+        let target_uri = format!(
+            "{scheme}://{}{path}",
+            format_authority(server_name, Some(server_port)),
+        );
         conn.open_websocket(&target_uri, self.resume_request).await
     }
 }
