@@ -29,7 +29,8 @@ use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
-    XhttpSession, generate_padding_header, is_valid_session_id, masquerade_response_headers,
+    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
+    masquerade_response_headers,
 };
 use super::padding::post_response_headers;
 
@@ -55,7 +56,7 @@ pub(in crate::server) struct XhttpAxumState {
 pub(in crate::server) async fn xhttp_handler(
     State(state): State<XhttpAxumState>,
     Path(session_id): Path<String>,
-    OriginalUri(_uri): OriginalUri,
+    OriginalUri(uri): OriginalUri,
     method: Method,
     version: Version,
     headers: HeaderMap,
@@ -66,9 +67,20 @@ pub(in crate::server) async fn xhttp_handler(
     if !is_valid_session_id(&session_id) {
         return short_status(StatusCode::BAD_REQUEST);
     }
-    match method {
-        Method::GET => xhttp_get(state, session_id, version, peer_addr, &headers).await,
-        Method::POST => xhttp_post(state, session_id, version, peer_addr, headers, body).await,
+    let submode = XhttpSubmode::parse(uri.query());
+    match (method.clone(), submode) {
+        (Method::GET, XhttpSubmode::PacketUp) => {
+            xhttp_get(state, session_id, version, peer_addr, &headers).await
+        },
+        (Method::POST, XhttpSubmode::PacketUp) => {
+            xhttp_post(state, session_id, version, peer_addr, headers, body).await
+        },
+        (Method::POST, XhttpSubmode::StreamOne) => {
+            xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
+        },
+        // GET on `?mode=stream-one` is malformed — the carrier is a
+        // single bidirectional POST, not a GET.
+        (Method::GET, XhttpSubmode::StreamOne) => short_status(StatusCode::BAD_REQUEST),
         _ => short_status(StatusCode::METHOD_NOT_ALLOWED),
     }
 }
@@ -255,6 +267,116 @@ async fn xhttp_post(
         && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
     {
         resp_headers.insert(SESSION_RESPONSE_HEADER, value);
+    }
+    response
+}
+
+/// Stream-one carrier on h2: a single bidirectional POST whose
+/// request body carries the uplink and whose response body carries
+/// the downlink. Falls back with a clear status when h1 is the
+/// negotiated version, since plain HTTP/1.1 cannot full-duplex.
+async fn xhttp_stream_one(
+    state: XhttpAxumState,
+    session_id: String,
+    version: Version,
+    peer_addr: SocketAddr,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    if matches!(version, Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11) {
+        // Stream-one needs h2 frame interleaving (or h3) to send
+        // response frames before the request body has been fully
+        // consumed. Reject loudly so the client switches to packet-up.
+        return short_status(StatusCode::HTTP_VERSION_NOT_SUPPORTED);
+    }
+    let route = match resolve_route(&state) {
+        Some(route) => route,
+        None => {
+            warn!(
+                base = %state.base_path,
+                "no vless route configured for xhttp base path; rejecting stream-one"
+            );
+            return short_status(StatusCode::NOT_FOUND);
+        },
+    };
+    let protocol = protocol_from_http_version(version);
+    let resume_for_create = ResumeContext::from_request_headers(
+        &headers,
+        &state.parent.services.vless_server.orphan_registry,
+    );
+    let (session, created) = state.registry.get_or_create(
+        &session_id,
+        state.parent.services.vless_server.ws_data_channel_capacity,
+        resume_for_create.issued_session_id,
+    );
+    if session.is_closed() {
+        return short_status(StatusCode::GONE);
+    }
+    if created {
+        spawn_relay(
+            Arc::clone(&session),
+            Arc::clone(&state.parent.services.vless_server),
+            Arc::clone(&state.registry),
+            VlessWsRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: Arc::clone(&state.base_path),
+                candidate_users: Arc::clone(&route.candidate_users),
+            },
+            resume_for_create,
+        );
+    }
+    // Claim the downlink slot so a parallel packet-up GET on the
+    // same id cannot race for the response body. A second
+    // stream-one POST gets 409 just like the GET case.
+    match session.try_attach_get() {
+        AttachOutcome::Ok => {},
+        AttachOutcome::Conflict => return short_status(StatusCode::CONFLICT),
+        AttachOutcome::Gone => return short_status(StatusCode::GONE),
+    }
+    debug!(
+        method = "POST", mode = "stream-one", ?version, base = %state.base_path,
+        %peer_addr, session = %session_id, created,
+        "xhttp stream-one duplex attached"
+    );
+
+    // Spawn the uplink pump: drain the request body frame-by-frame
+    // and push each chunk into the session ring in order. The pump
+    // closes the uplink half when the body ends so the relay sees
+    // EOF and can decide whether to park or tear down.
+    let session_for_uplink = Arc::clone(&session);
+    tokio::spawn(async move {
+        use http_body_util::BodyExt;
+        let mut body = body;
+        while let Some(frame) = body.frame().await {
+            match frame {
+                Ok(frame) => {
+                    if let Ok(data) = frame.into_data() {
+                        if data.is_empty() {
+                            continue;
+                        }
+                        if session_for_uplink.ingest_uplink_inorder(data).is_err() {
+                            break;
+                        }
+                    }
+                },
+                Err(error) => {
+                    debug!(?error, "xhttp stream-one request body errored");
+                    break;
+                },
+            }
+        }
+        session_for_uplink.close_uplink();
+    });
+
+    let issued_for_response = session.issued_resume_id;
+    let body = build_downlink_body(Arc::clone(&session));
+    let mut response = (StatusCode::OK, body).into_response();
+    apply_response_masquerade(response.headers_mut());
+    if let Some(id) = issued_for_response
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
     }
     response
 }

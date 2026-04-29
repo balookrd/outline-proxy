@@ -13,6 +13,8 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
+use http_body_util::{StreamBody, combinators::BoxBody};
+use std::convert::Infallible;
 use arc_swap::ArcSwap;
 use axum::http::{Method, Request, StatusCode};
 use bytes::{Bytes, BytesMut};
@@ -332,6 +334,96 @@ async fn xhttp_resume_capable_get_returns_session_header_and_reattach_keeps_it()
         .ok_or_else(|| anyhow!("POST response missing X-Outline-Session"))?;
     assert_eq!(post_token, token, "attach POST must surface the same minted token");
 
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
+    use http_body_util::BodyExt;
+
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server) = setup_xhttp_server("/xh").await?;
+    // Drive the request via a direct HTTP/2 handshake so the
+    // server actually sees an h2 connection. hyper-util's legacy
+    // Client speaks h1 over plain TCP unless TLS-ALPN negotiates
+    // h2, which is exactly the situation stream-one rejects with
+    // 505. Using the lower-level handshake matches the wire-form
+    // a real `xhttp_h2` client would produce.
+    let session_id = "stream-one-001";
+    let target_uri = format!("http://{listen_addr}/xh/{session_id}?mode=stream-one");
+
+    let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
+    let (mut send, conn) = hyper::client::conn::http2::Builder::new(
+        hyper_util::rt::TokioExecutor::new(),
+    )
+    .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
+    .await?;
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+
+    // Drive the request body through a channel so we can hold the
+    // uplink half open while reading the response. Closing the body
+    // immediately after the handshake would let the server-side
+    // `close_uplink()` race the relay's first VLESS frame and
+    // tear the session down before the upstream reply makes it
+    // back through the downlink.
+    let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<
+        Result<hyper::body::Frame<Bytes>, Infallible>,
+    >(8);
+    let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    frame_tx
+        .send(Ok(hyper::body::Frame::data(Bytes::from(handshake))))
+        .await?;
+    let body_stream = futures_util::stream::unfold(frame_rx, |mut rx| async move {
+        rx.recv().await.map(|frame| (frame, rx))
+    });
+    let stream_body = StreamBody::new(body_stream).boxed();
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(&target_uri)
+        .header(hyper::header::HOST, format!("{}", listen_addr))
+        .body(stream_body)?;
+    send.ready().await?;
+    let resp = send.send_request(req).await?;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").and_then(|v| v.to_str().ok()),
+        Some("text/event-stream"),
+    );
+    let mut body = resp.into_body();
+    let mut received = bytes::BytesMut::new();
+    while received.len() < 6 {
+        match body.frame().await {
+            Some(Ok(frame)) => {
+                if let Ok(data) = frame.into_data() {
+                    received.extend_from_slice(&data);
+                }
+            },
+            Some(Err(e)) => bail!("frame error: {e}"),
+            None => break,
+        }
+    }
+    assert_eq!(&received[..2], &[VERSION, 0x00]);
+    assert_eq!(&received[2..6], b"pong");
+
+    let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
+        .await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    // Now close the uplink half so the relay sees EOF and the
+    // server-side handler can shut down cleanly.
+    drop(frame_tx);
     server.abort();
     Ok(())
 }
