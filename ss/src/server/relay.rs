@@ -19,7 +19,7 @@ use tokio::{
 
 use crate::{
     crypto::{AeadStreamDecryptor, AeadStreamEncryptor, CryptoError, MAX_CHUNK_SIZE},
-    metrics::{Metrics, Protocol},
+    metrics::{AppProtocol, Metrics, Protocol},
 };
 
 use super::scratch::ScratchBuf;
@@ -74,6 +74,7 @@ pub(in crate::server) async fn relay_upstream_to_client<R, S>(
     encryptor: &mut AeadStreamEncryptor,
     metrics: Arc<Metrics>,
     protocol: Protocol,
+    app_protocol: AppProtocol,
     user_id: Arc<str>,
     cancel: Option<Arc<Notify>>,
 ) -> Result<UpstreamRelayOutcome<R>>
@@ -82,7 +83,7 @@ where
     S: UpstreamSink,
 {
     let user_counters = metrics.user_counters(&user_id);
-    let target_to_client = user_counters.tcp_out(protocol);
+    let target_to_client = user_counters.tcp_out(app_protocol, protocol);
     let mut buffer = ScratchBuf::take();
     let mut out_buf = BytesMut::with_capacity(MAX_CHUNK_SIZE);
     let mut saw_payload = false;
@@ -168,6 +169,7 @@ pub(in crate::server) async fn relay_client_to_upstream<R, W>(
     mut upstream_writer: W,
     metrics: Arc<Metrics>,
     protocol: Protocol,
+    app_protocol: AppProtocol,
     user_id: Arc<str>,
 ) -> Result<()>
 where
@@ -175,7 +177,7 @@ where
     W: AsyncWrite + Unpin,
 {
     let user_counters = metrics.user_counters(&user_id);
-    let client_to_target = user_counters.tcp_in(protocol);
+    let client_to_target = user_counters.tcp_in(app_protocol, protocol);
     if !initial_payload.is_empty() {
         client_to_target.increment(initial_payload.len() as u64);
         upstream_writer

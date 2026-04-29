@@ -68,7 +68,10 @@ where
     if let Some(initial) = initial
         && !initial.is_empty()
     {
-        state.user_counters.tcp_in(route.protocol).increment(initial.len() as u64);
+        state
+            .user_counters
+            .tcp_in(AppProtocol::Vless, route.protocol)
+            .increment(initial.len() as u64);
         writer
             .write_all(&initial)
             .await
@@ -117,7 +120,7 @@ where
     Msg: Send + 'static,
 {
     let user_counters = metrics.user_counters(&user);
-    let target_to_client = user_counters.tcp_out(protocol);
+    let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
     let mut buf = TcpRelayBuf::take();
     let mut frame_buf = BytesMut::with_capacity(16 * 1024 + 16);
     loop {

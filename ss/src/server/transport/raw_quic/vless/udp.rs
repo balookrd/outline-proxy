@@ -6,7 +6,7 @@ use tracing::{debug, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::Protocol,
+    metrics::{AppProtocol, Protocol},
     protocol::vless::{self, VlessUser},
 };
 
@@ -49,7 +49,7 @@ pub(super) async fn handle_udp(
     let udp_in = server
         .metrics
         .user_counters(&user.label_arc())
-        .udp_in(Protocol::QuicRaw)
+        .udp_in(AppProtocol::Vless, Protocol::QuicRaw)
         .clone();
     conn_state.register(
         session_id,
@@ -81,7 +81,7 @@ pub(super) async fn handle_udp(
     let target_to_client = server
         .metrics
         .user_counters(&user.label_arc())
-        .udp_out(Protocol::QuicRaw)
+        .udp_out(AppProtocol::Vless, Protocol::QuicRaw)
         .clone();
     let conn_for_reader = Arc::clone(connection);
     let conn_state_for_reader = Arc::clone(conn_state);

@@ -62,6 +62,7 @@ pub(super) trait WsSocket: Send + Sized + 'static {
     fn make_udp_response_sender(
         tx: mpsc::Sender<Self::Msg>,
         protocol: Protocol,
+        app_protocol: crate::metrics::AppProtocol,
     ) -> UdpResponseSender;
 }
 
@@ -137,8 +138,13 @@ impl WsSocket for AxumWs {
     fn make_udp_response_sender(
         tx: mpsc::Sender<Message>,
         protocol: Protocol,
+        app_protocol: crate::metrics::AppProtocol,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(WebSocketResponseSender { tx, protocol }))
+        UdpResponseSender::new(Arc::new(WebSocketResponseSender {
+            tx,
+            protocol,
+            app_protocol,
+        }))
     }
 }
 
@@ -212,14 +218,16 @@ impl WsSocket for H3Ws {
     fn make_udp_response_sender(
         tx: mpsc::Sender<H3Message>,
         _protocol: Protocol,
+        app_protocol: crate::metrics::AppProtocol,
     ) -> UdpResponseSender {
-        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx }))
+        UdpResponseSender::new(Arc::new(Http3ResponseSender { tx, app_protocol }))
     }
 }
 
 struct WebSocketResponseSender {
     tx: mpsc::Sender<Message>,
     protocol: Protocol,
+    app_protocol: crate::metrics::AppProtocol,
 }
 
 impl ResponseSender for WebSocketResponseSender {
@@ -230,10 +238,15 @@ impl ResponseSender for WebSocketResponseSender {
     fn protocol(&self) -> Protocol {
         self.protocol
     }
+
+    fn app_protocol(&self) -> crate::metrics::AppProtocol {
+        self.app_protocol
+    }
 }
 
 struct Http3ResponseSender {
     tx: mpsc::Sender<H3Message>,
+    app_protocol: crate::metrics::AppProtocol,
 }
 
 impl ResponseSender for Http3ResponseSender {
@@ -243,5 +256,9 @@ impl ResponseSender for Http3ResponseSender {
 
     fn protocol(&self) -> Protocol {
         Protocol::Http3
+    }
+
+    fn app_protocol(&self) -> crate::metrics::AppProtocol {
+        self.app_protocol
     }
 }

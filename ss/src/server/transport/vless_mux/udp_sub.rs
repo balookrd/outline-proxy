@@ -123,7 +123,7 @@ where
     Msg: Send + 'static,
 {
     let user_counters = metrics.user_counters(&user);
-    let target_to_client = user_counters.udp_out(protocol);
+    let target_to_client = user_counters.udp_out(AppProtocol::Vless, protocol);
     let mut buf = UdpRecvBuf::take();
     let mut frame_buf = BytesMut::with_capacity(MAX_UDP_PAYLOAD_SIZE + 32);
     loop {
@@ -187,7 +187,9 @@ pub(super) async fn send_udp_payload(
     user_counters: &PerUserCounters,
     protocol: Protocol,
 ) {
-    user_counters.udp_in(protocol).increment(payload.len() as u64);
+    user_counters
+        .udp_in(AppProtocol::Vless, protocol)
+        .increment(payload.len() as u64);
     if let Err(error) = socket.send_to(payload, dst).await {
         debug!(%dst, error = %error, "mux udp send_to failed");
     }

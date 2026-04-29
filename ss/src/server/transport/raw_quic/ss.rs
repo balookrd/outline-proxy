@@ -133,6 +133,7 @@ async fn run_stream(
             ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::QuicRaw,
+                crate::metrics::AppProtocol::Shadowsocks,
                 "success",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -142,6 +143,7 @@ async fn run_stream(
             ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::QuicRaw,
+                crate::metrics::AppProtocol::Shadowsocks,
                 "error",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -179,21 +181,23 @@ async fn run_stream(
             &mut encryptor,
             metrics,
             Protocol::QuicRaw,
+            crate::metrics::AppProtocol::Shadowsocks,
             relay_user_id,
             None,
         )
         .await
         .map(|_| ())
     };
-    ctx.services
-        .tcp_server
-        .metrics
-        .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::QuicRaw);
-    let upstream_guard = ctx
-        .services
-        .tcp_server
-        .metrics
-        .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::QuicRaw);
+    ctx.services.tcp_server.metrics.record_tcp_authenticated_session(
+        Arc::clone(&user_id),
+        Protocol::QuicRaw,
+        crate::metrics::AppProtocol::Shadowsocks,
+    );
+    let upstream_guard = ctx.services.tcp_server.metrics.open_tcp_upstream_connection(
+        Arc::clone(&user_id),
+        Protocol::QuicRaw,
+        crate::metrics::AppProtocol::Shadowsocks,
+    );
 
     let client_to_upstream = relay_client_to_upstream(
         recv,
@@ -202,6 +206,7 @@ async fn run_stream(
         upstream_writer,
         ctx.services.tcp_server.metrics.clone(),
         Protocol::QuicRaw,
+        crate::metrics::AppProtocol::Shadowsocks,
         Arc::clone(&user_id),
     );
 
@@ -397,5 +402,9 @@ impl ResponseSender for QuicSsResponseSender {
 
     fn protocol(&self) -> Protocol {
         Protocol::QuicRaw
+    }
+
+    fn app_protocol(&self) -> crate::metrics::AppProtocol {
+        crate::metrics::AppProtocol::Shadowsocks
     }
 }

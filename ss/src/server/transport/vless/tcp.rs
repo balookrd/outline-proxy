@@ -9,7 +9,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    metrics::{Metrics, Protocol, TcpUpstreamGuard},
+    metrics::{AppProtocol, Metrics, Protocol, TcpUpstreamGuard},
     protocol::vless::{self, VlessUser},
 };
 
@@ -216,7 +216,9 @@ where
             && let UpstreamSession::Tcp(tcp) = &mut state.upstream
         {
             if let Some(counters) = &state.user_counters {
-                counters.tcp_in(route.protocol).increment(leftover.len() as u64);
+                counters
+                    .tcp_in(AppProtocol::Vless, route.protocol)
+                    .increment(leftover.len() as u64);
             }
             tcp.writer
                 .write_all(&leftover)
@@ -240,6 +242,7 @@ where
             server.metrics.record_tcp_connect(
                 user.label_arc(),
                 route.protocol,
+                AppProtocol::Vless,
                 "success",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -249,6 +252,7 @@ where
             server.metrics.record_tcp_connect(
                 user.label_arc(),
                 route.protocol,
+                AppProtocol::Vless,
                 "error",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -298,12 +302,16 @@ where
         )
         .await
     }));
-    server
-        .metrics
-        .record_tcp_authenticated_session(user.label_arc(), route.protocol);
-    let guard = server
-        .metrics
-        .open_tcp_upstream_connection(user.label_arc(), route.protocol);
+    server.metrics.record_tcp_authenticated_session(
+        user.label_arc(),
+        route.protocol,
+        AppProtocol::Vless,
+    );
+    let guard = server.metrics.open_tcp_upstream_connection(
+        user.label_arc(),
+        route.protocol,
+        AppProtocol::Vless,
+    );
     state.user_counters = Some(server.metrics.user_counters(&user.label_arc()));
     state.authenticated_user = Some(user);
     state.upstream = UpstreamSession::Tcp(TcpUpstream {
@@ -320,7 +328,9 @@ where
         && let UpstreamSession::Tcp(tcp) = &mut state.upstream
     {
         if let Some(counters) = &state.user_counters {
-            counters.tcp_in(route.protocol).increment(leftover.len() as u64);
+            counters
+                .tcp_in(AppProtocol::Vless, route.protocol)
+                .increment(leftover.len() as u64);
         }
         tcp.writer
             .write_all(&leftover)
@@ -345,7 +355,7 @@ where
     Msg: Send + 'static,
 {
     let user_counters = metrics.user_counters(&user_id);
-    let target_to_client = user_counters.tcp_out(protocol);
+    let target_to_client = user_counters.tcp_out(AppProtocol::Vless, protocol);
     let mut buffer = TcpRelayBuf::take();
     loop {
         // Cancel arm: when no notify is registered, substitute a never-

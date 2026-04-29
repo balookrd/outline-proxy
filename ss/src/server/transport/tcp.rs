@@ -645,6 +645,7 @@ where
                     &mut encryptor,
                     relay_metrics,
                     protocol,
+                    AppProtocol::Shadowsocks,
                     relay_user_id,
                     Some(cancel_for_task),
                 )
@@ -679,6 +680,7 @@ where
                 server.metrics.record_tcp_connect(
                     Arc::clone(&user_id),
                     route.protocol,
+                    AppProtocol::Shadowsocks,
                     "success",
                     connect_started.elapsed().as_secs_f64(),
                 );
@@ -688,6 +690,7 @@ where
                 server.metrics.record_tcp_connect(
                     Arc::clone(&user_id),
                     route.protocol,
+                    AppProtocol::Shadowsocks,
                     "error",
                     connect_started.elapsed().as_secs_f64(),
                 );
@@ -741,17 +744,23 @@ where
                 &mut encryptor,
                 relay_metrics,
                 protocol,
+                AppProtocol::Shadowsocks,
                 relay_user_id,
                 Some(cancel_for_task),
             )
             .await
         }));
         state.relay_cancel = Some(cancel);
-        server
-            .metrics
-            .record_tcp_authenticated_session(Arc::clone(&user_id), route.protocol);
-        state.upstream_guard =
-            Some(server.metrics.open_tcp_upstream_connection(user_id, route.protocol));
+        server.metrics.record_tcp_authenticated_session(
+            Arc::clone(&user_id),
+            route.protocol,
+            AppProtocol::Shadowsocks,
+        );
+        state.upstream_guard = Some(server.metrics.open_tcp_upstream_connection(
+            user_id,
+            route.protocol,
+            AppProtocol::Shadowsocks,
+        ));
         state.user_counters = Some(server.metrics.user_counters(&user.id_arc()));
         state.authenticated_user = Some(user);
         state.upstream_writer = Some(writer);
@@ -774,7 +783,9 @@ async fn forward_plaintext_to_writer(
         && !plaintext_buffer.is_empty()
     {
         if let Some(counters) = &state.user_counters {
-            counters.tcp_in(protocol).increment(plaintext_buffer.len() as u64);
+            counters
+                .tcp_in(AppProtocol::Shadowsocks, protocol)
+                .increment(plaintext_buffer.len() as u64);
         }
         writer
             .write_all(plaintext_buffer)

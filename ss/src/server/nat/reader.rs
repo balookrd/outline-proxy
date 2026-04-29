@@ -97,8 +97,9 @@ pub(super) async fn nat_reader_task(ctx: NatReaderCtx) {
         }
 
         let protocol = sender.protocol();
-        user_counters.udp_out(protocol).increment(n as u64);
-        metrics.record_udp_response_datagrams(Arc::clone(&user_id), protocol, 1);
+        let app_protocol = sender.app_protocol();
+        user_counters.udp_out(app_protocol, protocol).increment(n as u64);
+        metrics.record_udp_response_datagrams(Arc::clone(&user_id), protocol, app_protocol, 1);
         if sender.send_bytes(Bytes::from(ciphertext)).await {
             // Only a delivered response resets the idle timer. Otherwise a
             // chatty upstream pointed at a dead client would hold the NAT
@@ -126,6 +127,9 @@ pub(crate) fn record_oversized_socket_response_drop(
     metrics.record_udp_oversized_datagram_dropped(
         user.id_arc(),
         Protocol::Socket,
+        sender
+            .map(UdpResponseSender::app_protocol)
+            .unwrap_or(crate::metrics::AppProtocol::Shadowsocks),
         "target_to_client",
     );
     warn!(

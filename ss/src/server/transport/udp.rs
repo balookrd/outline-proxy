@@ -193,7 +193,7 @@ async fn handle_udp_datagram_common<Msg>(
     session: &UdpSessionState,
     data: Bytes,
     outbound_tx: mpsc::Sender<Msg>,
-    make_response_sender: fn(mpsc::Sender<Msg>, Protocol) -> UdpResponseSender,
+    make_response_sender: fn(mpsc::Sender<Msg>, Protocol, AppProtocol) -> UdpResponseSender,
 ) -> Result<()>
 where
     Msg: Send + 'static,
@@ -271,9 +271,12 @@ where
     if session.session_recorded.swap(true, Ordering::Relaxed) {
         server.metrics.record_client_last_seen(Arc::clone(&user_id));
     } else {
-        server
-            .metrics
-            .record_client_session(Arc::clone(&user_id), route.protocol, Transport::Udp);
+        server.metrics.record_client_session(
+            Arc::clone(&user_id),
+            route.protocol,
+            Transport::Udp,
+            AppProtocol::Shadowsocks,
+        );
     }
     debug!(
         user = packet.user.id(),
@@ -304,7 +307,8 @@ where
         .await
         .with_context(|| format!("failed to create NAT entry for {resolved}"))?;
 
-    let response_sender = make_response_sender(outbound_tx, route.protocol);
+    let response_sender =
+        make_response_sender(outbound_tx, route.protocol, AppProtocol::Shadowsocks);
 
     // First-frame resume: if this stream advertised a pending
     // `X-Outline-Resume` ID, attempt the lookup and re-attach every
@@ -343,6 +347,7 @@ where
         server.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
             route.protocol,
+            AppProtocol::Shadowsocks,
             "client_to_target",
         );
         warn!(
@@ -356,6 +361,7 @@ where
         server.metrics.record_udp_request(
             Arc::clone(&user_id),
             route.protocol,
+            AppProtocol::Shadowsocks,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -363,12 +369,13 @@ where
     }
     entry
         .user_counters()
-        .udp_in(route.protocol)
+        .udp_in(AppProtocol::Shadowsocks, route.protocol)
         .increment(payload.len() as u64);
     if let Err(error) = entry.socket().send_to(payload, resolved).await {
         server.metrics.record_udp_request(
             Arc::clone(&user_id),
             route.protocol,
+            AppProtocol::Shadowsocks,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -378,6 +385,7 @@ where
     server.metrics.record_udp_request(
         user_id,
         route.protocol,
+        AppProtocol::Shadowsocks,
         "success",
         started_at.elapsed().as_secs_f64(),
     );
@@ -439,7 +447,12 @@ async fn run_udp_relay<T: WsSocket>(
                             data.len(),
                         );
                         if in_flight.len() >= UDP_MAX_CONCURRENT_RELAY_TASKS {
-                            server.metrics.record_udp_relay_drop(Transport::Udp, route.protocol, "concurrency_limit");
+                            server.metrics.record_udp_relay_drop(
+                                Transport::Udp,
+                                route.protocol,
+                                AppProtocol::Shadowsocks,
+                                "concurrency_limit",
+                            );
                             warn!("udp concurrent relay limit reached, dropping datagram");
                             continue;
                         }
@@ -456,6 +469,7 @@ async fn run_udp_relay<T: WsSocket>(
                                 server.metrics.record_udp_relay_drop(
                                     Transport::Udp,
                                     route.protocol,
+                                    AppProtocol::Shadowsocks,
                                     "global_concurrency_limit",
                                 );
                                 warn!(

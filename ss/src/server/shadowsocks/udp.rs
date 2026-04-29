@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 
 use crate::{
     crypto::{CryptoError, UserKey, decrypt_udp_packet_with_hint, diagnose_udp_packet},
-    metrics::{Protocol, Transport},
+    metrics::{AppProtocol, Protocol, Transport},
     protocol::parse_target_addr,
 };
 
@@ -57,6 +57,10 @@ impl ResponseSender for DatagramResponseSender {
     fn protocol(&self) -> Protocol {
         Protocol::Socket
     }
+
+    fn app_protocol(&self) -> crate::metrics::AppProtocol {
+        crate::metrics::AppProtocol::Shadowsocks
+    }
 }
 
 pub(in super::super) async fn serve_ss_udp_socket(
@@ -93,6 +97,7 @@ pub(in super::super) async fn serve_ss_udp_socket(
                     ctx.services.udp_server.metrics.record_udp_relay_drop(
                         Transport::Udp,
                         Protocol::Socket,
+                        AppProtocol::Shadowsocks,
                         "concurrency_limit",
                     );
                     warn!(%client_addr, "socket udp concurrent relay limit reached, dropping datagram");
@@ -218,6 +223,7 @@ where
         ctx.services.udp_server.metrics.record_udp_oversized_datagram_dropped(
             Arc::clone(&user_id),
             protocol,
+            AppProtocol::Shadowsocks,
             "client_to_target",
         );
         warn!(
@@ -231,6 +237,7 @@ where
         ctx.services.udp_server.metrics.record_udp_request(
             Arc::clone(&user_id),
             protocol,
+            AppProtocol::Shadowsocks,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -289,7 +296,7 @@ where
 
     entry
         .user_counters()
-        .udp_in(protocol)
+        .udp_in(AppProtocol::Shadowsocks, protocol)
         .increment(payload.len() as u64);
     debug!(
         user = packet.user.id(),
@@ -302,6 +309,7 @@ where
         ctx.services.udp_server.metrics.record_udp_request(
             Arc::clone(&user_id),
             protocol,
+            AppProtocol::Shadowsocks,
             "error",
             started_at.elapsed().as_secs_f64(),
         );
@@ -311,6 +319,7 @@ where
     ctx.services.udp_server.metrics.record_udp_request(
         user_id,
         protocol,
+        AppProtocol::Shadowsocks,
         "success",
         started_at.elapsed().as_secs_f64(),
     );

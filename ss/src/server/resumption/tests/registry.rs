@@ -8,7 +8,7 @@ use tokio::net::{TcpListener, TcpStream};
 use crate::{
     config::{CipherKind, Config, H3Alpn, UserEntry},
     crypto::UserKey,
-    metrics::{Metrics, Protocol},
+    metrics::{AppProtocol, Metrics, Protocol},
 };
 
 use super::super::parked::{Parked, ParkedTcp, TcpProtocolContext};
@@ -89,7 +89,11 @@ async fn make_parked_tcp(metrics: &Arc<Metrics>, owner: &str) -> Parked {
         owner: Arc::clone(&user_id),
         protocol_context: TcpProtocolContext::Ss(user),
         user_counters: metrics.user_counters(&user_id),
-        upstream_guard: metrics.open_tcp_upstream_connection(user_id, Protocol::Http2),
+        upstream_guard: metrics.open_tcp_upstream_connection(
+            user_id,
+            Protocol::Http2,
+            AppProtocol::Shadowsocks,
+        ),
     })
 }
 
