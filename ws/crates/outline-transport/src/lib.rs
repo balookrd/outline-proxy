@@ -165,6 +165,11 @@ pub(crate) async fn connect_tcp_socket(
 pub use config::{ServerAddr, TransportMode};
 pub use xhttp::XhttpSubmode;
 
+// Test-only TLS knob: cross-repo integration tests in `outline-ss-rust`
+// (which spin up an in-process self-signed server) call this before
+// dialing so XHTTP h2/h3 trust their cert. Production code never calls it.
+pub use tls::install_test_tls_root;
+
 // DNS cache: shared by every resolve path in the main binary.
 pub use dns::resolve_host_with_preference;
 pub use dns_cache::{DEFAULT_DNS_CACHE_TTL, DnsCache};

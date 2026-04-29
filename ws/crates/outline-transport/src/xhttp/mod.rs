@@ -176,6 +176,12 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 static XHTTP_H2_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
 
 fn h2_tls_config() -> Arc<rustls::ClientConfig> {
+    // The test override is consulted on every call (cheap RwLock
+    // read) so a cross-repo test fixture can pin self-signed roots
+    // even after a prior dial has populated the production cache.
+    if let Some(cfg) = crate::tls::xhttp_h2_test_override() {
+        return cfg;
+    }
     Arc::clone(XHTTP_H2_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h2"])))
 }
 
