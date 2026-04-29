@@ -13,7 +13,11 @@ use super::frames::send_end;
 use super::state::{
     MuxReaderHarvest, MuxRouteCtx, MuxServerCtx, MuxState, MuxSubConn, SubConnKind,
 };
-use super::super::super::{connect::connect_tcp_target, scratch::TcpRelayBuf};
+use super::super::super::{
+    connect::connect_tcp_target,
+    relay::{GREEDY_DRAIN_TARGET, try_read_now_into_slice},
+    scratch::TcpRelayBuf,
+};
 use crate::{
     metrics::{AppProtocol, Metrics, Protocol, Transport},
     protocol::{
@@ -135,8 +139,25 @@ where
                         break;
                     },
                 };
-                target_to_client.increment(read as u64);
-                frame_buf.reserve(read + 16);
+                // Greedy-drain: collapse multiple TCP-segment-sized
+                // upstream reads into a single mux frame so the per-frame
+                // mux header (`encode_frame`), metric record and mpsc push
+                // amortise across the same payload size as the SS path.
+                let mut total = read;
+                let cap = buf.len().min(GREEDY_DRAIN_TARGET);
+                while total < cap {
+                    match try_read_now_into_slice(&mut reader, &mut buf[total..cap]).await {
+                        Ok(Some(0)) => break,
+                        Ok(Some(n)) => total += n,
+                        Ok(None) => break,
+                        Err(error) => {
+                            debug!(session_id, error = %error, "mux tcp upstream drain error");
+                            break;
+                        },
+                    }
+                }
+                target_to_client.increment(total as u64);
+                frame_buf.reserve(total + 16);
                 encode_frame(
                     &mut frame_buf,
                     session_id,
@@ -144,7 +165,7 @@ where
                     OPTION_DATA,
                     None,
                     None,
-                    Some(&buf[..read]),
+                    Some(&buf[..total]),
                 );
                 let frame = frame_buf.split().freeze();
                 metrics.record_websocket_binary_frame(

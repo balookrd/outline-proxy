@@ -24,15 +24,18 @@ use crate::{
 
 use super::scratch::ScratchBuf;
 
-/// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`].
-/// Once the in-progress chunk reaches this size we stop polling for more
-/// already-buffered bytes and proceed to encrypt + send. Sized to one
-/// legacy-AEAD record (16 KiB - 1) so a single greedy-drained chunk fans
-/// out to one full-sized AEAD chunk per WS frame: tighter coalescing
+/// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`]
+/// and the matching VLESS-WS / VLESS-mux readers. Once the in-progress
+/// chunk reaches this size we stop polling for more already-buffered
+/// bytes and proceed to encrypt + send. Sized to one legacy-AEAD record
+/// (16 KiB - 1) so a single greedy-drained chunk fans out to one
+/// full-sized AEAD chunk per WS frame on the SS path: tighter coalescing
 /// would not produce larger frames anyway because `encrypt_legacy_chunks`
 /// re-splits at this boundary, and looser coalescing would risk pinning
-/// the relay reader long enough to starve the cancel arm.
-const GREEDY_DRAIN_TARGET: usize = 0x3fff;
+/// the relay reader long enough to starve the cancel arm. The VLESS
+/// paths reuse the same target so per-frame overhead (mux header,
+/// metric record, mpsc push) amortises across the same chunk size.
+pub(in crate::server) const GREEDY_DRAIN_TARGET: usize = 0x3fff;
 
 /// Outcome of [`relay_upstream_to_client`]. Distinguishes the natural
 /// upstream-EOF path from a caller-requested cancellation (used by
@@ -240,6 +243,35 @@ where
                 unsafe { buffer.set_len(prev_len + n) };
                 Poll::Ready(Ok(Some(n)))
             },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Ready(Ok(None)),
+        }
+    })
+    .await
+}
+
+/// Slice-flavoured counterpart of [`try_read_now`]. Used by the VLESS
+/// upstream readers, which share a fixed-length scratch slice across
+/// the loop instead of a `Vec` with grow-on-demand capacity. Caller
+/// passes the empty-tail half of the buffer (`&mut buf[total_read..]`)
+/// and adds the returned byte count to its running total.
+///
+/// Same return semantics as [`try_read_now`]: `Some(0)` is EOF,
+/// `Some(n)` for `n > 0` is bytes-buffered, `None` is `Poll::Pending`.
+pub(in crate::server) async fn try_read_now_into_slice<R>(
+    reader: &mut R,
+    buf: &mut [u8],
+) -> std::io::Result<Option<usize>>
+where
+    R: AsyncRead + Unpin,
+{
+    if buf.is_empty() {
+        return Ok(Some(0));
+    }
+    poll_fn(|cx| {
+        let mut read_buf = ReadBuf::new(buf);
+        match Pin::new(&mut *reader).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(Some(read_buf.filled().len()))),
             Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
             Poll::Pending => Poll::Ready(Ok(None)),
         }
