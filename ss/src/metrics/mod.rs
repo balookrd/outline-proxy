@@ -58,17 +58,28 @@ impl Metrics {
 
         with_local_recorder(&metrics.recorder, || {
             registry::register_descriptions();
+        });
+        metrics.touch_static_info();
+
+        metrics
+    }
+
+    /// Re-asserts the static `build_info` and `config_info` gauges so that
+    /// the recorder's idle-timeout cannot evict them. Called from `Metrics::new`
+    /// at startup and from `render_prometheus` on every scrape — both write
+    /// the same constant value, so the only effect of repeated calls is
+    /// keeping the time-series alive past `client_active_ttl_secs`.
+    pub(super) fn touch_static_info(&self) {
+        with_local_recorder(&self.recorder, || {
             gauge!("outline_ss_build_info", "version" => env!("CARGO_PKG_VERSION")).set(1.0);
             gauge!(
                 "outline_ss_config_info",
-                "method"   => metrics.method.clone(),
-                "tcp_tls"  => bool_label(metrics.tcp_tls_enabled),
-                "http3"    => bool_label(metrics.h3_enabled)
+                "method"   => self.method.clone(),
+                "tcp_tls"  => bool_label(self.tcp_tls_enabled),
+                "http3"    => bool_label(self.h3_enabled)
             )
             .set(1.0);
         });
-
-        metrics
     }
 
     // ── Session guards ─────────────────────────────────────────────────────────

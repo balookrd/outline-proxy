@@ -17,6 +17,7 @@ pub(super) fn render_prometheus(metrics: &Metrics) -> String {
         .map(|entry| (Arc::clone(entry.key()), entry.value().load(Ordering::Relaxed)))
         .collect();
 
+    metrics.touch_static_info();
     with_local_recorder(&metrics.recorder, || {
         counter!("outline_ss_metrics_scrapes_total").increment(1);
         gauge!("outline_ss_uptime_seconds").set(metrics.started_at.elapsed().as_secs_f64());
