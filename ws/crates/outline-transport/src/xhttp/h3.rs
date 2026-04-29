@@ -141,9 +141,19 @@ pub(super) async fn connect_xhttp_h3(
                 (issued, driver)
             },
             XhttpSubmode::StreamOne => {
+                // The h3 client closes the connection with `H3_NO_ERROR`
+                // when the last `SendRequest` drops, so we must keep one
+                // alive for the lifetime of the bidi stream — otherwise
+                // the request body's send_data calls race the close
+                // frame and the server sees `ApplicationClose` before
+                // any application bytes flow. `open_h3_stream_one`
+                // takes ownership of its own copy; the cloned guard
+                // moves into the driver task and is dropped only when
+                // the carrier shuts down for real.
                 let (issued, request_stream) =
-                    open_h3_stream_one(send_request, &target, resume_request).await?;
+                    open_h3_stream_one(send_request.clone(), &target, resume_request).await?;
                 let driver = tokio::spawn(driver_loop_h3_stream_one(
+                    send_request,
                     in_tx,
                     out_rx,
                     request_stream,
@@ -209,16 +219,22 @@ async fn h3_handshake(
     // outstanding RequestStream sees a closed-stream error, which
     // the GET / POST loops treat as terminal and shut the session
     // down via `XhttpSession::close()` indirectly through `in_tx`.
+    //
+    // The quinn endpoint moves into this task so it lives for the
+    // full duration of the h3 session: a local `let _guard = endpoint`
+    // in the outer function would drop it on `Ok` return, and on
+    // some carriers (notably stream-one, where the request body is
+    // long-lived) that drop closes the connection with
+    // `ApplicationClose(H3_NO_ERROR)` before any application data
+    // flows. Packet-up tolerates the early drop because each POST
+    // opens a fresh stream that completes synchronously, but
+    // stream-one's bidi stream needs the endpoint alive across the
+    // whole exchange.
     tokio::spawn(async move {
+        let _endpoint_guard = endpoint;
         let close = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
         debug!(?close, "xhttp/h3 driver closed");
     });
-    // Keep the endpoint alive for the duration of the session by
-    // anchoring it in a task-owning closure: when the driver task
-    // (above) exits, this side has nothing else holding the endpoint
-    // and it drops cleanly. The connection's `Drop` wakes the driver
-    // task to flush close frames.
-    let _endpoint_guard = endpoint;
     Ok(send_request)
 }
 
@@ -366,6 +382,11 @@ async fn open_h3_stream_one(
 }
 
 async fn driver_loop_h3_stream_one(
+    // Anchors the connection's `SendRequest` count at >0 so dropping
+    // the bidi stream below doesn't take the h3 connection down with
+    // it via `H3_NO_ERROR`. The handle is otherwise unused — stream-one
+    // never opens a second request.
+    _send_request_guard: SendRequest<h3_quinn::OpenStreams, Bytes>,
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
     stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
