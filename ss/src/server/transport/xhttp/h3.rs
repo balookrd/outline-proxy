@@ -25,7 +25,8 @@ use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
-    XhttpSession, generate_padding_header, is_valid_session_id, masquerade_response_headers,
+    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
+    masquerade_response_headers,
 };
 use super::padding::post_response_headers;
 
@@ -51,9 +52,10 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
     let method = request.method().clone();
     let headers = request.headers().clone();
     let version = request.version();
+    let submode = XhttpSubmode::parse(request.uri().query());
 
-    match method {
-        Method::GET => {
+    match (method, submode) {
+        (Method::GET, XhttpSubmode::PacketUp) => {
             xhttp_h3_get(
                 stream,
                 registry,
@@ -67,7 +69,7 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
             )
             .await
         },
-        Method::POST => {
+        (Method::POST, XhttpSubmode::PacketUp) => {
             xhttp_h3_post(
                 stream,
                 headers,
@@ -80,6 +82,23 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
                 peer_addr,
             )
             .await
+        },
+        (Method::POST, XhttpSubmode::StreamOne) => {
+            xhttp_h3_stream_one(
+                stream,
+                headers,
+                registry,
+                vless_server,
+                route,
+                base_path,
+                session_id,
+                version,
+                peer_addr,
+            )
+            .await
+        },
+        (Method::GET, XhttpSubmode::StreamOne) => {
+            finish_with_status(stream, StatusCode::BAD_REQUEST).await
         },
         _ => finish_with_status(stream, StatusCode::METHOD_NOT_ALLOWED).await,
     }
@@ -279,6 +298,172 @@ async fn xhttp_h3_post(
         .context("failed to send xhttp/h3 POST response")?;
     let _ = stream.finish().await;
     Ok(())
+}
+
+/// Stream-one carrier on h3: takes a single bidirectional QUIC
+/// stream, splits it into send/receive halves and runs uplink and
+/// downlink concurrently. Mirrors the h2/axum variant.
+#[allow(clippy::too_many_arguments)]
+async fn xhttp_h3_stream_one(
+    mut stream: RequestStream<BidiStream<Bytes>, Bytes>,
+    headers: HeaderMap,
+    registry: Arc<XhttpRegistry>,
+    vless_server: Arc<VlessWsServerCtx>,
+    route: Arc<VlessTransportRoute>,
+    base_path: Arc<str>,
+    session_id: String,
+    version: Version,
+    peer_addr: SocketAddr,
+) -> Result<()> {
+    let protocol = protocol_from_h3_version(version);
+    let resume_for_create =
+        ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
+    let (session, created) = registry.get_or_create(
+        &session_id,
+        vless_server.ws_data_channel_capacity,
+        resume_for_create.issued_session_id,
+    );
+    if session.is_closed() {
+        return finish_with_status(stream, StatusCode::GONE).await;
+    }
+    if created {
+        spawn_relay(
+            Arc::clone(&session),
+            Arc::clone(&vless_server),
+            Arc::clone(&registry),
+            VlessWsRouteCtx {
+                users: Arc::clone(&route.users),
+                protocol,
+                path: Arc::clone(&base_path),
+                candidate_users: Arc::clone(&route.candidate_users),
+            },
+            resume_for_create,
+        );
+    }
+    match session.try_attach_get() {
+        AttachOutcome::Ok => {},
+        AttachOutcome::Conflict => return finish_with_status(stream, StatusCode::CONFLICT).await,
+        AttachOutcome::Gone => return finish_with_status(stream, StatusCode::GONE).await,
+    }
+    debug!(
+        method = "POST", mode = "stream-one", version = ?version, base = %base_path,
+        %peer_addr, session = %session_id, created,
+        "xhttp/h3 stream-one duplex attached"
+    );
+
+    let mut response = http::Response::builder()
+        .status(StatusCode::OK)
+        .body(())
+        .context("failed to build xhttp/h3 stream-one response")?;
+    apply_response_masquerade(response.headers_mut());
+    if let Some(id) = session.issued_resume_id
+        && let Ok(value) = axum::http::HeaderValue::from_str(&id.to_hex())
+    {
+        response.headers_mut().insert(SESSION_RESPONSE_HEADER, value);
+    }
+    if let Err(error) = stream.send_response(response).await {
+        session.detach_get();
+        return Err(anyhow!(error)).context("failed to send xhttp/h3 stream-one response head");
+    }
+
+    // Split into send/recv halves so the uplink and downlink loops
+    // can borrow `stream` concurrently — h3 0.0.8 surfaces this as
+    // `RequestStream::split`.
+    let (send_half, mut recv_half) = stream.split();
+    // Uplink pump: drain request body chunks, ingest in order.
+    let session_for_uplink = Arc::clone(&session);
+    let uplink_task = tokio::spawn(async move {
+        loop {
+            match recv_half.recv_data().await {
+                Ok(Some(chunk)) => {
+                    let mut chunk = chunk;
+                    let mut acc = BytesMut::with_capacity(chunk.remaining());
+                    while chunk.has_remaining() {
+                        let segment = chunk.chunk();
+                        acc.extend_from_slice(segment);
+                        let consumed = segment.len();
+                        chunk.advance(consumed);
+                    }
+                    if !acc.is_empty()
+                        && session_for_uplink.ingest_uplink_inorder(acc.freeze()).is_err()
+                    {
+                        break;
+                    }
+                },
+                Ok(None) => break,
+                Err(error) => {
+                    debug!(?error, "xhttp/h3 stream-one recv_data failed");
+                    break;
+                },
+            }
+        }
+        session_for_uplink.close_uplink();
+    });
+
+    // Downlink pump: drain `session.downlink` and feed it to the
+    // QUIC send half. Reuses the same wait-then-recheck pattern as
+    // `drive_downlink_h3` so a chunk pushed between drain and notify
+    // is not lost.
+    let result = drive_downlink_send_only(send_half, Arc::clone(&session)).await;
+    session.detach_get();
+    let _ = uplink_task.await;
+    result
+}
+
+/// Variant of `drive_downlink_h3` operating on the *send* half of
+/// a `split()`-ed RequestStream so the uplink half can be borrowed
+/// concurrently. The chunk-loop is structurally identical; kept as
+/// a dedicated function to avoid generic-over-stream-half plumbing.
+async fn drive_downlink_send_only(
+    mut send: RequestStream<<BidiStream<Bytes> as h3::quic::BidiStream<Bytes>>::SendStream, Bytes>,
+    session: Arc<XhttpSession>,
+) -> Result<()> {
+    let mut buf: Vec<Bytes> = Vec::new();
+    loop {
+        buf.clear();
+        let closed = session.drain_downlink(&mut buf);
+        for chunk in buf.drain(..) {
+            if let Err(error) = send.send_data(chunk).await {
+                let error = anyhow::Error::from(error);
+                if is_normal_h3_shutdown(&error) {
+                    let _ = send.finish().await;
+                    return Ok(());
+                }
+                let _ = send.finish().await;
+                return Err(error.context("xhttp/h3 stream-one send_data failed"));
+            }
+        }
+        if closed {
+            let _ = send.finish().await;
+            return Ok(());
+        }
+        let notified = session.downlink_notify.notified();
+        let mut recheck: Vec<Bytes> = Vec::new();
+        let closed_recheck = session.drain_downlink(&mut recheck);
+        if !recheck.is_empty() {
+            for chunk in recheck {
+                if let Err(error) = send.send_data(chunk).await {
+                    let error = anyhow::Error::from(error);
+                    if is_normal_h3_shutdown(&error) {
+                        let _ = send.finish().await;
+                        return Ok(());
+                    }
+                    let _ = send.finish().await;
+                    return Err(error.context("xhttp/h3 stream-one send_data failed"));
+                }
+            }
+            if closed_recheck {
+                let _ = send.finish().await;
+                return Ok(());
+            }
+            continue;
+        }
+        if closed_recheck {
+            let _ = send.finish().await;
+            return Ok(());
+        }
+        notified.await;
+    }
 }
 
 async fn drive_downlink_h3(

@@ -52,6 +52,39 @@ pub(in crate::server) use padding::{generate_padding_header, masquerade_response
 /// HTTP request header carrying the in-order seq number for an
 /// uplink POST. Lower-cased to match hyper's normalised headers.
 pub(in crate::server) const SEQ_HEADER: &str = "x-xhttp-seq";
+
+/// Submode selector. Picked from the request URL's query string
+/// via `?mode=...`. Absent / unknown values fall back to packet-up,
+/// keeping pre-existing clients on the working path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::server) enum XhttpSubmode {
+    /// Default. Long-lived GET (downlink) + sequenced POSTs (uplink).
+    PacketUp,
+    /// Single bidirectional request: request body = uplink, response
+    /// body = downlink. Requires h2 or h3 (h1 cannot full-duplex).
+    StreamOne,
+}
+
+impl XhttpSubmode {
+    /// Parses `?mode=...` out of the URL query string. Accepts both
+    /// dashed (`stream-one`) and underscored (`stream_one`) spellings
+    /// because xray uses the dashed form on the wire while sing-box
+    /// configs sometimes carry the underscored one.
+    pub(in crate::server) fn parse(query: Option<&str>) -> Self {
+        let Some(q) = query else {
+            return Self::PacketUp;
+        };
+        for pair in q.split('&') {
+            if let Some(value) = pair.strip_prefix("mode=") {
+                return match value {
+                    "stream-one" | "stream_one" => Self::StreamOne,
+                    _ => Self::PacketUp,
+                };
+            }
+        }
+        Self::PacketUp
+    }
+}
 /// HTTP request/response header for a `Sec-WebSocket-Key`-style
 /// random padding. Server emits one with each response, server
 /// accepts and ignores any client-emitted value.
@@ -303,6 +336,33 @@ impl XhttpSession {
     pub(in crate::server) fn close_uplink(&self) {
         self.uplink.lock().closed = true;
         self.uplink_notify.notify_waiters();
+    }
+
+    /// Stream-one variant of [`Self::ingest_uplink`]: the carrier
+    /// is a single bidirectional request, so chunks are already in
+    /// order and never need the seq/reorder dance — push them
+    /// straight into the ready queue. Used by the server-side
+    /// stream-one handler (selected by `?mode=stream-one`).
+    pub(in crate::server) fn ingest_uplink_inorder(
+        &self,
+        data: Bytes,
+    ) -> Result<(), UplinkIngestError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut state = self.uplink.lock();
+        if state.closed {
+            return Err(UplinkIngestError::Closed);
+        }
+        state.ready.push_back(data);
+        // expected_seq stays 0 forever — packet-up reorder is not
+        // exercised on this carrier, but keeping the field around
+        // means a session that was created in stream-one mode does
+        // not reject seq=0 packets if anything ever bridges across.
+        drop(state);
+        self.uplink_notify.notify_waiters();
+        self.touch();
+        Ok(())
     }
 
     pub(in crate::server) fn pop_uplink_ready(&self) -> Option<Bytes> {
