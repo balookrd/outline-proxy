@@ -21,6 +21,7 @@ use arc_swap::ArcSwap;
 
 mod auth;
 mod connect;
+mod cross_repo_vless;
 mod cross_repo_xhttp;
 mod dns_cache;
 mod h3;
@@ -196,6 +197,57 @@ fn test_h3_client_config(cert_der: CertificateDer<'static>) -> Result<quinn::Cli
     let quic_config = quinn::crypto::rustls::QuicClientConfig::try_from(tls_config)
         .map_err(|error| anyhow::anyhow!(error))?;
     Ok(quinn::ClientConfig::new(Arc::new(quic_config)))
+}
+
+/// Lazy, process-wide self-signed cert reused by every cross-repo
+/// integration test that needs TLS. Returns DER-encoded cert + key
+/// bytes plus an owned `CertificateDer<'static>`. Building the
+/// `rustls::ServerConfig` is left to each test (h3 / h2 / vless /
+/// ss ALPN sets differ); the bytes themselves are shared so that
+/// `outline_transport::install_test_tls_root` — which is
+/// last-writer-wins — pins the same root for every dial in this
+/// process.
+pub(super) fn cross_repo_shared_test_cert()
+-> &'static (Vec<u8>, Vec<u8>, CertificateDer<'static>) {
+    static CELL: std::sync::OnceLock<(Vec<u8>, Vec<u8>, CertificateDer<'static>)> =
+        std::sync::OnceLock::new();
+    CELL.get_or_init(|| {
+        super::ensure_rustls_provider_installed();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .expect("rcgen self-signed cert");
+        let cert_bytes = cert.cert.der().to_vec();
+        let key_bytes = cert.signing_key.serialize_der();
+        let cert_der = CertificateDer::from(cert_bytes.clone());
+        (cert_bytes, key_bytes, cert_der)
+    })
+}
+
+/// Builds a fresh `rustls::ServerConfig` for the shared cross-repo
+/// cert with the given ALPN list. `H3WebSocketServer::bind` and
+/// the axum-over-TLS test path both consume the config by value,
+/// so each test rebuilds its own from the cached cert/key bytes.
+pub(super) fn cross_repo_test_server_tls_config(alpn: &[&[u8]]) -> rustls::ServerConfig {
+    let (cert_bytes, key_bytes, _) = cross_repo_shared_test_cert();
+    let cert_der = CertificateDer::from(cert_bytes.clone());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.clone()));
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key)
+        .expect("test server tls config");
+    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    cfg
+}
+
+/// Installs the shared self-signed root into the client's TLS
+/// override slot exactly once per process. Idempotent on its own,
+/// and `install_test_tls_root` is also idempotent if called
+/// repeatedly with the same cert.
+pub(super) fn cross_repo_install_test_tls_root_on_client() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let (_, _, cert_der) = cross_repo_shared_test_cert();
+        outline_transport::install_test_tls_root(cert_der.clone());
+    });
 }
 
 fn write_test_h2_tls_cert()
