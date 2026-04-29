@@ -269,6 +269,178 @@ async fn cross_repo_vless_tcp_ws_h2_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn cross_repo_vless_tcp_ws_h1_round_trip() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    // Same axum server the h2 test mounts — it accepts both h1 and
+    // h2 upgrade flavours since `build_app` doesn't gate on version.
+    let (listen_addr, server) = setup_vless_ws_server("/vless").await?;
+
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
+    let mut stream = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH1,
+        None,
+        false,
+        "cross-repo-vless-ws-h1",
+        None,
+    )
+    .await?;
+
+    let mut handshake = Vec::new();
+    handshake.push(VERSION);
+    handshake.extend_from_slice(&parse_uuid(TEST_UUID)?);
+    handshake.push(0);
+    handshake.push(crate::protocol::vless::COMMAND_TCP);
+    handshake.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    handshake.push(0x01);
+    handshake.extend_from_slice(&[127, 0, 0, 1]);
+    handshake.extend_from_slice(b"ping");
+    stream.send(Message::Binary(Bytes::from(handshake))).await?;
+
+    let received = read_binary_until_at_least(&mut stream, 6).await?;
+    assert_eq!(&received[..2], &[VERSION, 0x00]);
+    assert_eq!(&received[2..6], b"pong");
+
+    let upstream_bytes =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    drop(stream);
+    server.abort();
+    Ok(())
+}
+
+/// Spins up a real h3-only server (TLS+QUIC) with one VLESS-over-WS
+/// route mounted at `/vless`. The carrier is RFC 9220 — WebSocket
+/// over HTTP/3 CONNECT extended — driven by `serve_h3_server`'s
+/// existing dispatch.
+async fn setup_vless_ws_h3_server(
+    ws_path: &'static str,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    super::cross_repo_install_test_tls_root_on_client();
+    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let tls_config = super::cross_repo_test_server_tls_config(&[b"h3"]);
+    let h3_server =
+        H3WebSocketServer::<H3Transport>::bind(bind_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let listen_addr = h3_server.local_addr()?;
+
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from(ws_path),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+
+    let handle = tokio::spawn(async move {
+        serve_h3_server(
+            h3_server,
+            routes,
+            services,
+            auth,
+            Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+    Ok((listen_addr, handle))
+}
+
+#[tokio::test]
+async fn cross_repo_vless_tcp_ws_h3_round_trip() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server) = setup_vless_ws_h3_server("/vless").await?;
+
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // WS-h3 mandates `wss://` (the client bails on anything else
+    // before it even tries the QUIC dial).
+    let url = Url::parse(&format!("wss://localhost:{}/vless", listen_addr.port()))?;
+    let mut stream = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH3,
+        None,
+        false,
+        "cross-repo-vless-ws-h3",
+        None,
+    )
+    .await?;
+
+    let mut handshake = Vec::new();
+    handshake.push(VERSION);
+    handshake.extend_from_slice(&parse_uuid(TEST_UUID)?);
+    handshake.push(0);
+    handshake.push(crate::protocol::vless::COMMAND_TCP);
+    handshake.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    handshake.push(0x01);
+    handshake.extend_from_slice(&[127, 0, 0, 1]);
+    handshake.extend_from_slice(b"ping");
+    stream.send(Message::Binary(Bytes::from(handshake))).await?;
+
+    let received = read_binary_until_at_least(&mut stream, 6).await?;
+    assert_eq!(&received[..2], &[VERSION, 0x00]);
+    assert_eq!(&received[2..6], b"pong");
+
+    let upstream_bytes =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    drop(stream);
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn cross_repo_vless_tcp_raw_quic_round_trip() -> Result<()> {
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let upstream_addr = upstream.local_addr()?;
