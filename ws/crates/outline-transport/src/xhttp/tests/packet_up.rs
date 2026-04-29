@@ -78,8 +78,13 @@ async fn xhttp_client_round_trip_through_mock_server() -> Result<()> {
     let base_url: Url = format!("http://{listen_addr}/xh").parse()?;
     let cache = DnsCache::new(Duration::from_secs(30));
 
-    let mut stream = super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH2, None, false)
-        .await?;
+    let (mut stream, issued) =
+        super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH2, None, false, None).await?;
+    // The mock server does not echo `X-Outline-Session`, so the
+    // first dial should report no resume token. A follow-up test
+    // exercises the populated path against an actual outline-ss-rust
+    // server in the integration suite.
+    assert!(issued.is_none());
 
     // Push two uplink frames — the client should issue them as
     // POSTs with seq=0 and seq=1.

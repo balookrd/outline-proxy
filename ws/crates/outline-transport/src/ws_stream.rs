@@ -207,15 +207,14 @@ impl TransportStream {
         }
     }
 
-    /// Wraps an [`XhttpStream`] freshly returned from `connect_xhttp`.
-    /// XHTTP does not surface a server-issued session ID through the
-    /// upgrade response (it has no upgrade), so the slot starts empty;
-    /// the downgrade slot is filled by the dialer if a clamp / inline
-    /// fallback was applied.
-    pub(crate) fn new_xhttp(inner: XhttpStream) -> Self {
+    /// Wraps an [`XhttpStream`] freshly returned from `connect_xhttp`,
+    /// tagging it with the resume token the server returned in
+    /// `X-Outline-Session` (if any). The downgrade slot is filled
+    /// later via `with_downgraded_from`.
+    pub(crate) fn new_xhttp(inner: XhttpStream, issued_session_id: Option<SessionId>) -> Self {
         TransportStream::Xhttp {
             inner,
-            issued_session_id: None,
+            issued_session_id,
             downgraded_from: None,
         }
     }
