@@ -27,10 +27,12 @@ use url::Url;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
+use crate::resumption::SessionId;
 use crate::TransportOperation;
 
 use super::{
-    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, SEQ_HEADER, XhttpStream, XhttpTarget,
+    INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
+    RESUME_REQUEST_HEADER, SEQ_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpTarget,
     generate_session_id, io_ws_err,
 };
 
@@ -72,7 +74,8 @@ pub(super) async fn connect_xhttp_h3(
     url: &Url,
     fwmark: Option<u32>,
     ipv6_first: bool,
-) -> Result<XhttpStream> {
+    resume_request: Option<SessionId>,
+) -> Result<(XhttpStream, Option<SessionId>)> {
     let host = url
         .host_str()
         .ok_or_else(|| anyhow!("xhttp/h3 url missing host: {url}"))?
@@ -116,10 +119,30 @@ pub(super) async fn connect_xhttp_h3(
 
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
-        let driver = tokio::spawn(driver_loop(send_request, target, in_tx, out_rx));
 
-        debug!(%url, %session_id, mode = "xhttp_h3", "xhttp packet-up h3 session opened");
-        Ok::<_, anyhow::Error>(XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver)))
+        // Open the long-lived GET synchronously so the resume-id
+        // round-trip finishes before the dial returns; the body
+        // drain is then handed off to the driver task.
+        let (issued_session_id, request_stream) =
+            open_h3_get(send_request.clone(), &target, resume_request).await?;
+
+        let driver = tokio::spawn(driver_loop_h3(
+            send_request,
+            target,
+            in_tx,
+            out_rx,
+            request_stream,
+        ));
+
+        debug!(
+            %url, %session_id, mode = "xhttp_h3",
+            ?issued_session_id, ?resume_request,
+            "xhttp packet-up h3 session opened"
+        );
+        Ok::<_, anyhow::Error>((
+            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver)),
+            issued_session_id,
+        ))
     };
 
     timeout(FRESH_CONNECT_TIMEOUT, dial)
@@ -181,24 +204,68 @@ async fn h3_handshake(
     Ok(send_request)
 }
 
-async fn driver_loop(
+/// Synchronously opens the long-lived h3 GET, awaits response
+/// headers, and surfaces the optional `X-Outline-Session` token.
+/// The returned `RequestStream` is used by the driver task for body
+/// draining. Mirrors `open_h2_get` in the parent module.
+async fn open_h3_get(
+    mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
+    target: &XhttpTarget,
+    resume_request: Option<SessionId>,
+) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
+    let mut builder = Request::builder()
+        .method(Method::GET)
+        .uri(target.full_uri())
+        .version(Version::HTTP_3)
+        .header(RESUME_CAPABLE_HEADER, "1");
+    if let Some(id) = resume_request {
+        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    let req = builder
+        .body(())
+        .context("failed to build xhttp/h3 GET request")?;
+    let mut stream = send
+        .send_request(req)
+        .await
+        .map_err(|error| anyhow!(error))
+        .context("xhttp/h3 GET send_request failed")?;
+    stream
+        .finish()
+        .await
+        .map_err(|error| anyhow!(error))
+        .context("xhttp/h3 GET stream finish failed")?;
+    let resp = stream
+        .recv_response()
+        .await
+        .map_err(|error| anyhow!(error))
+        .context("xhttp/h3 GET recv_response failed")?;
+    if !resp.status().is_success() {
+        bail!("xhttp/h3 GET returned {}", resp.status());
+    }
+    let issued = resp
+        .headers()
+        .get(SESSION_RESPONSE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(SessionId::parse_hex);
+    Ok((issued, stream))
+}
+
+async fn driver_loop_h3(
     send_request: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: Arc<XhttpTarget>,
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
+    body_stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
 ) {
-    // GET reader sub-task: opens the long-lived downlink and pushes
-    // every chunk it receives onto the inbound channel. Mirrors the
-    // h2 path so `XhttpStream::poll_next` is carrier-agnostic.
-    let get_send = send_request.clone();
-    let get_target = Arc::clone(&target);
-    let get_in_tx = in_tx.clone();
-    let _get_task = AbortOnDrop::new(tokio::spawn(async move {
-        if let Err(error) = drive_get(get_send, get_target, &get_in_tx).await {
+    // GET drain sub-task. Headers were already received by
+    // `open_h3_get`; this only pulls body chunks.
+    let drain_in_tx = in_tx.clone();
+    let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
+        if let Err(error) = drain_h3_body(body_stream, &drain_in_tx).await {
             debug!(?error, "xhttp/h3 GET reader exited");
-            let _ = get_in_tx.send(Err(io_ws_err("xhttp/h3 downlink ended"))).await;
+            let _ = drain_in_tx.send(Err(io_ws_err("xhttp/h3 downlink ended"))).await;
         } else {
-            let _ = get_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
         }
     }));
 
@@ -237,37 +304,10 @@ async fn driver_loop(
     debug!("xhttp/h3 driver exiting");
 }
 
-async fn drive_get(
-    mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
-    target: Arc<XhttpTarget>,
+async fn drain_h3_body(
+    mut stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
     in_tx: &mpsc::Sender<Result<Message, WsError>>,
 ) -> Result<()> {
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(target.full_uri())
-        .version(Version::HTTP_3)
-        .body(())
-        .context("failed to build xhttp/h3 GET request")?;
-    let mut stream = send
-        .send_request(req)
-        .await
-        .map_err(|error| anyhow!(error))
-        .context("xhttp/h3 GET send_request failed")?;
-    // GET has no body; close the request side so the server can
-    // start streaming the response immediately.
-    stream
-        .finish()
-        .await
-        .map_err(|error| anyhow!(error))
-        .context("xhttp/h3 GET stream finish failed")?;
-    let resp = stream
-        .recv_response()
-        .await
-        .map_err(|error| anyhow!(error))
-        .context("xhttp/h3 GET recv_response failed")?;
-    if !resp.status().is_success() {
-        bail!("xhttp/h3 GET returned {}", resp.status());
-    }
     loop {
         let chunk = match stream.recv_data().await {
             Ok(Some(chunk)) => chunk,

@@ -56,6 +56,7 @@ use crate::config::TransportMode;
 use crate::dns::resolve_host_with_preference;
 use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
+use crate::resumption::SessionId;
 use crate::{TransportOperation, connect_tcp_socket};
 
 #[cfg(feature = "h3")]
@@ -70,6 +71,20 @@ mod tests_packet_up;
 /// `pub(super)` so the h3 sibling module can reuse the same wire
 /// constant without a copy that could drift out of sync.
 pub(super) const SEQ_HEADER: &str = "x-xhttp-seq";
+
+/// Cross-transport session resumption: client → server. Mirrors the
+/// header used by the WS-upgrade path so a single token works for
+/// any resumption-aware client/server pair.
+pub(super) const RESUME_REQUEST_HEADER: &str = "x-outline-resume";
+
+/// Cross-transport session resumption: client capability flag. The
+/// server only mints a fresh token when this is `1` (or when
+/// `RESUME_REQUEST_HEADER` is present), so non-resumption clients
+/// pay nothing.
+pub(super) const RESUME_CAPABLE_HEADER: &str = "x-outline-resume-capable";
+
+/// Cross-transport session resumption: server → client.
+pub(super) const SESSION_RESPONSE_HEADER: &str = "x-outline-session";
 
 /// Bounds for the random session id used in `<base>/<id>`. The id is
 /// opaque to the server; we just need it to be wide enough to avoid
@@ -214,7 +229,8 @@ pub(crate) async fn connect_xhttp(
     mode: TransportMode,
     fwmark: Option<u32>,
     ipv6_first: bool,
-) -> Result<XhttpStream> {
+    resume_request: Option<SessionId>,
+) -> Result<(XhttpStream, Option<SessionId>)> {
     match mode {
         TransportMode::XhttpH2 => {},
         #[cfg(feature = "h3")]
@@ -222,7 +238,7 @@ pub(crate) async fn connect_xhttp(
             // h3 carrier lives in the sibling module so the
             // quinn / h3 dependencies stay behind the `h3`
             // feature gate. Returns a fully-wired `XhttpStream`.
-            return h3::connect_xhttp_h3(cache, url, fwmark, ipv6_first).await;
+            return h3::connect_xhttp_h3(cache, url, fwmark, ipv6_first, resume_request).await;
         },
         #[cfg(not(feature = "h3"))]
         TransportMode::XhttpH3 => {
@@ -269,21 +285,83 @@ pub(crate) async fn connect_xhttp(
             session_id: session_id.clone(),
         });
 
-        let driver = tokio::spawn(driver_loop(send_request, target, in_tx, out_rx));
+        // Open the GET synchronously so the resume-id round-trip
+        // (X-Outline-Resume on the way out, X-Outline-Session on the
+        // way back) completes before we hand the stream to the
+        // caller. The body drain is then spawned as a sub-task.
+        let (issued_session_id, body) =
+            open_h2_get(send_request.clone(), &target, resume_request).await?;
 
-        debug!(%url, %session_id, mode = "xhttp_h2", "xhttp packet-up session opened");
-        Ok::<_, anyhow::Error>(XhttpStream {
-            incoming: in_rx,
-            outgoing: out_tx,
-            closed: false,
-            _driver: AbortOnDrop::new(driver),
-        })
+        let driver = tokio::spawn(driver_loop_h2(
+            send_request,
+            target,
+            in_tx,
+            out_rx,
+            body,
+        ));
+
+        debug!(
+            %url, %session_id, mode = "xhttp_h2",
+            ?issued_session_id, ?resume_request,
+            "xhttp packet-up session opened"
+        );
+        Ok::<_, anyhow::Error>((
+            XhttpStream {
+                incoming: in_rx,
+                outgoing: out_tx,
+                closed: false,
+                _driver: AbortOnDrop::new(driver),
+            },
+            issued_session_id,
+        ))
     };
 
     timeout(FRESH_CONNECT_TIMEOUT, dial)
         .await
         .with_context(|| format!("xhttp dial to {url} timed out"))?
         .with_context(|| format!("xhttp dial to {url} failed"))
+}
+
+/// Issues the long-lived GET, awaits response headers, and pulls
+/// out the optional `X-Outline-Session` resume token. The body is
+/// returned for the caller to drain in its own sub-task. Surfacing
+/// the issued id synchronously (rather than via a side channel) is
+/// what lets the dial path stash the token in the resume cache
+/// before any data flows.
+async fn open_h2_get(
+    mut send: http2::SendRequest<Full<Bytes>>,
+    target: &XhttpTarget,
+    resume_request: Option<SessionId>,
+) -> Result<(Option<SessionId>, hyper::body::Incoming)> {
+    let mut builder = Request::builder()
+        .method(Method::GET)
+        .uri(target.full_uri())
+        .version(Version::HTTP_2)
+        .header(http::header::HOST, target.authority.as_str())
+        .header(RESUME_CAPABLE_HEADER, "1");
+    if let Some(id) = resume_request {
+        builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
+    }
+    let req = builder
+        .body(Full::<Bytes>::new(Bytes::new()))
+        .context("failed to build xhttp GET request")?;
+    send.ready().await.context("xhttp h2 not ready for GET")?;
+    let resp = send
+        .send_request(req)
+        .await
+        .context("xhttp GET send_request failed")?;
+    if !resp.status().is_success() {
+        bail!("xhttp GET returned {}", resp.status());
+    }
+    let issued = parse_session_response(resp.headers());
+    Ok((issued, resp.into_body()))
+}
+
+fn parse_session_response(headers: &http::HeaderMap) -> Option<SessionId> {
+    headers
+        .get(SESSION_RESPONSE_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(SessionId::parse_hex)
 }
 
 fn default_port_for(use_tls: bool) -> u16 {
@@ -404,27 +482,27 @@ impl AsyncWrite for BoxedIo {
     }
 }
 
-async fn driver_loop(
+async fn driver_loop_h2(
     send_request: http2::SendRequest<Full<Bytes>>,
     target: Arc<XhttpTarget>,
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
+    body: hyper::body::Incoming,
 ) {
-    // Spawn the GET reader as a sub-task. It owns its own clone of
-    // the SendRequest so it can drive its long-lived response body
-    // independently of the POST loop.
-    let get_send = send_request.clone();
-    let get_target = Arc::clone(&target);
-    let get_in_tx = in_tx.clone();
-    let _get_task = AbortOnDrop::new(tokio::spawn(async move {
-        if let Err(error) = drive_get(get_send, get_target, &get_in_tx).await {
+    // GET drain sub-task. The GET request and response headers were
+    // already exchanged synchronously in `connect_xhttp`; this task
+    // just pulls body chunks until EOF and forwards them to the
+    // inbound channel.
+    let drain_in_tx = in_tx.clone();
+    let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
+        if let Err(error) = drain_h2_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp GET reader exited");
-            let _ = get_in_tx.send(Err(io_ws_err("xhttp downlink ended"))).await;
+            let _ = drain_in_tx.send(Err(io_ws_err("xhttp downlink ended"))).await;
         } else {
             // Clean EOF on the response body — surface a Close so
             // upstream sees a recognisable shutdown rather than a
             // silent stop.
-            let _ = get_in_tx.send(Ok(Message::Close(None))).await;
+            let _ = drain_in_tx.send(Ok(Message::Close(None))).await;
         }
     }));
 
@@ -476,36 +554,18 @@ async fn driver_loop(
     debug!("xhttp driver exiting");
 }
 
-async fn drive_get(
-    mut send: http2::SendRequest<Full<Bytes>>,
-    target: Arc<XhttpTarget>,
+async fn drain_h2_body(
+    mut body: hyper::body::Incoming,
     in_tx: &mpsc::Sender<Result<Message, WsError>>,
 ) -> Result<()> {
-    let req = Request::builder()
-        .method(Method::GET)
-        .uri(target.full_uri())
-        .version(Version::HTTP_2)
-        .header(http::header::HOST, target.authority.as_str())
-        .body(Full::<Bytes>::new(Bytes::new()))
-        .context("failed to build xhttp GET request")?;
-    send.ready().await.context("xhttp h2 not ready for GET")?;
-    let resp = send
-        .send_request(req)
-        .await
-        .context("xhttp GET send_request failed")?;
-    if !resp.status().is_success() {
-        bail!("xhttp GET returned {}", resp.status());
-    }
-    let mut body = resp.into_body();
     while let Some(frame) = body.frame().await {
         let frame = frame.context("xhttp GET body frame error")?;
         if let Ok(data) = frame.into_data()
             && !data.is_empty()
+            && in_tx.send(Ok(Message::Binary(data))).await.is_err()
         {
-            if in_tx.send(Ok(Message::Binary(data))).await.is_err() {
-                // Consumer gave up — exit cleanly.
-                return Ok(());
-            }
+            // Consumer gave up — exit cleanly.
+            return Ok(());
         }
     }
     Ok(())
