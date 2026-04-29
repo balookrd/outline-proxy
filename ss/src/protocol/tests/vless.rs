@@ -55,7 +55,7 @@ fn parse_vless_ipv6_tcp_request() {
 
 #[test]
 fn reject_unknown_uuid() {
-    let known = VlessUser::new(UUID.to_owned(), None).unwrap();
+    let known = VlessUser::new(UUID.to_owned(), std::sync::Arc::from("test"), None).unwrap();
     let unknown = parse_uuid("650e8400-e29b-41d4-a716-446655440000").unwrap();
     assert!(find_user(&[known], &unknown).is_none());
 }

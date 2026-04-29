@@ -199,7 +199,7 @@ async fn spawn_raw_quic_vless_resumption_server() -> Result<(
         Arc::clone(&metrics),
     ));
 
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let raw_vless_users: Arc<[VlessUser]> = Arc::from(vec![vless_user.clone()].into_boxed_slice());
     let raw_vless_candidates: Arc<[Arc<str>]> =
         Arc::from(vec![vless_user.label_arc()].into_boxed_slice());

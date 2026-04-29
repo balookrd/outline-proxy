@@ -39,7 +39,7 @@ async fn spawn_vless_resumption_server() -> Result<(ResumptionTestServer, VlessU
     let dummy_listen: SocketAddr = (Ipv4Addr::LOCALHOST, 0).into();
     let mut config = sample_config(dummy_listen);
     config.session_resumption.enabled = true;
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let vless_route = VlessUserRoute {
         user: vless_user.clone(),
         ws_path: Arc::from("/vless"),

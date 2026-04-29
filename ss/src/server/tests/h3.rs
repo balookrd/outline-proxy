@@ -126,7 +126,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -399,7 +399,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -531,7 +531,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),
@@ -657,7 +657,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
 
     let config = sample_config(addr);
     let metrics = Metrics::new(&config);
-    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), None)?;
+    let vless_user = VlessUser::new("550e8400-e29b-41d4-a716-446655440000".into(), std::sync::Arc::from("test"), None)?;
     let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
         user: vless_user,
         ws_path: Arc::from("/vless"),

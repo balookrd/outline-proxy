@@ -346,8 +346,9 @@ impl UserManager {
             let path = user
                 .effective_ws_path_vless(self.default_ws_path_vless.as_deref())
                 .ok_or_else(|| anyhow!("vless user {} missing ws_path_vless", user.id))?;
-            let vless_user = VlessUser::new(vless_id.clone(), user.fwmark)
-                .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
+            let vless_user =
+                VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark)
+                    .with_context(|| format!("failed to parse vless_id for user {}", user.id))?;
             vless_routes.push(VlessUserRoute {
                 user: vless_user,
                 ws_path: Arc::from(path),
