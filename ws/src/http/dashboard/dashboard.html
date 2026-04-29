@@ -353,9 +353,9 @@ function protocolLabel(transport) {
 }
 function transportLabel(mode) {
   const v = String(mode || "").toLowerCase();
-  if (v === "ws_h1") return "WS/H1";
-  if (v === "ws_h2") return "WS/H2";
-  if (v === "ws_h3") return "WS/H3";
+  if (v === "ws_h1"||v === "http1") return "WS/H1";
+  if (v === "ws_h2"||v === "h2") return "WS/H2";
+  if (v === "ws_h3"||v === "h3") return "WS/H3";
   if (v === "quic") return "QUIC";
   if (v === "xhttp_h2") return "WS/H2";
   if (v === "xhttp_h3") return "WS/H3";
