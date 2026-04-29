@@ -21,6 +21,7 @@ use arc_swap::ArcSwap;
 
 mod auth;
 mod connect;
+mod cross_repo_ss;
 mod cross_repo_vless;
 mod cross_repo_xhttp;
 mod dns_cache;
