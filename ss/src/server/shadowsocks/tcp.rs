@@ -11,7 +11,7 @@ use tracing::{debug, warn};
 
 use crate::{
     crypto::{AeadStreamEncryptor, UserKey},
-    metrics::Protocol,
+    metrics::{AppProtocol, Protocol},
 };
 
 use super::super::{
@@ -115,6 +115,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
+                AppProtocol::Shadowsocks,
                 "success",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -124,6 +125,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             ctx.services.tcp_server.metrics.record_tcp_connect(
                 handshake.user.id_arc(),
                 Protocol::Socket,
+                AppProtocol::Shadowsocks,
                 "error",
                 connect_started.elapsed().as_secs_f64(),
             );
@@ -171,21 +173,23 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
             &mut encryptor,
             relay_metrics,
             Protocol::Socket,
+            AppProtocol::Shadowsocks,
             relay_user_id,
             None,
         )
         .await
         .map(|_| ())
     });
-    ctx.services
-        .tcp_server
-        .metrics
-        .record_tcp_authenticated_session(Arc::clone(&user_id), Protocol::Socket);
-    let upstream_guard = ctx
-        .services
-        .tcp_server
-        .metrics
-        .open_tcp_upstream_connection(Arc::clone(&user_id), Protocol::Socket);
+    ctx.services.tcp_server.metrics.record_tcp_authenticated_session(
+        Arc::clone(&user_id),
+        Protocol::Socket,
+        AppProtocol::Shadowsocks,
+    );
+    let upstream_guard = ctx.services.tcp_server.metrics.open_tcp_upstream_connection(
+        Arc::clone(&user_id),
+        Protocol::Socket,
+        AppProtocol::Shadowsocks,
+    );
 
     let relay_result = super::super::relay::relay_client_to_upstream(
         client_reader,
@@ -194,6 +198,7 @@ async fn handle_ss_tcp_connection(socket: TcpStream, ctx: &SsTcpCtx) -> Result<(
         upstream_writer,
         ctx.services.tcp_server.metrics.clone(),
         Protocol::Socket,
+        AppProtocol::Shadowsocks,
         user_id,
     )
     .await;

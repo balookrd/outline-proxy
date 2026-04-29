@@ -66,6 +66,7 @@ pub struct TcpUpstreamGuard {
     pub(super) metrics: Arc<Metrics>,
     pub(super) user_id: Arc<str>,
     pub(super) protocol: Protocol,
+    pub(super) app_protocol: AppProtocol,
     pub(super) finished: bool,
 }
 
@@ -80,11 +81,13 @@ impl TcpUpstreamGuard {
         self.finished = true;
         let user = Arc::clone(&self.user_id);
         let protocol = self.protocol;
+        let app_protocol = self.app_protocol;
         with_local_recorder(&self.metrics.recorder, || {
             gauge!(
                 "outline_ss_active_tcp_upstream_connections",
-                "user"     => user,
-                "protocol" => protocol.as_str()
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .decrement(1.0);
         });

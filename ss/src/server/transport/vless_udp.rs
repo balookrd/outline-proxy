@@ -10,7 +10,7 @@ use tracing::{info, warn};
 
 use crate::{
     fwmark::apply_fwmark_if_needed,
-    metrics::{Metrics, PerUserCounters, Protocol},
+    metrics::{AppProtocol, Metrics, PerUserCounters, Protocol},
     outbound::OutboundIpv6,
     protocol::vless::{self, VlessUser},
 };
@@ -287,7 +287,9 @@ pub(super) async fn forward_vless_udp_client_frames(
         let _ = buffer.split_to(2);
         let payload = buffer.split_to(len).freeze();
         if let Some(counters) = user_counters {
-            counters.udp_in(protocol).increment(payload.len() as u64);
+            counters
+                .udp_in(AppProtocol::Vless, protocol)
+                .increment(payload.len() as u64);
         }
         match socket.send(&payload).await {
             Ok(sent) if sent == payload.len() => {},
@@ -320,7 +322,7 @@ where
     Msg: Send + 'static,
 {
     let user_counters = metrics.user_counters(&user_id);
-    let target_to_client = user_counters.udp_out(protocol);
+    let target_to_client = user_counters.udp_out(AppProtocol::Vless, protocol);
     let mut buffer = UdpRecvBuf::take();
     loop {
         let cancelled = async {

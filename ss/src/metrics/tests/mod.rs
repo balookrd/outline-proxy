@@ -63,10 +63,30 @@ fn renders_prometheus_metrics() {
     );
     metrics.record_pong_deadline_disconnect(Transport::Tcp, AppProtocol::Shadowsocks);
     metrics.observe_ws_data_channel_fill(Transport::Tcp, AppProtocol::Shadowsocks, 7);
-    metrics.record_tcp_authenticated_session("default", Protocol::Http2);
-    metrics.record_tcp_connect("default", Protocol::Http2, "success", 0.015);
-    metrics.record_udp_relay_drop(Transport::Udp, Protocol::Http2, "concurrency_limit");
-    metrics.record_client_session("default", Protocol::Http2, Transport::Udp);
+    metrics.record_tcp_authenticated_session(
+        "default",
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+    );
+    metrics.record_tcp_connect(
+        "default",
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "success",
+        0.015,
+    );
+    metrics.record_udp_relay_drop(
+        Transport::Udp,
+        Protocol::Http2,
+        AppProtocol::Shadowsocks,
+        "concurrency_limit",
+    );
+    metrics.record_client_session(
+        "default",
+        Protocol::Http2,
+        Transport::Udp,
+        AppProtocol::Shadowsocks,
+    );
     session.finish(DisconnectReason::Normal);
 
     let rendered = metrics.render_prometheus();
@@ -84,7 +104,7 @@ fn renders_prometheus_metrics() {
     assert!(rendered.contains("outline_ss_client_up"));
     assert!(rendered.contains("outline_ss_udp_relay_drops_total"));
     assert!(rendered.contains(
-        "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",reason=\"concurrency_limit\"} 1"
+        "outline_ss_udp_relay_drops_total{transport=\"udp\",protocol=\"http2\",app_protocol=\"shadowsocks\",reason=\"concurrency_limit\"} 1"
     ));
     #[cfg(target_os = "linux")]
     assert!(rendered.contains("outline_ss_process_resident_memory_bytes"));
@@ -113,20 +133,25 @@ fn user_counters_cache_returns_same_handles() {
 fn user_counters_increments_visible_in_render() {
     let metrics = Metrics::new(&test_config());
     let user: Arc<str> = Arc::from("alice");
-    metrics.record_client_session(Arc::clone(&user), Protocol::Http3, Transport::Tcp);
+    metrics.record_client_session(
+        Arc::clone(&user),
+        Protocol::Http3,
+        Transport::Tcp,
+        AppProtocol::Vless,
+    );
     let counters = metrics.user_counters(&user);
-    counters.tcp_in(Protocol::Http3).increment(100);
-    counters.tcp_out(Protocol::Http3).increment(250);
-    counters.udp_out(Protocol::Http3).increment(64);
+    counters.tcp_in(AppProtocol::Vless, Protocol::Http3).increment(100);
+    counters.tcp_out(AppProtocol::Vless, Protocol::Http3).increment(250);
+    counters.udp_out(AppProtocol::Shadowsocks, Protocol::Http3).increment(64);
 
     let rendered = metrics.render_prometheus();
     assert!(rendered.contains(
-        "outline_ss_tcp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"client_to_target\"} 100"
+        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"client_to_target\"} 100"
     ));
     assert!(rendered.contains(
-        "outline_ss_tcp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"target_to_client\"} 250"
+        "outline_ss_tcp_payload_bytes_total{user=\"alice\",app_protocol=\"vless\",protocol=\"http3\",direction=\"target_to_client\"} 250"
     ));
     assert!(rendered.contains(
-        "outline_ss_udp_payload_bytes_total{user=\"alice\",protocol=\"http3\",direction=\"target_to_client\"} 64"
+        "outline_ss_udp_payload_bytes_total{user=\"alice\",app_protocol=\"shadowsocks\",protocol=\"http3\",direction=\"target_to_client\"} 64"
     ));
 }

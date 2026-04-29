@@ -15,7 +15,7 @@ use crate::server::abort::AbortOnDrop;
 use crate::{
     clock,
     crypto::UdpCipherMode,
-    metrics::{PerUserCounters, Protocol},
+    metrics::{AppProtocol, PerUserCounters, Protocol},
 };
 
 /// Lookup key for a NAT entry.  Uniquely identifies the (user, routing mark,
@@ -38,6 +38,10 @@ pub(crate) trait ResponseSender: Send + Sync {
     /// Returns `false` when the receiving channel has been closed (session gone).
     fn send_bytes(&self, data: Bytes) -> BoxFuture<'_, bool>;
     fn protocol(&self) -> Protocol;
+    /// Application-layer protocol carried by this responder. Lets the
+    /// shared NAT reader tag per-datagram metrics by `app_protocol`
+    /// without needing to know which transport module created the entry.
+    fn app_protocol(&self) -> AppProtocol;
 }
 
 /// A cloneable handle to the outbound path of the currently active client
@@ -54,6 +58,10 @@ impl UdpResponseSender {
 
     pub(crate) fn protocol(&self) -> Protocol {
         self.inner.protocol()
+    }
+
+    pub(crate) fn app_protocol(&self) -> AppProtocol {
+        self.inner.app_protocol()
     }
 
     pub(crate) async fn send_bytes(&self, data: Bytes) -> bool {

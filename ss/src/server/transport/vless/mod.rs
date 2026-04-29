@@ -314,7 +314,9 @@ where
     match &mut state.upstream {
         UpstreamSession::Tcp(tcp) => {
             if let Some(counters) = counters {
-                counters.tcp_in(route.protocol).increment(data.len() as u64);
+                counters
+                    .tcp_in(AppProtocol::Vless, route.protocol)
+                    .increment(data.len() as u64);
             }
             tcp.writer
                 .write_all(&data)

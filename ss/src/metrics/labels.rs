@@ -24,10 +24,26 @@ pub enum AppProtocol {
 }
 
 impl AppProtocol {
+    pub const VARIANTS_COUNT: usize = 2;
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Shadowsocks => "shadowsocks",
             Self::Vless => "vless",
+        }
+    }
+
+    pub const fn as_index(self) -> usize {
+        match self {
+            Self::Shadowsocks => 0,
+            Self::Vless => 1,
+        }
+    }
+
+    pub const fn from_index(index: usize) -> Self {
+        match index {
+            0 => Self::Shadowsocks,
+            _ => Self::Vless,
         }
     }
 }

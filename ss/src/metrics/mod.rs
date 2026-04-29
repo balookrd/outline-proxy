@@ -120,13 +120,15 @@ impl Metrics {
         self: &Arc<Self>,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        app_protocol: AppProtocol,
     ) -> TcpUpstreamGuard {
         let user_id: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             gauge!(
                 "outline_ss_active_tcp_upstream_connections",
-                "user"     => Arc::clone(&user_id),
-                "protocol" => protocol.as_str()
+                "user"         => Arc::clone(&user_id),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(1.0);
         });
@@ -134,6 +136,7 @@ impl Metrics {
             metrics: self.clone(),
             user_id,
             protocol,
+            app_protocol,
             finished: false,
         }
     }
@@ -230,14 +233,20 @@ impl Metrics {
         });
     }
 
-    pub fn record_tcp_authenticated_session(&self, user: impl Into<Arc<str>>, protocol: Protocol) {
+    pub fn record_tcp_authenticated_session(
+        &self,
+        user: impl Into<Arc<str>>,
+        protocol: Protocol,
+        app_protocol: AppProtocol,
+    ) {
         let user: Arc<str> = user.into();
-        self.record_client_session(Arc::clone(&user), protocol, Transport::Tcp);
+        self.record_client_session(Arc::clone(&user), protocol, Transport::Tcp, app_protocol);
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_authenticated_sessions_total",
-                "user"     => user,
-                "protocol" => protocol.as_str()
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(1);
         });
@@ -248,14 +257,16 @@ impl Metrics {
         user: impl Into<Arc<str>>,
         protocol: Protocol,
         transport: Transport,
+        app_protocol: AppProtocol,
     ) {
         let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_client_sessions_total",
-                "user"      => Arc::clone(&user),
-                "protocol"  => protocol.as_str(),
-                "transport" => transport.as_str()
+                "user"         => Arc::clone(&user),
+                "protocol"     => protocol.as_str(),
+                "transport"    => transport.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(1);
         });
@@ -282,6 +293,7 @@ impl Metrics {
         &self,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         result: &'static str,
         duration_seconds: f64,
     ) {
@@ -289,16 +301,18 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_tcp_upstream_connects_total",
-                "user"     => Arc::clone(&user),
-                "protocol" => protocol.as_str(),
-                "result"   => result
+                "user"         => Arc::clone(&user),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "result"       => result
             )
             .increment(1);
             histogram!(
                 "outline_ss_tcp_upstream_connect_duration_seconds",
-                "user"     => user,
-                "protocol" => protocol.as_str(),
-                "result"   => result
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "result"       => result
             )
             .record(duration_seconds);
         });
@@ -323,6 +337,7 @@ impl Metrics {
         &self,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         result: &'static str,
         duration_seconds: f64,
     ) {
@@ -330,16 +345,18 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_requests_total",
-                "user"     => Arc::clone(&user),
-                "protocol" => protocol.as_str(),
-                "result"   => result
+                "user"         => Arc::clone(&user),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "result"       => result
             )
             .increment(1);
             histogram!(
                 "outline_ss_udp_relay_duration_seconds",
-                "user"     => user,
-                "protocol" => protocol.as_str(),
-                "result"   => result
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "result"       => result
             )
             .record(duration_seconds);
         });
@@ -349,14 +366,16 @@ impl Metrics {
         &self,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         count: usize,
     ) {
         let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_response_datagrams_total",
-                "user"     => user,
-                "protocol" => protocol.as_str()
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str()
             )
             .increment(count as u64);
         });
@@ -366,14 +385,16 @@ impl Metrics {
         &self,
         transport: Transport,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         reason: &'static str,
     ) {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_relay_drops_total",
-                "transport" => transport.as_str(),
-                "protocol"  => protocol.as_str(),
-                "reason"    => reason
+                "transport"    => transport.as_str(),
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "reason"       => reason
             )
             .increment(1);
         });
@@ -383,15 +404,17 @@ impl Metrics {
         &self,
         user: impl Into<Arc<str>>,
         protocol: Protocol,
+        app_protocol: AppProtocol,
         direction: &'static str,
     ) {
         let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_oversized_datagrams_dropped_total",
-                "user"      => user,
-                "protocol"  => protocol.as_str(),
-                "direction" => direction
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => app_protocol.as_str(),
+                "direction"    => direction
             )
             .increment(1);
         });
@@ -411,13 +434,18 @@ impl Metrics {
         });
     }
 
+    /// SS-2022 anti-replay drop. Replay protection is Shadowsocks-only,
+    /// so the metric is always tagged `app_protocol="shadowsocks"`. The
+    /// label is added anyway for query symmetry with the rest of the
+    /// payload-level metrics.
     pub fn record_udp_replay_dropped(&self, user: impl Into<Arc<str>>, protocol: Protocol) {
         let user: Arc<str> = user.into();
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_replay_dropped_total",
-                "user"     => user,
-                "protocol" => protocol.as_str()
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => AppProtocol::Shadowsocks.as_str()
             )
             .increment(1);
         });
@@ -432,8 +460,9 @@ impl Metrics {
         with_local_recorder(&self.recorder, || {
             counter!(
                 "outline_ss_udp_replay_store_full_dropped_total",
-                "user"     => user,
-                "protocol" => protocol.as_str()
+                "user"         => user,
+                "protocol"     => protocol.as_str(),
+                "app_protocol" => AppProtocol::Shadowsocks.as_str()
             )
             .increment(1);
         });

@@ -10,7 +10,7 @@ use tokio::{
 use tracing::{debug, info, warn};
 
 use crate::{
-    metrics::Protocol,
+    metrics::{AppProtocol, Protocol},
     protocol::vless::{self, AddonResumeResult, VlessUser},
 };
 
@@ -64,6 +64,7 @@ pub(super) async fn handle_tcp(
                     server.metrics.record_tcp_connect(
                         Arc::clone(&user_label),
                         Protocol::QuicRaw,
+                        AppProtocol::Vless,
                         "success",
                         connect_started.elapsed().as_secs_f64(),
                     );
@@ -73,6 +74,7 @@ pub(super) async fn handle_tcp(
                     server.metrics.record_tcp_connect(
                         Arc::clone(&user_label),
                         Protocol::QuicRaw,
+                        AppProtocol::Vless,
                         "error",
                         connect_started.elapsed().as_secs_f64(),
                     );
@@ -83,12 +85,16 @@ pub(super) async fn handle_tcp(
                 },
             };
             let (r, w) = upstream.into_split();
-            let guard = server
-                .metrics
-                .open_tcp_upstream_connection(Arc::clone(&user_label), Protocol::QuicRaw);
-            server
-                .metrics
-                .record_tcp_authenticated_session(Arc::clone(&user_label), Protocol::QuicRaw);
+            let guard = server.metrics.open_tcp_upstream_connection(
+                Arc::clone(&user_label),
+                Protocol::QuicRaw,
+                AppProtocol::Vless,
+            );
+            server.metrics.record_tcp_authenticated_session(
+                Arc::clone(&user_label),
+                Protocol::QuicRaw,
+                AppProtocol::Vless,
+            );
             (r, w, guard, result)
         },
     };
@@ -100,8 +106,12 @@ pub(super) async fn handle_tcp(
     write_vless_tcp_response_header(&mut send, resume.issued_session_id, resume_result).await?;
 
     let user_counters = server.metrics.user_counters(&user_label);
-    let client_to_target = user_counters.tcp_in(Protocol::QuicRaw).clone();
-    let target_to_client = user_counters.tcp_out(Protocol::QuicRaw).clone();
+    let client_to_target = user_counters
+        .tcp_in(AppProtocol::Vless, Protocol::QuicRaw)
+        .clone();
+    let target_to_client = user_counters
+        .tcp_out(AppProtocol::Vless, Protocol::QuicRaw)
+        .clone();
 
     // Pipe the initial payload (bytes that arrived after the request
     // header in the same chunk) before the relay tasks spin up.
