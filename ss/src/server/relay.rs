@@ -5,12 +5,15 @@
 //! semantics, ancillary logging) are captured by the [`UpstreamSink`] trait so
 //! the read/encrypt loop itself lives in a single place.
 
+use std::future::poll_fn;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::Poll;
 
 use anyhow::{Context, Result, anyhow};
 use bytes::{Bytes, BytesMut};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf},
     sync::Notify,
 };
 
@@ -20,6 +23,16 @@ use crate::{
 };
 
 use super::scratch::ScratchBuf;
+
+/// Upper bound for the greedy-drain loop in [`relay_upstream_to_client`].
+/// Once the in-progress chunk reaches this size we stop polling for more
+/// already-buffered bytes and proceed to encrypt + send. Sized to one
+/// legacy-AEAD record (16 KiB - 1) so a single greedy-drained chunk fans
+/// out to one full-sized AEAD chunk per WS frame: tighter coalescing
+/// would not produce larger frames anyway because `encrypt_legacy_chunks`
+/// re-splits at this boundary, and looser coalescing would risk pinning
+/// the relay reader long enough to starve the cancel arm.
+const GREEDY_DRAIN_TARGET: usize = 0x3fff;
 
 /// Outcome of [`relay_upstream_to_client`]. Distinguishes the natural
 /// upstream-EOF path from a caller-requested cancellation (used by
@@ -100,6 +113,28 @@ where
                     }
                     break;
                 }
+
+                // Greedy-drain: pull every byte the kernel already has
+                // buffered into our chunk before encrypting+sending,
+                // rather than letting one TCP-segment-sized read turn
+                // into one WS Binary frame. On bulk downloads a busy
+                // upstream produces ~1.4 KB segments; without this the
+                // relay emits ~14k frames/sec at 170 Mbit, each with
+                // its own TLS-record header, AEAD pair, and `await
+                // send`. The drain is non-blocking: it never yields,
+                // so it cannot delay ack-only or low-rate streams.
+                while buffer.len() < GREEDY_DRAIN_TARGET {
+                    match try_read_now(&mut upstream_reader, &mut buffer)
+                        .await
+                        .context("failed to drain upstream")?
+                    {
+                        Some(0) => break, // EOF: stop draining; encrypt what we have
+                        Some(_) => {},    // got more, keep pulling
+                        None => break,    // nothing immediately available
+                    }
+                }
+                let read = buffer.len();
+
                 if !saw_payload {
                     saw_payload = true;
                     sink.on_first_payload(read);
@@ -172,4 +207,42 @@ where
     }
     upstream_writer.shutdown().await.ok();
     Ok(())
+}
+
+/// Single non-blocking poll of `reader`, appending whatever is already
+/// available to `buffer` without yielding the runtime.
+///
+/// Returns:
+/// - `Ok(Some(n))` — `n` bytes read (`n == 0` is EOF).
+/// - `Ok(None)`    — the reader returned `Poll::Pending`; nothing was
+///   buffered in the kernel beyond what the caller has already consumed.
+/// - `Err(_)`      — the underlying `poll_read` reported an I/O error.
+///
+/// The caller is expected to have reserved enough spare capacity in
+/// `buffer` before calling — we write into `spare_capacity_mut` and only
+/// commit the filled bytes via `set_len` on success.
+async fn try_read_now<R>(reader: &mut R, buffer: &mut Vec<u8>) -> std::io::Result<Option<usize>>
+where
+    R: AsyncRead + Unpin,
+{
+    poll_fn(|cx| {
+        let prev_len = buffer.len();
+        let spare = buffer.spare_capacity_mut();
+        if spare.is_empty() {
+            return Poll::Ready(Ok(Some(0)));
+        }
+        let mut read_buf = ReadBuf::uninit(spare);
+        match Pin::new(&mut *reader).poll_read(cx, &mut read_buf) {
+            Poll::Ready(Ok(())) => {
+                let n = read_buf.filled().len();
+                // SAFETY: `poll_read` populated the first `n` bytes of
+                // the spare-capacity slice with initialised bytes.
+                unsafe { buffer.set_len(prev_len + n) };
+                Poll::Ready(Ok(Some(n)))
+            },
+            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+            Poll::Pending => Poll::Ready(Ok(None)),
+        }
+    })
+    .await
 }
