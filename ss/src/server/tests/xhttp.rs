@@ -40,7 +40,7 @@ use super::sample_config;
 use crate::metrics::Metrics;
 use crate::protocol::vless::{COMMAND_TCP, VERSION, VlessUser, parse_uuid};
 
-const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
+pub(super) const TEST_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 pub(super) async fn setup_xhttp_server(
     base_path: &'static str,
