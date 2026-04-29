@@ -18,6 +18,7 @@ fn make_uplink(name: &str) -> UplinkConfig {
         udp_ws_url: None,
         udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,
