@@ -97,12 +97,12 @@ fn builds_outline_artifacts_for_all_users() {
     assert_eq!(
         artifacts[2].access_key_url.as_deref(),
         Some(
-            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#carol%20vless"
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
         )
     );
     assert_eq!(
         artifacts[2].yaml,
-        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#carol%20vless\n"
+        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
     );
 }
 

@@ -248,13 +248,36 @@ fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
 fn vless_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> String {
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
+    let fragment = format!("{}:{label}", host_short_label(host));
     format!(
         "vless://{}@{}?type=ws&security={security}&path={}&encryption=none#{}",
         id,
         vless_authority(host, default_port),
         percent_encode_query_value(&normalize_path(path)),
-        percent_encode_fragment(label),
+        percent_encode_fragment(&fragment),
     )
+}
+
+fn host_short_label(host: &str) -> String {
+    let raw = strip_host_port(host);
+    if raw.parse::<std::net::IpAddr>().is_ok() {
+        raw.to_owned()
+    } else {
+        raw.split_once('.').map(|(head, _)| head.to_owned()).unwrap_or_else(|| raw.to_owned())
+    }
+}
+
+fn strip_host_port(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split_once(']').map(|(h, _)| h).unwrap_or(rest);
+    }
+    if let Some((h, port)) = host.rsplit_once(':')
+        && !h.contains(':')
+        && port.chars().all(|ch| ch.is_ascii_digit())
+    {
+        return h;
+    }
+    host
 }
 
 fn vless_authority(host: &str, default_port: u16) -> String {
@@ -282,7 +305,7 @@ fn percent_encode_query_value(value: &str) -> String {
 
 fn percent_encode_fragment(value: &str) -> String {
     percent_encode(value, |byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
+        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~' | b':')
     })
 }
 
