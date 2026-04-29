@@ -8,7 +8,7 @@ use url::Url;
 
 use crate::config::{
     CipherKind, LoadBalancingConfig, LoadBalancingMode, ProbeConfig, RoutingScope, TargetAddr,
-    UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, TransportMode,
+    TransportMode, UplinkConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig,
 };
 use crate::probe::build_http_probe_request;
 use crate::selection::{effective_latency, score_latency};
@@ -105,6 +105,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
         udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,
@@ -1329,6 +1330,7 @@ fn make_ws_uplink_with_modes(
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
         udp_ws_mode: udp_mode,
         vless_ws_url: None,
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,
@@ -1350,6 +1352,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         udp_ws_url: None,
         udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: Some(Url::parse(url).unwrap()),
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH3,
         tcp_addr: None,
         udp_addr: None,
@@ -1371,6 +1374,7 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
         udp_ws_url: None,
         udp_ws_mode: TransportMode::WsH3,
         vless_ws_url: None,
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         tcp_addr: Some("127.0.0.1:9000".parse().unwrap()),
         udp_addr: Some("127.0.0.1:9001".parse().unwrap()),
