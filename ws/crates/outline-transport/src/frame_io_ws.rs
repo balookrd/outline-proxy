@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode
 use tracing::debug;
 
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
-use crate::{AbortOnDrop, TransportOperation, WsClosed, WsTransportStream};
+use crate::{AbortOnDrop, TransportOperation, WsClosed, TransportStream};
 
 /// Default idle watchdog for WS transports. If no inbound frame arrives
 /// within this window the reader tears the session down — the only way
@@ -43,8 +43,8 @@ pub(crate) const WS_READ_IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// priority over `data_rx` (Binary frames) into `ws_stream`. Returns the
 /// task handle and the data/ctrl senders.
 fn spawn_ws_writer(
-    ws_stream: WsTransportStream,
-) -> (AbortOnDrop, mpsc::Sender<Message>, mpsc::Sender<Message>, SplitStream<WsTransportStream>) {
+    ws_stream: TransportStream,
+) -> (AbortOnDrop, mpsc::Sender<Message>, mpsc::Sender<Message>, SplitStream<TransportStream>) {
     let (sink, stream) = ws_stream.split();
     let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
     let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
@@ -132,7 +132,7 @@ impl FrameSink for WsFrameSink {
 /// sink's ctrl channel), surfaces Close as a clean EOF (`Ok(None)`), and
 /// fails reads idle longer than `idle_timeout`.
 pub struct WsFrameSource {
-    stream: SplitStream<WsTransportStream>,
+    stream: SplitStream<TransportStream>,
     ctrl_tx: mpsc::Sender<Message>,
     idle_timeout: Option<Duration>,
     closed_cleanly: bool,
@@ -208,7 +208,7 @@ impl FrameSource for WsFrameSource {
 /// `idle_timeout` of `None` disables the read-side idle watchdog;
 /// `keepalive` of `None` disables outbound Pings.
 pub fn from_ws_frames(
-    ws_stream: WsTransportStream,
+    ws_stream: TransportStream,
     idle_timeout: Option<Duration>,
     keepalive: Option<Duration>,
 ) -> (WsFrameSink, WsFrameSource) {
@@ -278,7 +278,7 @@ impl DatagramChannel for WsDatagramChannel {
 /// watchdog (used in tests). `keepalive` of `None` disables outbound
 /// Pings.
 pub fn from_ws_datagrams(
-    ws_stream: WsTransportStream,
+    ws_stream: TransportStream,
     idle_timeout: Option<Duration>,
     keepalive: Option<Duration>,
 ) -> WsDatagramChannel {

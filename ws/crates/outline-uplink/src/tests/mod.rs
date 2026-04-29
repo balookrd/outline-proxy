@@ -1307,7 +1307,7 @@ fn deduplicate_attempted_uplink_names_includes_current_when_not_seen() {
 
 // ── Silent transport fallback wiring ────────────────────────────────────────
 // These cover the uplink-side cross-crate wiring of the
-// `WsTransportStream::downgraded_from()` machinery added in earlier commits:
+// `TransportStream::downgraded_from()` machinery added in earlier commits:
 // after a fresh-dial / refill / probe path observes a host-level
 // `ws_mode_cache` clamp, it calls `note_silent_transport_fallback`, which must
 // flip `effective_*_ws_mode` to H2 — but only for Ws/Vless uplinks whose

@@ -15,7 +15,7 @@
 //! hidden inside the impls — the protocol layer never sees a `Message`.
 //!
 //! Construction is paired: WS-flavoured sink + source are built together
-//! from a single `WsTransportStream` so the source can route inbound Ping
+//! from a single `TransportStream` so the source can route inbound Ping
 //! payloads back into the sink's writer task as Pongs.
 
 use anyhow::Result;

@@ -17,6 +17,10 @@ pub(crate) struct ConfigFile {
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_ws_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
+    /// Base URL for VLESS-over-XHTTP packet-up. The session id is
+    /// appended at dial time (one path segment after the base path).
+    /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
+    pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
@@ -83,6 +87,10 @@ pub(crate) struct OutlineSection {
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_ws_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
+    /// Base URL for VLESS-over-XHTTP packet-up. The session id is
+    /// appended at dial time (one path segment after the base path).
+    /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
+    pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
@@ -174,6 +182,9 @@ pub(crate) struct UplinkSection {
     pub(crate) udp_ws_url: Option<Url>,
     pub(crate) udp_ws_mode: Option<TransportMode>,
     pub(crate) vless_ws_url: Option<Url>,
+    /// Base URL for VLESS-over-XHTTP packet-up. See top-level field
+    /// of the same name on `ConfigFile` for semantics.
+    pub(crate) vless_xhttp_url: Option<Url>,
     pub(crate) vless_mode: Option<TransportMode>,
     pub(crate) tcp_addr: Option<ServerAddr>,
     pub(crate) udp_addr: Option<ServerAddr>,

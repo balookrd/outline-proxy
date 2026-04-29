@@ -193,7 +193,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
 }
 
 async fn do_tcp_ss_setup(
-    ws_stream: outline_transport::WsTransportStream,
+    ws_stream: outline_transport::TransportStream,
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     source: &'static str,

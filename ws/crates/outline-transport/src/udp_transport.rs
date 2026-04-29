@@ -19,7 +19,7 @@ use crate::frame_io::DatagramChannel;
 use crate::frame_io_ws::{WS_READ_IDLE_TIMEOUT, from_ws_datagrams};
 
 use super::{
-    DnsCache, UpstreamTransportGuard, WsTransportStream, connect_websocket_with_resume,
+    DnsCache, UpstreamTransportGuard, TransportStream, connect_websocket_with_resume,
     connect_websocket_with_source,
 };
 use crate::resumption::SessionId;
@@ -74,7 +74,7 @@ pub fn is_dropped_oversized_udp_error(error: &anyhow::Error) -> bool {
 
 impl UdpWsTransport {
     pub fn from_websocket(
-        ws_stream: WsTransportStream,
+        ws_stream: TransportStream,
         cipher: CipherKind,
         password: &str,
         source: &'static str,

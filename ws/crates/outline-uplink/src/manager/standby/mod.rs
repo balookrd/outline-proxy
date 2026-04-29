@@ -11,7 +11,7 @@ use tracing::debug;
 
 use outline_metrics as metrics;
 use outline_transport::{
-    TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, WsTransportStream,
+    TransportOperation, UdpSessionTransport, UdpWsTransport, VlessUdpSessionMux, TransportStream,
     connect_shadowsocks_udp_with_source, connect_websocket_with_resume, global_resume_cache,
 };
 
@@ -99,7 +99,7 @@ impl UplinkManager {
     pub async fn try_take_tcp_standby(
         &self,
         candidate: &UplinkCandidate,
-    ) -> Option<WsTransportStream> {
+    ) -> Option<TransportStream> {
         if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             return None;
         }
@@ -122,7 +122,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         let cache = self.inner.dns_cache.as_ref();
         if !matches!(candidate.uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
             bail!("uplink {} does not use websocket transport", candidate.uplink.name);
@@ -184,7 +184,7 @@ impl UplinkManager {
         &self,
         candidate: &UplinkCandidate,
         source: &'static str,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         if let Some(ws) = self.try_take_tcp_standby(candidate).await {
             return Ok(ws);
         }
