@@ -16,6 +16,7 @@ use crate::{
 use super::super::super::{
     abort::AbortOnDrop,
     connect::connect_tcp_target,
+    relay::{GREEDY_DRAIN_TARGET, try_read_now_into_slice},
     resumption::{Parked, ParkedTcp, ResumeOutcome, SessionId, TcpProtocolContext},
     scratch::TcpRelayBuf,
 };
@@ -370,8 +371,27 @@ where
                 if read == 0 {
                     break;
                 }
-                target_to_client.increment(read as u64);
-                tx.send(make_binary(Bytes::copy_from_slice(&buffer[..read])))
+                // Greedy-drain: see `relay::relay_upstream_to_client`.
+                // VLESS-WS has no inner AEAD chunking, so the only
+                // amortisation knob is mpsc push + ws-writer send +
+                // TLS-record header per emitted frame. Pulling more
+                // already-buffered upstream bytes into a single binary
+                // frame collapses ~14k frames/sec at 200 Mbit into
+                // ~1.5k while never yielding the runtime.
+                let mut total = read;
+                let cap = buffer.len().min(GREEDY_DRAIN_TARGET);
+                while total < cap {
+                    match try_read_now_into_slice(&mut upstream_reader, &mut buffer[total..cap])
+                        .await
+                        .context("failed to drain vless upstream")?
+                    {
+                        Some(0) => break,
+                        Some(n) => total += n,
+                        None => break,
+                    }
+                }
+                target_to_client.increment(total as u64);
+                tx.send(make_binary(Bytes::copy_from_slice(&buffer[..total])))
                     .await
                     .map_err(|error| anyhow!("failed to queue vless websocket frame: {error}"))?;
             }
