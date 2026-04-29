@@ -27,7 +27,7 @@ use super::super::{
     },
 };
 use crate::crypto::UserKey;
-use crate::metrics::{Protocol, Transport};
+use crate::metrics::{AppProtocol, Protocol, Transport};
 
 pub(super) async fn handle_h3_connection(
     connection: quinn::Connection,
@@ -181,7 +181,7 @@ async fn handle_h3_request(
         let session = ctx
             .tcp_server
             .metrics
-            .open_websocket_session(Transport::Tcp, Protocol::Http3);
+            .open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Shadowsocks);
         let route_ctx = WsTcpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
@@ -210,7 +210,7 @@ async fn handle_h3_request(
         let session = ctx
             .udp_server
             .metrics
-            .open_websocket_session(Transport::Udp, Protocol::Http3);
+            .open_websocket_session(Transport::Udp, Protocol::Http3, AppProtocol::Shadowsocks);
         let route_ctx = Arc::new(UdpRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,
@@ -232,7 +232,7 @@ async fn handle_h3_request(
         let session = ctx
             .vless_server
             .metrics
-            .open_websocket_session(Transport::Tcp, Protocol::Http3);
+            .open_websocket_session(Transport::Tcp, Protocol::Http3, AppProtocol::Vless);
         let route_ctx = VlessWsRouteCtx {
             users: Arc::clone(&route.users),
             protocol: Protocol::Http3,

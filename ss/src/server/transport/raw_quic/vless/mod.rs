@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::metrics::{Protocol, Transport};
+use crate::metrics::{AppProtocol, Protocol, Transport};
 
 use super::super::super::transport::{VlessWsServerCtx, sink};
 
@@ -38,7 +38,7 @@ pub(in crate::server) async fn handle_raw_vless_quic_stream_with_prefix(
 ) -> Result<()> {
     let session = server
         .metrics
-        .open_websocket_session(Transport::Tcp, Protocol::QuicRaw);
+        .open_websocket_session(Transport::Tcp, Protocol::QuicRaw, AppProtocol::Vless);
 
     let outcome = stream::run_stream(
         send,

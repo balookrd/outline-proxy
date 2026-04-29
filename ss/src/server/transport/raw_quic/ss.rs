@@ -64,7 +64,11 @@ pub(in crate::server) async fn handle_raw_ss_quic_stream_with_prefix(
         .services
         .tcp_server
         .metrics
-        .open_websocket_session(crate::metrics::Transport::Tcp, Protocol::QuicRaw);
+        .open_websocket_session(
+            crate::metrics::Transport::Tcp,
+            Protocol::QuicRaw,
+            crate::metrics::AppProtocol::Shadowsocks,
+        );
 
     let outcome = run_stream(&mut send, &mut recv, prefix, &ctx).await;
     let outcome_for_metrics = match &outcome {
