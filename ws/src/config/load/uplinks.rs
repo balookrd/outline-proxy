@@ -17,6 +17,7 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) udp_ws_url: Option<Url>,
     pub(super) udp_ws_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
+    pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
@@ -54,6 +55,10 @@ impl ResolvedUplinkInput {
                 .vless_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|section| section.vless_ws_url.clone())),
+            vless_xhttp_url: args
+                .vless_xhttp_url
+                .clone()
+                .or_else(|| outline.and_then(|section| section.vless_xhttp_url.clone())),
             vless_mode: args
                 .vless_mode
                 .or_else(|| outline.and_then(|section| section.vless_mode)),
@@ -88,6 +93,7 @@ impl ResolvedUplinkInput {
             udp_ws_url: uplink.udp_ws_url.clone(),
             udp_ws_mode: uplink.udp_ws_mode,
             vless_ws_url: uplink.vless_ws_url.clone(),
+            vless_xhttp_url: uplink.vless_xhttp_url.clone(),
             vless_mode: uplink.vless_mode,
             tcp_addr: uplink.tcp_addr.clone(),
             udp_addr: uplink.udp_addr.clone(),
@@ -114,6 +120,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             udp_ws_url,
             udp_ws_mode,
             vless_ws_url,
+            vless_xhttp_url,
             vless_mode,
             tcp_addr,
             udp_addr,
@@ -163,12 +170,24 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
         // the WS/socket fields. Cross-population is rejected at parse time so
         // misconfiguration surfaces as a clear error rather than a confusing
         // dial failure later.
-        let (tcp_ws_url, tcp_ws_mode, udp_ws_url, udp_ws_mode, vless_ws_url, vless_mode, tcp_addr, udp_addr) =
-            match transport {
+        let (
+            tcp_ws_url,
+            tcp_ws_mode,
+            udp_ws_url,
+            udp_ws_mode,
+            vless_ws_url,
+            vless_xhttp_url,
+            vless_mode,
+            tcp_addr,
+            udp_addr,
+        ) = match transport {
                 UplinkTransport::Ws => {
-                    if vless_ws_url.is_some() || vless_mode.is_some() {
+                    if vless_ws_url.is_some()
+                        || vless_xhttp_url.is_some()
+                        || vless_mode.is_some()
+                    {
                         bail!(
-                            "uplink {name}: `vless_ws_url`/`vless_mode` are only valid for transport=vless"
+                            "uplink {name}: `vless_ws_url`/`vless_xhttp_url`/`vless_mode` are only valid for transport=vless"
                         );
                     }
                     if tcp_addr.is_some() || udp_addr.is_some() {
@@ -185,6 +204,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         udp_ws_url,
                         udp_ws_mode.unwrap_or_default(),
                         None,
+                        None,
                         TransportMode::default(),
                         None,
                         None,
@@ -197,7 +217,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         || udp_ws_mode.is_some()
                     {
                         bail!(
-                            "uplink {name}: `tcp_ws_url`/`tcp_ws_mode`/`udp_ws_url`/`udp_ws_mode` are not valid for transport=vless; use the single `vless_ws_url`/`vless_mode` instead (the VLESS server exposes one path for both TCP and UDP)"
+                            "uplink {name}: `tcp_ws_url`/`tcp_ws_mode`/`udp_ws_url`/`udp_ws_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
                         );
                     }
                     if tcp_addr.is_some() || udp_addr.is_some() {
@@ -205,16 +225,32 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                             "uplink {name}: `tcp_addr`/`udp_addr` are only valid for transport=shadowsocks"
                         );
                     }
-                    let vless_ws_url = Some(vless_ws_url.ok_or_else(|| {
-                        anyhow!("uplink {name}: transport=vless requires `vless_ws_url`")
-                    })?);
+                    let mode = vless_mode.unwrap_or_default();
+                    // Cross-check: the URL field carrying the dial target
+                    // must match the chosen mode. Forgetting either is a
+                    // common mistake; surface it as a clear error rather
+                    // than a confusing dial-time failure.
+                    let needs_xhttp_url =
+                        matches!(mode, TransportMode::XhttpH2 | TransportMode::XhttpH3);
+                    let needs_ws_url = !needs_xhttp_url;
+                    if needs_ws_url && vless_ws_url.is_none() {
+                        bail!(
+                            "uplink {name}: transport=vless with mode={mode} requires `vless_ws_url`"
+                        );
+                    }
+                    if needs_xhttp_url && vless_xhttp_url.is_none() {
+                        bail!(
+                            "uplink {name}: transport=vless with mode={mode} requires `vless_xhttp_url`"
+                        );
+                    }
                     (
                         None,
                         TransportMode::default(),
                         None,
                         TransportMode::default(),
                         vless_ws_url,
-                        vless_mode.unwrap_or_default(),
+                        vless_xhttp_url,
+                        mode,
                         None,
                         None,
                     )
@@ -225,6 +261,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         || udp_ws_url.is_some()
                         || udp_ws_mode.is_some()
                         || vless_ws_url.is_some()
+                        || vless_xhttp_url.is_some()
                         || vless_mode.is_some()
                     {
                         bail!(
@@ -239,6 +276,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                         TransportMode::default(),
                         None,
                         TransportMode::default(),
+                        None,
                         None,
                         TransportMode::default(),
                         tcp_addr,
@@ -255,6 +293,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             udp_ws_url,
             udp_ws_mode,
             vless_ws_url,
+            vless_xhttp_url,
             vless_mode,
             tcp_addr,
             udp_addr,
@@ -315,6 +354,7 @@ fn cli_uplink_override_requested(args: &Args) -> bool {
         || args.udp_ws_url.is_some()
         || args.udp_ws_mode.is_some()
         || args.vless_ws_url.is_some()
+        || args.vless_xhttp_url.is_some()
         || args.vless_mode.is_some()
         || args.tcp_addr.is_some()
         || args.udp_addr.is_some()

@@ -27,7 +27,7 @@ use tracing::info;
 use url::Url;
 
 use crate::{
-    AbortOnDrop, WsTransportStream,
+    AbortOnDrop, TransportStream,
     bind_addr_for, bind_udp_socket,
     DnsCache,
 };
@@ -349,11 +349,11 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         server_name: &str,
         server_port: u16,
         path: &str,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         let (ws, issued_session_id) = conn
             .open_websocket(server_name, server_port, path, self.resume_request)
             .await?;
-        Ok(WsTransportStream::H3 {
+        Ok(TransportStream::H3 {
             inner: ws,
             issued_session_id,
             downgraded_from: None,
@@ -370,7 +370,7 @@ pub(crate) async fn connect_websocket_h3(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<crate::resumption::SessionId>,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     if url.scheme() != "wss" {
         bail!("h3 websocket transport currently requires wss:// URLs");
     }

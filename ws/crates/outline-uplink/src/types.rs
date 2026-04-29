@@ -10,7 +10,7 @@ use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use tokio::time::Instant;
 
 use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
-use outline_transport::WsTransportStream;
+use outline_transport::TransportStream;
 use socks5_proto::TargetAddr;
 
 use super::routing_key::transport_key_prefix;
@@ -243,7 +243,7 @@ pub use outline_metrics::{StickyRouteSnapshot, UplinkManagerSnapshot, UplinkSnap
 /// observers that only need a size hint (e.g. `/metrics` scrapes) can read
 /// it without contending with hot-path mutations.
 pub(crate) struct TrackedDeque {
-    deque: Mutex<VecDeque<WsTransportStream>>,
+    deque: Mutex<VecDeque<TransportStream>>,
     len: AtomicUsize,
 }
 
@@ -268,12 +268,12 @@ impl TrackedDeque {
 }
 
 pub(crate) struct TrackedDequeGuard<'a> {
-    guard: tokio::sync::MutexGuard<'a, VecDeque<WsTransportStream>>,
+    guard: tokio::sync::MutexGuard<'a, VecDeque<TransportStream>>,
     len: &'a AtomicUsize,
 }
 
 impl Deref for TrackedDequeGuard<'_> {
-    type Target = VecDeque<WsTransportStream>;
+    type Target = VecDeque<TransportStream>;
     fn deref(&self) -> &Self::Target {
         &self.guard
     }

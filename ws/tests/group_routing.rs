@@ -71,6 +71,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         udp_ws_url: Some(Url::parse(&format!("{url}/udp")).unwrap()),
         udp_ws_mode: TransportMode::WsH1,
         vless_ws_url: None,
+        vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
         tcp_addr: None,
         udp_addr: None,

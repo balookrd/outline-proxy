@@ -218,8 +218,8 @@ async fn h2_reuses_shared_connection_for_non_probe_sources() {
         .await
         .unwrap();
 
-    assert!(matches!(ws_one, WsTransportStream::H2 { .. }));
-    assert!(matches!(ws_two, WsTransportStream::H2 { .. }));
+    assert!(matches!(ws_one, TransportStream::H2 { .. }));
+    assert!(matches!(ws_two, TransportStream::H2 { .. }));
     server.wait_for_counts(1, 2).await;
 }
 
@@ -236,8 +236,8 @@ async fn h2_probe_sources_do_not_reuse_shared_connections() {
         .await
         .unwrap();
 
-    assert!(matches!(ws_one, WsTransportStream::H2 { .. }));
-    assert!(matches!(ws_two, WsTransportStream::H2 { .. }));
+    assert!(matches!(ws_one, TransportStream::H2 { .. }));
+    assert!(matches!(ws_two, TransportStream::H2 { .. }));
     server.wait_for_counts(2, 2).await;
 }
 
@@ -264,7 +264,7 @@ async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
     .await
     .unwrap();
 
-    assert!(matches!(stream, WsTransportStream::H2 { .. }));
+    assert!(matches!(stream, TransportStream::H2 { .. }));
     assert_eq!(stream.downgraded_from(), Some(TransportMode::WsH3));
 }
 
@@ -320,7 +320,7 @@ async fn dial_at_requested_mode_carries_no_downgrade_marker() {
     .await
     .unwrap();
 
-    assert!(matches!(stream, WsTransportStream::H2 { .. }));
+    assert!(matches!(stream, TransportStream::H2 { .. }));
     assert_eq!(stream.downgraded_from(), None);
 }
 

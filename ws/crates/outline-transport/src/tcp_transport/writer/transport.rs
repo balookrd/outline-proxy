@@ -6,9 +6,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use crate::{AbortOnDrop, WsTransportStream};
+use crate::{AbortOnDrop, TransportStream};
 
-pub(super) type WsSink = SplitSink<WsTransportStream, Message>;
+pub(super) type WsSink = SplitSink<TransportStream, Message>;
 
 #[allow(async_fn_in_trait)]
 pub trait WriteTransport: Send + 'static {

@@ -43,3 +43,10 @@ thiserror = "2.0"
 tracing = "0.1"
 url = { version = "2.5", features = ["serde"] }
 webpki-roots = "0.26"
+
+[dev-dependencies]
+# Used only by the XHTTP client tests (`xhttp/tests/`). The mock h2
+# server they spin up needs the server side of hyper, which the
+# main build deliberately omits to keep the client crate slim.
+hyper = { version = "1.7", features = ["client", "http1", "http2", "server"] }
+tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync", "time", "test-util"] }

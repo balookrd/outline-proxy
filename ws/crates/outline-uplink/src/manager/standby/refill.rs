@@ -4,7 +4,7 @@ use tokio::time::{Instant, timeout};
 use tracing::{debug, warn};
 
 use outline_metrics as metrics;
-use outline_transport::{WsTransportStream, connect_websocket_with_source};
+use outline_transport::{TransportStream, connect_websocket_with_source};
 
 use crate::config::UplinkTransport;
 use crate::error_classify::StandbyProbeExpected;
@@ -45,7 +45,7 @@ impl<'a> StandbyCtx<'a> {
             // connection. When Http1 is the explicitly configured mode,
             // skip eviction and let the standard timeout-peek decide
             // liveness instead.
-            if matches!(ws, WsTransportStream::Http1 { .. }) && !mode_is_http1 {
+            if matches!(ws, TransportStream::Http1 { .. }) && !mode_is_http1 {
                 debug!(
                     uplink = %self.uplink.name,
                     transport = ?self.transport,
@@ -179,7 +179,7 @@ impl<'a> StandbyCtx<'a> {
                     // out in that case. When Http1 is *explicitly*
                     // configured, pooling a single Http1 connection is the
                     // intended behavior.
-                    if matches!(ws, WsTransportStream::Http1 { .. }) && !mode_is_http1 {
+                    if matches!(ws, TransportStream::Http1 { .. }) && !mode_is_http1 {
                         break;
                     }
 

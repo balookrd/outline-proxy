@@ -58,6 +58,10 @@ use crate::dns_cache::DnsCache;
 use crate::guards::AbortOnDrop;
 use crate::{TransportOperation, connect_tcp_socket};
 
+#[cfg(test)]
+#[path = "tests/packet_up.rs"]
+mod tests_packet_up;
+
 /// Lower-cased name of the request header carrying the in-order
 /// sequence number for an uplink POST. Mirrors the server constant.
 const SEQ_HEADER: &str = "x-xhttp-seq";
@@ -185,7 +189,7 @@ fn io_ws_err(msg: &'static str) -> WsError {
 /// as the XHTTP base — the server registers `<base>/<id>` and we
 /// generate `<id>` randomly.
 pub(crate) async fn connect_xhttp(
-    cache: &Arc<DnsCache>,
+    cache: &DnsCache,
     url: &Url,
     mode: TransportMode,
     fwmark: Option<u32>,

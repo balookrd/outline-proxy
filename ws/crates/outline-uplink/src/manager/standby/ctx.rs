@@ -7,7 +7,7 @@ use tracing::debug;
 use url::Url;
 
 use outline_metrics as metrics;
-use outline_transport::WsTransportStream;
+use outline_transport::TransportStream;
 
 use crate::config::TransportMode;
 use crate::types::{TrackedDeque, TransportKind, Uplink, UplinkManager};
@@ -29,7 +29,7 @@ pub(super) struct StandbyCtx<'a> {
     pub(super) uplink: &'a Uplink,
     pub(super) index: usize,
     pub(super) transport: TransportKind,
-    /// The deque that holds pooled `WsTransportStream`s for this transport.
+    /// The deque that holds pooled `TransportStream`s for this transport.
     pub(super) pool: &'a TrackedDeque,
     /// Serialises concurrent refill attempts for this transport.
     pub(super) refill_lock: &'a Mutex<()>,
@@ -111,7 +111,7 @@ impl<'a> StandbyCtx<'a> {
     pub(super) async fn try_take_alive(
         &self,
         candidate_name: &str,
-    ) -> Option<WsTransportStream> {
+    ) -> Option<TransportStream> {
         use tokio_tungstenite::tungstenite::protocol::Message;
 
         loop {

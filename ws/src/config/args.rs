@@ -45,12 +45,20 @@ pub struct Args {
     pub udp_ws_mode: Option<TransportMode>,
 
     /// VLESS-only: single WS URL serving both TCP and UDP. Required when
-    /// `transport = "vless"`. Mutually exclusive with `tcp_ws_url`/`udp_ws_url`.
+    /// `transport = "vless"` and `vless_mode` is a `ws_*` / `quic`
+    /// variant. Mutually exclusive with `tcp_ws_url`/`udp_ws_url`.
     #[arg(long, env = "OUTLINE_VLESS_WS_URL")]
     pub vless_ws_url: Option<Url>,
 
-    /// VLESS-only: WS transport mode (http1, h2, h3, quic).
-    #[arg(long, env = "OUTLINE_VLESS_WS_MODE", help = "http1, h2, h3, or quic")]
+    /// VLESS-only: base URL for XHTTP packet-up. Required when
+    /// `vless_mode` is `xhttp_h2` / `xhttp_h3`. The session id is
+    /// appended at dial time (single path segment).
+    #[arg(long, env = "OUTLINE_VLESS_XHTTP_URL")]
+    pub vless_xhttp_url: Option<Url>,
+
+    /// VLESS-only: dial mode. One of ws_h1, ws_h2, ws_h3, quic,
+    /// xhttp_h2, xhttp_h3.
+    #[arg(long, env = "OUTLINE_VLESS_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
     pub vless_mode: Option<TransportMode>,
 
     #[arg(long, env = "SHADOWSOCKS_METHOD")]

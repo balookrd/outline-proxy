@@ -178,7 +178,7 @@ async fn connect_tcp_uplink(
 }
 
 async fn do_tcp_ss_setup(
-    ws_stream: outline_transport::WsTransportStream,
+    ws_stream: outline_transport::TransportStream,
     uplink: &outline_uplink::UplinkConfig,
     target: &TargetAddr,
     keepalive_interval: Option<std::time::Duration>,

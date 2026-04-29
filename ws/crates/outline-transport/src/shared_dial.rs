@@ -16,7 +16,7 @@ use anyhow::Result;
 use tracing::debug;
 
 use crate::{
-    DnsCache, TransportConnectGuard, TransportOperation, WsTransportStream,
+    DnsCache, TransportConnectGuard, TransportOperation, TransportStream,
     resolve_host_with_preference,
 };
 use crate::shared_cache::{CachedEntry, SharedConnectionRegistry, with_reuse};
@@ -48,14 +48,14 @@ pub(crate) trait WsDialer: 'static {
     ) -> Result<Arc<Self::Conn>>;
 
     /// Open one WebSocket stream on `conn`, returning it already wrapped in
-    /// the correct `WsTransportStream` variant.
+    /// the correct `TransportStream` variant.
     async fn open_on(
         &self,
         conn: &Arc<Self::Conn>,
         server_name: &str,
         server_port: u16,
         path: &str,
-    ) -> Result<WsTransportStream>;
+    ) -> Result<TransportStream>;
 }
 
 // ── Public entry points ───────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ pub(crate) async fn connect_ws_reused<D: WsDialer>(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     let key = dialer.make_key(server_name, server_port, fwmark);
     let label = dialer.metric_label();
 
@@ -111,7 +111,7 @@ pub(crate) async fn connect_ws_probe<D: WsDialer>(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     let (_shared, ws) = resolve_and_dial(
         dialer, cache, server_name, server_port, path, fwmark, ipv6_first, source, None,
     )
@@ -134,7 +134,7 @@ async fn resolve_and_dial<D: WsDialer>(
     ipv6_first: bool,
     source: &'static str,
     cache_key: Option<D::Key>,
-) -> Result<(Arc<D::Conn>, WsTransportStream)> {
+) -> Result<(Arc<D::Conn>, TransportStream)> {
     let label = dialer.metric_label();
     let context = format!("failed to resolve {label} websocket host");
     let server_addrs =

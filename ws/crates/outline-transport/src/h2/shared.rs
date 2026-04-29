@@ -30,7 +30,7 @@ use tracing::info;
 use url::Url;
 
 use crate::{
-    AbortOnDrop, WsTransportStream, SharedConnectionHealth,
+    AbortOnDrop, TransportStream, SharedConnectionHealth,
     DnsCache, connect_tcp_socket,
 };
 use crate::shared_cache::{
@@ -224,7 +224,7 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         match self.open_websocket_inner(target_uri, resume_request).await {
             Ok(ws) => Ok(ws),
             Err(error) => {
@@ -245,7 +245,7 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
         }
@@ -320,7 +320,7 @@ impl SharedH2Connection {
         let ws = WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await;
         let shared_connection: Arc<dyn SharedConnectionHealth> = self.clone();
         self.streams_opened.fetch_add(1, Ordering::Relaxed);
-        Ok(WsTransportStream::H2 {
+        Ok(TransportStream::H2 {
             inner: H2WsStream::new_shared(ws, shared_connection),
             issued_session_id,
             downgraded_from: None,
@@ -413,7 +413,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
         server_name: &str,
         server_port: u16,
         path: &str,
-    ) -> Result<WsTransportStream> {
+    ) -> Result<TransportStream> {
         let scheme = if self.use_tls { "https" } else { "http" };
         let target_uri = format!("{scheme}://{}/{path}", format_authority(server_name, Some(server_port)));
         conn.open_websocket(&target_uri, self.resume_request).await
@@ -429,7 +429,7 @@ pub(crate) async fn connect_websocket_h2(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<crate::resumption::SessionId>,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     let host = url.host_str().ok_or_else(|| anyhow!("URL is missing host: {url}"))?;
     let port = url
         .port_or_known_default()

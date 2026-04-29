@@ -9,10 +9,10 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
 use tracing::debug;
-use crate::WsTransportStream;
+use crate::TransportStream;
 use crate::TransportOperation;
 
-pub(super) type WsStream = SplitStream<WsTransportStream>;
+pub(super) type WsStream = SplitStream<TransportStream>;
 
 // Maximum time an upstream WebSocket read may sit idle without producing any
 // frame (data, ping, pong, or close) before the reader assumes the stream is

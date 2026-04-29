@@ -11,7 +11,7 @@ use super::{
     drain_ready_buffered_segments, normalize_client_segment, queue_future_segment,
 };
 use crate::config::TunTcpConfig;
-use outline_transport::{WsTransportStream, TcpShadowsocksWriter};
+use outline_transport::{TransportStream, TcpShadowsocksWriter};
 use crate::tcp::state_machine::SequenceRange;
 use crate::wire::test_utils::{
     IP_PROTOCOL_TCP, assert_ipv4_header_checksum_valid, assert_transport_checksum_valid,
@@ -1671,7 +1671,7 @@ async fn tcp_flow_state_for_tests() -> super::TcpFlowState {
     });
 
     let (ws_stream, _) = connect_async(format!("ws://{addr}/")).await.unwrap();
-    let ws = WsTransportStream::new_http1(ws_stream);
+    let ws = TransportStream::new_http1(ws_stream);
     let (sink, _stream) = ws.split();
     let cipher = CipherKind::Chacha20IetfPoly1305;
     let master_key = cipher.derive_master_key("Secret0").unwrap();

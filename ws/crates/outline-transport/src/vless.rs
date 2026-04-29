@@ -40,7 +40,7 @@ use url::Url;
 
 use crate::{
     AbortOnDrop, DnsCache, TransportOperation, UpstreamTransportGuard, WsClosed,
-    WsTransportStream, config::TransportMode, connect_websocket_with_resume,
+    TransportStream, config::TransportMode, connect_websocket_with_resume,
     connect_websocket_with_source, frame_io_ws::WS_READ_IDLE_TIMEOUT,
     resumption::SessionId,
 };
@@ -395,7 +395,7 @@ impl VlessTcpReader {
 /// `keepalive_interval` enables WS Ping frames on the active session to
 /// defeat NAT/middlebox idle-timeout drops; pass `None` to disable.
 pub fn vless_tcp_pair_from_ws(
-    ws_stream: WsTransportStream,
+    ws_stream: TransportStream,
     uuid: &[u8; 16],
     target: &TargetAddr,
     lifetime: Arc<UpstreamTransportGuard>,
@@ -445,7 +445,7 @@ pub type VlessUdpWsTransport = VlessUdpTransport;
 
 impl VlessUdpTransport {
     pub fn from_websocket(
-        ws_stream: WsTransportStream,
+        ws_stream: TransportStream,
         uuid: &[u8; 16],
         target: &TargetAddr,
         source: &'static str,

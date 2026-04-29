@@ -14,6 +14,7 @@ use crate::h3::{
 };
 use crate::config::TransportMode;
 use crate::resumption::SessionId;
+use crate::xhttp::XhttpStream;
 
 use super::h2::H2WsStream;
 
@@ -29,7 +30,7 @@ pub(crate) trait SharedConnectionHealth: Send + Sync {
 pub(super) type H1WsStream = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Maximum time an HTTP/1 WebSocket stream may sit idle (no frame in either
-/// direction) before [`WsTransportStream::is_connection_alive`] starts
+/// direction) before [`TransportStream::is_connection_alive`] starts
 /// reporting `false`.  HTTP/1 has no shared multiplexed driver to notice a
 /// silently-dropped TCP path, so the honest signal we have is "did we see
 /// any frame recently?".  The standby pool's keepalive loop sends a Ping
@@ -71,7 +72,7 @@ impl H1Activity {
 }
 
 // When the h3 feature is disabled, provide a zero-size never-constructable
-// stub so that WsTransportStream::H3 remains a valid enum variant. The variant is
+// stub so that TransportStream::H3 remains a valid enum variant. The variant is
 // unreachable at runtime because nothing in the non-h3 code path can create it.
 #[cfg(not(feature = "h3"))]
 pin_project! {
@@ -132,8 +133,8 @@ pin_project! {
     /// Callers that participate in resumption stash this value before the
     /// stream is used and present it back via `X-Outline-Resume` on the
     /// next reconnect.
-    #[project = WsTransportStreamProj]
-    pub enum WsTransportStream {
+    #[project = TransportStreamProj]
+    pub enum TransportStream {
         Http1 {
             #[pin]
             inner: H1WsStream,
@@ -153,10 +154,19 @@ pin_project! {
             issued_session_id: Option<SessionId>,
             downgraded_from: Option<TransportMode>,
         },
+        /// VLESS-over-XHTTP packet-up. The inner stream multiplexes a
+        /// long-lived GET (downlink) and a sequence of POSTs (uplink)
+        /// onto a single h2 connection — see `crate::xhttp`.
+        Xhttp {
+            #[pin]
+            inner: XhttpStream,
+            issued_session_id: Option<SessionId>,
+            downgraded_from: Option<TransportMode>,
+        },
     }
 }
 
-impl WsTransportStream {
+impl TransportStream {
     /// Wrap a raw HTTP/1 WebSocket stream, initialising activity tracking.
     /// The session-ID slot is left `None`; callers that did receive an
     /// `X-Outline-Session` header should use [`Self::new_http1_with_session`].
@@ -177,7 +187,7 @@ impl WsTransportStream {
         // Mark the moment of birth as activity so a freshly-dialed stream is
         // not immediately reported stale before the first frame arrives.
         activity.touch();
-        WsTransportStream::Http1 {
+        TransportStream::Http1 {
             inner,
             activity,
             issued_session_id,
@@ -190,9 +200,23 @@ impl WsTransportStream {
     /// across the lifetime of the stream; reads are cheap (`Copy`).
     pub fn issued_session_id(&self) -> Option<SessionId> {
         match self {
-            WsTransportStream::Http1 { issued_session_id, .. } => *issued_session_id,
-            WsTransportStream::H2 { issued_session_id, .. } => *issued_session_id,
-            WsTransportStream::H3 { issued_session_id, .. } => *issued_session_id,
+            TransportStream::Http1 { issued_session_id, .. } => *issued_session_id,
+            TransportStream::H2 { issued_session_id, .. } => *issued_session_id,
+            TransportStream::H3 { issued_session_id, .. } => *issued_session_id,
+            TransportStream::Xhttp { issued_session_id, .. } => *issued_session_id,
+        }
+    }
+
+    /// Wraps an [`XhttpStream`] freshly returned from `connect_xhttp`.
+    /// XHTTP does not surface a server-issued session ID through the
+    /// upgrade response (it has no upgrade), so the slot starts empty;
+    /// the downgrade slot is filled by the dialer if a clamp / inline
+    /// fallback was applied.
+    pub(crate) fn new_xhttp(inner: XhttpStream) -> Self {
+        TransportStream::Xhttp {
+            inner,
+            issued_session_id: None,
+            downgraded_from: None,
         }
     }
 
@@ -203,9 +227,10 @@ impl WsTransportStream {
     /// `mode_downgrade_until` window so routing/metrics see a consistent state.
     pub fn downgraded_from(&self) -> Option<TransportMode> {
         match self {
-            WsTransportStream::Http1 { downgraded_from, .. } => *downgraded_from,
-            WsTransportStream::H2 { downgraded_from, .. } => *downgraded_from,
-            WsTransportStream::H3 { downgraded_from, .. } => *downgraded_from,
+            TransportStream::Http1 { downgraded_from, .. } => *downgraded_from,
+            TransportStream::H2 { downgraded_from, .. } => *downgraded_from,
+            TransportStream::H3 { downgraded_from, .. } => *downgraded_from,
+            TransportStream::Xhttp { downgraded_from, .. } => *downgraded_from,
         }
     }
 
@@ -215,9 +240,10 @@ impl WsTransportStream {
     /// returning the stream.
     pub fn with_downgraded_from(mut self, requested: Option<TransportMode>) -> Self {
         match &mut self {
-            WsTransportStream::Http1 { downgraded_from, .. } => *downgraded_from = requested,
-            WsTransportStream::H2 { downgraded_from, .. } => *downgraded_from = requested,
-            WsTransportStream::H3 { downgraded_from, .. } => *downgraded_from = requested,
+            TransportStream::Http1 { downgraded_from, .. } => *downgraded_from = requested,
+            TransportStream::H2 { downgraded_from, .. } => *downgraded_from = requested,
+            TransportStream::H3 { downgraded_from, .. } => *downgraded_from = requested,
+            TransportStream::Xhttp { downgraded_from, .. } => *downgraded_from = requested,
         }
         self
     }
@@ -231,12 +257,13 @@ impl WsTransportStream {
     /// 5-minute idle watcher.
     pub fn is_connection_alive(&self) -> bool {
         match self {
-            WsTransportStream::Http1 { activity, .. } => activity.is_fresh(H1_STALENESS_THRESHOLD),
-            WsTransportStream::H2 { inner, .. } => inner.is_connection_alive(),
+            TransportStream::Http1 { activity, .. } => activity.is_fresh(H1_STALENESS_THRESHOLD),
+            TransportStream::H2 { inner, .. } => inner.is_connection_alive(),
             #[cfg(feature = "h3")]
-            WsTransportStream::H3 { inner, .. } => inner.is_connection_alive(),
+            TransportStream::H3 { inner, .. } => inner.is_connection_alive(),
             #[cfg(not(feature = "h3"))]
-            WsTransportStream::H3 { .. } => true,
+            TransportStream::H3 { .. } => true,
+            TransportStream::Xhttp { inner, .. } => inner.is_healthy(),
         }
     }
 
@@ -246,17 +273,21 @@ impl WsTransportStream {
     /// connection's lifecycle.
     pub fn shared_connection_info(&self) -> Option<(u64, &'static str)> {
         match self {
-            WsTransportStream::Http1 { .. } => None,
-            WsTransportStream::H2 { inner, .. } => Some(inner.shared_connection_info()),
+            TransportStream::Http1 { .. } => None,
+            TransportStream::H2 { inner, .. } => Some(inner.shared_connection_info()),
             #[cfg(feature = "h3")]
-            WsTransportStream::H3 { inner, .. } => Some(inner.shared_connection_info()),
+            TransportStream::H3 { inner, .. } => Some(inner.shared_connection_info()),
             #[cfg(not(feature = "h3"))]
-            WsTransportStream::H3 { .. } => None,
+            TransportStream::H3 { .. } => None,
+            // XHTTP rides its own private h2 connection per session;
+            // there is no shared driver to label, so report None and
+            // keep the conn-life diagnostic clean.
+            TransportStream::Xhttp { .. } => None,
         }
     }
 }
 
-impl Stream for WsTransportStream {
+impl Stream for TransportStream {
     type Item = Result<Message, WsError>;
 
     fn poll_next(
@@ -264,16 +295,16 @@ impl Stream for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, activity, .. } => {
+            TransportStreamProj::Http1 { inner, activity, .. } => {
                 let poll = inner.poll_next(cx);
                 if let std::task::Poll::Ready(Some(_)) = &poll {
                     activity.touch();
                 }
                 poll
             },
-            WsTransportStreamProj::H2 { inner, .. } => inner.poll_next(cx),
+            TransportStreamProj::H2 { inner, .. } => inner.poll_next(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner, .. } => match inner.poll_next(cx) {
+            TransportStreamProj::H3 { inner, .. } => match inner.poll_next(cx) {
                 std::task::Poll::Ready(Some(Ok(message))) => {
                     std::task::Poll::Ready(Some(Ok(sockudo_to_tungstenite_message(message))))
                 },
@@ -285,12 +316,13 @@ impl Stream for WsTransportStream {
             },
             // Stub variant — Infallible inner field makes this branch unreachable.
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_next(cx),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_next(cx),
+            TransportStreamProj::Xhttp { inner, .. } => inner.poll_next(cx),
         }
     }
 }
 
-impl Sink<Message> for WsTransportStream {
+impl Sink<Message> for TransportStream {
     type Error = WsError;
 
     fn poll_ready(
@@ -298,31 +330,33 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_ready(cx),
-            WsTransportStreamProj::H2 { inner, .. } => inner.poll_ready(cx),
+            TransportStreamProj::Http1 { inner, .. } => inner.poll_ready(cx),
+            TransportStreamProj::H2 { inner, .. } => inner.poll_ready(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_ready(cx),
+            TransportStreamProj::Xhttp { inner, .. } => inner.poll_ready(cx),
         }
     }
 
     fn start_send(self: std::pin::Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, activity, .. } => {
+            TransportStreamProj::Http1 { inner, activity, .. } => {
                 let result = inner.start_send(item);
                 if result.is_ok() {
                     activity.touch();
                 }
                 result
             },
-            WsTransportStreamProj::H2 { inner, .. } => inner.start_send(item),
+            TransportStreamProj::H2 { inner, .. } => inner.start_send(item),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner, .. } => inner
+            TransportStreamProj::H3 { inner, .. } => inner
                 .start_send(tungstenite_to_sockudo_message(item)?)
                 .map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner, .. } => inner.start_send(item),
+            TransportStreamProj::H3 { inner, .. } => inner.start_send(item),
+            TransportStreamProj::Xhttp { inner, .. } => inner.start_send(item),
         }
     }
 
@@ -331,12 +365,13 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_flush(cx),
-            WsTransportStreamProj::H2 { inner, .. } => inner.poll_flush(cx),
+            TransportStreamProj::Http1 { inner, .. } => inner.poll_flush(cx),
+            TransportStreamProj::H2 { inner, .. } => inner.poll_flush(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_flush(cx),
+            TransportStreamProj::Xhttp { inner, .. } => inner.poll_flush(cx),
         }
     }
 
@@ -345,12 +380,13 @@ impl Sink<Message> for WsTransportStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         match self.project() {
-            WsTransportStreamProj::Http1 { inner, .. } => inner.poll_close(cx),
-            WsTransportStreamProj::H2 { inner, .. } => inner.poll_close(cx),
+            TransportStreamProj::Http1 { inner, .. } => inner.poll_close(cx),
+            TransportStreamProj::H2 { inner, .. } => inner.poll_close(cx),
             #[cfg(feature = "h3")]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_close(cx).map_err(sockudo_to_ws_error),
             #[cfg(not(feature = "h3"))]
-            WsTransportStreamProj::H3 { inner, .. } => inner.poll_close(cx),
+            TransportStreamProj::H3 { inner, .. } => inner.poll_close(cx),
+            TransportStreamProj::Xhttp { inner, .. } => inner.poll_close(cx),
         }
     }
 }

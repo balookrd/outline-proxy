@@ -185,7 +185,7 @@ pub use vless::{
     VlessTcpReader, VlessTcpWriter, VlessUdpDowngradeNotifier, VlessUdpMuxLimits,
     VlessUdpSessionMux, VlessUdpWsTransport,
 };
-pub use ws_stream::WsTransportStream;
+pub use ws_stream::TransportStream;
 
 // TCP transport primitives. `TcpReader` / `TcpWriter` are the unified enums
 // TUN and the proxy plumb through; the `TcpShadowsocks*` helpers construct
@@ -233,7 +233,7 @@ pub async fn connect_websocket_with_source(
     fwmark: Option<u32>,
     ipv6_first: bool,
     source: &'static str,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     connect_websocket_with_resume(cache, url, mode, fwmark, ipv6_first, source, None).await
 }
 
@@ -242,7 +242,7 @@ pub async fn connect_websocket_with_source(
 /// the chosen WebSocket transport sends `X-Outline-Resume: <hex>` on the
 /// upgrade so the server can re-attach to a parked upstream. Either way
 /// the server may issue a fresh Session ID via `X-Outline-Session`,
-/// readable on the returned stream via [`WsTransportStream::issued_session_id`].
+/// readable on the returned stream via [`TransportStream::issued_session_id`].
 pub async fn connect_websocket_with_resume(
     cache: &DnsCache,
     url: &Url,
@@ -251,7 +251,7 @@ pub async fn connect_websocket_with_resume(
     ipv6_first: bool,
     source: &'static str,
     resume_request: Option<SessionId>,
-) -> Result<WsTransportStream> {
+) -> Result<TransportStream> {
     let requested = mode;
     let mode = ws_mode_cache::effective_mode(url, mode).await;
     if mode != requested {
@@ -265,7 +265,7 @@ pub async fn connect_websocket_with_resume(
     // Stamp the originally-requested mode when the dial path ended up at a
     // lower mode than asked for (either via the host-level `ws_mode_cache`
     // clamp or via an inline H3→H2/H1 fallback below). Uplink-manager
-    // callers inspect `WsTransportStream::downgraded_from()` and mirror the
+    // callers inspect `TransportStream::downgraded_from()` and mirror the
     // downgrade into their per-uplink `mode_downgrade_until` window so
     // routing/metrics see a consistent state.
     let downgrade_marker = |actual: TransportMode| -> Option<TransportMode> {
@@ -278,7 +278,7 @@ pub async fn connect_websocket_with_resume(
                     .await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
             ws_mode_cache::record_success(url, TransportMode::WsH1).await;
-            Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+            Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                 .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
         },
         TransportMode::WsH2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
@@ -299,7 +299,7 @@ pub async fn connect_websocket_with_resume(
                     connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                         .await?;
                 debug!(url = %url, selected_mode = "http1", requested_mode = "h2", "websocket transport connected");
-                Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                     .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
             },
         },
@@ -341,7 +341,7 @@ pub async fn connect_websocket_with_resume(
                             connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                                 .await?;
                         debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                        Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                        Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                             .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
                     },
                 }
@@ -364,7 +364,7 @@ pub async fn connect_websocket_with_resume(
                         connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                             .await?;
                     debug!(url = %url, selected_mode = "http1", requested_mode = "h3", "websocket transport connected");
-                    Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
+                    Ok(TransportStream::new_http1_with_session(ws_stream, issued)
                         .with_downgraded_from(downgrade_marker(TransportMode::WsH1)))
                 },
             }
@@ -379,14 +379,21 @@ pub async fn connect_websocket_with_resume(
             );
         },
         TransportMode::XhttpH2 | TransportMode::XhttpH3 => {
-            // XHTTP rides its own packet-up dial path (`crate::xhttp::dial`)
-            // because it shares no machinery with the WebSocket upgrade
-            // pipeline — callers must select that path explicitly. As with
-            // Quic, reaching here means a config-routing bug.
-            anyhow::bail!(
-                "TransportMode::Xhttp* does not produce a WebSocket stream; \
-                 caller must dispatch to the xhttp dial path"
-            );
+            // XHTTP packet-up shares the `TransportStream` enum with the
+            // WS variants but has its own dial pipeline — no upgrade
+            // handshake, no resume header, no shared connection cache.
+            // The `connect_xhttp` driver opens its own TCP+TLS+h2 leg
+            // per session and returns an `XhttpStream` that we wrap as
+            // a `TransportStream::Xhttp`.
+            //
+            // h3 client variant is a stubbed bail; h2 is the only
+            // implemented carrier in this MVP. See `crate::xhttp`.
+            let stream = crate::xhttp::connect_xhttp(cache, url, mode, fwmark, ipv6_first)
+                .await?;
+            debug!(url = %url, selected_mode = %mode, "xhttp packet-up transport connected");
+            ws_mode_cache::record_success(url, mode).await;
+            Ok(TransportStream::new_xhttp(stream)
+                .with_downgraded_from(downgrade_marker(mode)))
         },
     }
 }
