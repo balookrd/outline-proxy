@@ -200,7 +200,7 @@ impl WsTransportStream {
     /// was produced by a transport-level fallback (clamp or inline retry),
     /// or `None` when the dial succeeded at the requested mode. Used by
     /// uplink-manager callsites to surface the downgrade in the per-uplink
-    /// `h3_downgrade_until` window so routing/metrics see a consistent state.
+    /// `mode_downgrade_until` window so routing/metrics see a consistent state.
     pub fn downgraded_from(&self) -> Option<WsTransportMode> {
         match self {
             WsTransportStream::Http1 { downgraded_from, .. } => *downgraded_from,

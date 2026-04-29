@@ -7,7 +7,7 @@ use super::super::super::penalty::{add_penalty, update_rtt_ewma};
 use super::super::super::types::{
     PerTransportStatus, ProbeOutcome, TransportKind, Uplink, UplinkManager,
 };
-use super::super::h3_downgrade::H3DowngradeTrigger;
+use super::super::mode_downgrade::ModeDowngradeTrigger;
 
 fn record_transport_failure(
     status: &mut PerTransportStatus,
@@ -46,7 +46,7 @@ fn needs_h3_recovery(
     effective_mode == WsTransportMode::H2
         && uplink_transport == UplinkTransport::Ws
         && uplink_ws_mode == WsTransportMode::H3
-        && status.h3_downgrade_until.is_some_and(|t| t > now)
+        && status.mode_downgrade_until.is_some_and(|t| t > now)
 }
 
 impl UplinkManager {
@@ -118,17 +118,17 @@ impl UplinkManager {
         // next probe uses the stable H2 path and H3 is only retried after the
         // window expires or a recovery re-probe confirms liveness.
         if !result.tcp_ok {
-            self.extend_h3_downgrade(
+            self.extend_mode_downgrade(
                 index,
                 TransportKind::Tcp,
-                H3DowngradeTrigger::ProbeTransportFailure,
+                ModeDowngradeTrigger::ProbeTransportFailure,
             );
         }
         if result.udp_applicable && !result.udp_ok {
-            self.extend_h3_downgrade(
+            self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
-                H3DowngradeTrigger::ProbeTransportFailure,
+                ModeDowngradeTrigger::ProbeTransportFailure,
             );
         }
         // The probe layer reports a "silent" downgrade when it succeeded but
@@ -139,17 +139,17 @@ impl UplinkManager {
         // `effective_*_ws_mode` stuck on H3 forever while every actual probe
         // and user dial silently rides H2.
         if let Some(requested) = result.tcp_downgraded_from {
-            self.extend_h3_downgrade(
+            self.extend_mode_downgrade(
                 index,
                 TransportKind::Tcp,
-                H3DowngradeTrigger::SilentTransportFallback(requested),
+                ModeDowngradeTrigger::SilentTransportFallback(requested),
             );
         }
         if let Some(requested) = result.udp_downgraded_from {
-            self.extend_h3_downgrade(
+            self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
-                H3DowngradeTrigger::SilentTransportFallback(requested),
+                ModeDowngradeTrigger::SilentTransportFallback(requested),
             );
         }
         if needs_h3_tcp_recovery {
@@ -201,16 +201,16 @@ impl UplinkManager {
         });
         // Probe-level failure (ws connect / timeout).  Same H3 downgrade logic
         // as the tcp_ok=false case above; helper is a no-op for non-WS/non-H3.
-        self.extend_h3_downgrade(
+        self.extend_mode_downgrade(
             index,
             TransportKind::Tcp,
-            H3DowngradeTrigger::ProbeConnectFailure(&error),
+            ModeDowngradeTrigger::ProbeConnectFailure(&error),
         );
         if uplink.supports_udp() {
-            self.extend_h3_downgrade(
+            self.extend_mode_downgrade(
                 index,
                 TransportKind::Udp,
-                H3DowngradeTrigger::ProbeConnectFailure(&error),
+                ModeDowngradeTrigger::ProbeConnectFailure(&error),
             );
         }
         warn!(uplink = %uplink.name, error = %format!("{error:#}"), "uplink probe failed");

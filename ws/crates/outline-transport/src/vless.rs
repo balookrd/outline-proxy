@@ -512,7 +512,7 @@ impl VlessUdpTransport {
     ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
     ///   fallback). The `VlessUdpSessionMux` reports this through its
     ///   `on_downgrade` hook so the uplink-manager mirrors the downgrade
-    ///   into its per-uplink `h3_downgrade_until` window.
+    ///   into its per-uplink `mode_downgrade_until` window.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_resume(
         cache: &DnsCache,

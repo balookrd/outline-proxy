@@ -155,7 +155,7 @@ pub(crate) struct PerTransportStatus {
     /// When set, connections must use H2 instead of H3 until this instant
     /// because H3 produced repeated APPLICATION_CLOSE or other transport
     /// errors. Cleared by a successful explicit H3 re-probe.
-    pub(crate) h3_downgrade_until: Option<Instant>,
+    pub(crate) mode_downgrade_until: Option<Instant>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
     pub(crate) last_active: Option<Instant>,
@@ -324,7 +324,7 @@ pub(crate) struct ProbeOutcome {
     /// inline H3→H2/H1 fallback inside `connect_websocket_with_resume`).
     /// `None` when the dial path matched the requested mode. Surfaced from
     /// the probe layer so the manager mirrors the downgrade into the
-    /// per-uplink `h3_downgrade_until` window even when the probe itself
+    /// per-uplink `mode_downgrade_until` window even when the probe itself
     /// succeeded — without this, `effective_*_ws_mode` would silently lag
     /// behind the actual transport state.
     pub(crate) tcp_downgraded_from: Option<crate::config::WsTransportMode>,

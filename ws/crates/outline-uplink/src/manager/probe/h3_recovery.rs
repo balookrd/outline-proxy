@@ -5,7 +5,7 @@ use tracing::{info, warn};
 use crate::config::WsTransportMode;
 
 use super::super::super::types::{TransportKind, Uplink, UplinkManager};
-use super::super::h3_downgrade::H3DowngradeTrigger;
+use super::super::mode_downgrade::ModeDowngradeTrigger;
 use super::scheduler::run_probe_attempt_with_timeout;
 
 impl UplinkManager {
@@ -67,9 +67,9 @@ impl UplinkManager {
                     kind = ?which,
                     "H3 recovery confirmed by re-probe, clearing downgrade window early"
                 );
-                self.clear_h3_downgrade(index, which);
+                self.clear_mode_downgrade(index, which);
             } else {
-                self.extend_h3_downgrade(index, which, H3DowngradeTrigger::RecoveryReprobeFail);
+                self.extend_mode_downgrade(index, which, ModeDowngradeTrigger::RecoveryReprobeFail);
             }
         }
     }

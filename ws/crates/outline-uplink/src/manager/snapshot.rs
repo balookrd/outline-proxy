@@ -119,12 +119,12 @@ impl UplinkManager {
                 udp_consecutive_failures: status.udp.consecutive_failures,
                 h3_tcp_downgrade_until_ms: status
                     .tcp
-                    .h3_downgrade_until
+                    .mode_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 h3_udp_downgrade_until_ms: status
                     .udp
-                    .h3_downgrade_until
+                    .mode_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
                 last_active_tcp_ago_ms: status

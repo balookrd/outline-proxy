@@ -172,7 +172,7 @@ impl UdpWsTransport {
     ///   `connect_websocket_with_resume` produced a stream at a lower mode
     ///   than requested (clamp via `ws_mode_cache` or inline H3→H2/H1
     ///   fallback). The uplink-manager caller mirrors this into its
-    ///   per-uplink `h3_downgrade_until` window so routing/metrics see a
+    ///   per-uplink `mode_downgrade_until` window so routing/metrics see a
     ///   consistent state.
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_with_resume(

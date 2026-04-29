@@ -228,9 +228,9 @@ impl UplinkManager {
         // H3 recovery re-probes: for each uplink where the H2 probe succeeded
         // during a downgrade window, run an explicit H3 probe.  A successful H3
         // result clears h3_*_downgrade_until immediately (instead of waiting for
-        // the full h3_downgrade_duration to expire) so traffic switches back to
+        // the full mode_downgrade_duration to expire) so traffic switches back to
         // H3 as soon as the server is confirmed ready.  A failing result extends
-        // the downgrade window by another h3_downgrade_duration from now,
+        // the downgrade window by another mode_downgrade_duration from now,
         // preventing oscillation if H3 is still unstable.
         self.run_h3_recovery_probes(h3_tcp_recovery_needed, TransportKind::Tcp).await;
         self.run_h3_recovery_probes(h3_udp_recovery_needed, TransportKind::Udp).await;

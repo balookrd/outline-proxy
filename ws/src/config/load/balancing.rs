@@ -34,8 +34,8 @@ pub(super) fn load_balancing_config(lb: Option<&LoadBalancingSection>) -> Result
         failure_penalty_halflife: Duration::from_secs(
             lb.and_then(|l| l.failure_penalty_halflife_secs).unwrap_or(60),
         ),
-        h3_downgrade_duration: Duration::from_secs(
-            lb.and_then(|l| l.h3_downgrade_secs).unwrap_or(60),
+        mode_downgrade_duration: Duration::from_secs(
+            lb.and_then(|l| l.mode_downgrade_secs).unwrap_or(60),
         ),
         udp_ws_keepalive_interval: lb
             .and_then(|l| l.udp_ws_keepalive_secs)

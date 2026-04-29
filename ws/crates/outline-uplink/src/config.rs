@@ -218,7 +218,7 @@ pub struct LoadBalancingConfig {
     pub failure_penalty_max: Duration,
     pub failure_penalty_halflife: Duration,
     /// How long to downgrade from H3 to H2 after an H3 runtime error.
-    pub h3_downgrade_duration: Duration,
+    pub mode_downgrade_duration: Duration,
     /// Interval at which WS ping frames are sent on idle UDP data-path connections
     /// to prevent NAT/firewall timeout disconnections. None disables keepalive.
     pub udp_ws_keepalive_interval: Option<Duration>,

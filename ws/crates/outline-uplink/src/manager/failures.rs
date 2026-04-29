@@ -10,7 +10,7 @@ use super::super::error_classify::{
 };
 use super::super::penalty::{add_penalty, current_penalty, update_rtt_ewma};
 use super::super::types::{TransportKind, UplinkManager};
-use super::h3_downgrade::H3DowngradeTrigger;
+use super::mode_downgrade::ModeDowngradeTrigger;
 
 const PROBE_WAKEUP_MIN_INTERVAL: Duration = Duration::from_secs(15);
 
@@ -322,7 +322,7 @@ impl UplinkManager {
         }
 
         // Apply H3 → H2 downgrade for this transport kind.
-        self.extend_h3_downgrade(index, transport, H3DowngradeTrigger::RuntimeFailure(error));
+        self.extend_mode_downgrade(index, transport, ModeDowngradeTrigger::RuntimeFailure(error));
 
         self.clear_standby(index, transport).await;
     }
