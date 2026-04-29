@@ -61,9 +61,11 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 - Routing fast path skips the per-packet `has_any_healthy` probe when no rule sets a fallback target.
 - Standby refill skips the TCP pool lookup entirely when the effective dial mode is raw QUIC (which has no per-connection pool).
 - Transport-internal cleanup: `tcp/connect` shares one SS target-header send between paths; `tun/tcp` flow tables moved to `DashMap` with a dedicated `FlowScheduler`; the H2/H3 dial skeleton is unified behind a single `WsDialer` associated-type trait; route TCP/UDP fallback shares one `apply_fallback_strategy` helper.
+- `outline_transport::install_test_tls_root(CertificateDer)` — test-only knob that pins a custom self-signed root for the XHTTP h2 / h3 dial paths. The override slot is a `RwLock<Option<…>>` defaulting to `None`, so production callers (which leave it unset) keep the existing webpki behaviour with one extra read per dial. The motivating consumer is the cross-repo end-to-end test in `outline-ss-rust`, which spins up an in-process self-signed server and dials it through the regular `connect_websocket_with_resume` entry.
 
 ### Fixed
 
+- XHTTP h3 stream-one closed the QUIC connection with `H3_NO_ERROR` before any application bytes flowed: the only `SendRequest` was being moved into `open_h3_stream_one`, which dropped it on return, and the h3 crate's `SendRequest::drop` triggers a graceful close once `sender_count` hits zero. Mirrored the packet-up pattern — clone before the open helper, hold the clone alive in the driver task. Same commit moves the quinn `Endpoint` into the driver task (the previous `let _endpoint_guard = endpoint;` only kept it alive for the function body, not the session lifetime).
 - Dashboard: the per-instance hyper connection driver is now aborted when the proxy task ends, closing a control-API socket leak that accumulated under instance churn.
 - Raw QUIC: the `VlessUdpDemuxer` Arc cycle that kept probe-driven QUIC connections alive after probe completion is broken; probes no longer pin connections beyond their natural lifetime.
 - TUN: raw-QUIC TCP dials initiated from TUN flows now fall back to WS over H2 the same way they fall back from SOCKS5 flows; previously a TUN-side raw-QUIC failure surfaced as an immediate flow termination.
