@@ -7,29 +7,42 @@
 //! client's `connect_websocket_with_resume` is the public entry —
 //! the same one production callers use.
 //!
-//! Plain h2 over TCP is used (`http://...` URL): the client picks
-//! TLS only when the URL scheme is `https`/`wss`, and the server's
-//! axum stack accepts h2 prior-knowledge over plain TCP. Skipping
-//! TLS keeps cert plumbing out of scope for these tests; TLS itself
-//! is exercised by production deployments.
+//! Two carrier classes are covered:
+//!   * **h2 over plain TCP** (`http://` URL): the client picks
+//!     `BoxedIo::Plain` whenever the scheme is not `https`/`wss`,
+//!     and axum accepts h2 prior-knowledge over plain TCP. No TLS
+//!     plumbing needed.
+//!   * **h3 over TLS+QUIC** (`https://` URL): h3 is TLS-only on
+//!     both sides. Tests share a self-signed cert via a
+//!     process-cached helper and install the matching root on the
+//!     client through `outline_transport::install_test_tls_root`,
+//!     so the dial trusts the in-process server.
 //!
 //! What these tests cover that single-side mocks do not: header
-//! capitalisation, edge-case parser behaviour, end-to-end framing.
-//! Disagreements between the server's axum routes and the client's
-//! `hyper::client::conn::http2` builder surface here.
+//! capitalisation, edge-case parser behaviour, end-to-end framing,
+//! TLS / QUIC handshake compatibility. Disagreements between the
+//! server's axum / h3 routes and the client's hyper / quinn
+//! builders surface here.
 
 use std::{
+    collections::BTreeMap,
     net::{Ipv4Addr, SocketAddr},
-    sync::Arc,
+    sync::{Arc, OnceLock},
     time::Duration,
 };
 
 use anyhow::{Result, bail};
+use arc_swap::ArcSwap;
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use sockudo_ws::{
+    Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
+    task::JoinHandle,
 };
 use tokio_tungstenite::tungstenite::protocol::Message;
 use url::Url;
@@ -38,8 +51,22 @@ use outline_transport::{
     DnsCache as ClientDnsCache, TransportMode, TransportStream, connect_websocket_with_resume,
 };
 
-use super::xhttp::{build_vless_tcp_handshake, setup_xhttp_server, setup_xhttp_server_with_resumption};
-use crate::protocol::vless::VERSION;
+use super::super::nat::NatTable;
+use super::super::resumption;
+use super::super::setup::{VlessXhttpUserRoute, build_xhttp_vless_route_map};
+use super::super::shutdown::ShutdownSignal;
+use super::super::state::{AuthPolicy, RouteRegistry, Services, UdpServices, UserKeySlice};
+use super::super::transport::XhttpRegistry;
+use super::super::{DnsCache, serve_h3_server};
+use super::sample_config;
+use super::xhttp::{
+    TEST_UUID, build_vless_tcp_handshake, setup_xhttp_server,
+    setup_xhttp_server_with_resumption,
+};
+use crate::config::H3Alpn;
+use crate::crypto::UserKey;
+use crate::metrics::Metrics;
+use crate::protocol::vless::{VERSION, VlessUser};
 
 /// Drains binary frames from the client stream until the
 /// accumulated payload reaches `expected` bytes (or the stream
@@ -248,6 +275,234 @@ async fn cross_repo_xhttp_h2_resume_reattaches_parked_upstream() -> Result<()> {
     assert_eq!(&second, b"helo");
 
     drop(stream_b);
+    server.abort();
+    Ok(())
+}
+
+// ── h3 (TLS+QUIC) cross-repo helpers and tests ──────────────────────────
+
+/// Lazy, process-wide self-signed cert. h3 is TLS-only on both
+/// sides (`https://` mandatory in the client, QUIC always TLS).
+/// Caching the DER bytes lets us hand the same root to the
+/// `outline-transport` test override and to every fresh
+/// `rustls::ServerConfig` (the server-side TLS struct is consumed
+/// by `H3WebSocketServer::bind`, so a new instance is built per
+/// test).
+fn shared_test_cert() -> &'static (Vec<u8>, Vec<u8>, CertificateDer<'static>) {
+    static CELL: OnceLock<(Vec<u8>, Vec<u8>, CertificateDer<'static>)> = OnceLock::new();
+    CELL.get_or_init(|| {
+        super::super::ensure_rustls_provider_installed();
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
+            .expect("rcgen self-signed cert");
+        let cert_bytes = cert.cert.der().to_vec();
+        let key_bytes = cert.signing_key.serialize_der();
+        let cert_der = CertificateDer::from(cert_bytes.clone());
+        (cert_bytes, key_bytes, cert_der)
+    })
+}
+
+fn build_test_server_tls_config(alpn: &[&[u8]]) -> rustls::ServerConfig {
+    let (cert_bytes, key_bytes, _) = shared_test_cert();
+    let cert_der = CertificateDer::from(cert_bytes.clone());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_bytes.clone()));
+    let mut cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert_der], key)
+        .expect("test server tls config");
+    cfg.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    cfg
+}
+
+/// Installs the shared self-signed root into the client's TLS
+/// override slot exactly once per process. Subsequent calls are
+/// no-ops; the override itself is last-writer-wins, so the
+/// `Once` is a defensive measure rather than strict correctness.
+fn ensure_test_tls_installed_on_client() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let (_, _, cert_der) = shared_test_cert();
+        outline_transport::install_test_tls_root(cert_der.clone());
+    });
+}
+
+/// Spins up a real server with only an h3 (QUIC) listener — no
+/// axum/h2. URL → `https://localhost:port/<base_path>`. Mirrors
+/// `setup_xhttp_server_with_resumption` from the sibling `xhttp`
+/// test module, but binds an `H3WebSocketServer` instead of an
+/// axum `serve_listener`. XHTTP routes are dispatched by
+/// `crate::server::transport::xhttp::handle_xhttp_h3_request` from
+/// inside `serve_h3_server`.
+async fn setup_xhttp_h3_server(
+    base_path: &'static str,
+    resumption: bool,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>, Arc<XhttpRegistry>)> {
+    ensure_test_tls_installed_on_client();
+    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let tls_config = build_test_server_tls_config(&[b"h3"]);
+    let h3_server =
+        H3WebSocketServer::<H3Transport>::bind(bind_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let listen_addr = h3_server.local_addr()?;
+
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let xhttp_routes = Arc::new(build_xhttp_vless_route_map(&[VlessXhttpUserRoute {
+        user: vless_user,
+        xhttp_path: Arc::from(base_path),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: xhttp_routes,
+    }));
+    let orphan_registry = if resumption {
+        Some(Arc::new(resumption::OrphanRegistry::new(
+            resumption::ResumptionConfig::from(&crate::config::SessionResumptionConfig {
+                enabled: true,
+                orphan_ttl_tcp_secs: 30,
+                orphan_ttl_udp_secs: 30,
+                orphan_per_user_cap: 4,
+                orphan_global_cap: 16,
+            }),
+            Arc::clone(&metrics),
+        )))
+    } else {
+        None
+    };
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        orphan_registry,
+        16,
+    ));
+    let xhttp_registry = Arc::clone(&services.xhttp_registry);
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+
+    let handle = tokio::spawn(async move {
+        serve_h3_server(
+            h3_server,
+            routes,
+            services,
+            auth,
+            Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+            Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+    Ok((listen_addr, handle, xhttp_registry))
+}
+
+#[tokio::test]
+async fn cross_repo_xhttp_packet_up_h3_round_trip() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server, _registry) = setup_xhttp_h3_server("/xh", false).await?;
+
+    // h3 mandates `https://` on the client; the test's self-signed
+    // root was just installed via `install_test_tls_root` so the
+    // dial trusts it without touching webpki.
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("https://localhost:{}/xh", listen_addr.port()))?;
+    let mut stream = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        None,
+        false,
+        "cross-repo-h3-test",
+        None,
+    )
+    .await?;
+
+    let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream.send(Message::Binary(Bytes::from(handshake))).await?;
+
+    let received = read_binary_until_at_least(&mut stream, 6).await?;
+    assert_eq!(&received[..2], &[VERSION, 0x00], "vless response header");
+    assert_eq!(&received[2..6], b"pong", "echoed payload");
+
+    let upstream_bytes =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    drop(stream);
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn cross_repo_xhttp_stream_one_h3_round_trip() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server, _registry) = setup_xhttp_h3_server("/xh", false).await?;
+
+    // Stream-one on h3 uses `RequestStream::split` on both ends —
+    // the client hands the bidi stream to two concurrent tasks
+    // (uplink pump + downlink drain) and the server's
+    // `handle_xhttp_h3_request` does the matching split. This test
+    // is the only place that exercise reaches in-tree.
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!(
+        "https://localhost:{}/xh?mode=stream-one",
+        listen_addr.port()
+    ))?;
+    let mut stream = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::XhttpH3,
+        None,
+        false,
+        "cross-repo-h3-test",
+        None,
+    )
+    .await?;
+
+    let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    stream.send(Message::Binary(Bytes::from(handshake))).await?;
+
+    let received = read_binary_until_at_least(&mut stream, 6).await?;
+    assert_eq!(&received[..2], &[VERSION, 0x00]);
+    assert_eq!(&received[2..6], b"pong");
+
+    let upstream_bytes =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    drop(stream);
     server.abort();
     Ok(())
 }
