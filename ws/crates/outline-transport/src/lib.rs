@@ -203,6 +203,10 @@ pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_di
 // HTTP/2 window-size tuning: called once during startup from the main binary.
 pub use h2::init_h2_window_sizes;
 
+// Per-host ws-mode downgrade cache TTL: called once during startup from the
+// main binary, fed from the `mode_downgrade_secs` config knob.
+pub use ws_mode_cache::init_downgrade_ttl;
+
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.
 pub use guards::UpstreamTransportGuard;
@@ -261,7 +265,7 @@ pub async fn connect_websocket_with_resume(
     // lower mode than asked for (either via the host-level `ws_mode_cache`
     // clamp or via an inline H3→H2/H1 fallback below). Uplink-manager
     // callers inspect `WsTransportStream::downgraded_from()` and mirror the
-    // downgrade into their per-uplink `h3_downgrade_until` window so
+    // downgrade into their per-uplink `mode_downgrade_until` window so
     // routing/metrics see a consistent state.
     let downgrade_marker = |actual: WsTransportMode| -> Option<WsTransportMode> {
         if actual != requested { Some(requested) } else { None }
@@ -272,12 +276,14 @@ pub async fn connect_websocket_with_resume(
                 connect_websocket_http1(cache, url, fwmark, ipv6_first, source, resume_request)
                     .await?;
             debug!(url = %url, selected_mode = "http1", "websocket transport connected");
+            ws_mode_cache::record_success(url, WsTransportMode::Http1).await;
             Ok(WsTransportStream::new_http1_with_session(ws_stream, issued)
                 .with_downgraded_from(downgrade_marker(WsTransportMode::Http1)))
         },
         WsTransportMode::H2 => match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h2", "websocket transport connected");
+                ws_mode_cache::record_success(url, WsTransportMode::H2).await;
                 Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
             },
             Err(h2_error) => {
@@ -300,6 +306,7 @@ pub async fn connect_websocket_with_resume(
         WsTransportMode::H3 => match connect_websocket_h3(cache, url, fwmark, ipv6_first, source, resume_request).await {
             Ok(stream) => {
                 debug!(url = %url, selected_mode = "h3", "websocket transport connected");
+                ws_mode_cache::record_success(url, WsTransportMode::H3).await;
                 Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H3)))
             },
             Err(h3_error) => {
@@ -313,6 +320,12 @@ pub async fn connect_websocket_with_resume(
                 match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                     Ok(stream) => {
                         debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
+                        // Note: we deliberately do NOT call `record_success(H2)` here.
+                        // Reaching this branch means h3 just failed; the record_failure
+                        // above set cap=H2, and an H2 success would not "exceed" that cap
+                        // — but more importantly, clearing the entry would invite the
+                        // next dial to retry h3 immediately and we'd burn the doomed
+                        // handshake again. The TTL is the correct natural recovery here.
                         Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
                     },
                     Err(h2_error) => {
@@ -340,6 +353,7 @@ pub async fn connect_websocket_with_resume(
             match connect_websocket_h2(cache, url, fwmark, ipv6_first, source, resume_request).await {
                 Ok(stream) => {
                     debug!(url = %url, selected_mode = "h2", requested_mode = "h3", "websocket transport connected");
+                    // See sibling H3 success branch: do not clear the cap here.
                     Ok(stream.with_downgraded_from(downgrade_marker(WsTransportMode::H2)))
                 },
                 Err(h2_error) => {

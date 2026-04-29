@@ -19,7 +19,29 @@ use url::Url;
 
 use crate::config::WsTransportMode;
 
-const DOWNGRADE_TTL: Duration = Duration::from_secs(300);
+/// Default TTL applied when [`init_downgrade_ttl`] has not been called.
+/// Matches the `LoadBalancingConfig::mode_downgrade_duration` default in
+/// `outline-uplink` so a binary that never wires startup config still
+/// behaves consistently with the per-uplink soft-window.
+const DEFAULT_DOWNGRADE_TTL: Duration = Duration::from_secs(60);
+
+/// Process-wide TTL for the per-host downgrade cache. Set once at
+/// startup from the `mode_downgrade_secs` (legacy alias
+/// `h3_downgrade_secs`) config knob; subsequent calls are no-ops.
+static DOWNGRADE_TTL: OnceLock<Duration> = OnceLock::new();
+
+fn downgrade_ttl() -> Duration {
+    DOWNGRADE_TTL.get().copied().unwrap_or(DEFAULT_DOWNGRADE_TTL)
+}
+
+/// Initialise [`downgrade_ttl`]. First call wins; subsequent calls are
+/// silently ignored. Intended for the `outline-ws-rust` bootstrap: pass
+/// the maximum `mode_downgrade_duration` across all uplink groups so the
+/// process-global cache holds at least as long as the most conservative
+/// group expects (the cache is keyed by `host:port`, not per-group).
+pub fn init_downgrade_ttl(ttl: Duration) {
+    let _ = DOWNGRADE_TTL.set(ttl);
+}
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -77,7 +99,7 @@ pub(crate) async fn record_failure(url: &Url, failed: WsTransportMode) {
     let Some(key) = host_key(url) else { return };
     let now = Instant::now();
     let mut map = cache().write().await;
-    let expires_at = now + DOWNGRADE_TTL;
+    let expires_at = now + downgrade_ttl();
     map.entry(key)
         .and_modify(|e| {
             if rank(new_max) <= rank(e.max_mode) {
@@ -86,6 +108,21 @@ pub(crate) async fn record_failure(url: &Url, failed: WsTransportMode) {
             }
         })
         .or_insert(Entry { max_mode: new_max, expires_at });
+}
+
+/// Drop the per-host clamp once a dial actually succeeded at a mode
+/// that meets-or-exceeds the cached cap. Without this the cache would
+/// only clear when the entry naturally expires, so concurrent dials
+/// hitting the same host during the recovery window keep clamping to
+/// the lower mode even though h3 / h2 is already healthy again.
+pub(crate) async fn record_success(url: &Url, succeeded: WsTransportMode) {
+    let Some(key) = host_key(url) else { return };
+    let mut map = cache().write().await;
+    if let Some(entry) = map.get(&key)
+        && rank(succeeded) >= rank(entry.max_mode)
+    {
+        map.remove(&key);
+    }
 }
 
 /// Drop expired entries.  Called from `gc_shared_connections`.

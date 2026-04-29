@@ -270,6 +270,41 @@ async fn ws_mode_cache_clamp_marks_stream_as_downgraded_from_requested() {
 
 #[cfg(feature = "metrics")]
 #[tokio::test]
+async fn record_success_clears_cache_when_succeeded_meets_or_exceeds_cap() {
+    // Use a unique URL per test so the process-global cache map does
+    // not bleed state between concurrent tests on the same host:port.
+    let url = Url::parse("wss://record-success-meets.test:443/").unwrap();
+    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    assert_eq!(
+        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
+        WsTransportMode::H2,
+        "failure must clamp"
+    );
+    super::ws_mode_cache::record_success(&url, WsTransportMode::H3).await;
+    assert_eq!(
+        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
+        WsTransportMode::H3,
+        "successful h3 must drop the clamp so the next dial is not held back"
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
+async fn record_success_keeps_cache_when_succeeded_is_below_cap() {
+    let url = Url::parse("wss://record-success-below.test:443/").unwrap();
+    super::ws_mode_cache::record_failure(&url, WsTransportMode::H3).await;
+    // Cap is now H2. A successful Http1 dial does not prove H2/H3 work
+    // so the clamp must remain in place.
+    super::ws_mode_cache::record_success(&url, WsTransportMode::Http1).await;
+    assert_eq!(
+        super::ws_mode_cache::effective_mode(&url, WsTransportMode::H3).await,
+        WsTransportMode::H2,
+        "an Http1 success must not clear an H2 cap"
+    );
+}
+
+#[cfg(feature = "metrics")]
+#[tokio::test]
 async fn dial_at_requested_mode_carries_no_downgrade_marker() {
     let server = TestH2Server::start().await;
     let url = server.url();
