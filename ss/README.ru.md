@@ -23,7 +23,8 @@
 - WebSocket over HTTP/3 — RFC 9220 Extended CONNECT
 - Shadowsocks AEAD (включая SS-2022) поверх WebSocket — TCP и UDP
 - VLESS поверх WebSocket — TCP, UDP и mux.cool с XUDP per-packet addressing (совместимо с xray / Happ / Hiddify)
-- VLESS поверх XHTTP packet-up — long-lived GET + POST'ы с инкрементным seq, X-Padding и SSE-маскировка заголовков; для CDN, блокирующих WebSocket-апгрейд (совместимо с xray / sing-box / Hiddify)
+- VLESS поверх XHTTP — режимы `packet-up` (long-lived GET + POST'ы с инкрементным seq) и `stream-one` (один full-duplex POST), переключение per-session через `?mode=` в URL запроса; X-Padding и SSE-маскировка заголовков; для CDN, блокирующих WebSocket-апгрейд (совместимо с xray / sing-box / Hiddify)
+- Cross-transport session resumption поверх XHTTP — припаркованный VLESS upstream переподключается через XHTTP reconnect, в том числе при смене carrier'а (h3→h2 fallback)
 - Несколько пользователей с независимыми паролями Shadowsocks и/или VLESS UUID
 - Выбор шифра на уровне пользователя
 - Индивидуальные TCP-, UDP- и VLESS-пути WebSocket на пользователя
@@ -58,6 +59,8 @@
 | Outline динамические ключи | Поддерживается | `ssconf://` + генерируемый YAML |
 | VLESS поверх WebSocket | Поддерживается | TCP, UDP, mux.cool с XUDP per-packet addressing (совместимо с xray/happ/hiddify), до 8 под-соединений одновременно |
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET + POST'ы с seq-номерами на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер на сервере склеивает out-of-order POST'ы; downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c); `X-Padding` + SSE-style маскировка заголовков (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
+| VLESS поверх XHTTP stream-one | Поддерживается | Один bidirectional запрос: request body — uplink, response body — downlink. Включается через `?mode=stream-one` в URL запроса на том же base path. Требует h2 или h3 (h1 → 505). На h3 bidi-стрим разделяется через `RequestStream::split` на send/recv половинки на отдельных tasks |
+| Resumption через XHTTP | Поддерживается | Сервер выдаёт `X-Outline-Session` на первом запросе, паркует VLESS-upstream при разрыве carrier'а и переподключает на следующем запросе с `X-Outline-Resume` — в том числе при смене carrier'а (например, fallback клиента с h3 на h2 с тем же токеном) |
 | VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | VLESS / Shadowsocks raw поверх QUIC | Поддерживается | Без WebSocket / без HTTP/3 framing'а; выбирается по ALPN (`vless`, `ss`) на том же `h3_listen` |
 | Outline management API | Не поддерживается | Только data plane |
@@ -289,9 +292,9 @@ xhttp_path_vless = "/alice/xh"
 
 Для `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305` параметр `password` должен содержать base64-кодированный сырой PSK длиной ровно 16, 32 и 32 байта соответственно, например `openssl rand -base64 32`.
 
-### VLESS поверх XHTTP packet-up
+### VLESS поверх XHTTP
 
-Для деплойментов за CDN, блокирующим WebSocket-апгрейд, можно настроить VLESS поверх XHTTP packet-up рядом с WS-путём (или вместо). Сервер регистрирует `<xhttp_path_vless>/{id}` для каждого base; `{id}` — opaque токен, выбираемый клиентом на сессию. Тот же `vless_id` работает на обоих несущих — клиент сам выбирает, на каком пути ему лучше в данный момент.
+Для деплойментов за CDN, блокирующим WebSocket-апгрейд, можно настроить VLESS поверх XHTTP рядом с WS-путём (или вместо). Сервер регистрирует `<xhttp_path_vless>/{id}` для каждого base; `{id}` — opaque токен, выбираемый клиентом на сессию. Тот же `vless_id` работает на обоих несущих — клиент сам выбирает, на каком пути ему лучше в данный момент.
 
 ```toml
 listen = "0.0.0.0:443"
@@ -308,7 +311,16 @@ id = "alice"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ```
 
-Динамический генератор access-key выпускает отдельный URI `vless://...?type=xhttp&mode=packet-up&path=...` на пользователя, когда `xhttp_path_vless` установлен. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают этот URI как есть.
+Один и тот же `xhttp_path_vless` слушатель обслуживает оба XHTTP wire-режима; клиент выбирает carrier на сессию через query-параметр URL:
+
+| Режим | URL клиента | Что куда |
+| --- | --- | --- |
+| `packet-up` (по умолчанию) | `https://example.com/xh/<id>` | `GET <id>` — long-lived downlink; короткие `POST <id>` с `X-Xhttp-Seq: N` несут uplink. Reorder-буфер склеивает out-of-order POST'ы. Downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c) — следующий GET с тем же `<id>` продолжает с unread-курсора. |
+| `stream-one` | `https://example.com/xh/<id>?mode=stream-one` | Один bidirectional `POST <id>?mode=stream-one`: request body = uplink, response body = downlink. Требует h2 или h3 (h1 → 505). На h3 bidi-стрим QUIC разделяется на send/recv половины на отдельных tasks. |
+
+Cross-transport session resumption opt-in (`[session_resumption].enabled = true`) и работает через XHTTP reconnect, в том числе при смене carrier'а — например, клиент, у которого упал h3 dial, может откатиться на h2 с тем же `X-Outline-Resume` токеном, и сервер переподключит припаркованный VLESS-upstream вместо нового connect'а к таргету. Токен `X-Outline-Session`, который сервер выдаёт на первом запросе, появляется в каждом последующем GET/POST/stream-one ответе той же сессии — поэтому reconnect-attach забирает его без дополнительного state'а на клиенте.
+
+Динамический генератор access-key выпускает отдельный URI `vless://...?type=xhttp&mode=packet-up&path=...` на пользователя, когда `xhttp_path_vless` установлен. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают этот URI как есть. Замени `?mode=packet-up` на `?mode=stream-one` в клиенте (или прямо в URI), чтобы переключить carrier на stream-one.
 
 ### VLESS поверх WebSocket/TLS
 
