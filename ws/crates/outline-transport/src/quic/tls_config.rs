@@ -25,7 +25,23 @@ static QUIC_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
 
 /// Returns the process-wide shared `quinn::Endpoint` for the given bind
 /// address (one per IPv4 / IPv6). Used by both H3 and raw QUIC.
+///
+/// In test mode (when `crate::tls::test_mode_active()` returns true)
+/// the cache is bypassed and a fresh endpoint is bound per dial —
+/// the cached endpoint's driver task is bound to whichever
+/// `#[tokio::test]` runtime first hit the cache and would not survive
+/// the next test in the same `cargo test` binary.
 pub(crate) fn shared_quic_endpoint(bind_addr: SocketAddr) -> Result<quinn::Endpoint> {
+    if crate::tls::test_mode_active() {
+        let socket = bind_udp_socket(bind_addr, None)?;
+        return quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind QUIC client endpoint on {bind_addr}"));
+    }
     let cell = if bind_addr.is_ipv4() {
         &QUIC_CLIENT_ENDPOINT_V4
     } else {
