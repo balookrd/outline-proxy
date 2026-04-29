@@ -429,6 +429,176 @@ async fn xhttp_stream_one_full_duplex_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<()> {
+    // Echo upstream that accepts ONE TCP connection and serves
+    // both XHTTP sessions through it. If resumption works the
+    // second XHTTP session re-attaches to the parked writer/reader
+    // for this socket; if it does not, this `accept` only completes
+    // once and the second session would either hang or open a new
+    // upstream that the test would notice through a second accept.
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server) = setup_xhttp_server_with_resumption("/xh", true).await?;
+    let client = http_client();
+
+    // ── Session A: capability-advertise, run a real handshake,
+    //    push `ping` plus FIN so the server-side relay sees uplink
+    //    EOF and parks the upstream ──────────────────────────────
+    let session_a_id = "resume-test-session-a";
+    let url_a = format!("http://{listen_addr}/xh/{session_a_id}");
+
+    // Open GET first so the response stream can deliver the VLESS
+    // header and the upstream echo before the relay parks.
+    let get_a_url = url_a.clone();
+    let get_a_client = client.clone();
+    let get_a = tokio::spawn(async move {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&get_a_url)
+            .header("x-outline-resume-capable", "1")
+            .body(Full::new(Bytes::new()))?;
+        let resp = get_a_client.request(req).await?;
+        let issued = resp
+            .headers()
+            .get("x-outline-session")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let mut body = resp.into_body();
+        let bytes = read_body_until_at_least(&mut body, 6).await?;
+        Result::<_, anyhow::Error>::Ok((issued, bytes))
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let handshake_a = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    // Note: NO `X-Xhttp-Fin` here. Closing the uplink in the same
+    // POST that opens the connection would race the relay's
+    // upstream-reader task — by the time the reader picks up
+    // `pong` from the echo socket the relay's main loop has
+    // already seen `uplink_eof` and broken out, cancelling the
+    // reader without forwarding the reply.
+    let post_a = Request::builder()
+        .method(Method::POST)
+        .uri(&url_a)
+        .header("x-xhttp-seq", "0")
+        .body(Full::new(Bytes::from(handshake_a)))?;
+    let post_a_resp = client.request(post_a).await?;
+    assert_eq!(post_a_resp.status(), StatusCode::OK);
+
+    let (issued_a, downlink_a) =
+        tokio::time::timeout(Duration::from_secs(5), get_a).await???;
+    assert_eq!(&downlink_a[..2], &[VERSION, 0x00], "vless response header on A");
+    assert_eq!(&downlink_a[2..6], b"pong", "echo reply on A");
+    let token = issued_a
+        .ok_or_else(|| anyhow!("session A did not surface X-Outline-Session"))?;
+    assert_eq!(token.len(), 32);
+
+    // Now that `pong` has reached the client, send a separate
+    // empty FIN POST to close the uplink half. The relay then
+    // breaks out of the read loop and the cleanup path parks the
+    // live upstream into the orphan registry under `token`.
+    let fin_a = Request::builder()
+        .method(Method::POST)
+        .uri(&url_a)
+        .header("x-xhttp-seq", "1")
+        .header("x-xhttp-fin", "1")
+        .body(Full::new(Bytes::new()))?;
+    let fin_a_resp = client.request(fin_a).await?;
+    assert_eq!(fin_a_resp.status(), StatusCode::OK);
+
+    // The relay needs a moment to break out of its read loop and
+    // shove the upstream into the orphan registry. Without this
+    // sleep the resume on session B can race the park and miss it.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Session B: brand-new path id, presents the prior token
+    //    as `X-Outline-Resume`. The server should re-attach to the
+    //    parked upstream instead of opening a new TCP connection ──
+    let session_b_id = "resume-test-session-b";
+    let url_b = format!("http://{listen_addr}/xh/{session_b_id}");
+
+    let get_b_url = url_b.clone();
+    let get_b_client = client.clone();
+    let token_for_get = token.clone();
+    let get_b = tokio::spawn(async move {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&get_b_url)
+            .header("x-outline-resume-capable", "1")
+            .header("x-outline-resume", token_for_get.as_str())
+            .body(Full::new(Bytes::new()))?;
+        let resp = get_b_client.request(req).await?;
+        let issued_b = resp
+            .headers()
+            .get("x-outline-session")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_owned());
+        let mut body = resp.into_body();
+        let bytes = read_body_until_at_least(&mut body, 6).await?;
+        Result::<_, anyhow::Error>::Ok((issued_b, bytes))
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // The handshake target is irrelevant to the resume path —
+    // server uses the parked writer/reader and never reads
+    // the target field — but the VLESS parser still needs a
+    // syntactically valid one. We send `helo` as the next
+    // payload so the test can distinguish the two echoes.
+    //
+    // Crucially, we do NOT set `X-Xhttp-Fin` here: closing the
+    // uplink makes the relay break out of its read loop the
+    // moment the handshake-and-leftover frame is consumed, and
+    // the upstream-reader task is then cancelled before it can
+    // forward `ackk` back into the downlink. Keeping the uplink
+    // open lets the response complete; the test relies on the
+    // downlink frame arrival to finish, then drops the request
+    // futures (which closes everything cleanly).
+    let handshake_b = build_vless_tcp_handshake(upstream_addr, b"helo")?;
+    let post_b = Request::builder()
+        .method(Method::POST)
+        .uri(&url_b)
+        .header("x-xhttp-seq", "0")
+        .header("x-outline-resume", token.as_str())
+        .body(Full::new(Bytes::from(handshake_b)))?;
+    let post_b_resp = client.request(post_b).await?;
+    assert_eq!(post_b_resp.status(), StatusCode::OK);
+
+    let (issued_b, downlink_b) =
+        tokio::time::timeout(Duration::from_secs(5), get_b).await???;
+    // Session B mints its own resume token (the server cannot
+    // know the request is a resume until it sees the VLESS
+    // handshake), but its presence on the response is incidental
+    // for this test — the assertion is the upstream payload.
+    let _ = issued_b;
+    assert_eq!(&downlink_b[..2], &[VERSION, 0x00], "vless response header on B");
+    assert_eq!(&downlink_b[2..6], b"ackk", "echo reply on B (via resumed upstream)");
+
+    // The upstream future completes only once both `read_exact`
+    // calls have been served. If resumption did NOT work, the
+    // second session would have opened a fresh TCP connection
+    // and this `accept` would still be waiting (the first
+    // upstream socket would already be closed from session A's
+    // teardown), causing `read_exact(&mut second)` to never fire.
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn xhttp_uplink_reorder_buffers_out_of_order_posts() -> Result<()> {
     // Echo upstream that returns whatever it gets.
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
