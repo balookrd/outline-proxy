@@ -21,6 +21,7 @@ It supports:
 - WebSocket over HTTP/3 via RFC 9220 Extended CONNECT
 - Shadowsocks AEAD (including SS-2022) over WebSocket — TCP and UDP
 - VLESS over WebSocket — TCP, UDP, and mux.cool with XUDP per-packet addressing (xray / Happ / Hiddify-compatible)
+- VLESS over XHTTP packet-up — long-lived GET + sequenced POSTs, X-Padding and SSE-style masquerade headers, designed for CDNs that block WebSocket upgrades (xray / sing-box / Hiddify-compatible)
 - Multiple users with independent Shadowsocks passwords and/or VLESS UUIDs
 - Per-user cipher selection
 - Per-user TCP, UDP, and VLESS WebSocket paths
@@ -54,6 +55,7 @@ It supports:
 | Grafana dashboard | Supported | Ready-made JSON dashboard included |
 | Outline dynamic access keys | Supported | `ssconf://` + generated YAML |
 | VLESS over WebSocket | Supported | TCP, UDP, mux.cool with XUDP per-packet addressing (xray/happ/hiddify-compatible), up to 8 concurrent sub-connections; available over HTTP/1.1, HTTP/2, and HTTP/3 |
+| VLESS over XHTTP packet-up | Supported | Long-lived GET + sequenced POSTs sharing one HTTP/2 (or HTTP/3) connection; reorder buffer absorbs out-of-order POSTs; downlink ring survives mid-flight GET drops (CDN ~100 s cut-off); `X-Padding` + SSE-style masquerade headers (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | VLESS / Shadowsocks raw over QUIC | Supported | No WebSocket / no HTTP/3 framing; selected by ALPN (`vless`, `ss`) on the same `h3_listen` port |
 | Outline management API | Not supported | Data plane only |
@@ -76,6 +78,8 @@ flowchart LR
     VL --> H2
     VL --> H3
     VL --> VLQ["Raw VLESS over QUIC (ALPN vless)"]
+    VL --> XH["XHTTP packet-up (h2/h3)"]
+    XH --> S
 
     H1 --> S["outline-ss-rust"]
     H2 --> S
@@ -237,6 +241,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `ws_path_tcp` | Default TCP WebSocket path |
 | `ws_path_udp` | Default UDP WebSocket path |
 | `ws_path_vless` | Optional VLESS-over-WebSocket TCP path on the main HTTP/1.1/HTTP/2 listener |
+| `xhttp_path_vless` | Optional VLESS-over-XHTTP base path. Server registers `<base>/{id}` for each base; `{id}` is an opaque per-session token chosen by the client. Distinct from `ws_path_vless` |
 | `http_root_auth` | Enable OpenConnect-style HTTP Basic auth on `/`; after 3 failed passwords it returns `403`, while non-root paths still return `404` |
 | `http_root_realm` | Text shown in the HTTP Basic password prompt for `/`; default is `Authorization required` |
 | `public_host` | Public host used for generated Outline access keys |
@@ -251,6 +256,7 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | `users[].password` | Optional per-user Shadowsocks password |
 | `users[].vless_id` | Optional per-user VLESS UUID |
 | `users[].ws_path_vless` | Optional per-user VLESS WebSocket path; falls back to top-level `ws_path_vless` |
+| `users[].xhttp_path_vless` | Optional per-user VLESS XHTTP base path; falls back to top-level `xhttp_path_vless` |
 | `users[].enabled` | Optional `bool` toggle. `false` blocks the user (no routes, no auth) without deleting the entry. Default: `true` |
 | `[control]` | Optional runtime user-management HTTP endpoint (feature `control`, on by default). See [Control Plane](#control-plane) |
 | `control.listen` | Socket address for the control listener, e.g. `127.0.0.1:7001`. Bound on its own socket — keep it off the public internet |
@@ -276,9 +282,31 @@ ws_path_tcp = "/alice/tcp"
 ws_path_udp = "/alice/udp"
 vless_id = "550e8400-e29b-41d4-a716-446655440000"
 ws_path_vless = "/alice/vless"
+xhttp_path_vless = "/alice/xh"
 ```
 
 For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`, `password` must be a base64-encoded raw PSK of exactly 16, 32, and 32 bytes respectively, for example `openssl rand -base64 32`.
+
+### VLESS over XHTTP packet-up
+
+For deployments behind a CDN that blocks WebSocket upgrades, configure VLESS over XHTTP packet-up alongside (or instead of) the WS path. The server registers `<xhttp_path_vless>/{id}` for every base; `{id}` is an opaque per-session token chosen by the client. The same `vless_id` works on both carriers — pick whichever has the better path on a given network.
+
+```toml
+listen = "0.0.0.0:443"
+tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+
+# Optional: keep the WS path for clients on direct connections.
+ws_path_vless = "/vless"
+# Required for XHTTP. Distinct from `ws_path_vless`.
+xhttp_path_vless = "/xh"
+
+[[users]]
+id = "alice"
+vless_id = "550e8400-e29b-41d4-a716-446655440000"
+```
+
+The dynamic access-key generator emits a separate `vless://...?type=xhttp&mode=packet-up&path=...` URI per user when `xhttp_path_vless` is set. xray, sing-box, Hiddify, v2rayNG, and Shadowrocket all accept this URI as-is.
 
 ### VLESS over WebSocket/TLS
 

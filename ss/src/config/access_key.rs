@@ -43,10 +43,31 @@ pub fn build_access_key_artifacts(
             artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
         }
         if user.vless_id.is_some() {
-            artifacts.push(build_vless_user_artifact(config, ak, &user, public_host)?);
+            push_vless_artifacts(&mut artifacts, config, ak, &user, public_host)?;
         }
     }
     Ok(artifacts)
+}
+
+/// Emits one VLESS access-key artifact per configured carrier (WS,
+/// XHTTP). A user that has neither `ws_path_vless` nor
+/// `xhttp_path_vless` set is reachable only over raw VLESS-over-QUIC;
+/// the client constructs that URI from `vless_xhttp_url` / endpoint
+/// directly, so we emit nothing here.
+fn push_vless_artifacts(
+    artifacts: &mut Vec<AccessKeyArtifact>,
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+) -> Result<()> {
+    if user.effective_ws_path_vless(config.ws_path_vless.as_deref()).is_some() {
+        artifacts.push(build_vless_ws_user_artifact(config, ak, user, public_host)?);
+    }
+    if user.effective_xhttp_path_vless(config.xhttp_path_vless.as_deref()).is_some() {
+        artifacts.push(build_vless_xhttp_user_artifact(config, ak, user, public_host)?);
+    }
+    Ok(())
 }
 
 #[cfg_attr(not(feature = "control"), allow(dead_code))]
@@ -70,7 +91,7 @@ pub fn build_access_key_artifacts_for_user(
         artifacts.push(build_shadowsocks_user_artifact(config, ak, &user, public_host)?);
     }
     if user.vless_id.is_some() {
-        artifacts.push(build_vless_user_artifact(config, ak, &user, public_host)?);
+        push_vless_artifacts(&mut artifacts, config, ak, &user, public_host)?;
     }
     Ok(artifacts)
 }
@@ -186,7 +207,7 @@ fn build_shadowsocks_user_artifact(
     })
 }
 
-fn build_vless_user_artifact(
+fn build_vless_ws_user_artifact(
     config: &Config,
     ak: &AccessKeyConfig,
     user: &UserEntry,
@@ -204,6 +225,35 @@ fn build_vless_user_artifact(
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
     let vless_url = vless_uri(vless_id, public_host, &ak.public_scheme, vless_path, &user.id);
+
+    Ok(AccessKeyArtifact {
+        user_id: user.id.clone(),
+        config_filename,
+        config_url,
+        access_key_url: Some(vless_url.clone()),
+        yaml: format!("{vless_url}\n"),
+    })
+}
+
+fn build_vless_xhttp_user_artifact(
+    config: &Config,
+    ak: &AccessKeyConfig,
+    user: &UserEntry,
+    public_host: &str,
+) -> Result<AccessKeyArtifact> {
+    let vless_id = user.vless_id.as_deref().expect("checked by caller");
+    let xhttp_path = user
+        .effective_xhttp_path_vless(config.xhttp_path_vless.as_deref())
+        .ok_or_else(|| anyhow!("vless_id for user {} requires xhttp_path_vless", user.id))?;
+    let config_filename =
+        format!("{}-vless-xhttp{}", sanitize_filename(&user.id), ak.access_key_file_extension);
+    let config_url = ak
+        .access_key_url_base
+        .as_deref()
+        .map(|base| join_url(base, &config_filename))
+        .transpose()?;
+    let vless_url =
+        vless_xhttp_uri(vless_id, public_host, &ak.public_scheme, xhttp_path, &user.id);
 
     Ok(AccessKeyArtifact {
         user_id: user.id.clone(),
@@ -251,6 +301,26 @@ fn vless_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> Str
     let fragment = format!("{}:{label}", host_short_label(host));
     format!(
         "vless://{}@{}?type=ws&security={security}&path={}&encryption=none#{}",
+        id,
+        vless_authority(host, default_port),
+        percent_encode_query_value(&normalize_path(path)),
+        percent_encode_fragment(&fragment),
+    )
+}
+
+/// Builds a `vless://` URI for the XHTTP packet-up carrier. The
+/// `path` is the server's `xhttp_path_vless` base — the client
+/// appends a per-session id to it at dial time.
+fn vless_xhttp_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> String {
+    // XHTTP requires TLS when carried over h2; mirror the WS URI's
+    // tls/none coupling for symmetry rather than enforcing tls
+    // unilaterally — local-network test deployments still want a
+    // `vless://...` shape that survives copy/paste.
+    let security = if scheme == "wss" { "tls" } else { "none" };
+    let default_port = if scheme == "wss" { 443 } else { 80 };
+    let fragment = format!("{}:{label}-xhttp", host_short_label(host));
+    format!(
+        "vless://{}@{}?type=xhttp&mode=packet-up&security={security}&path={}&encryption=none#{}",
         id,
         vless_authority(host, default_port),
         percent_encode_query_value(&normalize_path(path)),
