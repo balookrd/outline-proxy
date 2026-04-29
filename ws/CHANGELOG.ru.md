@@ -62,6 +62,7 @@
 - Refill standby полностью пропускает поиск в TCP-пуле, если эффективный режим dial — raw QUIC (где per-connection пула нет).
 - Внутренний clean-up: `tcp/connect` шарит общий SS target-header send между путями; flow-таблица `tun/tcp` переехала в `DashMap` с отдельным `FlowScheduler`; H2/H3 dial-скелет унифицирован за одной associated-type-чертой `WsDialer`; route TCP/UDP fallback использует общий `apply_fallback_strategy`.
 - `outline_transport::install_test_tls_root(CertificateDer)` — тест-only ручка, пинающая кастомный самоподписанный root для XHTTP h2 / h3 dial-путей. Override-слот это `RwLock<Option<…>>` с дефолтом `None`, так что продакшен-вызывающие (которые её не трогают) сохраняют webpki-поведение с одним лишним чтением на dial. Целевой потребитель — cross-repo e2e-тест в `outline-ss-rust`, который поднимает in-process самоподписанный сервер и дёргает его через обычный `connect_websocket_with_resume`.
+- Тест-обход для процесс-вайдных кэшей QUIC-эндпоинтов. Когда выставлен тестовый override (т.е. `install_test_tls_root` был вызван), `H3_CLIENT_ENDPOINT_V4` / `_V6` и raw-QUIC `QUIC_CLIENT_ENDPOINT_V4` / `_V6` пропускают кэш и биндят свежий endpoint на каждый dial. Каждый `#[tokio::test]` крутится в своём runtime; driver-task закэшированного endpoint'а привязан к runtime, который первым попал в кэш, и умирает сразу как только тот тест завершается — следующий тест получает `endpoint driver future was dropped`. Продакшен-поведение не меняется.
 
 ### Исправлено
 

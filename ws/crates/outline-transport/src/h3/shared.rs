@@ -272,6 +272,21 @@ static H3_CLIENT_ENDPOINT_V4: OnceCell<quinn::Endpoint> = OnceCell::new();
 static H3_CLIENT_ENDPOINT_V6: OnceCell<quinn::Endpoint> = OnceCell::new();
 
 fn get_or_init_shared_h3_endpoint(bind_addr: std::net::SocketAddr) -> Result<quinn::Endpoint> {
+    // Cross-repo integration tests run each `#[tokio::test]` in its
+    // own runtime; the shared endpoint's driver task is spawned on
+    // whichever runtime first hit the cache, so it dies the moment
+    // that test ends. Bypass the cache in test mode and bind a fresh
+    // endpoint per dial — production behaviour is unchanged.
+    if crate::tls::test_mode_active() {
+        let socket = bind_udp_socket(bind_addr, None)?;
+        return quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            None,
+            socket,
+            Arc::new(quinn::TokioRuntime),
+        )
+        .with_context(|| format!("failed to bind H3 QUIC client endpoint on {bind_addr}"));
+    }
     let cell = if bind_addr.is_ipv4() {
         &H3_CLIENT_ENDPOINT_V4
     } else {
