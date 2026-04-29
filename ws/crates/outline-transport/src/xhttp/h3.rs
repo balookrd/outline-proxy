@@ -44,12 +44,9 @@ const FRESH_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 static XHTTP_H3_TLS_CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
 
 fn h3_tls_config() -> Arc<rustls::ClientConfig> {
-    // Mirror the h2 path's override-first semantics so cross-repo
-    // tests can pin self-signed roots without poisoning the
-    // production OnceLock for later non-test callers.
-    if let Some(cfg) = crate::tls::xhttp_h3_test_override() {
-        return cfg;
-    }
+    // `build_client_config` reads the test override slot, so a fresh
+    // process that installs the override before the first dial
+    // captures it inside this OnceLock.
     Arc::clone(XHTTP_H3_TLS_CONFIG.get_or_init(|| crate::tls::build_client_config(&[b"h3"])))
 }
 
