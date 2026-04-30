@@ -421,14 +421,14 @@ impl AppMode {
                 .unwrap_or(30),
             ws_path_tcp: args
                 .ws_path_tcp
-                .or(websocket.tcp_path)
+                .or(websocket.ws_path_tcp)
                 .unwrap_or_else(|| "/tcp".to_owned()),
             ws_path_udp: args
                 .ws_path_udp
-                .or(websocket.udp_path)
+                .or(websocket.ws_path_udp)
                 .unwrap_or_else(|| "/udp".to_owned()),
-            ws_path_vless: websocket.vless_path,
-            xhttp_path_vless: websocket.xhttp_vless_path,
+            ws_path_vless: websocket.ws_path_vless,
+            xhttp_path_vless: websocket.xhttp_path_vless,
             http_root_auth: args.http_root_auth.or(http_root.auth).unwrap_or(false),
             http_root_realm: args
                 .http_root_realm

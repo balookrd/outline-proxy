@@ -92,14 +92,14 @@ pub(super) struct OutboundSection {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct WebsocketSection {
-    pub tcp_path: Option<String>,
-    pub udp_path: Option<String>,
-    pub vless_path: Option<String>,
+    pub ws_path_tcp: Option<String>,
+    pub ws_path_udp: Option<String>,
+    pub ws_path_vless: Option<String>,
     /// Base path for VLESS-over-XHTTP packet-up. The server registers
     /// `<base>/{id}` for every advertised base, where `{id}` is an
     /// opaque per-session token chosen by the client. Absent (the
     /// default) disables XHTTP.
-    pub xhttp_vless_path: Option<String>,
+    pub xhttp_path_vless: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
