@@ -53,8 +53,8 @@ pub(in crate::server) use tcp::{
 pub(in crate::server) use udp::{UdpRouteCtx, UdpServerCtx, handle_udp_h3_connection};
 pub(in crate::server) use vless::{VlessWsRouteCtx, VlessWsServerCtx, handle_vless_h3_connection};
 pub(in crate::server) use xhttp::{
-    XhttpAxumState, XhttpRegistry, handle_xhttp_h3_request, xhttp_handler,
-    xhttp_handler_with_path_seq,
+    XhttpAxumState, XhttpRegistry, generate_anonymous_xhttp_session_id, handle_xhttp_h3_request,
+    xhttp_handler, xhttp_handler_no_session, xhttp_handler_with_path_seq,
 };
 
 pub(super) async fn tcp_websocket_upgrade(

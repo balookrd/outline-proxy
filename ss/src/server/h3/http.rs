@@ -22,8 +22,9 @@ use super::super::{
     state::{empty_transport_route, empty_vless_transport_route},
     transport::{
         ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, finish_ws_session,
-        h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
-        handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
+        generate_anonymous_xhttp_session_id, h3_fallback_handle, handle_tcp_h3_connection,
+        handle_udp_h3_connection, handle_vless_h3_connection, handle_xhttp_h3_request,
+        is_normal_h3_shutdown,
     },
 };
 use crate::crypto::UserKey;
@@ -107,6 +108,13 @@ async fn handle_h3_request(
             match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
             && let Some(route) = ctx.xhttp_vless.get(base.as_ref()).cloned()
         {
+            // `match_xhttp_path` returns `session_id = None` for the
+            // bare-`<base>` shape (xray's sessionless stream-one
+            // form). Mint a fresh server-side id here so every code
+            // path further in still sees a non-empty `String` —
+            // mirrors what `xhttp_handler_no_session` does on the
+            // axum side.
+            let session_id = session_id.unwrap_or_else(generate_anonymous_xhttp_session_id);
             return handle_xhttp_h3_request(
                 request,
                 stream,
@@ -290,9 +298,14 @@ async fn handle_h3_request(
     Ok(())
 }
 
-/// Returns `Some((base, session_id, path_seq))` for either:
+/// Returns `Some((base, session_id, path_seq))` for any of:
+/// - `<base>` or `<base>/` — `session_id = None`, `path_seq = None`.
+///   xray / sing-box stream-one wire shape (the client passes
+///   `sessionId=""` and the path is left at the base + optional
+///   normalising slash); the caller mints a fresh server-side id.
 /// - `<base>/<id>` — `path_seq = None` (every GET, every stream-one
-///   POST, and packet-up POSTs from header-based-seq clients);
+///   POST that carries an explicit `?mode=stream-one`, and
+///   packet-up POSTs from header-based-seq clients).
 /// - `<base>/<id>/<seq>` — `path_seq = Some(seq)` (packet-up POSTs
 ///   from xray / sing-box-default clients that place `seq` in the
 ///   URL path, e.g. `happ`, `hiddify`, `v2rayN`).
@@ -303,9 +316,13 @@ async fn handle_h3_request(
 fn match_xhttp_path(
     path: &str,
     xhttp_paths: &std::collections::BTreeSet<String>,
-) -> Option<(std::sync::Arc<str>, String, Option<u64>)> {
+) -> Option<(std::sync::Arc<str>, Option<String>, Option<u64>)> {
     for base in xhttp_paths {
         let Some(rest) = path.strip_prefix(base.as_str()) else { continue };
+        if rest.is_empty() || rest == "/" {
+            // `<base>` or `<base>/` — sessionless stream-one shape.
+            return Some((std::sync::Arc::from(base.as_str()), None, None));
+        }
         let Some(rest) = rest.strip_prefix('/') else { continue };
         if rest.is_empty() {
             continue;
@@ -313,7 +330,11 @@ fn match_xhttp_path(
         match rest.split_once('/') {
             None => {
                 // `<base>/<id>` — single segment after base.
-                return Some((std::sync::Arc::from(base.as_str()), rest.to_owned(), None));
+                return Some((
+                    std::sync::Arc::from(base.as_str()),
+                    Some(rest.to_owned()),
+                    None,
+                ));
             },
             Some((id, tail)) => {
                 // `<base>/<id>/<seq>` — `seq` must be a non-empty
@@ -326,7 +347,7 @@ fn match_xhttp_path(
                 let Ok(seq) = tail.parse::<u64>() else { continue };
                 return Some((
                     std::sync::Arc::from(base.as_str()),
-                    id.to_owned(),
+                    Some(id.to_owned()),
                     Some(seq),
                 ));
             },

@@ -678,6 +678,125 @@ async fn xhttp_stream_one_xray_style_no_mode_query_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn xhttp_stream_one_xray_sessionless_round_trip() -> Result<()> {
+    // xray's `OpenStream` for `mode = "stream-one"` passes
+    // `sessionId=""`, so `ApplyMetaToRequest` skips the path-append
+    // and the wire URL stays at `<base>` (or `<base>/` after path
+    // normalisation). The server must accept this shape, mint a
+    // fresh session id server-side, and dispatch into the same
+    // stream-one carrier — otherwise every stream-one POST from
+    // `happ` / `hiddify` / `v2rayN` 404s and the client retries
+    // until the user gives up. Both `<base>` and `<base>/` shapes
+    // are exercised because xray clients don't agree on whether
+    // the trailing slash is included.
+    use http_body_util::BodyExt;
+
+    for trailing_slash in [false, true] {
+        let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        let upstream_addr = upstream.local_addr()?;
+        let upstream_task = tokio::spawn(async move {
+            let (mut stream, _) = upstream.accept().await?;
+            let mut got = [0_u8; 4];
+            stream.read_exact(&mut got).await?;
+            stream.write_all(b"pong").await?;
+            Result::<_, anyhow::Error>::Ok(got)
+        });
+
+        let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+        // No session id segment in the URL.
+        let target_uri = if trailing_slash {
+            format!("http://{listen_addr}/xh/")
+        } else {
+            format!("http://{listen_addr}/xh")
+        };
+
+        let tcp = tokio::net::TcpStream::connect(listen_addr).await?;
+        let (mut send, conn) = hyper::client::conn::http2::Builder::new(
+            hyper_util::rt::TokioExecutor::new(),
+        )
+        .handshake::<_, BoxBody<Bytes, Infallible>>(hyper_util::rt::TokioIo::new(tcp))
+        .await?;
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+
+        let (frame_tx, frame_rx) = tokio::sync::mpsc::channel::<
+            Result<hyper::body::Frame<Bytes>, Infallible>,
+        >(8);
+        let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+        frame_tx
+            .send(Ok(hyper::body::Frame::data(Bytes::from(handshake))))
+            .await?;
+        let body_stream = futures_util::stream::unfold(frame_rx, |mut rx| async move {
+            rx.recv().await.map(|frame| (frame, rx))
+        });
+        let stream_body = StreamBody::new(body_stream).boxed();
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri(&target_uri)
+            .header(hyper::header::HOST, format!("{}", listen_addr))
+            .body(stream_body)?;
+        send.ready().await?;
+        let resp = send.send_request(req).await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "POST to {target_uri:?} (sessionless stream-one) must succeed",
+        );
+
+        let mut body = resp.into_body();
+        let mut received = bytes::BytesMut::new();
+        while received.len() < 6 {
+            match body.frame().await {
+                Some(Ok(frame)) => {
+                    if let Ok(data) = frame.into_data() {
+                        received.extend_from_slice(&data);
+                    }
+                },
+                Some(Err(e)) => bail!("frame error: {e}"),
+                None => break,
+            }
+        }
+        assert_eq!(&received[..2], &[VERSION, 0x00]);
+        assert_eq!(&received[2..6], b"pong");
+
+        let upstream_bytes = tokio::time::timeout(Duration::from_secs(5), upstream_task)
+            .await???;
+        assert_eq!(&upstream_bytes, b"ping");
+
+        drop(frame_tx);
+        server.abort();
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_sessionless_get_returns_method_not_allowed() -> Result<()> {
+    // Only POST makes sense on the bare-`<base>` shape — a GET on
+    // it would have to invent a session id with no companion
+    // request to attach against, which isn't a real client flow.
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+
+    for url in [format!("http://{listen_addr}/xh"), format!("http://{listen_addr}/xh/")] {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&url)
+            .body(Full::new(Bytes::new()))?;
+        let resp = client.request(req).await?;
+        assert_eq!(
+            resp.status(),
+            StatusCode::METHOD_NOT_ALLOWED,
+            "GET on sessionless XHTTP route must be 405",
+        );
+    }
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn xhttp_resume_reattaches_to_parked_upstream_across_sessions() -> Result<()> {
     // Echo upstream that accepts ONE TCP connection and serves
     // both XHTTP sessions through it. If resumption works the
