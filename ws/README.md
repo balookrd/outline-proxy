@@ -14,6 +14,7 @@ It supports:
 - WebSocket-over-HTTP/1.1, RFC 8441 (`ws-over-h2`), and RFC 9220 (`ws-over-h3`)
 - raw QUIC transport (per-ALPN: `vless`, `ss`, `h3`) — VLESS / Shadowsocks framed directly over QUIC bidi streams and datagrams (RFC 9221), no WebSocket / no HTTP/3
 - VLESS-over-WebSocket uplinks (UUID auth, shared WSS dial path, per-destination UDP session-mux)
+- one-line VLESS uplink config via `vless://UUID@HOST:PORT?...#NAME` share-link URIs (TOML `link = "..."`, CLI `--vless-link`, control-plane `link` payload field)
 - direct Shadowsocks TCP/UDP socket uplinks
 - Prometheus metrics, built-in multi-instance dashboard, and packaged Grafana dashboards
 - existing TUN device integration for `tun2udp`
@@ -639,7 +640,7 @@ password = "Secret0"
 # VLESS-over-WebSocket uplink. Shares the WSS dial path with the "websocket"
 # transport; `vless_id` replaces the Shadowsocks cipher/password. The VLESS
 # server exposes one WS path (`ws_path_vless`) shared by TCP and UDP, so the
-# client takes a single `vless_ws_url`/`vless_ws_mode` pair — using
+# client takes a single `vless_ws_url`/`vless_mode` pair — using
 # `tcp_ws_url`/`udp_ws_url` with `transport = "vless"` is rejected at parse
 # time.
 [[outline.uplinks]]
@@ -647,11 +648,24 @@ name = "vless-edge"
 group = "main"
 transport = "vless"
 vless_ws_url = "wss://vless.example.com/SECRET/vless"
-vless_ws_mode = "h2"
+vless_mode = "h2"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 0.5
 
-# VLESS over raw QUIC (ALPN = "vless"). Set vless_ws_mode = "quic" to
+# Same VLESS uplink configured from a single share-link URI. The loader
+# expands the URI into the matching `vless_id` / `vless_*_url` /
+# `vless_mode` triple at startup; mixing `link` with the explicit fields
+# is rejected. Recognises the standard Xray / V2Ray query parameters
+# (`type`, `security`, `path`, `alpn`, `mode`). See
+# docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs" for the full
+# parameter table.
+[[outline.uplinks]]
+name = "vless-share"
+group = "main"
+link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fvless&alpn=h2#vless-edge"
+weight = 0.5
+
+# VLESS over raw QUIC (ALPN = "vless"). Set vless_mode = "quic" to
 # bypass the WebSocket layer entirely and ride VLESS framing directly on
 # QUIC bidi streams (TCP) and datagrams (UDP, prefixed with the
 # server-allocated 4-byte session_id). Only host:port from the URL is
@@ -663,7 +677,7 @@ name = "vless-quic"
 group = "main"
 transport = "vless"
 vless_ws_url = "https://vless.example.com:443"
-vless_ws_mode = "quic"
+vless_mode = "quic"
 vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 
@@ -699,6 +713,7 @@ via = "main"
 ### Key config behavior
 
 - `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
+- `link = "vless://UUID@HOST:PORT?type=...&security=...&alpn=...#NAME"` configures a VLESS uplink from a single share-link URI in lieu of the explicit `vless_id` / `vless_*_url` / `vless_mode` fields; `transport = "vless"` is implied. The same value is accepted via the `--vless-link` CLI flag (`OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST payload (`link`, alias `share_link`). Mixing `link` with the explicit fields is rejected. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#7-vless-share-link-uris) for the recognised query-parameter table and constraints.
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
 - `tcp_mode` / `udp_mode` (`transport = "ws"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw QUIC framing on ALPN `vless` / `ss`), or `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
