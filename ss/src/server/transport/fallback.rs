@@ -16,7 +16,7 @@
 //!   wiring through a custom hyper connector that would also need to
 //!   carry per-request PROXY-protocol metadata.
 
-use std::{io::Write as _, net::SocketAddr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
 use axum::{
@@ -33,10 +33,11 @@ use hyper_util::rt::TokioIo;
 use tokio::{io::AsyncWriteExt, net::TcpStream, time::Duration};
 use tracing::{debug, warn};
 
-use crate::config::{HttpFallbackConfig, ProxyProtocolVersion};
+use crate::config::HttpFallbackConfig;
 
 use super::super::auth::build_not_found_response;
 use super::super::state::AppState;
+use super::proxy_protocol::encode_proxy_protocol;
 
 /// Per-process state for the fallback handler. Built once at startup,
 /// shared by every fallback request via `AppState`.
@@ -253,81 +254,5 @@ fn collect_connection_tokens(headers: &HeaderMap) -> Vec<String> {
         }
     }
     out
-}
-
-/// Encodes a HAProxy PROXY-protocol header into `buf`. The destination
-/// address is the listener bind addr — for `0.0.0.0` / `[::]` we emit
-/// UNSPEC (v2) / UNKNOWN (v1) since we do not currently learn the
-/// per-connection local address.
-fn encode_proxy_protocol(
-    buf: &mut Vec<u8>,
-    version: ProxyProtocolVersion,
-    src: SocketAddr,
-    dst: SocketAddr,
-) {
-    match version {
-        ProxyProtocolVersion::V1 => encode_proxy_v1(buf, src, dst),
-        ProxyProtocolVersion::V2 => encode_proxy_v2(buf, src, dst),
-    }
-}
-
-fn encode_proxy_v1(buf: &mut Vec<u8>, src: SocketAddr, dst: SocketAddr) {
-    let unspec = src.ip().is_unspecified() || dst.ip().is_unspecified();
-    if unspec {
-        buf.extend_from_slice(b"PROXY UNKNOWN\r\n");
-        return;
-    }
-    let proto = match (src, dst) {
-        (SocketAddr::V4(_), SocketAddr::V4(_)) => "TCP4",
-        (SocketAddr::V6(_), SocketAddr::V6(_)) => "TCP6",
-        _ => {
-            buf.extend_from_slice(b"PROXY UNKNOWN\r\n");
-            return;
-        },
-    };
-    let _ = write!(
-        buf,
-        "PROXY {proto} {src_ip} {dst_ip} {src_port} {dst_port}\r\n",
-        src_ip = src.ip(),
-        dst_ip = dst.ip(),
-        src_port = src.port(),
-        dst_port = dst.port(),
-    );
-}
-
-fn encode_proxy_v2(buf: &mut Vec<u8>, src: SocketAddr, dst: SocketAddr) {
-    // 12-byte signature: \r\n\r\n\0\r\nQUIT\n.
-    buf.extend_from_slice(&[
-        0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
-    ]);
-    // Version + command: 0x21 = v2 + PROXY.
-    buf.push(0x21);
-
-    let unspec = src.ip().is_unspecified() || dst.ip().is_unspecified();
-    match (src, dst) {
-        (SocketAddr::V4(s), SocketAddr::V4(d)) if !unspec => {
-            buf.push(0x11); // AF_INET + STREAM (TCP)
-            buf.extend_from_slice(&12u16.to_be_bytes());
-            buf.extend_from_slice(&s.ip().octets());
-            buf.extend_from_slice(&d.ip().octets());
-            buf.extend_from_slice(&s.port().to_be_bytes());
-            buf.extend_from_slice(&d.port().to_be_bytes());
-        },
-        (SocketAddr::V6(s), SocketAddr::V6(d)) if !unspec => {
-            buf.push(0x21); // AF_INET6 + STREAM (TCP)
-            buf.extend_from_slice(&36u16.to_be_bytes());
-            buf.extend_from_slice(&s.ip().octets());
-            buf.extend_from_slice(&d.ip().octets());
-            buf.extend_from_slice(&s.port().to_be_bytes());
-            buf.extend_from_slice(&d.port().to_be_bytes());
-        },
-        _ => {
-            // AF_UNSPEC + UNSPEC — header carries no peer information
-            // but is still well-formed and the upstream is expected to
-            // accept the connection without deriving peer metadata.
-            buf.push(0x00);
-            buf.extend_from_slice(&0u16.to_be_bytes());
-        },
-    }
 }
 

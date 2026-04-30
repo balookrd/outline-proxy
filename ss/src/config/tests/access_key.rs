@@ -70,6 +70,7 @@ fn sample_config() -> Config {
         tuning: Default::default(),
         session_resumption: Default::default(),
         http_fallback: None,
+        sni_fallback: None,
         config_path: None,
         control: None,
         dashboard: None,

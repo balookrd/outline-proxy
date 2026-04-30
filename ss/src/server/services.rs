@@ -27,7 +27,7 @@ use super::{
         AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
         UdpServices, UserKeySlice, VlessTransportRoute,
     },
-    transport::HttpFallbackContext,
+    transport::{HttpFallbackContext, sni_fallback::SniFallbackContext},
 };
 use arc_swap::ArcSwap;
 
@@ -48,6 +48,9 @@ pub(super) struct Built {
     /// Per-process state for the HTTP fallback reverse-proxy. `None`
     /// when `[http_fallback]` is not configured.
     pub(super) http_fallback: Option<Arc<HttpFallbackContext>>,
+    /// Per-process state for the SNI-routed L4 fallback. `None` when
+    /// `[sni_fallback]` is not configured.
+    pub(super) sni_fallback: Option<Arc<SniFallbackContext>>,
 }
 
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
@@ -134,6 +137,13 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
             inbound_tls: config.tcp_tls_enabled(),
         })
     });
+    let sni_fallback = config.sni_fallback.as_ref().map(|cfg| {
+        let inbound_listen = config.listen.expect("listen required when sni_fallback is set");
+        Arc::new(SniFallbackContext {
+            config: Arc::new(cfg.clone()),
+            inbound_listen,
+        })
+    });
     Ok(Built {
         users,
         user_routes,
@@ -148,6 +158,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         services,
         auth,
         http_fallback,
+        sni_fallback,
     })
 }
 

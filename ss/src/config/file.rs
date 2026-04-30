@@ -39,6 +39,8 @@ pub(super) struct FileConfig {
     pub session_resumption: Option<SessionResumptionSection>,
     #[serde(default)]
     pub http_fallback: Option<HttpFallbackSection>,
+    #[serde(default)]
+    pub sni_fallback: Option<SniFallbackSection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -178,6 +180,34 @@ pub(super) struct HttpFallbackSection {
     /// upstream MUST be configured to expect the matching version
     /// (e.g. nginx `proxy_protocol on;` on the listen directive).
     pub proxy_protocol: Option<String>,
+}
+
+/// `[sni_fallback]` block. When present and the inbound TCP listener
+/// terminates TLS, peeks the ClientHello before handshake: if the SNI
+/// matches `match_sni`, terminates locally as before; otherwise splices
+/// the raw TCP stream (including the captured ClientHello) to
+/// `backend`, so the backend can present its own cert for the foreign
+/// SNI. Sister of `[http_fallback]` — different OSI layer, same
+/// camouflage idea.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SniFallbackSection {
+    /// `host:port` of the upstream backend that handles foreign SNIs.
+    pub backend: Option<String>,
+    /// Whitelist of SNIs treated as "ours". Each entry is matched
+    /// case-insensitively; an entry starting with `*.` matches one
+    /// label to the left (nginx-style). Required.
+    pub match_sni: Option<Vec<String>>,
+    /// What to do for connections that arrive without an SNI
+    /// extension. Default `false` — splice to the backend.
+    pub allow_no_sni: Option<bool>,
+    /// Wrap the upstream TCP connection in a HAProxy PROXY-protocol
+    /// header (`"v1"` text or `"v2"` binary). Default: disabled.
+    pub proxy_protocol: Option<String>,
+    /// Maximum bytes to buffer while waiting for a parseable
+    /// ClientHello. Anything larger is treated as a malformed TLS
+    /// handshake and the connection is closed. Default 8192.
+    pub max_client_hello_bytes: Option<usize>,
 }
 
 /// `[session_resumption]` block. All fields are optional; absence keeps
