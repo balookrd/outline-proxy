@@ -201,6 +201,36 @@ weight = 1.0
   parked upstream instead of opening a fresh session. UDP rides the
   same XHTTP carrier and inherits TCP's reconnect behaviour.
 
+### Submode: packet-up vs stream-one
+
+The wire submode is selected purely from the `?mode=` query string on
+`vless_xhttp_url` — there is no separate config field. `XhttpSubmode`
+is read on every dial, so flipping the URL is enough.
+
+| URL                                              | Submode                |
+|--------------------------------------------------|------------------------|
+| `https://host/path/xhttp`                        | `packet-up` (default)  |
+| `https://host/path/xhttp?mode=packet-up`         | `packet-up` (explicit) |
+| `https://host/path/xhttp?mode=stream-one`        | `stream-one`           |
+| `https://host/path/xhttp?mode=stream_one`        | `stream-one` (alias)   |
+
+- **packet-up** (default) — one long-lived GET (downlink) plus a
+  pipeline of POSTs (uplink) sequenced via `X-Xhttp-Seq`. Each uplink
+  chunk is its own short request. Most tolerant to CDNs and
+  middleboxes that buffer or close long-running POST bodies. Start
+  here.
+- **stream-one** — one bidirectional POST whose request body carries
+  the uplink and response body carries the downlink. Less per-chunk
+  overhead and lower small-packet latency. Requires `xhttp_h2` /
+  `xhttp_h3` and a path that does not buffer POST bodies — proxies
+  that wait for end-of-request before forwarding will stall the first
+  byte. On h3 the `RequestStream` is split so uplink and downlink
+  halves run on dedicated tasks.
+
+Both submodes share the same `connect_xhttp` driver, so resume
+behaviour, fallback chain (`xhttp_h3 → xhttp_h2`), and downgrade-window
+mechanics are identical.
+
 ---
 
 ## Summary
