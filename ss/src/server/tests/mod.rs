@@ -329,6 +329,41 @@ pub(super) async fn cross_repo_serve_axum_with_tls(
     }
 }
 
+/// Plain-TCP, h1-only serve loop for cross-repo h2→h1 fallback
+/// tests. Drives the dispatcher's WsH2 → WsH1 downgrade: a client
+/// dialing with `TransportMode::WsH2` opens a TCP connection and
+/// writes the h2 preface (`PRI * HTTP/2.0\r\n…`); h1-only hyper
+/// rejects it as a malformed h1 request, the dispatcher records the
+/// failure and retries on h1 with the same `X-Outline-Resume`
+/// header. No TLS — `ws://` URL keeps tungstenite happy and avoids
+/// the webpki / override mismatch on the h1 path (tungstenite uses
+/// its own webpki bundle for `wss://`, which would not see our
+/// shared self-signed root).
+pub(super) async fn cross_repo_serve_axum_h1_only(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+) -> anyhow::Result<()> {
+    use hyper_util::{rt::TokioIo, service::TowerToHyperService};
+    use std::net::SocketAddr;
+
+    loop {
+        let (tcp, peer_addr): (_, SocketAddr) = match listener.accept().await {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let app = app.clone();
+        tokio::spawn(async move {
+            let app_with_addr =
+                app.layer(axum::Extension(axum::extract::ConnectInfo(peer_addr)));
+            let svc = TowerToHyperService::new(app_with_addr);
+            let _ = hyper::server::conn::http1::Builder::new()
+                .serve_connection(TokioIo::new(tcp), svc)
+                .with_upgrades()
+                .await;
+        });
+    }
+}
+
 fn write_test_h2_tls_cert()
 -> Result<(std::path::PathBuf, std::path::PathBuf, CertificateDer<'static>)> {
     let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])?;

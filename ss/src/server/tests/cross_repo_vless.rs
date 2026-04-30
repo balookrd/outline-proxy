@@ -1190,3 +1190,166 @@ async fn cross_repo_vless_tcp_ws_h3_to_h2_fallback_with_resume_token() -> Result
     server.abort();
     Ok(())
 }
+
+/// Plain-TCP, h1-only axum server with `OrphanRegistry` enabled.
+/// Drives the dispatcher's WS-h2 → WS-h1 fallback path: a WsH2 dial
+/// hits this listener with the h2 preface, hyper's h1 codec rejects
+/// the malformed request, the client records the failure and retries
+/// on h1 with the same `X-Outline-Resume` header. No TLS — the h1
+/// path goes through tungstenite's own `client_async_tls`, which
+/// uses webpki and does not consult the cross-repo TLS override
+/// slot, so a TLS dial would fail at certificate validation. Plain
+/// TCP keeps the test focused on the dispatcher's downgrade logic.
+async fn setup_vless_ws_h1_only_server_with_resumption(
+    ws_path: &'static str,
+) -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let listen_addr = listener.local_addr()?;
+    let config = sample_config(listen_addr);
+    let metrics = Metrics::new(&config);
+    let vless_user = VlessUser::new(TEST_UUID.into(), Arc::from("test"), None)?;
+    let vless_routes = Arc::new(build_vless_transport_route_map(&[VlessUserRoute {
+        user: vless_user,
+        ws_path: Arc::from(ws_path),
+    }]));
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: vless_routes,
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let orphan_registry = Some(Arc::new(OrphanRegistry::new(
+        ResumptionConfig::from(&crate::config::SessionResumptionConfig {
+            enabled: true,
+            orphan_ttl_tcp_secs: 30,
+            orphan_ttl_udp_secs: 30,
+            orphan_per_user_cap: 4,
+            orphan_global_cap: 16,
+        }),
+        Arc::clone(&metrics),
+    )));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        orphan_registry,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+    let app = build_app(routes, services, auth);
+
+    let handle = tokio::spawn(super::cross_repo_serve_axum_h1_only(listener, app));
+    Ok((listen_addr, handle))
+}
+
+#[tokio::test]
+async fn cross_repo_vless_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut first = [0_u8; 4];
+        stream.read_exact(&mut first).await?;
+        stream.write_all(b"pong").await?;
+        let mut second = [0_u8; 4];
+        stream.read_exact(&mut second).await?;
+        stream.write_all(b"ackk").await?;
+        Result::<_, anyhow::Error>::Ok((first, second))
+    });
+
+    let (listen_addr, server) =
+        setup_vless_ws_h1_only_server_with_resumption("/vless").await?;
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    let url = Url::parse(&format!("ws://{listen_addr}/vless"))?;
+
+    // ── Client A: WsH1 over plain TCP — gets the resume token ──
+    let mut stream_a = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH1,
+        None,
+        false,
+        "cross-repo-vless-h2-h1-fallback-a",
+        None,
+    )
+    .await?;
+    let token = stream_a
+        .issued_session_id()
+        .ok_or_else(|| anyhow::anyhow!("client A: server did not surface a resume token"))?;
+
+    let mut handshake_a = Vec::new();
+    handshake_a.push(VERSION);
+    handshake_a.extend_from_slice(&parse_uuid(TEST_UUID)?);
+    handshake_a.push(0);
+    handshake_a.push(crate::protocol::vless::COMMAND_TCP);
+    handshake_a.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    handshake_a.push(0x01);
+    handshake_a.extend_from_slice(&[127, 0, 0, 1]);
+    handshake_a.extend_from_slice(b"ping");
+    stream_a
+        .send(Message::Binary(Bytes::from(handshake_a)))
+        .await?;
+    let received_a = read_binary_until_at_least(&mut stream_a, 6).await?;
+    assert_eq!(&received_a[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_a[2..6], b"pong");
+
+    let _ = stream_a.send(Message::Close(None)).await;
+    let _ = stream_a.close().await;
+    drop(stream_a);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Client B: WsH2 → h2 handshake fails → fallback to WsH1 ─
+    let mut stream_b = connect_websocket_with_resume(
+        &cache,
+        &url,
+        TransportMode::WsH2,
+        None,
+        false,
+        "cross-repo-vless-h2-h1-fallback-b",
+        Some(token),
+    )
+    .await?;
+    assert_eq!(
+        stream_b.downgraded_from(),
+        Some(TransportMode::WsH2),
+        "client B should report a downgrade from WsH2",
+    );
+    let _issued_b = stream_b.issued_session_id();
+
+    let mut handshake_b = Vec::new();
+    handshake_b.push(VERSION);
+    handshake_b.extend_from_slice(&parse_uuid(TEST_UUID)?);
+    handshake_b.push(0);
+    handshake_b.push(crate::protocol::vless::COMMAND_TCP);
+    handshake_b.extend_from_slice(&upstream_addr.port().to_be_bytes());
+    handshake_b.push(0x01);
+    handshake_b.extend_from_slice(&[127, 0, 0, 1]);
+    handshake_b.extend_from_slice(b"helo");
+    stream_b
+        .send(Message::Binary(Bytes::from(handshake_b)))
+        .await?;
+    let received_b = read_binary_until_at_least(&mut stream_b, 6).await?;
+    assert_eq!(&received_b[..2], &[VERSION, 0x00]);
+    assert_eq!(&received_b[2..6], b"ackk", "echo via resumed upstream");
+
+    let (first, second) =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&first, b"ping");
+    assert_eq!(&second, b"helo");
+
+    drop(stream_b);
+    server.abort();
+    Ok(())
+}
