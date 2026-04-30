@@ -38,7 +38,7 @@ use super::shared::{
 use crate::config::BackendProto;
 use crate::server::auth::build_not_found_response;
 use crate::server::state::AppState;
-use crate::server::transport::proxy_protocol::encode_proxy_protocol;
+use crate::server::transport::proxy_protocol::{PpTransport, encode_proxy_protocol};
 
 pub(in crate::server) async fn http_fallback_handler(
     State(state): State<AppState>,
@@ -82,7 +82,13 @@ async fn proxy_to_backend(
 
     let stream = if let Some(version) = ctx.config.proxy_protocol {
         let mut header = Vec::with_capacity(64);
-        encode_proxy_protocol(&mut header, version, peer_addr, ctx.inbound_listen);
+        encode_proxy_protocol(
+            &mut header,
+            version,
+            peer_addr,
+            ctx.inbound_listen,
+            PpTransport::Stream,
+        );
         let mut stream = stream;
         stream
             .write_all(&header)
