@@ -207,14 +207,17 @@ password = "Secret0"
 # `transport = "ws"` but authenticates with `vless_id` instead of
 # cipher+password. The VLESS server exposes a single WS path
 # (`ws_path_vless`) shared by TCP and UDP, so VLESS uplinks take a
-# single `vless_ws_url` / `vless_ws_mode` pair (NOT `tcp_ws_url`/
+# single `vless_ws_url` / `vless_mode` pair (NOT `tcp_ws_url`/
 # `udp_ws_url`, which are rejected for `transport = "vless"`).
+# Equivalent VLESS configuration is also accepted as a single share-link
+# URI; see the `link = "vless://..."` example below and
+# docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
 # [[outline.uplinks]]
 # name = "vless-edge"
 # group = "main"
 # transport = "vless"
 # vless_ws_url = "wss://vless.example.com/SECRET/vless"
-# vless_ws_mode = "h2"
+# vless_mode = "h2"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 0.5
 
@@ -249,7 +252,7 @@ password = "Secret0"
 # group = "main"
 # transport = "vless"
 # vless_ws_url = "https://vless.example.com:443"
-# vless_ws_mode = "quic"
+# vless_mode = "quic"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 1.0
 #

@@ -4,23 +4,16 @@
 
 Этот changelog подготовлен ретроспективно по git-тегам и истории коммитов репозитория. Он фиксирует пользовательские и эксплуатационные изменения, а не перечисляет каждый отдельный коммит.
 
-В репозитории также есть rolling-тег `nightly`, но верхний раздел ниже описывает текущее состояние ветки после `v1.2.0`, а не изменяемый тег.
+В репозитории также есть rolling-тег `nightly`, но верхний раздел ниже описывает текущее состояние ветки после последнего теха-релиза, а не изменяемый тег.
 
 ---
 
 *English version: [CHANGELOG.md](CHANGELOG.md)*
 
-## [Unreleased] - изменения после `v1.2.0` (по состоянию на 2026-04-28)
-
-### Изменено
-
-- **Ломающее переименование в конфиге / CLI / API.** Поля «режим транспорта на направление» теперь везде называются `tcp_mode` / `udp_mode` — TOML (`tcp_mode = "h2"`), CLI (`--tcp-mode`, `--udp-mode`), переменные окружения (`OUTLINE_TCP_MODE`, `OUTLINE_UDP_MODE`), JSON control-плана (`/control/topology`, `/control/uplinks`), payload дашборда и Rust API (`UplinkConfig::tcp_mode`, `effective_tcp_mode()`). Старые имена удалены без алиасов — существующие TOML-файлы и скрипты придётся обновить вручную. Причина: после появления `xhttp_h2` / `xhttp_h3` / `quic`, которые уже не привязаны к WebSocket, инфикс `_ws_` в имени стал вводить в заблуждение.
-- Панель дашборда теперь корректно рисует даунгрейд `xhttp_h3` → `xhttp_h2` (раньше H3/QUIC-индикация срабатывала только на старых коротких именах режимов, и xhttp-аплинки визуально «зависали» на сконфигурированном режиме).
-- Фикс снапшота: VLESS-аплинки теперь публикуют `tcp_mode` / `udp_mode` и для `xhttp_h2` / `xhttp_h3`. Раньше поле выставлялось только при наличии `vless_ws_url`, поэтому чисто-XHTTP аплинк отображался на дашборде дефолтным «VLESS/WS/H1».
+## [Unreleased] - изменения после `v1.3.1`
 
 ### Добавлено
 
-- VLESS share-link URI стали полноценной формой конфига. Одна строка `link = "vless://UUID@HOST:PORT?type=ws|xhttp|quic&...#NAME"` в `[[outline.uplinks]]` (или в top-level / inline `[outline]`) на этапе загрузки разворачивается в тройку `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. Поддержанные query-параметры: `type` (`ws` / `xhttp` / `quic`), `security` (`none` / `tls` / `reality`), `path`, `alpn` (выбирает H1/H2/H3 вариант режима), `mode` (`packet-up` / `stream-one`, пробрасывается в XHTTP dial-URL), `encryption=none`. `flow=...`, `type=tcp|grpc|h2`, расходящиеся `sni=` / `host=` и любой `encryption`, кроме `none`, отклоняются. То же поле принимает CLI-флаг `--vless-link <URI>` (`OUTLINE_VLESS_LINK`) и REST-эндпойнты `/control/uplinks` (`link`, алиас `share_link`). См. docs/UPLINK-CONFIGURATIONS.ru.md «VLESS share-link URIs».
 - Клиент VLESS-over-XHTTP packet-up. Доступны два режима:
   - `vless_mode = "xhttp_h2"` — XHTTP едет по одному shared TCP+TLS+h2 соединению на сессию.
   - `vless_mode = "xhttp_h3"` — XHTTP едет по QUIC + HTTP/3 (за feature-флагом `h3`, в дефолтном профиле включён). Парный листенер — тот же `xhttp_path_vless` в outline-ss-rust, доступный на QUIC-эндпоинте по ALPN `h3`.
@@ -31,6 +24,36 @@
     1. **Fallback `xhttp_h3 → xhttp_h2`.** При провале QUIC + HTTP/3 dial'а (handshake timeout, ALPN mismatch, заблокированный UDP) dispatcher прозрачно повторяет через h2, неся тот же `resume_request`, открывает существующее `mode-downgrade` окно — следующие dial'ы пропускают h3 до восстановления — и сообщает изначальный режим через `TransportStream::downgraded_from()` для записи в uplink-manager.
     2. **Cross-transport resumption** через XHTTP carrier. Dial рекламирует `X-Outline-Resume-Capable: 1` и (если есть) `X-Outline-Resume: <hex>`, синхронно ждёт response headers — токен `X-Outline-Session`, выданный сервером, забирается до старта drain'а. Токен ложится в существующий `ResumeCache` ровно как у WS-пути, поэтому припаркованный VLESS upstream переподключается через XHTTP reconnect — в том числе при смене carrier'а (h3-провалился-h2 несёт тот же токен end-to-end).
     3. **Stream-one carrier** выбирается чисто из URL-а dial'а. Прописываешь `?mode=stream-one` в `vless_xhttp_url` — и пара GET+POST заменяется на один bidirectional POST: request body несёт uplink, response body несёт downlink. Никакого нового конфиг-поля, никакого нового mode-варианта — `XhttpSubmode::from_url(&Url)` читает query во время dial'а и роутит на нужный driver. На h3 stream разделяется через `RequestStream::split` — uplink и downlink половинки на отдельных tasks. Packet-up driver остаётся по умолчанию для URL'ов без query (или с `?mode=packet-up`).
+- VLESS share-link URI стали полноценной формой конфига. Одна строка `link = "vless://UUID@HOST:PORT?type=ws|xhttp|quic&...#NAME"` в `[[outline.uplinks]]` (или в top-level / inline `[outline]`) на этапе загрузки разворачивается в тройку `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. Поддержанные query-параметры: `type` (`ws` / `xhttp` / `quic`), `security` (`none` / `tls` / `reality`), `path`, `alpn` (выбирает H1/H2/H3 вариант режима), `mode` (`packet-up` / `stream-one`, пробрасывается в XHTTP dial-URL), `encryption=none`. `flow=...`, `type=tcp|grpc|h2`, расходящиеся `sni=` / `host=` и любой `encryption`, кроме `none`, отклоняются. То же поле принимает CLI-флаг `--vless-link <URI>` (`OUTLINE_VLESS_LINK`) и REST-эндпойнты `/control/uplinks` (`link`, алиас `share_link`). См. docs/UPLINK-CONFIGURATIONS.ru.md «VLESS share-link URIs».
+
+### Изменено
+
+- **Ломающее переименование в конфиге / CLI / API.** Поля «режим транспорта» теперь везде называются `tcp_mode` / `udp_mode` / `vless_mode` — TOML (`tcp_mode = "h2"`), CLI (`--tcp-mode`, `--udp-mode`, `--vless-mode`), переменные окружения (`OUTLINE_TCP_MODE`, `OUTLINE_UDP_MODE`, `OUTLINE_VLESS_MODE`), JSON control-плана (`/control/topology`, `/control/uplinks`), payload дашборда и Rust API (`UplinkConfig::tcp_mode`, `effective_tcp_mode()`). Старые `*_ws_mode` имена удалены без алиасов — существующие TOML-файлы и скрипты придётся обновить вручную. Причина: после появления `xhttp_h2` / `xhttp_h3` / `quic`, которые уже не привязаны к WebSocket, инфикс `_ws_` стал вводить в заблуждение.
+- Панель дашборда теперь корректно рисует даунгрейд `xhttp_h3` → `xhttp_h2` (раньше H3/QUIC-индикация срабатывала только на старых коротких именах режимов, и xhttp-аплинки визуально «зависали» на сконфигурированном режиме). VLESS-аплинки также публикуют `tcp_mode` / `udp_mode` для `xhttp_h2` / `xhttp_h3` — раньше поле выставлялось только при наличии `vless_ws_url`, поэтому чисто-XHTTP аплинк отображался дефолтным «VLESS/WS/H1».
+- `outline_transport::install_test_tls_root(CertificateDer)` — тест-only ручка, пинающая кастомный самоподписанный root для XHTTP h2 / h3 dial-путей. Override-слот это `RwLock<Option<…>>` с дефолтом `None`, так что продакшен-вызывающие (которые её не трогают) сохраняют webpki-поведение с одним лишним чтением на dial. Целевой потребитель — cross-repo e2e-тест в `outline-ss-rust`, который поднимает in-process самоподписанный сервер и дёргает его через обычный `connect_websocket_with_resume`.
+- Тест-обход для процесс-вайдных кэшей QUIC-эндпоинтов. Когда выставлен тестовый override (т.е. `install_test_tls_root` был вызван), `H3_CLIENT_ENDPOINT_V4` / `_V6` и raw-QUIC `QUIC_CLIENT_ENDPOINT_V4` / `_V6` пропускают кэш и биндят свежий endpoint на каждый dial. Каждый `#[tokio::test]` крутится в своём runtime; driver-task закэшированного endpoint'а привязан к runtime, который первым попал в кэш, и умирает сразу как только тот тест завершается — следующий тест получает `endpoint driver future was dropped`. Продакшен-поведение не меняется.
+
+### Исправлено
+
+- WebSocket-over-h2 диалер слал `:path = //{ws_path}` потому что `H2Dialer::open_on` форматировал `target_uri` как `format!("{scheme}://{auth}/{path}")`, а `websocket_path` уже возвращает ведущий `/`. Серверные axum-роутеры отвергают двойной слэш с 404, что годами маскировалось h1-фолбэком в WS-h2 диспетчере (tungstenite нормализует слэш по дороге на провод). h2-путь теперь конкатенирует без повторного `/`. Виден только на h2-only серверах (RFC 8441 стеки без h1) и всплыл благодаря cross-repo h3→h2 fallback тесту в `outline-ss-rust`.
+- XHTTP h3 stream-one закрывал QUIC-соединение с `H3_NO_ERROR` ещё до того, как через него пройдёт хоть один прикладной байт: единственный `SendRequest` уезжал в `open_h3_stream_one`, дропался на return, а `SendRequest::drop` в крейте h3 делает graceful-close, как только `sender_count` падает в ноль. Зеркалит паттерн packet-up — клонируем перед open-хелпером, оригинал держим живым в driver-task'е. Тот же коммит переносит quinn `Endpoint` в driver-task (прежний `let _endpoint_guard = endpoint;` держал его живым только в скоупе функции, не на время сессии).
+- Редактор аплинков в дашборде теперь отдаёт всю XHTTP-тройку (`vless_xhttp_url`, `vless_mode`, `vless_id`), так что XHTTP-аплинки можно создавать и редактировать из UI без 400 «unknown field».
+- Пробы и refill standby для VLESS теперь идут через тот же хелпер `vless_dial_url()`, что и live data path, — пробы, выбирающие XHTTP carrier, больше не сваливаются на `vless_ws_url`, когда настроен только `vless_xhttp_url`.
+
+## [1.3.1] - 2026-04-29
+
+### Исправлено
+
+- Per-host окно даунгрейда `ws_mode_cache` теперь сбрасывается при успешном dial'е изначально запрошенного режима, а дефолтный TTL короче — восстановившийся H3/QUIC путь снова идёт в работу сразу, как только становится доступен, а не остаётся залипшим на старое длинное окно.
+
+### Изменено
+
+- Внутренний clean-up: Rust-идентификаторы и метрические лейблы `h3_downgrade_*` переименованы в `mode_downgrade_*` под унифицированную H3 + raw-QUIC семантику, появившуюся в v1.3.0 (TOML / CLI ключ принимает `mode_downgrade_secs` уже с v1.3.0; алиас `h3_downgrade_secs` сохраняется). `utils.rs` крейта `outline-uplink` разнесён на per-domain модули; `error_text.rs` переименован в `error_classify.rs`; тесты переразложены под канонический layout `<dir>/tests/<basename>.rs`. Без изменений в публичном конфиге и API.
+
+## [1.3.0] - 2026-04-28
+
+### Добавлено
+
 - Raw QUIC транспорт (`*_ws_mode = "quic"`): VLESS / Shadowsocks-кадры прямо поверх QUIC bidi-стримов и датаграмм (RFC 9221), без WebSocket и без HTTP/3. ALPN per-connection выбирает протокол (`vless`, `ss`, `h3`); парный листенер — в outline-ss-rust. Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект. VLESS-UDP использует per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм; SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами. URL для дайла переиспользуется как QUIC dial target — берётся только `host:port`, путь игнорируется.
 - Raw-QUIC oversize stream-fallback. Новые ALPN `vless-mtu` / `ss-mtu` несут UDP-датаграммы, превысившие лимит QUIC-датаграммы, поверх server-initiated bidi (`accept_bi`), чтобы патологически большие UDP-пакеты по-прежнему ехали по raw-QUIC, а не молча дропались. Стартовый QUIC `initial_mtu` поднят до 1400, чтобы типичный UDP-трафик оставался на быстром пути датаграмм.
 - Fallback raw-QUIC при дайле. На отказ dial / handshake raw-QUIC теперь падает на WS over H2 (с дальнейшим H1) и открывает единое окно mode-downgrade — следующие дайлы пропускают QUIC, пока recovery-проба не подтвердит, что QUIC снова доступен. Покрытие: VLESS-TCP, VLESS-UDP, SS-TCP, SS-UDP. Заменяет прежнее поведение "no fallback by design".
@@ -68,13 +91,9 @@
 - Routing fast path пропускает per-packet `has_any_healthy`, если ни одно правило не задаёт fallback-таргет.
 - Refill standby полностью пропускает поиск в TCP-пуле, если эффективный режим dial — raw QUIC (где per-connection пула нет).
 - Внутренний clean-up: `tcp/connect` шарит общий SS target-header send между путями; flow-таблица `tun/tcp` переехала в `DashMap` с отдельным `FlowScheduler`; H2/H3 dial-скелет унифицирован за одной associated-type-чертой `WsDialer`; route TCP/UDP fallback использует общий `apply_fallback_strategy`.
-- `outline_transport::install_test_tls_root(CertificateDer)` — тест-only ручка, пинающая кастомный самоподписанный root для XHTTP h2 / h3 dial-путей. Override-слот это `RwLock<Option<…>>` с дефолтом `None`, так что продакшен-вызывающие (которые её не трогают) сохраняют webpki-поведение с одним лишним чтением на dial. Целевой потребитель — cross-repo e2e-тест в `outline-ss-rust`, который поднимает in-process самоподписанный сервер и дёргает его через обычный `connect_websocket_with_resume`.
-- Тест-обход для процесс-вайдных кэшей QUIC-эндпоинтов. Когда выставлен тестовый override (т.е. `install_test_tls_root` был вызван), `H3_CLIENT_ENDPOINT_V4` / `_V6` и raw-QUIC `QUIC_CLIENT_ENDPOINT_V4` / `_V6` пропускают кэш и биндят свежий endpoint на каждый dial. Каждый `#[tokio::test]` крутится в своём runtime; driver-task закэшированного endpoint'а привязан к runtime, который первым попал в кэш, и умирает сразу как только тот тест завершается — следующий тест получает `endpoint driver future was dropped`. Продакшен-поведение не меняется.
 
 ### Исправлено
 
-- WebSocket-over-h2 диалер слал `:path = //{ws_path}` потому что `H2Dialer::open_on` форматировал `target_uri` как `format!("{scheme}://{auth}/{path}")`, а `websocket_path` уже возвращает ведущий `/`. Серверные axum-роутеры отвергают двойной слэш с 404, что годами маскировалось h1-фолбэком в WS-h2 диспетчере (tungstenite нормализует слэш по дороге на провод). h2-путь теперь конкатенирует без повторного `/`. Виден только на h2-only серверах (RFC 8441 стеки без h1) и всплыл благодаря cross-repo h3→h2 fallback тесту в `outline-ss-rust`.
-- XHTTP h3 stream-one закрывал QUIC-соединение с `H3_NO_ERROR` ещё до того, как через него пройдёт хоть один прикладной байт: единственный `SendRequest` уезжал в `open_h3_stream_one`, дропался на return, а `SendRequest::drop` в крейте h3 делает graceful-close, как только `sender_count` падает в ноль. Зеркалит паттерн packet-up — клонируем перед open-хелпером, оригинал держим живым в driver-task'е. Тот же коммит переносит quinn `Endpoint` в driver-task (прежний `let _endpoint_guard = endpoint;` держал его живым только в скоупе функции, не на время сессии).
 - Дашборд: per-instance hyper connection driver теперь аборитится при завершении proxy task — закрывает протечку control-API сокета, копившуюся при churn инстансов.
 - Raw QUIC: разорван цикл Arc в `VlessUdpDemuxer`, удерживавший probe-driven QUIC-коннекты живыми после завершения пробы; пробы больше не пинят коннекты дольше их естественной жизни.
 - TUN: дайлы raw-QUIC TCP, инициированные из TUN-flow, теперь так же падают на WS over H2, как и со стороны SOCKS5; до этого provision raw-QUIC из TUN сразу убивал flow.
