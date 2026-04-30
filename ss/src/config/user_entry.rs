@@ -76,7 +76,7 @@ pub struct UserEntry {
     pub vless_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ws_path_vless: Option<String>,
-    /// Per-user override of the global `[websocket].xhttp_vless_path`
+    /// Per-user override of the global `[websocket].xhttp_path_vless`
     /// base. Defaulting to the global keeps single-tenant configs
     /// terse; per-user overrides are useful for path-segregated
     /// deployments behind a CDN.

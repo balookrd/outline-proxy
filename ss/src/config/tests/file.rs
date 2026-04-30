@@ -8,9 +8,9 @@ fn parses_sectioned_ws_paths() {
 listen = "0.0.0.0:3000"
 
 [websocket]
-tcp_path = "/custom-tcp"
-udp_path = "/custom-udp"
-vless_path = "/vless"
+ws_path_tcp = "/custom-tcp"
+ws_path_udp = "/custom-udp"
+ws_path_vless = "/vless"
 
 [http_root]
 auth = true
@@ -26,9 +26,9 @@ ws_path_udp = "/alice-udp"
     .unwrap();
 
     let ws = config.websocket.unwrap();
-    assert_eq!(ws.tcp_path.as_deref(), Some("/custom-tcp"));
-    assert_eq!(ws.udp_path.as_deref(), Some("/custom-udp"));
-    assert_eq!(ws.vless_path.as_deref(), Some("/vless"));
+    assert_eq!(ws.ws_path_tcp.as_deref(), Some("/custom-tcp"));
+    assert_eq!(ws.ws_path_udp.as_deref(), Some("/custom-udp"));
+    assert_eq!(ws.ws_path_vless.as_deref(), Some("/vless"));
     let http_root = config.http_root.unwrap();
     assert_eq!(http_root.auth, Some(true));
     assert_eq!(http_root.realm.as_deref(), Some("VPN"));

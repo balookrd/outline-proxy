@@ -67,11 +67,11 @@ path = "/metrics"
 # ipv6_refresh_secs = 30
 
 [websocket]
-tcp_path = "/tcp"
-udp_path = "/udp"
+ws_path_tcp = "/tcp"
+ws_path_udp = "/udp"
 # Optional VLESS over WebSocket path on the main TCP listener.
 # Use with TLS for public deployments. MVP supports TCP CONNECT only.
-# vless_path = "/vless"
+# ws_path_vless = "/vless"
 
 # Optional OpenConnect-style password prompt on GET /.
 # The browser username is ignored; the password is matched against configured users.
@@ -142,7 +142,7 @@ method = "2022-blake3-chacha20-poly1305"
 ws_path_tcp = "/dave/tcp"
 ws_path_udp = "/dave/udp"
 
-# Optional VLESS-only user. Requires `[websocket].vless_path` (global) or
+# Optional VLESS-only user. Requires `[websocket].ws_path_vless` (global) or
 # a per-user `ws_path_vless`.
 # [[users]]
 # id = "eve-vless"

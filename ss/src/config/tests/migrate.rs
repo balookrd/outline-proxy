@@ -21,13 +21,12 @@ method = "chacha20-ietf-poly1305"
     assert!(out.contains("[metrics]"));
     assert!(out.contains("path = \"/metrics\""));
     assert!(out.contains("[websocket]"));
-    assert!(out.contains("tcp_path = \"/tcp\""));
-    assert!(out.contains("udp_path = \"/udp\""));
+    assert!(out.contains("ws_path_tcp = \"/tcp\""));
+    assert!(out.contains("ws_path_udp = \"/udp\""));
     assert!(out.contains("[http_root]"));
     assert!(out.contains("auth = true"));
     assert!(out.contains("[shadowsocks]"));
     assert!(out.contains("method = \"chacha20-ietf-poly1305\""));
-    assert!(!out.contains("ws_path_tcp ="));
 }
 
 #[test]
