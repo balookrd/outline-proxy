@@ -20,6 +20,7 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ### Added
 
+- VLESS share-link URIs are now a first-class config shape. A single `link = "vless://UUID@HOST:PORT?type=ws|xhttp|quic&...#NAME"` entry inside `[[outline.uplinks]]` (or top-level / `[outline]` inline) expands at load time into the matching `vless_id` / `vless_*_url` / `vless_mode` triple, with `transport = "vless"` implied. Recognised query parameters: `type` (`ws` / `xhttp` / `quic`), `security` (`none` / `tls` / `reality`), `path`, `alpn` (selects H1 / H2 / H3 mode variant), `mode` (`packet-up` / `stream-one`, propagated to the XHTTP dial URL), and `encryption=none`. `flow=...`, `type=tcp|grpc|h2`, divergent `sni=` / `host=`, and any non-`none` `encryption` are rejected. The same field is accepted by the CLI flag `--vless-link <URI>` (`OUTLINE_VLESS_LINK`) and the `/control/uplinks` REST endpoints (`link`, alias `share_link`). See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
 - VLESS-over-XHTTP packet-up client. Two modes are live:
   - `vless_mode = "xhttp_h2"` — XHTTP rides a single shared TCP+TLS+h2 connection per session.
   - `vless_mode = "xhttp_h3"` — XHTTP rides QUIC + HTTP/3 (gated behind the `h3` feature, which the default profile already enables). Pairs with the same outline-ss-rust listener as the h2 variant; the server's `xhttp_path_vless` route is reachable on the QUIC endpoint via the `h3` ALPN.

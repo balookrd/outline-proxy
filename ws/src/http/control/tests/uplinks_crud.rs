@@ -181,6 +181,50 @@ vless_id = "11111111-2222-3333-4444-555555555555"
 }
 
 #[test]
+fn vless_share_link_payload_round_trips_through_validation() {
+    // Operators can paste a `vless://` URI into the dashboard form instead
+    // of filling in `vless_id` / `vless_*_url` / `vless_mode` by hand. The
+    // payload must survive the table round-trip and validate via the same
+    // pipeline the loader uses at startup.
+    let payload = UplinkPayload {
+        name: Some("share".into()),
+        transport: Some("vless".into()),
+        link: Some(
+            "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443\
+             ?type=ws&security=tls&path=%2Fsecret%2Fvless&alpn=h3#share"
+                .into(),
+        ),
+        ..Default::default()
+    };
+    let tbl = payload_to_table(&payload);
+    let rendered = tbl.to_string();
+    assert!(rendered.contains("link ="), "share-link missing in TOML:\n{rendered}");
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    validate_uplink_section(&section, 0).unwrap();
+}
+
+#[test]
+fn validation_rejects_link_alongside_explicit_vless_fields() {
+    let payload = UplinkPayload {
+        name: Some("conflict".into()),
+        transport: Some("vless".into()),
+        link: Some(
+            "vless://11111111-2222-3333-4444-555555555555@host:443?type=ws&security=tls"
+                .into(),
+        ),
+        vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
+        ..Default::default()
+    };
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    let err = validate_uplink_section(&section, 0).unwrap_err();
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("mutually exclusive"),
+        "expected conflict error, got: {message}"
+    );
+}
+
+#[test]
 fn validation_rejects_missing_password_for_shadowsocks() {
     let payload = UplinkPayload {
         name: Some("u9".into()),

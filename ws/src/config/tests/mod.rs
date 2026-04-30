@@ -1110,3 +1110,71 @@ async fn load_config_reads_dashboard_instances() {
 
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[tokio::test]
+async fn load_config_expands_vless_share_link_field() {
+    // A bare `link = "vless://..."` entry should produce a fully-formed
+    // VLESS uplink without the user spelling out `vless_id` / `vless_*_url`/
+    // `vless_mode` separately.
+    let path = std::env::temp_dir().join("outline-ws-rust-share-link.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "edge"
+        group = "main"
+        link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fvless&alpn=h3#edge"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let uplink = &config.groups[0].uplinks[0];
+    assert_eq!(uplink.transport, UplinkTransport::Vless);
+    assert!(uplink.vless_id.is_some(), "vless_id should be expanded from link");
+    let url = uplink.vless_ws_url.as_ref().expect("vless_ws_url present");
+    assert_eq!(url.scheme(), "wss");
+    assert_eq!(url.host_str(), Some("vless.example.com"));
+    assert_eq!(url.path(), "/secret/vless");
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn load_config_rejects_link_alongside_explicit_vless_url() {
+    let path = std::env::temp_dir().join("outline-ws-rust-share-link-conflict.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "edge"
+        group = "main"
+        link = "vless://11111111-2222-3333-4444-555555555555@host:443?type=ws&security=tls"
+        vless_ws_url = "wss://host/explicit"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let err = load_config(&path, &args).await.unwrap_err();
+    let message = format!("{err:#}");
+    assert!(
+        message.contains("mutually exclusive"),
+        "expected conflict error, got: {message}"
+    );
+
+    let _ = std::fs::remove_file(path);
+}

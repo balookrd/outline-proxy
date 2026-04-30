@@ -22,6 +22,11 @@ pub(crate) struct ConfigFile {
     /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
+    /// expands at load time into the matching `vless_id`, dial URL and
+    /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
+    /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+    pub(super) link: Option<String>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
@@ -92,6 +97,9 @@ pub(crate) struct OutlineSection {
     /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
+    /// VLESS share-link URI. Same semantics as `ConfigFile::link`; provided
+    /// here so the inline-uplink shape can carry a one-line VLESS config.
+    pub(super) link: Option<String>,
     pub(super) tcp_addr: Option<ServerAddr>,
     pub(super) udp_addr: Option<ServerAddr>,
     pub(super) method: Option<CipherKind>,
@@ -186,6 +194,11 @@ pub(crate) struct UplinkSection {
     /// of the same name on `ConfigFile` for semantics.
     pub(crate) vless_xhttp_url: Option<Url>,
     pub(crate) vless_mode: Option<TransportMode>,
+    /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
+    /// expands at load time into the matching `vless_id`, dial URL and
+    /// `vless_mode`. Mutually exclusive with explicitly-set `vless_*`
+    /// fields. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+    pub(crate) link: Option<String>,
     pub(crate) tcp_addr: Option<ServerAddr>,
     pub(crate) udp_addr: Option<ServerAddr>,
     pub(crate) method: Option<CipherKind>,

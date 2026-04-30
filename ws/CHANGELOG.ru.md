@@ -20,6 +20,7 @@
 
 ### Добавлено
 
+- VLESS share-link URI стали полноценной формой конфига. Одна строка `link = "vless://UUID@HOST:PORT?type=ws|xhttp|quic&...#NAME"` в `[[outline.uplinks]]` (или в top-level / inline `[outline]`) на этапе загрузки разворачивается в тройку `vless_id` / `vless_*_url` / `vless_mode`; `transport = "vless"` подставляется автоматически. Поддержанные query-параметры: `type` (`ws` / `xhttp` / `quic`), `security` (`none` / `tls` / `reality`), `path`, `alpn` (выбирает H1/H2/H3 вариант режима), `mode` (`packet-up` / `stream-one`, пробрасывается в XHTTP dial-URL), `encryption=none`. `flow=...`, `type=tcp|grpc|h2`, расходящиеся `sni=` / `host=` и любой `encryption`, кроме `none`, отклоняются. То же поле принимает CLI-флаг `--vless-link <URI>` (`OUTLINE_VLESS_LINK`) и REST-эндпойнты `/control/uplinks` (`link`, алиас `share_link`). См. docs/UPLINK-CONFIGURATIONS.ru.md «VLESS share-link URIs».
 - Клиент VLESS-over-XHTTP packet-up. Доступны два режима:
   - `vless_mode = "xhttp_h2"` — XHTTP едет по одному shared TCP+TLS+h2 соединению на сессию.
   - `vless_mode = "xhttp_h3"` — XHTTP едет по QUIC + HTTP/3 (за feature-флагом `h3`, в дефолтном профиле включён). Парный листенер — тот же `xhttp_path_vless` в outline-ss-rust, доступный на QUIC-эндпоинте по ALPN `h3`.

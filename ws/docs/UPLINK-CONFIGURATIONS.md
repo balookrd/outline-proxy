@@ -201,6 +201,68 @@ weight = 1.0
   parked upstream instead of opening a fresh session. UDP rides the
   same XHTTP carrier and inherits TCP's reconnect behaviour.
 
+## 7. VLESS share-link URIs
+
+The five VLESS shapes above (sections 4–6, plus the `ws_h2` / `ws_h1`
+variants of section 5) can also be configured through a single
+`vless://UUID@HOST:PORT?...#NAME` URI — the share-link format used by
+Xray / V2Ray clients. Set the `link` field instead of writing the
+`vless_id` / `vless_*_url` / `vless_mode` triple by hand:
+
+```toml
+[[outline.uplinks]]
+name = "vless-share"
+group = "main"
+link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fvless&alpn=h3&encryption=none#edge"
+weight = 1.0
+```
+
+The loader expands the URI into the same internal fields the long-form
+TOML produces, so the dial / fallback / resume behaviour is identical
+to the corresponding section above. Setting `transport` is optional —
+`link` implies `transport = "vless"`.
+
+### Recognised query parameters
+
+| URI element / param                | Maps to                                           |
+|------------------------------------|---------------------------------------------------|
+| `UUID` (userinfo)                  | `vless_id`                                        |
+| `HOST:PORT` (authority)            | dial URL host + port (port is required)           |
+| `type=ws`                          | `vless_mode = ws_h1` (with `alpn`: `ws_h2`/`ws_h3`), URL → `vless_ws_url` |
+| `type=xhttp`                       | `vless_mode = xhttp_h2` (with `alpn=h3`: `xhttp_h3`), URL → `vless_xhttp_url` |
+| `type=quic`                        | `vless_mode = quic`, URL → `vless_ws_url` (TLS-only) |
+| `security=tls` / `reality`         | URL scheme → `wss://` (ws) or `https://` (xhttp/quic) |
+| `security=none` (or absent)        | URL scheme → `ws://` / `http://`                  |
+| `path=...`                         | URL path (percent-decoded; leading `/` added if missing) |
+| `alpn=h3` / `h2` / `h1` / `h2,h3`  | picks the H1/H2/H3 mode variant; first token wins |
+| `mode=packet-up` / `stream-one`    | propagated as `?mode=` on the XHTTP dial URL      |
+| `encryption=none` (or absent)      | accepted (VLESS has no other encryption modes)    |
+| `#NAME`                            | uplink name (percent-decoded)                     |
+
+### Constraints and conflicts
+
+- The URI must have an explicit `:port` — there is no scheme default.
+- `link` is mutually exclusive with `vless_id`, `vless_ws_url`,
+  `vless_xhttp_url` and `vless_mode`. Mixing them errors out at config
+  load with a clear message; use the URI **or** the explicit fields.
+- `flow=...` (xtls-rprx-vision) and `encryption=` other than `none`
+  are rejected — no client-side implementation.
+- `sni=` and `host=` parameters are only accepted when they match the
+  authority host. The current transport stack reuses the URL host for
+  both SNI and the HTTP `Host` header, so divergent values would be
+  silently dropped — the loader fails fast instead.
+- `type=tcp` / `type=grpc` / `type=h2` are rejected — the codebase
+  has no carrier for them.
+- Reality-specific parameters (`pbk`, `sid`, `spx`, `fp`) are accepted
+  but have no effect; treat `security=reality` as a synonym for
+  `security=tls` until reality lands.
+
+The same `link` field is accepted by:
+
+- The CLI flag `--vless-link <URI>` / `OUTLINE_VLESS_LINK` env var.
+- The `/control/uplinks` REST endpoints, as `link` (alias `share_link`)
+  inside the `uplink` JSON payload.
+
 ### Submode: packet-up vs stream-one
 
 The wire submode is selected purely from the `?mode=` query string on
