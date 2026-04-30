@@ -64,6 +64,21 @@ fn xhttp_alpn_h3_picks_xhttp_h3_mode() {
 }
 
 #[test]
+fn xhttp_alpn_first_token_wins_for_comma_lists() {
+    // Mirrors `ws_alpn_first_token_wins_for_comma_lists` — pins the
+    // first-token-wins rule for the XHTTP carrier so an `alpn=h3,h2`
+    // URI emitted by `outline-ss-rust v1.4.x+` resolves to
+    // `XhttpH3` (with the h3→h2 inline fallback on the dial path
+    // taking care of UDP-blocked clients). Both single-token shapes
+    // are already covered above; this test specifically guards the
+    // multi-token case.
+    let link = parse(&format!(
+        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h3%2Ch2"
+    ));
+    assert_eq!(link.mode, TransportMode::XhttpH3);
+}
+
+#[test]
 fn xhttp_submode_preserved_as_query_string() {
     let link = parse(&format!(
         "vless://{UUID}@host:443?type=xhttp&security=tls&path=%2Fxhttp&mode=stream-one"
