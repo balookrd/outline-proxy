@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use url::Url;
 
 use outline_transport::{ServerAddr, TransportMode};
-use outline_uplink::{UplinkConfig, UplinkTransport};
+use outline_uplink::{UplinkConfig, UplinkTransport, VlessShareLink};
 use shadowsocks_crypto::CipherKind;
 
 use super::super::args::Args;
@@ -11,7 +11,7 @@ use super::super::schema::{OutlineSection, UplinkSection};
 #[derive(Debug, Clone)]
 pub(super) struct ResolvedUplinkInput {
     pub(super) name: String,
-    pub(super) transport: UplinkTransport,
+    pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
     pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
@@ -27,6 +27,10 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) fwmark: Option<u32>,
     pub(super) ipv6_first: Option<bool>,
     pub(super) vless_id: Option<String>,
+    /// Optional `vless://` share-link URI. When set, expands during
+    /// `TryFrom<ResolvedUplinkInput>` into the matching VLESS fields and
+    /// fails if any of them is already populated.
+    pub(super) link: Option<String>,
 }
 
 impl ResolvedUplinkInput {
@@ -35,8 +39,7 @@ impl ResolvedUplinkInput {
             name: "cli".to_string(),
             transport: args
                 .transport
-                .or_else(|| outline.and_then(|section| section.transport))
-                .unwrap_or_default(),
+                .or_else(|| outline.and_then(|section| section.transport)),
             tcp_ws_url: args
                 .tcp_ws_url
                 .clone()
@@ -81,13 +84,17 @@ impl ResolvedUplinkInput {
                 .ipv6_first
                 .or_else(|| outline.and_then(|section| section.ipv6_first)),
             vless_id: None,
+            link: args
+                .vless_link
+                .clone()
+                .or_else(|| outline.and_then(|section| section.link.clone())),
         }
     }
 
     pub(super) fn from_section(index: usize, uplink: &UplinkSection) -> Self {
         Self {
             name: uplink.name.clone().unwrap_or_else(|| format!("uplink-{}", index + 1)),
-            transport: uplink.transport.unwrap_or_default(),
+            transport: uplink.transport,
             tcp_ws_url: uplink.tcp_ws_url.clone(),
             tcp_mode: uplink.tcp_mode,
             udp_ws_url: uplink.udp_ws_url.clone(),
@@ -103,6 +110,7 @@ impl ResolvedUplinkInput {
             fwmark: uplink.fwmark,
             ipv6_first: uplink.ipv6_first,
             vless_id: uplink.vless_id.clone(),
+            link: uplink.link.clone(),
         }
     }
 
@@ -119,9 +127,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             tcp_mode,
             udp_ws_url,
             udp_mode,
-            vless_ws_url,
-            vless_xhttp_url,
-            vless_mode,
+            mut vless_ws_url,
+            mut vless_xhttp_url,
+            mut vless_mode,
             tcp_addr,
             udp_addr,
             cipher,
@@ -129,8 +137,51 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             weight,
             fwmark,
             ipv6_first,
-            vless_id,
+            mut vless_id,
+            link,
         } = input;
+
+        // `link = "vless://..."` populates the VLESS fields from a single
+        // share-link URI. We do this before the transport-default fold so
+        // a bare `link` entry implies `transport = "vless"` without the
+        // user having to say so twice.
+        let transport = if let Some(raw_link) = link.as_deref() {
+            let parsed = VlessShareLink::parse(raw_link)
+                .with_context(|| format!("uplink {name}: invalid vless share link"))?;
+            if vless_id.is_some() {
+                bail!(
+                    "uplink {name}: `vless_id` is mutually exclusive with `link`; remove one"
+                );
+            }
+            if vless_ws_url.is_some() {
+                bail!(
+                    "uplink {name}: `vless_ws_url` is mutually exclusive with `link`; remove one"
+                );
+            }
+            if vless_xhttp_url.is_some() {
+                bail!(
+                    "uplink {name}: `vless_xhttp_url` is mutually exclusive with `link`; remove one"
+                );
+            }
+            if vless_mode.is_some() {
+                bail!(
+                    "uplink {name}: `vless_mode` is mutually exclusive with `link`; remove one"
+                );
+            }
+            match transport {
+                None | Some(UplinkTransport::Vless) => {},
+                Some(other) => bail!(
+                    "uplink {name}: `link` only applies to transport=vless, but transport={other} was set"
+                ),
+            }
+            vless_id = Some(parsed.uuid);
+            vless_ws_url = parsed.vless_ws_url;
+            vless_xhttp_url = parsed.vless_xhttp_url;
+            vless_mode = Some(parsed.mode);
+            UplinkTransport::Vless
+        } else {
+            transport.unwrap_or_default()
+        };
 
         let weight = weight.unwrap_or(1.0);
         if !weight.is_finite() || weight <= 0.0 {
@@ -374,6 +425,7 @@ fn cli_uplink_override_requested(args: &Args) -> bool {
         || args.vless_ws_url.is_some()
         || args.vless_xhttp_url.is_some()
         || args.vless_mode.is_some()
+        || args.vless_link.is_some()
         || args.tcp_addr.is_some()
         || args.udp_addr.is_some()
         || args.method.is_some()

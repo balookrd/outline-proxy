@@ -218,6 +218,16 @@ password = "Secret0"
 # vless_id = "11111111-2222-3333-4444-555555555555"
 # weight = 0.5
 
+# Same uplink configured from a single VLESS share-link URI. The loader
+# expands the link into the matching `vless_id` / `vless_*_url` /
+# `vless_mode` fields; mixing `link` with the explicit fields is
+# rejected. See docs/UPLINK-CONFIGURATIONS.md "VLESS share-link URIs".
+# [[outline.uplinks]]
+# name = "vless-share"
+# group = "main"
+# link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2FSECRET%2Fvless&alpn=h2#vless-edge"
+# weight = 0.5
+
 # Raw QUIC examples (no WebSocket / no HTTP/3 framing). Pairs with the
 # outline-ss-rust server's `transport::raw_quic` listener — ALPN selects
 # the protocol on the same QUIC endpoint, then VLESS / SS framing rides

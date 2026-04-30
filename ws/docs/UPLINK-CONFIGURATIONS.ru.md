@@ -198,6 +198,70 @@ weight = 1.0
   припаркованный upstream вместо открытия новой сессии. UDP едет в
   том же XHTTP-carrier'е и наследует поведение реконнекта от TCP.
 
+## 7. VLESS share-link URIs
+
+Пять VLESS форм выше (разделы 4–6 плюс варианты `ws_h2` / `ws_h1`
+раздела 5) можно сконфигурировать одной строкой
+`vless://UUID@HOST:PORT?...#NAME` — это share-link формат клиентов
+Xray / V2Ray. Используйте поле `link` вместо ручного заполнения
+тройки `vless_id` / `vless_*_url` / `vless_mode`:
+
+```toml
+[[outline.uplinks]]
+name = "vless-share"
+group = "main"
+link = "vless://11111111-2222-3333-4444-555555555555@vless.example.com:443?type=ws&security=tls&path=%2Fsecret%2Fvless&alpn=h3&encryption=none#edge"
+weight = 1.0
+```
+
+Загрузчик разворачивает URI в те же внутренние поля, которые
+порождает длинная TOML-форма, так что поведение dial / fallback /
+resume полностью совпадает с соответствующим разделом выше. Поле
+`transport` указывать необязательно: `link` неявно подразумевает
+`transport = "vless"`.
+
+### Распознаваемые параметры
+
+| Элемент / параметр URI             | Куда мапится                                       |
+|------------------------------------|----------------------------------------------------|
+| `UUID` (userinfo)                  | `vless_id`                                         |
+| `HOST:PORT` (authority)            | host + port dial-URL (порт обязателен)             |
+| `type=ws`                          | `vless_mode = ws_h1` (с `alpn`: `ws_h2`/`ws_h3`), URL → `vless_ws_url` |
+| `type=xhttp`                       | `vless_mode = xhttp_h2` (с `alpn=h3`: `xhttp_h3`), URL → `vless_xhttp_url` |
+| `type=quic`                        | `vless_mode = quic`, URL → `vless_ws_url` (только TLS) |
+| `security=tls` / `reality`         | scheme URL → `wss://` (ws) или `https://` (xhttp/quic) |
+| `security=none` (или отсутствует)  | scheme URL → `ws://` / `http://`                   |
+| `path=...`                         | path URL (percent-decoded; ведущий `/` добавляется автоматически) |
+| `alpn=h3` / `h2` / `h1` / `h2,h3`  | выбирает H1/H2/H3-вариант режима; учитывается первый токен |
+| `mode=packet-up` / `stream-one`    | пробрасывается как `?mode=` в XHTTP dial-URL       |
+| `encryption=none` (или отсутствует)| принимается (других режимов encryption у VLESS нет)|
+| `#NAME`                            | имя аплинка (percent-decoded)                      |
+
+### Ограничения и конфликты
+
+- В URI обязателен явный `:port` — у схемы нет дефолта.
+- `link` взаимно исключителен с `vless_id`, `vless_ws_url`,
+  `vless_xhttp_url` и `vless_mode`. Смешение приводит к ошибке на
+  этапе загрузки конфига; используйте либо URI, либо явные поля.
+- `flow=...` (xtls-rprx-vision) и любые `encryption=`, отличные от
+  `none`, отклоняются — на клиенте этих режимов нет.
+- Параметры `sni=` и `host=` принимаются только если они совпадают с
+  authority host. Текущий транспорт переиспользует host из URL и
+  как SNI, и как HTTP-заголовок `Host`, поэтому расходящиеся значения
+  иначе бы тихо терялись — загрузчик предпочитает ошибку.
+- `type=tcp` / `type=grpc` / `type=h2` отклоняются — для них нет
+  реализации carrier'а.
+- Reality-параметры (`pbk`, `sid`, `spx`, `fp`) принимаются, но
+  игнорируются; пока reality не реализован, считайте
+  `security=reality` синонимом `security=tls`.
+
+То же поле `link` принимается:
+
+- CLI-флагом `--vless-link <URI>` / переменной окружения
+  `OUTLINE_VLESS_LINK`.
+- REST-эндпойнтами `/control/uplinks` — как `link` (алиас
+  `share_link`) внутри JSON-объекта `uplink`.
+
 ### Submode: packet-up vs stream-one
 
 Wire-режим выбирается **только** через query-параметр `?mode=` в

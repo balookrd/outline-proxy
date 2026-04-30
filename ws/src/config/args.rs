@@ -61,6 +61,14 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_VLESS_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
     pub vless_mode: Option<TransportMode>,
 
+    /// Configure a VLESS uplink from a single share-link URI
+    /// (`vless://UUID@HOST:PORT?type=ws|xhttp|quic&...`). Mutually
+    /// exclusive with `--vless-id` / `--vless-ws-url` /
+    /// `--vless-xhttp-url` / `--vless-mode`. Sets `transport = "vless"`
+    /// implicitly.
+    #[arg(long, env = "OUTLINE_VLESS_LINK")]
+    pub vless_link: Option<String>,
+
     #[arg(long, env = "SHADOWSOCKS_METHOD")]
     pub method: Option<CipherKind>,
 

@@ -12,6 +12,7 @@ mod probe;
 mod registry;
 mod routing_key;
 mod selection;
+pub mod share_link;
 pub mod state;
 mod time;
 mod types;
@@ -21,6 +22,7 @@ pub use config::{
     ProbeConfig, RoutingScope, ServerAddr, TargetAddr, TcpProbeConfig, UplinkConfig,
     UplinkGroupConfig, UplinkTransport, VlessUdpMuxLimits, WsProbeConfig, TransportMode,
 };
+pub use share_link::VlessShareLink;
 #[cfg(test)]
 mod tests;
 
