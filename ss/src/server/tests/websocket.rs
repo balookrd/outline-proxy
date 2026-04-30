@@ -45,7 +45,7 @@ async fn websocket_rfc8441_http2_connect_smoke() -> Result<()> {
         false,
         "Authorization required",
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -93,7 +93,7 @@ async fn websocket_http1_connect_still_works_with_root_auth_enabled() -> Result<
         true,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -123,7 +123,7 @@ async fn websocket_http2_connect_still_works_with_root_auth_enabled() -> Result<
         true,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -179,7 +179,7 @@ async fn websocket_rfc8441_http2_udp_relay_smoke() -> Result<()> {
         false,
         "Authorization required",
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -244,7 +244,7 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
         false,
         "Authorization required",
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
 
     let (cert_path, key_path, cert_der) = write_test_h2_tls_cert()?;
     let mut tls_config = config.clone();
@@ -345,7 +345,7 @@ async fn websocket_tcp_path_isolates_users_by_route() -> Result<()> {
         false,
         "Authorization required",
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 

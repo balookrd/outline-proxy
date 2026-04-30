@@ -69,6 +69,7 @@ fn sample_config() -> Config {
         access_key: Default::default(),
         tuning: Default::default(),
         session_resumption: Default::default(),
+        http_fallback: None,
         config_path: None,
         control: None,
         dashboard: None,

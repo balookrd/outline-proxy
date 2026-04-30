@@ -61,6 +61,7 @@
 | VLESS поверх XHTTP packet-up | Поддерживается | Long-lived GET + POST'ы с seq-номерами на одном HTTP/2 (или HTTP/3) соединении; reorder-буфер на сервере склеивает out-of-order POST'ы; downlink-кольцо переживает обрыв GET'а в полёте (CDN ~100 c); `X-Padding` + SSE-style маскировка заголовков (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS поверх XHTTP stream-one | Поддерживается | Один bidirectional запрос: request body — uplink, response body — downlink. Включается через `?mode=stream-one` в URL запроса на том же base path. Требует h2 или h3 (h1 → 505). На h3 bidi-стрим разделяется через `RequestStream::split` на send/recv половинки на отдельных tasks |
 | Resumption через XHTTP | Поддерживается | Сервер выдаёт `X-Outline-Session` на первом запросе, паркует VLESS-upstream при разрыве carrier'а и переподключает на следующем запросе с `X-Outline-Resume` — в том числе при смене carrier'а (например, fallback клиента с h3 на h2 с тем же токеном) |
+| HTTP fallback (маскировка) | Поддерживается | Reverse-proxy неподходящих под наши маршруты HTTP/1.1 + HTTP/2 запросов на внешний бэкенд (haproxy / nginx / caddy) вместо `404`, чтобы листенер выглядел как обычный веб-сервис. Опциональный HAProxy PROXY-protocol v1/v2 prefix сохраняет реальный IP клиента для логов/ACL |
 | VLESS REALITY / XTLS / Vision | Не поддерживается | Вне области применения |
 | VLESS / Shadowsocks raw поверх QUIC | Поддерживается | Без WebSocket / без HTTP/3 framing'а; выбирается по ALPN (`vless`, `ss`) на том же `h3_listen` |
 | Outline management API | Не поддерживается | Только data plane |
@@ -484,6 +485,38 @@ h3_key_path = "/etc/outline-ss-rust/tls/privkey.pem"
 ```
 
 HTTP/3 всегда требует TLS и доступности UDP на выбранном порту.
+
+### 4. HTTP fallback на внешний веб-сервер (маскировка)
+
+По умолчанию на любой запрос, который не попал ни в один сконфигурированный WebSocket / XHTTP / metrics путь, сервер отвечает `404 Not Found`. Сканеры по этой реакции легко отличают наш листенер от обычного веб-сервиса. Блок `[http_fallback]` делает так, чтобы такие «не наши» запросы выглядели как ответы обычного сайта: они проксируются на внешний бэкенд (haproxy, nginx, caddy, …), и случайный `curl https://your-host/` или TLS-сканер видит то, что отдаёт этот бэкенд.
+
+```toml
+[http_fallback]
+backend = "http://127.0.0.1:8080"   # пока только http://
+# request_timeout_secs = 30
+# add_x_forwarded_for = true
+# add_x_forwarded_proto = true
+# add_x_forwarded_host = true
+# proxy_protocol = "v1"             # либо "v2"; пропустить — выкл.
+```
+
+Что именно проксируется:
+
+- Любой запрос, который **не** попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control / dashboard маршрут. Порядок приоритетов прежний: WebSocket и XHTTP-маршруты первыми, затем `http_root_auth` на `/`, и только потом fallback.
+- Hop-by-hop заголовки (`Connection`, `Keep-Alive`, `TE`, `Trailers`, `Transfer-Encoding`, `Upgrade`, `Proxy-*`) срезаются в обе стороны, включая всё, что перечислено внутри `Connection:`. Тело стримится в обе стороны.
+- `Host` заменяется на authority бэкенда — virtual host'ы на upstream'е резолвятся так, словно запрос пришёл напрямую к нему (поведение nginx-овского `proxy_set_header Host $proxy_host;`).
+- `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host` добавляются/устанавливаются в зависимости от тумблеров выше. `X-Forwarded-Proto` отражает, терминировал ли входящий листенер TLS.
+
+PROXY-protocol:
+
+- `proxy_protocol = "v1"` (текстовый) или `"v2"` (бинарный) — добавит HAProxy PROXY-protocol заголовок в начало TCP-соединения с бэкендом. Бэкенд должен быть явно настроен на ровно эту версию (`proxy_protocol on;` в `listen`-директиве nginx, `accept-proxy` на bind у haproxy и т. п.).
+- В качестве destination в заголовок пишется bind-адрес входящего листенера. Если он `0.0.0.0` / `[::]`, кодер деградирует до UNKNOWN (v1) / UNSPEC (v2) — per-connection local_addr пока не пробрасывается.
+
+Ограничения:
+
+- HTTP/3 fallback не реализован: на `h3_listen` не наши запросы по-прежнему возвращают `404`. Чисто пробросить h3-фреймы на h1/h2 бэкенд без отдельного h3-клиента и большого слоя трансляции framing'а нельзя, поэтому отложено до явного запроса.
+- backend поддерживает только `http://host:port`. HTTPS-upstream и Unix-доменные сокеты добавим по запросу.
+- При высокой частоте запросов fallback открывает по одному upstream TCP-соединению на каждый входящий (без пула). Для маскировочного трафика этого достаточно; если хочется использовать fallback как полноценный балансер — терминируйте на upstream'е напрямую.
 
 ## Настройка производительности HTTP/3
 

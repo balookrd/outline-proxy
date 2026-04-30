@@ -25,8 +25,9 @@ use super::super::{
     shutdown::ShutdownSignal,
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
-        XhttpAxumState, metrics_handler, not_found_handler, root_http_auth_handler,
-        tcp_websocket_upgrade, udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
+        HttpFallbackContext, XhttpAxumState, http_fallback_handler, metrics_handler,
+        not_found_handler, root_http_auth_handler, tcp_websocket_upgrade, udp_websocket_upgrade,
+        vless_websocket_upgrade, xhttp_handler,
     },
 };
 use super::tls::build_tcp_tls_acceptor;
@@ -35,6 +36,7 @@ pub(in crate::server) fn build_app(
     routes: RoutesSnapshot,
     services: Arc<Services>,
     auth: Arc<AuthPolicy>,
+    http_fallback: Option<Arc<HttpFallbackContext>>,
 ) -> Router {
     let mut router = Router::new();
 
@@ -61,8 +63,14 @@ pub(in crate::server) fn build_app(
         routes: Arc::clone(&routes),
         services: Arc::clone(&services),
         auth,
+        http_fallback,
     };
-    let mut app = router.fallback(any(not_found_handler)).with_state(state.clone());
+    let fallback_route = if state.http_fallback.is_some() {
+        any(http_fallback_handler)
+    } else {
+        any(not_found_handler)
+    };
+    let mut app = router.fallback(fallback_route).with_state(state.clone());
 
     // XHTTP routes carry their own `XhttpAxumState`, so they have to
     // be merged in after the main router pins its state. The base

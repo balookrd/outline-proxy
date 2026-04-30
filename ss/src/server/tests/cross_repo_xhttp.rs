@@ -606,7 +606,7 @@ async fn setup_xhttp_h2_tls_server_with_resumption(
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
 
     let server_tls = super::cross_repo_test_server_tls_config(&[b"h2", b"http/1.1"]);
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_tls));

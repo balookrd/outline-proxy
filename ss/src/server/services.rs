@@ -27,6 +27,7 @@ use super::{
         AuthPolicy, AuthUsersSnapshot, RouteRegistry, RoutesSnapshot, Services, TransportRoute,
         UdpServices, UserKeySlice, VlessTransportRoute,
     },
+    transport::HttpFallbackContext,
 };
 use arc_swap::ArcSwap;
 
@@ -44,6 +45,9 @@ pub(super) struct Built {
     pub(super) auth_users: AuthUsersSnapshot,
     pub(super) services: Arc<Services>,
     pub(super) auth: Arc<AuthPolicy>,
+    /// Per-process state for the HTTP fallback reverse-proxy. `None`
+    /// when `[http_fallback]` is not configured.
+    pub(super) http_fallback: Option<Arc<HttpFallbackContext>>,
 }
 
 pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
@@ -120,6 +124,16 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         http_root_auth: config.http_root_auth,
         http_root_realm: Arc::from(config.http_root_realm.clone()),
     });
+    let http_fallback = config.http_fallback.as_ref().map(|cfg| {
+        // Listener bind addr is required upstream by `validate()`, so the
+        // unwrap below cannot fire when `http_fallback` is `Some`.
+        let inbound_listen = config.listen.expect("listen required when http_fallback is set");
+        Arc::new(HttpFallbackContext {
+            config: Arc::new(cfg.clone()),
+            inbound_listen,
+            inbound_tls: config.tcp_tls_enabled(),
+        })
+    });
     Ok(Built {
         users,
         user_routes,
@@ -133,6 +147,7 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         auth_users,
         services,
         auth,
+        http_fallback,
     })
 }
 

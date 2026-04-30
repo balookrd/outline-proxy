@@ -33,7 +33,7 @@ async fn root_http_auth_challenges_allows_password_and_hides_other_paths() -> Re
         true,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 
@@ -126,7 +126,7 @@ async fn root_http_auth_returns_403_after_three_failed_password_attempts() -> Re
         true,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 

@@ -188,6 +188,9 @@ impl Config {
         if self.outbound_ipv6_refresh_secs == 0 {
             bail!("outbound_ipv6_refresh_secs must be > 0");
         }
+        if self.http_fallback.is_some() && self.listen.is_none() {
+            bail!("http_fallback requires the [server] listen to be configured");
+        }
         self.tuning.validate()?;
         Ok(())
     }

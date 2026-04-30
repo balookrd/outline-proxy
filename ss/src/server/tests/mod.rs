@@ -25,6 +25,7 @@ mod cross_repo_ss;
 mod cross_repo_vless;
 mod cross_repo_xhttp;
 mod dns_cache;
+mod fallback;
 mod h3;
 mod nat;
 mod raw_quic;
@@ -119,6 +120,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         access_key: Default::default(),
         tuning: Default::default(),
         session_resumption: Default::default(),
+        http_fallback: None,
         config_path: None,
         control: None,
         dashboard: None,

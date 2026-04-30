@@ -122,7 +122,7 @@ async fn setup_ss_ws_server() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
         false,
         config.http_root_realm.clone(),
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let handle = tokio::spawn(async move {
         serve_listener(listener, app, ShutdownSignal::never()).await
     });
@@ -503,7 +503,7 @@ async fn setup_ss_ws_server_with_resumption() -> Result<(SocketAddr, JoinHandle<
         http_root_auth: false,
         http_root_realm: Arc::from(config.http_root_realm.as_str()),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let handle = tokio::spawn(async move {
         serve_listener(listener, app, ShutdownSignal::never()).await
     });
@@ -900,7 +900,7 @@ async fn setup_ss_ws_h2_tls_server_with_resumption()
         http_root_auth: false,
         http_root_realm: Arc::from(config.http_root_realm.as_str()),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
 
     let server_tls = super::cross_repo_test_server_tls_config(&[b"h2", b"http/1.1"]);
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(server_tls));
@@ -1092,7 +1092,7 @@ async fn setup_ss_ws_h1_only_server_with_resumption()
         http_root_auth: false,
         http_root_realm: Arc::from(config.http_root_realm.as_str()),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
 
     let handle = tokio::spawn(super::cross_repo_serve_axum_h1_only(listener, app));
     Ok((listen_addr, handle))
