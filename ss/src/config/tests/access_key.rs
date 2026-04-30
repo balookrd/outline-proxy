@@ -103,12 +103,12 @@ fn builds_outline_artifacts_for_all_users() {
     assert_eq!(
         artifacts[2].access_key_url.as_deref(),
         Some(
-            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
         )
     );
     assert_eq!(
         artifacts[2].yaml,
-        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
+        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
     );
 }
 
@@ -253,13 +253,16 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
 }
 
 #[test]
-fn xhttp_uri_alpn_prefers_h3_when_quic_listener_enabled() {
-    // When `[server.h3]` is configured, the URI advertises `h3,h2`
-    // so dual-stack clients try QUIC first (lower-RTT carrier) and
-    // fall back to h2 only when UDP/QUIC is blocked. Comma is
-    // percent-encoded on the wire (`%2C`) per the URI spec; the
-    // assertion checks the encoded form so a future change that
-    // accidentally drops the encoding trips here.
+fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
+    // When `[server.h3]` is configured, every TLS-carrying VLESS
+    // URI (WS and XHTTP alike) advertises `h3,h2` so dual-stack
+    // clients try QUIC first (lower-RTT carrier) and fall back to
+    // h2 only when UDP/QUIC is blocked. Comma is percent-encoded on
+    // the wire (`%2C`) per the URI spec; the assertion checks the
+    // encoded form so a future change that accidentally drops the
+    // encoding trips here. Both URI shapes are covered to pin the
+    // shared `preferred_alpn_list` helper — a regression that fixes
+    // one variant while breaking the other would now fail loudly.
     let mut config = sample_config();
     config.xhttp_path_vless = Some("/xh".into());
     config.h3_listen = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 443));
@@ -273,7 +276,7 @@ fn xhttp_uri_alpn_prefers_h3_when_quic_listener_enabled() {
         ws_path_tcp: None,
         ws_path_udp: None,
         vless_id: Some("850e8400-e29b-41d4-a716-446655440000".into()),
-        ws_path_vless: None,
+        ws_path_vless: Some("/eve/vless".into()),
         xhttp_path_vless: None,
         enabled: None,
     });
@@ -284,20 +287,32 @@ fn xhttp_uri_alpn_prefers_h3_when_quic_listener_enabled() {
         .iter()
         .find(|a| a.config_filename == "eve-vless-xhttp-stream-one.yaml")
         .expect("stream-one artifact emitted");
-    let url = xhttp.access_key_url.as_deref().unwrap();
+    let xhttp_url = xhttp.access_key_url.as_deref().unwrap();
     assert!(
-        url.contains("alpn=h3%2Ch2"),
-        "h3-enabled deployment must list h3 first in alpn: {:?}",
+        xhttp_url.contains("alpn=h3%2Ch2"),
+        "h3-enabled XHTTP URI must list h3 first in alpn: {:?}",
         xhttp.access_key_url,
+    );
+
+    let ws = artifacts
+        .iter()
+        .find(|a| a.config_filename == "eve-vless.yaml")
+        .expect("WS-VLESS artifact emitted");
+    let ws_url = ws.access_key_url.as_deref().unwrap();
+    assert!(
+        ws_url.contains("alpn=h3%2Ch2"),
+        "h3-enabled WS-VLESS URI must list h3 first in alpn: {:?}",
+        ws.access_key_url,
     );
 }
 
 #[test]
-fn xhttp_uri_skips_alpn_for_plain_http_scheme() {
+fn vless_uris_skip_alpn_for_plain_http_scheme() {
     // ALPN is a TLS extension — emitting it for a `ws://` (plain
     // HTTP) deployment would just be noise xray clients ignore.
     // Pin the omission so a future refactor that always-on emits
-    // it accidentally trips this test.
+    // it accidentally trips this test. Both WS and XHTTP shapes
+    // are covered to keep the helper's TLS-only contract tight.
     let ak = AccessKeyConfig {
         public_scheme: "ws".into(),
         ..sample_ak_config()
@@ -312,22 +327,24 @@ fn xhttp_uri_skips_alpn_for_plain_http_scheme() {
         ws_path_tcp: None,
         ws_path_udp: None,
         vless_id: Some("950e8400-e29b-41d4-a716-446655440000".into()),
-        ws_path_vless: None,
+        ws_path_vless: Some("/frank/vless".into()),
         xhttp_path_vless: None,
         enabled: None,
     });
 
     let artifacts = build_access_key_artifacts(&config, &ak).unwrap();
-    let xhttp = artifacts
-        .iter()
-        .find(|a| a.config_filename == "frank-vless-xhttp.yaml")
-        .expect("packet-up artifact emitted");
-    let url = xhttp.access_key_url.as_deref().unwrap();
-    assert!(
-        !url.contains("alpn="),
-        "plain-http deployment must not emit alpn=: {:?}",
-        xhttp.access_key_url,
-    );
+    for filename in ["frank-vless-xhttp.yaml", "frank-vless.yaml"] {
+        let artifact = artifacts
+            .iter()
+            .find(|a| a.config_filename == filename)
+            .unwrap_or_else(|| panic!("artifact {filename:?} expected"));
+        let url = artifact.access_key_url.as_deref().unwrap();
+        assert!(
+            !url.contains("alpn="),
+            "plain-http deployment must not emit alpn= in {filename:?}: {:?}",
+            artifact.access_key_url,
+        );
+    }
 }
 
 #[test]

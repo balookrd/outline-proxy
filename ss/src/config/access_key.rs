@@ -278,7 +278,15 @@ fn build_vless_ws_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let vless_url = vless_uri(vless_id, public_host, &ak.public_scheme, vless_path, &user.id);
+    let alpn = preferred_alpn_list(config, &ak.public_scheme);
+    let vless_url = vless_uri(
+        vless_id,
+        public_host,
+        &ak.public_scheme,
+        vless_path,
+        &user.id,
+        alpn.as_deref(),
+    );
 
     Ok(AccessKeyArtifact {
         user_id: user.id.clone(),
@@ -311,25 +319,7 @@ fn build_vless_xhttp_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    // Pin the ALPN preference list when the carrier rides TLS so
-    // xray-family clients (`happ`, `hiddify`, `v2rayN`) negotiate
-    // h2 / h3 instead of falling through to HTTP/1.1. Stream-one
-    // requires h2 frame interleaving (or h3) on our server side, so
-    // an h1-only negotiation drops every stream-one POST with 505.
-    // Even packet-up benefits — h1 carrier works but creates a
-    // distinguishable wire shape from a real CDN-fronted XHTTP
-    // service. h3 is listed first when the QUIC listener is up so
-    // dual-stack clients prefer the lower-RTT carrier.
-    let alpn = if ak.public_scheme == "wss" {
-        let mut entries: Vec<&str> = Vec::with_capacity(2);
-        if config.effective_h3_listen().is_some() {
-            entries.push("h3");
-        }
-        entries.push("h2");
-        Some(entries.join(","))
-    } else {
-        None
-    };
+    let alpn = preferred_alpn_list(config, &ak.public_scheme);
     let vless_url = vless_xhttp_uri(
         vless_id,
         public_host,
@@ -380,12 +370,46 @@ fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
     format!("{scheme}://{}{}", normalize_host(host), normalize_path(path))
 }
 
-fn vless_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> String {
+/// Comma-separated ALPN preference list to advertise on a TLS-
+/// carrying VLESS URI, or `None` for plain-HTTP deployments where
+/// ALPN does not apply. xray-family clients use this list as their
+/// preferred-protocol order during the TLS / QUIC handshake; without
+/// it they default to HTTP/1.1, which is functionally fine for
+/// classic WebSocket Upgrade but loses h2 / h3 efficiency and breaks
+/// XHTTP stream-one (which needs frame interleaving — h1 cannot
+/// full-duplex). h3 is listed first when `[server.h3]` is configured
+/// so dual-stack clients prefer QUIC and only fall through to h2 /
+/// h1.1 when UDP is blocked. Older clients that do not parse h3 in
+/// the URI just skip it and pick the next entry — no compatibility
+/// loss.
+fn preferred_alpn_list(config: &Config, public_scheme: &str) -> Option<String> {
+    if public_scheme != "wss" {
+        return None;
+    }
+    let mut entries: Vec<&str> = Vec::with_capacity(2);
+    if config.effective_h3_listen().is_some() {
+        entries.push("h3");
+    }
+    entries.push("h2");
+    Some(entries.join(","))
+}
+
+fn vless_uri(
+    id: &str,
+    host: &str,
+    scheme: &str,
+    path: &str,
+    label: &str,
+    alpn: Option<&str>,
+) -> String {
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
     let fragment = format!("{}:{label}", host_short_label(host));
+    let alpn_segment = alpn
+        .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
+        .unwrap_or_default();
     format!(
-        "vless://{}@{}?type=ws&security={security}&path={}&encryption=none#{}",
+        "vless://{}@{}?type=ws&security={security}{alpn_segment}&path={}&encryption=none#{}",
         id,
         vless_authority(host, default_port),
         percent_encode_query_value(&normalize_path(path)),
