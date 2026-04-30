@@ -177,12 +177,34 @@ pub struct HttpFallbackConfig {
     /// PROXY-protocol version to prepend to the upstream TCP stream
     /// (`None` to disable).
     pub proxy_protocol: Option<ProxyProtocolVersion>,
+    /// HTTP version we speak to the upstream backend. Independent of
+    /// the inbound version — an h1 client can still be relayed to an
+    /// h2 backend (e.g. a gRPC gateway) and vice versa. `H2` uses the
+    /// prior-knowledge form (no ALPN) since the upstream is plain
+    /// HTTP and assumed to be on a trusted private network or
+    /// loopback.
+    pub backend_proto: BackendProto,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProxyProtocolVersion {
     V1,
     V2,
+}
+
+/// HTTP wire-version the fallback uses when talking to the upstream
+/// backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackendProto {
+    /// HTTP/1.1 — the legacy default. Compatible with everything
+    /// (nginx / haproxy / caddy default vhosts, plain web servers).
+    #[default]
+    H1,
+    /// HTTP/2 in prior-knowledge mode (no ALPN, no upgrade). The
+    /// upstream MUST be configured to accept h2c on the listen port
+    /// (e.g. nginx `listen ... http2;` with an h2c-enabled module,
+    /// envoy / caddy / a gRPC server).
+    H2,
 }
 
 /// Resolved `[sni_fallback]` block. Always carries a non-empty
@@ -351,6 +373,13 @@ impl HttpFallbackConfig {
                 "http_fallback.proxy_protocol must be \"v1\" or \"v2\"; got {other:?}"
             ),
         };
+        let backend_proto = match section.backend_proto.as_deref().map(str::trim) {
+            None | Some("") | Some("h1") => BackendProto::H1,
+            Some("h2") => BackendProto::H2,
+            Some(other) => anyhow::bail!(
+                "http_fallback.backend_proto must be \"h1\" or \"h2\"; got {other:?}"
+            ),
+        };
         let request_timeout_secs = section.request_timeout_secs.unwrap_or(30);
         if request_timeout_secs == 0 {
             anyhow::bail!("http_fallback.request_timeout_secs must be > 0");
@@ -365,6 +394,7 @@ impl HttpFallbackConfig {
             add_x_forwarded_proto: section.add_x_forwarded_proto.unwrap_or(true),
             add_x_forwarded_host: section.add_x_forwarded_host.unwrap_or(true),
             proxy_protocol,
+            backend_proto,
         }))
     }
 }

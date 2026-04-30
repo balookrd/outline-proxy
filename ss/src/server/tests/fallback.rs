@@ -20,7 +20,11 @@ use axum::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full};
-use hyper_util::{client::legacy::Client, rt::TokioExecutor};
+use hyper::{server::conn::http2 as h2_server, service::service_fn};
+use hyper_util::{
+    client::legacy::Client,
+    rt::{TokioExecutor, TokioIo},
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
@@ -33,7 +37,7 @@ use super::super::shutdown::ShutdownSignal;
 use super::super::transport::HttpFallbackContext;
 use super::super::{DnsCache, build_app, build_user_routes};
 use super::{build_test_state, sample_config};
-use crate::config::{HttpFallbackConfig, ProxyProtocolVersion};
+use crate::config::{BackendProto, HttpFallbackConfig, ProxyProtocolVersion};
 use crate::metrics::Metrics;
 
 /// Snapshot of one upstream request, captured by the echo handler so
@@ -93,6 +97,15 @@ fn fallback_ctx_for(
     inbound_listen: SocketAddr,
     proxy_protocol: Option<ProxyProtocolVersion>,
 ) -> Arc<HttpFallbackContext> {
+    fallback_ctx_for_proto(upstream, inbound_listen, proxy_protocol, BackendProto::H1)
+}
+
+fn fallback_ctx_for_proto(
+    upstream: SocketAddr,
+    inbound_listen: SocketAddr,
+    proxy_protocol: Option<ProxyProtocolVersion>,
+    backend_proto: BackendProto,
+) -> Arc<HttpFallbackContext> {
     Arc::new(HttpFallbackContext {
         config: Arc::new(HttpFallbackConfig {
             backend_scheme: "http".into(),
@@ -104,6 +117,7 @@ fn fallback_ctx_for(
             add_x_forwarded_proto: true,
             add_x_forwarded_host: true,
             proxy_protocol,
+            backend_proto,
         }),
         inbound_listen,
         inbound_tls: false,
@@ -467,4 +481,125 @@ async fn http_fallback_emits_proxy_protocol_v2_header() -> Result<()> {
 #[allow(dead_code)]
 fn _ensure_into_response_compiles() -> axum::response::Response {
     StatusCode::OK.into_response()
+}
+
+/// h2c (prior-knowledge) upstream — plain TCP, no ALPN, no Upgrade.
+/// Built by hand via `hyper::server::conn::http2` because `axum::serve`
+/// negotiates h1+h2 over ALPN, and we want to assert that the proxy
+/// can talk h2 to a server that *only* speaks h2.
+async fn spawn_h2c_echo_upstream(
+    response_status: StatusCode,
+    response_headers: Vec<(&'static str, &'static str)>,
+    response_body: &'static str,
+) -> Result<(SocketAddr, oneshot::Receiver<CapturedRequest>)> {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let (tx, rx) = oneshot::channel::<CapturedRequest>();
+    let tx = Arc::new(tokio::sync::Mutex::new(Some(tx)));
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(pair) => pair,
+                Err(_) => return,
+            };
+            let tx = Arc::clone(&tx);
+            let response_headers = response_headers.clone();
+            tokio::spawn(async move {
+                let svc = service_fn(
+                    move |req: axum::http::Request<hyper::body::Incoming>| {
+                        let tx = Arc::clone(&tx);
+                        let response_headers = response_headers.clone();
+                        async move {
+                            let (parts, body) = req.into_parts();
+                            let body_bytes = body.collect().await.unwrap().to_bytes();
+                            if let Some(tx) = tx.lock().await.take() {
+                                let _ = tx.send(CapturedRequest {
+                                    method: parts.method.clone(),
+                                    uri: parts.uri.to_string(),
+                                    headers: parts.headers.clone(),
+                                    body: body_bytes,
+                                });
+                            }
+                            let mut builder = axum::http::Response::builder().status(response_status);
+                            for (k, v) in &response_headers {
+                                builder = builder.header(*k, *v);
+                            }
+                            Ok::<_, std::convert::Infallible>(
+                                builder
+                                    .body(Full::new(Bytes::from_static(response_body.as_bytes())))
+                                    .unwrap(),
+                            )
+                        }
+                    },
+                );
+                let _ = h2_server::Builder::new(TokioExecutor::new())
+                    .serve_connection(TokioIo::new(stream), svc)
+                    .await;
+            });
+        }
+    });
+
+    Ok((addr, rx))
+}
+
+#[tokio::test]
+async fn http_fallback_relays_to_h2_upstream() -> Result<()> {
+    let (upstream_addr, rx) = spawn_h2c_echo_upstream(
+        StatusCode::OK,
+        vec![("content-type", "text/plain"), ("x-upstream-marker", "h2-yes")],
+        "hello-from-h2",
+    )
+    .await?;
+
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let addr = listener.local_addr()?;
+    let config = sample_config(addr);
+    let user_routes = build_user_routes(&config)?;
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        Metrics::new(&config),
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+    let fallback = fallback_ctx_for_proto(upstream_addr, addr, None, BackendProto::H2);
+    let app = build_app(routes, services, auth, Some(fallback));
+    let server =
+        tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
+
+    let client = Client::builder(TokioExecutor::new()).build_http::<Empty<Bytes>>();
+    let response = client
+        .request(
+            axum::http::Request::builder()
+                .method(Method::GET)
+                .uri(format!("http://{addr}/h2-target"))
+                .header("x-marker", "passthrough")
+                .body(Empty::<Bytes>::new())?,
+        )
+        .await?;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers().get("x-upstream-marker").unwrap(), "h2-yes");
+    let body = response.into_body().collect().await?.to_bytes();
+    assert_eq!(body.as_ref(), b"hello-from-h2");
+
+    let captured = rx.await?;
+    assert_eq!(captured.method, Method::GET);
+    assert!(
+        captured.uri.contains("/h2-target"),
+        "upstream should see the original path"
+    );
+    assert_eq!(
+        captured.headers.get("x-marker").map(|v| v.to_str().unwrap()),
+        Some("passthrough"),
+        "passthrough header should reach the h2 upstream"
+    );
+
+    server.abort();
+    let _ = server.await;
+    Ok(())
 }

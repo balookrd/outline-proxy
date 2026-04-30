@@ -94,6 +94,10 @@ ws_path_udp = "/udp"
 # add_x_forwarded_host = true
 # proxy_protocol = "v1"   # or "v2"; omit to disable. Upstream MUST be
 #                         # configured to expect the matching version.
+# backend_proto = "h1"    # or "h2"; default "h1". "h2" speaks
+#                         # prior-knowledge HTTP/2 (h2c, no ALPN) to
+#                         # the backend — useful for gRPC gateways or
+#                         # nginx upstreams configured for h2c.
 
 # Optional L4 SNI fallback for the TLS listener. When set, the
 # ClientHello is peeked before handshake; foreign SNIs (or no SNI when
