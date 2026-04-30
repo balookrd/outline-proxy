@@ -320,7 +320,7 @@ The same `xhttp_path_vless` listener serves both XHTTP wire modes; the client pi
 
 Cross-transport session resumption is opt-in (set `[session_resumption].enabled = true`) and works across an XHTTP reconnect, including a carrier switch — for example, a client whose h3 dial just failed can fall back to h2 carrying the same `X-Outline-Resume` token, and the server re-attaches the parked VLESS upstream instead of opening a new one to the target. The `X-Outline-Session` token the server emits on first contact is surfaced on every subsequent GET/POST/stream-one response on that session, so a reconnect-attach picks it up without state on the client side beyond the token itself.
 
-The dynamic access-key generator emits a separate `vless://...?type=xhttp&mode=packet-up&path=...` URI per user when `xhttp_path_vless` is set. xray, sing-box, Hiddify, v2rayNG, and Shadowrocket all accept this URI as-is. Switch the URL to `?mode=stream-one` (in the client config or the URI's query) to use the stream-one carrier instead.
+The dynamic access-key generator emits two `vless://...?type=xhttp&path=...` URIs per user when `xhttp_path_vless` is set — one for `mode=packet-up` (file `<user>-vless-xhttp.<ext>`) and one for `mode=stream-one` (file `<user>-vless-xhttp-stream-one.<ext>`). xray, sing-box, Hiddify, v2rayNG, and Shadowrocket all accept both URIs as-is, so the user can pick whichever wire mode survives the network they land on.
 
 ### VLESS over WebSocket/TLS
 

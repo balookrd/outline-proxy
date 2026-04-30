@@ -183,7 +183,15 @@ impl UserManager {
 
         for artifact in artifacts {
             if artifact.yaml.starts_with("vless://") {
-                view.vless_url = artifact.access_key_url;
+                // `build_access_key_artifacts_for_user` may return
+                // multiple VLESS URIs per user (WS, plus XHTTP
+                // packet-up + stream-one). The view keeps a single
+                // representative; first wins so the carrier order
+                // (WS → XHTTP packet-up → XHTTP stream-one) decides
+                // which one surfaces here.
+                if view.vless_url.is_none() {
+                    view.vless_url = artifact.access_key_url;
+                }
             } else {
                 view.ss_config_url = artifact.config_url;
                 view.ss_access_key_url = artifact.access_key_url;
@@ -356,10 +364,7 @@ impl UserManager {
             let xhttp_path =
                 user.effective_xhttp_path_vless(self.default_xhttp_path_vless.as_deref());
             if ws_path.is_none() && xhttp_path.is_none() {
-                bail!(
-                    "vless user {} requires at least ws_path_vless or xhttp_path_vless",
-                    user.id
-                );
+                bail!("vless user {} requires at least ws_path_vless or xhttp_path_vless", user.id);
             }
             let vless_user =
                 VlessUser::new(vless_id.clone(), Arc::from(user.id.as_str()), user.fwmark)

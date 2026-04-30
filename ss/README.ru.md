@@ -322,7 +322,7 @@ vless_id = "550e8400-e29b-41d4-a716-446655440000"
 
 Cross-transport session resumption opt-in (`[session_resumption].enabled = true`) и работает через XHTTP reconnect, в том числе при смене carrier'а — например, клиент, у которого упал h3 dial, может откатиться на h2 с тем же `X-Outline-Resume` токеном, и сервер переподключит припаркованный VLESS-upstream вместо нового connect'а к таргету. Токен `X-Outline-Session`, который сервер выдаёт на первом запросе, появляется в каждом последующем GET/POST/stream-one ответе той же сессии — поэтому reconnect-attach забирает его без дополнительного state'а на клиенте.
 
-Динамический генератор access-key выпускает отдельный URI `vless://...?type=xhttp&mode=packet-up&path=...` на пользователя, когда `xhttp_path_vless` установлен. xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают этот URI как есть. Замени `?mode=packet-up` на `?mode=stream-one` в клиенте (или прямо в URI), чтобы переключить carrier на stream-one.
+Динамический генератор access-key выпускает два URI `vless://...?type=xhttp&path=...` на пользователя, когда `xhttp_path_vless` установлен: один с `mode=packet-up` (файл `<user>-vless-xhttp.<ext>`), второй с `mode=stream-one` (файл `<user>-vless-xhttp-stream-one.<ext>`). xray, sing-box, Hiddify, v2rayNG и Shadowrocket принимают оба URI как есть — клиент сам подбирает тот wire-режим, который проходит на его сети.
 
 ### VLESS поверх WebSocket/TLS
 
