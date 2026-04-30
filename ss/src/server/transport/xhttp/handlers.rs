@@ -29,8 +29,8 @@ use super::super::vless::{VlessWsRouteCtx, VlessWsServerCtx, run_vless_relay};
 use super::super::{finish_ws_session, is_normal_h3_shutdown, sink};
 use super::{
     AttachOutcome, FIN_HEADER, SEQ_HEADER, UplinkIngestError, XhttpDuplex, XhttpRegistry,
-    XhttpSession, XhttpSubmode, generate_padding_header, is_valid_session_id,
-    masquerade_response_headers,
+    XhttpSession, XhttpSubmode, generate_anonymous_session_id, generate_padding_header,
+    is_valid_session_id, masquerade_response_headers,
 };
 use super::padding::post_response_headers;
 
@@ -66,6 +66,35 @@ pub(in crate::server) async fn xhttp_handler(
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
+    dispatch_xhttp(state, session_id, None, uri, method, version, headers, peer_addr, body).await
+}
+
+/// ANY-method handler for the bare-`<base>` route shape — the
+/// xray / sing-box wire format for stream-one carriers that
+/// dial without a client-supplied session id (xray's client passes
+/// `sessionId=""` to `OpenStream` for `mode = "stream-one"`, and
+/// `ApplyMetaToRequest` simply skips the path-append when the id
+/// is empty, leaving the URL at `<base>` / `<base>/`). Each
+/// stream-one carrier is fully self-contained — request body =
+/// uplink, response body = downlink, no companion GET — so a
+/// fresh server-side id per request is correct: nothing else has
+/// to attach to that registry slot.
+pub(in crate::server) async fn xhttp_handler_no_session(
+    State(state): State<XhttpAxumState>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    body: Body,
+) -> Response {
+    // Only POST makes sense on this shape — GET against `<base>` is
+    // a misrouted client (the carrier needs an id to attach the
+    // downlink slot to anything reusable).
+    if method != Method::POST {
+        return short_status(StatusCode::METHOD_NOT_ALLOWED);
+    }
+    let session_id = generate_anonymous_session_id();
     dispatch_xhttp(state, session_id, None, uri, method, version, headers, peer_addr, body).await
 }
 

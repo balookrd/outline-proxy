@@ -46,6 +46,19 @@ pub(in crate::server) async fn http_fallback_handler(
     OriginalUri(uri): OriginalUri,
     request: Request,
 ) -> Response {
+    // Diagnostic: what slipped past every explicit route and landed
+    // in the fallback? The XHTTP rollout for xray-family clients
+    // (`happ`, `hiddify`) uncovered enough wire-shape variance that
+    // having the request line in the log saves a tcpdump round on
+    // every new compatibility bug. Cheap (one line per request,
+    // debug-level).
+    debug!(
+        method = %request.method(),
+        uri = %uri,
+        version = ?request.version(),
+        %peer_addr,
+        "http fallback received unmatched request"
+    );
     let Some(ctx) = state.http_fallback.as_ref() else {
         return build_not_found_response(Body::empty()).into_response();
     };
