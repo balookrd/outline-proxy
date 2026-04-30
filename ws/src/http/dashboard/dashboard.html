@@ -357,8 +357,8 @@ function transportLabel(mode) {
   if (v === "ws_h2"||v === "h2") return "WS/H2";
   if (v === "ws_h3"||v === "h3") return "WS/H3";
   if (v === "quic") return "QUIC";
-  if (v === "xhttp_h2") return "WS/H2";
-  if (v === "xhttp_h3") return "WS/H3";
+  if (v === "xhttp_h2") return "XHTTP/H2";
+  if (v === "xhttp_h3") return "XHTTP/H3";
   return null;
 }
 function stackLabel(transport, mode) {
