@@ -58,6 +58,7 @@ Changes after `v1.0.2` (2026-04-12):
 
 ### Changed
 
+- Re-aligned the bilingual README so EN and RU mirror one-to-one again. Restored the missing "Plain Shadowsocks Socket Service" deployment-mode section in the RU side, renumbered the SNI/HTTP fallback modes accordingly, moved "HTTP/3 Performance Tuning" to its EN position (after "Observability", before "Production Operations"), refreshed the Prometheus metric bullet list to reflect current emitters (`smaps`-derived virtual-mapping gauges, thread count, etc.) instead of the legacy `[heap]` / allocator-trim wording, and brought the "VLESS over WebSocket" feature-table row up to parity with the EN note about availability over h1/h2/h3. Section count, bullet count, table count and code-fence count now match across all five bilingual docs (README, ARCHITECTURE, SESSION-RESUMPTION, PATCHES, CHANGELOG).
 - Moved tuning parameters (`client_active_ttl_secs`, `udp_nat_idle_timeout_secs`, `udp_max_concurrent_relay_tasks`) from top-level config fields into `TuningProfile` inside `[tuning]`. **Breaking change**: configs with old top-level keys fail on `deny_unknown_fields`.
 - Renamed the per-user `vless_ws_path` config key to `ws_path_vless` for parity with `ws_path_tcp` / `ws_path_udp`. The control-plane JSON field and dashboard form use the new name as well. **Breaking change**: configs and API clients using the old name fail on `deny_unknown_fields`.
 - Split the metrics module into focused submodules (`labels`, `registry`, `guards`, `sampler`, `render`).
