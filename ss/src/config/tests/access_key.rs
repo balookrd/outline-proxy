@@ -176,6 +176,68 @@ fn builds_both_ss_and_vless_artifacts_for_combined_user() {
 }
 
 #[test]
+fn emits_xhttp_packet_up_and_stream_one_artifacts() {
+    let mut config = sample_config();
+    config.xhttp_path_vless = Some("/xh".into());
+    config.users.push(UserEntry {
+        id: "dave".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        vless_id: Some("750e8400-e29b-41d4-a716-446655440000".into()),
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        enabled: None,
+    });
+
+    let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
+
+    let packet_up = artifacts
+        .iter()
+        .find(|a| a.config_filename == "dave-vless-xhttp.yaml")
+        .expect("packet-up artifact emitted");
+    assert!(
+        packet_up
+            .access_key_url
+            .as_deref()
+            .unwrap()
+            .contains("mode=packet-up"),
+        "packet-up URI carries mode=packet-up: {:?}",
+        packet_up.access_key_url
+    );
+    assert!(
+        packet_up
+            .access_key_url
+            .as_deref()
+            .unwrap()
+            .ends_with("#vpn:dave-xhttp")
+    );
+
+    let stream_one = artifacts
+        .iter()
+        .find(|a| a.config_filename == "dave-vless-xhttp-stream-one.yaml")
+        .expect("stream-one artifact emitted");
+    assert!(
+        stream_one
+            .access_key_url
+            .as_deref()
+            .unwrap()
+            .contains("mode=stream-one"),
+        "stream-one URI carries mode=stream-one: {:?}",
+        stream_one.access_key_url
+    );
+    assert!(
+        stream_one
+            .access_key_url
+            .as_deref()
+            .unwrap()
+            .ends_with("#vpn:dave-xhttp-stream-one")
+    );
+}
+
+#[test]
 fn uses_custom_access_key_file_extension() {
     let ak = AccessKeyConfig {
         access_key_file_extension: ".txt".into(),
