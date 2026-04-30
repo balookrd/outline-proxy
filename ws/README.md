@@ -454,9 +454,9 @@ Example one-shot CLI override:
 cargo run --release -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
-  --tcp-ws-mode h3 \
+  --tcp-mode h3 \
   --udp-ws-url wss://example.com/SECRET/udp \
-  --udp-ws-mode h3 \
+  --udp-mode h3 \
   --method chacha20-ietf-poly1305 \
   --password 'Secret0'
 ```
@@ -616,11 +616,11 @@ group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
-tcp_ws_mode = "h3"
+tcp_mode = "h3"
 # fwmark = 100
 # ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
-udp_ws_mode = "h3"
+udp_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
@@ -630,9 +630,9 @@ group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
-tcp_ws_mode = "h2"
+tcp_mode = "h2"
 udp_ws_url = "wss://backup.example.com/SECRET/udp"
-udp_ws_mode = "h2"
+udp_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
@@ -669,8 +669,8 @@ weight = 1.0
 
 # Shadowsocks over raw QUIC (ALPN = "ss"). One QUIC bidi per SS-TCP
 # session; SS-UDP rides QUIC datagrams 1:1 with SS-AEAD packets. Same
-# cipher / password as the WS path. transport = "websocket" + tcp_ws_mode =
-# "quic" selects this path; transport = "vless" + tcp_ws_mode = "quic"
+# cipher / password as the WS path. transport = "websocket" + tcp_mode =
+# "quic" selects this path; transport = "vless" + tcp_mode = "quic"
 # selects the VLESS branch above.
 [[outline.uplinks]]
 name = "ss-quic"
@@ -678,8 +678,8 @@ group = "main"
 transport = "websocket"
 tcp_ws_url = "https://ss.example.com:443"
 udp_ws_url = "https://ss.example.com:443"
-tcp_ws_mode = "quic"
-udp_ws_mode = "quic"
+tcp_mode = "quic"
+udp_mode = "quic"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 weight = 1.0
@@ -698,9 +698,9 @@ via = "main"
 
 ### Key config behavior
 
-- `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
+- `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
-- `tcp_ws_mode` / `udp_ws_mode` (`transport = "ws"`) and `vless_ws_mode` (`transport = "vless"`) accept `http1` (alias `h1`), `h2`, `h3`, or `quic`. Modes `http1` / `h2` / `h3` ride a WebSocket Upgrade over the matching HTTP version (with automatic `h3 → h2 → http1` fallback for WS modes); `quic` selects raw QUIC framing on ALPN `vless` (for VLESS) or `ss` (for Shadowsocks-over-WS) with `quic → h2 → http1` dial-time fallback.
+- `tcp_mode` / `udp_mode` (`transport = "ws"`) and `vless_ws_mode` (`transport = "vless"`) accept `http1` (alias `h1`), `h2`, `h3`, or `quic`. Modes `http1` / `h2` / `h3` ride a WebSocket Upgrade over the matching HTTP version (with automatic `h3 → h2 → http1` fallback for WS modes); `quic` selects raw QUIC framing on ALPN `vless` (for VLESS) or `ss` (for Shadowsocks-over-WS) with `quic → h2 → http1` dial-time fallback.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
@@ -735,9 +735,9 @@ via = "main"
 - `--socks5-username` / `SOCKS5_USERNAME`
 - `--socks5-password` / `SOCKS5_PASSWORD`
 - `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
-- `--tcp-ws-mode` / `OUTLINE_TCP_WS_MODE`
+- `--tcp-mode` / `OUTLINE_TCP_MODE`
 - `--udp-ws-url` / `OUTLINE_UDP_WS_URL`
-- `--udp-ws-mode` / `OUTLINE_UDP_WS_MODE`
+- `--udp-mode` / `OUTLINE_UDP_MODE`
 - `--method` / `SHADOWSOCKS_METHOD`
 - `--password` / `SHADOWSOCKS_PASSWORD`
 - `--metrics-listen` / `METRICS_LISTEN`
@@ -835,7 +835,7 @@ Use when the upstream supports RFC 9220 and QUIC/UDP is available end to end.
 
 ### Raw QUIC
 
-Use when the upstream runs the matching raw-QUIC listener (outline-ss-rust `transport::raw_quic`). Selected per uplink via `tcp_ws_mode = "quic"` / `udp_ws_mode = "quic"` (for `transport = "ws"`) or `vless_ws_mode = "quic"` (for `transport = "vless"`). The path skips WebSocket and HTTP/3 framing entirely:
+Use when the upstream runs the matching raw-QUIC listener (outline-ss-rust `transport::raw_quic`). Selected per uplink via `tcp_mode = "quic"` / `udp_mode = "quic"` (for `transport = "ws"`) or `vless_ws_mode = "quic"` (for `transport = "vless"`). The path skips WebSocket and HTTP/3 framing entirely:
 
 - VLESS-TCP / SS-TCP — one QUIC bidi stream per session.
 - VLESS-UDP — per-target control bidi (server returns a 4-byte `session_id`) plus connection-level datagram demux.
@@ -866,7 +866,7 @@ Runtime fallback behavior:
 The same downgrade is also triggered by TCP probe failures on H3 / QUIC uplinks, preventing probe-driven flapping in `active_passive + global` mode: without this, intermittent advanced-mode probe pass/fail alternation would cause a failover switch every probe cycle.
 
 Probe behavior during a downgrade window:
-- Probes use `effective_tcp_ws_mode` / `effective_udp_ws_mode`, which return H2 while the downgrade timer is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3 / QUIC.
+- Probes use `effective_tcp_mode` / `effective_udp_mode`, which return H2 while the downgrade timer is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3 / QUIC.
 - A successful probe during the window does **not** clear the downgrade timer. Recovery is tested naturally once the timer expires and the next real connection attempts the original mode. If that attempt fails, the timer is reset.
 
 Scoring during a downgrade window (`per_flow` scope):

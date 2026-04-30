@@ -33,8 +33,8 @@ impl UplinkManager {
                 // keep the other transport at its native mode (it doesn't
                 // affect the recovery decision but avoids penalising it).
                 let (eff_tcp, eff_udp) = match which {
-                    TransportKind::Tcp => (TransportMode::WsH3, uplink.udp_ws_mode),
-                    TransportKind::Udp => (uplink.tcp_ws_mode, TransportMode::WsH3),
+                    TransportKind::Tcp => (TransportMode::WsH3, uplink.udp_mode),
+                    TransportKind::Udp => (uplink.tcp_mode, TransportMode::WsH3),
                 };
                 let outcome = run_probe_attempt_with_timeout(
                     Arc::clone(&dns_cache),

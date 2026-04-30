@@ -13,9 +13,9 @@ pub(crate) struct ConfigFile {
     pub(super) socks5: Option<Socks5Section>,
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<TransportMode>,
+    pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<TransportMode>,
+    pub(super) udp_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
     /// Base URL for VLESS-over-XHTTP packet-up. The session id is
     /// appended at dial time (one path segment after the base path).
@@ -83,9 +83,9 @@ pub(super) struct Socks5UserSection {
 pub(crate) struct OutlineSection {
     pub(super) transport: Option<UplinkTransport>,
     pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<TransportMode>,
+    pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<TransportMode>,
+    pub(super) udp_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
     /// Base URL for VLESS-over-XHTTP packet-up. The session id is
     /// appended at dial time (one path segment after the base path).
@@ -178,9 +178,9 @@ pub(crate) struct UplinkSection {
     pub(crate) name: Option<String>,
     pub(crate) transport: Option<UplinkTransport>,
     pub(crate) tcp_ws_url: Option<Url>,
-    pub(crate) tcp_ws_mode: Option<TransportMode>,
+    pub(crate) tcp_mode: Option<TransportMode>,
     pub(crate) udp_ws_url: Option<Url>,
-    pub(crate) udp_ws_mode: Option<TransportMode>,
+    pub(crate) udp_mode: Option<TransportMode>,
     pub(crate) vless_ws_url: Option<Url>,
     /// Base URL for VLESS-over-XHTTP packet-up. See top-level field
     /// of the same name on `ConfigFile` for semantics.

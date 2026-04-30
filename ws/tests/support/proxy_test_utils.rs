@@ -45,7 +45,7 @@ listen = "127.0.0.1:{proxy_port}"
 
 [outline]
 tcp_ws_url = "{tcp_ws_url}"
-tcp_ws_mode = "{mode}"
+tcp_mode = "{mode}"
 method = "{method}"
 password = "{password}"
 "#
@@ -54,7 +54,7 @@ password = "{password}"
         config.push_str(&format!(
             r#"
 udp_ws_url = "{udp_ws_url}"
-udp_ws_mode = "{mode}"
+udp_mode = "{mode}"
 "#
         ));
     }
@@ -130,9 +130,9 @@ listen = "127.0.0.1:{proxy_port}"
 
 [outline]
 tcp_ws_url = "{tcp_ws_url}"
-tcp_ws_mode = "{mode}"
+tcp_mode = "{mode}"
 udp_ws_url = "{udp_ws_url}"
-udp_ws_mode = "{mode}"
+udp_mode = "{mode}"
 method = "{method}"
 password = "{password}"
 "#

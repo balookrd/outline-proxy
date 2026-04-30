@@ -29,8 +29,8 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_TRANSPORT")]
     pub transport: Option<UplinkTransport>,
 
-    #[arg(long, env = "OUTLINE_TCP_WS_MODE", help = "http1, h2, or h3")]
-    pub tcp_ws_mode: Option<TransportMode>,
+    #[arg(long, env = "OUTLINE_TCP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
+    pub tcp_mode: Option<TransportMode>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
     pub udp_ws_url: Option<Url>,
@@ -41,8 +41,8 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_UDP_ADDR")]
     pub udp_addr: Option<ServerAddr>,
 
-    #[arg(long, env = "OUTLINE_UDP_WS_MODE", help = "http1, h2, or h3")]
-    pub udp_ws_mode: Option<TransportMode>,
+    #[arg(long, env = "OUTLINE_UDP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
+    pub udp_mode: Option<TransportMode>,
 
     /// VLESS-only: single WS URL serving both TCP and UDP. Required when
     /// `transport = "vless"` and `vless_mode` is a `ws_*` / `quic`

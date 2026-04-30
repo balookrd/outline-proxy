@@ -73,9 +73,9 @@ pub(super) fn load_groups(
     // (single-uplink CLI convenience).
     let cli_override_requested = args.tcp_ws_url.is_some()
         || args.transport.is_some()
-        || args.tcp_ws_mode.is_some()
+        || args.tcp_mode.is_some()
         || args.udp_ws_url.is_some()
-        || args.udp_ws_mode.is_some()
+        || args.udp_mode.is_some()
         || args.vless_ws_url.is_some()
         || args.vless_mode.is_some()
         || args.tcp_addr.is_some()

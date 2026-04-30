@@ -66,11 +66,11 @@ pub struct UplinkConfig {
     /// `transport = "ws"` only. None for vless/shadowsocks.
     pub tcp_ws_url: Option<Url>,
     /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
-    pub tcp_ws_mode: TransportMode,
+    pub tcp_mode: TransportMode,
     /// `transport = "ws"` only. None for vless/shadowsocks.
     pub udp_ws_url: Option<Url>,
     /// `transport = "ws"` only. Meaningless for vless/shadowsocks.
-    pub udp_ws_mode: TransportMode,
+    pub udp_mode: TransportMode,
     /// `transport = "vless"` only. Single WS URL serving both TCP
     /// and UDP — required when `vless_mode` is one of the WS or QUIC
     /// variants.
@@ -139,7 +139,7 @@ impl UplinkConfig {
     pub fn tcp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
-            _ => self.tcp_ws_mode,
+            _ => self.tcp_mode,
         }
     }
 
@@ -148,7 +148,7 @@ impl UplinkConfig {
     pub fn udp_dial_mode(&self) -> TransportMode {
         match self.transport {
             UplinkTransport::Vless => self.vless_mode,
-            _ => self.udp_ws_mode,
+            _ => self.udp_mode,
         }
     }
 }

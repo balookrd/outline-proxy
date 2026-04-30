@@ -144,8 +144,8 @@ impl UplinkManager {
             // represent real data-path behaviour (the server may reject
             // actual streams with APPLICATION_CLOSE while still answering
             // ping/pong at the connection level).
-            let effective_tcp_mode = self.effective_tcp_ws_mode(index).await;
-            let effective_udp_mode = self.effective_udp_ws_mode(index).await;
+            let effective_tcp_mode = self.effective_tcp_mode(index).await;
+            let effective_udp_mode = self.effective_udp_mode(index).await;
             tasks.spawn(async move {
                 let _permit = execution_limit
                     .acquire_owned()

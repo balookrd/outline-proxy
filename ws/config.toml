@@ -175,13 +175,13 @@ weight = 1.0
 # back automatically: h3 -> h2 -> http1. "quic" selects raw QUIC (no
 # WebSocket / no HTTP/3) — see the QUIC examples below; raw QUIC has no
 # fallback (dial failure surfaces as an uplink failure).
-tcp_ws_mode = "h3"
+tcp_mode = "h3"
 # Linux only, requires CAP_NET_ADMIN if set
 # fwmark = 100
 # Prefer IPv6 addresses first for this uplink
 # ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
-udp_ws_mode = "h3"
+udp_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 # for ss2022 methods use a base64 PSK, for example:
@@ -197,9 +197,9 @@ transport = "ws"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
 # requested mode; runtime fallback order is h2 -> http1
-tcp_ws_mode = "h2"
+tcp_mode = "h2"
 udp_ws_url = "wss://backup.example.com/SECRET/udp"
-udp_ws_mode = "h2"
+udp_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
@@ -252,8 +252,8 @@ password = "Secret0"
 # transport = "ws"   # ws+quic mode = SS-over-QUIC; vless+quic = VLESS-over-QUIC
 # tcp_ws_url = "https://ss.example.com:443"
 # udp_ws_url = "https://ss.example.com:443"
-# tcp_ws_mode = "quic"
-# udp_ws_mode = "quic"
+# tcp_mode = "quic"
+# udp_mode = "quic"
 # method = "chacha20-ietf-poly1305"
 # password = "Secret0"
 
