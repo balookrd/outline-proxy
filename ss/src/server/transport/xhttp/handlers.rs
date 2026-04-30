@@ -12,7 +12,7 @@ use std::sync::Arc;
 use axum::{
     body::Body,
     extract::{ConnectInfo, OriginalUri, Path, State},
-    http::{HeaderMap, Method, StatusCode, Version},
+    http::{HeaderMap, Method, StatusCode, Uri, Version},
     response::{IntoResponse, Response},
 };
 use bytes::Bytes;
@@ -51,8 +51,11 @@ pub(in crate::server) struct XhttpAxumState {
     pub(in crate::server) parent: AppState,
 }
 
-/// Single ANY-method handler. Dispatches on `Method` so we don't
-/// duplicate state-extraction boilerplate between GET and POST.
+/// ANY-method handler for the `<base>/<session-id>` route shape.
+/// Used by every XHTTP request that does not carry an upload-side
+/// sequence number in the URL path — that is: every GET, every
+/// stream-one POST, and packet-up POSTs from clients that put `seq`
+/// into the `X-Xhttp-Seq` header instead of the URL.
 pub(in crate::server) async fn xhttp_handler(
     State(state): State<XhttpAxumState>,
     Path(session_id): Path<String>,
@@ -60,22 +63,76 @@ pub(in crate::server) async fn xhttp_handler(
     method: Method,
     version: Version,
     headers: HeaderMap,
-    connect_info: ConnectInfo<SocketAddr>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     body: Body,
 ) -> Response {
-    let ConnectInfo(peer_addr) = connect_info;
+    dispatch_xhttp(state, session_id, None, uri, method, version, headers, peer_addr, body).await
+}
+
+/// ANY-method handler for the `<base>/<session-id>/<seq>` route
+/// shape — the xray / sing-box default for packet-up uplink POSTs.
+/// `seq` is taken from the URL path; the `X-Xhttp-Seq` header is
+/// ignored on this route. GET / stream-one on this shape is
+/// malformed and returns 400.
+pub(in crate::server) async fn xhttp_handler_with_path_seq(
+    State(state): State<XhttpAxumState>,
+    Path((session_id, seq)): Path<(String, u64)>,
+    OriginalUri(uri): OriginalUri,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    body: Body,
+) -> Response {
+    dispatch_xhttp(
+        state,
+        session_id,
+        Some(seq),
+        uri,
+        method,
+        version,
+        headers,
+        peer_addr,
+        body,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_xhttp(
+    state: XhttpAxumState,
+    session_id: String,
+    path_seq: Option<u64>,
+    uri: Uri,
+    method: Method,
+    version: Version,
+    headers: HeaderMap,
+    peer_addr: SocketAddr,
+    body: Body,
+) -> Response {
     if !is_valid_session_id(&session_id) {
         return short_status(StatusCode::BAD_REQUEST);
     }
     let submode = XhttpSubmode::parse(uri.query());
-    match (method.clone(), submode) {
+    match (method, submode) {
         (Method::GET, XhttpSubmode::PacketUp) => {
+            // `<base>/<id>/<seq>` is uplink-only; a GET on this shape
+            // means the client wired the route wrong.
+            if path_seq.is_some() {
+                return short_status(StatusCode::BAD_REQUEST);
+            }
             xhttp_get(state, session_id, version, peer_addr, &headers).await
         },
         (Method::POST, XhttpSubmode::PacketUp) => {
-            xhttp_post(state, session_id, version, peer_addr, headers, body).await
+            xhttp_post(state, session_id, path_seq, version, peer_addr, headers, body).await
         },
         (Method::POST, XhttpSubmode::StreamOne) => {
+            // stream-one is a single bidirectional carrier per
+            // session — there is no per-packet seq, so the
+            // `<id>/<seq>` shape is malformed.
+            if path_seq.is_some() {
+                return short_status(StatusCode::BAD_REQUEST);
+            }
             xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
         },
         // GET on `?mode=stream-one` is malformed — the carrier is a
@@ -159,12 +216,17 @@ async fn xhttp_get(
 async fn xhttp_post(
     state: XhttpAxumState,
     session_id: String,
+    path_seq: Option<u64>,
     version: Version,
     peer_addr: SocketAddr,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let seq = match parse_seq(&headers) {
+    // Path-based seq (xray / sing-box default placement) wins over
+    // the header-based seq, so a client that supplies both does not
+    // get a silent disagreement between the two — the URL is the
+    // authoritative one in that case.
+    let seq = match path_seq.or_else(|| parse_seq(&headers)) {
         Some(seq) => seq,
         None => return short_status(StatusCode::BAD_REQUEST),
     };

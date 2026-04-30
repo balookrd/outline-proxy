@@ -28,6 +28,7 @@ use super::super::{
         HttpFallbackContext, XhttpAxumState, http_fallback_handler, metrics_handler,
         not_found_handler, root_http_auth_handler, sni_fallback, tcp_websocket_upgrade,
         udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
+        xhttp_handler_with_path_seq,
     },
 };
 use sni_fallback::SniFallbackContext;
@@ -83,18 +84,28 @@ pub(in crate::server) fn build_app(
     let mut app = router.fallback(fallback_route).with_state(state.clone());
 
     // XHTTP routes carry their own `XhttpAxumState`, so they have to
-    // be merged in after the main router pins its state. The base
-    // path is captured once per route and the `{id}` segment is
-    // appended for axum to extract.
+    // be merged in after the main router pins its state. Two route
+    // shapes are registered per base:
+    //
+    // - `<base>/<id>` for every GET (downlink), every stream-one
+    //   POST, and packet-up uplink POSTs from clients that put the
+    //   `seq` in `X-Xhttp-Seq` (the `outline-ws-rust` convention);
+    // - `<base>/<id>/<seq>` for packet-up uplink POSTs from clients
+    //   that put the `seq` in the URL path (xray / sing-box default
+    //   placement; what `happ`, `hiddify`, `v2rayN` send on the
+    //   wire). Without this route every such POST 404s and the
+    //   client retries against fresh session ids until it gives up.
     for base in xhttp_paths {
         let xhttp_state = XhttpAxumState {
             base_path: Arc::from(base.as_str()),
             registry: Arc::clone(&services.xhttp_registry),
             parent: state.clone(),
         };
-        let route_pattern = format!("{base}/{{id}}");
+        let route_id = format!("{base}/{{id}}");
+        let route_id_seq = format!("{base}/{{id}}/{{seq}}");
         let xhttp_router = Router::new()
-            .route(&route_pattern, any(xhttp_handler))
+            .route(&route_id, any(xhttp_handler))
+            .route(&route_id_seq, any(xhttp_handler_with_path_seq))
             .with_state(xhttp_state);
         app = app.merge(xhttp_router);
     }
