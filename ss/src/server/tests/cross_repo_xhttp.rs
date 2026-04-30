@@ -358,6 +358,7 @@ async fn setup_xhttp_h3_server(
             Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
             Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await

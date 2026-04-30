@@ -21,8 +21,8 @@ use super::{
     },
     state::{AuthPolicy, RoutesSnapshot, Services, VlessTransportRoute},
     transport::{
-        RawQuicSsCtx, RawQuicVlessRouteCtx, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx,
-        XhttpRegistry, is_normal_h3_shutdown,
+        HttpFallbackContext, RawQuicSsCtx, RawQuicVlessRouteCtx, UdpServerCtx, VlessWsServerCtx,
+        WsTcpServerCtx, XhttpRegistry, is_normal_h3_shutdown,
     },
 };
 
@@ -192,6 +192,14 @@ struct H3ConnectionCtx {
     alpn: Arc<[H3Alpn]>,
     raw_vless_route: Arc<RawQuicVlessRouteCtx>,
     raw_ss_ctx: Arc<RawQuicSsCtx>,
+    /// Per-process fallback context — `Some` and active for h3 only
+    /// when `[http_fallback]` is set with `apply_to_h3 = true`. The
+    /// h3 dispatch in `http::handle_h3_request` checks the
+    /// `apply_to_h3` flag before invoking the adapter; we keep the
+    /// raw `Option` here rather than pre-filtering so a future
+    /// hot-reload of `[http_fallback]` can flip the flag without
+    /// having to rebuild the per-connection ctx.
+    http_fallback: Option<Arc<HttpFallbackContext>>,
 }
 
 fn negotiated_alpn(connection: &quinn::Connection) -> Option<H3Alpn> {
@@ -212,6 +220,7 @@ pub(in crate::server) async fn serve_h3_server(
     raw_vless_users: Arc<[VlessUser]>,
     raw_vless_candidates: Arc<[Arc<str>]>,
     raw_ss_users: Arc<[UserKey]>,
+    http_fallback: Option<Arc<HttpFallbackContext>>,
     mut shutdown: super::shutdown::ShutdownSignal,
 ) -> Result<()> {
     let initial = routes.load();
@@ -293,6 +302,7 @@ pub(in crate::server) async fn serve_h3_server(
             alpn: Arc::clone(&alpn),
             raw_vless_route: Arc::clone(&raw_vless_route),
             raw_ss_ctx: Arc::clone(&raw_ss_ctx),
+            http_fallback: http_fallback.clone(),
         });
 
         tokio::spawn(async move {

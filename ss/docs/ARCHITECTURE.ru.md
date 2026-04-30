@@ -98,15 +98,23 @@ HTTP/3 листенер в дёрже не участвует — quinn парс
 
 ### L7: HTTP fallback (`[http_fallback]`)
 
-Активен для каждого TLS-терминированного (или plain) HTTP-запроса, который не попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control / dashboard маршрут. Вместо `404` axum'овский fallback-обработчик reverse-proxy'ит запрос в `backend` через per-request соединение `hyper::client::conn::http1`:
+Активен для каждого TLS-терминированного (или plain) HTTP-запроса, который не попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control / dashboard маршрут. Вместо `404` fallback-адаптер reverse-proxy'ит запрос в `backend`:
 
 - Hop-by-hop заголовки (RFC 7230 §6.1 + всё перечисленное в `Connection:`) срезаются в обе стороны.
 - `Host` заменяется на authority бэкенда (поведение nginx-овского `proxy_set_header Host $proxy_host;`).
 - URI пересобирается в origin-form, чтобы бэкенд парсил его как обычный запрос, а не как proxy CONNECT.
-- `X-Forwarded-{For,Proto,Host}` добавляются/выставляются по тумблерам; `X-Forwarded-Proto` отражает, терминировал ли входящий листенер TLS.
+- `X-Forwarded-{For,Proto,Host}` добавляются/выставляются по тумблерам. `X-Forwarded-Proto` для TCP-пути отражает, терминировал ли входящий листенер TLS; HTTP/3-путь всегда рапортует `https` — QUIC по спеке шифрован.
 - Опциональный `proxy_protocol = "v1" | "v2"` префиксит HAProxy PROXY-protocol заголовок к upstream TCP-соединению, чтобы бэкенд логировал реальный IP клиента.
+- `backend_proto = "h1" | "h2"` выбирает HTTP-версию, на которой листенер говорит с upstream, независимо от входящей версии. `"h1"` (default) использует `hyper::client::conn::http1`; `"h2"` — `hyper::client::conn::http2` в режиме prior-knowledge (h2c, без ALPN), полезно для gRPC-gateway или nginx-upstream'ов, настроенных на h2c.
 
-Оба fallback'а используют общий `transport::proxy_protocol::encode_proxy_protocol`, поэтому wire-форма v1/v2 идентична между L4-сплайсами и L7-коннектами. Адрес назначения берётся из bind-адреса входящего листенера и деградирует до UNKNOWN (v1) / UNSPEC (v2), если bind на `0.0.0.0` / `[::]`.
+Два независимых тумблера выбирают, к каким inbound-листенерам fallback применяется:
+
+- `apply_to_h1 = true` (default) — врезает адаптер в axum-роутер на TCP-листенере как 404-replacement обработчик, покрывающий HTTP/1.1 и HTTP/2 (выбор по ALPN).
+- `apply_to_h3 = false` (default; opt-in) — расширяет fallback на QUIC-листенер. h3-диспатч в `server::h3::http::handle_h3_request` зовёт адаптер для каждого не-CONNECT запроса, который не попал ни в XHTTP base path, ни в auth-root `/`. Auth-root (`http_root.auth = true` для `/`) сохраняет приоритет над fallback'ом — это симметрично тому, как axum-роутер пиннит `/` впереди wildcard-fallback'а на TCP-стороне. Тело запроса буферизуется до форвардинга; тело ответа стримится chunk-ами обратно через QUIC. Трейлеры пробрасываются в обе стороны, если выбранный `backend_proto` их умеет.
+
+PROXY-protocol заголовки в upstream TCP-сокете несут `Transport=STREAM` (`0x11` / `0x21`) для h1/h2 inbound и `Transport=DGRAM` (`0x12` / `0x22`) для h3 inbound — бэкенд видит транспорт origin'а. У v1 на проводе нет UDP-формы, поэтому `proxy_protocol = "v1"` отвергается на старте при `apply_to_h3 = true` — используйте `"v2"` или отключите PROXY-protocol.
+
+Оба fallback'а используют общий `transport::proxy_protocol::encode_proxy_protocol`, поэтому wire-форма v1/v2 идентична между L4-сплайсами и L7-коннектами. Адрес назначения берётся из bind-адреса входящего листенера (TCP — для `apply_to_h1`, h3 — для `apply_to_h3`) и деградирует до UNKNOWN (v1) / UNSPEC (v2), если bind на `0.0.0.0` / `[::]`.
 
 ## Маршрутизация запросов
 

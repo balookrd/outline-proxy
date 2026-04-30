@@ -66,7 +66,16 @@ pub(in crate::server) fn build_app(
         auth,
         http_fallback,
     };
-    let fallback_route = if state.http_fallback.is_some() {
+    // The h1/h2 fallback handler is only wired when `apply_to_h1` is
+    // on. `apply_to_h3 = true, apply_to_h1 = false` keeps the TCP
+    // listener honest (404 for unmatched) while still masquerading
+    // QUIC traffic through the h3 adapter.
+    let h1_fallback_active = state
+        .http_fallback
+        .as_ref()
+        .map(|fb| fb.config.apply_to_h1)
+        .unwrap_or(false);
+    let fallback_route = if h1_fallback_active {
         any(http_fallback_handler)
     } else {
         any(not_found_handler)

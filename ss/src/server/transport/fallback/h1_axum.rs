@@ -71,7 +71,8 @@ async fn proxy_to_backend(
     request: Request,
 ) -> Result<Response> {
     let (parts_in, body) = request.into_parts();
-    let upstream_parts = build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in)?;
+    let upstream_parts =
+        build_upstream_parts(&ctx, peer_addr, &original_uri, &parts_in, ctx.inbound_tls)?;
     let upstream_req = http::Request::from_parts(upstream_parts, body);
 
     let stream = TcpStream::connect(ctx.config.backend_authority.as_str())
@@ -81,12 +82,18 @@ async fn proxy_to_backend(
         })?;
 
     let stream = if let Some(version) = ctx.config.proxy_protocol {
+        // `apply_to_h1` and validation guarantee `tcp_inbound_listen`
+        // is `Some` when this handler is wired; degrade to UNSPECIFIED
+        // (encoder emits AF_UNSPEC) if it ever isn't, rather than panic.
+        let dst = ctx
+            .tcp_inbound_listen
+            .unwrap_or_else(|| SocketAddr::from(([0, 0, 0, 0], 0)));
         let mut header = Vec::with_capacity(64);
         encode_proxy_protocol(
             &mut header,
             version,
             peer_addr,
-            ctx.inbound_listen,
+            dst,
             PpTransport::Stream,
         );
         let mut stream = stream;

@@ -22,8 +22,8 @@ use super::super::{
     state::{empty_transport_route, empty_vless_transport_route},
     transport::{
         ResumeContext, UdpRouteCtx, VlessWsRouteCtx, WsTcpRouteCtx, finish_ws_session,
-        handle_tcp_h3_connection, handle_udp_h3_connection, handle_vless_h3_connection,
-        handle_xhttp_h3_request, is_normal_h3_shutdown,
+        h3_fallback_handle, handle_tcp_h3_connection, handle_udp_h3_connection,
+        handle_vless_h3_connection, handle_xhttp_h3_request, is_normal_h3_shutdown,
     },
 };
 use crate::crypto::UserKey;
@@ -117,6 +117,19 @@ async fn handle_h3_request(
                 peer_addr,
             )
             .await;
+        }
+
+        // The auth-root challenge (when configured) takes priority
+        // over the fallback for `/` — same precedence the axum router
+        // applies on the TCP listener: `router.route("/", ...)` is
+        // pinned ahead of the wildcard fallback. Without this, an
+        // active `[http_fallback]` would swallow auth challenges.
+        let is_root_auth = path == "/" && ctx.auth.http_root_auth;
+        if !is_root_auth
+            && let Some(fb) = ctx.http_fallback.as_ref()
+            && fb.config.apply_to_h3
+        {
+            return h3_fallback_handle(request, stream, Arc::clone(fb), peer_addr).await;
         }
 
         let users_snap = ctx.auth.users.load();

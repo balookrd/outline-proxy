@@ -205,6 +205,7 @@ async fn setup_vless_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<
             raw_vless_users,
             raw_vless_candidates,
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -382,6 +383,7 @@ async fn setup_vless_ws_h3_server(
             Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
             Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -752,6 +754,7 @@ async fn setup_vless_raw_quic_server_with_resumption()
             raw_vless_users,
             raw_vless_candidates,
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -919,6 +922,7 @@ async fn setup_vless_ws_h3_server_with_resumption(
             Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
             Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await

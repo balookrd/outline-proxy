@@ -16,18 +16,24 @@ use axum::http::{
 use crate::config::HttpFallbackConfig;
 
 /// Per-process state for the fallback handler. Built once at startup,
-/// shared by every fallback request via `AppState`.
+/// shared by every fallback request via `AppState` (h1 path) and
+/// `H3ConnectionCtx` (h3 path).
 #[derive(Clone)]
 pub(in crate::server) struct HttpFallbackContext {
     pub(in crate::server) config: Arc<HttpFallbackConfig>,
-    /// Address the inbound listener is bound to. Used as the
-    /// destination for PROXY-protocol headers. `0.0.0.0` / `[::]`
-    /// degrade to UNSPEC (v2) / UNKNOWN (v1) since we do not learn
-    /// the per-stream local address with the current `axum::serve`
-    /// wiring.
-    pub(in crate::server) inbound_listen: SocketAddr,
-    /// `true` when the inbound listener terminates TLS — drives the
-    /// value of `X-Forwarded-Proto`.
+    /// Bind addr of the TCP listener. `Some` when `apply_to_h1` is
+    /// on; used as the destination in PROXY-protocol headers emitted
+    /// by the h1/h2 adapter. `0.0.0.0` / `[::]` degrade to UNSPEC
+    /// (v2) / UNKNOWN (v1) since we do not learn the per-stream
+    /// local address with the current `axum::serve` wiring.
+    pub(in crate::server) tcp_inbound_listen: Option<SocketAddr>,
+    /// Bind addr of the HTTP/3 listener. `Some` when `apply_to_h3`
+    /// is on; used as the destination in PROXY-protocol headers
+    /// emitted by the h3 adapter (transport `Dgram`).
+    pub(in crate::server) h3_inbound_listen: Option<SocketAddr>,
+    /// `true` when the TCP inbound listener terminates TLS — drives
+    /// the value of `X-Forwarded-Proto` for the h1 adapter. The h3
+    /// adapter always reports `https` since QUIC is encrypted.
     pub(in crate::server) inbound_tls: bool,
 }
 
@@ -35,11 +41,16 @@ pub(in crate::server) struct HttpFallbackContext {
 /// body. Callers attach their own body type — `axum::body::Body` for
 /// the TCP listener, an `h3::server::RequestStream` adapter for the
 /// HTTP/3 listener — so this stays transport-agnostic.
+///
+/// `is_secure_inbound` drives `X-Forwarded-Proto` when the toggle is
+/// on. The h1 adapter passes `ctx.inbound_tls`; the h3 adapter
+/// passes `true` unconditionally because QUIC is always encrypted.
 pub(super) fn build_upstream_parts(
     ctx: &HttpFallbackContext,
     peer_addr: SocketAddr,
     original_uri: &Uri,
     parts: &Parts,
+    is_secure_inbound: bool,
 ) -> Result<Parts> {
     let path_and_query = original_uri
         .path_and_query()
@@ -84,7 +95,7 @@ pub(super) fn build_upstream_parts(
         append_xff(dest_headers, peer_addr);
     }
     if ctx.config.add_x_forwarded_proto {
-        let proto = if ctx.inbound_tls { "https" } else { "http" };
+        let proto = if is_secure_inbound { "https" } else { "http" };
         dest_headers.insert(
             HeaderName::from_static("x-forwarded-proto"),
             HeaderValue::from_static(proto),

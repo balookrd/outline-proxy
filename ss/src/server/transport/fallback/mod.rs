@@ -9,14 +9,16 @@
 //!   [`HttpFallbackContext`].
 //! - [`h1_axum`] — TCP listener integration. Wired into the axum
 //!   router as a 404-replacement handler that covers HTTP/1.1 and
-//!   HTTP/2 (selected via ALPN).
-//!
-//! An HTTP/3 adapter that reuses [`shared`] is planned alongside
-//! `apply_to_h3` in `[http_fallback]`; until it lands the H3
-//! listener keeps returning 404 for unmatched requests.
+//!   HTTP/2 (selected via ALPN). Driven by `apply_to_h1`.
+//! - [`h3_stream`] — HTTP/3 listener integration, called from the
+//!   per-stream handler in `server::h3::http`. Driven by
+//!   `apply_to_h3`. Buffers the request body up-front; streams the
+//!   response body chunk-by-chunk back over QUIC.
 
 mod h1_axum;
+mod h3_stream;
 mod shared;
 
 pub(in crate::server) use h1_axum::http_fallback_handler;
+pub(in crate::server) use h3_stream::{h3_fallback_handle, send_h3_status_only_response};
 pub(in crate::server) use shared::HttpFallbackContext;

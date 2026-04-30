@@ -94,10 +94,19 @@ ws_path_udp = "/udp"
 # add_x_forwarded_host = true
 # proxy_protocol = "v1"   # or "v2"; omit to disable. Upstream MUST be
 #                         # configured to expect the matching version.
+#                         # `v1` is incompatible with `apply_to_h3`
+#                         # (RFC has no UDP form for v1).
 # backend_proto = "h1"    # or "h2"; default "h1". "h2" speaks
 #                         # prior-knowledge HTTP/2 (h2c, no ALPN) to
 #                         # the backend — useful for gRPC gateways or
 #                         # nginx upstreams configured for h2c.
+# apply_to_h1 = true      # default true. Apply the fallback to the
+#                         # TCP listener (HTTP/1.1 + HTTP/2 via ALPN).
+# apply_to_h3 = false     # default false. Apply the fallback to the
+#                         # HTTP/3 listener (UDP/QUIC). Independent
+#                         # of `apply_to_h1` — both can be on at once
+#                         # so the same backend masquerades probes on
+#                         # 443/TCP and 443/UDP. Requires [server.h3].
 
 # Optional L4 SNI fallback for the TLS listener. When set, the
 # ClientHello is peeked before handshake; foreign SNIs (or no SNI when

@@ -36,7 +36,9 @@ mod ws_socket;
 mod ws_writer;
 mod xhttp;
 
-pub(in crate::server) use fallback::{HttpFallbackContext, http_fallback_handler};
+pub(in crate::server) use fallback::{
+    HttpFallbackContext, h3_fallback_handle, http_fallback_handler,
+};
 pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use raw_quic::{
     OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, SsQuicConn, StreamKind, VlessQuicConn,

@@ -66,6 +66,7 @@ async fn websocket_rfc9220_http3_connect_smoke() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -170,6 +171,7 @@ async fn vless_websocket_http3_tcp_relay_smoke() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -267,6 +269,7 @@ async fn http3_root_auth_challenges_get_root_when_enabled() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -342,6 +345,7 @@ async fn websocket_http3_connect_still_works_with_root_auth_enabled() -> Result<
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -444,6 +448,7 @@ async fn vless_websocket_http3_udp_relay_smoke() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -577,6 +582,7 @@ async fn vless_websocket_http3_accepts_large_initial_frame() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
@@ -704,6 +710,7 @@ async fn vless_websocket_http3_mux_tcp_relay_smoke() -> Result<()> {
             std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
             std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await
