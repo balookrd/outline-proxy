@@ -278,7 +278,7 @@ fn build_vless_ws_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let alpn = preferred_alpn_list(config, &ak.public_scheme);
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, AlpnCarrier::Ws);
     let vless_url = vless_uri(
         vless_id,
         public_host,
@@ -319,7 +319,7 @@ fn build_vless_xhttp_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let alpn = preferred_alpn_list(config, &ak.public_scheme);
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, AlpnCarrier::Xhttp);
     let vless_url = vless_xhttp_uri(
         vless_id,
         public_host,
@@ -370,27 +370,51 @@ fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
     format!("{scheme}://{}{}", normalize_host(host), normalize_path(path))
 }
 
+/// Carrier flavour for `preferred_alpn_list`. Controls whether
+/// `http/1.1` is appended as the last-resort fallback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AlpnCarrier {
+    /// WS-VLESS URI. Classic WebSocket Upgrade works over h1 too,
+    /// so `http/1.1` is appended as the last-resort fallback for
+    /// clients that cannot speak h2 Extended CONNECT (RFC 8441) or
+    /// h3 Extended CONNECT (RFC 9220).
+    Ws,
+    /// XHTTP URI. `stream-one` mode needs h2 frame interleaving
+    /// (or h3) and the server returns 505 for it on HTTP/1.1, so
+    /// listing `http/1.1` here would invite the client to pick a
+    /// transport that immediately bounces the dial. `packet-up`
+    /// mode does work on h1, but the URI is not mode-aware; keep
+    /// the safer subset for both XHTTP modes.
+    Xhttp,
+}
+
 /// Comma-separated ALPN preference list to advertise on a TLS-
 /// carrying VLESS URI, or `None` for plain-HTTP deployments where
 /// ALPN does not apply. xray-family clients use this list as their
 /// preferred-protocol order during the TLS / QUIC handshake; without
 /// it they default to HTTP/1.1, which is functionally fine for
 /// classic WebSocket Upgrade but loses h2 / h3 efficiency and breaks
-/// XHTTP stream-one (which needs frame interleaving — h1 cannot
-/// full-duplex). h3 is listed first when `[server.h3]` is configured
-/// so dual-stack clients prefer QUIC and only fall through to h2 /
-/// h1.1 when UDP is blocked. Older clients that do not parse h3 in
-/// the URI just skip it and pick the next entry — no compatibility
-/// loss.
-fn preferred_alpn_list(config: &Config, public_scheme: &str) -> Option<String> {
+/// XHTTP stream-one (h1 cannot full-duplex). h3 is listed first when
+/// `[server.h3]` is configured so dual-stack clients prefer QUIC and
+/// only fall through to h2 / h1.1 when UDP is blocked. Older clients
+/// that do not parse h3 in the URI just skip it and pick the next
+/// entry — no compatibility loss.
+fn preferred_alpn_list(
+    config: &Config,
+    public_scheme: &str,
+    carrier: AlpnCarrier,
+) -> Option<String> {
     if public_scheme != "wss" {
         return None;
     }
-    let mut entries: Vec<&str> = Vec::with_capacity(2);
+    let mut entries: Vec<&str> = Vec::with_capacity(3);
     if config.effective_h3_listen().is_some() {
         entries.push("h3");
     }
     entries.push("h2");
+    if carrier == AlpnCarrier::Ws {
+        entries.push("http/1.1");
+    }
     Some(entries.join(","))
 }
 
