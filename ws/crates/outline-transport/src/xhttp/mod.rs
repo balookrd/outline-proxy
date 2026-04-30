@@ -67,12 +67,6 @@ mod h3;
 #[path = "tests/packet_up.rs"]
 mod tests_packet_up;
 
-/// Lower-cased name of the request header carrying the in-order
-/// sequence number for an uplink POST. Mirrors the server constant.
-/// `pub(super)` so the h3 sibling module can reuse the same wire
-/// constant without a copy that could drift out of sync.
-pub(super) const SEQ_HEADER: &str = "x-xhttp-seq";
-
 /// Cross-transport session resumption: client → server. Mirrors the
 /// header used by the WS-upgrade path so a single token works for
 /// any resumption-aware client/server pair.
@@ -558,6 +552,20 @@ impl XhttpTarget {
         )
     }
 
+    /// Packet-up uplink POST URL: appends the per-packet `seq` to
+    /// the path, matching xray / sing-box's `PlacementPath` default
+    /// (`<base>/<session>/<seq>`). The server still accepts the
+    /// older header-based form (`X-Xhttp-Seq`) for backward
+    /// compatibility, but this client now emits the path form so
+    /// the wire shape is identical to what xray-family clients
+    /// produce — the same byte stream in either ecosystem.
+    pub(super) fn full_uri_with_seq(&self, seq: u64) -> String {
+        format!(
+            "{}://{}{}/{}/{seq}",
+            self.scheme, self.authority, self.base_path, self.session_id,
+        )
+    }
+
     /// Same as [`Self::full_uri`] but with a `?mode=...` selector
     /// appended for the stream-one carrier. Packet-up sessions use
     /// the bare URI (the server defaults to packet-up when the
@@ -760,12 +768,16 @@ async fn post_one(
     seq: u64,
     payload: Bytes,
 ) -> Result<()> {
+    // Path-based seq (`<base>/<session>/<seq>`) is xray / sing-box's
+    // default placement; the server matches both shapes but emitting
+    // path-based here keeps the wire byte-identical to what xray
+    // produces, so an on-path observer cannot tell our client apart
+    // from a vanilla xray one.
     let req = Request::builder()
         .method(Method::POST)
-        .uri(target.full_uri())
+        .uri(target.full_uri_with_seq(seq))
         .version(Version::HTTP_2)
         .header(http::header::HOST, target.authority.as_str())
-        .header(SEQ_HEADER, seq.to_string())
         .body(full_request_body(payload))
         .context("failed to build xhttp POST request")?;
     let resp = send

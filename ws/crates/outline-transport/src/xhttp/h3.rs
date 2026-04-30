@@ -32,7 +32,7 @@ use crate::TransportOperation;
 
 use super::{
     INBOUND_CHANNEL_CAPACITY, OUTBOUND_CHANNEL_CAPACITY, RESUME_CAPABLE_HEADER,
-    RESUME_REQUEST_HEADER, SEQ_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
+    RESUME_REQUEST_HEADER, SESSION_RESPONSE_HEADER, XhttpStream, XhttpSubmode,
     XhttpTarget, generate_session_id, io_ws_err,
 };
 
@@ -470,11 +470,14 @@ async fn post_one(
     seq: u64,
     payload: Bytes,
 ) -> Result<()> {
+    // Path-based seq matches xray / sing-box's default placement and
+    // mirrors the h2 sibling — keep the wire shape identical across
+    // h2 and h3 so a backend cannot tell which version the client
+    // negotiated by looking at the uplink URLs.
     let req = Request::builder()
         .method(Method::POST)
-        .uri(target.full_uri())
+        .uri(target.full_uri_with_seq(seq))
         .version(Version::HTTP_3)
-        .header(SEQ_HEADER, seq.to_string())
         .body(())
         .context("failed to build xhttp/h3 POST request")?;
     let mut stream = send

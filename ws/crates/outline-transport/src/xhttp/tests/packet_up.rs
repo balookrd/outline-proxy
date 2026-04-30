@@ -315,10 +315,15 @@ async fn handle(
                 .unwrap())
         },
         (Method::POST, false) => {
-            let seq: u64 = req
-                .headers()
-                .get("x-xhttp-seq")
-                .and_then(|v| v.to_str().ok()?.parse().ok())
+            // Packet-up uplink puts the per-packet `seq` in the URL
+            // path: `/xh/<session>/<seq>`. Pin the parser to that
+            // shape so a regression that re-introduces the old
+            // header form (`X-Xhttp-Seq`) trips this assertion
+            // instead of silently passing.
+            let path = req.uri().path();
+            let seq: u64 = path
+                .rsplit_once('/')
+                .and_then(|(_, tail)| tail.parse().ok())
                 .unwrap_or(u64::MAX);
             let body_bytes = match req.into_body().collect().await {
                 Ok(collected) => collected.to_bytes(),
