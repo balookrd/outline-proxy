@@ -113,31 +113,63 @@ async fn dispatch_xhttp(
     if !is_valid_session_id(&session_id) {
         return short_status(StatusCode::BAD_REQUEST);
     }
+    // The `?mode=` query selector is our access-key generator's own
+    // hint — xray / sing-box clients do not echo it on the wire.
+    // The wire-format that xray emits is fully implicit: POST with a
+    // seq → packet-up uplink, POST without a seq → stream-one /
+    // stream-up uplink (xray's `ApplyMetaToRequest` simply omits the
+    // seq segment for the non-packet-up carriers). So we let an
+    // explicit `?mode=stream-one` pin the carrier when present, but
+    // when it is absent we fall back to the "seq presence picks the
+    // carrier" rule — that is what every xray-family client actually
+    // produces.
     let submode = XhttpSubmode::parse(uri.query());
-    match (method, submode) {
-        (Method::GET, XhttpSubmode::PacketUp) => {
-            // `<base>/<id>/<seq>` is uplink-only; a GET on this shape
-            // means the client wired the route wrong.
+    match method {
+        Method::GET => {
+            // `<base>/<id>/<seq>` is uplink-only; a GET on this
+            // shape means the client wired the route wrong.
             if path_seq.is_some() {
                 return short_status(StatusCode::BAD_REQUEST);
             }
-            xhttp_get(state, session_id, version, peer_addr, &headers).await
-        },
-        (Method::POST, XhttpSubmode::PacketUp) => {
-            xhttp_post(state, session_id, path_seq, version, peer_addr, headers, body).await
-        },
-        (Method::POST, XhttpSubmode::StreamOne) => {
-            // stream-one is a single bidirectional carrier per
-            // session — there is no per-packet seq, so the
-            // `<id>/<seq>` shape is malformed.
-            if path_seq.is_some() {
-                return short_status(StatusCode::BAD_REQUEST);
+            match submode {
+                XhttpSubmode::PacketUp => {
+                    xhttp_get(state, session_id, version, peer_addr, &headers).await
+                },
+                // GET on `?mode=stream-one` is malformed — the
+                // carrier is a single bidirectional POST, not a GET.
+                XhttpSubmode::StreamOne => short_status(StatusCode::BAD_REQUEST),
             }
-            xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
         },
-        // GET on `?mode=stream-one` is malformed — the carrier is a
-        // single bidirectional POST, not a GET.
-        (Method::GET, XhttpSubmode::StreamOne) => short_status(StatusCode::BAD_REQUEST),
+        Method::POST => {
+            let seq = path_seq.or_else(|| parse_seq(&headers));
+            match submode {
+                XhttpSubmode::StreamOne => {
+                    // Explicit stream-one MUST NOT carry a seq —
+                    // mismatch is a client bug, not silent fallback.
+                    if seq.is_some() {
+                        return short_status(StatusCode::BAD_REQUEST);
+                    }
+                    xhttp_stream_one(state, session_id, version, peer_addr, headers, body).await
+                },
+                XhttpSubmode::PacketUp => match seq {
+                    Some(_) => {
+                        xhttp_post(
+                            state, session_id, path_seq, version, peer_addr, headers, body,
+                        )
+                        .await
+                    },
+                    // No seq, no `?mode=` — the xray default for
+                    // stream-one / stream-up. Our stream-one handler
+                    // accepts both shapes (it drains the request
+                    // body chunk-by-chunk), so `stream-up` mode
+                    // clients land here too without extra wiring.
+                    None => {
+                        xhttp_stream_one(state, session_id, version, peer_addr, headers, body)
+                            .await
+                    },
+                },
+            }
+        },
         _ => short_status(StatusCode::METHOD_NOT_ALLOWED),
     }
 }

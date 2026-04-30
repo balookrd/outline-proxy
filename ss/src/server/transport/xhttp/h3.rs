@@ -56,64 +56,89 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
     let method = request.method().clone();
     let headers = request.headers().clone();
     let version = request.version();
+    // Mirror the axum dispatch logic in `handlers::dispatch_xhttp` —
+    // see the long comment there for why the `?mode=` query is only
+    // a fallback hint and seq presence is the wire-level signal that
+    // picks the carrier for xray-style clients.
     let submode = XhttpSubmode::parse(request.uri().query());
 
-    match (method, submode) {
-        (Method::GET, XhttpSubmode::PacketUp) => {
-            // `<base>/<id>/<seq>` is uplink-only — a GET on this
-            // shape is a misrouted client, mirror the axum side.
+    match method {
+        Method::GET => {
             if path_seq.is_some() {
                 return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
             }
-            xhttp_h3_get(
-                stream,
-                registry,
-                vless_server,
-                route,
-                base_path,
-                session_id,
-                version,
-                peer_addr,
-                headers,
-            )
-            .await
-        },
-        (Method::POST, XhttpSubmode::PacketUp) => {
-            xhttp_h3_post(
-                stream,
-                headers,
-                registry,
-                vless_server,
-                route,
-                base_path,
-                session_id,
-                path_seq,
-                version,
-                peer_addr,
-            )
-            .await
-        },
-        (Method::POST, XhttpSubmode::StreamOne) => {
-            // stream-one has no per-packet seq — `<id>/<seq>` is
-            // malformed for it.
-            if path_seq.is_some() {
-                return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
+            match submode {
+                XhttpSubmode::PacketUp => {
+                    xhttp_h3_get(
+                        stream,
+                        registry,
+                        vless_server,
+                        route,
+                        base_path,
+                        session_id,
+                        version,
+                        peer_addr,
+                        headers,
+                    )
+                    .await
+                },
+                XhttpSubmode::StreamOne => {
+                    finish_with_status(stream, StatusCode::BAD_REQUEST).await
+                },
             }
-            xhttp_h3_stream_one(
-                stream,
-                headers,
-                registry,
-                vless_server,
-                route,
-                base_path,
-                session_id,
-                version,
-                peer_addr,
-            )
-            .await
         },
-        (Method::GET, XhttpSubmode::StreamOne) => {
-            finish_with_status(stream, StatusCode::BAD_REQUEST).await
+        Method::POST => {
+            let seq = path_seq.or_else(|| parse_seq(&headers));
+            match submode {
+                XhttpSubmode::StreamOne => {
+                    if seq.is_some() {
+                        return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
+                    }
+                    xhttp_h3_stream_one(
+                        stream,
+                        headers,
+                        registry,
+                        vless_server,
+                        route,
+                        base_path,
+                        session_id,
+                        version,
+                        peer_addr,
+                    )
+                    .await
+                },
+                XhttpSubmode::PacketUp => match seq {
+                    Some(_) => {
+                        xhttp_h3_post(
+                            stream,
+                            headers,
+                            registry,
+                            vless_server,
+                            route,
+                            base_path,
+                            session_id,
+                            path_seq,
+                            version,
+                            peer_addr,
+                        )
+                        .await
+                    },
+                    None => {
+                        xhttp_h3_stream_one(
+                            stream,
+                            headers,
+                            registry,
+                            vless_server,
+                            route,
+                            base_path,
+                            session_id,
+                            version,
+                            peer_addr,
+                        )
+                        .await
+                    },
+                },
+            }
         },
         _ => finish_with_status(stream, StatusCode::METHOD_NOT_ALLOWED).await,
     }
