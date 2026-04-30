@@ -37,7 +37,7 @@ use tracing::{debug, warn};
 
 use crate::config::SniFallbackConfig;
 
-use super::proxy_protocol::encode_proxy_protocol;
+use super::proxy_protocol::{PpTransport, encode_proxy_protocol};
 
 /// Per-process state for the SNI fallback. Built once at startup and
 /// shared by every accepted TLS-listener connection.
@@ -146,7 +146,13 @@ pub(in crate::server) async fn splice_to_backend(
 
     if let Some(version) = ctx.config.proxy_protocol {
         let mut header = Vec::with_capacity(64);
-        encode_proxy_protocol(&mut header, version, peer_addr, ctx.inbound_listen);
+        encode_proxy_protocol(
+            &mut header,
+            version,
+            peer_addr,
+            ctx.inbound_listen,
+            PpTransport::Stream,
+        );
         backend
             .write_all(&header)
             .await

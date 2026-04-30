@@ -1,5 +1,7 @@
 use super::*;
 
+mod proxy_protocol;
+
 #[test]
 fn h3_no_error_through_sockudo_io_other_is_benign() {
     // Reproduces the production cause chain: h3 ConnectionError stringified
