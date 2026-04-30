@@ -700,7 +700,7 @@ via = "main"
 
 - `transport` accepts `websocket` (default), `shadowsocks`, or `vless`. VLESS shares the WSS dial path with `websocket` (same `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark` fields) but authenticates with a single `vless_id` instead of a Shadowsocks `method` + `password`. VLESS UDP opens one WSS session per destination inside the uplink (bounded by `[outline.load_balancing] vless_udp_max_sessions`, LRU-evicted, with idle eviction controlled by `vless_udp_session_idle_secs`).
 - At least one ingress must be configured: `--listen` / `[socks5].listen` and/or `[tun]`. If neither is present, the process exits with an error instead of silently binding `127.0.0.1:1080`.
-- `tcp_mode` / `udp_mode` (`transport = "ws"`) and `vless_ws_mode` (`transport = "vless"`) accept `http1` (alias `h1`), `h2`, `h3`, or `quic`. Modes `http1` / `h2` / `h3` ride a WebSocket Upgrade over the matching HTTP version (with automatic `h3 → h2 → http1` fallback for WS modes); `quic` selects raw QUIC framing on ALPN `vless` (for VLESS) or `ss` (for Shadowsocks-over-WS) with `quic → h2 → http1` dial-time fallback.
+- `tcp_mode` / `udp_mode` (`transport = "ws"`) and `vless_mode` (`transport = "vless"`) pick the per-direction transport carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw QUIC framing on ALPN `vless` / `ss`), or `xhttp_h2` / `xhttp_h3` (VLESS-only XHTTP packet-up). See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md) for per-shape config blocks, dial-time fallback chains, and resume behaviour.
 - `tcp_addr` / `udp_addr` are used with `transport = "shadowsocks"` and accept `host:port` or `[ipv6]:port`.
 - `ipv6_first` (default `false`) changes resolved-address preference for that uplink from IPv4-first to IPv6-first for TCP, UDP, H1, H2, and H3 connections.
 - `method` also accepts `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chacha20-poly1305`; for these methods `password` must be a base64-encoded PSK of the exact cipher key length.
@@ -821,60 +821,26 @@ When the primary `via` resolves to a group with no currently-healthy uplinks, th
 
 ## Transport Modes
 
-### HTTP/1.1
-
-Use when you want the most compatible baseline behavior.
-
-### HTTP/2
-
-Use when the upstream supports RFC 8441 Extended CONNECT for WebSockets.
-
-### HTTP/3
-
-Use when the upstream supports RFC 9220 and QUIC/UDP is available end to end.
-
-### Raw QUIC
-
-Use when the upstream runs the matching raw-QUIC listener (outline-ss-rust `transport::raw_quic`). Selected per uplink via `tcp_mode = "quic"` / `udp_mode = "quic"` (for `transport = "ws"`) or `vless_ws_mode = "quic"` (for `transport = "vless"`). The path skips WebSocket and HTTP/3 framing entirely:
-
-- VLESS-TCP / SS-TCP — one QUIC bidi stream per session.
-- VLESS-UDP — per-target control bidi (server returns a 4-byte `session_id`) plus connection-level datagram demux.
-- SS-UDP — 1 QUIC datagram = 1 SS-AEAD packet (RFC 9221).
-- ALPNs `vless-mtu` / `ss-mtu` — auxiliary stream-fallback for oversized UDP payloads that exceed the QUIC datagram limit.
-- Multiple sessions of the same ALPN to the same `host:port` share one cached QUIC connection.
-- Only `host:port` from the dial URL is used; the path is ignored.
+The six supported uplink shapes (native SS, SS/QUIC, SS/WS/H3, VLESS/QUIC, VLESS/WS/H3, VLESS/XHTTP/H3) are documented separately, with TOML examples and full dial-time fallback chains, in [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md). The notes below cover only the operator-facing runtime details that aren't part of that reference.
 
 Recommended operator stance:
 
-- prefer `http1` as a conservative baseline
-- enable `h2` only when the reverse proxy and origin are known-good for RFC 8441
-- enable `h3` only when QUIC is explicitly supported and reachable
+- prefer `ws_h1` as a conservative baseline
+- enable `ws_h2` only when the reverse proxy and origin are known-good for RFC 8441
+- enable `ws_h3` only when QUIC is explicitly supported and reachable
 - enable `quic` only when the matching outline-ss-rust raw-QUIC listener is reachable end to end
+- enable `xhttp_h2` / `xhttp_h3` when WebSocket Upgrade is blocked on the network path
 
 **Shared QUIC endpoint:** H3 and raw-QUIC connections that do not use a per-uplink `fwmark` share a single UDP socket per address family (one for IPv4, one for IPv6). This means N warm-standby connections do not open N UDP sockets. Connections that require a specific `fwmark` still use their own dedicated socket because the mark must be applied before the first `sendmsg`.
 
 QUIC keep-alive pings are sent every 10 seconds to prevent NAT mapping expiry and to allow the server to detect dead connections without waiting for the full idle timeout.
 
-Runtime fallback behavior:
-
-- requested `h3` tries `h3`, then `h2`, then `http1`
-- requested `h2` tries `h2`, then `http1`
-- requested `quic` tries raw QUIC, then WS over `h2`, then WS over `http1` on dial / handshake failure
-
-**Mode downgrade window:** when an "advanced mode" failure (H3 application-level error such as `H3_INTERNAL_ERROR`, **or** a raw-QUIC dial / handshake failure) occurs on an uplink that requested H3 or QUIC, the uplink automatically falls back to H2 for new TCP and UDP connections for the duration configured by `h3_downgrade_secs` (default: 60 seconds; also accepted as `mode_downgrade_secs`). After the window expires, the original mode is retried by the next real connection. This prevents reconnect storms where every new flow establishes a QUIC / H3 connection only to have it fail shortly after.
-
-The same downgrade is also triggered by TCP probe failures on H3 / QUIC uplinks, preventing probe-driven flapping in `active_passive + global` mode: without this, intermittent advanced-mode probe pass/fail alternation would cause a failover switch every probe cycle.
-
-Probe behavior during a downgrade window:
-- Probes use `effective_tcp_mode` / `effective_udp_mode`, which return H2 while the downgrade timer is active. The probe therefore tests H2 connectivity during the window rather than continuing to stress-test broken H3 / QUIC.
-- A successful probe during the window does **not** clear the downgrade timer. Recovery is tested naturally once the timer expires and the next real connection attempts the original mode. If that attempt fails, the timer is reset.
+**Mode downgrade window:** the per-uplink window that gates re-attempts of an "advanced mode" (H3 / QUIC / xhttp_h3) after a failure is configured by `h3_downgrade_secs` (default: 60s; also accepted as `mode_downgrade_secs`). Set to `0` to disable. The same window is also opened by TCP probe failures on H3 / QUIC uplinks — without that, intermittent advanced-mode probe pass/fail alternation would cause a failover switch every probe cycle in `active_passive + global` mode. See [docs/UPLINK-CONFIGURATIONS.md](docs/UPLINK-CONFIGURATIONS.md#downgrade-window-mechanics) for the two-layer (per-host cache + per-uplink window) breakdown.
 
 Scoring during a downgrade window (`per_flow` scope):
 - While the downgrade timer is active, the uplink's effective latency score has `failure_penalty_max` added on top of the normal failure penalty. This prevents `active_active + per_flow` flows from switching back to the primary uplink while it is operating in H2 fallback mode: as the normal failure penalty decays, the extra downgrade penalty keeps the primary's score unfavorable until the window closes.
 
 Warm-standby connections respect the active downgrade state: while an uplink is in H3→H2 or QUIC→H2 downgrade, new standby slots are filled using H2.
-
-**VLESS-UDP raw-QUIC hybrid mux:** because VLESS-UDP raw-QUIC sessions dial lazily on the first packet, the SS-style "try QUIC at acquire time, fall back if that fails" pattern doesn't apply directly. Instead, the VLESS-UDP path is wrapped in a hybrid mux that owns both a QUIC inner mux and a WS-over-H2 inner mux: it dials QUIC first, and on first-dial failure pivots to WS, calls `note_advanced_mode_dial_failure` to start the cooldown, and proxies downlink datagrams from whichever inner mux is currently active. A latched `quic_succeeded_once` flag prevents collapse to WS once a QUIC session has actually completed — runtime errors on a working QUIC session still propagate as real failures.
 
 **Transport handshake timeouts:** every WebSocket connect path enforces an upper bound so that a silently-broken or black-holed server cannot stall new sessions for minutes while keeping the uplink nominally "healthy".
 

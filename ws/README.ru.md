@@ -696,7 +696,7 @@ via = "main"
 
 - `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
-- `tcp_mode` / `udp_mode` (для `transport = "ws"`) и `vless_ws_mode` (для `transport = "vless"`) принимают `http1` (алиас `h1`), `h2`, `h3` или `quic`. Режимы `http1` / `h2` / `h3` едут поверх WebSocket Upgrade на соответствующей версии HTTP (с автоматическим fallback `h3 → h2 → http1` для WS-режимов); `quic` выбирает raw QUIC framing на ALPN `vless` (для VLESS) или `ss` (для Shadowsocks-over-WS) с dial-time fallback `quic → h2 → http1`.
+- `tcp_mode` / `udp_mode` (для `transport = "ws"`) и `vless_mode` (для `transport = "vless"`) задают per-direction carrier: `ws_h1` / `ws_h2` / `ws_h3` (WebSocket Upgrade), `quic` (raw-QUIC framing на ALPN `vless` / `ss`) или `xhttp_h2` / `xhttp_h3` (только VLESS, XHTTP packet-up). Конфиг-блоки на каждую форму, цепочки fallback на этапе дозвона и поведение resume — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md).
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
 - `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
@@ -817,60 +817,26 @@ fallback_direct = true    # или: fallback_drop = true / fallback_via = "backu
 
 ## Транспортные режимы
 
-### HTTP/1.1
-
-Используйте, когда нужна максимально совместимая базовая конфигурация.
-
-### HTTP/2
-
-Используйте, когда upstream поддерживает RFC 8441 Extended CONNECT для WebSocket.
-
-### HTTP/3
-
-Используйте, когда upstream поддерживает RFC 9220 и QUIC/UDP доступен end-to-end.
-
-### Raw QUIC
-
-Используйте, когда на сервере поднят соответствующий raw-QUIC listener (`transport::raw_quic` в outline-ss-rust). Выбирается per-uplink через `tcp_mode = "quic"` / `udp_mode = "quic"` (для `transport = "ws"`) или `vless_ws_mode = "quic"` (для `transport = "vless"`). Этот путь полностью обходит WebSocket и HTTP/3 framing:
-
-- VLESS-TCP / SS-TCP — один QUIC bidi на сессию.
-- VLESS-UDP — per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм.
-- SS-UDP — 1 QUIC-датаграмма = 1 SS-AEAD пакет (RFC 9221).
-- Вспомогательные ALPN `vless-mtu` / `ss-mtu` — stream-fallback для UDP-payload'а, превышающего лимит датаграммы QUIC.
-- Несколько сессий с одинаковым ALPN на тот же `host:port` шарят один кэшированный QUIC-коннект.
-- Из URL дайла берётся только `host:port`, путь игнорируется.
+Шесть поддерживаемых форм аплинка (native SS, SS/QUIC, SS/WS/H3, VLESS/QUIC, VLESS/WS/H3, VLESS/XHTTP/H3) описаны отдельно — с TOML-примерами и полными цепочками fallback на этапе дозвона — в [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md). Заметки ниже покрывают только runtime-детали для оператора, которых нет в том документе.
 
 Рекомендуемый подход:
 
-- предпочитайте `http1` как консервативную базу
-- включайте `h2` только если reverse proxy и origin проверены на совместимость с RFC 8441
-- включайте `h3` только если QUIC явно поддерживается и доступен
+- предпочитайте `ws_h1` как консервативную базу
+- включайте `ws_h2` только если reverse proxy и origin проверены на совместимость с RFC 8441
+- включайте `ws_h3` только если QUIC явно поддерживается и доступен
 - включайте `quic` только если соответствующий raw-QUIC listener в outline-ss-rust доступен end-to-end
+- включайте `xhttp_h2` / `xhttp_h3`, когда WebSocket Upgrade блокируется на сети
 
 **Общий QUIC-эндпоинт:** H3 и raw-QUIC соединения без per-uplink `fwmark` разделяют один UDP-сокет на address family (один для IPv4, один для IPv6). Это означает, что N warm-standby соединений не открывают N UDP-сокетов. Соединения с `fwmark` по-прежнему используют выделенный сокет, поскольку метка должна быть применена до первого `sendmsg`.
 
 QUIC keep-alive пинги отправляются каждые 10 секунд для предотвращения истечения NAT-маппингов и обнаружения мёртвых соединений.
 
-Runtime fallback:
-
-- запрошенный `h3` пробует `h3`, затем `h2`, затем `http1`
-- запрошенный `h2` пробует `h2`, затем `http1`
-- запрошенный `quic` на провал dial / handshake пробует raw QUIC, затем WS over `h2`, затем WS over `http1`
-
-**Окно даунгрейда режима:** при сбое «продвинутого» режима (H3 application-level error, например `H3_INTERNAL_ERROR`, **или** провал dial / handshake raw QUIC) на аплинке, запросившем H3 или QUIC, аплинк автоматически переходит на H2 для новых TCP- и UDP-соединений на время, заданное `h3_downgrade_secs` (по умолчанию 60 секунд; принимается также как `mode_downgrade_secs`). После истечения окна исходный режим повторно пробуется следующим реальным соединением. Это предотвращает reconnect-штормы, когда каждый новый поток устанавливает QUIC / H3-соединение, которое вскоре падает.
-
-Тот же даунгрейд также срабатывает при сбоях TCP-проб на H3 / QUIC-аплинках, предотвращая probe-driven flapping в режиме `active_passive + global`.
-
-Поведение проб во время окна даунгрейда:
-- Пробы используют `effective_tcp_mode` / `effective_udp_mode`, который возвращает H2, пока активен таймер даунгрейда. Таким образом, проба тестирует H2-связность в течение окна, а не продолжает стресс-тестирование сломанного H3 / QUIC.
-- Успешная проба в окне **не** сбрасывает таймер даунгрейда. Восстановление тестируется естественным образом после истечения таймера: следующее реальное соединение пробует исходный режим; при сбое таймер сбрасывается заново.
+**Окно даунгрейда режима:** per-uplink окно, в течение которого «продвинутый» режим (H3 / QUIC / xhttp_h3) пропускается после сбоя, конфигурируется параметром `h3_downgrade_secs` (по умолчанию 60 с; принимается также как `mode_downgrade_secs`). `0` отключает. То же окно открывается и при сбоях TCP-проб на H3 / QUIC-аплинках — без этого probe-driven чередование pass/fail вызывало бы failover-переключение на каждом цикле в режиме `active_passive + global`. Раскладка по двум слоям (per-host cache + per-uplink window) — см. [docs/UPLINK-CONFIGURATIONS.ru.md](docs/UPLINK-CONFIGURATIONS.ru.md#механика-окна-даунгрейда).
 
 Скоринг во время окна даунгрейда (`per_flow` scope):
 - Пока активен таймер даунгрейда, к эффективному latency-скору аплинка добавляется `failure_penalty_max` поверх обычного штрафа. Это предотвращает возврат `active_active + per_flow`-потоков на primary, пока тот работает в H2-режиме.
 
 Warm-standby соединения учитывают активное состояние даунгрейда: пока аплинк в режиме H3→H2 или QUIC→H2, новые standby-слоты заполняются через H2.
-
-**VLESS-UDP raw-QUIC hybrid mux:** поскольку VLESS-UDP raw-QUIC сессии дайлятся лениво на первом пакете, привычная для SS схема «попробовать QUIC при acquire, упасть на WS если не вышло» здесь не работает. Вместо этого VLESS-UDP путь оборачивается в hybrid mux, владеющий одновременно двумя inner mux'ами (QUIC и WS over H2): при первом провале дайла QUIC он переключается на WS, вызывает `note_advanced_mode_dial_failure` (открывает cooldown) и проксирует входящие датаграммы из активного inner mux. Залипший флаг `quic_succeeded_once` не даёт схлопнуться в WS, если QUIC-сессия уже успешно установилась — рантайм-ошибки на работающей QUIC-сессии по-прежнему пробрасываются как обычный сбой.
 
 **Таймауты транспортных рукопожатий:** каждый путь установки WebSocket-соединения имеет жёсткий верхний предел, чтобы тихо сломанный сервер или чёрная дыра в сети не могли подвесить новые сессии на минуты, пока аплинк формально считается «здоровым».
 
