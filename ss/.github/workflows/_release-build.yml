@@ -86,6 +86,21 @@ jobs:
           ref: ${{ steps.vars.outputs.checkout_ref }}
           fetch-depth: 0
 
+      # Cargo resolves path-based dev-dependencies even for `cargo
+      # build --release`, so the sibling `outline-ws-rust` checkout
+      # (referenced as `../outline-ws-rust/crates/outline-transport`
+      # in Cargo.toml) must exist next to this repo on the runner.
+      # `actions/checkout` only writes under $GITHUB_WORKSPACE, so we
+      # `git clone` into the parent directory directly.
+      - name: Checkout outline-ws-rust sibling for cross-repo dev-dep
+        shell: bash
+        working-directory: ${{ github.workspace }}/..
+        run: |
+          set -euo pipefail
+          if [ ! -d outline-ws-rust ]; then
+            git clone --depth=1 https://github.com/balookrd/outline-ws-rust.git outline-ws-rust
+          fi
+
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: mlugg/setup-zig@v2
