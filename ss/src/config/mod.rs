@@ -184,6 +184,17 @@ pub struct HttpFallbackConfig {
     /// HTTP and assumed to be on a trusted private network or
     /// loopback.
     pub backend_proto: BackendProto,
+    /// Apply the fallback to the TCP listener (HTTP/1.1 + HTTP/2 via
+    /// ALPN). `true` by default — preserves the legacy behaviour for
+    /// existing deployments.
+    pub apply_to_h1: bool,
+    /// Apply the fallback to the HTTP/3 listener (UDP/QUIC). `false`
+    /// by default so that upgrading the binary does not silently
+    /// start forwarding QUIC traffic to a backend the operator only
+    /// configured for TCP. Requires `[server.h3]` to be set; v1
+    /// PROXY-protocol is rejected when this is on (RFC has no UDP
+    /// form for v1).
+    pub apply_to_h3: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -380,6 +391,21 @@ impl HttpFallbackConfig {
                 "http_fallback.backend_proto must be \"h1\" or \"h2\"; got {other:?}"
             ),
         };
+        let apply_to_h1 = section.apply_to_h1.unwrap_or(true);
+        let apply_to_h3 = section.apply_to_h3.unwrap_or(false);
+        if !apply_to_h1 && !apply_to_h3 {
+            anyhow::bail!(
+                "http_fallback has both apply_to_h1 and apply_to_h3 disabled — \
+                 the section would be a no-op; remove it instead",
+            );
+        }
+        if apply_to_h3 && matches!(proxy_protocol, Some(ProxyProtocolVersion::V1)) {
+            anyhow::bail!(
+                "http_fallback.proxy_protocol = \"v1\" is not compatible with \
+                 apply_to_h3 = true (PROXY-protocol v1 has no UDP form on the \
+                 wire); use \"v2\" or disable proxy_protocol",
+            );
+        }
         let request_timeout_secs = section.request_timeout_secs.unwrap_or(30);
         if request_timeout_secs == 0 {
             anyhow::bail!("http_fallback.request_timeout_secs must be > 0");
@@ -395,6 +421,8 @@ impl HttpFallbackConfig {
             add_x_forwarded_host: section.add_x_forwarded_host.unwrap_or(true),
             proxy_protocol,
             backend_proto,
+            apply_to_h1,
+            apply_to_h3,
         }))
     }
 }

@@ -128,12 +128,16 @@ pub(super) fn build(config: &Arc<Config>) -> Result<Built> {
         http_root_realm: Arc::from(config.http_root_realm.clone()),
     });
     let http_fallback = config.http_fallback.as_ref().map(|cfg| {
-        // Listener bind addr is required upstream by `validate()`, so the
-        // unwrap below cannot fire when `http_fallback` is `Some`.
-        let inbound_listen = config.listen.expect("listen required when http_fallback is set");
+        // `validate()` already enforces that the listener required by
+        // each `apply_to_*` flag is set; we simply gate the bind addr
+        // on the flag so an h3-only deployment with `apply_to_h1 =
+        // false` does not pull a non-existent TCP listen addr.
+        let tcp_inbound_listen = if cfg.apply_to_h1 { config.listen } else { None };
+        let h3_inbound_listen = if cfg.apply_to_h3 { config.h3_listen } else { None };
         Arc::new(HttpFallbackContext {
             config: Arc::new(cfg.clone()),
-            inbound_listen,
+            tcp_inbound_listen,
+            h3_inbound_listen,
             inbound_tls: config.tcp_tls_enabled(),
         })
     });

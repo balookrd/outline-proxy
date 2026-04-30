@@ -244,6 +244,7 @@ async fn spawn_raw_quic_vless_resumption_server() -> Result<(
             raw_vless_users,
             raw_vless_candidates,
             Arc::from(Vec::<UserKey>::new().into_boxed_slice()),
+            None,
             ShutdownSignal::never(),
         )
         .await

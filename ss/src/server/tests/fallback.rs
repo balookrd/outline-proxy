@@ -18,7 +18,7 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use http_body_util::{BodyExt, Empty, Full};
 use hyper::{server::conn::http2 as h2_server, service::service_fn};
 use hyper_util::{
@@ -35,9 +35,9 @@ use super::super::bootstrap::serve_listener;
 use super::super::nat::NatTable;
 use super::super::shutdown::ShutdownSignal;
 use super::super::transport::HttpFallbackContext;
-use super::super::{DnsCache, build_app, build_user_routes};
-use super::{build_test_state, sample_config};
-use crate::config::{BackendProto, HttpFallbackConfig, ProxyProtocolVersion};
+use super::super::{DnsCache, build_app, build_user_routes, serve_h3_server};
+use super::{build_test_state, sample_config, test_h3_client_config, test_h3_server_tls};
+use crate::config::{BackendProto, H3Alpn, HttpFallbackConfig, ProxyProtocolVersion};
 use crate::metrics::Metrics;
 
 /// Snapshot of one upstream request, captured by the echo handler so
@@ -118,8 +118,11 @@ fn fallback_ctx_for_proto(
             add_x_forwarded_host: true,
             proxy_protocol,
             backend_proto,
+            apply_to_h1: true,
+            apply_to_h3: false,
         }),
-        inbound_listen,
+        tcp_inbound_listen: Some(inbound_listen),
+        h3_inbound_listen: None,
         inbound_tls: false,
     })
 }
@@ -601,5 +604,149 @@ async fn http_fallback_relays_to_h2_upstream() -> Result<()> {
 
     server.abort();
     let _ = server.await;
+    Ok(())
+}
+
+fn fallback_ctx_for_h3(
+    upstream: SocketAddr,
+    h3_inbound_listen: SocketAddr,
+    backend_proto: BackendProto,
+) -> Arc<HttpFallbackContext> {
+    Arc::new(HttpFallbackContext {
+        config: Arc::new(HttpFallbackConfig {
+            backend_scheme: "http".into(),
+            backend_authority: upstream.to_string(),
+            backend_host: upstream.ip().to_string(),
+            backend_port: upstream.port(),
+            request_timeout_secs: 5,
+            add_x_forwarded_for: true,
+            add_x_forwarded_proto: true,
+            add_x_forwarded_host: true,
+            proxy_protocol: None,
+            backend_proto,
+            apply_to_h1: false,
+            apply_to_h3: true,
+        }),
+        tcp_inbound_listen: None,
+        h3_inbound_listen: Some(h3_inbound_listen),
+        // QUIC is encrypted by spec — `inbound_tls` is moot for the
+        // h3 path which always reports `https` for X-Forwarded-Proto.
+        inbound_tls: true,
+    })
+}
+
+#[tokio::test]
+async fn h3_fallback_relays_unmatched_request_to_h2_upstream() -> Result<()> {
+    use sockudo_ws::{
+        Config as H3WsConfig, Http3 as H3Transport, WebSocketServer as H3WebSocketServer,
+    };
+
+    let (upstream_addr, rx) = spawn_h2c_echo_upstream(
+        StatusCode::OK,
+        vec![("content-type", "text/plain"), ("x-upstream-marker", "h3-via-h2")],
+        "hello-from-h2-via-h3",
+    )
+    .await?;
+
+    let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let (tls_config, cert_der) = test_h3_server_tls()?;
+    let server =
+        H3WebSocketServer::<H3Transport>::bind(server_addr, tls_config, H3WsConfig::default())
+            .await?;
+    let addr = server.local_addr()?;
+
+    let config = sample_config(addr);
+    let user_routes = build_user_routes(&config)?;
+    let metrics = Metrics::new(&config);
+    let nat_table = NatTable::new(std::time::Duration::from_secs(300));
+    let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let (routes, services, auth) = build_test_state(
+        user_routes,
+        metrics,
+        nat_table,
+        dns_cache,
+        false,
+        config.http_root_realm.clone(),
+    );
+
+    let h3_fallback = fallback_ctx_for_h3(upstream_addr, addr, BackendProto::H2);
+    let server_task = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            std::sync::Arc::from(vec![H3Alpn::H3].into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::protocol::vless::VlessUser>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<std::sync::Arc<str>>::new().into_boxed_slice()),
+            std::sync::Arc::from(Vec::<crate::crypto::UserKey>::new().into_boxed_slice()),
+            Some(h3_fallback),
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+
+    let mut endpoint = quinn::Endpoint::client(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
+    endpoint.set_default_client_config(test_h3_client_config(cert_der)?);
+    let connection = endpoint.connect(addr, "localhost")?.await?;
+    let (mut driver, mut send_request) =
+        h3::client::new(h3_quinn::Connection::new(connection)).await?;
+    let driver_task =
+        tokio::spawn(async move { std::future::poll_fn(|cx| driver.poll_close(cx)).await });
+
+    // Plain GET on a path that does not match any TCP/UDP/VLESS/XHTTP
+    // route — should be relayed by the fallback to the h2c upstream.
+    let request = axum::http::Request::builder()
+        .method(Method::GET)
+        .uri(format!("https://localhost:{}/whatever?x=1", addr.port()))
+        .version(axum::http::Version::HTTP_3)
+        .header("x-marker", "h3-passthrough")
+        .body(())?;
+    let mut stream = send_request.send_request(request).await?;
+    stream.finish().await?;
+
+    let response = stream.recv_response().await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get("x-upstream-marker").unwrap(),
+        "h3-via-h2",
+    );
+
+    let mut body = Vec::new();
+    while let Some(mut chunk) = stream.recv_data().await? {
+        while chunk.has_remaining() {
+            let slice = chunk.chunk();
+            body.extend_from_slice(slice);
+            let len = slice.len();
+            chunk.advance(len);
+        }
+    }
+    assert_eq!(body.as_slice(), b"hello-from-h2-via-h3");
+
+    let captured = rx.await?;
+    assert_eq!(captured.method, Method::GET);
+    assert!(
+        captured.uri.contains("/whatever"),
+        "upstream should see the original path, got {:?}",
+        captured.uri
+    );
+    assert_eq!(
+        captured.headers.get("x-marker").map(|v| v.to_str().unwrap()),
+        Some("h3-passthrough"),
+        "passthrough header should reach the h2 upstream",
+    );
+    assert_eq!(
+        captured
+            .headers
+            .get("x-forwarded-proto")
+            .map(|v| v.to_str().unwrap()),
+        Some("https"),
+        "h3 listener should report https for X-Forwarded-Proto regardless of TCP TLS",
+    );
+
+    driver_task.abort();
+    server_task.abort();
+    let _ = driver_task.await;
+    let _ = server_task.await;
     Ok(())
 }

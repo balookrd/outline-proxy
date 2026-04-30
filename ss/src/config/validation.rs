@@ -188,8 +188,17 @@ impl Config {
         if self.outbound_ipv6_refresh_secs == 0 {
             bail!("outbound_ipv6_refresh_secs must be > 0");
         }
-        if self.http_fallback.is_some() && self.listen.is_none() {
-            bail!("http_fallback requires the [server] listen to be configured");
+        if let Some(fb) = self.http_fallback.as_ref() {
+            if fb.apply_to_h1 && self.listen.is_none() {
+                bail!(
+                    "http_fallback.apply_to_h1 = true requires the [server] listen to be configured",
+                );
+            }
+            if fb.apply_to_h3 && self.h3_listen.is_none() {
+                bail!(
+                    "http_fallback.apply_to_h3 = true requires [server.h3] listen to be configured",
+                );
+            }
         }
         if self.sni_fallback.is_some() {
             if self.listen.is_none() {

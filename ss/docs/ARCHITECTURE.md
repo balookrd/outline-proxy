@@ -98,15 +98,23 @@ The HTTP/3 listener is unaffected — quinn parses SNI before our code sees the 
 
 ### L7: HTTP fallback (`[http_fallback]`)
 
-Active for every TLS-terminated (or plain) HTTP request that does not hit a configured WebSocket / XHTTP / metrics / control / dashboard route. Instead of returning `404`, axum's fallback handler reverse-proxies the request to `backend` over a per-request `hyper::client::conn::http1` connection:
+Active for every TLS-terminated (or plain) HTTP request that does not hit a configured WebSocket / XHTTP / metrics / control / dashboard route. Instead of returning `404`, the fallback adapter reverse-proxies the request to `backend`:
 
 - Hop-by-hop headers (RFC 7230 §6.1 + anything listed in `Connection:`) are stripped on both directions.
 - `Host` is rewritten to the backend authority (mirrors nginx's `proxy_set_header Host $proxy_host;`).
 - The URI is rebuilt in origin-form so the backend parses it as a normal request, not a proxy CONNECT.
-- `X-Forwarded-{For,Proto,Host}` are appended/set per per-feature toggles; `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS.
+- `X-Forwarded-{For,Proto,Host}` are appended/set per per-feature toggles. `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS for the TCP path; the HTTP/3 path always reports `https` since QUIC is encrypted by spec.
 - Optional `proxy_protocol = "v1" | "v2"` prepends a HAProxy PROXY-protocol header to the upstream TCP connection so the backend logs the real client IP.
+- `backend_proto = "h1" | "h2"` selects the HTTP wire-version the listener uses to talk to the upstream, independent of the inbound version. `"h1"` (default) uses `hyper::client::conn::http1`; `"h2"` uses `hyper::client::conn::http2` in prior-knowledge mode (h2c, no ALPN) — useful for gRPC gateways or h2c-configured nginx upstreams.
 
-Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind addr, degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
+Two independent toggles select which inbound listeners the fallback applies to:
+
+- `apply_to_h1 = true` (default) — wires the adapter into the axum router on the TCP listener as a 404-replacement handler that covers HTTP/1.1 and HTTP/2 (selected via ALPN).
+- `apply_to_h3 = false` (default; opt-in) — extends the fallback to the QUIC listener. The h3 dispatch in `server::h3::http::handle_h3_request` invokes the adapter for every non-CONNECT request that does not match an XHTTP base path or the `/` auth-root challenge. Auth-root (`http_root.auth = true` for `/`) keeps priority over the fallback, mirroring the axum router pinning `/` ahead of the wildcard fallback on the TCP path. Request body is buffered up-front before forwarding; response body is streamed chunk-by-chunk back over QUIC. Trailers are forwarded both directions when `backend_proto` carries them.
+
+PROXY-protocol headers emitted on the upstream TCP socket carry `Transport=STREAM` (`0x11` / `0x21`) for the h1/h2 inbound and `Transport=DGRAM` (`0x12` / `0x22`) for the h3 inbound, so the backend can tell the origin transport. v1 has no UDP form on the wire, so `proxy_protocol = "v1"` is rejected at config-load time when `apply_to_h3 = true` — use `"v2"` or disable PROXY-protocol.
+
+Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind addr (TCP listener for `apply_to_h1`, h3 listener for `apply_to_h3`), degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
 
 ## Request Routing
 

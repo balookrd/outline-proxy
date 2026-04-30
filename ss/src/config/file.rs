@@ -185,6 +185,15 @@ pub(super) struct HttpFallbackSection {
     /// mode, i.e. h2c without ALPN). Independent of what the inbound
     /// client speaks.
     pub backend_proto: Option<String>,
+    /// Apply the fallback to the TCP listener (HTTP/1.1 + HTTP/2).
+    /// Default `true`. Set `false` when only the HTTP/3 listener
+    /// should masquerade.
+    pub apply_to_h1: Option<bool>,
+    /// Apply the fallback to the HTTP/3 listener (UDP/QUIC). Default
+    /// `false` so that upgrading the binary does not silently start
+    /// forwarding QUIC traffic to a backend that was only set up for
+    /// TCP. Requires `[server.h3]`; rejects `proxy_protocol = "v1"`.
+    pub apply_to_h3: Option<bool>,
 }
 
 /// `[sni_fallback]` block. When present and the inbound TCP listener
