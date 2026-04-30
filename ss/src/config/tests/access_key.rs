@@ -100,15 +100,22 @@ fn builds_outline_artifacts_for_all_users() {
     assert!(artifacts[0].yaml.contains("cipher: \"aes-256-gcm\""));
     assert!(artifacts[1].yaml.contains("cipher: \"chacha20-ietf-poly1305\""));
     assert_eq!(artifacts[2].config_filename, "carol_vless-vless.yaml");
+    // WS-VLESS URI carries `alpn=h2,http/1.1` — the Ws carrier
+    // appends `http/1.1` as the last-resort fallback so old clients
+    // that cannot speak h2 Extended CONNECT still match a transport.
+    // XHTTP keeps the shorter `alpn=h2` (no h1) because stream-one
+    // returns 505 over HTTP/1.1 and listing it would invite a doomed
+    // dial. Comma is percent-encoded (`%2C`); `/` in `http/1.1` is
+    // also encoded (`http%2F1.1`).
     assert_eq!(
         artifacts[2].access_key_url.as_deref(),
         Some(
-            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
+            "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless"
         )
     );
     assert_eq!(
         artifacts[2].yaml,
-        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
+        "vless://550e8400-e29b-41d4-a716-446655440000@vpn.example.com:443?type=ws&security=tls&alpn=h2%2Chttp%2F1.1&path=%2Fcarol%2Fvless%20path&encryption=none#vpn:carol%20vless\n"
     );
 }
 
@@ -288,9 +295,16 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
         .find(|a| a.config_filename == "eve-vless-xhttp-stream-one.yaml")
         .expect("stream-one artifact emitted");
     let xhttp_url = xhttp.access_key_url.as_deref().unwrap();
+    // XHTTP URI lists exactly `h3,h2` — `http/1.1` would invite a
+    // 505 on stream-one, so it stays out.
     assert!(
-        xhttp_url.contains("alpn=h3%2Ch2"),
-        "h3-enabled XHTTP URI must list h3 first in alpn: {:?}",
+        xhttp_url.contains("alpn=h3%2Ch2&"),
+        "h3-enabled XHTTP URI must list `h3,h2` (no h1 trailer): {:?}",
+        xhttp.access_key_url,
+    );
+    assert!(
+        !xhttp_url.contains("http%2F1.1"),
+        "XHTTP URI must NOT include http/1.1 in alpn: {:?}",
         xhttp.access_key_url,
     );
 
@@ -299,9 +313,12 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
         .find(|a| a.config_filename == "eve-vless.yaml")
         .expect("WS-VLESS artifact emitted");
     let ws_url = ws.access_key_url.as_deref().unwrap();
+    // WS-VLESS URI lists `h3,h2,http/1.1` — classic WS Upgrade
+    // works as the last-resort fallback for old clients without
+    // h2 Extended CONNECT support.
     assert!(
-        ws_url.contains("alpn=h3%2Ch2"),
-        "h3-enabled WS-VLESS URI must list h3 first in alpn: {:?}",
+        ws_url.contains("alpn=h3%2Ch2%2Chttp%2F1.1"),
+        "h3-enabled WS URI must list `h3,h2,http/1.1`: {:?}",
         ws.access_key_url,
     );
 }
