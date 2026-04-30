@@ -51,7 +51,7 @@ use url::Url;
 
 use outline_transport::{
     CipherKind, DnsCache as ClientDnsCache, TcpShadowsocksReader, TcpShadowsocksWriter,
-    TransportMode, UpstreamTransportGuard, connect_websocket_with_resume,
+    TransportMode, UpstreamTransportGuard, connect_ss_tcp_quic, connect_websocket_with_resume,
 };
 
 use super::super::bootstrap::serve_listener;
@@ -1221,6 +1221,140 @@ async fn cross_repo_ss_tcp_ws_h2_to_h1_fallback_with_resume_token() -> Result<()
     drop(writer_b);
     drop(ctrl_tx_b);
     drop(lifetime_b);
+    server.abort();
+    Ok(())
+}
+
+/// Spins up a raw-QUIC server with the `ss` ALPN. Mirrors
+/// `setup_vless_raw_quic_server` from `cross_repo_vless` but
+/// populates `raw_ss_users` from `build_users(&sample_config)` and
+/// leaves the VLESS slots empty. The server reads SS-AEAD off the
+/// QUIC bidi stream exactly as the plain-TCP listener does — the
+/// `unit raw_quic::ss_raw_quic_tcp_relay_smoke` test exercises the
+/// same path with a hand-rolled QUIC client; this cross-repo test
+/// drives it through `outline_transport::connect_ss_tcp_quic`.
+async fn setup_ss_raw_quic_server() -> Result<(SocketAddr, JoinHandle<Result<()>>)> {
+    super::cross_repo_install_test_tls_root_on_client();
+    let bind_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    // Client offers `[ss-mtu, ss]` (MTU-aware first); the server
+    // mirrors so negotiation lands on `ss-mtu` when the path
+    // supports it and on `ss` otherwise.
+    let tls_config = super::cross_repo_test_server_tls_config(&[b"ss-mtu", b"ss"]);
+    let quic_config = quinn::crypto::rustls::QuicServerConfig::try_from(tls_config)
+        .map_err(|_| anyhow::anyhow!("invalid raw-quic test TLS config"))?;
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quic_config));
+    let mut transport = quinn::TransportConfig::default();
+    transport
+        .datagram_receive_buffer_size(Some(1 << 20))
+        .datagram_send_buffer_size(1 << 20);
+    server_config.transport_config(Arc::new(transport));
+    let endpoint = quinn::Endpoint::server(server_config, bind_addr)?;
+    let server = H3WebSocketServer::<H3Transport>::from_endpoint(endpoint, H3WsConfig::default());
+    let listen_addr = server.local_addr()?;
+
+    let config = sample_config(listen_addr);
+    let users = build_users(&config)?;
+    let metrics = Metrics::new(&config);
+
+    let routes = Arc::new(ArcSwap::from_pointee(RouteRegistry {
+        tcp: Arc::new(BTreeMap::new()),
+        udp: Arc::new(BTreeMap::new()),
+        vless: Arc::new(BTreeMap::new()),
+        xhttp_vless: Arc::new(BTreeMap::new()),
+    }));
+    let services = Arc::new(Services::new(
+        metrics,
+        DnsCache::new(Duration::from_secs(30)),
+        false,
+        None,
+        UdpServices {
+            nat_table: NatTable::new(Duration::from_secs(300)),
+            replay_store: super::super::replay::ReplayStore::new(Duration::from_secs(300), 0),
+            relay_semaphore: None,
+        },
+        None,
+        16,
+    ));
+    let auth = Arc::new(AuthPolicy {
+        users: Arc::new(ArcSwap::from_pointee(UserKeySlice(Arc::from(
+            Vec::<UserKey>::new().into_boxed_slice(),
+        )))),
+        http_root_auth: false,
+        http_root_realm: Arc::from("Authorization required"),
+    });
+
+    let handle = tokio::spawn(async move {
+        serve_h3_server(
+            server,
+            routes,
+            services,
+            auth,
+            Arc::from(vec![H3Alpn::Ss].into_boxed_slice()),
+            Arc::from(Vec::<VlessUser>::new().into_boxed_slice()),
+            Arc::from(Vec::<Arc<str>>::new().into_boxed_slice()),
+            users,
+            ShutdownSignal::never(),
+        )
+        .await
+    });
+    Ok((listen_addr, handle))
+}
+
+#[tokio::test]
+async fn cross_repo_ss_tcp_raw_quic_round_trip() -> Result<()> {
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server) = setup_ss_raw_quic_server().await?;
+
+    let cache = ClientDnsCache::new(Duration::from_secs(30));
+    // Same shape as the VLESS raw-QUIC test: `https://` is required
+    // because raw QUIC is TLS-only, the path is ignored, and ALPN
+    // selection happens inside `connect_ss_tcp_quic`.
+    let url = Url::parse(&format!("https://localhost:{}/", listen_addr.port()))?;
+
+    let cipher = CipherKind::Chacha20IetfPoly1305;
+    let master_key = cipher
+        .derive_master_key(SS_PASSWORD)
+        .expect("derive_master_key succeeds for chacha20");
+    let lifetime = UpstreamTransportGuard::new("cross-repo-ss-quic", "ss-quic");
+
+    let (mut writer, mut reader) = connect_ss_tcp_quic(
+        &cache,
+        &url,
+        None,
+        false,
+        "cross-repo-ss-quic",
+        cipher,
+        &master_key,
+        Arc::clone(&lifetime),
+    )
+    .await?;
+
+    // Same wire form as the plain-TCP / WS-h2 SS tests: the first
+    // chunk carries `target_addr || payload`, and `read_chunk()`
+    // returns just the upstream bytes (target prefix is consumed by
+    // the relay).
+    let mut first_payload = TargetAddr::Socket(upstream_addr).encode()?;
+    first_payload.extend_from_slice(b"ping");
+    writer.send_chunk(&first_payload).await?;
+    let reply = reader.read_chunk().await?;
+    assert_eq!(&reply, b"pong");
+
+    let upstream_bytes =
+        tokio::time::timeout(Duration::from_secs(5), upstream_task).await???;
+    assert_eq!(&upstream_bytes, b"ping");
+
+    drop(reader);
+    drop(writer);
+    drop(lifetime);
     server.abort();
     Ok(())
 }
