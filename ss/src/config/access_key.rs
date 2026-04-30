@@ -311,8 +311,34 @@ fn build_vless_xhttp_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let vless_url =
-        vless_xhttp_uri(vless_id, public_host, &ak.public_scheme, xhttp_path, &user.id, mode);
+    // Pin the ALPN preference list when the carrier rides TLS so
+    // xray-family clients (`happ`, `hiddify`, `v2rayN`) negotiate
+    // h2 / h3 instead of falling through to HTTP/1.1. Stream-one
+    // requires h2 frame interleaving (or h3) on our server side, so
+    // an h1-only negotiation drops every stream-one POST with 505.
+    // Even packet-up benefits — h1 carrier works but creates a
+    // distinguishable wire shape from a real CDN-fronted XHTTP
+    // service. h3 is listed first when the QUIC listener is up so
+    // dual-stack clients prefer the lower-RTT carrier.
+    let alpn = if ak.public_scheme == "wss" {
+        let mut entries: Vec<&str> = Vec::with_capacity(2);
+        if config.effective_h3_listen().is_some() {
+            entries.push("h3");
+        }
+        entries.push("h2");
+        Some(entries.join(","))
+    } else {
+        None
+    };
+    let vless_url = vless_xhttp_uri(
+        vless_id,
+        public_host,
+        &ak.public_scheme,
+        xhttp_path,
+        &user.id,
+        mode,
+        alpn.as_deref(),
+    );
 
     Ok(AccessKeyArtifact {
         user_id: user.id.clone(),
@@ -369,7 +395,12 @@ fn vless_uri(id: &str, host: &str, scheme: &str, path: &str, label: &str) -> Str
 
 /// Builds a `vless://` URI for the XHTTP carrier in the requested
 /// wire mode. The `path` is the server's `xhttp_path_vless` base —
-/// the client appends a per-session id to it at dial time.
+/// the client appends a per-session id to it at dial time. `alpn`,
+/// when present, is a comma-separated ALPN-preference list (e.g.
+/// `"h3,h2"`) that the caller computes from the deployment topology
+/// — TLS-only, and only when the listener actually advertises the
+/// listed protocols.
+#[allow(clippy::too_many_arguments)]
 fn vless_xhttp_uri(
     id: &str,
     host: &str,
@@ -377,6 +408,7 @@ fn vless_xhttp_uri(
     path: &str,
     label: &str,
     mode: XhttpMode,
+    alpn: Option<&str>,
 ) -> String {
     // XHTTP requires TLS when carried over h2; mirror the WS URI's
     // tls/none coupling for symmetry rather than enforcing tls
@@ -385,8 +417,11 @@ fn vless_xhttp_uri(
     let security = if scheme == "wss" { "tls" } else { "none" };
     let default_port = if scheme == "wss" { 443 } else { 80 };
     let fragment = format!("{}:{label}-xhttp{}", host_short_label(host), mode.artifact_suffix());
+    let alpn_segment = alpn
+        .map(|value| format!("&alpn={}", percent_encode_query_value(value)))
+        .unwrap_or_default();
     format!(
-        "vless://{}@{}?type=xhttp&mode={}&security={security}&path={}&encryption=none#{}",
+        "vless://{}@{}?type=xhttp&mode={}&security={security}{alpn_segment}&path={}&encryption=none#{}",
         id,
         vless_authority(host, default_port),
         mode.query_value(),

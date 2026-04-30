@@ -235,6 +235,99 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
             .unwrap()
             .ends_with("#vpn:dave-xhttp-stream-one")
     );
+
+    // Both URIs carry an `alpn=` preference list when the carrier
+    // rides TLS — without it, xray-family clients fall through to
+    // HTTP/1.1 ALPN, where stream-one fails server-side (h1 cannot
+    // full-duplex). Sample config has `h3_listen = None`, so the
+    // list collapses to plain `h2`.
+    for artifact in [packet_up, stream_one] {
+        let url = artifact.access_key_url.as_deref().unwrap();
+        assert!(
+            url.contains("alpn=h2"),
+            "{} URI must pin alpn=h2 (no h3 listener in sample): {:?}",
+            artifact.config_filename,
+            artifact.access_key_url,
+        );
+    }
+}
+
+#[test]
+fn xhttp_uri_alpn_prefers_h3_when_quic_listener_enabled() {
+    // When `[server.h3]` is configured, the URI advertises `h3,h2`
+    // so dual-stack clients try QUIC first (lower-RTT carrier) and
+    // fall back to h2 only when UDP/QUIC is blocked. Comma is
+    // percent-encoded on the wire (`%2C`) per the URI spec; the
+    // assertion checks the encoded form so a future change that
+    // accidentally drops the encoding trips here.
+    let mut config = sample_config();
+    config.xhttp_path_vless = Some("/xh".into());
+    config.h3_listen = Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 443));
+    config.h3_cert_path = Some(std::path::PathBuf::from("/dev/null"));
+    config.h3_key_path = Some(std::path::PathBuf::from("/dev/null"));
+    config.users.push(UserEntry {
+        id: "eve".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        vless_id: Some("850e8400-e29b-41d4-a716-446655440000".into()),
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        enabled: None,
+    });
+
+    let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
+
+    let xhttp = artifacts
+        .iter()
+        .find(|a| a.config_filename == "eve-vless-xhttp-stream-one.yaml")
+        .expect("stream-one artifact emitted");
+    let url = xhttp.access_key_url.as_deref().unwrap();
+    assert!(
+        url.contains("alpn=h3%2Ch2"),
+        "h3-enabled deployment must list h3 first in alpn: {:?}",
+        xhttp.access_key_url,
+    );
+}
+
+#[test]
+fn xhttp_uri_skips_alpn_for_plain_http_scheme() {
+    // ALPN is a TLS extension — emitting it for a `ws://` (plain
+    // HTTP) deployment would just be noise xray clients ignore.
+    // Pin the omission so a future refactor that always-on emits
+    // it accidentally trips this test.
+    let ak = AccessKeyConfig {
+        public_scheme: "ws".into(),
+        ..sample_ak_config()
+    };
+    let mut config = sample_config();
+    config.xhttp_path_vless = Some("/xh".into());
+    config.users.push(UserEntry {
+        id: "frank".into(),
+        password: None,
+        fwmark: None,
+        method: None,
+        ws_path_tcp: None,
+        ws_path_udp: None,
+        vless_id: Some("950e8400-e29b-41d4-a716-446655440000".into()),
+        ws_path_vless: None,
+        xhttp_path_vless: None,
+        enabled: None,
+    });
+
+    let artifacts = build_access_key_artifacts(&config, &ak).unwrap();
+    let xhttp = artifacts
+        .iter()
+        .find(|a| a.config_filename == "frank-vless-xhttp.yaml")
+        .expect("packet-up artifact emitted");
+    let url = xhttp.access_key_url.as_deref().unwrap();
+    assert!(
+        !url.contains("alpn="),
+        "plain-http deployment must not emit alpn=: {:?}",
+        xhttp.access_key_url,
+    );
 }
 
 #[test]
