@@ -68,22 +68,22 @@ impl UplinkManager {
                 name: uplink.name.clone(),
                 group: self.inner.group_name.clone(),
                 transport: uplink.transport.to_string(),
-                tcp_ws_mode: match uplink.transport {
+                tcp_mode: match uplink.transport {
                     UplinkTransport::Ws => {
-                        uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_ws_mode.to_string())
+                        uplink.tcp_ws_url.as_ref().map(|_| uplink.tcp_mode.to_string())
                     },
-                    UplinkTransport::Vless => {
-                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_mode.to_string())
-                    },
+                    UplinkTransport::Vless => uplink
+                        .tcp_dial_url()
+                        .map(|_| uplink.vless_mode.to_string()),
                     UplinkTransport::Shadowsocks => None,
                 },
-                udp_ws_mode: match uplink.transport {
+                udp_mode: match uplink.transport {
                     UplinkTransport::Ws => {
-                        uplink.udp_ws_url.as_ref().map(|_| uplink.udp_ws_mode.to_string())
+                        uplink.udp_ws_url.as_ref().map(|_| uplink.udp_mode.to_string())
                     },
-                    UplinkTransport::Vless => {
-                        uplink.vless_ws_url.as_ref().map(|_| uplink.vless_mode.to_string())
-                    },
+                    UplinkTransport::Vless => uplink
+                        .udp_dial_url()
+                        .map(|_| uplink.vless_mode.to_string()),
                     UplinkTransport::Shadowsocks => None,
                 },
                 weight: uplink.weight,

@@ -15,9 +15,9 @@ use super::{ConfigFile, load_config, normalize_outline_section};
 fn config_deserializes() {
     let cfg = r#"
         tcp_ws_url = "wss://example.com/secret/tcp"
-        tcp_ws_mode = "h2"
+        tcp_mode = "h2"
         udp_ws_url = "wss://example.com/secret/udp"
-        udp_ws_mode = "h2"
+        udp_mode = "h2"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
 
@@ -200,20 +200,20 @@ fn config_deserializes_multiple_uplinks() {
         [[uplinks]]
         name = "primary"
         tcp_ws_url = "wss://primary.example.com/secret/tcp"
-        tcp_ws_mode = "h3"
+        tcp_mode = "h3"
         weight = 1.5
         fwmark = 100
         udp_ws_url = "wss://primary.example.com/secret/udp"
-        udp_ws_mode = "h3"
+        udp_mode = "h3"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
 
         [[uplinks]]
         name = "backup"
         tcp_ws_url = "wss://backup.example.com/secret/tcp"
-        tcp_ws_mode = "h2"
+        tcp_mode = "h2"
         udp_ws_url = "wss://backup.example.com/secret/udp"
-        udp_ws_mode = "h2"
+        udp_mode = "h2"
         method = "aes-128-gcm"
         password = "Secret1"
     "#;
@@ -247,7 +247,7 @@ fn config_deserializes_global_routing_scope() {
         [[uplinks]]
         name = "primary"
         tcp_ws_url = "wss://primary.example.com/secret/tcp"
-        tcp_ws_mode = "h2"
+        tcp_mode = "h2"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
     "#;
@@ -308,7 +308,7 @@ async fn load_config_disables_probes_when_not_configured() {
         &path,
         r#"
         tcp_ws_url = "wss://example.com/secret/tcp"
-        tcp_ws_mode = "h2"
+        tcp_mode = "h2"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
 
@@ -443,7 +443,7 @@ async fn load_config_disables_probes_when_probe_section_has_no_checks() {
         &path,
         r#"
         tcp_ws_url = "wss://example.com/secret/tcp"
-        tcp_ws_mode = "h2"
+        tcp_mode = "h2"
         method = "chacha20-ietf-poly1305"
         password = "Secret0"
 

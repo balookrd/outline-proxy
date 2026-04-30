@@ -86,7 +86,7 @@ impl UplinkManager {
                     &status.tcp,
                     effective_tcp_mode,
                     uplink.transport,
-                    uplink.tcp_ws_mode,
+                    uplink.tcp_mode,
                     now,
                 );
             }
@@ -102,7 +102,7 @@ impl UplinkManager {
                         &status.udp,
                         effective_udp_mode,
                         uplink.transport,
-                        uplink.udp_ws_mode,
+                        uplink.udp_mode,
                         now,
                     );
                 }

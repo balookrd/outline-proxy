@@ -43,13 +43,14 @@ pub struct UplinkSnapshot {
     /// payload format the uplink speaks. Surfaced on dashboards as the
     /// "encapsulation" layer.
     pub transport: String,
-    /// Outer transport mode for TCP-style sessions (`http1`, `h2`, `h3`,
-    /// `quic`). `Some` whenever the uplink has a dial URL on TCP — i.e. for
-    /// `ws` and `vless`. `None` for plain `shadowsocks`.
-    pub tcp_ws_mode: Option<String>,
+    /// Outer transport mode for TCP-style sessions (`ws_h1`, `ws_h2`,
+    /// `ws_h3`, `quic`, `xhttp_h2`, `xhttp_h3`). `Some` whenever the uplink
+    /// has a dial URL on TCP — i.e. for `ws` and `vless`. `None` for plain
+    /// `shadowsocks`.
+    pub tcp_mode: Option<String>,
     /// Outer transport mode for UDP-style sessions. Same semantics as
-    /// `tcp_ws_mode`. `Some` only when the uplink supports UDP via WS/QUIC.
-    pub udp_ws_mode: Option<String>,
+    /// `tcp_mode`. `Some` only when the uplink supports UDP via WS/QUIC.
+    pub udp_mode: Option<String>,
     pub weight: f64,
     pub tcp_healthy: Option<bool>,
     pub udp_healthy: Option<bool>,

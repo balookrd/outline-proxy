@@ -46,9 +46,9 @@ pub(crate) fn normalize_outline_section(file: &ConfigFile) -> Option<OutlineSect
 fn top_level_uplink_fields_present(file: &ConfigFile) -> bool {
     file.tcp_ws_url.is_some()
         || file.transport.is_some()
-        || file.tcp_ws_mode.is_some()
+        || file.tcp_mode.is_some()
         || file.udp_ws_url.is_some()
-        || file.udp_ws_mode.is_some()
+        || file.udp_mode.is_some()
         || file.vless_ws_url.is_some()
         || file.vless_xhttp_url.is_some()
         || file.vless_mode.is_some()
@@ -67,9 +67,9 @@ fn from_top_level(file: &ConfigFile) -> OutlineSection {
     OutlineSection {
         transport: file.transport,
         tcp_ws_url: file.tcp_ws_url.clone(),
-        tcp_ws_mode: file.tcp_ws_mode,
+        tcp_mode: file.tcp_mode,
         udp_ws_url: file.udp_ws_url.clone(),
-        udp_ws_mode: file.udp_ws_mode,
+        udp_mode: file.udp_mode,
         vless_ws_url: file.vless_ws_url.clone(),
         vless_xhttp_url: file.vless_xhttp_url.clone(),
         vless_mode: file.vless_mode,
@@ -89,9 +89,9 @@ fn merge_top_level_into(file: &ConfigFile, outline: OutlineSection) -> OutlineSe
     OutlineSection {
         transport: outline.transport.or(file.transport),
         tcp_ws_url: outline.tcp_ws_url.or_else(|| file.tcp_ws_url.clone()),
-        tcp_ws_mode: outline.tcp_ws_mode.or(file.tcp_ws_mode),
+        tcp_mode: outline.tcp_mode.or(file.tcp_mode),
         udp_ws_url: outline.udp_ws_url.or_else(|| file.udp_ws_url.clone()),
-        udp_ws_mode: outline.udp_ws_mode.or(file.udp_ws_mode),
+        udp_mode: outline.udp_mode.or(file.udp_mode),
         vless_ws_url: outline.vless_ws_url.or_else(|| file.vless_ws_url.clone()),
         vless_xhttp_url: outline.vless_xhttp_url.or_else(|| file.vless_xhttp_url.clone()),
         vless_mode: outline.vless_mode.or(file.vless_mode),
@@ -121,9 +121,9 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         name: Some("default".to_string()),
         transport: outline.transport,
         tcp_ws_url: outline.tcp_ws_url.clone(),
-        tcp_ws_mode: outline.tcp_ws_mode,
+        tcp_mode: outline.tcp_mode,
         udp_ws_url: outline.udp_ws_url.clone(),
-        udp_ws_mode: outline.udp_ws_mode,
+        udp_mode: outline.udp_mode,
         vless_ws_url: outline.vless_ws_url.clone(),
         vless_xhttp_url: outline.vless_xhttp_url.clone(),
         vless_mode: outline.vless_mode,
@@ -143,9 +143,9 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
 fn outline_has_inline_uplink_fields(outline: &OutlineSection) -> bool {
     outline.transport.is_some()
         || outline.tcp_ws_url.is_some()
-        || outline.tcp_ws_mode.is_some()
+        || outline.tcp_mode.is_some()
         || outline.udp_ws_url.is_some()
-        || outline.udp_ws_mode.is_some()
+        || outline.udp_mode.is_some()
         || outline.vless_ws_url.is_some()
         || outline.vless_xhttp_url.is_some()
         || outline.vless_mode.is_some()

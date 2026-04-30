@@ -12,6 +12,12 @@ A rolling `nightly` tag also exists in the repository, but the top section below
 
 ## [Unreleased] - changes after `v1.2.0` (through 2026-04-28)
 
+### Changed
+
+- **Breaking config / CLI / API rename.** The per-direction transport-mode fields are now `tcp_mode` / `udp_mode` everywhere — TOML config (`tcp_mode = "h2"`), CLI (`--tcp-mode`, `--udp-mode`), env vars (`OUTLINE_TCP_MODE`, `OUTLINE_UDP_MODE`), control-plane JSON (`/control/topology`, `/control/uplinks`), dashboard payload, and Rust API (`UplinkConfig::tcp_mode`, `effective_tcp_mode()`). Old names are removed without aliases — existing TOML files and scripts must be renamed by hand. Reason: with `xhttp_h2` / `xhttp_h3` / `quic` no longer riding only WebSocket, the `_ws_` infix in the field name had become misleading.
+- Dashboard panel now correctly renders `xhttp_h3` → `xhttp_h2` downgrades (previously the H3/QUIC downgrade decoration only fired on the legacy short-form mode strings, leaving xhttp uplinks visually frozen on the configured mode).
+- Snapshot fix: VLESS uplinks now publish `tcp_mode` / `udp_mode` for `xhttp_h2` / `xhttp_h3` modes too. Previously the field was emitted only when `vless_ws_url` was set, so XHTTP-only uplinks fell back to the default rendering ("VLESS/WS/H1") on the dashboard.
+
 ### Added
 
 - VLESS-over-XHTTP packet-up client. Two modes are live:

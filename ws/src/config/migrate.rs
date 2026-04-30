@@ -19,9 +19,9 @@ use tracing::{info, warn};
 const LEGACY_KEYS: &[&str] = &[
     "transport",
     "tcp_ws_url",
-    "tcp_ws_mode",
+    "tcp_mode",
     "udp_ws_url",
-    "udp_ws_mode",
+    "udp_mode",
     "vless_ws_url",
     "vless_mode",
     "tcp_addr",
@@ -43,9 +43,9 @@ const LEGACY_KEYS: &[&str] = &[
 const UPLINK_INLINE_KEYS: &[&str] = &[
     "transport",
     "tcp_ws_url",
-    "tcp_ws_mode",
+    "tcp_mode",
     "udp_ws_url",
-    "udp_ws_mode",
+    "udp_mode",
     "vless_ws_url",
     "vless_mode",
     "tcp_addr",

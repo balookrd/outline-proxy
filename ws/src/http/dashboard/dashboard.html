@@ -362,9 +362,9 @@ function transportLabel(mode) {
   return null;
 }
 function stackLabel(transport, mode) {
-  const enc = protocolLabel(transport);
   const t = String(transport || "").toLowerCase();
   if (t === "shadowsocks") return "SS/QUIC";
+  const enc = protocolLabel(transport);
   const tr = transportLabel(mode);
   if (!tr) return enc;
   return `${enc}/${tr}`;
@@ -382,10 +382,10 @@ function legPill(t, cls, leg, configured, effective, downgraded) {
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
   const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
-  const tcpMode = uplink.tcp_ws_mode || null;
-  const udpMode = uplink.udp_ws_mode || null;
-  const tcpEff = uplink.tcp_ws_mode_effective || tcpMode;
-  const udpEff = uplink.udp_ws_mode_effective || udpMode;
+  const tcpMode = uplink.tcp_mode || null;
+  const udpMode = uplink.udp_mode || null;
+  const tcpEff = uplink.tcp_mode_effective || tcpMode;
+  const udpEff = uplink.udp_mode_effective || udpMode;
   const tcpDg = !!uplink.tcp_downgrade_active && tcpMode !== tcpEff;
   const udpDg = !!uplink.udp_downgrade_active && udpMode !== udpEff;
   if (t === "shadowsocks") {
@@ -417,8 +417,8 @@ function activeProtocolChip(group) {
     const t = String(u.transport || "").toLowerCase();
     const cls = t === "vless" || t === "shadowsocks" || t === "ws" ? `proto-${t}` : "";
     const isUdp = scope === "UDP";
-    const configured = isUdp ? u.udp_ws_mode : u.tcp_ws_mode;
-    const effective = (isUdp ? u.udp_ws_mode_effective : u.tcp_ws_mode_effective) || configured;
+    const configured = isUdp ? u.udp_mode : u.tcp_mode;
+    const effective = (isUdp ? u.udp_mode_effective : u.tcp_mode_effective) || configured;
     const downgraded = !!(isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active) && configured !== effective;
     const dg = downgraded ? " proto-downgraded" : "";
     const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";

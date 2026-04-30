@@ -450,9 +450,9 @@ cargo run --release
 cargo run --release -- \
   --listen [::]:1080 \
   --tcp-ws-url wss://example.com/SECRET/tcp \
-  --tcp-ws-mode h3 \
+  --tcp-mode h3 \
   --udp-ws-url wss://example.com/SECRET/udp \
-  --udp-ws-mode h3 \
+  --udp-mode h3 \
   --method chacha20-ietf-poly1305 \
   --password 'Secret0'
 ```
@@ -612,11 +612,11 @@ group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://example.com/SECRET/tcp"
 weight = 1.0
-tcp_ws_mode = "h3"
+tcp_mode = "h3"
 # fwmark = 100
 # ipv6_first = true
 udp_ws_url = "wss://example.com/SECRET/udp"
-udp_ws_mode = "h3"
+udp_mode = "h3"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
@@ -626,9 +626,9 @@ group = "main"
 transport = "websocket"
 tcp_ws_url = "wss://backup.example.com/SECRET/tcp"
 weight = 0.8
-tcp_ws_mode = "h2"
+tcp_mode = "h2"
 udp_ws_url = "wss://backup.example.com/SECRET/udp"
-udp_ws_mode = "h2"
+udp_mode = "h2"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 
@@ -666,16 +666,16 @@ weight = 1.0
 # Shadowsocks поверх raw QUIC (ALPN = "ss"). Один QUIC bidi на SS-TCP
 # сессию; SS-UDP едет в QUIC-датаграммах 1-к-1 c SS-AEAD пакетами.
 # Cipher / password те же, что в WS-варианте. transport = "websocket" +
-# tcp_ws_mode = "quic" — это SS-over-QUIC; transport = "vless" +
-# tcp_ws_mode = "quic" — VLESS-over-QUIC (см. выше).
+# tcp_mode = "quic" — это SS-over-QUIC; transport = "vless" +
+# tcp_mode = "quic" — VLESS-over-QUIC (см. выше).
 [[outline.uplinks]]
 name = "ss-quic"
 group = "main"
 transport = "websocket"
 tcp_ws_url = "https://ss.example.com:443"
 udp_ws_url = "https://ss.example.com:443"
-tcp_ws_mode = "quic"
-udp_ws_mode = "quic"
+tcp_mode = "quic"
+udp_mode = "quic"
 method = "chacha20-ietf-poly1305"
 password = "Secret0"
 weight = 1.0
@@ -694,9 +694,9 @@ via = "main"
 
 ### Ключевые параметры конфигурации
 
-- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_ws_mode` / `udp_ws_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
+- `transport` принимает `websocket` (по умолчанию), `shadowsocks` или `vless`. VLESS делит WSS-путь дозвона с `websocket` (те же поля `tcp_ws_url` / `udp_ws_url` / `tcp_mode` / `udp_mode` / `ipv6_first` / `fwmark`), но аутентифицируется одним `vless_id` вместо пары Shadowsocks `method` + `password`. VLESS UDP открывает по одной WSS-сессии на каждое назначение внутри аплинка (ограничено `[outline.load_balancing] vless_udp_max_sessions` с LRU-вытеснением; idle-эвикция управляется `vless_udp_session_idle_secs`).
 - Должен быть настроен хотя бы один ingress: `--listen` / `[socks5].listen` и/или `[tun]`. Если не задано ни то ни другое, процесс завершится с ошибкой вместо молчаливого bind на `127.0.0.1:1080`.
-- `tcp_ws_mode` / `udp_ws_mode` (для `transport = "ws"`) и `vless_ws_mode` (для `transport = "vless"`) принимают `http1` (алиас `h1`), `h2`, `h3` или `quic`. Режимы `http1` / `h2` / `h3` едут поверх WebSocket Upgrade на соответствующей версии HTTP (с автоматическим fallback `h3 → h2 → http1` для WS-режимов); `quic` выбирает raw QUIC framing на ALPN `vless` (для VLESS) или `ss` (для Shadowsocks-over-WS) с dial-time fallback `quic → h2 → http1`.
+- `tcp_mode` / `udp_mode` (для `transport = "ws"`) и `vless_ws_mode` (для `transport = "vless"`) принимают `http1` (алиас `h1`), `h2`, `h3` или `quic`. Режимы `http1` / `h2` / `h3` едут поверх WebSocket Upgrade на соответствующей версии HTTP (с автоматическим fallback `h3 → h2 → http1` для WS-режимов); `quic` выбирает raw QUIC framing на ALPN `vless` (для VLESS) или `ss` (для Shadowsocks-over-WS) с dial-time fallback `quic → h2 → http1`.
 - `tcp_addr` / `udp_addr` используются с `transport = "shadowsocks"` и принимают `host:port` или `[ipv6]:port`.
 - `ipv6_first` (по умолчанию `false`) меняет предпочтение адресов после DNS для этого uplink с IPv4-first на IPv6-first для TCP, UDP, H1, H2 и H3 соединений.
 - `method` также поддерживает `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm` и `2022-blake3-chacha20-poly1305`; для них `password` должен быть base64-кодированным PSK точной длины ключа выбранного шифра.
@@ -731,9 +731,9 @@ via = "main"
 - `--socks5-username` / `SOCKS5_USERNAME`
 - `--socks5-password` / `SOCKS5_PASSWORD`
 - `--tcp-ws-url` / `OUTLINE_TCP_WS_URL`
-- `--tcp-ws-mode` / `OUTLINE_TCP_WS_MODE`
+- `--tcp-mode` / `OUTLINE_TCP_MODE`
 - `--udp-ws-url` / `OUTLINE_UDP_WS_URL`
-- `--udp-ws-mode` / `OUTLINE_UDP_WS_MODE`
+- `--udp-mode` / `OUTLINE_UDP_MODE`
 - `--method` / `SHADOWSOCKS_METHOD`
 - `--password` / `SHADOWSOCKS_PASSWORD`
 - `--metrics-listen` / `METRICS_LISTEN`
@@ -831,7 +831,7 @@ fallback_direct = true    # или: fallback_drop = true / fallback_via = "backu
 
 ### Raw QUIC
 
-Используйте, когда на сервере поднят соответствующий raw-QUIC listener (`transport::raw_quic` в outline-ss-rust). Выбирается per-uplink через `tcp_ws_mode = "quic"` / `udp_ws_mode = "quic"` (для `transport = "ws"`) или `vless_ws_mode = "quic"` (для `transport = "vless"`). Этот путь полностью обходит WebSocket и HTTP/3 framing:
+Используйте, когда на сервере поднят соответствующий raw-QUIC listener (`transport::raw_quic` в outline-ss-rust). Выбирается per-uplink через `tcp_mode = "quic"` / `udp_mode = "quic"` (для `transport = "ws"`) или `vless_ws_mode = "quic"` (для `transport = "vless"`). Этот путь полностью обходит WebSocket и HTTP/3 framing:
 
 - VLESS-TCP / SS-TCP — один QUIC bidi на сессию.
 - VLESS-UDP — per-target control bidi (сервер выдаёт 4-байтный `session_id`) и connection-level demux датаграмм.
@@ -862,7 +862,7 @@ Runtime fallback:
 Тот же даунгрейд также срабатывает при сбоях TCP-проб на H3 / QUIC-аплинках, предотвращая probe-driven flapping в режиме `active_passive + global`.
 
 Поведение проб во время окна даунгрейда:
-- Пробы используют `effective_tcp_ws_mode` / `effective_udp_ws_mode`, который возвращает H2, пока активен таймер даунгрейда. Таким образом, проба тестирует H2-связность в течение окна, а не продолжает стресс-тестирование сломанного H3 / QUIC.
+- Пробы используют `effective_tcp_mode` / `effective_udp_mode`, который возвращает H2, пока активен таймер даунгрейда. Таким образом, проба тестирует H2-связность в течение окна, а не продолжает стресс-тестирование сломанного H3 / QUIC.
 - Успешная проба в окне **не** сбрасывает таймер даунгрейда. Восстановление тестируется естественным образом после истечения таймера: следующее реальное соединение пробует исходный режим; при сбое таймер сбрасывается заново.
 
 Скоринг во время окна даунгрейда (`per_flow` scope):

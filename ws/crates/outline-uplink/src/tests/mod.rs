@@ -101,9 +101,9 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
-        tcp_ws_mode: TransportMode::WsH1,
+        tcp_mode: TransportMode::WsH1,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
-        udp_ws_mode: TransportMode::WsH1,
+        udp_mode: TransportMode::WsH1,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
@@ -1326,9 +1326,9 @@ fn make_ws_uplink_with_modes(
         name: name.to_string(),
         transport: UplinkTransport::Ws,
         tcp_ws_url: Some(Url::parse(url).unwrap()),
-        tcp_ws_mode: tcp_mode,
+        tcp_mode: tcp_mode,
         udp_ws_url: Some(Url::parse(&(url.to_string() + "/udp")).unwrap()),
-        udp_ws_mode: udp_mode,
+        udp_mode: udp_mode,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
@@ -1348,9 +1348,9 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Vless,
         tcp_ws_url: None,
-        tcp_ws_mode: TransportMode::WsH1,
+        tcp_mode: TransportMode::WsH1,
         udp_ws_url: None,
-        udp_ws_mode: TransportMode::WsH1,
+        udp_mode: TransportMode::WsH1,
         vless_ws_url: Some(Url::parse(url).unwrap()),
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH3,
@@ -1370,9 +1370,9 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
         name: name.to_string(),
         transport: UplinkTransport::Shadowsocks,
         tcp_ws_url: None,
-        tcp_ws_mode: TransportMode::WsH3,
+        tcp_mode: TransportMode::WsH3,
         udp_ws_url: None,
-        udp_ws_mode: TransportMode::WsH3,
+        udp_mode: TransportMode::WsH3,
         vless_ws_url: None,
         vless_xhttp_url: None,
         vless_mode: TransportMode::WsH1,
@@ -1388,7 +1388,7 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
 }
 
 #[tokio::test]
-async fn note_silent_transport_fallback_clamps_effective_tcp_ws_mode_to_h2() {
+async fn note_silent_transport_fallback_clamps_effective_tcp_mode_to_h2() {
     let manager = UplinkManager::new_for_test(
         "test",
         vec![make_ws_uplink_with_modes(
@@ -1402,16 +1402,16 @@ async fn note_silent_transport_fallback_clamps_effective_tcp_ws_mode_to_h2() {
     )
     .unwrap();
 
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
 
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::WsH3);
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH2);
     // UDP polosa is independent — only TCP got the marker.
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH1);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH1);
 }
 
 #[tokio::test]
-async fn note_silent_transport_fallback_clamps_effective_udp_ws_mode_to_h2() {
+async fn note_silent_transport_fallback_clamps_effective_udp_mode_to_h2() {
     let manager = UplinkManager::new_for_test(
         "test",
         vec![make_ws_uplink_with_modes(
@@ -1426,15 +1426,15 @@ async fn note_silent_transport_fallback_clamps_effective_udp_ws_mode_to_h2() {
     .unwrap();
 
     manager.note_silent_transport_fallback(0, TransportKind::Udp, TransportMode::WsH3);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH2);
     // TCP polosa is untouched.
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH1);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH1);
 }
 
 #[tokio::test]
 async fn note_silent_transport_fallback_works_for_vless_uplink() {
     // VLESS uplinks share the same `vless_mode` for both TCP and UDP, so a
-    // TCP-side marker only flips the TCP polosa — `effective_udp_ws_mode` stays
+    // TCP-side marker only flips the TCP polosa — `effective_udp_mode` stays
     // on H3 until UDP also reports its own downgrade.
     let manager = UplinkManager::new_for_test(
         "test",
@@ -1444,15 +1444,15 @@ async fn note_silent_transport_fallback_works_for_vless_uplink() {
     )
     .unwrap();
 
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH3);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH3);
 
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::WsH3);
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH2);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH3);
 
     manager.note_silent_transport_fallback(0, TransportKind::Udp, TransportMode::WsH3);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH2);
 }
 
 #[tokio::test]
@@ -1473,8 +1473,8 @@ async fn note_silent_transport_fallback_is_noop_for_shadowsocks_uplink() {
     // The configured mode field is just a slot; for Shadowsocks transports
     // `effective_*_ws_mode` returns whatever was configured, with the
     // downgrade window suppressed by the guard.
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH3);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH3);
 }
 
 #[tokio::test]
@@ -1497,8 +1497,8 @@ async fn note_silent_transport_fallback_is_noop_when_mode_is_not_advanced() {
 
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::WsH3);
     manager.note_silent_transport_fallback(0, TransportKind::Udp, TransportMode::WsH3);
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH2);
-    assert_eq!(manager.effective_udp_ws_mode(0).await, TransportMode::WsH1);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH1);
 }
 
 #[tokio::test]
@@ -1522,8 +1522,8 @@ async fn note_silent_transport_fallback_marker_expires_after_window() {
     .unwrap();
 
     manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::WsH3);
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH2);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH2);
 
     tokio::time::sleep(Duration::from_millis(80)).await;
-    assert_eq!(manager.effective_tcp_ws_mode(0).await, TransportMode::WsH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::WsH3);
 }

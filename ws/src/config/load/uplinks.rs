@@ -13,9 +13,9 @@ pub(super) struct ResolvedUplinkInput {
     pub(super) name: String,
     pub(super) transport: UplinkTransport,
     pub(super) tcp_ws_url: Option<Url>,
-    pub(super) tcp_ws_mode: Option<TransportMode>,
+    pub(super) tcp_mode: Option<TransportMode>,
     pub(super) udp_ws_url: Option<Url>,
-    pub(super) udp_ws_mode: Option<TransportMode>,
+    pub(super) udp_mode: Option<TransportMode>,
     pub(super) vless_ws_url: Option<Url>,
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
@@ -41,16 +41,16 @@ impl ResolvedUplinkInput {
                 .tcp_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|section| section.tcp_ws_url.clone())),
-            tcp_ws_mode: args
-                .tcp_ws_mode
-                .or_else(|| outline.and_then(|section| section.tcp_ws_mode)),
+            tcp_mode: args
+                .tcp_mode
+                .or_else(|| outline.and_then(|section| section.tcp_mode)),
             udp_ws_url: args
                 .udp_ws_url
                 .clone()
                 .or_else(|| outline.and_then(|section| section.udp_ws_url.clone())),
-            udp_ws_mode: args
-                .udp_ws_mode
-                .or_else(|| outline.and_then(|section| section.udp_ws_mode)),
+            udp_mode: args
+                .udp_mode
+                .or_else(|| outline.and_then(|section| section.udp_mode)),
             vless_ws_url: args
                 .vless_ws_url
                 .clone()
@@ -89,9 +89,9 @@ impl ResolvedUplinkInput {
             name: uplink.name.clone().unwrap_or_else(|| format!("uplink-{}", index + 1)),
             transport: uplink.transport.unwrap_or_default(),
             tcp_ws_url: uplink.tcp_ws_url.clone(),
-            tcp_ws_mode: uplink.tcp_ws_mode,
+            tcp_mode: uplink.tcp_mode,
             udp_ws_url: uplink.udp_ws_url.clone(),
-            udp_ws_mode: uplink.udp_ws_mode,
+            udp_mode: uplink.udp_mode,
             vless_ws_url: uplink.vless_ws_url.clone(),
             vless_xhttp_url: uplink.vless_xhttp_url.clone(),
             vless_mode: uplink.vless_mode,
@@ -116,9 +116,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name,
             transport,
             tcp_ws_url,
-            tcp_ws_mode,
+            tcp_mode,
             udp_ws_url,
-            udp_ws_mode,
+            udp_mode,
             vless_ws_url,
             vless_xhttp_url,
             vless_mode,
@@ -172,9 +172,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
         // dial failure later.
         let (
             tcp_ws_url,
-            tcp_ws_mode,
+            tcp_mode,
             udp_ws_url,
-            udp_ws_mode,
+            udp_mode,
             vless_ws_url,
             vless_xhttp_url,
             vless_mode,
@@ -200,9 +200,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                     })?);
                     (
                         tcp_ws_url,
-                        tcp_ws_mode.unwrap_or_default(),
+                        tcp_mode.unwrap_or_default(),
                         udp_ws_url,
-                        udp_ws_mode.unwrap_or_default(),
+                        udp_mode.unwrap_or_default(),
                         None,
                         None,
                         TransportMode::default(),
@@ -212,12 +212,12 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                 },
                 UplinkTransport::Vless => {
                     if tcp_ws_url.is_some()
-                        || tcp_ws_mode.is_some()
+                        || tcp_mode.is_some()
                         || udp_ws_url.is_some()
-                        || udp_ws_mode.is_some()
+                        || udp_mode.is_some()
                     {
                         bail!(
-                            "uplink {name}: `tcp_ws_url`/`tcp_ws_mode`/`udp_ws_url`/`udp_ws_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
+                            "uplink {name}: `tcp_ws_url`/`tcp_mode`/`udp_ws_url`/`udp_mode` are not valid for transport=vless; use `vless_ws_url`/`vless_xhttp_url`/`vless_mode` instead (the VLESS server exposes a single path for both TCP and UDP)"
                         );
                     }
                     if tcp_addr.is_some() || udp_addr.is_some() {
@@ -275,9 +275,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                 },
                 UplinkTransport::Shadowsocks => {
                     if tcp_ws_url.is_some()
-                        || tcp_ws_mode.is_some()
+                        || tcp_mode.is_some()
                         || udp_ws_url.is_some()
-                        || udp_ws_mode.is_some()
+                        || udp_mode.is_some()
                         || vless_ws_url.is_some()
                         || vless_xhttp_url.is_some()
                         || vless_mode.is_some()
@@ -307,9 +307,9 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             name,
             transport,
             tcp_ws_url,
-            tcp_ws_mode,
+            tcp_mode,
             udp_ws_url,
-            udp_ws_mode,
+            udp_mode,
             vless_ws_url,
             vless_xhttp_url,
             vless_mode,
@@ -368,9 +368,9 @@ pub(crate) fn validate_uplink_section(
 fn cli_uplink_override_requested(args: &Args) -> bool {
     args.tcp_ws_url.is_some()
         || args.transport.is_some()
-        || args.tcp_ws_mode.is_some()
+        || args.tcp_mode.is_some()
         || args.udp_ws_url.is_some()
-        || args.udp_ws_mode.is_some()
+        || args.udp_mode.is_some()
         || args.vless_ws_url.is_some()
         || args.vless_xhttp_url.is_some()
         || args.vless_mode.is_some()

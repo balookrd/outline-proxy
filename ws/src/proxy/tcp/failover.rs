@@ -142,7 +142,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
 ) -> Result<ConnectedTcpUplink> {
     #[cfg(feature = "h3")]
     {
-        let mode = uplinks.effective_tcp_ws_mode(candidate.index).await;
+        let mode = uplinks.effective_tcp_mode(candidate.index).await;
         if mode == outline_transport::TransportMode::Quic {
             match uplinks
                 .connect_tcp_quic_fresh(candidate, target, "socks_tcp")
@@ -174,7 +174,7 @@ pub(super) async fn connect_tcp_uplink_fresh(
                         TransportKind::Tcp,
                         &e,
                     );
-                    // Fall through to the WS path below; effective_tcp_ws_mode
+                    // Fall through to the WS path below; effective_tcp_mode
                     // will now return H2 for the rest of the downgrade window,
                     // and connect_websocket_with_source handles H2 → H1.
                 }

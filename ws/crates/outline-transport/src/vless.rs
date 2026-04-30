@@ -886,7 +886,7 @@ impl VlessUdpSessionMux {
     /// by the transport layer (host-level `ws_mode_cache` clamp or inline
     /// fallback inside `connect_websocket_with_resume`). Latched: fires at
     /// most once per mux instance regardless of how many subsequent dials
-    /// also see the downgrade. Without this, `effective_udp_ws_mode` keeps
+    /// also see the downgrade. Without this, `effective_udp_mode` keeps
     /// reporting H3 in the uplink-manager while every actual session dial
     /// is silently clamped to H2 — the "vless/ws/h3 stays put" symptom.
     pub fn with_on_downgrade(mut self, hook: Option<VlessUdpDowngradeNotifier>) -> Self {

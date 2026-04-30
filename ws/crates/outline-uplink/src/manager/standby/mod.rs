@@ -34,7 +34,7 @@ impl UplinkManager {
     /// Returns the effective TCP dial mode for `index`, falling back to H2
     /// when an "advanced" mode (H3 or raw QUIC) has been marked broken by
     /// repeated runtime / dial errors.  Applies to Ws and Vless transports.
-    pub async fn effective_tcp_ws_mode(&self, index: usize) -> crate::config::TransportMode {
+    pub async fn effective_tcp_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
         let advanced = matches!(
@@ -56,9 +56,9 @@ impl UplinkManager {
         configured
     }
 
-    /// Same as `effective_tcp_ws_mode`, but for the UDP-over-WS / UDP-over-QUIC
+    /// Same as `effective_tcp_mode`, but for the UDP-over-WS / UDP-over-QUIC
     /// transport.
-    pub(crate) async fn effective_udp_ws_mode(
+    pub(crate) async fn effective_udp_mode(
         &self,
         index: usize,
     ) -> crate::config::TransportMode {
@@ -108,7 +108,7 @@ impl UplinkManager {
         // back empty. Skip it to avoid the per-call pool lock and the
         // bogus `miss` counter inflation against a pool that cannot
         // produce a stream by design.
-        if self.effective_tcp_ws_mode(candidate.index).await
+        if self.effective_tcp_mode(candidate.index).await
             == outline_transport::TransportMode::Quic
         {
             return None;
@@ -133,7 +133,7 @@ impl UplinkManager {
             &candidate.uplink.name,
             "miss",
         );
-        let mode = self.effective_tcp_ws_mode(candidate.index).await;
+        let mode = self.effective_tcp_mode(candidate.index).await;
         debug!(
             uplink = %candidate.uplink.name,
             mode = %mode,
@@ -172,7 +172,7 @@ impl UplinkManager {
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
         // or inline H3→H2/H1 fallback inside `connect_websocket_with_resume`)
         // into the per-uplink `mode_downgrade_until` window. Without this,
-        // `effective_tcp_ws_mode` keeps reporting H3 while every actual dial
+        // `effective_tcp_mode` keeps reporting H3 while every actual dial
         // is silently clamped to H2 — the "ss/ws/h3 stays put" symptom.
         if let Some(requested) = ws.downgraded_from() {
             self.note_silent_transport_fallback(candidate.index, TransportKind::Tcp, requested);
@@ -262,7 +262,7 @@ impl UplinkManager {
             UplinkTransport::Ws => {
                 // Standalone "shadowsocks-over-quic" path uses the
                 // existing WS uplink config: same URL field, but
-                // `tcp_ws_mode = "quic"` selects this branch.
+                // `tcp_mode = "quic"` selects this branch.
                 let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
                 let (mut w, r) = outline_transport::connect_ss_tcp_quic(
                     cache,
@@ -351,7 +351,7 @@ impl UplinkManager {
             let uuid = candidate.uplink.vless_id.ok_or_else(|| {
                 anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)
             })?;
-            let mode = self.effective_udp_ws_mode(candidate.index).await;
+            let mode = self.effective_udp_mode(candidate.index).await;
             #[cfg(feature = "quic")]
             if mode == outline_transport::TransportMode::Quic {
                 let quic_mux = outline_transport::VlessUdpQuicMux::new(
@@ -476,7 +476,7 @@ impl UplinkManager {
         // but stripping `mut` would break the quic build. Suppress the
         // warning instead of duplicating the binding under cfg.
         #[cfg_attr(not(feature = "quic"), allow(unused_mut))]
-        let mut mode = self.effective_udp_ws_mode(candidate.index).await;
+        let mut mode = self.effective_udp_mode(candidate.index).await;
         let started = Instant::now();
         #[cfg(feature = "quic")]
         if mode == outline_transport::TransportMode::Quic {
@@ -509,7 +509,7 @@ impl UplinkManager {
                         "ss raw-QUIC UDP dial failed, falling back to WS over H2"
                     );
                     self.note_advanced_mode_dial_failure(candidate.index, TransportKind::Udp, &e);
-                    mode = self.effective_udp_ws_mode(candidate.index).await;
+                    mode = self.effective_udp_mode(candidate.index).await;
                 },
             }
         }
@@ -538,7 +538,7 @@ impl UplinkManager {
             .await;
         // Mirror a transport-level downgrade (host clamp via `ws_mode_cache`
         // or inline H3→H2/H1 fallback) into the per-uplink window so
-        // `effective_udp_ws_mode` reflects reality on subsequent dials.
+        // `effective_udp_mode` reflects reality on subsequent dials.
         if let Some(requested) = udp_downgraded_from {
             self.note_silent_transport_fallback(candidate.index, TransportKind::Udp, requested);
         }
