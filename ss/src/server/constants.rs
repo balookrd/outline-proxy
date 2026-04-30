@@ -93,3 +93,12 @@ pub(super) const NAT_EVICTION_INTERVAL_SECS: u64 = 60;
 // only bounds the lag between a deadline passing and the entry being
 // reclaimed. Five seconds matches `docs/SESSION-RESUMPTION.md`.
 pub(super) const ORPHAN_SWEEP_INTERVAL_SECS: u64 = 5;
+
+// Period at which the XHTTP registry janitor evicts idle / closed
+// sessions. Sessions whose `XhttpSession::touch` last ran more than
+// `SESSION_IDLE_EVICTION` ago are dropped on the next tick. 30 s
+// caps the leak window for a session that was created by the GET
+// handler but whose relay never started (client disconnected before
+// the first POST landed) — without this, dead sessions accumulate
+// in the `XhttpRegistry` for the lifetime of the process.
+pub(super) const XHTTP_EVICTION_INTERVAL_SECS: u64 = 30;

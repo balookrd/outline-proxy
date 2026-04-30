@@ -25,7 +25,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use anyhow::{Context, Result};
-use axum::http::{self, HeaderName, HeaderValue, StatusCode, header};
+use axum::http;
 use bytes::{Buf, Bytes, BytesMut};
 use h3::server::RequestStream;
 use http_body_util::{BodyExt, Full};
@@ -241,30 +241,5 @@ async fn proxy_h3_to_backend(
         .finish()
         .await
         .context("failed to finalize HTTP/3 response stream")?;
-    Ok(())
-}
-
-/// Sends a synthetic 502 / 504 / 404 response on the stream when the
-/// fallback cannot proceed — used by `handle_h3_request` so a
-/// failure path on the fallback does not desynchronise the stream
-/// state.
-pub(in crate::server) async fn send_h3_status_only_response(
-    mut stream: H3Stream,
-    status: StatusCode,
-) -> Result<()> {
-    let response = http::Response::builder()
-        .status(status)
-        .header(HeaderName::from_static("content-length"), HeaderValue::from_static("0"))
-        .header(header::CACHE_CONTROL, HeaderValue::from_static("no-store"))
-        .body(())
-        .context("failed to assemble status-only HTTP/3 response")?;
-    stream
-        .send_response(response)
-        .await
-        .context("failed to send status-only HTTP/3 response")?;
-    stream
-        .finish()
-        .await
-        .context("failed to finish status-only HTTP/3 response")?;
     Ok(())
 }

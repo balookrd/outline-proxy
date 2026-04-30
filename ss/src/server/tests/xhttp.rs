@@ -1053,7 +1053,7 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
     let client = http_client();
     let session_id = "drop-resume-session";
     let url = format!("http://{listen_addr}/xh/{session_id}");
-    let (session, created) = registry.get_or_create(session_id, 16, None);
+    let (session, created) = registry.get_or_create(session_id, None);
     assert!(created, "registry should mint a fresh session for a new id");
 
     // ── GET-A: read one downlink chunk, then drop the body ──────

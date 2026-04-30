@@ -137,7 +137,6 @@ impl XhttpRegistry {
     pub(in crate::server) fn get_or_create(
         &self,
         session_id: &str,
-        data_channel_capacity: usize,
         issued_resume_id: Option<SessionId>,
     ) -> (Arc<XhttpSession>, bool) {
         let key: Arc<str> = Arc::from(session_id);
@@ -147,11 +146,7 @@ impl XhttpRegistry {
             .entry(Arc::clone(&key))
             .or_insert_with(|| {
                 created = true;
-                Arc::new(XhttpSession::new(
-                    Arc::clone(&key),
-                    data_channel_capacity,
-                    issued_resume_id,
-                ))
+                Arc::new(XhttpSession::new(Arc::clone(&key), issued_resume_id))
             })
             .value()
             .clone();
@@ -206,7 +201,6 @@ pub(in crate::server) struct XhttpSession {
     closed: AtomicBool,
     last_activity_nanos: AtomicI64,
     created_at: Instant,
-    pub(in crate::server) data_channel_capacity: usize,
     /// Server-issued cross-transport resumption id, minted on the
     /// first request that creates the session (when the client
     /// advertised `X-Outline-Resume-Capable` or supplied
@@ -234,11 +228,7 @@ pub(in crate::server) struct DownlinkState {
 }
 
 impl XhttpSession {
-    fn new(
-        id: Arc<str>,
-        data_channel_capacity: usize,
-        issued_resume_id: Option<SessionId>,
-    ) -> Self {
+    fn new(id: Arc<str>, issued_resume_id: Option<SessionId>) -> Self {
         Self {
             id,
             uplink: Mutex::new(UplinkState {
@@ -259,7 +249,6 @@ impl XhttpSession {
             closed: AtomicBool::new(false),
             last_activity_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
-            data_channel_capacity,
             issued_resume_id,
         }
     }

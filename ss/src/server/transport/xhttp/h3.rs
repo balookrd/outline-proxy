@@ -159,11 +159,8 @@ async fn xhttp_h3_get(
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
         ResumeContext::from_request_headers(&request_headers, &vless_server.orphan_registry);
-    let (session, created) = registry.get_or_create(
-        &session_id,
-        vless_server.ws_data_channel_capacity,
-        resume_for_create.issued_session_id,
-    );
+    let (session, created) =
+        registry.get_or_create(&session_id, resume_for_create.issued_session_id);
 
     if created {
         spawn_relay(
@@ -240,11 +237,7 @@ async fn xhttp_h3_post(
     let resume_for_create =
         ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
     let (session, created) = if seq == 0 {
-        registry.get_or_create(
-            &session_id,
-            vless_server.ws_data_channel_capacity,
-            resume_for_create.issued_session_id,
-        )
+        registry.get_or_create(&session_id, resume_for_create.issued_session_id)
     } else {
         match registry.get(&session_id) {
             Some(s) => (s, false),
@@ -361,11 +354,8 @@ async fn xhttp_h3_stream_one(
     let protocol = protocol_from_h3_version(version);
     let resume_for_create =
         ResumeContext::from_request_headers(&headers, &vless_server.orphan_registry);
-    let (session, created) = registry.get_or_create(
-        &session_id,
-        vless_server.ws_data_channel_capacity,
-        resume_for_create.issued_session_id,
-    );
+    let (session, created) =
+        registry.get_or_create(&session_id, resume_for_create.issued_session_id);
     if session.is_closed() {
         return finish_with_status(stream, StatusCode::GONE).await;
     }

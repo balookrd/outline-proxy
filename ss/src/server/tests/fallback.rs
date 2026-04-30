@@ -108,10 +108,7 @@ fn fallback_ctx_for_proto(
 ) -> Arc<HttpFallbackContext> {
     Arc::new(HttpFallbackContext {
         config: Arc::new(HttpFallbackConfig {
-            backend_scheme: "http".into(),
             backend_authority: upstream.to_string(),
-            backend_host: upstream.ip().to_string(),
-            backend_port: upstream.port(),
             request_timeout_secs: 5,
             add_x_forwarded_for: true,
             add_x_forwarded_proto: true,
@@ -614,10 +611,7 @@ fn fallback_ctx_for_h3(
 ) -> Arc<HttpFallbackContext> {
     Arc::new(HttpFallbackContext {
         config: Arc::new(HttpFallbackConfig {
-            backend_scheme: "http".into(),
             backend_authority: upstream.to_string(),
-            backend_host: upstream.ip().to_string(),
-            backend_port: upstream.port(),
             request_timeout_secs: 5,
             add_x_forwarded_for: true,
             add_x_forwarded_proto: true,
