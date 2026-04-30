@@ -31,6 +31,7 @@ mod nat;
 mod raw_quic;
 mod resumption;
 mod shadowsocks;
+mod sni_fallback;
 mod vless;
 mod websocket;
 mod xhttp;
@@ -121,6 +122,7 @@ fn sample_config_with_users(listen: SocketAddr, users: Vec<UserEntry>) -> Config
         tuning: Default::default(),
         session_resumption: Default::default(),
         http_fallback: None,
+        sni_fallback: None,
         config_path: None,
         control: None,
         dashboard: None,

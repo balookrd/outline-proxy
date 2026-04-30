@@ -158,7 +158,10 @@ pub async fn run(config: Config) -> Result<()> {
     if let Some(listener) = bound.listener {
         let config = Arc::clone(&config);
         let shutdown = shutdown_signal.clone();
-        tasks.spawn(async move { serve_tcp_listener(listener, app, config, shutdown).await });
+        let sni_fallback = built.sni_fallback.clone();
+        tasks.spawn(async move {
+            serve_tcp_listener(listener, app, config, sni_fallback, shutdown).await
+        });
     }
     if let Some(h3_server) = bound.h3_server {
         let routes = Arc::clone(&built.routes);

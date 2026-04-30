@@ -95,6 +95,22 @@ ws_path_udp = "/udp"
 # proxy_protocol = "v1"   # or "v2"; omit to disable. Upstream MUST be
 #                         # configured to expect the matching version.
 
+# Optional L4 SNI fallback for the TLS listener. When set, the
+# ClientHello is peeked before handshake; foreign SNIs (or no SNI when
+# `allow_no_sni = false`) are spliced as raw TCP to `backend`, which
+# must terminate TLS for those SNIs with its own cert. Sister of
+# [http_fallback] one OSI layer below — needed when probes target a
+# non-HTTP TLS service or the wrong domain entirely. Requires built-in
+# TLS (tls_cert_path + tls_key_path) on the main listener.
+# [sni_fallback]
+# backend = "127.0.0.1:8443"
+# match_sni = ["vpn.example.com", "*.api.example.com"]   # required
+# allow_no_sni = false
+# proxy_protocol = "v2"   # strongly recommended so the backend logs
+#                         # the real client IP. Upstream MUST be
+#                         # configured to expect the matching version.
+# max_client_hello_bytes = 8192
+
 [access_keys]
 # Used for generated Outline access keys.
 # For IPv6 hosts, use brackets:

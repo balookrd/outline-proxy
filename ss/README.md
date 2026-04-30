@@ -60,6 +60,7 @@ It supports:
 | VLESS over XHTTP stream-one | Supported | Single bidirectional request: request body = uplink, response body = downlink. Selected by `?mode=stream-one` in the request URL on the same base path. Requires h2 or h3 (h1 returns 505); on h3 the bidi stream is split via `RequestStream::split` so uplink and downlink halves run on dedicated tasks |
 | XHTTP cross-transport session resumption | Supported | Server mints `X-Outline-Session` on first contact, parks the VLESS upstream when the carrier drops, and re-attaches on the next `X-Outline-Resume` — including across a carrier switch (e.g. client failed h3 → re-dialed h2 with the same token) |
 | HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 + HTTP/2 requests to an upstream backend (haproxy / nginx / caddy) instead of returning 404, so the listener is indistinguishable from a regular web service. Optional HAProxy PROXY-protocol v1/v2 prefix preserves the real client IP for upstream logs/ACLs |
+| SNI fallback (L4 camouflage) | Supported | Peeks ClientHello on the TLS listener and splices foreign-SNI connections (raw TCP, including the captured ClientHello) to a backend that holds its own cert. Sister of the HTTP fallback, one OSI layer below. nginx-style wildcards in `match_sni`; PROXY-protocol v1/v2 strongly recommended so the backend sees the real peer IP |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | VLESS / Shadowsocks raw over QUIC | Supported | No WebSocket / no HTTP/3 framing; selected by ALPN (`vless`, `ss`) on the same `h3_listen` port |
 | Outline management API | Not supported | Data plane only |
@@ -527,6 +528,43 @@ Limitations:
 - HTTP/3 fallback is not implemented; over `h3_listen` unmatched requests still return 404. There is no clean way to bridge h3 frames to an h1/h2 backend without a dedicated h3 client and a much larger framing translation layer; deferred until requested.
 - Backend URL is `http://host:port` only. HTTPS upstreams and Unix-domain sockets can be added on demand.
 - Under high request volume the fallback opens one upstream TCP connection per inbound request (no pooling). Camouflage traffic is rare-path, so this is fine in practice; if you intend to use the fallback as a real load balancer, terminate at the upstream instead.
+
+### 6. SNI Routing for Foreign TLS Domains (L4 Camouflage)
+
+The HTTP fallback above kicks in *after* TLS terminates on us — useful when the SNI is ours but the path/Host doesn't match a route. The `[sni_fallback]` block adds the layer below: peek the ClientHello *before* handshake and, when the SNI doesn't belong to us, splice the raw TCP stream (including the captured ClientHello) to a backend that handles foreign SNIs with its own cert. From a passive observer the listener now looks like an SNI-routed haproxy frontend.
+
+Requires built-in TLS (`tls_cert_path` + `tls_key_path`) on the main TCP listener.
+
+```toml
+[server]
+listen = "0.0.0.0:443"
+tls_cert_path = "/etc/letsencrypt/live/your-host/fullchain.pem"
+tls_key_path  = "/etc/letsencrypt/live/your-host/privkey.pem"
+
+[sni_fallback]
+backend = "127.0.0.1:8443"               # haproxy / nginx / caddy
+match_sni = ["our.example.com",
+             "*.api.our.example.com"]    # required, nginx-style wildcards
+# allow_no_sni = false                   # SNI-less connections → backend
+# proxy_protocol = "v2"                  # v1 / v2 / omit. STRONGLY recommended
+                                         # so the backend logs the real client IP
+# max_client_hello_bytes = 8192          # close conn if ClientHello exceeds this
+```
+
+How dispatch decides:
+
+1. Read just enough bytes off the inbound socket to feed `rustls::server::Acceptor` a full ClientHello. Anything larger than `max_client_hello_bytes` is treated as malformed and the connection is closed (intentionally — junk does not get forwarded to the backend so it can't poison its logs).
+2. If the SNI matches any entry in `match_sni` (case-insensitive; `*.foo.bar` matches one label to the left), the captured bytes are replayed back into our TLS terminator via a `PrependStream` wrapper and the rest behaves exactly like before — including `[http_fallback]` if enabled.
+3. Otherwise (or when no SNI was present and `allow_no_sni = false`), open a fresh TCP connection to `backend`, optionally prepend a HAProxy PROXY-protocol header, write the captured ClientHello, then `tokio::io::copy_bidirectional` until either side closes.
+
+PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we forward raw TCP bytes, so without it the backend sees `127.0.0.1` as the peer for every spliced connection — log/ACL/rate-limit blind. As with `[http_fallback]`, the destination address in the header is the inbound listener's bind address (degrades to UNKNOWN / UNSPEC for `0.0.0.0` / `[::]`).
+
+Limitations:
+
+- TLS only. Plain (non-TLS) `[server] listen` cannot dispatch on SNI because there is no SNI to dispatch on. Validation rejects this configuration.
+- The destination port in the PROXY header is the listener bind port, not the per-connection local port.
+- Wildcard matching is one-label-left only (nginx-style). No mid-segment wildcards, no full regex.
+- The HTTP/3 listener is not affected — h3 SNI is parsed by quinn before our code sees it; routing it would need separate plumbing.
 
 ## Client Config Generation
 

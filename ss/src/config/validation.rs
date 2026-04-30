@@ -191,6 +191,16 @@ impl Config {
         if self.http_fallback.is_some() && self.listen.is_none() {
             bail!("http_fallback requires the [server] listen to be configured");
         }
+        if self.sni_fallback.is_some() {
+            if self.listen.is_none() {
+                bail!("sni_fallback requires the [server] listen to be configured");
+            }
+            if !self.tcp_tls_enabled() {
+                bail!(
+                    "sni_fallback requires built-in TLS: set tls_cert_path and tls_key_path"
+                );
+            }
+        }
         self.tuning.validate()?;
         Ok(())
     }

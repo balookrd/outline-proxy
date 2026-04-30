@@ -23,8 +23,10 @@ use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
 mod fallback;
+mod proxy_protocol;
 mod raw_quic;
 pub(in crate::server) mod sink;
+pub(in crate::server) mod sni_fallback;
 mod tcp;
 mod udp;
 mod vless;

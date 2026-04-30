@@ -15,8 +15,8 @@ use clap::Parser;
 
 use cli::ConfigArgs;
 use file::{
-    FileConfig, HttpFallbackSection, SessionResumptionSection, default_config_path_if_exists,
-    load_file_config,
+    FileConfig, HttpFallbackSection, SessionResumptionSection, SniFallbackSection,
+    default_config_path_if_exists, load_file_config,
 };
 
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
@@ -148,6 +148,11 @@ pub struct Config {
     /// `None` keeps the legacy 404 behaviour. Configure via
     /// `[http_fallback]` in the config file.
     pub http_fallback: Option<HttpFallbackConfig>,
+    /// SNI-routed L4 fallback. When set and the inbound TCP listener
+    /// terminates TLS, foreign SNIs are spliced as raw TCP to the
+    /// configured backend. `None` keeps every TLS connection on the
+    /// local terminator.
+    pub sni_fallback: Option<SniFallbackConfig>,
 }
 
 /// Resolved `[http_fallback]` block. All fields are concrete (defaults
@@ -178,6 +183,121 @@ pub struct HttpFallbackConfig {
 pub enum ProxyProtocolVersion {
     V1,
     V2,
+}
+
+/// Resolved `[sni_fallback]` block. Always carries a non-empty
+/// `match_sni` whitelist — config-time validation rejects an empty
+/// list to keep the camouflage decision deterministic.
+#[derive(Debug, Clone)]
+pub struct SniFallbackConfig {
+    /// `host:port` of the upstream that handles foreign SNIs.
+    pub backend_authority: String,
+    pub match_sni: Vec<SniMatcher>,
+    pub allow_no_sni: bool,
+    pub proxy_protocol: Option<ProxyProtocolVersion>,
+    pub max_client_hello_bytes: usize,
+}
+
+/// Parsed entry from `match_sni`. Either an exact SNI to match
+/// case-insensitively, or a one-label-left wildcard (`*.foo.example`
+/// matches `bar.foo.example` but not `bar.baz.foo.example`).
+#[derive(Debug, Clone)]
+pub enum SniMatcher {
+    Exact(String),
+    Wildcard { suffix: String },
+}
+
+impl SniMatcher {
+    fn parse(raw: &str) -> Result<Self> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            anyhow::bail!("sni_fallback.match_sni entries must be non-empty");
+        }
+        let lower = raw.to_ascii_lowercase();
+        if let Some(rest) = lower.strip_prefix("*.") {
+            if rest.is_empty() || rest.starts_with('.') {
+                anyhow::bail!("sni_fallback.match_sni wildcard {raw:?} is malformed");
+            }
+            if rest.contains('*') {
+                anyhow::bail!(
+                    "sni_fallback.match_sni wildcard {raw:?} may only contain one leading `*.`"
+                );
+            }
+            Ok(Self::Wildcard { suffix: format!(".{rest}") })
+        } else {
+            if lower.contains('*') {
+                anyhow::bail!(
+                    "sni_fallback.match_sni {raw:?} contains `*` outside the leading `*.` form"
+                );
+            }
+            Ok(Self::Exact(lower))
+        }
+    }
+
+    /// Tests whether `sni` (already lowercased by the caller) matches.
+    pub fn matches(&self, sni: &str) -> bool {
+        match self {
+            Self::Exact(name) => name == sni,
+            Self::Wildcard { suffix } => {
+                if let Some(prefix) = sni.strip_suffix(suffix.as_str()) {
+                    !prefix.is_empty() && !prefix.contains('.')
+                } else {
+                    false
+                }
+            },
+        }
+    }
+}
+
+impl SniFallbackConfig {
+    fn from_section(section: SniFallbackSection) -> Result<Option<Self>> {
+        let Some(backend_raw) = section
+            .backend
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty())
+        else {
+            return Ok(None);
+        };
+        // host:port — accept both bare host:port and the bracketed
+        // IPv6 form. We do not pre-resolve since the operator may
+        // run the backend on a hostname that resolves later.
+        if !backend_raw.contains(':') {
+            anyhow::bail!(
+                "sni_fallback.backend must be host:port (got {backend_raw:?})"
+            );
+        }
+        let raw_match = section
+            .match_sni
+            .ok_or_else(|| anyhow::anyhow!("sni_fallback requires match_sni"))?;
+        if raw_match.is_empty() {
+            anyhow::bail!("sni_fallback.match_sni must list at least one entry");
+        }
+        let mut match_sni = Vec::with_capacity(raw_match.len());
+        for entry in raw_match {
+            match_sni.push(SniMatcher::parse(&entry)?);
+        }
+        let proxy_protocol = match section.proxy_protocol.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some("v1") => Some(ProxyProtocolVersion::V1),
+            Some("v2") => Some(ProxyProtocolVersion::V2),
+            Some(other) => anyhow::bail!(
+                "sni_fallback.proxy_protocol must be \"v1\" or \"v2\"; got {other:?}"
+            ),
+        };
+        let max_client_hello_bytes = section.max_client_hello_bytes.unwrap_or(8192);
+        if max_client_hello_bytes < 256 {
+            anyhow::bail!(
+                "sni_fallback.max_client_hello_bytes must be >= 256 (got {max_client_hello_bytes})"
+            );
+        }
+        Ok(Some(Self {
+            backend_authority: backend_raw,
+            match_sni,
+            allow_no_sni: section.allow_no_sni.unwrap_or(false),
+            proxy_protocol,
+            max_client_hello_bytes,
+        }))
+    }
 }
 
 impl HttpFallbackConfig {
@@ -450,6 +570,9 @@ impl AppMode {
             ),
             http_fallback: HttpFallbackConfig::from_section(
                 file.http_fallback.unwrap_or_default(),
+            )?,
+            sni_fallback: SniFallbackConfig::from_section(
+                file.sni_fallback.unwrap_or_default(),
             )?,
         };
         config.validate()?;

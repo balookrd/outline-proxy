@@ -26,10 +26,11 @@ use super::super::{
     state::{AppState, AuthPolicy, RoutesSnapshot, Services},
     transport::{
         HttpFallbackContext, XhttpAxumState, http_fallback_handler, metrics_handler,
-        not_found_handler, root_http_auth_handler, tcp_websocket_upgrade, udp_websocket_upgrade,
-        vless_websocket_upgrade, xhttp_handler,
+        not_found_handler, root_http_auth_handler, sni_fallback, tcp_websocket_upgrade,
+        udp_websocket_upgrade, vless_websocket_upgrade, xhttp_handler,
     },
 };
+use sni_fallback::SniFallbackContext;
 use super::tls::build_tcp_tls_acceptor;
 
 pub(in crate::server) fn build_app(
@@ -101,12 +102,18 @@ pub(in crate::server) async fn serve_tcp_listener(
     listener: TcpListener,
     app: Router,
     config: Arc<Config>,
+    sni_fallback: Option<Arc<SniFallbackContext>>,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
         let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(listener, app, acceptor, config.tuning, shutdown).await
+        serve_tls_listener(listener, app, acceptor, config.tuning, sni_fallback, shutdown).await
     } else {
+        // SNI fallback only makes sense for the TLS path. Validation
+        // already rejects `[sni_fallback]` without TLS so the
+        // `Some(_)` branch is unreachable here in practice; assert
+        // it explicitly to catch future drift.
+        debug_assert!(sni_fallback.is_none(), "sni_fallback requires TLS");
         serve_listener(listener, app, shutdown).await
     }
 }
@@ -178,6 +185,7 @@ async fn serve_tls_listener(
     app: Router,
     acceptor: TlsAcceptor,
     profile: TuningProfile,
+    sni_fallback: Option<Arc<SniFallbackContext>>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let connection_limit = Arc::new(Semaphore::new(TLS_MAX_CONCURRENT_CONNECTIONS));
@@ -220,17 +228,45 @@ async fn serve_tls_listener(
         }
         let acceptor = acceptor.clone();
         let app = app.clone();
+        let sni_fallback = sni_fallback.clone();
         let mut task_shutdown = shutdown.clone();
 
         tasks.spawn(async move {
             let _permit = permit;
+
+            // SNI dispatch: when [sni_fallback] is configured, peek
+            // the ClientHello before handshake. Foreign SNIs (or no
+            // SNI when `allow_no_sni = false`) are spliced as raw
+            // TCP to the configured backend; matching SNIs continue
+            // through the local TLS terminator with the buffered
+            // bytes prepended. Wrapping in `PrependStream` even when
+            // the buffer is empty keeps the type uniform across the
+            // two branches without paying for `Box<dyn ...>`.
+            let stream_for_handshake = if let Some(ctx) = sni_fallback.as_ref() {
+                let dispatch = tokio::select! {
+                    biased;
+                    _ = task_shutdown.cancelled() => {
+                        debug!(%peer_addr, "aborting SNI peek on shutdown");
+                        return;
+                    }
+                    res = sni_fallback::dispatch_sni(ctx, stream, peer_addr) => res,
+                };
+                match dispatch {
+                    Ok(Some(prepended)) => prepended,
+                    Ok(None) => return,
+                    Err(_) => return,
+                }
+            } else {
+                sni_fallback::PrependStream::new(Vec::new(), stream)
+            };
+
             let tls_stream = tokio::select! {
                 biased;
                 _ = task_shutdown.cancelled() => {
                     debug!(%peer_addr, "aborting TLS handshake on shutdown");
                     return;
                 }
-                res = acceptor.accept(stream) => match res {
+                res = acceptor.accept(stream_for_handshake) => match res {
                     Ok(s) => s,
                     Err(error) => {
                         if is_benign_tls_handshake_error(&error) {

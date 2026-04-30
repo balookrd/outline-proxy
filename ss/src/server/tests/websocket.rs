@@ -251,7 +251,8 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     tls_config.tls_cert_path = Some(cert_path.clone());
     tls_config.tls_key_path = Some(key_path.clone());
     let server = tokio::spawn(async move {
-        serve_tcp_listener(listener, app, Arc::new(tls_config), ShutdownSignal::never()).await
+        serve_tcp_listener(listener, app, Arc::new(tls_config), None, ShutdownSignal::never())
+            .await
     });
 
     let mut roots = rustls::RootCertStore::empty();

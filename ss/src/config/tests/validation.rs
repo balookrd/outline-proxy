@@ -42,6 +42,7 @@ fn base_config() -> Config {
         tuning: super::super::TuningProfile::LARGE,
         session_resumption: Default::default(),
         http_fallback: None,
+        sni_fallback: None,
     }
 }
 
