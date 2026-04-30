@@ -103,7 +103,8 @@ async fn handle_h3_request(
         // method with the root-auth handler, and confusing those
         // two would either expose the auth challenge to xhttp
         // clients or eat xhttp upgrade requests.
-        if let Some((base, session_id)) = match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
+        if let Some((base, session_id, path_seq)) =
+            match_xhttp_path(&path, ctx.xhttp_paths.as_ref())
             && let Some(route) = ctx.xhttp_vless.get(base.as_ref()).cloned()
         {
             return handle_xhttp_h3_request(
@@ -114,6 +115,7 @@ async fn handle_h3_request(
                 route,
                 base,
                 session_id,
+                path_seq,
                 peer_addr,
             )
             .await;
@@ -288,22 +290,46 @@ async fn handle_h3_request(
     Ok(())
 }
 
-/// Returns `Some((base, session_id))` if `path` is `<base>/<id>` for
-/// some `base` in `xhttp_paths` and `<id>` is a single non-empty path
-/// segment. Done with a linear scan — `xhttp_paths` is at most a few
-/// entries in any realistic deployment, and the cost is dominated by
-/// the per-request work that follows.
+/// Returns `Some((base, session_id, path_seq))` for either:
+/// - `<base>/<id>` — `path_seq = None` (every GET, every stream-one
+///   POST, and packet-up POSTs from header-based-seq clients);
+/// - `<base>/<id>/<seq>` — `path_seq = Some(seq)` (packet-up POSTs
+///   from xray / sing-box-default clients that place `seq` in the
+///   URL path, e.g. `happ`, `hiddify`, `v2rayN`).
+///
+/// Done with a linear scan — `xhttp_paths` is at most a few entries
+/// in any realistic deployment, and the cost is dominated by the
+/// per-request work that follows.
 fn match_xhttp_path(
     path: &str,
     xhttp_paths: &std::collections::BTreeSet<String>,
-) -> Option<(std::sync::Arc<str>, String)> {
+) -> Option<(std::sync::Arc<str>, String, Option<u64>)> {
     for base in xhttp_paths {
-        if let Some(rest) = path.strip_prefix(base.as_str())
-            && let Some(id) = rest.strip_prefix('/')
-            && !id.is_empty()
-            && !id.contains('/')
-        {
-            return Some((std::sync::Arc::from(base.as_str()), id.to_owned()));
+        let Some(rest) = path.strip_prefix(base.as_str()) else { continue };
+        let Some(rest) = rest.strip_prefix('/') else { continue };
+        if rest.is_empty() {
+            continue;
+        }
+        match rest.split_once('/') {
+            None => {
+                // `<base>/<id>` — single segment after base.
+                return Some((std::sync::Arc::from(base.as_str()), rest.to_owned(), None));
+            },
+            Some((id, tail)) => {
+                // `<base>/<id>/<seq>` — `seq` must be a non-empty
+                // u64 with no further path segments. Anything else
+                // means the URL is not an XHTTP one and the caller
+                // should fall through to 404 / fallback.
+                if id.is_empty() || tail.is_empty() || tail.contains('/') {
+                    continue;
+                }
+                let Ok(seq) = tail.parse::<u64>() else { continue };
+                return Some((
+                    std::sync::Arc::from(base.as_str()),
+                    id.to_owned(),
+                    Some(seq),
+                ));
+            },
         }
     }
     None
@@ -341,3 +367,7 @@ fn h3_http_response(
         None => build_root_http_auth_challenge_response(failed_attempts, http_root_realm, ()),
     }
 }
+
+#[cfg(test)]
+#[path = "tests/http.rs"]
+mod tests;

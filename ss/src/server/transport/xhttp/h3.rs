@@ -33,8 +33,11 @@ use super::padding::post_response_headers;
 const MAX_POST_BYTES: usize = 256 * 1024;
 
 /// Dispatcher entry. Called from `h3/http.rs` once a non-CONNECT
-/// request has been classified as XHTTP by path lookup. The
-/// caller has already split the path into base + session id.
+/// request has been classified as XHTTP by path lookup. The caller
+/// has already split the path into base + session id and, when the
+/// URL was the xray / sing-box `<base>/<id>/<seq>` shape, the
+/// per-packet seq.
+#[allow(clippy::too_many_arguments)]
 pub(in crate::server) async fn handle_xhttp_h3_request(
     request: http::Request<()>,
     stream: RequestStream<BidiStream<Bytes>, Bytes>,
@@ -43,6 +46,7 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
     route: Arc<VlessTransportRoute>,
     base_path: Arc<str>,
     session_id: String,
+    path_seq: Option<u64>,
     peer_addr: SocketAddr,
 ) -> Result<()> {
     if !is_valid_session_id(&session_id) {
@@ -56,6 +60,11 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
 
     match (method, submode) {
         (Method::GET, XhttpSubmode::PacketUp) => {
+            // `<base>/<id>/<seq>` is uplink-only — a GET on this
+            // shape is a misrouted client, mirror the axum side.
+            if path_seq.is_some() {
+                return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
+            }
             xhttp_h3_get(
                 stream,
                 registry,
@@ -78,12 +87,18 @@ pub(in crate::server) async fn handle_xhttp_h3_request(
                 route,
                 base_path,
                 session_id,
+                path_seq,
                 version,
                 peer_addr,
             )
             .await
         },
         (Method::POST, XhttpSubmode::StreamOne) => {
+            // stream-one has no per-packet seq — `<id>/<seq>` is
+            // malformed for it.
+            if path_seq.is_some() {
+                return finish_with_status(stream, StatusCode::BAD_REQUEST).await;
+            }
             xhttp_h3_stream_one(
                 stream,
                 headers,
@@ -184,10 +199,13 @@ async fn xhttp_h3_post(
     route: Arc<VlessTransportRoute>,
     base_path: Arc<str>,
     session_id: String,
+    path_seq: Option<u64>,
     version: Version,
     peer_addr: SocketAddr,
 ) -> Result<()> {
-    let seq = match parse_seq(&headers) {
+    // Path-based seq (xray / sing-box default) wins over the header
+    // form, mirroring the axum-side rule.
+    let seq = match path_seq.or_else(|| parse_seq(&headers)) {
         Some(seq) => seq,
         None => return finish_with_status(stream, StatusCode::BAD_REQUEST).await,
     };

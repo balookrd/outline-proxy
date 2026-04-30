@@ -46,7 +46,7 @@ mod padding;
 
 pub(in crate::server) use duplex::XhttpDuplex;
 pub(in crate::server) use h3::handle_xhttp_h3_request;
-pub(in crate::server) use handlers::{XhttpAxumState, xhttp_handler};
+pub(in crate::server) use handlers::{XhttpAxumState, xhttp_handler, xhttp_handler_with_path_seq};
 pub(in crate::server) use padding::{generate_padding_header, masquerade_response_headers};
 
 /// HTTP request header carrying the in-order seq number for an

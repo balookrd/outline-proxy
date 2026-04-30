@@ -232,6 +232,163 @@ async fn xhttp_packet_up_tcp_echo_round_trip() -> Result<()> {
 }
 
 #[tokio::test]
+async fn xhttp_packet_up_path_based_seq_round_trip() -> Result<()> {
+    // xray / sing-box default placement puts the per-packet seq into
+    // the URL path (`<base>/<id>/<seq>`) rather than the
+    // `X-Xhttp-Seq` header. Without the second axum route this POST
+    // 404s and the client retries forever — the regression that
+    // surfaced as `happ` timing out on every XHTTP test connection.
+    let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    let upstream_addr = upstream.local_addr()?;
+    let upstream_task = tokio::spawn(async move {
+        let (mut stream, _) = upstream.accept().await?;
+        let mut got = [0_u8; 4];
+        stream.read_exact(&mut got).await?;
+        stream.write_all(b"pong").await?;
+        Result::<_, anyhow::Error>::Ok(got)
+    });
+
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+    let session_id = "xray-style-session-001";
+    let get_url = format!("http://{listen_addr}/xh/{session_id}");
+
+    let get_client = client.clone();
+    let get_url_for_task = get_url.clone();
+    let get_handle = tokio::spawn(async move {
+        let req = Request::builder()
+            .method(Method::GET)
+            .uri(&get_url_for_task)
+            .body(Full::new(Bytes::new()))?;
+        let resp = get_client.request(req).await?;
+        if resp.status() != StatusCode::OK {
+            bail!("GET status {}", resp.status());
+        }
+        let mut body = resp.into_body();
+        let bytes = read_body_until_at_least(&mut body, 6).await?;
+        Result::<_, anyhow::Error>::Ok(bytes)
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // POST goes to `<base>/<id>/<seq>` with NO `X-Xhttp-Seq` header.
+    // The server must pull the seq from the URL path.
+    let handshake = build_vless_tcp_handshake(upstream_addr, b"ping")?;
+    let post_url = format!("http://{listen_addr}/xh/{session_id}/0");
+    let post_req = Request::builder()
+        .method(Method::POST)
+        .uri(&post_url)
+        .body(Full::new(Bytes::from(handshake)))?;
+    let post_resp = client.request(post_req).await?;
+    assert_eq!(
+        post_resp.status(),
+        StatusCode::OK,
+        "path-based seq POST must succeed without X-Xhttp-Seq"
+    );
+
+    let received_upstream = tokio::time::timeout(Duration::from_secs(5), upstream_task)
+        .await???;
+    assert_eq!(&received_upstream, b"ping");
+
+    let downlink = tokio::time::timeout(Duration::from_secs(5), get_handle).await???;
+    assert_eq!(&downlink[..2], &[VERSION, 0x00], "vless response header");
+    assert_eq!(&downlink[2..6], b"pong", "echoed payload");
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_path_based_seq_overrides_header_seq() -> Result<()> {
+    // When a client supplies *both* a path-based seq and a header
+    // seq, the server must pick the path one. This pins the rule
+    // that path-based wins, so a future refactor cannot silently
+    // flip the precedence and break xray clients that happen to
+    // also include the header.
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+    let session_id = "both-seq-session-001";
+
+    // POST seq=1 on the URL but seq=99 in the header. seq=1 against
+    // a fresh session id (no GET yet, no prior POST) means the
+    // session does not exist yet → server should answer 410 GONE
+    // (because seq != 0). If the server picked the header (99), it
+    // would behave identically here, so use a follow-up: send seq=0
+    // first to create the session, then seq=1 with header seq=42 →
+    // server must accept (path seq=1 is the next-in-order packet).
+    let url_seq0 = format!("http://{listen_addr}/xh/{session_id}/0");
+    let req0 = Request::builder()
+        .method(Method::POST)
+        .uri(&url_seq0)
+        .header("x-xhttp-seq", "999") // server must ignore in favour of path
+        .body(Full::new(Bytes::from_static(b"")))?;
+    let resp0 = client.request(req0).await?;
+    assert_eq!(resp0.status(), StatusCode::OK, "seq=0 from path creates the session");
+
+    // Now seq=1 from path, but header says seq=999. The server must
+    // honour the path seq (so the in-order check succeeds), not the
+    // header.
+    let url_seq1 = format!("http://{listen_addr}/xh/{session_id}/1");
+    let req1 = Request::builder()
+        .method(Method::POST)
+        .uri(&url_seq1)
+        .header("x-xhttp-seq", "999")
+        .body(Full::new(Bytes::from_static(b"")))?;
+    let resp1 = client.request(req1).await?;
+    assert_eq!(resp1.status(), StatusCode::OK, "seq=1 from path is accepted next-in-order");
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_path_based_get_returns_bad_request() -> Result<()> {
+    // `<base>/<id>/<seq>` is uplink-only — a GET on this shape is a
+    // misrouted client. The handler must reject it with 400 instead
+    // of accidentally creating a session through the GET branch.
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+    let url = format!("http://{listen_addr}/xh/some-session-000/0");
+
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri(&url)
+        .body(Full::new(Bytes::new()))?;
+    let resp = client.request(req).await?;
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn xhttp_path_based_seq_non_numeric_returns_404() -> Result<()> {
+    // `<base>/<id>/<not-a-number>` does not match the path-seq route
+    // (axum's `Path<(String, u64)>` extractor fails on non-numeric)
+    // and also does not match the plain `<base>/<id>` route (extra
+    // path segment). The request falls through to the global
+    // not-found handler, returning 404 — so a stray client typo
+    // does not silently land on a packet-up POST.
+    let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
+    let client = http_client();
+    let url = format!("http://{listen_addr}/xh/some-session-000/not-a-number");
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(&url)
+        .body(Full::new(Bytes::from_static(b"x")))?;
+    let resp = client.request(req).await?;
+    assert!(
+        matches!(resp.status(), StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST),
+        "expected 404 / 400 for non-numeric seq, got {}",
+        resp.status(),
+    );
+
+    server.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn xhttp_post_to_unknown_session_with_seq_above_zero_returns_gone() -> Result<()> {
     let (listen_addr, server, _registry) = setup_xhttp_server("/xh").await?;
     let client = http_client();
