@@ -198,6 +198,36 @@ weight = 1.0
   припаркованный upstream вместо открытия новой сессии. UDP едет в
   том же XHTTP-carrier'е и наследует поведение реконнекта от TCP.
 
+### Submode: packet-up vs stream-one
+
+Wire-режим выбирается **только** через query-параметр `?mode=` в
+`vless_xhttp_url` — отдельного конфиг-поля нет. `XhttpSubmode`
+читается на каждом dial'е, так что менять можно прямо в URL.
+
+| URL                                              | Submode                |
+|--------------------------------------------------|------------------------|
+| `https://host/path/xhttp`                        | `packet-up` (default)  |
+| `https://host/path/xhttp?mode=packet-up`         | `packet-up` (явно)     |
+| `https://host/path/xhttp?mode=stream-one`        | `stream-one`           |
+| `https://host/path/xhttp?mode=stream_one`        | `stream-one` (alias)   |
+
+- **packet-up** (default) — один долгоживущий GET (downlink) плюс
+  pipeline POST'ов (uplink), упорядоченных через `X-Xhttp-Seq`. Каждый
+  uplink-чанк — отдельный короткий запрос. Максимально устойчив к
+  CDN'ам и middlebox'ам, которые буферизируют или закрывают
+  long-running POST body. Начинать стоит с него.
+- **stream-one** — один bidirectional POST: request body несёт
+  uplink, response body — downlink. Меньше overhead'а на чанк и ниже
+  latency на мелких пачках. Работает только на `xhttp_h2` / `xhttp_h3`
+  и только если путь не буферизирует POST body — прокси, которые ждут
+  end-of-request перед форвардом, застрянут на первом байте. На h3
+  `RequestStream` разделяется через `split`, так что uplink/downlink
+  половинки крутятся в отдельных tasks.
+
+Оба submode'а идут через один и тот же `connect_xhttp` driver, так что
+resume, fallback chain (`xhttp_h3 → xhttp_h2`) и механика окна
+даунгрейда у них одинаковые.
+
 ---
 
 ## Сводка
