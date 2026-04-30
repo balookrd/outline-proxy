@@ -39,6 +39,7 @@ pub(crate) struct UplinkPayload {
     pub(crate) udp_ws_url: Option<String>,
     pub(crate) udp_mode: Option<String>,
     pub(crate) vless_ws_url: Option<String>,
+    pub(crate) vless_xhttp_url: Option<String>,
     pub(crate) vless_mode: Option<String>,
     pub(crate) tcp_addr: Option<String>,
     pub(crate) udp_addr: Option<String>,
@@ -525,6 +526,7 @@ fn payload_to_table(payload: &UplinkPayload) -> Table {
     set_str(&mut tbl, "udp_ws_url", payload.udp_ws_url.as_deref());
     set_str(&mut tbl, "udp_mode", payload.udp_mode.as_deref());
     set_str(&mut tbl, "vless_ws_url", payload.vless_ws_url.as_deref());
+    set_str(&mut tbl, "vless_xhttp_url", payload.vless_xhttp_url.as_deref());
     set_str(&mut tbl, "vless_mode", payload.vless_mode.as_deref());
     set_str(&mut tbl, "tcp_addr", payload.tcp_addr.as_deref());
     set_str(&mut tbl, "udp_addr", payload.udp_addr.as_deref());
@@ -569,6 +571,9 @@ fn merge_patch_into_table(tbl: &mut Table, patch: &UplinkPayload) {
     }
     if let Some(v) = patch.vless_ws_url.as_deref() {
         set_str(tbl, "vless_ws_url", Some(v));
+    }
+    if let Some(v) = patch.vless_xhttp_url.as_deref() {
+        set_str(tbl, "vless_xhttp_url", Some(v));
     }
     if let Some(v) = patch.vless_mode.as_deref() {
         set_str(tbl, "vless_mode", Some(v));
