@@ -58,6 +58,7 @@
 
 ### Изменено
 
+- Восстановлен паритет EN/RU README. В RU вернули пропавший раздел "Чистый Shadowsocks-сокет" (deployment mode #3) и перепронумеровали SNI/HTTP-fallback'и под EN, перенесли блок "Настройка производительности HTTP/3" в его EN-позицию (после "Наблюдаемости", перед "Production-эксплуатацией"), обновили список Prometheus-метрик под актуальные эмиттеры (smaps virtual-mapping, thread count и т.д.) вместо устаревших упоминаний `[heap]` и legacy allocator-trim, и привели строку "VLESS поверх WebSocket" в feature-table к EN-варианту (доступно поверх h1/h2/h3). Количество секций, bullet'ов, таблиц и code-fence'ов теперь совпадают по всем пяти двуязычным докам (README, ARCHITECTURE, SESSION-RESUMPTION, PATCHES, CHANGELOG).
 - Tuning-параметры (`client_active_ttl_secs`, `udp_nat_idle_timeout_secs`, `udp_max_concurrent_relay_tasks`) перенесены из топ-левела конфига в `TuningProfile` внутри секции `[tuning]`. **Breaking change**: конфиги со старыми топ-левел ключами не проходят `deny_unknown_fields`.
 - Поле `vless_ws_path` у `[[users]]` переименовано в `ws_path_vless` для единообразия с `ws_path_tcp` / `ws_path_udp`. JSON-поле control API и форма дашборда тоже используют новое имя. **Breaking change**: конфиги и API-клиенты со старым именем не проходят `deny_unknown_fields`.
 - Модуль метрик разбит на специализированные субмодули (`labels`, `registry`, `guards`, `sampler`, `render`).
