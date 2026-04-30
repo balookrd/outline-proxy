@@ -28,13 +28,14 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use http_body_util::BodyExt;
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use tokio::{io::AsyncWriteExt, net::TcpStream, time::Duration};
 use tracing::{debug, warn};
 
 use super::shared::{
     HttpFallbackContext, build_upstream_parts, collect_connection_tokens, is_hop_by_hop,
 };
+use crate::config::BackendProto;
 use crate::server::auth::build_not_found_response;
 use crate::server::state::AppState;
 use crate::server::transport::proxy_protocol::encode_proxy_protocol;
@@ -92,28 +93,48 @@ async fn proxy_to_backend(
         stream
     };
 
-    let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
-        .preserve_header_case(true)
-        .handshake::<_, Body>(TokioIo::new(stream))
-        .await
-        .context("failed to handshake with upstream")?;
-
-    let conn_task = tokio::spawn(async move {
-        if let Err(error) = conn.await {
-            debug!(?error, "http fallback upstream connection ended with error");
-        }
-    });
-
-    let response = sender
-        .send_request(upstream_req)
-        .await
-        .context("failed to send request to upstream")?;
-    drop(sender);
+    // Two builders, one shape: handshake → spawn the connection
+    // driver task → send the request and hand back the response.
+    // The driver keeps running after `sender` is dropped; the
+    // response body channel keeps working as long as the task is
+    // alive. We discard the JoinHandle on purpose — the task ends
+    // when the body is consumed and the connection closes.
+    let response = match ctx.config.backend_proto {
+        BackendProto::H1 => {
+            let (mut sender, conn) = hyper::client::conn::http1::Builder::new()
+                .preserve_header_case(true)
+                .handshake::<_, Body>(TokioIo::new(stream))
+                .await
+                .context("failed to handshake with upstream over HTTP/1.1")?;
+            tokio::spawn(async move {
+                if let Err(error) = conn.await {
+                    debug!(?error, "h1 upstream connection ended with error");
+                }
+            });
+            sender
+                .send_request(upstream_req)
+                .await
+                .context("failed to send request to upstream over HTTP/1.1")?
+        },
+        BackendProto::H2 => {
+            // Prior-knowledge h2c: no ALPN, no Upgrade. Upstream MUST
+            // be configured to expect h2 directly on this listen port.
+            let (mut sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+                .handshake::<_, Body>(TokioIo::new(stream))
+                .await
+                .context("failed to handshake with upstream over HTTP/2")?;
+            tokio::spawn(async move {
+                if let Err(error) = conn.await {
+                    debug!(?error, "h2 upstream connection ended with error");
+                }
+            });
+            sender
+                .send_request(upstream_req)
+                .await
+                .context("failed to send request to upstream over HTTP/2")?
+        },
+    };
     let (resp_parts, resp_body) = response.into_parts();
-    // Surface any framing-level error from the connection task by
-    // letting it run to completion; the body's read side joins it
-    // implicitly via the channel.
-    drop(conn_task);
 
     let mut builder = Response::builder().status(resp_parts.status);
     let resp_headers = builder.headers_mut().expect("response builder ok");

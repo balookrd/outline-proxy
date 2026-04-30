@@ -180,6 +180,11 @@ pub(super) struct HttpFallbackSection {
     /// upstream MUST be configured to expect the matching version
     /// (e.g. nginx `proxy_protocol on;` on the listen directive).
     pub proxy_protocol: Option<String>,
+    /// HTTP version to use when talking to the backend: `"h1"`
+    /// (default, plain HTTP/1.1) or `"h2"` (HTTP/2 in prior-knowledge
+    /// mode, i.e. h2c without ALPN). Independent of what the inbound
+    /// client speaks.
+    pub backend_proto: Option<String>,
 }
 
 /// `[sni_fallback]` block. When present and the inbound TCP listener
