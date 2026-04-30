@@ -126,6 +126,61 @@ fn payload_round_trip_validates_as_section() {
 }
 
 #[test]
+fn vless_xhttp_payload_round_trips_through_table() {
+    // Regression: the CRUD payload originally lacked `vless_xhttp_url`,
+    // so editing or creating an XHTTP-mode uplink through the dashboard
+    // 400'd with `unknown field` (UplinkPayload uses
+    // `deny_unknown_fields`). The full triple — vless_xhttp_url +
+    // vless_mode + vless_id — must survive payload → toml table → toml
+    // section without loss.
+    let payload = UplinkPayload {
+        name: Some("vx".into()),
+        transport: Some("vless".into()),
+        vless_xhttp_url: Some("https://example.com/SECRET/xhttp".into()),
+        vless_mode: Some("xhttp_h3".into()),
+        vless_id: Some("11111111-2222-3333-4444-555555555555".into()),
+        ..Default::default()
+    };
+    let tbl = payload_to_table(&payload);
+    let rendered = tbl.to_string();
+    assert!(rendered.contains("vless_xhttp_url"), "field missing:\n{rendered}");
+    assert!(rendered.contains("xhttp_h3"));
+    let section = payload_to_section(&payload, Some("core")).unwrap();
+    assert!(section.vless_xhttp_url.is_some());
+    validate_uplink_section(&section, 0).unwrap();
+}
+
+#[test]
+fn merge_patch_updates_vless_xhttp_url() {
+    let mut doc = r#"
+[[uplink_group]]
+name = "core"
+
+[[outline.uplinks]]
+name = "vx"
+group = "core"
+transport = "vless"
+vless_xhttp_url = "https://old.example.com/A/xhttp"
+vless_mode = "xhttp_h2"
+vless_id = "11111111-2222-3333-4444-555555555555"
+"#
+    .parse::<DocumentMut>()
+    .unwrap();
+    let arr = get_or_init_outline_uplinks(&mut doc);
+    let idx = find_outline_uplink_index(arr, "core", "vx").unwrap();
+    let patch = UplinkPayload {
+        vless_xhttp_url: Some("https://new.example.com/B/xhttp".into()),
+        vless_mode: Some("xhttp_h3".into()),
+        ..Default::default()
+    };
+    merge_patch_into_table(arr.get_mut(idx).unwrap(), &patch);
+    let rendered = doc.to_string();
+    assert!(rendered.contains("https://new.example.com/B/xhttp"));
+    assert!(rendered.contains("xhttp_h3"));
+    assert!(!rendered.contains("https://old.example.com/A/xhttp"));
+}
+
+#[test]
 fn validation_rejects_missing_password_for_shadowsocks() {
     let payload = UplinkPayload {
         name: Some("u9".into()),

@@ -226,7 +226,10 @@ function getUplinkConfig(group, name) {
 }
 
 const TRANSPORTS = ["shadowsocks", "vless"];
-const WS_MODES = ["", "http1", "http2", "http3"];
+// `tcp_mode` / `udp_mode` apply to `transport = "ws"` (Shadowsocks-over-WS).
+// XHTTP modes are VLESS-only, so they live in VLESS_MODES instead.
+const WS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic"];
+const VLESS_MODES = ["", "ws_h1", "ws_h2", "ws_h3", "quic", "xhttp_h2", "xhttp_h3"];
 
 function escapeHtml(value) {
   return String(value == null ? "" : value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
@@ -294,8 +297,12 @@ function renderGroups() {
       if (cfg.tcp_addr) chips.push(`<span class="meta-chip">TCP <strong>${escapeHtml(cfg.tcp_addr)}</strong></span>`);
       if (cfg.udp_addr) chips.push(`<span class="meta-chip">UDP <strong>${escapeHtml(cfg.udp_addr)}</strong></span>`);
       if (cfg.tcp_ws_url) chips.push(`<span class="meta-chip">TCP WS <strong>${escapeHtml(cfg.tcp_ws_url)}</strong></span>`);
+      if (cfg.tcp_mode) chips.push(`<span class="meta-chip">TCP mode <strong>${escapeHtml(cfg.tcp_mode)}</strong></span>`);
       if (cfg.udp_ws_url) chips.push(`<span class="meta-chip">UDP WS <strong>${escapeHtml(cfg.udp_ws_url)}</strong></span>`);
+      if (cfg.udp_mode) chips.push(`<span class="meta-chip">UDP mode <strong>${escapeHtml(cfg.udp_mode)}</strong></span>`);
       if (cfg.vless_ws_url) chips.push(`<span class="meta-chip">VLESS WS <strong>${escapeHtml(cfg.vless_ws_url)}</strong></span>`);
+      if (cfg.vless_xhttp_url) chips.push(`<span class="meta-chip">VLESS XHTTP <strong>${escapeHtml(cfg.vless_xhttp_url)}</strong></span>`);
+      if (cfg.vless_mode) chips.push(`<span class="meta-chip">VLESS mode <strong>${escapeHtml(cfg.vless_mode)}</strong></span>`);
       if (cfg.method) chips.push(`<span class="meta-chip">${escapeHtml(cfg.method)}</span>`);
       if (cfg.weight != null) chips.push(`<span class="meta-chip">w=${escapeHtml(cfg.weight)}</span>`);
       if (cfg.fwmark != null) chips.push(`<span class="meta-chip">fwmark=${escapeHtml(cfg.fwmark)}</span>`);
@@ -340,12 +347,13 @@ const FIELDS = [
   { key: "method",      label: "Cipher" },
   { key: "password",    label: "Password" },
   { key: "vless_id",    label: "VLESS id" },
-  { key: "tcp_ws_url",   label: "TCP WS URL" },
-  { key: "tcp_mode",  label: "TCP mode", type: "select", options: WS_MODES },
-  { key: "udp_ws_url",   label: "UDP WS URL" },
-  { key: "udp_mode",  label: "UDP mode", type: "select", options: WS_MODES },
-  { key: "vless_ws_url",  label: "VLESS WS URL" },
-  { key: "vless_ws_mode", label: "VLESS WS mode", type: "select", options: WS_MODES },
+  { key: "tcp_ws_url",     label: "TCP WS URL (transport=ws)" },
+  { key: "tcp_mode",       label: "TCP mode (transport=ws)", type: "select", options: WS_MODES },
+  { key: "udp_ws_url",     label: "UDP WS URL (transport=ws)" },
+  { key: "udp_mode",       label: "UDP mode (transport=ws)", type: "select", options: WS_MODES },
+  { key: "vless_ws_url",   label: "VLESS WS URL (vless_mode=ws_*/quic)" },
+  { key: "vless_xhttp_url", label: "VLESS XHTTP URL (vless_mode=xhttp_*)" },
+  { key: "vless_mode",     label: "VLESS mode", type: "select", options: VLESS_MODES },
   { key: "weight",      label: "Weight", type: "number" },
   { key: "fwmark",      label: "fwmark", type: "number" },
   { key: "ipv6_first",  label: "IPv6 first", type: "select", options: ["", "true", "false"] },
