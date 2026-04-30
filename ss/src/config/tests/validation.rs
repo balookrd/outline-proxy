@@ -234,7 +234,10 @@ fn rejects_vless_id_without_any_path() {
     .unwrap_err()
     .to_string();
 
-    assert!(error.contains("user alice vless_id requires ws_path_vless"));
+    assert!(
+        error.contains("user alice vless_id requires at least one transport"),
+        "unexpected error: {error}"
+    );
 }
 
 #[test]
