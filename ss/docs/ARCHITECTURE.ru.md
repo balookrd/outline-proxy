@@ -17,13 +17,20 @@ flowchart TD
     end
 
     subgraph CORE["outline-ss-rust"]
-        ROUTER["Маршрутизатор путей"]
+        SNID["L4: SNI dispatch (опционально)"]
+        ROUTER["L7: Маршрутизатор путей"]
         FILTER["Фильтр пользователей по пути"]
         CRYPTO["Shadowsocks AEAD расшифровка / шифрование"]
         VLESS["VLESS UUID-аутентификация + mux.cool/XUDP"]
         TCPR["TCP relay"]
         UDPR["UDP relay"]
+        HTTPF["HTTP fallback (опционально)"]
         METRICS["Метрики Prometheus"]
+    end
+
+    subgraph BACKEND["Маскировочный backend (haproxy / nginx / caddy)"]
+        BSNI["TLS-терминатор для чужих SNI"]
+        BWEB["Обычный HTTP-origin"]
     end
 
     subgraph UPSTREAM["Upstream-сеть"]
@@ -36,13 +43,17 @@ flowchart TD
     CLIENT --> H2
     CLIENT --> H3
 
-    H1 --> ROUTER
-    H2 --> ROUTER
+    H1 --> SNID
+    H2 --> SNID
     H3 --> ROUTER
+    SNID -- "наш SNI" --> ROUTER
+    SNID -- "чужой / без SNI" --> BSNI
 
     ROUTER --> FILTER
     FILTER --> CRYPTO
     ROUTER --> VLESS
+    ROUTER -- "не наш HTTP-путь" --> HTTPF
+    HTTPF --> BWEB
     CRYPTO --> TCPR
     CRYPTO --> UDPR
     VLESS --> TCPR
@@ -69,6 +80,33 @@ flowchart TD
 - Опциональный QUIC-слушатель для HTTP/3
 
 Метрики Prometheus обслуживаются отдельным опциональным слушателем, чтобы операционный трафик не делил WebSocket-путь с основным ingress.
+
+## Слои маскировки
+
+Две независимые ручки fallback'а делают публичный листенер неотличимым от обычного веб-фронтенда для пассивных сканеров. Обе по умолчанию выключены.
+
+### L4: SNI dispatch (`[sni_fallback]`)
+
+Активен только когда основной TCP-слушатель терминирует TLS. До вызова `tokio_rustls::TlsAcceptor::accept` каждый принятый стрим подсматривается одноразовым `rustls::server::Acceptor`'ом:
+
+1. Читаем в небольшой буфер до тех пор, пока Acceptor не отдаст распарсенный ClientHello (или пока не превышен `max_client_hello_bytes` — малформированные handshake'и закрываются локально, чтобы не попасть в логи бэкенда).
+2. Захваченные байты сохраняются дословно и больше с провода не считываются.
+3. Если распарсенный SNI совпал с `match_sni` (case-insensitive; nginx-style `*.example.com` матчит ровно один лейбл слева), байты воспроизводятся в наш TLS-терминатор через обёртку `PrependStream`, которая на `poll_read` сначала отдаёт префикс, а потом проваливается в нижележащий сокет. Дальше handshake продолжается обычным путём, и dispatcher передаёт управление на L7.
+4. Иначе (или если SNI не было и `allow_no_sni = false`), открывается новое TCP-соединение к `backend`, опционально префиксится HAProxy PROXY-protocol v1/v2 заголовок, дописывается захваченный ClientHello и запускается `tokio::io::copy_bidirectional` до закрытия одной из сторон.
+
+HTTP/3 листенер в дёрже не участвует — quinn парсит SNI до того, как наш код видит соединение, а маршрутизация туда требует отдельного слоя.
+
+### L7: HTTP fallback (`[http_fallback]`)
+
+Активен для каждого TLS-терминированного (или plain) HTTP-запроса, который не попал ни в один сконфигурированный WebSocket / XHTTP / metrics / control / dashboard маршрут. Вместо `404` axum'овский fallback-обработчик reverse-proxy'ит запрос в `backend` через per-request соединение `hyper::client::conn::http1`:
+
+- Hop-by-hop заголовки (RFC 7230 §6.1 + всё перечисленное в `Connection:`) срезаются в обе стороны.
+- `Host` заменяется на authority бэкенда (поведение nginx-овского `proxy_set_header Host $proxy_host;`).
+- URI пересобирается в origin-form, чтобы бэкенд парсил его как обычный запрос, а не как proxy CONNECT.
+- `X-Forwarded-{For,Proto,Host}` добавляются/выставляются по тумблерам; `X-Forwarded-Proto` отражает, терминировал ли входящий листенер TLS.
+- Опциональный `proxy_protocol = "v1" | "v2"` префиксит HAProxy PROXY-protocol заголовок к upstream TCP-соединению, чтобы бэкенд логировал реальный IP клиента.
+
+Оба fallback'а используют общий `transport::proxy_protocol::encode_proxy_protocol`, поэтому wire-форма v1/v2 идентична между L4-сплайсами и L7-коннектами. Адрес назначения берётся из bind-адреса входящего листенера и деградирует до UNKNOWN (v1) / UNSPEC (v2), если bind на `0.0.0.0` / `[::]`.
 
 ## Маршрутизация запросов
 
@@ -276,3 +314,4 @@ sequenceDiagram
 3. Держите TCP и UDP WebSocket-пути раздельными.
 4. Используйте отдельные пути на пользователя для более чёткой сегментации трафика или поэтапного развёртывания.
 5. Резервируйте переопределения шифра на пользователя для сценариев совместимости или миграции, а не применяйте их произвольно.
+6. Для публичных деплойментов включайте слои маскировки — `[sni_fallback]` сплайсит чужие SNI на полноценный TLS-фронтенд (например, default-блок haproxy / nginx), `[http_fallback]` reverse-proxy'ит «не наши» HTTP-пути на обычный origin. Оба убирают сигналы по умолчанию (`404` / TLS-handshake-fail), по которым сканеры fingerprint'ят VPN-листенеры. На `[sni_fallback]` настоятельно рекомендуется PROXY-protocol v1/v2, чтобы бэкенд по-прежнему видел реальный IP клиента.

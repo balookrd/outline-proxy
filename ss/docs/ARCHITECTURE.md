@@ -17,13 +17,20 @@ flowchart TD
     end
 
     subgraph CORE["outline-ss-rust"]
-        ROUTER["Path Router"]
+        SNID["L4: SNI Dispatch (optional)"]
+        ROUTER["L7: Path Router"]
         FILTER["Per-path User Filter"]
         CRYPTO["Shadowsocks AEAD Decrypt / Encrypt"]
         VLESS["VLESS UUID Auth + mux.cool/XUDP"]
         TCPR["TCP Relay"]
         UDPR["UDP Relay"]
+        HTTPF["HTTP fallback (optional)"]
         METRICS["Prometheus Metrics"]
+    end
+
+    subgraph BACKEND["Camouflage Backend (haproxy / nginx / caddy)"]
+        BSNI["Foreign-SNI TLS terminator"]
+        BWEB["HTTP origin server"]
     end
 
     subgraph UPSTREAM["Upstream Network"]
@@ -36,13 +43,17 @@ flowchart TD
     CLIENT --> H2
     CLIENT --> H3
 
-    H1 --> ROUTER
-    H2 --> ROUTER
+    H1 --> SNID
+    H2 --> SNID
     H3 --> ROUTER
+    SNID -- "matched SNI" --> ROUTER
+    SNID -- "foreign SNI / no SNI" --> BSNI
 
     ROUTER --> FILTER
     FILTER --> CRYPTO
     ROUTER --> VLESS
+    ROUTER -- "unmatched HTTP path" --> HTTPF
+    HTTPF --> BWEB
     CRYPTO --> TCPR
     CRYPTO --> UDPR
     VLESS --> TCPR
@@ -69,6 +80,33 @@ The server may run up to three listeners:
 - Optional QUIC listener for HTTP/3
 
 Prometheus metrics are served from a separate optional listener so that operational traffic does not share the WebSocket ingress path.
+
+## Camouflage Layers
+
+Two independent fallback knobs make the public listener look indistinguishable from a regular web frontend to passive scanners. Both are off by default.
+
+### L4: SNI dispatch (`[sni_fallback]`)
+
+Active only when the main TCP listener terminates TLS. Before `tokio_rustls::TlsAcceptor::accept` runs, every incoming stream is peeked with a throw-away `rustls::server::Acceptor`:
+
+1. Read into a small buffer until the Acceptor delivers a parsed ClientHello (or `max_client_hello_bytes` is exceeded — malformed handshakes are closed locally so they never reach the backend logs).
+2. The buffered bytes are kept verbatim and never re-read from the wire.
+3. If the parsed SNI matches `match_sni` (case-insensitive; nginx-style `*.example.com` matches one label to the left), the bytes are replayed into the local TLS terminator via a `PrependStream` wrapper that drains the prefix on `poll_read` before falling through to the underlying socket. Handshake then continues normally and the dispatcher hands off to L7.
+4. Otherwise (or when no SNI was sent and `allow_no_sni = false`), a fresh TCP connection is opened to `backend`, an optional HAProxy PROXY-protocol v1/v2 header is prepended, the captured ClientHello is written, and `tokio::io::copy_bidirectional` runs until either side closes.
+
+The HTTP/3 listener is unaffected — quinn parses SNI before our code sees the stream, and routing it would need separate plumbing.
+
+### L7: HTTP fallback (`[http_fallback]`)
+
+Active for every TLS-terminated (or plain) HTTP request that does not hit a configured WebSocket / XHTTP / metrics / control / dashboard route. Instead of returning `404`, axum's fallback handler reverse-proxies the request to `backend` over a per-request `hyper::client::conn::http1` connection:
+
+- Hop-by-hop headers (RFC 7230 §6.1 + anything listed in `Connection:`) are stripped on both directions.
+- `Host` is rewritten to the backend authority (mirrors nginx's `proxy_set_header Host $proxy_host;`).
+- The URI is rebuilt in origin-form so the backend parses it as a normal request, not a proxy CONNECT.
+- `X-Forwarded-{For,Proto,Host}` are appended/set per per-feature toggles; `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS.
+- Optional `proxy_protocol = "v1" | "v2"` prepends a HAProxy PROXY-protocol header to the upstream TCP connection so the backend logs the real client IP.
+
+Both fallbacks share `transport::proxy_protocol::encode_proxy_protocol` so v1/v2 wire form is identical between L4 splices and L7 connects. The destination address is the inbound listener's bind addr, degrading to UNKNOWN (v1) / UNSPEC (v2) when bound to `0.0.0.0` / `[::]`.
 
 ## Request Routing
 
@@ -276,3 +314,4 @@ Recommended production pattern:
 3. Keep TCP and UDP WebSocket paths distinct.
 4. Use separate per-user paths when you want cleaner traffic segmentation or staged rollouts.
 5. Reserve per-user cipher overrides for compatibility or migration scenarios rather than using them arbitrarily.
+6. For public deployments add the camouflage layers — `[sni_fallback]` to splice foreign SNIs to a real TLS frontend (e.g. a default haproxy / nginx server block), `[http_fallback]` to reverse-proxy unmatched HTTP paths to a regular origin. Both replace the default `404` / TLS-handshake-fail signal that probes use to fingerprint VPN listeners. PROXY-protocol v1/v2 is strongly recommended on `[sni_fallback]` so the backend still sees the real client IP.
