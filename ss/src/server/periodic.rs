@@ -11,7 +11,7 @@ use crate::{clock, config::Config, metrics::Metrics, outbound::OutboundIpv6};
 use super::{
     constants::{
         DNS_CACHE_STALE_GRACE_SECS, DNS_CACHE_SWEEP_INTERVAL_SECS, NAT_EVICTION_INTERVAL_SECS,
-        ORPHAN_SWEEP_INTERVAL_SECS,
+        ORPHAN_SWEEP_INTERVAL_SECS, XHTTP_EVICTION_INTERVAL_SECS,
     },
     services::Built,
     shutdown::{ShutdownSender, ShutdownSignal},
@@ -124,6 +124,34 @@ pub(super) fn spawn_maintenance(
                                 debug!(purged, "swept expired orphan-registry entries");
                             }
                         }
+                    }
+                }
+            },
+        );
+    }
+
+    // XHTTP registry janitor: evicts sessions that have been idle past
+    // `SESSION_IDLE_EVICTION` (60 s, defined inside the xhttp module).
+    // Without this loop a session created by the GET handler whose
+    // relay never started (client dropped before the first POST) sits
+    // in the registry for the whole process lifetime.
+    {
+        let registry = Arc::clone(&built.services.xhttp_registry);
+        let mut sd = shutdown.clone();
+        spawn_supervised(
+            "xhttp_registry_eviction",
+            Arc::clone(&built.services.tcp_server.metrics),
+            Arc::clone(&shutdown_sender),
+            async move {
+                let mut interval =
+                    tokio::time::interval(Duration::from_secs(XHTTP_EVICTION_INTERVAL_SECS));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                interval.tick().await;
+                loop {
+                    tokio::select! {
+                        biased;
+                        _ = sd.cancelled() => break,
+                        _ = interval.tick() => registry.evict_idle(),
                     }
                 }
             },

@@ -63,7 +63,7 @@ use self::{
         serve_tcp_listener,
     },
     h3::serve_h3_server,
-    setup::{describe_user_routes, describe_vless_user_routes},
+    setup::{describe_user_routes, describe_vless_user_routes, describe_vless_xhttp_user_routes},
     shadowsocks::{SsTcpCtx, SsUdpCtx, serve_ss_tcp_listener, serve_ss_udp_socket},
     shutdown::{shutdown_channel, wait_for_shutdown_signal},
 };
@@ -128,6 +128,8 @@ pub async fn run(config: Config) -> Result<()> {
     }
     let user_routes = describe_user_routes(built.user_routes.as_ref());
     let vless_user_routes = describe_vless_user_routes(built.vless_user_routes.as_ref());
+    let vless_xhttp_user_routes =
+        describe_vless_xhttp_user_routes(built.vless_xhttp_user_routes.as_ref());
     info!(
         listen = ?config.listen,
         ss_listen = ?config.ss_listen,
@@ -146,6 +148,7 @@ pub async fn run(config: Config) -> Result<()> {
         xhttp_paths = ?xhttp_paths,
         user_routes = ?user_routes,
         vless_user_routes = ?vless_user_routes,
+        vless_xhttp_user_routes = ?vless_xhttp_user_routes,
         method = ?config.method,
         users = built.users.len(),
         udp_nat_idle_timeout_secs = config.tuning.udp_nat_idle_timeout_secs,

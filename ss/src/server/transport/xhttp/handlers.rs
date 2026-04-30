@@ -231,7 +231,6 @@ async fn xhttp_get(
     );
     let (session, created) = state.registry.get_or_create(
         &session_id,
-        state.parent.services.vless_server.ws_data_channel_capacity,
         resume_for_create.issued_session_id,
     );
 
@@ -315,11 +314,7 @@ async fn xhttp_post(
     // dead session — at that point the client is replaying old
     // packets to a registry slot that has been swept.
     let (session, created) = if seq == 0 {
-        state.registry.get_or_create(
-            &session_id,
-            state.parent.services.vless_server.ws_data_channel_capacity,
-            resume_for_create.issued_session_id,
-        )
+        state.registry.get_or_create(&session_id, resume_for_create.issued_session_id)
     } else {
         match state.registry.get(&session_id) {
             Some(s) => (s, false),
@@ -429,7 +424,6 @@ async fn xhttp_stream_one(
     );
     let (session, created) = state.registry.get_or_create(
         &session_id,
-        state.parent.services.vless_server.ws_data_channel_capacity,
         resume_for_create.issued_session_id,
     );
     if session.is_closed() {

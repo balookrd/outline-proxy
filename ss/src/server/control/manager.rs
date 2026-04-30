@@ -297,19 +297,44 @@ impl UserManager {
             }
         }
         if entry.vless_id.is_some() {
-            let path = entry
+            let ws_path = entry
                 .ws_path_vless
                 .as_deref()
-                .or(self.default_ws_path_vless.as_deref())
-                .ok_or_else(|| anyhow!("vless_id requires ws_path_vless"))?;
-            if !path.starts_with('/') {
-                bail!("ws_path_vless must start with '/'");
-            }
-            if !self.allowed_vless_paths.contains(path) {
+                .or(self.default_ws_path_vless.as_deref());
+            let xhttp_path = entry
+                .xhttp_path_vless
+                .as_deref()
+                .or(self.default_xhttp_path_vless.as_deref());
+            if ws_path.is_none() && xhttp_path.is_none() {
                 bail!(
-                    "ws_path_vless {path:?} was not registered at startup; restart the \
-                     server after adding it to the config file"
+                    "vless_id requires at least one of ws_path_vless or xhttp_path_vless"
                 );
+            }
+            if let Some(path) = ws_path {
+                if !path.starts_with('/') {
+                    bail!("ws_path_vless must start with '/'");
+                }
+                if !self.allowed_vless_paths.contains(path) {
+                    bail!(
+                        "ws_path_vless {path:?} was not registered at startup; restart the \
+                         server after adding it to the config file"
+                    );
+                }
+            }
+            if let Some(path) = xhttp_path {
+                if !path.starts_with('/') {
+                    bail!("xhttp_path_vless must start with '/'");
+                }
+                // Symmetric to the ws_path_vless check above —
+                // pre-registered route set is the dispatch contract;
+                // the live router cannot grow new routes until the
+                // next process restart.
+                if !self.allowed_xhttp_paths.contains(path) {
+                    bail!(
+                        "xhttp_path_vless {path:?} was not registered at startup; restart \
+                         the server after adding it to the config file"
+                    );
+                }
             }
         }
         Ok(())

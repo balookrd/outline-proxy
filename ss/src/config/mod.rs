@@ -160,15 +160,11 @@ pub struct Config {
 /// listener returns 404 for unmatched paths, exactly as before.
 #[derive(Debug, Clone)]
 pub struct HttpFallbackConfig {
-    /// Scheme of the upstream backend. Always `http` in the MVP.
-    pub backend_scheme: String,
-    /// `host:port` of the upstream backend.
+    /// `host:port` of the upstream backend. Scheme is fixed to `http`
+    /// in the MVP — TLS to the backend is intentionally out of scope
+    /// (the backend is expected to live on loopback or a trusted
+    /// private network).
     pub backend_authority: String,
-    /// Backend host without the port (used for the outgoing `Host` header).
-    pub backend_host: String,
-    /// Backend port (used by the connector and for the `Host` header
-    /// when it is not the scheme default).
-    pub backend_port: u16,
     /// Per-request timeout: connect + receive headers + receive body.
     pub request_timeout_secs: u64,
     pub add_x_forwarded_for: bool,
@@ -411,10 +407,7 @@ impl HttpFallbackConfig {
             anyhow::bail!("http_fallback.request_timeout_secs must be > 0");
         }
         Ok(Some(Self {
-            backend_scheme: scheme,
             backend_authority: authority,
-            backend_host: host,
-            backend_port: port,
             request_timeout_secs,
             add_x_forwarded_for: section.add_x_forwarded_for.unwrap_or(true),
             add_x_forwarded_proto: section.add_x_forwarded_proto.unwrap_or(true),

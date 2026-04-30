@@ -122,6 +122,13 @@ pub(super) fn describe_vless_user_routes(routes: &[VlessUserRoute]) -> Vec<Strin
         .collect()
 }
 
+pub(super) fn describe_vless_xhttp_user_routes(routes: &[VlessXhttpUserRoute]) -> Vec<String> {
+    routes
+        .iter()
+        .map(|route| format!("{} xhttp={}", route.user.label(), route.xhttp_path))
+        .collect()
+}
+
 pub(super) fn build_user_routes(config: &Config) -> Result<Arc<[UserRoute]>> {
     Ok(Arc::from(
         config
