@@ -345,8 +345,8 @@ impl UplinkManager {
                 &candidate.uplink.name,
                 "miss",
             );
-            let udp_ws_url = candidate.uplink.vless_ws_url.as_ref().ok_or_else(|| {
-                anyhow!("vless_ws_url is not configured for uplink {}", candidate.uplink.name)
+            let udp_ws_url = candidate.uplink.udp_dial_url().ok_or_else(|| {
+                anyhow!("vless dial URL is not configured for uplink {}", candidate.uplink.name)
             })?;
             let uuid = candidate.uplink.vless_id.ok_or_else(|| {
                 anyhow!("uplink {} is VLESS but has no vless_id", candidate.uplink.name)

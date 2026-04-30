@@ -154,9 +154,8 @@ pub(super) async fn connect_probe_tcp(
             let ws_stream = connect_websocket_with_source(
                 cache,
                 uplink
-                    .vless_ws_url
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless_ws_url", uplink.name))?,
+                    .tcp_dial_url()
+                    .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
                 effective_tcp_mode,
                 uplink.fwmark,
                 uplink.ipv6_first,
@@ -164,7 +163,7 @@ pub(super) async fn connect_probe_tcp(
             )
             .await
             .with_context(|| TransportOperation::Connect {
-                target: format!("{probe_label} vless websocket for uplink {}", uplink.name),
+                target: format!("{probe_label} vless transport for uplink {}", uplink.name),
             })?;
             let downgraded_from = ws_stream.downgraded_from();
             let shared_conn_info = ws_stream.shared_connection_info();
