@@ -41,6 +41,7 @@ fn base_config() -> Config {
         access_key: Default::default(),
         tuning: super::super::TuningProfile::LARGE,
         session_resumption: Default::default(),
+        http_fallback: None,
     }
 }
 

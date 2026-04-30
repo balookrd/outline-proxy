@@ -14,7 +14,10 @@ use anyhow::Result;
 use clap::Parser;
 
 use cli::ConfigArgs;
-use file::{FileConfig, SessionResumptionSection, default_config_path_if_exists, load_file_config};
+use file::{
+    FileConfig, HttpFallbackSection, SessionResumptionSection, default_config_path_if_exists,
+    load_file_config,
+};
 
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
 pub use user_entry::{CipherKind, ConfigError, UserEntry};
@@ -141,6 +144,109 @@ pub struct Config {
     /// disabled; opt in via `[session_resumption]` in the config file.
     /// See `docs/SESSION-RESUMPTION.md`.
     pub session_resumption: SessionResumptionConfig,
+    /// Reverse-proxy unmatched HTTP requests to an upstream backend.
+    /// `None` keeps the legacy 404 behaviour. Configure via
+    /// `[http_fallback]` in the config file.
+    pub http_fallback: Option<HttpFallbackConfig>,
+}
+
+/// Resolved `[http_fallback]` block. All fields are concrete (defaults
+/// applied). The reverse-proxy is opt-in: when this is `None` the
+/// listener returns 404 for unmatched paths, exactly as before.
+#[derive(Debug, Clone)]
+pub struct HttpFallbackConfig {
+    /// Scheme of the upstream backend. Always `http` in the MVP.
+    pub backend_scheme: String,
+    /// `host:port` of the upstream backend.
+    pub backend_authority: String,
+    /// Backend host without the port (used for the outgoing `Host` header).
+    pub backend_host: String,
+    /// Backend port (used by the connector and for the `Host` header
+    /// when it is not the scheme default).
+    pub backend_port: u16,
+    /// Per-request timeout: connect + receive headers + receive body.
+    pub request_timeout_secs: u64,
+    pub add_x_forwarded_for: bool,
+    pub add_x_forwarded_proto: bool,
+    pub add_x_forwarded_host: bool,
+    /// PROXY-protocol version to prepend to the upstream TCP stream
+    /// (`None` to disable).
+    pub proxy_protocol: Option<ProxyProtocolVersion>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyProtocolVersion {
+    V1,
+    V2,
+}
+
+impl HttpFallbackConfig {
+    fn from_section(section: HttpFallbackSection) -> Result<Option<Self>> {
+        let Some(backend_raw) = section
+            .backend
+            .map(|b| b.trim().to_owned())
+            .filter(|b| !b.is_empty())
+        else {
+            // Section present but no `backend` set is treated as opt-out
+            // so operators can keep the block in templates without
+            // accidentally enabling the proxy.
+            return Ok(None);
+        };
+        let url = backend_raw.parse::<hyper::Uri>().map_err(|error| {
+            anyhow::anyhow!("invalid http_fallback.backend {backend_raw:?}: {error}")
+        })?;
+        let scheme = url
+            .scheme_str()
+            .ok_or_else(|| anyhow::anyhow!("http_fallback.backend must include a scheme"))?
+            .to_ascii_lowercase();
+        if scheme != "http" {
+            anyhow::bail!(
+                "http_fallback.backend scheme {scheme:?} is not supported (only http:// in MVP)"
+            );
+        }
+        if url.path() != "" && url.path() != "/" {
+            anyhow::bail!(
+                "http_fallback.backend must not include a path; got {:?}",
+                url.path()
+            );
+        }
+        if url.query().is_some() {
+            anyhow::bail!("http_fallback.backend must not include a query string");
+        }
+        let host = url
+            .host()
+            .ok_or_else(|| anyhow::anyhow!("http_fallback.backend has no host"))?
+            .to_owned();
+        let port = url.port_u16().unwrap_or(80);
+        let authority = if url.port_u16().is_some() {
+            format!("{host}:{port}")
+        } else {
+            format!("{host}:80")
+        };
+        let proxy_protocol = match section.proxy_protocol.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some("v1") => Some(ProxyProtocolVersion::V1),
+            Some("v2") => Some(ProxyProtocolVersion::V2),
+            Some(other) => anyhow::bail!(
+                "http_fallback.proxy_protocol must be \"v1\" or \"v2\"; got {other:?}"
+            ),
+        };
+        let request_timeout_secs = section.request_timeout_secs.unwrap_or(30);
+        if request_timeout_secs == 0 {
+            anyhow::bail!("http_fallback.request_timeout_secs must be > 0");
+        }
+        Ok(Some(Self {
+            backend_scheme: scheme,
+            backend_authority: authority,
+            backend_host: host,
+            backend_port: port,
+            request_timeout_secs,
+            add_x_forwarded_for: section.add_x_forwarded_for.unwrap_or(true),
+            add_x_forwarded_proto: section.add_x_forwarded_proto.unwrap_or(true),
+            add_x_forwarded_host: section.add_x_forwarded_host.unwrap_or(true),
+            proxy_protocol,
+        }))
+    }
 }
 
 /// Public snapshot of the `[session_resumption]` config. Mirrors
@@ -342,6 +448,9 @@ impl AppMode {
             session_resumption: SessionResumptionConfig::from_section(
                 file.session_resumption.unwrap_or_default(),
             ),
+            http_fallback: HttpFallbackConfig::from_section(
+                file.http_fallback.unwrap_or_default(),
+            )?,
         };
         config.validate()?;
 

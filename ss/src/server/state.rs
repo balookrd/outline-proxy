@@ -16,7 +16,9 @@ use super::nat::NatTable;
 use super::peer_user_cache::PeerUserCache;
 use super::replay::ReplayStore;
 use super::resumption::OrphanRegistry;
-use super::transport::{UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry};
+use super::transport::{
+    HttpFallbackContext, UdpServerCtx, VlessWsServerCtx, WsTcpServerCtx, XhttpRegistry,
+};
 
 use super::dns_cache::DnsCache;
 
@@ -143,6 +145,9 @@ pub(super) struct AppState {
     pub(super) routes: RoutesSnapshot,
     pub(super) services: Arc<Services>,
     pub(super) auth: Arc<AuthPolicy>,
+    /// Reverse-proxy context for the HTTP fallback handler. `None`
+    /// keeps the legacy 404 behaviour for unmatched paths.
+    pub(super) http_fallback: Option<Arc<HttpFallbackContext>>,
 }
 
 #[derive(Clone)]

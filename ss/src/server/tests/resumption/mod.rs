@@ -183,7 +183,7 @@ async fn spawn_test_server(
         http_root_auth: false,
         http_root_realm: "Authorization required".into(),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let task =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
     Ok(ResumptionTestServer { listen_addr, task })

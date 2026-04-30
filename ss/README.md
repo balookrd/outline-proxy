@@ -59,6 +59,7 @@ It supports:
 | VLESS over XHTTP packet-up | Supported | Long-lived GET + sequenced POSTs sharing one HTTP/2 (or HTTP/3) connection; reorder buffer absorbs out-of-order POSTs; downlink ring survives mid-flight GET drops (CDN ~100 s cut-off); `X-Padding` + SSE-style masquerade headers (`text/event-stream`, `Cache-Control: no-store`, `X-Accel-Buffering: no`) |
 | VLESS over XHTTP stream-one | Supported | Single bidirectional request: request body = uplink, response body = downlink. Selected by `?mode=stream-one` in the request URL on the same base path. Requires h2 or h3 (h1 returns 505); on h3 the bidi stream is split via `RequestStream::split` so uplink and downlink halves run on dedicated tasks |
 | XHTTP cross-transport session resumption | Supported | Server mints `X-Outline-Session` on first contact, parks the VLESS upstream when the carrier drops, and re-attaches on the next `X-Outline-Resume` — including across a carrier switch (e.g. client failed h3 → re-dialed h2 with the same token) |
+| HTTP fallback (camouflage) | Supported | Reverse-proxies unmatched HTTP/1.1 + HTTP/2 requests to an upstream backend (haproxy / nginx / caddy) instead of returning 404, so the listener is indistinguishable from a regular web service. Optional HAProxy PROXY-protocol v1/v2 prefix preserves the real client IP for upstream logs/ACLs |
 | VLESS REALITY / XTLS / Vision | Not supported | Out of scope |
 | VLESS / Shadowsocks raw over QUIC | Supported | No WebSocket / no HTTP/3 framing; selected by ALPN (`vless`, `ss`) on the same `h3_listen` port |
 | Outline management API | Not supported | Data plane only |
@@ -494,6 +495,38 @@ h3_key_path = "/etc/outline-ss-rust/tls/privkey.pem"
 ```
 
 HTTP/3 always requires TLS and UDP reachability on the selected port.
+
+### 5. HTTP Fallback to an External Web Server (Camouflage)
+
+By default the server responds with `404 Not Found` to every request that does not hit a configured WebSocket / XHTTP / metrics path. Probes can spot this and tell the listener apart from an ordinary web service. The `[http_fallback]` block makes those unmatched requests look perfectly normal: they are reverse-proxied to an upstream backend (haproxy, nginx, caddy, …), so a casual `curl https://your-host/` or a TLS scanner sees whatever that backend serves.
+
+```toml
+[http_fallback]
+backend = "http://127.0.0.1:8080"   # only http:// in MVP
+# request_timeout_secs = 30
+# add_x_forwarded_for = true
+# add_x_forwarded_proto = true
+# add_x_forwarded_host = true
+# proxy_protocol = "v1"             # or "v2"; omit to disable
+```
+
+What gets proxied:
+
+- Every request that does **not** match a configured WebSocket / XHTTP / metrics / control / dashboard route. The order of priority is unchanged: WebSocket and XHTTP routes first, then `http_root_auth` on `/` if enabled, then the fallback.
+- Hop-by-hop headers (`Connection`, `Keep-Alive`, `TE`, `Trailers`, `Transfer-Encoding`, `Upgrade`, `Proxy-*`) are stripped on both directions, including any tokens listed in `Connection:`. The body streams in both directions.
+- `Host` is rewritten to the backend authority so virtual hosts on the upstream resolve as if the request originated there (mirrors nginx's `proxy_set_header Host $proxy_host;`).
+- `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` are appended/set per the toggles above. `X-Forwarded-Proto` reflects whether the inbound listener terminated TLS.
+
+PROXY-protocol:
+
+- Set `proxy_protocol = "v1"` (text) or `"v2"` (binary) to prepend the HAProxy PROXY-protocol header to the upstream TCP connection. The upstream MUST be configured to expect that exact version (`proxy_protocol on;` on nginx's `listen` directive, `accept-proxy` on haproxy's bind, etc.).
+- The destination address in the header is the inbound listener's bind address. When that address is `0.0.0.0` / `[::]`, the encoder degrades to UNKNOWN (v1) / UNSPEC (v2) — it does not currently learn the per-connection local address.
+
+Limitations:
+
+- HTTP/3 fallback is not implemented; over `h3_listen` unmatched requests still return 404. There is no clean way to bridge h3 frames to an h1/h2 backend without a dedicated h3 client and a much larger framing translation layer; deferred until requested.
+- Backend URL is `http://host:port` only. HTTPS upstreams and Unix-domain sockets can be added on demand.
+- Under high request volume the fallback opens one upstream TCP connection per inbound request (no pooling). Camouflage traffic is rare-path, so this is fine in practice; if you intend to use the fallback as a real load balancer, terminate at the upstream instead.
 
 ## Client Config Generation
 

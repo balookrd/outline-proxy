@@ -22,6 +22,7 @@ use crate::metrics::{AppProtocol, DisconnectReason, Metrics, Transport, WebSocke
 use super::setup::protocol_from_http_version;
 use super::state::{AppState, empty_transport_route, empty_vless_transport_route};
 
+mod fallback;
 mod raw_quic;
 pub(in crate::server) mod sink;
 mod tcp;
@@ -33,6 +34,7 @@ mod ws_socket;
 mod ws_writer;
 mod xhttp;
 
+pub(in crate::server) use fallback::{HttpFallbackContext, http_fallback_handler};
 pub(in crate::server) use sink::is_handshake_rejected;
 pub(in crate::server) use raw_quic::{
     OversizeStream, RawQuicSsCtx, RawQuicVlessRouteCtx, SsQuicConn, StreamKind, VlessQuicConn,

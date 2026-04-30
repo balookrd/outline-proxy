@@ -37,6 +37,8 @@ pub(super) struct FileConfig {
     pub dashboard: Option<DashboardFileConfig>,
     #[serde(default)]
     pub session_resumption: Option<SessionResumptionSection>,
+    #[serde(default)]
+    pub http_fallback: Option<HttpFallbackSection>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -150,6 +152,32 @@ pub(super) struct DashboardInstanceFileConfig {
     pub control_url: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+}
+
+/// `[http_fallback]` block. When present, requests that do not match a
+/// websocket / xhttp / metrics route are reverse-proxied to `backend`
+/// instead of returning 404. Useful for masquerading the listener as a
+/// regular web service in front of nginx / haproxy / caddy.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HttpFallbackSection {
+    /// `http://host:port` of the upstream backend. HTTPS, unix sockets,
+    /// and path prefixes are not supported in this MVP.
+    pub backend: Option<String>,
+    /// Per-request connect+response timeout in seconds. Default 30.
+    pub request_timeout_secs: Option<u64>,
+    /// Append the original peer IP to `X-Forwarded-For`. Default true.
+    pub add_x_forwarded_for: Option<bool>,
+    /// Set `X-Forwarded-Proto` to `http` / `https` based on whether the
+    /// inbound listener is TLS. Default true.
+    pub add_x_forwarded_proto: Option<bool>,
+    /// Set `X-Forwarded-Host` to the original `Host` header. Default true.
+    pub add_x_forwarded_host: Option<bool>,
+    /// Wrap the upstream TCP connection in a HAProxy PROXY-protocol
+    /// header (`"v1"` text or `"v2"` binary). Default: disabled. The
+    /// upstream MUST be configured to expect the matching version
+    /// (e.g. nginx `proxy_protocol on;` on the listen directive).
+    pub proxy_protocol: Option<String>,
 }
 
 /// `[session_resumption]` block. All fields are optional; absence keeps

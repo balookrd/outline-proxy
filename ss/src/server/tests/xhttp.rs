@@ -106,7 +106,7 @@ pub(super) async fn setup_xhttp_server_with_resumption(
         http_root_auth: false,
         http_root_realm: Arc::from("Authorization required"),
     });
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let handle = tokio::spawn(async move {
         serve_listener(listener, app, ShutdownSignal::never()).await
     });

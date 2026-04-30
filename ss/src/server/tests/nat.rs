@@ -143,7 +143,7 @@ async fn websocket_rfc8441_http2_udp_reuses_nat_entry_after_client_reconnect() -
         false,
         "Authorization required",
     );
-    let app = build_app(routes, services, auth);
+    let app = build_app(routes, services, auth, None);
     let server =
         tokio::spawn(async move { serve_listener(listener, app, ShutdownSignal::never()).await });
 

@@ -73,8 +73,12 @@ pub async fn run(config: Config) -> Result<()> {
     let config = Arc::new(config);
     let built = services::build(&config)?;
     let bound = listeners::bind(&config).await?;
-    let app =
-        build_app(Arc::clone(&built.routes), Arc::clone(&built.services), Arc::clone(&built.auth));
+    let app = build_app(
+        Arc::clone(&built.routes),
+        Arc::clone(&built.services),
+        Arc::clone(&built.auth),
+        built.http_fallback.clone(),
+    );
 
     let (shutdown_sender, shutdown_signal) = shutdown_channel();
 
