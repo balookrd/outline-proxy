@@ -321,6 +321,15 @@ async fn serve_tls_listener(
                     Err(error) => {
                         let reason = classify_tls_handshake_error(&error);
                         metrics.record_tls_handshake_failed(reason.as_str());
+                        // For `no_cert_chain` also record the rejected
+                        // SNI on a separate per-SNI counter so the
+                        // dashboard can break failures down by
+                        // hostname for config-gap diagnosis.
+                        // Cardinality is bounded inside the metrics
+                        // layer (`<overflow>` bucket past the cap).
+                        if matches!(reason, TlsHandshakeFailReason::NoCertChain) {
+                            metrics.record_tls_handshake_no_cert_chain(peeked_sni.as_deref());
+                        }
                         // `closed_early` and `no_cert_chain` are noisy
                         // under scanners and broken-but-harmless
                         // clients. Keep them as `debug` — the metric

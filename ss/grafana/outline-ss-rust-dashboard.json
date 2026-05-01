@@ -5195,6 +5195,106 @@
       ],
       "title": "TLS Handshake Failures by Reason",
       "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Top 10 SNIs that hit `no_cert_chain` — the rejected hostname for handshakes the cert resolver could not satisfy. Special labels: `<none>` (client sent no SNI), `<invalid>` (non-ASCII bytes), `<long>` (>253 chars), `<overflow>` (cardinality cap reached — operator should harden `match_sni` or grow the cap). Counterpart of the by-reason panel above; their `no_cert_chain` totals must agree.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 175
+      },
+      "id": 69,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max",
+            "sum"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "topk(10, sum by (short_instance, sni) (label_replace(rate(outline_ss_tls_handshake_no_cert_chain_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\")))",
+          "legendFormat": "{{short_instance}} {{sni}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "TLS no_cert_chain — Top SNIs",
+      "type": "timeseries"
     }
   ],
   "preload": false,

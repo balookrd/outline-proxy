@@ -196,4 +196,10 @@ pub(super) fn register_descriptions() {
         "outline_ss_tls_handshake_failed_total",
         "TLS handshake failures on the TCP listener grouped by classified reason."
     );
+    describe_counter!(
+        "outline_ss_tls_handshake_no_cert_chain_total",
+        "Subset of TLS handshake failures where the cert resolver returned None, broken down by the rejected SNI. \
+         Special label values: <none> (no SNI sent), <invalid> (non-ASCII/control bytes), <long> (>253 chars), \
+         <overflow> (cardinality cap reached)."
+    );
 }

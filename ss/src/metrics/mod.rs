@@ -26,6 +26,15 @@ use parking_lot::RwLock;
 
 use crate::config::Config;
 
+/// Maximum number of distinct SNI label values kept on
+/// `outline_ss_tls_handshake_no_cert_chain_total`. A scanner can cycle
+/// through arbitrary `*.example` names and each one would otherwise add
+/// a new Prometheus time-series — at the storage layer that cost is
+/// permanent for the retention window. Cap at 64; everything above
+/// folds into the `<overflow>` bucket and the operator gets a single
+/// signal to either widen the cap or harden `match_sni`.
+const TLS_NO_CERT_CHAIN_SNI_CAP: usize = 64;
+
 pub struct Metrics {
     pub(super) started_at: Instant,
     method: String,
@@ -35,6 +44,14 @@ pub struct Metrics {
     pub(super) process_memory_snapshot: RwLock<Option<ProcessMemorySnapshot>>,
     pub(super) client_last_seen: DashMap<Arc<str>, AtomicI64>,
     pub(super) user_counters_cache: DashMap<Arc<str>, Arc<PerUserCounters>>,
+    /// Set of distinct SNIs already observed for the
+    /// `outline_ss_tls_handshake_no_cert_chain_total` metric. We cache
+    /// the `Arc<str>` so repeat hits on the same SNI reuse the same
+    /// label value (no allocation per record), and we bound the set
+    /// at [`TLS_NO_CERT_CHAIN_SNI_CAP`] so a flood of attacker-chosen
+    /// SNIs cannot blow up Prometheus cardinality. Once full, every
+    /// new SNI is folded into a single `<overflow>` bucket.
+    pub(super) tls_no_cert_chain_snis: DashMap<Arc<str>, ()>,
     pub(super) recorder: PrometheusRecorder,
     pub(super) handle: PrometheusHandle,
 }
@@ -52,6 +69,7 @@ impl Metrics {
             process_memory_snapshot: RwLock::new(process_memory::sample()),
             client_last_seen: DashMap::new(),
             user_counters_cache: DashMap::new(),
+            tls_no_cert_chain_snis: DashMap::new(),
             recorder,
             handle,
         });
@@ -537,6 +555,64 @@ impl Metrics {
         });
     }
 
+    /// Counts a `no_cert_chain` failure broken down by the rejected
+    /// SNI. Companion to [`Self::record_tls_handshake_failed`] —
+    /// `failed_total{reason="no_cert_chain"}` always equals the sum of
+    /// this counter, but this one carries the actual hostname so the
+    /// operator can see *which* SNI is missing a cert.
+    ///
+    /// SNI input is normalised before it ever becomes a label value:
+    /// - `None` → `<none>` (no `server_name` extension).
+    /// - non-ASCII / control bytes → `<invalid>` (rustls already
+    ///   accepted it, but we still don't trust attacker-controlled
+    ///   bytes in metric labels).
+    /// - longer than 253 chars (RFC 1035 hostname cap) → `<long>`.
+    /// - over [`TLS_NO_CERT_CHAIN_SNI_CAP`] distinct SNIs → fold into
+    ///   `<overflow>` so cardinality stays bounded.
+    pub fn record_tls_handshake_no_cert_chain(&self, sni: Option<&str>) {
+        let sni_label = self.intern_no_cert_chain_sni(sni);
+        with_local_recorder(&self.recorder, || {
+            counter!(
+                "outline_ss_tls_handshake_no_cert_chain_total",
+                "sni" => sni_label
+            )
+            .increment(1);
+        });
+    }
+
+    fn intern_no_cert_chain_sni(&self, sni: Option<&str>) -> Arc<str> {
+        let Some(raw) = sni else {
+            return Arc::from("<none>");
+        };
+        // Hostnames are ASCII (with IDN already punycode-encoded by
+        // the client). Anything else here is either a buggy peer or an
+        // attempt to inject log/label noise — fold to a static bucket.
+        if !raw.bytes().all(is_safe_sni_byte) {
+            return Arc::from("<invalid>");
+        }
+        if raw.len() > 253 {
+            return Arc::from("<long>");
+        }
+        let normalized = raw.to_ascii_lowercase();
+
+        if let Some(existing) = self.tls_no_cert_chain_snis.get(normalized.as_str()) {
+            return Arc::clone(existing.key());
+        }
+
+        // Bound the cardinality: if the table is already at the cap,
+        // skip the insert and return the static `<overflow>` label.
+        // The size check races with concurrent inserts, so the table
+        // can briefly grow a few entries past the cap — that's fine,
+        // the goal is preventing unbounded growth, not a hard ceiling.
+        if self.tls_no_cert_chain_snis.len() >= TLS_NO_CERT_CHAIN_SNI_CAP {
+            return Arc::from("<overflow>");
+        }
+
+        let arc: Arc<str> = Arc::from(normalized);
+        self.tls_no_cert_chain_snis.insert(Arc::clone(&arc), ());
+        arc
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────────
 
     pub fn render_prometheus(&self) -> String {
@@ -546,6 +622,17 @@ impl Metrics {
 
 fn bool_label(value: bool) -> &'static str {
     if value { "true" } else { "false" }
+}
+
+/// ASCII bytes accepted in a hostname-like SNI metric label without
+/// triggering the `<invalid>` fallback. Allows the chars actually
+/// present in real-world SNIs (DNS names plus the `:port`/`%zone`
+/// forms TLS sometimes sees) and rejects everything else.
+fn is_safe_sni_byte(b: u8) -> bool {
+    matches!(
+        b,
+        b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'.' | b'-' | b'_' | b':'
+    )
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
