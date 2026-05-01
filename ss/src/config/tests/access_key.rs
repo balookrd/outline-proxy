@@ -249,16 +249,27 @@ fn emits_xhttp_packet_up_and_stream_one_artifacts() {
     // rides TLS — without it, xray-family clients fall through to
     // HTTP/1.1 ALPN, where stream-one fails server-side (h1 cannot
     // full-duplex). Sample config has `h3_listen = None`, so the
-    // list collapses to plain `h2`.
-    for artifact in [packet_up, stream_one] {
-        let url = artifact.access_key_url.as_deref().unwrap();
-        assert!(
-            url.contains("alpn=h2"),
-            "{} URI must pin alpn=h2 (no h3 listener in sample): {:?}",
-            artifact.config_filename,
-            artifact.access_key_url,
-        );
-    }
+    // baseline is `h2`. The two modes diverge on the trailer:
+    // packet-up appends `http/1.1` (each packet is its own short
+    // request, so h1 is a viable floor), stream-one omits it
+    // (would invite a 505).
+    let packet_up_url = packet_up.access_key_url.as_deref().unwrap();
+    assert!(
+        packet_up_url.contains("alpn=h2%2Chttp%2F1.1"),
+        "packet-up URI must list `h2,http/1.1`: {:?}",
+        packet_up.access_key_url,
+    );
+    let stream_one_url = stream_one.access_key_url.as_deref().unwrap();
+    assert!(
+        stream_one_url.contains("alpn=h2&"),
+        "stream-one URI must list exactly `h2` (no h1 trailer): {:?}",
+        stream_one.access_key_url,
+    );
+    assert!(
+        !stream_one_url.contains("http%2F1.1"),
+        "stream-one URI must NOT include http/1.1 in alpn: {:?}",
+        stream_one.access_key_url,
+    );
 }
 
 #[test]
@@ -292,22 +303,39 @@ fn vless_uris_alpn_prefers_h3_when_quic_listener_enabled() {
 
     let artifacts = build_access_key_artifacts(&config, &sample_ak_config()).unwrap();
 
-    let xhttp = artifacts
+    let stream_one = artifacts
         .iter()
         .find(|a| a.config_filename == "eve-vless-xhttp-stream-one.yaml")
         .expect("stream-one artifact emitted");
-    let xhttp_url = xhttp.access_key_url.as_deref().unwrap();
-    // XHTTP URI lists exactly `h3,h2` — `http/1.1` would invite a
-    // 505 on stream-one, so it stays out.
+    let stream_one_url = stream_one.access_key_url.as_deref().unwrap();
+    // Stream-one URI lists exactly `h3,h2` — `http/1.1` would invite
+    // a 505 on the dial because h1 cannot full-duplex stream-one's
+    // single bidi POST, so it stays out.
     assert!(
-        xhttp_url.contains("alpn=h3%2Ch2&"),
-        "h3-enabled XHTTP URI must list `h3,h2` (no h1 trailer): {:?}",
-        xhttp.access_key_url,
+        stream_one_url.contains("alpn=h3%2Ch2&"),
+        "h3-enabled stream-one URI must list `h3,h2` (no h1 trailer): {:?}",
+        stream_one.access_key_url,
     );
     assert!(
-        !xhttp_url.contains("http%2F1.1"),
-        "XHTTP URI must NOT include http/1.1 in alpn: {:?}",
-        xhttp.access_key_url,
+        !stream_one_url.contains("http%2F1.1"),
+        "stream-one URI must NOT include http/1.1 in alpn: {:?}",
+        stream_one.access_key_url,
+    );
+
+    let packet_up = artifacts
+        .iter()
+        .find(|a| a.config_filename == "eve-vless-xhttp.yaml")
+        .expect("packet-up artifact emitted");
+    let packet_up_url = packet_up.access_key_url.as_deref().unwrap();
+    // Packet-up URI lists `h3,h2,http/1.1` — each packet is its own
+    // short request/response, so h1 is a viable last-resort path
+    // when a CDN strips h2 ALPN. The trailer matches the WS URI so
+    // both XHTTP modes' sibling URIs offer the right floor for
+    // their respective server-side handler contracts.
+    assert!(
+        packet_up_url.contains("alpn=h3%2Ch2%2Chttp%2F1.1"),
+        "h3-enabled packet-up URI must list `h3,h2,http/1.1`: {:?}",
+        packet_up.access_key_url,
     );
 
     let ws = artifacts
