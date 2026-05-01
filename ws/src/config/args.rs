@@ -29,7 +29,7 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_TRANSPORT")]
     pub transport: Option<UplinkTransport>,
 
-    #[arg(long, env = "OUTLINE_TCP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
+    #[arg(long, env = "OUTLINE_TCP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h1, xhttp_h2, xhttp_h3")]
     pub tcp_mode: Option<TransportMode>,
 
     #[arg(long, env = "OUTLINE_UDP_WS_URL")]
@@ -41,7 +41,7 @@ pub struct Args {
     #[arg(long, env = "OUTLINE_UDP_ADDR")]
     pub udp_addr: Option<ServerAddr>,
 
-    #[arg(long, env = "OUTLINE_UDP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
+    #[arg(long, env = "OUTLINE_UDP_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h1, xhttp_h2, xhttp_h3")]
     pub udp_mode: Option<TransportMode>,
 
     /// VLESS-only: single WS URL serving both TCP and UDP. Required when
@@ -51,14 +51,14 @@ pub struct Args {
     pub vless_ws_url: Option<Url>,
 
     /// VLESS-only: base URL for XHTTP packet-up. Required when
-    /// `vless_mode` is `xhttp_h2` / `xhttp_h3`. The session id is
-    /// appended at dial time (single path segment).
+    /// `vless_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`. The
+    /// session id is appended at dial time (single path segment).
     #[arg(long, env = "OUTLINE_VLESS_XHTTP_URL")]
     pub vless_xhttp_url: Option<Url>,
 
     /// VLESS-only: dial mode. One of ws_h1, ws_h2, ws_h3, quic,
-    /// xhttp_h2, xhttp_h3.
-    #[arg(long, env = "OUTLINE_VLESS_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h2, xhttp_h3")]
+    /// xhttp_h1, xhttp_h2, xhttp_h3.
+    #[arg(long, env = "OUTLINE_VLESS_MODE", help = "ws_h1, ws_h2, ws_h3, quic, xhttp_h1, xhttp_h2, xhttp_h3")]
     pub vless_mode: Option<TransportMode>,
 
     /// Configure a VLESS uplink from a single share-link URI

@@ -60,12 +60,17 @@ use crate::guards::AbortOnDrop;
 use crate::resumption::SessionId;
 use crate::{TransportOperation, connect_tcp_socket};
 
+mod h1;
 #[cfg(feature = "h3")]
 mod h3;
 
 #[cfg(test)]
 #[path = "tests/packet_up.rs"]
 mod tests_packet_up;
+
+#[cfg(test)]
+#[path = "tests/packet_up_h1.rs"]
+mod tests_packet_up_h1;
 
 /// Cross-transport session resumption: client → server. Mirrors the
 /// header used by the WS-upgrade path so a single token works for
@@ -294,6 +299,10 @@ pub(crate) async fn connect_xhttp(
     let submode = XhttpSubmode::from_url(url);
     match mode {
         TransportMode::XhttpH2 => {},
+        TransportMode::XhttpH1 => {
+            return h1::connect_xhttp_h1(cache, url, submode, fwmark, ipv6_first, resume_request)
+                .await;
+        },
         #[cfg(feature = "h3")]
         TransportMode::XhttpH3 => {
             return h3::connect_xhttp_h3(cache, url, submode, fwmark, ipv6_first, resume_request)
@@ -487,7 +496,7 @@ async fn driver_loop_h2_stream_one(
     // `driver_loop_h2` for packet-up.
     let drain_in_tx = in_tx.clone();
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
-        if let Err(error) = drain_h2_body(body, &drain_in_tx).await {
+        if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp stream-one downlink reader exited");
             let _ = drain_in_tx
                 .send(Err(io_ws_err("xhttp stream-one downlink ended")))
@@ -526,14 +535,14 @@ async fn driver_loop_h2_stream_one(
     debug!("xhttp stream-one driver exiting");
 }
 
-fn parse_session_response(headers: &http::HeaderMap) -> Option<SessionId> {
+pub(super) fn parse_session_response(headers: &http::HeaderMap) -> Option<SessionId> {
     headers
         .get(SESSION_RESPONSE_HEADER)
         .and_then(|v| v.to_str().ok())
         .and_then(SessionId::parse_hex)
 }
 
-fn default_port_for(use_tls: bool) -> u16 {
+pub(super) fn default_port_for(use_tls: bool) -> u16 {
     if use_tls { 443 } else { 80 }
 }
 
@@ -622,8 +631,9 @@ where
 
 // Simple AsyncRead+Write wrapper so we can hold either a plain TCP
 // stream or a TLS stream behind a single TokioIo without an enum
-// in the type signature of `spawn_h2`.
-enum BoxedIo {
+// in the type signature of `spawn_h2`. `pub(super)` so the h1
+// sibling module reuses the same wrapper for its own handshake.
+pub(super) enum BoxedIo {
     Plain(TcpStream),
     Tls(tokio_rustls::client::TlsStream<TcpStream>),
 }
@@ -686,7 +696,7 @@ async fn driver_loop_h2(
     // inbound channel.
     let drain_in_tx = in_tx.clone();
     let _drain_task = AbortOnDrop::new(tokio::spawn(async move {
-        if let Err(error) = drain_h2_body(body, &drain_in_tx).await {
+        if let Err(error) = drain_hyper_body(body, &drain_in_tx).await {
             debug!(?error, "xhttp GET reader exited");
             let _ = drain_in_tx.send(Err(io_ws_err("xhttp downlink ended"))).await;
         } else {
@@ -745,7 +755,11 @@ async fn driver_loop_h2(
     debug!("xhttp driver exiting");
 }
 
-async fn drain_h2_body(
+/// Drain a hyper response body into the inbound channel as
+/// `Message::Binary` frames. Used by the h1 and h2 packet-up GET
+/// handlers, both of which produce `hyper::body::Incoming`. `pub(super)`
+/// so the `h1` sibling reuses the same drain shape.
+pub(super) async fn drain_hyper_body(
     mut body: hyper::body::Incoming,
     in_tx: &mpsc::Sender<Result<Message, WsError>>,
 ) -> Result<()> {

@@ -299,8 +299,10 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
                     // must match the chosen mode. Forgetting either is a
                     // common mistake; surface it as a clear error rather
                     // than a confusing dial-time failure.
-                    let needs_xhttp_url =
-                        matches!(mode, TransportMode::XhttpH2 | TransportMode::XhttpH3);
+                    let needs_xhttp_url = matches!(
+                        mode,
+                        TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3
+                    );
                     let needs_ws_url = !needs_xhttp_url;
                     if needs_ws_url && vless_ws_url.is_none() {
                         bail!(

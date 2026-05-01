@@ -19,7 +19,7 @@ pub(crate) struct ConfigFile {
     pub(super) vless_ws_url: Option<Url>,
     /// Base URL for VLESS-over-XHTTP packet-up. The session id is
     /// appended at dial time (one path segment after the base path).
-    /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
+    /// Required when `vless_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
     /// VLESS share-link URI (`vless://UUID@HOST:PORT?...#NAME`). When set,
@@ -94,7 +94,7 @@ pub(crate) struct OutlineSection {
     pub(super) vless_ws_url: Option<Url>,
     /// Base URL for VLESS-over-XHTTP packet-up. The session id is
     /// appended at dial time (one path segment after the base path).
-    /// Required when `vless_mode` is `xhttp_h2` / `xhttp_h3`.
+    /// Required when `vless_mode` is `xhttp_h1` / `xhttp_h2` / `xhttp_h3`.
     pub(super) vless_xhttp_url: Option<Url>,
     pub(super) vless_mode: Option<TransportMode>,
     /// VLESS share-link URI. Same semantics as `ConfigFile::link`; provided

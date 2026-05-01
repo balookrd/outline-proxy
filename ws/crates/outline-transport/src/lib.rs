@@ -395,10 +395,10 @@ pub async fn connect_websocket_with_resume(
         },
         TransportMode::XhttpH3 => {
             // h3 carrier first; on dial / handshake failure fall
-            // back to h2 carrying the same `resume_request` so the
-            // server reattaches the parked upstream instead of
-            // creating a fresh session. Mirror the WS h3→h2
-            // fallback shape but with the XHTTP dial.
+            // back to h2 (and then h1) carrying the same
+            // `resume_request` so the server reattaches the parked
+            // upstream instead of creating a fresh session. Mirror
+            // the WS h3→h2→h1 fallback shape but with the XHTTP dial.
             match crate::xhttp::connect_xhttp(cache, url, mode, fwmark, ipv6_first, resume_request)
                 .await
             {
@@ -416,35 +416,113 @@ pub async fn connect_websocket_with_resume(
                         "xhttp h3 dial failed, falling back"
                     );
                     ws_mode_cache::record_failure(url, TransportMode::XhttpH3).await;
-                    let (stream, issued) = crate::xhttp::connect_xhttp(
+                    connect_xhttp_h2_with_h1_fallback(
                         cache,
                         url,
-                        TransportMode::XhttpH2,
                         fwmark,
                         ipv6_first,
                         resume_request,
+                        TransportMode::XhttpH3,
                     )
-                    .await?;
-                    debug!(
-                        url = %url,
-                        selected_mode = "xhttp_h2",
-                        requested_mode = "xhttp_h3",
-                        ?issued,
-                        "xhttp packet-up transport connected via h2 fallback"
-                    );
-                    Ok(TransportStream::new_xhttp(stream, issued)
-                        .with_downgraded_from(downgrade_marker(TransportMode::XhttpH2)))
+                    .await
                 },
             }
         },
         TransportMode::XhttpH2 => {
+            connect_xhttp_h2_with_h1_fallback(
+                cache,
+                url,
+                fwmark,
+                ipv6_first,
+                resume_request,
+                TransportMode::XhttpH2,
+            )
+            .await
+        },
+        TransportMode::XhttpH1 => {
             let (stream, issued) =
                 crate::xhttp::connect_xhttp(cache, url, mode, fwmark, ipv6_first, resume_request)
                     .await?;
-            debug!(url = %url, selected_mode = "xhttp_h2", ?issued, "xhttp h2 connected");
+            debug!(url = %url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
             ws_mode_cache::record_success(url, mode).await;
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgrade_marker(mode)))
+        },
+    }
+}
+
+/// Shared XHTTP h2-then-h1 fallback. Reached from two places:
+/// the `XhttpH2` arm calls it directly with `requested = XhttpH2`,
+/// and the `XhttpH3` arm calls it after the h3 dial failed with
+/// `requested = XhttpH3` so the `downgraded_from` marker reflects
+/// the originally-requested mode (not the intermediate h2 hop).
+async fn connect_xhttp_h2_with_h1_fallback(
+    cache: &DnsCache,
+    url: &Url,
+    fwmark: Option<u32>,
+    ipv6_first: bool,
+    resume_request: Option<SessionId>,
+    requested: TransportMode,
+) -> Result<TransportStream> {
+    let downgraded_from = |actual: TransportMode| -> Option<TransportMode> {
+        if actual == requested { None } else { Some(requested) }
+    };
+    match crate::xhttp::connect_xhttp(
+        cache,
+        url,
+        TransportMode::XhttpH2,
+        fwmark,
+        ipv6_first,
+        resume_request,
+    )
+    .await
+    {
+        Ok((stream, issued)) => {
+            debug!(
+                url = %url,
+                selected_mode = "xhttp_h2",
+                requested_mode = %requested,
+                ?issued,
+                "xhttp h2 connected"
+            );
+            // Only record h2 success when h2 was the request — reaching
+            // here from an h3 fallback means h3 just failed, and clearing
+            // the cap would invite the next dial to retry h3 immediately
+            // and burn the doomed handshake again. Same rationale as
+            // the WS h3→h2 success branch.
+            if requested == TransportMode::XhttpH2 {
+                ws_mode_cache::record_success(url, TransportMode::XhttpH2).await;
+            }
+            Ok(TransportStream::new_xhttp(stream, issued)
+                .with_downgraded_from(downgraded_from(TransportMode::XhttpH2)))
+        },
+        Err(h2_error) => {
+            warn!(
+                url = %url,
+                error = %format!("{h2_error:#}"),
+                fallback = "xhttp_h1",
+                requested_mode = %requested,
+                "xhttp h2 dial failed, falling back"
+            );
+            ws_mode_cache::record_failure(url, TransportMode::XhttpH2).await;
+            let (stream, issued) = crate::xhttp::connect_xhttp(
+                cache,
+                url,
+                TransportMode::XhttpH1,
+                fwmark,
+                ipv6_first,
+                resume_request,
+            )
+            .await?;
+            debug!(
+                url = %url,
+                selected_mode = "xhttp_h1",
+                requested_mode = %requested,
+                ?issued,
+                "xhttp packet-up transport connected via h1 fallback"
+            );
+            Ok(TransportStream::new_xhttp(stream, issued)
+                .with_downgraded_from(downgraded_from(TransportMode::XhttpH1)))
         },
     }
 }

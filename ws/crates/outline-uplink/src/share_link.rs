@@ -218,6 +218,7 @@ fn pick_mode_and_scheme(
             let mode = match first_alpn_token(alpn) {
                 Some("h3") => TransportMode::XhttpH3,
                 Some("h2") | None => TransportMode::XhttpH2,
+                Some("h1") | Some("http/1.1") => TransportMode::XhttpH1,
                 Some(other) => bail!("vless link alpn={other} is not supported for type=xhttp"),
             };
             let scheme = if tls { "https" } else { "http" };

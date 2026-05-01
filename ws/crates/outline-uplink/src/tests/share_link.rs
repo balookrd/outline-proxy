@@ -64,6 +64,26 @@ fn xhttp_alpn_h3_picks_xhttp_h3_mode() {
 }
 
 #[test]
+fn xhttp_alpn_h1_picks_xhttp_h1_mode() {
+    // `alpn=h1` and `alpn=http/1.1` both map to the h1 carrier of
+    // the XHTTP fallback chain (h3 → h2 → h1). xray-style share
+    // links never emit `alpn=h1` on their own; we accept it as a
+    // first-class shape so an operator who knows their server only
+    // serves XHTTP over h1 (e.g. CDN that strips ALPN h2) can pin
+    // the mode without dialing through the inline fallback.
+    let link = parse(&format!(
+        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=h1"
+    ));
+    assert_eq!(link.mode, TransportMode::XhttpH1);
+    assert!(link.vless_xhttp_url.is_some());
+
+    let link = parse(&format!(
+        "vless://{UUID}@host:443?type=xhttp&security=tls&alpn=http%2F1.1"
+    ));
+    assert_eq!(link.mode, TransportMode::XhttpH1);
+}
+
+#[test]
 fn xhttp_alpn_first_token_wins_for_comma_lists() {
     // Mirrors `ws_alpn_first_token_wins_for_comma_lists` — pins the
     // first-token-wins rule for the XHTTP carrier so an `alpn=h3,h2`

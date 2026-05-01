@@ -77,7 +77,7 @@ pub struct UplinkConfig {
     pub vless_ws_url: Option<Url>,
     /// `transport = "vless"` only. Base URL for XHTTP packet-up;
     /// session id is appended at dial time. Required when
-    /// `vless_mode` is `XhttpH2` / `XhttpH3`.
+    /// `vless_mode` is `XhttpH1` / `XhttpH2` / `XhttpH3`.
     pub vless_xhttp_url: Option<Url>,
     /// `transport = "vless"` only.
     pub vless_mode: TransportMode,
@@ -129,7 +129,9 @@ impl UplinkConfig {
     /// branch each time the dial target is needed.
     fn vless_dial_url(&self) -> Option<&Url> {
         match self.vless_mode {
-            TransportMode::XhttpH2 | TransportMode::XhttpH3 => self.vless_xhttp_url.as_ref(),
+            TransportMode::XhttpH1 | TransportMode::XhttpH2 | TransportMode::XhttpH3 => {
+                self.vless_xhttp_url.as_ref()
+            },
             _ => self.vless_ws_url.as_ref(),
         }
     }
