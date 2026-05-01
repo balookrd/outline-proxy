@@ -326,6 +326,12 @@ pub(crate) async fn connect_xhttp(
         bail!("xhttp url path must be a non-empty base (e.g. /xh): {url}");
     }
     let use_tls = matches!(url.scheme(), "https" | "wss");
+    // Profile picked once per dial — every GET / POST in this h2
+    // session shares the same browser identity so an observer never
+    // sees a single peer split across two fingerprints. `Option` is
+    // a `Copy` reference into the static pool, so we pass it freely
+    // into spawned sub-tasks below.
+    let profile = crate::fingerprint_profile::select(url);
 
     let dial = async {
         let addrs =
@@ -360,13 +366,14 @@ pub(crate) async fn connect_xhttp(
                 // the caller. The body drain is spawned as a
                 // sub-task; POSTs are pipelined per `start_send`.
                 let (issued, body) =
-                    open_h2_get(send_request.clone(), &target, resume_request).await?;
+                    open_h2_get(send_request.clone(), &target, resume_request, profile).await?;
                 let driver = tokio::spawn(driver_loop_h2(
                     send_request,
                     target.clone(),
                     in_tx,
                     out_rx,
                     body,
+                    profile,
                 ));
                 (issued, driver)
             },
@@ -376,7 +383,7 @@ pub(crate) async fn connect_xhttp(
                 // hand the response body and the request-body
                 // sender to the driver.
                 let (issued, body, frame_tx) =
-                    open_h2_stream_one(send_request, &target, resume_request).await?;
+                    open_h2_stream_one(send_request, &target, resume_request, profile).await?;
                 let driver = tokio::spawn(driver_loop_h2_stream_one(
                     in_tx, out_rx, body, frame_tx,
                 ));
@@ -416,6 +423,7 @@ async fn open_h2_get(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, hyper::body::Incoming)> {
     let mut builder = Request::builder()
         .method(Method::GET)
@@ -426,9 +434,16 @@ async fn open_h2_get(
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
-    let req = builder
+    let mut req = builder
         .body(empty_request_body())
         .context("failed to build xhttp GET request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     send.ready().await.context("xhttp h2 not ready for GET")?;
     let resp = send
         .send_request(req)
@@ -450,6 +465,7 @@ async fn open_h2_stream_one(
     mut send: http2::SendRequest<RequestBody>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(
     Option<SessionId>,
     hyper::body::Incoming,
@@ -470,9 +486,16 @@ async fn open_h2_stream_one(
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
-    let req = builder
+    let mut req = builder
         .body(body)
         .context("failed to build xhttp stream-one request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     send.ready().await.context("xhttp h2 not ready for stream-one")?;
     let resp = send
         .send_request(req)
@@ -689,6 +712,7 @@ async fn driver_loop_h2(
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
     body: hyper::body::Incoming,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
     // GET drain sub-task. The GET request and response headers were
     // already exchanged synchronously in `connect_xhttp`; this task
@@ -744,7 +768,7 @@ async fn driver_loop_h2(
             break;
         }
         tokio::spawn(async move {
-            if let Err(error) = post_one(send, target.as_ref(), seq, bytes).await {
+            if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
                 warn!(?error, seq, "xhttp POST failed");
                 let _ = in_tx_for_err
                     .send(Err(io_ws_err("xhttp uplink POST failed")))
@@ -781,19 +805,27 @@ async fn post_one(
     target: &XhttpTarget,
     seq: u64,
     payload: Bytes,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<()> {
     // Path-based seq (`<base>/<session>/<seq>`) is xray / sing-box's
     // default placement; the server matches both shapes but emitting
     // path-based here keeps the wire byte-identical to what xray
     // produces, so an on-path observer cannot tell our client apart
     // from a vanilla xray one.
-    let req = Request::builder()
+    let mut req = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_seq(seq))
         .version(Version::HTTP_2)
         .header(http::header::HOST, target.authority.as_str())
         .body(full_request_body(payload))
         .context("failed to build xhttp POST request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     let resp = send
         .send_request(req)
         .await
