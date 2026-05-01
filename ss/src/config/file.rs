@@ -199,29 +199,55 @@ pub(super) struct HttpFallbackSection {
 /// `[sni_fallback]` block. When present and the inbound TCP listener
 /// terminates TLS, peeks the ClientHello before handshake: if the SNI
 /// matches `match_sni`, terminates locally as before; otherwise splices
-/// the raw TCP stream (including the captured ClientHello) to
-/// `backend`, so the backend can present its own cert for the foreign
-/// SNI. Sister of `[http_fallback]` — different OSI layer, same
-/// camouflage idea.
+/// the raw TCP stream (including the captured ClientHello) to a backend
+/// chosen by SNI. Sister of `[http_fallback]` — different OSI layer,
+/// same camouflage idea.
+///
+/// Two mutually exclusive formats:
+///
+/// **Single-backend (legacy):** `backend` at section level, all foreign
+/// SNIs go to one upstream.
+///
+/// **Multi-backend:** omit `backend`; add one or more
+/// `[[sni_fallback.backends]]` tables, each with its own `backend` and
+/// `match_sni`. A backend whose `match_sni` is absent or empty is a
+/// catch-all and must be the last entry.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SniFallbackSection {
-    /// `host:port` of the upstream backend that handles foreign SNIs.
+    /// Single-backend mode: `host:port` of the upstream. Mutually
+    /// exclusive with `backends`.
     pub backend: Option<String>,
-    /// Whitelist of SNIs treated as "ours". Each entry is matched
-    /// case-insensitively; an entry starting with `*.` matches one
+    /// Whitelist of SNIs treated as "ours" (handled locally). Each
+    /// entry is matched case-insensitively; `*.` prefix matches one
     /// label to the left (nginx-style). Required.
     pub match_sni: Option<Vec<String>>,
-    /// What to do for connections that arrive without an SNI
-    /// extension. Default `false` — splice to the backend.
+    /// What to do for connections that arrive without an SNI extension.
+    /// Default `false` — splice to the backend.
     pub allow_no_sni: Option<bool>,
-    /// Wrap the upstream TCP connection in a HAProxy PROXY-protocol
-    /// header (`"v1"` text or `"v2"` binary). Default: disabled.
+    /// Single-backend mode: wrap the upstream TCP connection in a
+    /// HAProxy PROXY-protocol header. Default: disabled.
     pub proxy_protocol: Option<String>,
     /// Maximum bytes to buffer while waiting for a parseable
     /// ClientHello. Anything larger is treated as a malformed TLS
     /// handshake and the connection is closed. Default 8192.
     pub max_client_hello_bytes: Option<usize>,
+    /// Multi-backend mode: ordered list of backends. Mutually exclusive
+    /// with `backend`. First match wins; a catch-all (no `match_sni`)
+    /// must be last.
+    pub backends: Option<Vec<SniBackendSection>>,
+}
+
+/// One entry in `[[sni_fallback.backends]]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct SniBackendSection {
+    /// `host:port` of this backend.
+    pub backend: String,
+    /// SNIs routed to this backend. Absent or empty = catch-all.
+    pub match_sni: Option<Vec<String>>,
+    /// HAProxy PROXY-protocol version for this backend. Default: disabled.
+    pub proxy_protocol: Option<String>,
 }
 
 /// `[session_resumption]` block. All fields are optional; absence keeps

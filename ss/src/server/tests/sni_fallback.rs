@@ -41,7 +41,7 @@ use super::super::shutdown::ShutdownSignal;
 use super::super::transport::sni_fallback::SniFallbackContext;
 use super::super::{DnsCache, build_app, build_user_routes};
 use super::{build_test_state, sample_config};
-use crate::config::{Config, ProxyProtocolVersion, SniFallbackConfig, SniMatcher};
+use crate::config::{Config, ProxyProtocolVersion, SniBackend, SniFallbackConfig, SniMatcher};
 use crate::metrics::Metrics;
 
 /// Spawns a raw-TCP backend that captures everything the splice path
@@ -179,11 +179,14 @@ fn sni_ctx(
 ) -> Arc<SniFallbackContext> {
     Arc::new(SniFallbackContext {
         config: Arc::new(SniFallbackConfig {
-            backend_authority: backend.to_string(),
             match_sni: vec![SniMatcher::Exact("localhost".into())],
             allow_no_sni,
-            proxy_protocol,
             max_client_hello_bytes: 8192,
+            backends: vec![SniBackend {
+                authority: backend.to_string(),
+                match_sni: vec![],
+                proxy_protocol,
+            }],
         }),
         inbound_listen,
     })

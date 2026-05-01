@@ -109,20 +109,39 @@ ws_path_udp = "/udp"
 #                         # 443/TCP and 443/UDP. Requires [server.h3].
 
 # Optional L4 SNI fallback for the TLS listener. When set, the
-# ClientHello is peeked before handshake; foreign SNIs (or no SNI when
-# `allow_no_sni = false`) are spliced as raw TCP to `backend`, which
-# must terminate TLS for those SNIs with its own cert. Sister of
-# [http_fallback] one OSI layer below — needed when probes target a
-# non-HTTP TLS service or the wrong domain entirely. Requires built-in
-# TLS (tls_cert_path + tls_key_path) on the main listener.
+# L4 SNI-routed fallback. ClientHello is peeked before handshake; if
+# the SNI is in `match_sni` (or missing and `allow_no_sni = true`) the
+# connection is handled locally. Otherwise the raw TCP stream is spliced
+# to a backend chosen by SNI, which must present its own cert. Sister of
+# [http_fallback] one OSI layer below. Requires built-in TLS
+# (tls_cert_path + tls_key_path) on the main listener.
+#
+# Single-backend mode — all foreign SNIs go to one upstream:
 # [sni_fallback]
 # backend = "127.0.0.1:8443"
 # match_sni = ["vpn.example.com", "*.api.example.com"]   # required
 # allow_no_sni = false
-# proxy_protocol = "v2"   # strongly recommended so the backend logs
-#                         # the real client IP. Upstream MUST be
-#                         # configured to expect the matching version.
+# proxy_protocol = "v2"   # strongly recommended; upstream must expect it
 # max_client_hello_bytes = 8192
+#
+# Multi-backend mode — route different domains to different upstreams:
+# [sni_fallback]
+# match_sni = ["vpn.example.com"]   # stays on local TLS terminator
+# allow_no_sni = false
+# max_client_hello_bytes = 8192
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:8443"
+# match_sni = ["nginx.example.com", "*.nginx.example.com"]
+# proxy_protocol = "v2"
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:9443"
+# match_sni = ["caddy.example.com"]
+#
+# [[sni_fallback.backends]]
+# backend = "127.0.0.1:10443"
+# # no match_sni = catch-all; must be the last entry
 
 [access_keys]
 # Used for generated Outline access keys.

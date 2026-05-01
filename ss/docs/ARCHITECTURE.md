@@ -92,7 +92,11 @@ Active only when the main TCP listener terminates TLS. Before `tokio_rustls::Tls
 1. Read into a small buffer until the Acceptor delivers a parsed ClientHello (or `max_client_hello_bytes` is exceeded — malformed handshakes are closed locally so they never reach the backend logs).
 2. The buffered bytes are kept verbatim and never re-read from the wire.
 3. If the parsed SNI matches `match_sni` (case-insensitive; nginx-style `*.example.com` matches one label to the left), the bytes are replayed into the local TLS terminator via a `PrependStream` wrapper that drains the prefix on `poll_read` before falling through to the underlying socket. Handshake then continues normally and the dispatcher hands off to L7.
-4. Otherwise (or when no SNI was sent and `allow_no_sni = false`), a fresh TCP connection is opened to `backend`, an optional HAProxy PROXY-protocol v1/v2 header is prepended, the captured ClientHello is written, and `tokio::io::copy_bidirectional` runs until either side closes.
+4. Otherwise (or when no SNI was sent and `allow_no_sni = false`), the dispatcher selects a backend and splices to it. Two config modes are supported:
+   - **Single-backend** (`backend = "host:port"` at section level): all foreign SNIs go to one upstream.
+   - **Multi-backend** (`[[sni_fallback.backends]]` array): each entry carries its own `backend`, an optional per-backend `match_sni` list, and an optional `proxy_protocol`. The dispatcher iterates the list in order and picks the first entry whose `match_sni` contains the connection's SNI. An entry with no (or empty) `match_sni` is a catch-all and must be the last entry; a connection that matches no backend is silently dropped. This lets operators route different domains to different upstreams (e.g. nginx on `:8443` for one domain, caddy on `:9443` for another) without running a separate haproxy in front.
+
+   In both modes a fresh TCP connection is opened to the selected upstream, an optional HAProxy PROXY-protocol v1/v2 header is prepended, the captured ClientHello is written, and `tokio::io::copy_bidirectional` runs until either side closes.
 
 The HTTP/3 listener is unaffected — quinn parses SNI before our code sees the stream, and routing it would need separate plumbing.
 
