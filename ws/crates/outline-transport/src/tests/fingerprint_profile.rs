@@ -187,3 +187,54 @@ fn strategy_from_str_rejects_unknown_aliases() {
     assert!(Strategy::from_str("perma").is_err());
     assert!(Strategy::from_str("rotate").is_err());
 }
+
+#[test]
+fn note_first_use_returns_true_only_on_first_call() {
+    // Hostname is unique per test so the process-global dedup set is
+    // not poisoned by other tests in this binary.
+    let url: Url = "wss://note-first-use-once.test:443/".parse().unwrap();
+    let profile = &PROFILES[0];
+    assert!(crate::fingerprint_profile::note_first_use(&url, profile));
+    assert!(!crate::fingerprint_profile::note_first_use(&url, profile));
+    assert!(!crate::fingerprint_profile::note_first_use(&url, profile));
+}
+
+#[test]
+fn note_first_use_treats_distinct_profiles_as_distinct_entries() {
+    // Same host, different profile — both must log on first use,
+    // because operators rotating the strategy at startup should see
+    // both identities pop up in logs without per-process restart.
+    let url: Url = "wss://note-first-use-profiles.test:443/".parse().unwrap();
+    let p1 = &PROFILES[0];
+    let p2 = PROFILES
+        .iter()
+        .find(|p| p.name != p1.name)
+        .expect("pool has at least two profiles");
+    assert!(crate::fingerprint_profile::note_first_use(&url, p1));
+    assert!(crate::fingerprint_profile::note_first_use(&url, p2));
+    assert!(!crate::fingerprint_profile::note_first_use(&url, p1));
+    assert!(!crate::fingerprint_profile::note_first_use(&url, p2));
+}
+
+#[test]
+fn note_first_use_treats_distinct_hosts_as_distinct_entries() {
+    let url1: Url = "wss://note-first-use-host-a.test:443/".parse().unwrap();
+    let url2: Url = "wss://note-first-use-host-b.test:443/".parse().unwrap();
+    let profile = &PROFILES[0];
+    assert!(crate::fingerprint_profile::note_first_use(&url1, profile));
+    assert!(crate::fingerprint_profile::note_first_use(&url2, profile));
+    assert!(!crate::fingerprint_profile::note_first_use(&url1, profile));
+    assert!(!crate::fingerprint_profile::note_first_use(&url2, profile));
+}
+
+#[test]
+fn note_first_use_treats_distinct_ports_as_distinct_entries() {
+    // Two URLs with the same host but different ports are different
+    // peers — `ws_mode_cache` keys them apart, so the deduper should
+    // mirror that to keep log granularity consistent.
+    let url1: Url = "wss://note-first-use-port.test:443/".parse().unwrap();
+    let url2: Url = "wss://note-first-use-port.test:8443/".parse().unwrap();
+    let profile = &PROFILES[0];
+    assert!(crate::fingerprint_profile::note_first_use(&url1, profile));
+    assert!(crate::fingerprint_profile::note_first_use(&url2, profile));
+}
