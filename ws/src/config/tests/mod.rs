@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use tempfile::TempDir;
 
 use outline_routing::RouteTarget;
 use outline_uplink::{LoadBalancingMode, RoutingScope, UplinkTransport};
@@ -35,7 +36,8 @@ fn config_deserializes() {
 
 #[tokio::test]
 async fn load_config_enables_single_optional_socks5_auth() {
-    let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -62,13 +64,12 @@ async fn load_config_enables_single_optional_socks5_auth() {
             }],
         })
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_enables_multiple_socks5_users() {
-    let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-users.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -107,13 +108,12 @@ async fn load_config_enables_multiple_socks5_users() {
             ],
         })
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_partial_socks5_auth() {
-    let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-partial.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -131,13 +131,12 @@ async fn load_config_rejects_partial_socks5_auth() {
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     assert!(format!("{err:#}").contains("missing socks5 password"));
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_mixed_single_and_multi_socks5_auth() {
-    let path = std::env::temp_dir().join("outline-ws-rust-socks5-auth-mixed.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -160,8 +159,6 @@ async fn load_config_rejects_mixed_single_and_multi_socks5_auth() {
     let args = super::Args::parse_from(["test"]);
     let err = load_config(&path, &args).await.unwrap_err();
     assert!(format!("{err:#}").contains("not both"));
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[test]
@@ -303,7 +300,8 @@ fn config_deserializes_tun() {
 
 #[tokio::test]
 async fn load_config_disables_probes_when_not_configured() {
-    let path = std::env::temp_dir().join("outline-ws-rust-no-probe.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -321,14 +319,13 @@ async fn load_config_disables_probes_when_not_configured() {
     let args = super::Args::parse_from(["test"]);
     let config = super::load_config(&path, &args).await.unwrap();
     assert!(!config.groups[0].probe.enabled());
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_enables_tun_when_configured() {
-    let path = std::env::temp_dir().join("outline-ws-rust-tun.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -381,7 +378,8 @@ async fn load_config_enables_tun_when_configured() {
 #[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_enables_tun_from_cli_without_tun_section() {
-    let path = std::env::temp_dir().join("outline-ws-rust-no-tun-section.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -405,14 +403,13 @@ async fn load_config_enables_tun_from_cli_without_tun_section() {
     assert_eq!(config.tun.as_ref().unwrap().path, PathBuf::from("/dev/net/tun"));
     assert_eq!(config.tun.as_ref().unwrap().name.as_deref(), Some("tun0"));
     assert_eq!(config.tun.as_ref().unwrap().mtu, 1500);
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(feature = "metrics")]
 #[tokio::test]
 async fn load_config_enables_metrics_from_cli_without_metrics_section() {
-    let path = std::env::temp_dir().join("outline-ws-rust-no-metrics-section.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -432,13 +429,12 @@ async fn load_config_enables_metrics_from_cli_without_metrics_section() {
     ]);
     let config = load_config(&path, &args).await.unwrap();
     assert_eq!(config.metrics.as_ref().unwrap().listen, "[::1]:9090".parse().unwrap());
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_disables_probes_when_probe_section_has_no_checks() {
-    let path = std::env::temp_dir().join("outline-ws-rust-empty-probe.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -460,13 +456,12 @@ async fn load_config_disables_probes_when_probe_section_has_no_checks() {
     let args = super::Args::parse_from(["test"]);
     let config = super::load_config(&path, &args).await.unwrap();
     assert!(!config.groups[0].probe.enabled());
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_supports_direct_shadowsocks_uplink() {
-    let path = std::env::temp_dir().join("outline-ws-rust-direct-ss.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -492,13 +487,12 @@ async fn load_config_supports_direct_shadowsocks_uplink() {
     assert_eq!(uplink.udp_addr.as_ref().unwrap().to_string(), "ss.example.com:8388");
     assert!(uplink.tcp_ws_url.is_none());
     assert!(uplink.udp_ws_url.is_none());
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_missing_all_ingress() {
-    let path = std::env::temp_dir().join("outline-ws-rust-no-ingress.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -512,13 +506,12 @@ async fn load_config_rejects_missing_all_ingress() {
     let args = super::Args::parse_from(["test"]);
     let err = super::load_config(&path, &args).await.unwrap_err();
     assert!(format!("{err:#}").contains("no ingress configured"));
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_new_shape_groups_and_routes() {
-    let path = std::env::temp_dir().join("outline-ws-rust-groups-routes.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -603,13 +596,12 @@ async fn load_config_new_shape_groups_and_routes() {
     assert_eq!(routing.rules[1].fallback, Some(RouteTarget::Group("backup".into())));
     assert_eq!(routing.default_target, RouteTarget::Group("main".into()));
     assert_eq!(routing.default_fallback, Some(RouteTarget::Direct));
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_unknown_group_in_route() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-unknown-group.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -637,13 +629,12 @@ async fn load_config_rejects_unknown_group_in_route() {
     let err = super::load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("nonexistent"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_too_many_uplink_groups() {
-    let path = std::env::temp_dir().join("outline-ws-rust-too-many-groups.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     let mut body = String::from("[socks5]\nlisten = \"127.0.0.1:1080\"\n\n");
     // 65 groups — one above the 64-group cap.
     for i in 0..65 {
@@ -660,14 +651,13 @@ async fn load_config_rejects_too_many_uplink_groups() {
     let err = super::load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("too many") && msg.contains("64"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(feature = "tun")]
 #[tokio::test]
 async fn load_config_allows_tun_without_socks5_listener() {
-    let path = std::env::temp_dir().join("outline-ws-rust-tun-only.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -697,15 +687,14 @@ async fn load_config_allows_tun_without_socks5_listener() {
     let config = super::load_config(&path, &args).await.unwrap();
     assert!(config.listen.is_none());
     assert!(config.tun.is_some());
-
-    let _ = std::fs::remove_file(path);
 }
 
 // ── Edge-case validation tests ───────────────────────────────────────────────
 
 #[tokio::test]
 async fn load_config_rejects_invalid_toml() {
-    let path = std::env::temp_dir().join("outline-ws-rust-invalid.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         // Invalid TOML: unterminated array.
@@ -717,13 +706,12 @@ async fn load_config_rejects_invalid_toml() {
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("failed to parse"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_uplink_group_without_uplinks() {
-    let path = std::env::temp_dir().join("outline-ws-rust-group-no-uplinks.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -743,13 +731,12 @@ async fn load_config_rejects_uplink_group_without_uplinks() {
         msg.contains("no [[uplinks]]") || msg.contains("no uplinks"),
         "got: {msg}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_route_without_prefixes_or_file() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-rule.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -783,13 +770,12 @@ async fn load_config_rejects_route_without_prefixes_or_file() {
         msg.contains("prefixes") && msg.contains("file"),
         "got: {msg}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_empty_route_section() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-empty-arr.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -818,13 +804,12 @@ password = "Secret0"
         msg.contains("empty") && msg.contains("route"),
         "got: {msg}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_cli_override_with_uplink_group() {
-    let path = std::env::temp_dir().join("outline-ws-rust-cli-override.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -856,15 +841,12 @@ async fn load_config_rejects_cli_override_with_uplink_group() {
         msg.contains("CLI uplink overrides") && msg.contains("[[uplink_group]]"),
         "got: {msg}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_loads_multiple_route_files() {
-    let dir = std::env::temp_dir().join("outline-ws-rust-route-files-ok");
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
     let v4_path = dir.join("cn-v4.list");
     let v6_path = dir.join("cn-v6.list");
     std::fs::write(&v4_path, "1.0.0.0/8\n2.0.0.0/8\n").unwrap();
@@ -905,13 +887,12 @@ async fn load_config_loads_multiple_route_files() {
     assert_eq!(rule.files.len(), 2);
     assert_eq!(rule.files[0], v4_path);
     assert_eq!(rule.files[1], v6_path);
-
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn load_config_rejects_inverted_route_without_prefixes() {
-    let path = std::env::temp_dir().join("outline-ws-rust-route-invert-empty.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -950,14 +931,13 @@ async fn load_config_rejects_inverted_route_without_prefixes() {
         msg.contains("prefixes") || msg.contains("invert"),
         "got: {msg}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(feature = "control")]
 #[tokio::test]
 async fn load_config_accepts_control_section_with_token() {
-    let path = std::env::temp_dir().join("outline-ws-rust-control-ok.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -980,13 +960,12 @@ async fn load_config_accepts_control_section_with_token() {
     let control = config.control.expect("control config present");
     assert_eq!(control.listen, "127.0.0.1:9091".parse::<SocketAddr>().unwrap());
     assert_eq!(control.token, "topsecret");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_control_listener_without_token() {
-    let path = std::env::temp_dir().join("outline-ws-rust-control-no-token.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -1007,13 +986,12 @@ async fn load_config_rejects_control_listener_without_token() {
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("token"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_control_token_without_listener() {
-    let path = std::env::temp_dir().join("outline-ws-rust-control-no-listen.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -1034,15 +1012,13 @@ async fn load_config_rejects_control_token_without_listener() {
     let err = load_config(&path, &args).await.unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("listener"), "got: {msg}");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[cfg(feature = "control")]
 #[tokio::test]
 async fn load_config_reads_control_token_from_file() {
-    let dir = std::env::temp_dir().join("outline-ws-rust-control-tokfile");
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
     let token_path = dir.join("token");
     std::fs::write(&token_path, "  filetoken\n").unwrap();
     let path = dir.join("config.toml");
@@ -1066,15 +1042,13 @@ async fn load_config_reads_control_token_from_file() {
     let args = super::Args::parse_from(["test"]);
     let config = load_config(&path, &args).await.unwrap();
     assert_eq!(config.control.unwrap().token, "filetoken");
-
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[cfg(feature = "dashboard")]
 #[tokio::test]
 async fn load_config_reads_dashboard_instances() {
-    let dir = std::env::temp_dir().join("outline-ws-rust-dashboard-config");
-    std::fs::create_dir_all(&dir).unwrap();
+    let tmp = TempDir::new().unwrap();
+    let dir = tmp.path();
     std::fs::write(dir.join("inst-a.token"), "  dash-token\n").unwrap();
     let path = dir.join("config.toml");
     std::fs::write(
@@ -1107,8 +1081,6 @@ async fn load_config_reads_dashboard_instances() {
     assert_eq!(dashboard.request_timeout_secs, 17);
     assert_eq!(dashboard.instances[0].name, "inst-a");
     assert_eq!(dashboard.instances[0].token, "dash-token");
-
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]
@@ -1116,7 +1088,8 @@ async fn load_config_expands_vless_share_link_field() {
     // A bare `link = "vless://..."` entry should produce a fully-formed
     // VLESS uplink without the user spelling out `vless_id` / `vless_*_url`/
     // `vless_mode` separately.
-    let path = std::env::temp_dir().join("outline-ws-rust-share-link.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -1143,13 +1116,12 @@ async fn load_config_expands_vless_share_link_field() {
     assert_eq!(url.scheme(), "wss");
     assert_eq!(url.host_str(), Some("vless.example.com"));
     assert_eq!(url.path(), "/secret/vless");
-
-    let _ = std::fs::remove_file(path);
 }
 
 #[tokio::test]
 async fn load_config_rejects_link_alongside_explicit_vless_url() {
-    let path = std::env::temp_dir().join("outline-ws-rust-share-link-conflict.toml");
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
     std::fs::write(
         &path,
         r#"
@@ -1175,6 +1147,4 @@ async fn load_config_rejects_link_alongside_explicit_vless_url() {
         message.contains("mutually exclusive"),
         "expected conflict error, got: {message}"
     );
-
-    let _ = std::fs::remove_file(path);
 }
