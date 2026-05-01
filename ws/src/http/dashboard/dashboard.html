@@ -182,6 +182,9 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .proto-stack { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
 .proto-pill.proto-downgraded { border-style: dashed; box-shadow: inset 0 0 0 1px rgba(214, 130, 30, .35); }
 .proto-pill .proto-dg { margin-left: 5px; font-size: 10px; opacity: .85; color: #b8631a; }
+.proto-pill .proto-submode { margin-left: 4px; padding: 0 4px; font-size: 9.5px; opacity: .8; border-radius: 4px; background: rgba(0,0,0,.1); letter-spacing: .04em; }
+.proto-pill .proto-submode.proto-downgraded { border-style: solid; box-shadow: none; color: #b8631a; background: rgba(214, 130, 30, .15); opacity: 1; }
+.proto-pill .proto-submode .proto-dg { margin: 0 1px; }
 .rows-head { min-height: 46px; color: var(--muted); font-size: 11px; font-weight: 780; text-transform: uppercase; letter-spacing: .08em; border-bottom: 1px solid var(--line); }
 .row { border-bottom: 1px solid var(--line); font-size: 13px; }
 .row:last-child { border-bottom: 0; }
@@ -372,12 +375,32 @@ function stackLabel(transport, mode) {
 function downgradeTitle(configured, effective, leg) {
   return `${leg} auto-downgraded ${configured.toUpperCase()} → ${effective.toUpperCase()} (H3/QUIC unreachable)`;
 }
-function legPill(t, cls, leg, configured, effective, downgraded) {
+// Compact suffix that surfaces the XHTTP submode on the pill. Hidden
+// for packet-up (the default — showing "/P" everywhere clutters the
+// row) and shown explicitly only when stream-one is configured. When
+// the per-host stream-one block is live the suffix becomes "/S↘P" so
+// the dashboard reflects the actual carrier shape, not the configured
+// one. Returns ["", ""] for non-XHTTP carriers.
+function submodeSuffix(submode, effective, downgraded) {
+  if (!submode) return ["", ""];
+  if (submode === "packet-up" && !downgraded) return ["", ""];
+  if (downgraded) {
+    return [
+      "<span class=\"proto-submode proto-downgraded\">/S<span class=\"proto-dg\">↘</span>P</span>",
+      `submode auto-downgraded stream-one → packet-up (recent stream-one failure cached)`,
+    ];
+  }
+  if (submode === "stream-one") return ["<span class=\"proto-submode\">/S</span>", "submode: stream-one"];
+  return ["<span class=\"proto-submode\">/P</span>", "submode: packet-up"];
+}
+function legPill(t, cls, leg, configured, effective, downgraded, submode, submodeEff, submodeDg) {
   const dg = downgraded ? " proto-downgraded" : "";
   const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
-  const title = downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`;
+  const [submodeHtml, submodeTitle] = submodeSuffix(submode, submodeEff, submodeDg);
+  const baseTitle = downgraded ? downgradeTitle(configured, effective, leg) : `${leg} path`;
+  const title = submodeTitle ? `${baseTitle} · ${submodeTitle}` : baseTitle;
   const legTag = leg ? `<span class="proto-leg">${leg}</span>` : "";
-  return `<span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}</span>`;
+  return `<span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}">${legTag}${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}</span>`;
 }
 function protocolPill(uplink) {
   const t = String(uplink.transport || "").toLowerCase();
@@ -388,15 +411,22 @@ function protocolPill(uplink) {
   const udpEff = uplink.udp_mode_effective || udpMode;
   const tcpDg = !!uplink.tcp_downgrade_active && tcpMode !== tcpEff;
   const udpDg = !!uplink.udp_downgrade_active && udpMode !== udpEff;
+  const tcpSm = uplink.tcp_xhttp_submode || null;
+  const udpSm = uplink.udp_xhttp_submode || null;
+  const tcpSmEff = uplink.tcp_xhttp_submode_effective || tcpSm;
+  const udpSmEff = uplink.udp_xhttp_submode_effective || udpSm;
+  const tcpSmDg = !!uplink.tcp_xhttp_submode_downgrade_active && tcpSm !== tcpSmEff;
+  const udpSmDg = !!uplink.udp_xhttp_submode_downgrade_active && udpSm !== udpSmEff;
   if (t === "shadowsocks") {
     return `<span class="proto-pill ${cls}" title="encapsulation/transport">${escapeHtml(stackLabel(t))}</span>`;
   }
-  if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg) {
-    return legPill(t, cls, "", tcpMode, tcpEff, tcpDg);
+  const sameSubmode = tcpSm === udpSm && tcpSmEff === udpSmEff && tcpSmDg === udpSmDg;
+  if (tcpMode && udpMode && tcpMode === udpMode && tcpEff === udpEff && tcpDg === udpDg && sameSubmode) {
+    return legPill(t, cls, "", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg);
   }
   const parts = [];
-  if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg));
-  if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg));
+  if (tcpMode) parts.push(legPill(t, cls, "TCP", tcpMode, tcpEff, tcpDg, tcpSm, tcpSmEff, tcpSmDg));
+  if (udpMode) parts.push(legPill(t, cls, "UDP", udpMode, udpEff, udpDg, udpSm, udpSmEff, udpSmDg));
   if (!parts.length) return `<span class="proto-pill ${cls}">${escapeHtml(protocolLabel(t))}</span>`;
   return `<div class="proto-stack">${parts.join("")}</div>`;
 }
@@ -420,10 +450,15 @@ function activeProtocolChip(group) {
     const configured = isUdp ? u.udp_mode : u.tcp_mode;
     const effective = (isUdp ? u.udp_mode_effective : u.tcp_mode_effective) || configured;
     const downgraded = !!(isUdp ? u.udp_downgrade_active : u.tcp_downgrade_active) && configured !== effective;
+    const submode = (isUdp ? u.udp_xhttp_submode : u.tcp_xhttp_submode) || null;
+    const submodeEff = (isUdp ? u.udp_xhttp_submode_effective : u.tcp_xhttp_submode_effective) || submode;
+    const submodeDg = !!(isUdp ? u.udp_xhttp_submode_downgrade_active : u.tcp_xhttp_submode_downgrade_active) && submode !== submodeEff;
     const dg = downgraded ? " proto-downgraded" : "";
     const star = downgraded ? "<span class=\"proto-dg\">↘</span>" : "";
-    const title = downgraded ? downgradeTitle(configured, effective, scope) : "";
-    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(t, effective))}${star}</span></span>`;
+    const [submodeHtml, submodeTitle] = submodeSuffix(submode, submodeEff, submodeDg);
+    const baseTitle = downgraded ? downgradeTitle(configured, effective, scope) : "";
+    const title = submodeTitle ? (baseTitle ? `${baseTitle} · ${submodeTitle}` : submodeTitle) : baseTitle;
+    return `<span class="cfg-chip"><span>⇄</span><span class="cfg-key">${scope}:</span><span class="proto-pill ${cls}${dg}" title="${escapeHtml(title)}" style="margin-left:2px">${escapeHtml(stackLabel(t, effective))}${star}${submodeHtml}</span></span>`;
   }).join("");
 }
 function uplinkRole(u) {
