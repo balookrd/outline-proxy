@@ -150,7 +150,12 @@ pub(super) async fn connect_xhttp_h1(
             "xhttp h1 session opened"
         );
         Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver)),
+            XhttpStream::from_channels(
+                in_rx,
+                out_tx,
+                AbortOnDrop::new(driver),
+                XhttpSubmode::PacketUp,
+            ),
             issued_session_id,
         ))
     };

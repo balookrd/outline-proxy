@@ -110,17 +110,19 @@ async fn xhttp_h1_client_round_trip_through_mock_server() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn xhttp_h1_rejects_stream_one_submode() -> Result<()> {
-    // Stream-one is intentionally not implemented for the h1
-    // carrier — the user-facing fallback chain only covers
-    // packet-up. Rather than silently downgrade the carrier shape,
-    // `connect_xhttp_h1` bails loudly so a misconfigured URL
-    // (`?mode=stream-one` with `vless_mode = xhttp_h1`) surfaces as
-    // a clear dial error instead of unexpected wire behaviour.
+async fn xhttp_h1_silently_coerces_stream_one_to_packet_up() -> Result<()> {
+    // The user-facing `connect_xhttp` entry point clamps stream-one
+    // to packet-up whenever the carrier is `xhttp_h1` — h1 cannot
+    // multiplex a streaming GET against a streaming POST on a single
+    // connection, so attempting stream-one there is meaningless. The
+    // clamp happens *before* dispatching to the h1 carrier so the
+    // dial proceeds with packet-up shape; the h1 carrier's defensive
+    // `packet-up only` bail still exists internally but is no longer
+    // reachable through the public entry point.
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     let listen_addr = listener.local_addr()?;
-    // No accept loop — `connect_xhttp_h1` should bail before any
-    // socket is opened.
+    // No accept loop — we just want to verify the dial is attempted
+    // (proving the clamp fired) rather than rejected up-front.
     drop(listener);
 
     let base_url: Url = format!("http://{listen_addr}/xh?mode=stream-one").parse()?;
@@ -129,13 +131,17 @@ async fn xhttp_h1_rejects_stream_one_submode() -> Result<()> {
     let result =
         super::connect_xhttp(&cache, &base_url, TransportMode::XhttpH1, None, false, None).await;
     let err = match result {
-        Ok(_) => panic!("expected stream-one bail, got an open session"),
+        Ok(_) => panic!("expected dial failure (no server), got an open session"),
         Err(error) => error,
     };
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("packet-up only"),
-        "expected `packet-up only` in error chain, got: {msg}"
+        !msg.contains("packet-up only"),
+        "h1 entry must clamp stream-one silently, but the defensive bail fired: {msg}"
+    );
+    assert!(
+        msg.contains("Connection refused") || msg.contains("connect TCP socket"),
+        "expected connect-level failure after the clamp, got: {msg}"
     );
     Ok(())
 }

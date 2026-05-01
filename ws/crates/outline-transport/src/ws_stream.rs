@@ -233,6 +233,18 @@ impl TransportStream {
         }
     }
 
+    /// XHTTP submode the dialer actually landed on (after any inline
+    /// `stream-one → packet-up` retry). `None` for non-XHTTP variants —
+    /// the concept does not apply to WS or QUIC carriers. Used by the
+    /// uplink layer to surface the effective carrier shape on the
+    /// dashboard, distinct from the `TransportMode`'s h-version axis.
+    pub fn xhttp_active_submode(&self) -> Option<crate::xhttp::XhttpSubmode> {
+        match self {
+            TransportStream::Xhttp { inner, .. } => Some(inner.active_submode()),
+            _ => None,
+        }
+    }
+
     /// Stamp the originally-requested mode so the caller can detect that
     /// this stream is the result of a fallback. Chainable; intended to be
     /// called inside `connect_websocket_with_resume` immediately before

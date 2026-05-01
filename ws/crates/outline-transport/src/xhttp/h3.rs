@@ -124,7 +124,7 @@ pub(super) async fn connect_xhttp_h3(
         let (in_tx, in_rx) = mpsc::channel::<Result<Message, WsError>>(INBOUND_CHANNEL_CAPACITY);
         let (out_tx, out_rx) = mpsc::channel::<Message>(OUTBOUND_CHANNEL_CAPACITY);
 
-        let (issued_session_id, driver) = match submode {
+        let (issued_session_id, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 let (issued, request_stream) =
                     open_h3_get(send_request.clone(), &target, resume_request).await?;
@@ -135,7 +135,7 @@ pub(super) async fn connect_xhttp_h3(
                     out_rx,
                     request_stream,
                 ));
-                (issued, driver)
+                (issued, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // The h3 client closes the connection with `H3_NO_ERROR`
@@ -147,25 +147,55 @@ pub(super) async fn connect_xhttp_h3(
                 // takes ownership of its own copy; the cloned guard
                 // moves into the driver task and is dropped only when
                 // the carrier shuts down for real.
-                let (issued, request_stream) =
-                    open_h3_stream_one(send_request.clone(), &target, resume_request).await?;
-                let driver = tokio::spawn(driver_loop_h3_stream_one(
-                    send_request,
-                    in_tx,
-                    out_rx,
-                    request_stream,
-                ));
-                (issued, driver)
+                //
+                // On dial-time failure we retry packet-up on the same
+                // QUIC connection (mirror of the h2 inline fallback).
+                // The handshake cost is sunk; if stream-one is broken
+                // on this network path, packet-up usually still works
+                // because it issues one short bidi stream per POST
+                // instead of one long-lived one.
+                match open_h3_stream_one(send_request.clone(), &target, resume_request).await {
+                    Ok((issued, request_stream)) => {
+                        let driver = tokio::spawn(driver_loop_h3_stream_one(
+                            send_request,
+                            in_tx,
+                            out_rx,
+                            request_stream,
+                        ));
+                        crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
+                            .await;
+                        (issued, driver, XhttpSubmode::StreamOne)
+                    },
+                    Err(stream_err) => {
+                        warn!(
+                            %url,
+                            error = %format!("{stream_err:#}"),
+                            "xhttp h3 stream-one failed, falling back to packet-up on same connection"
+                        );
+                        crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
+                            .await;
+                        let (issued, request_stream) =
+                            open_h3_get(send_request.clone(), &target, resume_request).await?;
+                        let driver = tokio::spawn(driver_loop_h3(
+                            send_request,
+                            target.clone(),
+                            in_tx,
+                            out_rx,
+                            request_stream,
+                        ));
+                        (issued, driver, XhttpSubmode::PacketUp)
+                    },
+                }
             },
         };
 
         debug!(
-            %url, %session_id, mode = "xhttp_h3", ?submode,
+            %url, %session_id, mode = "xhttp_h3", ?submode, ?active_submode,
             ?issued_session_id, ?resume_request,
             "xhttp h3 session opened"
         );
         Ok::<_, anyhow::Error>((
-            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver)),
+            XhttpStream::from_channels(in_rx, out_tx, AbortOnDrop::new(driver), active_submode),
             issued_session_id,
         ))
     };
