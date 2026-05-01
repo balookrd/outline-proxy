@@ -133,6 +133,7 @@ mod ws_mode_cache;
 mod ws_stream;
 mod xhttp;
 mod xhttp_mode_cache;
+mod xhttp_submode_cache;
 
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
@@ -222,13 +223,24 @@ pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_di
 pub use h2::init_h2_window_sizes;
 
 // Per-host downgrade cache TTL: called once during startup from the
-// main binary, fed from the `mode_downgrade_secs` config knob. The
-// WS and XHTTP caches share the same knob — both families decay on
-// the same cadence, but the slots are independent so a `record_failure`
-// on one chain cannot clobber the other's cap.
+// main binary, fed from the `mode_downgrade_secs` config knob. All
+// three caches (WS h-version, XHTTP h-version, XHTTP submode) share
+// the same knob — every axis decays on the same cadence, but the
+// slots are independent so a `record_failure` on one axis cannot
+// clobber the cap on another.
 pub fn init_downgrade_ttl(ttl: std::time::Duration) {
     ws_mode_cache::init_downgrade_ttl(ttl);
     xhttp_mode_cache::init_downgrade_ttl(ttl);
+    xhttp_submode_cache::init_downgrade_ttl(ttl);
+}
+
+/// Time remaining on the per-host XHTTP stream-one block for this dial
+/// URL, or `None` when no block is active. Wraps the internal submode
+/// cache so the uplink-snapshot builder can surface the cache state on
+/// dashboards without depending on the cache module directly. Returns
+/// `None` for non-XHTTP URLs (the cache simply has no entry there).
+pub async fn xhttp_stream_one_block_remaining(url: &url::Url) -> Option<std::time::Duration> {
+    xhttp_submode_cache::stream_one_block_remaining(url).await
 }
 
 // Browser fingerprint profile strategy: called once at startup when a
@@ -256,6 +268,7 @@ pub async fn gc_shared_connections() {
     crate::quic::gc_shared_quic_connections().await;
     ws_mode_cache::gc().await;
     xhttp_mode_cache::gc().await;
+    xhttp_submode_cache::gc().await;
 }
 
 pub async fn connect_websocket_with_source(

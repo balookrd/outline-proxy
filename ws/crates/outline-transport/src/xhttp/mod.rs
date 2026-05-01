@@ -99,6 +99,18 @@ pub enum XhttpSubmode {
     StreamOne,
 }
 
+impl std::fmt::Display for XhttpSubmode {
+    /// Renders the dashed spelling the server's `?mode=` query
+    /// expects, so the same string can be echoed back on dashboards
+    /// and logs without re-mapping. Stable wire shape, do not change.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::PacketUp => "packet-up",
+            Self::StreamOne => "stream-one",
+        })
+    }
+}
+
 impl XhttpSubmode {
     /// Extracts the submode from a `?mode=...` query parameter on
     /// the dial URL. Accepts both dashed (`stream-one`) and
@@ -131,6 +143,28 @@ impl XhttpSubmode {
             },
         }
     }
+}
+
+/// Pick the submode the dialer will actually use for a given carrier.
+/// Two clamps stack on top of the URL-derived value:
+///   1. The h1 carrier supports packet-up only (it cannot multiplex a
+///      streaming GET against a streaming POST on a single keep-alive
+///      socket), so callers asking for stream-one over h1 are silently
+///      coerced. Without the clamp the inner `connect_xhttp_h1` bails,
+///      which would propagate as a hard dial failure even though
+///      packet-up is a safe substitute.
+///   2. The per-host stream-one block — see [`crate::xhttp_submode_cache`] —
+///      clamps stream-one to packet-up for `DOWNGRADE_TTL` after a
+///      recent stream-one failure on this `host:port`. This avoids
+///      re-paying the doomed handshake on every dial when the network
+///      path between the client and server cannot carry stream-one
+///      (CDN buffering, middlebox idle-timeout, etc.).
+async fn resolve_effective_submode(url: &Url, mode: TransportMode) -> XhttpSubmode {
+    let mut submode = XhttpSubmode::from_url(url);
+    if matches!(mode, TransportMode::XhttpH1) {
+        submode = XhttpSubmode::PacketUp;
+    }
+    crate::xhttp_submode_cache::effective_submode(url, submode).await
 }
 
 /// Boxed body type used by every XHTTP request the client issues.
@@ -190,6 +224,11 @@ pub(crate) struct XhttpStream {
     incoming: mpsc::Receiver<Result<Message, WsError>>,
     outgoing: mpsc::Sender<Message>,
     closed: bool,
+    /// Submode the dialer landed on. Differs from the URL-requested
+    /// submode when the inline stream-one→packet-up retry kicked in,
+    /// so the uplink layer can surface the actual carrier shape on
+    /// dashboards instead of the originally-requested one.
+    active_submode: XhttpSubmode,
     // The driver task owns the h2 SendRequest, the GET reader
     // sub-task and the POST fan-out sub-tasks. Dropping the stream
     // aborts the driver, which cancels every sub-task and frees the
@@ -206,6 +245,15 @@ impl XhttpStream {
         !self.outgoing.is_closed()
     }
 
+    /// The XHTTP submode this stream is actually carrying (after any
+    /// inline stream-one→packet-up fallback at dial time). The h-version
+    /// is reflected separately by the surrounding `TransportMode` —
+    /// this method only tells you whether the carrier is `stream-one`
+    /// or `packet-up`.
+    pub fn active_submode(&self) -> XhttpSubmode {
+        self.active_submode
+    }
+
     /// Constructor used by the h3 sibling module: it builds the
     /// driver task and the channel pair on its own and hands the
     /// finished triple here. Keeps the field-level details of
@@ -215,8 +263,9 @@ impl XhttpStream {
         incoming: mpsc::Receiver<Result<Message, WsError>>,
         outgoing: mpsc::Sender<Message>,
         driver: AbortOnDrop,
+        active_submode: XhttpSubmode,
     ) -> Self {
-        Self { incoming, outgoing, closed: false, _driver: driver }
+        Self { incoming, outgoing, closed: false, active_submode, _driver: driver }
     }
 }
 
@@ -296,7 +345,7 @@ pub(crate) async fn connect_xhttp(
     ipv6_first: bool,
     resume_request: Option<SessionId>,
 ) -> Result<(XhttpStream, Option<SessionId>)> {
-    let submode = XhttpSubmode::from_url(url);
+    let submode = resolve_effective_submode(url, mode).await;
     match mode {
         TransportMode::XhttpH2 => {},
         TransportMode::XhttpH1 => {
@@ -359,7 +408,7 @@ pub(crate) async fn connect_xhttp(
             session_id: session_id.clone(),
         });
 
-        let (issued_session_id, driver) = match submode {
+        let (issued_session_id, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 // Open the GET synchronously so the resume-id
                 // round-trip completes before we hand the stream to
@@ -375,24 +424,57 @@ pub(crate) async fn connect_xhttp(
                     body,
                     profile,
                 ));
-                (issued, driver)
+                (issued, driver, XhttpSubmode::PacketUp)
             },
             XhttpSubmode::StreamOne => {
                 // Stream-one is a single bidirectional POST: open
                 // it synchronously to read response headers, then
                 // hand the response body and the request-body
-                // sender to the driver.
-                let (issued, body, frame_tx) =
-                    open_h2_stream_one(send_request, &target, resume_request, profile).await?;
-                let driver = tokio::spawn(driver_loop_h2_stream_one(
-                    in_tx, out_rx, body, frame_tx,
-                ));
-                (issued, driver)
+                // sender to the driver. On dial-time failure we
+                // retry packet-up on the same h2 connection — the
+                // TCP/TLS/h2 cost is sunk and the failure is most
+                // likely middlebox-shaped (the CDN refused to
+                // forward the streaming request body), so trying
+                // the simpler carrier on the surviving connection
+                // recovers without burning a fresh handshake.
+                match open_h2_stream_one(send_request.clone(), &target, resume_request, profile)
+                    .await
+                {
+                    Ok((issued, body, frame_tx)) => {
+                        let driver = tokio::spawn(driver_loop_h2_stream_one(
+                            in_tx, out_rx, body, frame_tx,
+                        ));
+                        crate::xhttp_submode_cache::record_success(url, XhttpSubmode::StreamOne)
+                            .await;
+                        (issued, driver, XhttpSubmode::StreamOne)
+                    },
+                    Err(stream_err) => {
+                        warn!(
+                            %url,
+                            error = %format!("{stream_err:#}"),
+                            "xhttp h2 stream-one failed, falling back to packet-up on same connection"
+                        );
+                        crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
+                            .await;
+                        let (issued, body) =
+                            open_h2_get(send_request.clone(), &target, resume_request, profile)
+                                .await?;
+                        let driver = tokio::spawn(driver_loop_h2(
+                            send_request,
+                            target.clone(),
+                            in_tx,
+                            out_rx,
+                            body,
+                            profile,
+                        ));
+                        (issued, driver, XhttpSubmode::PacketUp)
+                    },
+                }
             },
         };
 
         debug!(
-            %url, %session_id, mode = "xhttp_h2", ?submode,
+            %url, %session_id, mode = "xhttp_h2", ?submode, ?active_submode,
             ?issued_session_id, ?resume_request,
             "xhttp session opened"
         );
@@ -401,6 +483,7 @@ pub(crate) async fn connect_xhttp(
                 incoming: in_rx,
                 outgoing: out_tx,
                 closed: false,
+                active_submode,
                 _driver: AbortOnDrop::new(driver),
             },
             issued_session_id,
