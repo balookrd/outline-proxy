@@ -18,10 +18,10 @@ const PROTOCOL_VARIANTS: usize = Protocol::VARIANTS_COUNT;
 const APP_PROTOCOL_VARIANTS: usize = AppProtocol::VARIANTS_COUNT;
 
 /// 2D Counter array indexed by `[app_protocol_index][protocol_index]`.
-/// Splitting the metric by `app_protocol` raises cardinality from
-/// `users × 5 protocols × 2 directions` to `users × 2 app_protocols ×
-/// 5 protocols × 2 directions`, but each row is still O(1) on the
-/// hot path: one indexed lookup into a fixed-size array.
+/// Splitting the metric by `app_protocol` doubles cardinality (every
+/// `(user, protocol, direction)` row gets a `(shadowsocks, vless)`
+/// twin), but each row is still O(1) on the hot path: one indexed
+/// lookup into a fixed-size array.
 type CounterMatrix = [[Counter; PROTOCOL_VARIANTS]; APP_PROTOCOL_VARIANTS];
 
 pub struct PerUserCounters {

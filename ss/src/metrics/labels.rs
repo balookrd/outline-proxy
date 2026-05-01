@@ -55,6 +55,12 @@ pub enum Protocol {
     Http3,
     Socket,
     QuicRaw,
+    /// VLESS over XHTTP packet-up carried on HTTP/1.1. Each packet
+    /// is its own short request/response, so h1 is fine for this
+    /// mode (stream-one returns 505 on h1 and never lands here).
+    /// Distinct from `Http1` so the metric splits XHTTP packet-up
+    /// from WebSocket-Upgrade traffic on the same h1 listener.
+    XhttpH1,
     /// VLESS over XHTTP packet-up / stream-one carried on HTTP/2
     /// (RFC 7540). Distinct from `Http2` so dashboards can split
     /// XHTTP traffic from WebSocket-Upgrade traffic on the same
@@ -66,7 +72,7 @@ pub enum Protocol {
 }
 
 impl Protocol {
-    pub const VARIANTS_COUNT: usize = 7;
+    pub const VARIANTS_COUNT: usize = 8;
 
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -75,6 +81,7 @@ impl Protocol {
             Self::Http3 => "http3",
             Self::Socket => "socket",
             Self::QuicRaw => "quic",
+            Self::XhttpH1 => "xhttp_h1",
             Self::XhttpH2 => "xhttp_h2",
             Self::XhttpH3 => "xhttp_h3",
         }
@@ -87,8 +94,9 @@ impl Protocol {
             Self::Http3 => 2,
             Self::Socket => 3,
             Self::QuicRaw => 4,
-            Self::XhttpH2 => 5,
-            Self::XhttpH3 => 6,
+            Self::XhttpH1 => 5,
+            Self::XhttpH2 => 6,
+            Self::XhttpH3 => 7,
         }
     }
 
@@ -99,7 +107,8 @@ impl Protocol {
             2 => Self::Http3,
             3 => Self::Socket,
             4 => Self::QuicRaw,
-            5 => Self::XhttpH2,
+            5 => Self::XhttpH1,
+            6 => Self::XhttpH2,
             _ => Self::XhttpH3,
         }
     }
