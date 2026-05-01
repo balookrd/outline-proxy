@@ -134,11 +134,21 @@ pub(in crate::server) async fn serve_tcp_listener(
     app: Router,
     config: Arc<Config>,
     sni_fallback: Option<Arc<SniFallbackContext>>,
+    metrics: Arc<Metrics>,
     shutdown: ShutdownSignal,
 ) -> Result<()> {
     if config.tcp_tls_enabled() {
         let acceptor = build_tcp_tls_acceptor(config.as_ref())?;
-        serve_tls_listener(listener, app, acceptor, config.tuning, sni_fallback, shutdown).await
+        serve_tls_listener(
+            listener,
+            app,
+            acceptor,
+            config.tuning,
+            sni_fallback,
+            metrics,
+            shutdown,
+        )
+        .await
     } else {
         // SNI fallback only makes sense for the TLS path. Validation
         // already rejects `[sni_fallback]` without TLS so the
@@ -217,6 +227,7 @@ async fn serve_tls_listener(
     acceptor: TlsAcceptor,
     profile: TuningProfile,
     sni_fallback: Option<Arc<SniFallbackContext>>,
+    metrics: Arc<Metrics>,
     mut shutdown: ShutdownSignal,
 ) -> Result<()> {
     let connection_limit = Arc::new(Semaphore::new(TLS_MAX_CONCURRENT_CONNECTIONS));
@@ -260,6 +271,7 @@ async fn serve_tls_listener(
         let acceptor = acceptor.clone();
         let app = app.clone();
         let sni_fallback = sni_fallback.clone();
+        let metrics = Arc::clone(&metrics);
         let mut task_shutdown = shutdown.clone();
 
         tasks.spawn(async move {
@@ -273,7 +285,14 @@ async fn serve_tls_listener(
             // bytes prepended. Wrapping in `PrependStream` even when
             // the buffer is empty keeps the type uniform across the
             // two branches without paying for `Box<dyn ...>`.
-            let stream_for_handshake = if let Some(ctx) = sni_fallback.as_ref() {
+            //
+            // `peeked_sni` is `Some(_)` only when sni_fallback ran
+            // and observed a `server_name` extension. For the
+            // sni_fallback-disabled path the cost of an extra
+            // ClientHello peek isn't worth the diagnostic — rustls
+            // still gives us a classifiable `io::Error`, just
+            // without the SNI label on the log line.
+            let (stream_for_handshake, peeked_sni) = if let Some(ctx) = sni_fallback.as_ref() {
                 let dispatch = tokio::select! {
                     biased;
                     _ = task_shutdown.cancelled() => {
@@ -283,12 +302,12 @@ async fn serve_tls_listener(
                     res = sni_fallback::dispatch_sni(ctx, stream, peer_addr) => res,
                 };
                 match dispatch {
-                    Ok(Some(prepended)) => prepended,
+                    Ok(Some(accepted)) => (accepted.stream, accepted.sni),
                     Ok(None) => return,
                     Err(_) => return,
                 }
             } else {
-                sni_fallback::PrependStream::new(Vec::new(), stream)
+                (sni_fallback::PrependStream::new(Vec::new(), stream), None)
             };
 
             let tls_stream = tokio::select! {
@@ -300,10 +319,36 @@ async fn serve_tls_listener(
                 res = acceptor.accept(stream_for_handshake) => match res {
                     Ok(s) => s,
                     Err(error) => {
-                        if is_benign_tls_handshake_error(&error) {
-                            debug!(?error, %peer_addr, "tls handshake closed before completion");
-                        } else {
-                            warn!(?error, %peer_addr, "tls handshake failed");
+                        let reason = classify_tls_handshake_error(&error);
+                        metrics.record_tls_handshake_failed(reason.as_str());
+                        // `closed_early` and `no_cert_chain` are noisy
+                        // under scanners and broken-but-harmless
+                        // clients. Keep them as `debug` — the metric
+                        // still surfaces them on the dashboard. Real
+                        // protocol/IO failures stay at `warn` since
+                        // they almost always point at a bug or
+                        // misconfigured peer.
+                        match reason {
+                            TlsHandshakeFailReason::ClosedEarly
+                            | TlsHandshakeFailReason::NoCertChain => {
+                                debug!(
+                                    ?error,
+                                    %peer_addr,
+                                    sni = ?peeked_sni,
+                                    reason = reason.as_str(),
+                                    "tls handshake failed",
+                                );
+                            },
+                            TlsHandshakeFailReason::ProtocolError
+                            | TlsHandshakeFailReason::IoError => {
+                                warn!(
+                                    ?error,
+                                    %peer_addr,
+                                    sni = ?peeked_sni,
+                                    reason = reason.as_str(),
+                                    "tls handshake failed",
+                                );
+                            },
                         }
                         return;
                     },
@@ -390,14 +435,65 @@ fn is_benign_http_serve_error(error: &(dyn std::error::Error + 'static)) -> bool
     false
 }
 
-fn is_benign_tls_handshake_error(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::UnexpectedEof
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionAborted,
-    )
+/// Bucket for `outline_ss_tls_handshake_failed_total{reason=...}`.
+/// Stays in lockstep with the values documented on
+/// [`Metrics::record_tls_handshake_failed`].
+#[derive(Debug, Clone, Copy)]
+pub(super) enum TlsHandshakeFailReason {
+    ClosedEarly,
+    NoCertChain,
+    ProtocolError,
+    IoError,
+}
+
+impl TlsHandshakeFailReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ClosedEarly => "closed_early",
+            Self::NoCertChain => "no_cert_chain",
+            Self::ProtocolError => "protocol_error",
+            Self::IoError => "io_error",
+        }
+    }
+}
+
+/// Classify a `tokio_rustls` handshake error into a metric/log bucket.
+///
+/// `closed_early` is the classic peer-aborted-during-handshake case
+/// (RST/FIN/EOF). `no_cert_chain` is rustls' specific signal that
+/// `ResolvesServerCert::resolve` returned `None` — almost always a
+/// config gap (a SNI was admitted by `[sni_fallback].match_sni` but
+/// not registered in `[[server.certs]]`, or no default cert). The
+/// remaining rustls protocol errors land in `protocol_error`; raw
+/// `io::Error` kinds we don't recognise become `io_error`.
+pub(super) fn classify_tls_handshake_error(error: &std::io::Error) -> TlsHandshakeFailReason {
+    use std::io::ErrorKind::*;
+    match error.kind() {
+        UnexpectedEof | ConnectionReset | BrokenPipe | ConnectionAborted => {
+            TlsHandshakeFailReason::ClosedEarly
+        },
+        InvalidData => {
+            // rustls wraps its own `Error` inside `io::Error::other`
+            // (or `io::Error::new(InvalidData, _)` depending on the
+            // path). Downcast to spot the `Error::General(...)`
+            // emitted from `server::hs` when the cert resolver yields
+            // `None`. The text is matched verbatim because rustls
+            // does not export this variant by name; if the upstream
+            // string changes the bucket falls back to
+            // `protocol_error` and we keep the metric without the
+            // misclassification.
+            if let Some(inner) = error
+                .get_ref()
+                .and_then(|e| e.downcast_ref::<rustls::Error>())
+                && let rustls::Error::General(msg) = inner
+                && msg == "no server certificate chain resolved"
+            {
+                return TlsHandshakeFailReason::NoCertChain;
+            }
+            TlsHandshakeFailReason::ProtocolError
+        },
+        _ => TlsHandshakeFailReason::IoError,
+    }
 }
 
 #[cfg(test)]
