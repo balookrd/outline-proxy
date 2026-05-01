@@ -280,16 +280,25 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrependStream<S> {
     }
 }
 
+/// Outcome of [`dispatch_sni`] when the connection is staying for the
+/// local TLS terminator. The SNI is carried alongside the stream so the
+/// TLS listener can attach it to handshake-failure logs and metrics
+/// (otherwise rustls swallows it before we get a chance).
+pub(in crate::server) struct LocalTlsAccepted {
+    pub stream: PrependStream<TcpStream>,
+    pub sni: Option<String>,
+}
+
 /// Top-level dispatch helper. Called by the TLS listener for every
 /// accepted stream when `[sni_fallback]` is configured. Returns
-/// `Ok(Some(stream))` to continue with the local TLS terminator, or
+/// `Ok(Some(accepted))` to continue with the local TLS terminator, or
 /// `Ok(None)` if the stream was spliced to a backend (caller stops
 /// processing it). Errors are fatal for this stream only.
 pub(in crate::server) async fn dispatch_sni(
     ctx: &SniFallbackContext,
     mut inbound: TcpStream,
     peer_addr: SocketAddr,
-) -> Result<Option<PrependStream<TcpStream>>> {
+) -> Result<Option<LocalTlsAccepted>> {
     let peeked = match peek_sni(&mut inbound, ctx.config.max_client_hello_bytes).await {
         Ok(p) => p,
         Err(error) => {
@@ -299,7 +308,10 @@ pub(in crate::server) async fn dispatch_sni(
     };
 
     if sni_matches_ours(&ctx.config, peeked.sni.as_deref()) {
-        return Ok(Some(PrependStream::new(peeked.buffered, inbound)));
+        return Ok(Some(LocalTlsAccepted {
+            stream: PrependStream::new(peeked.buffered, inbound),
+            sni: peeked.sni,
+        }));
     }
 
     match find_backend(&ctx.config.backends, peeked.sni.as_deref()) {

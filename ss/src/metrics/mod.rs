@@ -518,6 +518,25 @@ impl Metrics {
         });
     }
 
+    // ── TLS handshake failures ────────────────────────────────────────────────
+
+    /// Counts a TLS handshake that failed before the application got a
+    /// usable stream. `reason` is one of:
+    /// - `no_cert_chain` — `ResolvesServerCert::resolve()` returned
+    ///   `None` (SNI without a registered cert and no default).
+    /// - `closed_early` — the peer aborted the connection before we
+    ///   could complete the handshake (RST/FIN/EOF).
+    /// - `protocol_error` — rustls rejected the ClientHello / record
+    ///   stream (malformed TLS, unsupported version, bad MAC, …).
+    /// - `io_error` — anything else surfaced as `io::Error` from the
+    ///   acceptor (filesystem-style errors are not expected here, but
+    ///   we keep the bucket so unknown variants still get counted).
+    pub fn record_tls_handshake_failed(&self, reason: &'static str) {
+        with_local_recorder(&self.recorder, || {
+            counter!("outline_ss_tls_handshake_failed_total", "reason" => reason).increment(1);
+        });
+    }
+
     // ── Rendering ──────────────────────────────────────────────────────────────
 
     pub fn render_prometheus(&self) -> String {

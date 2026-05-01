@@ -192,4 +192,8 @@ pub(super) fn register_descriptions() {
         "outline_ss_orphan_current",
         "Currently parked orphan sessions awaiting cross-transport resumption, by kind."
     );
+    describe_counter!(
+        "outline_ss_tls_handshake_failed_total",
+        "TLS handshake failures on the TCP listener grouped by classified reason."
+    );
 }

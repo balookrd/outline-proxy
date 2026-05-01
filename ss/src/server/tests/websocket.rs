@@ -236,9 +236,10 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(std::time::Duration::from_secs(300));
     let dns_cache = DnsCache::new(std::time::Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
     let (routes, services, auth) = build_test_state(
         user_routes.clone(),
-        Metrics::new(&config),
+        Arc::clone(&metrics),
         nat_table,
         dns_cache,
         false,
@@ -251,8 +252,15 @@ async fn websocket_rfc8441_http2_tls_connect_smoke() -> Result<()> {
     tls_config.tls_cert_path = Some(cert_path.clone());
     tls_config.tls_key_path = Some(key_path.clone());
     let server = tokio::spawn(async move {
-        serve_tcp_listener(listener, app, Arc::new(tls_config), None, ShutdownSignal::never())
-            .await
+        serve_tcp_listener(
+            listener,
+            app,
+            Arc::new(tls_config),
+            None,
+            metrics,
+            ShutdownSignal::never(),
+        )
+        .await
     });
 
     let mut roots = rustls::RootCertStore::empty();

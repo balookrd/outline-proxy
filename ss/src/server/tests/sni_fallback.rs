@@ -203,9 +203,10 @@ async fn matched_sni_terminates_locally() -> Result<()> {
     let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
         user_routes,
-        Metrics::new(&config),
+        Arc::clone(&metrics),
         nat_table,
         dns_cache,
         false,
@@ -216,7 +217,7 @@ async fn matched_sni_terminates_locally() -> Result<()> {
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
     let server = tokio::spawn(async move {
-        serve_tcp_listener(listener, app, server_config, sni_fallback, shutdown).await
+        serve_tcp_listener(listener, app, server_config, sni_fallback, metrics, shutdown).await
     });
     // Give the server task one scheduler tick to reach `listener.accept()`
     // — without this, parallel-test scheduling sometimes lets the client
@@ -264,9 +265,10 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
     let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
         user_routes,
-        Metrics::new(&config),
+        Arc::clone(&metrics),
         nat_table,
         dns_cache,
         false,
@@ -277,7 +279,7 @@ async fn foreign_sni_splices_to_backend_with_clienthello() -> Result<()> {
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
     let server = tokio::spawn(async move {
-        serve_tcp_listener(listener, app, server_config, sni_fallback, shutdown).await
+        serve_tcp_listener(listener, app, server_config, sni_fallback, metrics, shutdown).await
     });
     // Give the server task one scheduler tick to reach `listener.accept()`
     // — without this, parallel-test scheduling sometimes lets the client
@@ -329,9 +331,10 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let user_routes = build_user_routes(&config)?;
     let nat_table = NatTable::new(Duration::from_secs(300));
     let dns_cache = DnsCache::new(Duration::from_secs(30));
+    let metrics = Metrics::new(&config);
     let (routes, services_state, auth) = build_test_state(
         user_routes,
-        Metrics::new(&config),
+        Arc::clone(&metrics),
         nat_table,
         dns_cache,
         false,
@@ -347,7 +350,7 @@ async fn foreign_sni_with_proxy_protocol_v2_prefixes_header() -> Result<()> {
     let server_config = Arc::new(config);
     let shutdown = ShutdownSignal::never();
     let server = tokio::spawn(async move {
-        serve_tcp_listener(listener, app, server_config, sni_fallback, shutdown).await
+        serve_tcp_listener(listener, app, server_config, sni_fallback, metrics, shutdown).await
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
 

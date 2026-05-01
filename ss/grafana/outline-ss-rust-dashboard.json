@@ -5083,6 +5083,118 @@
       ],
       "title": "UDP Relay Latency p95 by app_protocol",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 166
+      },
+      "id": 67,
+      "panels": [],
+      "title": "TLS Handshake",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "TLS handshake failures on the TCP listener, broken down by classified reason. `no_cert_chain` is the cert resolver returning None (a SNI was admitted by `[sni_fallback].match_sni` but is not registered in `[[server.certs]]`, or no default cert is configured). `closed_early` is peer-side aborts during the handshake (RST/FIN/EOF) — common under scanners. `protocol_error` is malformed TLS / unsupported version / bad MAC. `io_error` covers everything else surfaced as an `io::Error`.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 4,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 167
+      },
+      "id": 68,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.1",
+      "targets": [
+        {
+          "editorMode": "code",
+          "expr": "sum by (short_instance, reason) (label_replace(rate(outline_ss_tls_handshake_failed_total{instance=~\"$instance\"}[5m]), \"short_instance\", \"$1\", \"instance\", \"([^.]+).*\"))",
+          "legendFormat": "{{short_instance}} {{reason}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "TLS Handshake Failures by Reason",
+      "type": "timeseries"
     }
   ],
   "preload": false,
