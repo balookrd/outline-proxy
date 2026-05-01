@@ -27,9 +27,10 @@
 //!   ordering. Those are owned by `hyper`/`h2` and `quinn` and have
 //!   their own (largely closed) fingerprint surface.
 
+use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use anyhow::{Result, bail};
 use http::{HeaderMap, HeaderValue, header};
@@ -178,9 +179,51 @@ fn current_strategy() -> Strategy {
 }
 
 /// Returns the profile selected for `url` under the active strategy,
-/// or `None` when fingerprint diversification is disabled.
+/// or `None` when fingerprint diversification is disabled. Logs the
+/// (host, port, profile.name) triple at `info` the first time each
+/// distinct combination is observed in the current process — useful
+/// for operators verifying that the strategy actually engaged and for
+/// correlating dial failures with a specific profile choice.
 pub fn select(url: &Url) -> Option<&'static Profile> {
-    select_with_strategy(url, current_strategy())
+    let profile = select_with_strategy(url, current_strategy())?;
+    note_first_use(url, profile);
+    Some(profile)
+}
+
+/// Process-wide log dedup for [`select`]. Returns `true` when the
+/// `(host, port, profile.name)` triple is being logged for the first
+/// time in this process, `false` for every subsequent call. Logging
+/// happens as a side effect; the bool return value lets unit tests
+/// drive the deduper without depending on tracing-test plumbing.
+pub(crate) fn note_first_use(url: &Url, profile: &'static Profile) -> bool {
+    static LOGGED: OnceLock<RwLock<HashSet<(String, u16, &'static str)>>> = OnceLock::new();
+    let map = LOGGED.get_or_init(|| RwLock::new(HashSet::new()));
+    let host = url.host_str().unwrap_or_default().to_owned();
+    let port = url.port_or_known_default().unwrap_or(0);
+    let key = (host, port, profile.name);
+    // Fast path: read lock is enough when the entry is already there,
+    // so the hot dial path costs at most one shared read after the
+    // first observation per host.
+    if map
+        .read()
+        .expect("fingerprint-profile log set lock poisoned")
+        .contains(&key)
+    {
+        return false;
+    }
+    let inserted = map
+        .write()
+        .expect("fingerprint-profile log set lock poisoned")
+        .insert(key);
+    if inserted {
+        tracing::info!(
+            host = %url.host_str().unwrap_or_default(),
+            port = url.port_or_known_default().unwrap_or(0),
+            profile = profile.name,
+            "fingerprint profile bound to host"
+        );
+    }
+    inserted
 }
 
 /// Variant of [`select`] that ignores the process-wide
