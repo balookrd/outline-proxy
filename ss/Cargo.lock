@@ -1518,6 +1518,7 @@ dependencies = [
  "tungstenite",
  "url",
  "webpki-roots 1.0.7",
+ "x509-parser",
 ]
 
 [[package]]

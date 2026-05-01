@@ -66,6 +66,66 @@ key_path = "./key.pem"
 }
 
 #[test]
+fn parses_server_certs_with_unified_names() {
+    // New canonical naming: `cert_path` / `key_path` in [server], same
+    // as in [server.h3]. Plus an array of additional cert/key/sni
+    // triples for SNI-based selection.
+    let config: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:443"
+cert_path = "./default.pem"
+key_path  = "./default.key"
+
+[[server.certs]]
+cert_path = "./api.pem"
+key_path  = "./api.key"
+sni = ["api.example.com", "api2.example.com"]
+
+[[server.certs]]
+cert_path = "./derived-from-san.pem"
+key_path  = "./derived-from-san.key"
+
+[server.h3]
+listen = "0.0.0.0:443"
+
+[[server.h3.certs]]
+cert_path = "./h3.pem"
+key_path  = "./h3.key"
+"#,
+    )
+    .unwrap();
+
+    let server = config.server.unwrap();
+    assert!(server.cert_path.is_some());
+    assert!(server.key_path.is_some());
+    let certs = server.certs.unwrap();
+    assert_eq!(certs.len(), 2);
+    assert_eq!(certs[0].sni.as_deref().map(|s| s.len()), Some(2));
+    assert!(certs[1].sni.is_none());
+    let h3 = server.h3.unwrap();
+    assert_eq!(h3.certs.unwrap().len(), 1);
+}
+
+#[test]
+fn legacy_tls_cert_path_aliases_are_accepted() {
+    // The old `tls_cert_path` / `tls_key_path` keys still parse — they
+    // are serde aliases of the new `cert_path` / `key_path`.
+    let config: FileConfig = toml::from_str(
+        r#"
+[server]
+listen = "0.0.0.0:3000"
+tls_cert_path = "./old.pem"
+tls_key_path  = "./old.key"
+"#,
+    )
+    .unwrap();
+    let server = config.server.unwrap();
+    assert_eq!(server.cert_path.as_deref().and_then(|p| p.to_str()), Some("./old.pem"));
+    assert_eq!(server.key_path.as_deref().and_then(|p| p.to_str()), Some("./old.key"));
+}
+
+#[test]
 fn parses_tuning_profile_and_overrides() {
     let config: FileConfig = toml::from_str(
         r#"
