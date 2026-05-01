@@ -96,6 +96,11 @@ pub(super) async fn connect_xhttp_h3(
         // an `http://` URL by mistake instead of silently downgrading.
         bail!("xhttp/h3 requires an https/wss URL, got scheme {:?}", url.scheme());
     }
+    // Profile picked once per dial — every GET / POST in this h3
+    // session shares the same browser identity. Same shape as the h2
+    // path, the `Option` is `Copy` so it threads freely into spawned
+    // sub-tasks below.
+    let profile = crate::fingerprint_profile::select(url);
 
     let dial = async {
         let addrs = resolve_host_with_preference(
@@ -127,13 +132,14 @@ pub(super) async fn connect_xhttp_h3(
         let (issued_session_id, driver, active_submode) = match submode {
             XhttpSubmode::PacketUp => {
                 let (issued, request_stream) =
-                    open_h3_get(send_request.clone(), &target, resume_request).await?;
+                    open_h3_get(send_request.clone(), &target, resume_request, profile).await?;
                 let driver = tokio::spawn(driver_loop_h3(
                     send_request,
                     target.clone(),
                     in_tx,
                     out_rx,
                     request_stream,
+                    profile,
                 ));
                 (issued, driver, XhttpSubmode::PacketUp)
             },
@@ -154,7 +160,9 @@ pub(super) async fn connect_xhttp_h3(
                 // on this network path, packet-up usually still works
                 // because it issues one short bidi stream per POST
                 // instead of one long-lived one.
-                match open_h3_stream_one(send_request.clone(), &target, resume_request).await {
+                match open_h3_stream_one(send_request.clone(), &target, resume_request, profile)
+                    .await
+                {
                     Ok((issued, request_stream)) => {
                         let driver = tokio::spawn(driver_loop_h3_stream_one(
                             send_request,
@@ -175,13 +183,15 @@ pub(super) async fn connect_xhttp_h3(
                         crate::xhttp_submode_cache::record_failure(url, XhttpSubmode::StreamOne)
                             .await;
                         let (issued, request_stream) =
-                            open_h3_get(send_request.clone(), &target, resume_request).await?;
+                            open_h3_get(send_request.clone(), &target, resume_request, profile)
+                                .await?;
                         let driver = tokio::spawn(driver_loop_h3(
                             send_request,
                             target.clone(),
                             in_tx,
                             out_rx,
                             request_stream,
+                            profile,
                         ));
                         (issued, driver, XhttpSubmode::PacketUp)
                     },
@@ -273,6 +283,7 @@ async fn open_h3_get(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
     let mut builder = Request::builder()
         .method(Method::GET)
@@ -282,9 +293,16 @@ async fn open_h3_get(
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
-    let req = builder
+    let mut req = builder
         .body(())
         .context("failed to build xhttp/h3 GET request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     let mut stream = send
         .send_request(req)
         .await
@@ -317,6 +335,7 @@ async fn driver_loop_h3(
     in_tx: mpsc::Sender<Result<Message, WsError>>,
     mut out_rx: mpsc::Receiver<Message>,
     body_stream: h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) {
     // GET drain sub-task. Headers were already received by
     // `open_h3_get`; this only pulls body chunks.
@@ -354,7 +373,7 @@ async fn driver_loop_h3(
         let target = Arc::clone(&target);
         let in_tx_for_err = in_tx.clone();
         tokio::spawn(async move {
-            if let Err(error) = post_one(send, target.as_ref(), seq, bytes).await {
+            if let Err(error) = post_one(send, target.as_ref(), seq, bytes, profile).await {
                 warn!(?error, seq, "xhttp/h3 POST failed");
                 let _ = in_tx_for_err
                     .send(Err(io_ws_err("xhttp/h3 uplink POST failed")))
@@ -373,6 +392,7 @@ async fn open_h3_stream_one(
     mut send: SendRequest<h3_quinn::OpenStreams, Bytes>,
     target: &XhttpTarget,
     resume_request: Option<SessionId>,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<(Option<SessionId>, h3::client::RequestStream<h3_quinn::BidiStream<Bytes>, Bytes>)> {
     let mut builder = Request::builder()
         .method(Method::POST)
@@ -382,9 +402,16 @@ async fn open_h3_stream_one(
     if let Some(id) = resume_request {
         builder = builder.header(RESUME_REQUEST_HEADER, id.to_hex());
     }
-    let req = builder
+    let mut req = builder
         .body(())
         .context("failed to build xhttp/h3 stream-one request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     let mut stream = send
         .send_request(req)
         .await
@@ -499,17 +526,25 @@ async fn post_one(
     target: &XhttpTarget,
     seq: u64,
     payload: Bytes,
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 ) -> Result<()> {
     // Path-based seq matches xray / sing-box's default placement and
     // mirrors the h2 sibling — keep the wire shape identical across
     // h2 and h3 so a backend cannot tell which version the client
     // negotiated by looking at the uplink URLs.
-    let req = Request::builder()
+    let mut req = Request::builder()
         .method(Method::POST)
         .uri(target.full_uri_with_seq(seq))
         .version(Version::HTTP_3)
         .body(())
         .context("failed to build xhttp/h3 POST request")?;
+    if let Some(profile) = profile {
+        crate::fingerprint_profile::apply(
+            profile,
+            req.headers_mut(),
+            crate::fingerprint_profile::SecFetchPreset::XhrCors,
+        );
+    }
     let mut stream = send
         .send_request(req)
         .await

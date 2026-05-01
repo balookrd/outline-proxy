@@ -106,9 +106,10 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
         match self
-            .open_websocket_inner(server_name, server_port, path, resume_request)
+            .open_websocket_inner(server_name, server_port, path, resume_request, profile)
             .await
         {
             Ok(ws) => Ok(ws),
@@ -131,6 +132,7 @@ impl SharedH3Connection {
         server_port: u16,
         path: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<(H3WsStream, Option<crate::resumption::SessionId>)> {
         if !self.is_open() {
             bail!("shared h3 connection is already closed");
@@ -146,9 +148,16 @@ impl SharedH3Connection {
             request_builder =
                 request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
         }
-        let request: Request<()> = request_builder
+        let mut request: Request<()> = request_builder
             .body(())
             .expect("request builder never fails");
+        if let Some(profile) = profile {
+            crate::fingerprint_profile::apply(
+                profile,
+                request.headers_mut(),
+                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
+            );
+        }
 
         let mut stream: H3RequestStreamHandle = timeout(OPEN_WEBSOCKET_TIMEOUT, async {
             let mut send_request = self.send_request.lock().await;
@@ -326,6 +335,11 @@ struct H3Dialer {
     /// dialer construction so the trait `open_on` method can stay
     /// signature-stable while threading the request through.
     resume_request: Option<crate::resumption::SessionId>,
+    /// Browser identity to mix into the CONNECT request headers, or
+    /// `None` when fingerprint diversification is disabled. Threaded
+    /// alongside `resume_request` for the same reason — the trait
+    /// signature stays unchanged.
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 }
 
 impl crate::shared_dial::WsDialer for H3Dialer {
@@ -366,7 +380,7 @@ impl crate::shared_dial::WsDialer for H3Dialer {
         path: &str,
     ) -> Result<TransportStream> {
         let (ws, issued_session_id) = conn
-            .open_websocket(server_name, server_port, path, self.resume_request)
+            .open_websocket(server_name, server_port, path, self.resume_request, self.profile)
             .await?;
         Ok(TransportStream::H3 {
             inner: ws,
@@ -395,7 +409,8 @@ pub(crate) async fn connect_websocket_h3(
         .port_or_known_default()
         .ok_or_else(|| anyhow!("URL is missing port"))?;
     let path = websocket_path(url);
-    let dialer = H3Dialer { resume_request };
+    let profile = crate::fingerprint_profile::select(url);
+    let dialer = H3Dialer { resume_request, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused
