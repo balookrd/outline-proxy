@@ -92,6 +92,24 @@ pub struct Profile {
     pub sec_ch_ua_platform: Option<&'static str>,
 }
 
+/// UNIX seconds-since-epoch when [`PROFILES`] was last reviewed
+/// against current browser releases. Used by the accompanying
+/// staleness test in `tests/fingerprint_profile.rs`: once the value
+/// is more than [`REFRESH_PERIOD_SECS`] in the past, `cargo test`
+/// nags the operator into bumping the UA strings before they age
+/// past detection (a DPI rule with a whitelist of current versions
+/// reads "Chrome 130 in 2027" as an obvious old client and starts
+/// re-detecting this binary). To refresh: update each `user_agent`
+/// and `sec_ch_ua` field in the table below, bump the constant to
+/// the current `date +%s`, then re-run the suite.
+pub const PROFILES_REFRESHED_AT_UNIX: u64 = 1_777_593_600; // 2026-05-01 00:00 UTC
+
+/// Maximum tolerated age of [`PROFILES`] before the staleness test
+/// fails. Six months is short enough to keep up with browser-major
+/// drift (Chrome ships ~6 majors per year) and long enough that
+/// regular contributors are not woken up by the nag.
+pub const REFRESH_PERIOD_SECS: u64 = 180 * 24 * 60 * 60;
+
 /// Pool of representative browser identities. Six entries spread
 /// across the three Chromium-derived UAs (Chrome × 2 OS, Edge × 1)
 /// and the two non-Chromium UAs (Firefox × 2 OS, Safari × 1) so a

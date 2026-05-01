@@ -228,6 +228,34 @@ fn note_first_use_treats_distinct_hosts_as_distinct_entries() {
 }
 
 #[test]
+fn profile_pool_must_be_refreshed_at_least_every_refresh_period() {
+    // The pool's UA / Sec-CH-UA strings encode specific browser-major
+    // versions. They go stale fast — Chrome ships ~6 majors per year,
+    // so a year-old "Chrome 130" looks like an old client to any DPI
+    // with a current-version whitelist. This test fails once the
+    // last refresh is older than `REFRESH_PERIOD_SECS` so a routine
+    // `cargo test` run nags the operator before that detection
+    // window opens. To unblock: update each `user_agent` /
+    // `sec_ch_ua` to the latest stable release, bump
+    // `PROFILES_REFRESHED_AT_UNIX` to the current Unix timestamp.
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time is before UNIX epoch")
+        .as_secs();
+    let refreshed = crate::fingerprint_profile::PROFILES_REFRESHED_AT_UNIX;
+    let period = crate::fingerprint_profile::REFRESH_PERIOD_SECS;
+    assert!(
+        now <= refreshed.saturating_add(period),
+        "PROFILES has not been refreshed in {} days (limit {} days). \
+         Update the UA strings to current Chrome/Firefox/Safari/Edge releases, \
+         bump PROFILES_REFRESHED_AT_UNIX, and re-run.",
+        now.saturating_sub(refreshed) / 86_400,
+        period / 86_400,
+    );
+}
+
+#[test]
 fn note_first_use_treats_distinct_ports_as_distinct_entries() {
     // Two URLs with the same host but different ports are different
     // peers — `ws_mode_cache` keys them apart, so the deduper should
