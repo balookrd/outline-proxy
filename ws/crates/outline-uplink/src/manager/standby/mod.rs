@@ -154,14 +154,17 @@ impl UplinkManager {
         // bottom records the new ID for the next reconnect.
         let resume_key = resume_cache_key(&candidate.uplink.name, "tcp");
         let resume_request = global_resume_cache().get(&resume_key);
-        let ws = connect_websocket_with_resume(
-            cache,
-            url,
-            mode,
-            candidate.uplink.fwmark,
-            candidate.uplink.ipv6_first,
-            source,
-            resume_request,
+        let ws = crate::dial::dial_in_uplink_scope(
+            &candidate.uplink,
+            connect_websocket_with_resume(
+                cache,
+                url,
+                mode,
+                candidate.uplink.fwmark,
+                candidate.uplink.ipv6_first,
+                source,
+                resume_request,
+            ),
         )
         .await
         .with_context(|| TransportOperation::Connect { target: format!("to {}", url) })?;
@@ -229,16 +232,19 @@ impl UplinkManager {
                 let resume_key = resume_cache_key(&uplink.name, "tcp");
                 let resume_request = global_resume_cache().get(&resume_key);
                 let resume_id_bytes = resume_request.map(|id| *id.as_bytes());
-                let (w, r, issued_rx) = outline_transport::connect_vless_tcp_quic_with_resume(
-                    cache,
-                    url,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
-                    uuid,
-                    target,
-                    lifetime,
-                    resume_id_bytes.as_ref(),
+                let (w, r, issued_rx) = crate::dial::dial_in_uplink_scope(
+                    uplink,
+                    outline_transport::connect_vless_tcp_quic_with_resume(
+                        cache,
+                        url,
+                        uplink.fwmark,
+                        uplink.ipv6_first,
+                        source,
+                        uuid,
+                        target,
+                        lifetime,
+                        resume_id_bytes.as_ref(),
+                    ),
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
@@ -266,15 +272,18 @@ impl UplinkManager {
                 // existing WS uplink config: same URL field, but
                 // `tcp_mode = "quic"` selects this branch.
                 let master_key = uplink.cipher.derive_master_key(&uplink.password)?;
-                let (mut w, r) = outline_transport::connect_ss_tcp_quic(
-                    cache,
-                    url,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
+                let (mut w, r) = crate::dial::dial_in_uplink_scope(
+                    uplink,
+                    outline_transport::connect_ss_tcp_quic(
+                        cache,
+                        url,
+                        uplink.fwmark,
+                        uplink.ipv6_first,
+                        source,
+                        uplink.cipher,
+                        &master_key,
+                        Arc::clone(&lifetime),
+                    ),
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
@@ -482,14 +491,17 @@ impl UplinkManager {
         let started = Instant::now();
         #[cfg(feature = "quic")]
         if mode == outline_transport::TransportMode::Quic {
-            match outline_transport::connect_ss_udp_quic(
-                cache,
-                udp_ws_url,
-                candidate.uplink.fwmark,
-                candidate.uplink.ipv6_first,
-                source,
-                candidate.uplink.cipher,
-                &candidate.uplink.password,
+            match crate::dial::dial_in_uplink_scope(
+                &candidate.uplink,
+                outline_transport::connect_ss_udp_quic(
+                    cache,
+                    udp_ws_url,
+                    candidate.uplink.fwmark,
+                    candidate.uplink.ipv6_first,
+                    source,
+                    candidate.uplink.cipher,
+                    &candidate.uplink.password,
+                ),
             )
             .await
             {

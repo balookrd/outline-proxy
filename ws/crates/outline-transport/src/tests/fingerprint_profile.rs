@@ -266,3 +266,60 @@ fn note_first_use_treats_distinct_ports_as_distinct_entries() {
     assert!(crate::fingerprint_profile::note_first_use(&url1, profile));
     assert!(crate::fingerprint_profile::note_first_use(&url2, profile));
 }
+
+#[tokio::test]
+async fn task_local_override_supersedes_default_global() {
+    // Default global strategy is `None` until `init_strategy` is
+    // called (which the test binary never does). A per-call
+    // task-local override must therefore flip select() from None
+    // to Some without touching the global.
+    let url: Url = "wss://task-local-override.example/".parse().unwrap();
+    let outer = crate::fingerprint_profile::select(&url);
+    let inner = crate::fingerprint_profile::with_strategy_override(
+        Strategy::PerHostStable,
+        async { crate::fingerprint_profile::select(&url) },
+    )
+    .await;
+    let after = crate::fingerprint_profile::select(&url);
+    assert!(outer.is_none(), "no scope, default global is None");
+    assert!(inner.is_some(), "task-local override applies inside the scope");
+    assert!(after.is_none(), "scope drops on `.await` completion");
+}
+
+#[tokio::test]
+async fn task_local_none_override_disables_inside_scope() {
+    // Useful inversion: an uplink that explicitly opts OUT of
+    // fingerprint diversification (e.g. to keep a byte-identical
+    // xray-style wire shape) wraps its dial in
+    // `with_strategy_override(Strategy::None, …)`. Verify the inner
+    // select() returns None even if a higher-priority scope or future
+    // global default would otherwise pick a profile.
+    let url: Url = "wss://task-local-none-override.example/".parse().unwrap();
+    let inner = crate::fingerprint_profile::with_strategy_override(
+        Strategy::None,
+        async { crate::fingerprint_profile::select(&url) },
+    )
+    .await;
+    assert!(inner.is_none(), "explicit None override disables selection");
+}
+
+#[tokio::test]
+async fn nested_task_local_override_uses_innermost_value() {
+    // Inner scope wins over outer scope — that's what tokio's
+    // `task_local!::scope` already guarantees, but the test pins the
+    // contract so a future refactor that swaps the storage primitive
+    // does not silently change semantics.
+    let url: Url = "wss://nested-override.example/".parse().unwrap();
+    let inner = crate::fingerprint_profile::with_strategy_override(
+        Strategy::PerHostStable,
+        async {
+            crate::fingerprint_profile::with_strategy_override(
+                Strategy::None,
+                async { crate::fingerprint_profile::select(&url) },
+            )
+            .await
+        },
+    )
+    .await;
+    assert!(inner.is_none(), "innermost override wins");
+}

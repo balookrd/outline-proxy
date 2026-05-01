@@ -4,6 +4,7 @@
 //! [`UplinkRegistry`], which holds one [`UplinkManager`] per configured group.
 
 pub mod config;
+pub mod dial;
 mod error_classify;
 
 mod manager;

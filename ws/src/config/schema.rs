@@ -218,6 +218,13 @@ pub(crate) struct UplinkSection {
     /// New: group this uplink belongs to. Required when `[[uplink_group]]` is
     /// declared; optional in legacy config (all uplinks land in `default`).
     pub(crate) group: Option<String>,
+    /// Per-uplink override for the browser fingerprint diversification
+    /// strategy. Same accepted aliases as the top-level
+    /// `fingerprint_profile` key (`"off"`, `"stable"`, `"random"`, …);
+    /// omitted means inherit the top-level value. Useful for an uplink
+    /// that must keep a byte-identical xray-style wire shape while
+    /// siblings on the same `host:port` opt into per-host-stable.
+    pub(crate) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 /// New: explicit uplink group with its own LB config and probe override.

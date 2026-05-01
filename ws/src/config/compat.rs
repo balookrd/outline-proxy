@@ -140,6 +140,7 @@ fn synthesize_default_uplink(mut outline: OutlineSection) -> OutlineSection {
         ipv6_first: outline.ipv6_first,
         vless_id: None,
         group: None,
+        fingerprint_profile: None,
     }]);
     outline
 }

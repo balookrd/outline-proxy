@@ -91,6 +91,13 @@ pub struct UplinkConfig {
     /// Present when `transport = "vless"`. Raw 16-byte user id; parsed from
     /// the config string via `outline_transport::vless::parse_uuid`.
     pub vless_id: Option<[u8; 16]>,
+    /// Per-uplink override for the browser fingerprint diversification
+    /// strategy. `None` means inherit the process-wide value wired by
+    /// [`outline_transport::init_fingerprint_profile_strategy`]; `Some`
+    /// pins this uplink to a specific strategy (most usefully
+    /// `Strategy::None` for an uplink that must keep a byte-identical
+    /// xray-style wire shape, while siblings opt into `PerHostStable`).
+    pub fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 impl UplinkConfig {
