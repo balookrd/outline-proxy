@@ -3,7 +3,7 @@ members = [".", "crates/outline-metrics", "crates/outline-net", "crates/outline-
 
 [package]
 name = "outline-ws-rust"
-version = "1.4.0"
+version = "1.4.1"
 edition = "2024"
 
 # Feature flags
