@@ -16,7 +16,25 @@ use outline_transport::{
 };
 
 use crate::config::UplinkTransport;
+use crate::types::PerTransportStatus;
 use outline_transport::collections::maybe_shrink_vecdeque;
+
+/// Resolve `(deadline, cap)` from a per-transport status snapshot
+/// against the configured mode. Returns the cap when the window is
+/// active and the cap is set; falls back to the configured mode
+/// otherwise (no window, expired window, or somehow the cap is
+/// missing — defensive: a corrupted state should not strand the
+/// uplink on a stale mode).
+fn capped_or_configured(
+    status: &PerTransportStatus,
+    configured: crate::config::TransportMode,
+) -> crate::config::TransportMode {
+    let now = tokio::time::Instant::now();
+    match (status.mode_downgrade_until, status.mode_downgrade_capped_to) {
+        (Some(until), Some(cap)) if until > now => cap,
+        _ => configured,
+    }
+}
 
 use crate::types::{TransportKind, UplinkCandidate, UplinkManager};
 
@@ -31,56 +49,40 @@ pub(super) fn resume_cache_key(uplink_name: &str, transport: &str) -> String {
 }
 
 impl UplinkManager {
-    /// Returns the effective TCP dial mode for `index`, falling back to H2
-    /// when an "advanced" mode (H3 or raw QUIC) has been marked broken by
-    /// repeated runtime / dial errors.  Applies to Ws and Vless transports.
+    /// Returns the effective TCP dial mode for `index`, falling back to
+    /// the per-uplink mode-downgrade cap when the configured carrier
+    /// has been marked broken by repeated runtime / dial errors. The
+    /// cap is family-aware: `WsH3` / `Quic` collapse to `WsH2`,
+    /// `XhttpH3` collapses to `XhttpH2`, `XhttpH2` to `XhttpH1`.
+    /// A multi-step XHTTP downgrade converges over consecutive dials —
+    /// the writer in [`extend_mode_downgrade`] lowers the cap one rank
+    /// per observed fallback. Applies to Ws and Vless transports;
+    /// Shadowsocks always returns the configured mode unchanged.
+    ///
+    /// [`extend_mode_downgrade`]: crate::manager::mode_downgrade
     pub async fn effective_tcp_mode(&self, index: usize) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.tcp_dial_mode();
-        let advanced = matches!(
-            configured,
-            crate::config::TransportMode::WsH3 | crate::config::TransportMode::Quic
-        );
-        let supports_downgrade =
-            matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
-        if advanced && supports_downgrade {
-            let status = self.inner.read_status(index);
-            if status
-                .tcp
-                .mode_downgrade_until
-                .is_some_and(|t| t > tokio::time::Instant::now())
-            {
-                return crate::config::TransportMode::WsH2;
-            }
+        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
         }
-        configured
+        let status = self.inner.read_status(index);
+        capped_or_configured(&status.tcp, configured)
     }
 
-    /// Same as `effective_tcp_mode`, but for the UDP-over-WS / UDP-over-QUIC
-    /// transport.
+    /// Same as `effective_tcp_mode`, but for the UDP-over-WS /
+    /// UDP-over-QUIC / UDP-over-XHTTP transport.
     pub(crate) async fn effective_udp_mode(
         &self,
         index: usize,
     ) -> crate::config::TransportMode {
         let uplink = &self.inner.uplinks[index];
         let configured = uplink.udp_dial_mode();
-        let advanced = matches!(
-            configured,
-            crate::config::TransportMode::WsH3 | crate::config::TransportMode::Quic
-        );
-        let supports_downgrade =
-            matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless);
-        if advanced && supports_downgrade {
-            let status = self.inner.read_status(index);
-            if status
-                .udp
-                .mode_downgrade_until
-                .is_some_and(|t| t > tokio::time::Instant::now())
-            {
-                return crate::config::TransportMode::WsH2;
-            }
+        if !matches!(uplink.transport, UplinkTransport::Ws | UplinkTransport::Vless) {
+            return configured;
         }
-        configured
+        let status = self.inner.read_status(index);
+        capped_or_configured(&status.udp, configured)
     }
 
     /// Pops one connection from the TCP standby pool without falling back to

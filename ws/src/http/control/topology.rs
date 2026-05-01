@@ -59,21 +59,22 @@ fn effective_mode(
     transport: &str,
     configured: Option<&str>,
     downgrade_active: bool,
+    capped_to: Option<&str>,
 ) -> Option<String> {
     let mode = configured?;
     let supports_downgrade = matches!(transport, "ws" | "vless");
     if !(downgrade_active && supports_downgrade) {
         return Some(mode.to_string());
     }
-    // The downgrade window only fires for H3 / QUIC paths; everything
-    // else passes through unchanged. Pick a sibling H2 carrier that
-    // matches the family of the configured mode.
-    let downgraded = match mode {
-        "ws_h3" | "quic" => "ws_h2",
-        "xhttp_h3" => "xhttp_h2",
-        _ => mode,
-    };
-    Some(downgraded.to_string())
+    // Source of truth is the per-uplink `mode_downgrade_capped_to`
+    // surfaced via the snapshot — family-aware (`WsH2` for `WsH3` /
+    // `Quic`, `XhttpH2` for `XhttpH3`, `XhttpH1` for `XhttpH2`) and
+    // multi-step-aware (a second failure on the already-capped
+    // carrier lowers `capped_to` one rank further). Fall back to the
+    // configured mode if the cap field is missing — defensive: the
+    // window-active flag is meaningful on its own and a corrupted
+    // payload should not strand the dashboard on a stale entry.
+    Some(capped_to.unwrap_or(mode).to_string())
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -124,10 +125,18 @@ fn build_uplink_topology(
 ) -> ControlUplinkTopology {
     let tcp_downgrade_active = uplink.h3_tcp_downgrade_until_ms.is_some_and(|ms| ms > 0);
     let udp_downgrade_active = uplink.h3_udp_downgrade_until_ms.is_some_and(|ms| ms > 0);
-    let tcp_mode_effective =
-        effective_mode(&uplink.transport, uplink.tcp_mode.as_deref(), tcp_downgrade_active);
-    let udp_mode_effective =
-        effective_mode(&uplink.transport, uplink.udp_mode.as_deref(), udp_downgrade_active);
+    let tcp_mode_effective = effective_mode(
+        &uplink.transport,
+        uplink.tcp_mode.as_deref(),
+        tcp_downgrade_active,
+        uplink.tcp_mode_capped_to.as_deref(),
+    );
+    let udp_mode_effective = effective_mode(
+        &uplink.transport,
+        uplink.udp_mode.as_deref(),
+        udp_downgrade_active,
+        uplink.udp_mode_capped_to.as_deref(),
+    );
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),

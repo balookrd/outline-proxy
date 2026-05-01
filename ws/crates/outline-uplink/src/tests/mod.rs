@@ -1501,6 +1501,112 @@ async fn note_silent_transport_fallback_is_noop_when_mode_is_not_advanced() {
     assert_eq!(manager.effective_udp_mode(0).await, TransportMode::WsH1);
 }
 
+fn make_vless_xhttp_uplink_with_mode(
+    name: &str,
+    url: &str,
+    vless_mode: TransportMode,
+) -> UplinkConfig {
+    UplinkConfig {
+        name: name.to_string(),
+        transport: UplinkTransport::Vless,
+        tcp_ws_url: None,
+        tcp_mode: TransportMode::WsH1,
+        udp_ws_url: None,
+        udp_mode: TransportMode::WsH1,
+        vless_ws_url: None,
+        vless_xhttp_url: Some(Url::parse(url).unwrap()),
+        vless_mode,
+        tcp_addr: None,
+        udp_addr: None,
+        cipher: CipherKind::Chacha20IetfPoly1305,
+        password: "secret".to_string(),
+        weight: 1.0,
+        fwmark: None,
+        ipv6_first: false,
+        vless_id: Some([0u8; 16]),
+    }
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_xhttp_h3_caps_to_xhttp_h2() {
+    // Mirror of the WsH3 → WsH2 case but for the XHTTP family. A
+    // single fallback observation on a `vless_mode = "xhttp_h3"`
+    // uplink must park `effective_tcp_mode` at `XhttpH2` for the
+    // window — `effective_*_mode` is now family-aware via
+    // `mode_downgrade_capped_to`, so the dispatcher can skip the
+    // doomed h3 handshake on the next dial.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_vless_xhttp_uplink_with_mode(
+            "vless-xhttp-h3",
+            "https://xhttp.example.com/SECRET/xhttp",
+            TransportMode::XhttpH3,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
+    manager.note_silent_transport_fallback(0, TransportKind::Udp, TransportMode::XhttpH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::XhttpH2);
+    assert_eq!(manager.effective_udp_mode(0).await, TransportMode::XhttpH2);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_xhttp_multi_step_caps_to_xhttp_h1() {
+    // Multi-step convergence: after the first XhttpH3 fallback the
+    // cap is XhttpH2; the dispatcher then dials XhttpH2 directly. If
+    // h2 also fails, the inline fallback in `connect_websocket_with_resume`
+    // lands at XhttpH1 and emits a second `SilentTransportFallback`,
+    // this time carrying `XhttpH2`. The cap must descend to
+    // `XhttpH1` — never raise back to XhttpH2 inside the same window.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_vless_xhttp_uplink_with_mode(
+            "vless-xhttp-h3",
+            "https://xhttp.example.com/SECRET/xhttp",
+            TransportMode::XhttpH3,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::XhttpH2);
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH2);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::XhttpH1);
+
+    // A late XhttpH3 trigger inside the same window must NOT raise
+    // the cap back to XhttpH2 — the deepest observed failure wins.
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH3);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::XhttpH1);
+}
+
+#[tokio::test]
+async fn note_silent_transport_fallback_xhttp_h2_uplink_caps_to_xhttp_h1_directly() {
+    // An uplink configured at `xhttp_h2` (no h3 attempt) that hits
+    // an inline h2→h1 fallback must cap to `xhttp_h1` straight away,
+    // not wait for a second observation. This is the single-hop
+    // shape, mirroring how the existing WsH3 → WsH2 fallback caps
+    // immediately on the first observation.
+    let manager = UplinkManager::new_for_test(
+        "test",
+        vec![make_vless_xhttp_uplink_with_mode(
+            "vless-xhttp-h2",
+            "https://xhttp.example.com/SECRET/xhttp",
+            TransportMode::XhttpH2,
+        )],
+        probe_disabled(),
+        lb(),
+    )
+    .unwrap();
+
+    manager.note_silent_transport_fallback(0, TransportKind::Tcp, TransportMode::XhttpH2);
+    assert_eq!(manager.effective_tcp_mode(0).await, TransportMode::XhttpH1);
+}
+
 #[tokio::test]
 async fn note_silent_transport_fallback_marker_expires_after_window() {
     // After the configured `mode_downgrade_duration` elapses, `effective_*_ws_mode`

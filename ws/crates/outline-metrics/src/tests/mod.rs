@@ -59,6 +59,8 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         udp_consecutive_failures: 0,
         h3_tcp_downgrade_until_ms: None,
         h3_udp_downgrade_until_ms: None,
+        tcp_mode_capped_to: None,
+        udp_mode_capped_to: None,
         last_active_tcp_ago_ms: None,
         last_active_udp_ago_ms: None,
     }

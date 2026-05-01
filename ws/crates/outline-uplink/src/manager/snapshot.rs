@@ -127,6 +127,14 @@ impl UplinkManager {
                     .mode_downgrade_until
                     .and_then(|until| until.checked_duration_since(now))
                     .map(|v| v.as_millis()),
+                tcp_mode_capped_to: status
+                    .tcp
+                    .mode_downgrade_capped_to
+                    .map(|m| m.to_string()),
+                udp_mode_capped_to: status
+                    .udp
+                    .mode_downgrade_capped_to
+                    .map(|m| m.to_string()),
                 last_active_tcp_ago_ms: status
                     .tcp
                     .last_active
