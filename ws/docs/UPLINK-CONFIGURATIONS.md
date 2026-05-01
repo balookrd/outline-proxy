@@ -452,7 +452,24 @@ across reconnects.
 
 The knob is opt-in. Default behaviour leaves the wire shape exactly
 as in pre-fingerprint builds — no headers added beyond
-`X-Outline-Resume-*`. To enable, call once at startup:
+`X-Outline-Resume-*`. Enable it via the top-level `fingerprint_profile`
+key in `config.toml`:
+
+```toml
+# top-level — sibling of [socks5], [metrics], [outline], [[uplink_group]]
+fingerprint_profile = "stable"
+```
+
+Accepted values:
+
+- `"off"` / `"none"` / `"disabled"` / omitted — default, no headers added.
+- `"stable"` / `"per_host_stable"` / `"per-host-stable"` / `"per-host"` —
+  one identity per `(host, port)` for the lifetime of the process.
+- `"random"` — fresh profile on every dial.
+
+For embedded callers (tests, custom binaries) the strategy can also be
+wired directly via the Rust API; the bootstrap binary picks the
+config value at startup:
 
 ```rust
 use outline_transport::{
@@ -461,12 +478,6 @@ use outline_transport::{
 
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 ```
-
-`Strategy` accepts `None` (default), `PerHostStable`, and `Random`.
-The string aliases — `"off"`, `"none"`, `"disabled"`, `"stable"`,
-`"per_host_stable"`, `"per-host-stable"`, `"per-host"`, `"random"`
-— round-trip through `serde::Deserialize` so the value can come
-straight from a config file.
 
 What this does **not** cover (separate, costlier work):
 

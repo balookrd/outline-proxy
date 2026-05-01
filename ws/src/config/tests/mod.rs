@@ -1148,3 +1148,93 @@ async fn load_config_rejects_link_alongside_explicit_vless_url() {
         "expected conflict error, got: {message}"
     );
 }
+
+#[test]
+fn config_deserialises_fingerprint_profile_aliases() {
+    // Each accepted alias must round-trip into the matching enum
+    // variant. Done with `toml::from_str` directly (no disk IO) so the
+    // assertion stays focused on the deserialiser, not the loader.
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    let cases = [
+        ("\"off\"", Fp::None),
+        ("\"none\"", Fp::None),
+        ("\"disabled\"", Fp::None),
+        ("\"stable\"", Fp::PerHostStable),
+        ("\"per_host_stable\"", Fp::PerHostStable),
+        ("\"per-host-stable\"", Fp::PerHostStable),
+        ("\"per-host\"", Fp::PerHostStable),
+        ("\"random\"", Fp::Random),
+    ];
+    for (literal, expected) in cases {
+        let toml_input = format!("fingerprint_profile = {literal}");
+        let parsed: ConfigFile = toml::from_str(&toml_input).expect("toml parses");
+        assert_eq!(
+            parsed.fingerprint_profile,
+            Some(expected),
+            "alias {literal} must map to {expected:?}"
+        );
+    }
+}
+
+#[test]
+fn config_fingerprint_profile_field_is_optional() {
+    // Missing key → `None` in the schema, which `load_config` then
+    // promotes to `Strategy::None` via `unwrap_or_default()`. Tested
+    // here at the schema layer where the conversion is deterministic.
+    let toml_input = r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+    "#;
+    let parsed: ConfigFile = toml::from_str(toml_input).expect("toml parses");
+    assert!(parsed.fingerprint_profile.is_none());
+}
+
+#[tokio::test]
+async fn load_config_threads_fingerprint_profile_into_app_config() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        fingerprint_profile = "stable"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.fingerprint_profile, Fp::PerHostStable);
+}
+
+#[tokio::test]
+async fn load_config_defaults_fingerprint_profile_to_none_when_missing() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        tcp_ws_url = "wss://example.com/secret/tcp"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [socks5]
+        listen = "127.0.0.1:1080"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    assert_eq!(config.fingerprint_profile, Fp::None);
+}

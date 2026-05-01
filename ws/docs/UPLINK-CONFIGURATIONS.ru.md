@@ -455,7 +455,25 @@ Firefox 130 (Windows + macOS), Safari 17 (macOS), Edge 130 (Windows).
 
 Тумблер opt-in. По умолчанию форма провода полностью совпадает с тем,
 что было до этого изменения — никаких новых заголовков, кроме
-`X-Outline-Resume-*`. Чтобы включить, нужно один раз при старте:
+`X-Outline-Resume-*`. Включается ключом верхнего уровня
+`fingerprint_profile` в `config.toml`:
+
+```toml
+# верхний уровень — рядом с [socks5], [metrics], [outline], [[uplink_group]]
+fingerprint_profile = "stable"
+```
+
+Допустимые значения:
+
+- `"off"` / `"none"` / `"disabled"` / отсутствие ключа — по умолчанию,
+  заголовки не добавляются.
+- `"stable"` / `"per_host_stable"` / `"per-host-stable"` / `"per-host"` —
+  одна идентичность на пару `(host, port)` на всё время жизни процесса.
+- `"random"` — свежий профиль на каждый дозвон.
+
+Для встроенных вызовов (тесты, кастомные бинарники) стратегию также
+можно проставить прямо через Rust API; bootstrap-бинарь подхватывает
+значение из конфига при старте:
 
 ```rust
 use outline_transport::{
@@ -464,12 +482,6 @@ use outline_transport::{
 
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 ```
-
-`Strategy` принимает `None` (по умолчанию), `PerHostStable` и
-`Random`. Строковые алиасы — `"off"`, `"none"`, `"disabled"`,
-`"stable"`, `"per_host_stable"`, `"per-host-stable"`, `"per-host"`,
-`"random"` — корректно проходят через `serde::Deserialize`, так что
-значение можно читать прямо из конфига.
 
 Что **не** покрыто (отдельная и дороже задача):
 
