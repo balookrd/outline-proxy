@@ -58,7 +58,10 @@ fn rank(m: TransportMode) -> u8 {
         // so it is never selected by clamping logic here. XHTTP modes share
         // the same property: they ride their own dial path and never get
         // clamped against the WS chain.
-        TransportMode::Quic | TransportMode::XhttpH2 | TransportMode::XhttpH3 => 3,
+        TransportMode::Quic
+        | TransportMode::XhttpH1
+        | TransportMode::XhttpH2
+        | TransportMode::XhttpH3 => 3,
     }
 }
 

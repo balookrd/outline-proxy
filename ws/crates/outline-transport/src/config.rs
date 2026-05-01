@@ -30,6 +30,15 @@ pub enum TransportMode {
     /// datagrams (RFC 9221). Available only when the `quic` feature is
     /// enabled at build time.
     Quic,
+    /// VLESS over XHTTP packet-up, carried on HTTP/1.1. Last-resort
+    /// fallback when both `xhttp_h3` and `xhttp_h2` are blocked: the
+    /// downlink GET stays on a long-lived keep-alive TCP+TLS socket
+    /// (chunked response body) and uplink POSTs are serialised on a
+    /// second keep-alive socket — h1 can't multiplex a streaming GET
+    /// against concurrent POSTs on a single connection. Throughput is
+    /// strictly worse than h2/h3, but the wire shape is otherwise
+    /// identical so the same `xhttp_path_vless` listener serves it.
+    XhttpH1,
     /// VLESS over XHTTP packet-up, carried on HTTP/2. Pairs with the
     /// server's `xhttp_path_vless` listener. Useful behind CDNs that
     /// block WebSocket upgrades.
@@ -64,6 +73,7 @@ impl std::str::FromStr for TransportMode {
             "ws_h2" | "h2" => Ok(Self::WsH2),
             "ws_h3" | "h3" => Ok(Self::WsH3),
             "quic" => Ok(Self::Quic),
+            "xhttp_h1" => Ok(Self::XhttpH1),
             "xhttp_h2" => Ok(Self::XhttpH2),
             "xhttp_h3" => Ok(Self::XhttpH3),
             _ => bail!("unsupported transport mode: {s}"),
@@ -134,6 +144,7 @@ impl fmt::Display for TransportMode {
             Self::WsH2 => "ws_h2",
             Self::WsH3 => "ws_h3",
             Self::Quic => "quic",
+            Self::XhttpH1 => "xhttp_h1",
             Self::XhttpH2 => "xhttp_h2",
             Self::XhttpH3 => "xhttp_h3",
         };

@@ -186,20 +186,42 @@ vless_id = "11111111-2222-3333-4444-555555555555"
 weight = 1.0
 ```
 
-- **TCP fallback chain:** `xhttp_h3 → xhttp_h2`. The dispatcher reuses
-  the same `resume_request` token across the carrier switch, so a
-  parked upstream re-attaches without producing a new VLESS session.
-  There is no further fallback below `xhttp_h2` — XHTTP runs only on
-  h2 / h3.
-- **UDP fallback chain:** `xhttp_h3 → xhttp_h2`. XHTTP is a
-  bidirectional packet-up driver on the same h2/h3 connection, so UDP
+- **TCP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`. The
+  dispatcher reuses the same `resume_request` token across each
+  carrier switch, so a parked upstream re-attaches without producing
+  a new VLESS session. The h1 carrier is the last-resort fallback
+  for paths that block both QUIC and h2 ALPN; throughput is strictly
+  worse (no multiplexing — see "h1 carrier shape" below) but the
+  wire URL stays identical (`<base>/<session>/<seq>`) so the same
+  `xhttp_path_vless` listener serves it.
+- **UDP fallback chain:** `xhttp_h3 → xhttp_h2 → xhttp_h1`. XHTTP is
+  a bidirectional packet-up driver on the same connection, so UDP
   rides alongside TCP in the same carrier and downgrades
   synchronously.
-- **Resume:** the `<uplink>#tcp` slot is reused across the
-  `xhttp_h3 → xhttp_h2` carrier switch — the same `resume_request`
-  token is presented on either carrier, so the server re-attaches the
-  parked upstream instead of opening a fresh session. UDP rides the
-  same XHTTP carrier and inherits TCP's reconnect behaviour.
+- **Resume:** the `<uplink>#tcp` slot is reused across every step of
+  the `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch — the same
+  `resume_request` token is presented on each carrier, so the server
+  re-attaches the parked upstream instead of opening a fresh session.
+  UDP rides the same XHTTP carrier and inherits TCP's reconnect
+  behaviour.
+
+**h1 carrier shape.** Unlike h2 / h3, HTTP/1.1 cannot multiplex a
+streaming GET against concurrent POSTs on a single connection, so the
+h1 carrier dials **two** keep-alive sockets per session: one
+dedicated to the long-lived downlink GET (chunked response body), and
+one for strictly serialised uplink POSTs (one in-flight request at a
+time). Pipelining is intentionally avoided — it is too brittle through
+CDN / proxy intermediaries to rely on. As a result:
+
+- Throughput is bounded by single-stream POST round-trip time; expect
+  it to lag h2 noticeably under load.
+- A single POST failure tears the uplink socket down and the driver
+  exits, so the upstream sees a clean session drop rather than
+  partial corruption. The next dial reattaches via the resume token.
+- Stream-one submode is **not** supported on h1 — `?mode=stream-one`
+  with `vless_mode = xhttp_h1` (or a chain that falls through to h1)
+  bails at dial time with a clear error. Use `xhttp_h2` / `xhttp_h3`
+  for stream-one.
 
 ## 7. VLESS share-link URIs
 
@@ -229,7 +251,7 @@ to the corresponding section above. Setting `transport` is optional —
 | `UUID` (userinfo)                  | `vless_id`                                        |
 | `HOST:PORT` (authority)            | dial URL host + port (port is required)           |
 | `type=ws`                          | `vless_mode = ws_h1` (with `alpn`: `ws_h2`/`ws_h3`), URL → `vless_ws_url` |
-| `type=xhttp`                       | `vless_mode = xhttp_h2` (with `alpn=h3`: `xhttp_h3`), URL → `vless_xhttp_url` |
+| `type=xhttp`                       | `vless_mode = xhttp_h2` (with `alpn=h3`: `xhttp_h3`; with `alpn=h1` / `http/1.1`: `xhttp_h1`), URL → `vless_xhttp_url` |
 | `type=quic`                        | `vless_mode = quic`, URL → `vless_ws_url` (TLS-only) |
 | `security=tls` / `reality`         | URL scheme → `wss://` (ws) or `https://` (xhttp/quic) |
 | `security=none` (or absent)        | URL scheme → `ws://` / `http://`                  |
@@ -287,11 +309,14 @@ is read on every dial, so flipping the URL is enough.
   `xhttp_h3` and a path that does not buffer POST bodies — proxies
   that wait for end-of-request before forwarding will stall the first
   byte. On h3 the `RequestStream` is split so uplink and downlink
-  halves run on dedicated tasks.
+  halves run on dedicated tasks. **Not supported on `xhttp_h1`** —
+  the h1 carrier intentionally bails on `?mode=stream-one` instead
+  of silently downgrading to packet-up.
 
 Both submodes share the same `connect_xhttp` driver, so resume
-behaviour, fallback chain (`xhttp_h3 → xhttp_h2`), and downgrade-window
-mechanics are identical.
+behaviour, fallback chain (`xhttp_h3 → xhttp_h2 → xhttp_h1` for
+packet-up, `xhttp_h3 → xhttp_h2` for stream-one), and
+downgrade-window mechanics are identical.
 
 ---
 
@@ -304,7 +329,7 @@ mechanics are identical.
 | SS / WS / H3          | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | yes (`#udp`)              |
 | VLESS / QUIC          | `quic → ws_h2 → ws_h1`     | `quic → ws_h2 → ws_h1` (hybrid mux)  | yes (`#tcp`)      | no (sessions re-created)  |
 | VLESS / WS / H3       | `ws_h3 → ws_h2 → ws_h1`    | `ws_h3 → ws_h2 → ws_h1`              | yes (`#tcp`)      | shared with TCP carrier   |
-| VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2`      | `xhttp_h3 → xhttp_h2`                | yes (`#tcp`)      | shared with TCP carrier   |
+| VLESS / XHTTP / H3    | `xhttp_h3 → xhttp_h2→ xhttp_h1` | `xhttp_h3 → xhttp_h2 → xhttp_h1` | yes (`#tcp`) | shared with TCP carrier   |
 
 ## Downgrade window mechanics
 
@@ -341,7 +366,8 @@ On dial, the cached ID (if any) is presented to the server as a
   opcode. The `#tcp` slot is shared with VLESS-over-WS, so a cached ID
   reattaches across either carrier.
 - **XHTTP path** — sent as `X-Outline-Resume`; the same token is
-  re-used across the `xhttp_h3 → xhttp_h2` carrier switch.
+  re-used across every step of the
+  `xhttp_h3 → xhttp_h2 → xhttp_h1` carrier switch.
 
 If the server replies with a `X-Outline-Session: <hex>` header (or the
 VLESS equivalent in addons), the new ID is stored back into the slot

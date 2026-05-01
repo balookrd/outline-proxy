@@ -44,9 +44,9 @@ pub struct UplinkSnapshot {
     /// "encapsulation" layer.
     pub transport: String,
     /// Outer transport mode for TCP-style sessions (`ws_h1`, `ws_h2`,
-    /// `ws_h3`, `quic`, `xhttp_h2`, `xhttp_h3`). `Some` whenever the uplink
-    /// has a dial URL on TCP — i.e. for `ws` and `vless`. `None` for plain
-    /// `shadowsocks`.
+    /// `ws_h3`, `quic`, `xhttp_h1`, `xhttp_h2`, `xhttp_h3`). `Some`
+    /// whenever the uplink has a dial URL on TCP — i.e. for `ws` and
+    /// `vless`. `None` for plain `shadowsocks`.
     pub tcp_mode: Option<String>,
     /// Outer transport mode for UDP-style sessions. Same semantics as
     /// `tcp_mode`. `Some` only when the uplink supports UDP via WS/QUIC.
