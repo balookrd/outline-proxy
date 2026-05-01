@@ -82,6 +82,22 @@ pub struct UplinkSnapshot {
     pub tcp_mode_capped_to: Option<String>,
     /// UDP counterpart to [`Self::tcp_mode_capped_to`].
     pub udp_mode_capped_to: Option<String>,
+    /// XHTTP submode the TCP dial URL configures (`packet-up` or
+    /// `stream-one`, parsed from the `?mode=` query). `None` for
+    /// non-XHTTP transports — the concept does not apply outside the
+    /// XHTTP family.
+    pub tcp_xhttp_submode: Option<String>,
+    /// UDP counterpart to [`Self::tcp_xhttp_submode`].
+    pub udp_xhttp_submode: Option<String>,
+    /// Milliseconds remaining on the per-host stream-one block in the
+    /// XHTTP submode cache for the TCP dial URL. `Some(_)` when a
+    /// recent stream-one failure has clamped subsequent dials to
+    /// packet-up; `None` when stream-one is currently allowed (or the
+    /// uplink is not XHTTP, or the URL is not configured for
+    /// stream-one in the first place).
+    pub tcp_xhttp_submode_block_remaining_ms: Option<u128>,
+    /// UDP counterpart to [`Self::tcp_xhttp_submode_block_remaining_ms`].
+    pub udp_xhttp_submode_block_remaining_ms: Option<u128>,
     pub last_active_tcp_ago_ms: Option<u128>,
     pub last_active_udp_ago_ms: Option<u128>,
 }

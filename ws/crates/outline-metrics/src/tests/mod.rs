@@ -61,6 +61,10 @@ fn snapshot_uplink(name: &str) -> UplinkSnapshot {
         h3_udp_downgrade_until_ms: None,
         tcp_mode_capped_to: None,
         udp_mode_capped_to: None,
+        tcp_xhttp_submode: None,
+        udp_xhttp_submode: None,
+        tcp_xhttp_submode_block_remaining_ms: None,
+        udp_xhttp_submode_block_remaining_ms: None,
         last_active_tcp_ago_ms: None,
         last_active_udp_ago_ms: None,
     }
