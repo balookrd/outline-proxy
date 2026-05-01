@@ -340,11 +340,22 @@ Recorded in two layers:
    requested mode down to the recorded ceiling. Survives across uplinks
    that share the same host.
 
-2. **Per-uplink `mode_downgrade_until`**. Set when
-   `note_advanced_mode_dial_failure` fires. `effective_tcp_mode` /
-   `effective_udp_mode` return `WsH2` while the window is open, so
-   probes, standby refills and direct dials all stop hammering the
-   broken advanced mode. Cleared by a successful H3-recovery probe.
+2. **Per-uplink `mode_downgrade_until`** + family-aware
+   `mode_downgrade_capped_to`. Set when `note_advanced_mode_dial_failure`
+   or `note_silent_transport_fallback` fires. `effective_tcp_mode` /
+   `effective_udp_mode` return the cap (not the configured mode) while
+   the window is open, so probes, standby refills and direct dials all
+   stop hammering the broken advanced mode. Family-aware: `WsH3` /
+   `Quic` collapse to `WsH2`, `XhttpH3` collapses to `XhttpH2`,
+   `XhttpH2` to `XhttpH1`. Multi-step XHTTP downgrades
+   (`XhttpH3 → XhttpH2 → XhttpH1`) converge over consecutive dials —
+   each silent-fallback observation lowers the cap one rank inside the
+   active window and never raises it. Cleared by a successful H3
+   recovery probe (WS path) or by natural TTL expiry (XHTTP path —
+   no recovery probe). The cap is published through the snapshot
+   (`tcp_mode_capped_to` / `udp_mode_capped_to`) so the dashboard's
+   `tcp_mode_effective` / `udp_mode_effective` columns reflect the
+   actual carrier the dispatcher will use.
 
 When both layers report the same constraint, `effective_*_mode` is
 authoritative for routing and the host cache governs the inline

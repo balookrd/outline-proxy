@@ -341,12 +341,24 @@ packet-up; `xhttp_h3 → xhttp_h2` для stream-one) и механика окн
    клампают запрошенный режим до записанного потолка. Переживает
    границы аплинков, делящих один и тот же хост.
 
-2. **Per-uplink `mode_downgrade_until`**. Выставляется по
-   `note_advanced_mode_dial_failure`. Пока окно открыто,
-   `effective_tcp_mode` / `effective_udp_mode` возвращают `WsH2` —
-   пробы, refill standby и прямые дозвоны перестают долбиться в
-   сломанный продвинутый режим. Сбрасывается успешной H3-recovery
-   пробой.
+2. **Per-uplink `mode_downgrade_until`** + family-aware
+   `mode_downgrade_capped_to`. Выставляется по
+   `note_advanced_mode_dial_failure` или
+   `note_silent_transport_fallback`. Пока окно открыто,
+   `effective_tcp_mode` / `effective_udp_mode` возвращают cap
+   (а не configured режим) — пробы, refill standby и прямые дозвоны
+   перестают долбиться в сломанный продвинутый режим. Family-aware:
+   `WsH3` / `Quic` коллапсируют в `WsH2`, `XhttpH3` — в `XhttpH2`,
+   `XhttpH2` — в `XhttpH1`. Многоступенчатые XHTTP-даунгрейды
+   (`XhttpH3 → XhttpH2 → XhttpH1`) сходятся за несколько dial'ов —
+   каждое наблюдение silent-fallback'а понижает cap на один rank
+   внутри активного окна и никогда не повышает обратно.
+   Сбрасывается успешной H3-recovery пробой (WS-путь) или
+   естественным истечением TTL (XHTTP-путь — recovery пробы нет).
+   Cap публикуется через snapshot (`tcp_mode_capped_to` /
+   `udp_mode_capped_to`), так что колонки `tcp_mode_effective` /
+   `udp_mode_effective` дашборда отражают реальный carrier, который
+   выберет диспетчер.
 
 Когда оба слоя дают одно и то же ограничение, `effective_*_mode`
 авторитетен для роутинга, а host-кэш управляет инлайн-клампом

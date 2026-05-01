@@ -9,7 +9,7 @@ use parking_lot::Mutex as SyncMutex;
 use tokio::sync::{Mutex, Notify, RwLock, Semaphore, watch};
 use tokio::time::Instant;
 
-use crate::config::{LoadBalancingConfig, ProbeConfig, UplinkConfig};
+use crate::config::{LoadBalancingConfig, ProbeConfig, TransportMode, UplinkConfig};
 use outline_transport::TransportStream;
 use socks5_proto::TargetAddr;
 
@@ -152,10 +152,26 @@ pub(crate) struct PerTransportStatus {
     /// `probe.min_failures` consecutive runtime failures, without waiting
     /// for the next probe cycle.
     pub(crate) consecutive_runtime_failures: u32,
-    /// When set, connections must use H2 instead of H3 until this instant
-    /// because H3 produced repeated APPLICATION_CLOSE or other transport
-    /// errors. Cleared by a successful explicit H3 re-probe.
+    /// When set, connections must use a lower-rank carrier than the
+    /// configured one until this instant because the configured one
+    /// (H3, raw QUIC, XHTTP-H3, XHTTP-H2) produced repeated transport
+    /// errors. Cleared by a successful explicit H3 re-probe (WS path)
+    /// or by natural TTL expiry (XHTTP path — no recovery probe).
+    /// Always paired with [`Self::mode_downgrade_capped_to`]: either
+    /// both are `Some` or both are `None`.
     pub(crate) mode_downgrade_until: Option<Instant>,
+    /// Family-aware ceiling for the downgrade window — what
+    /// `effective_*_mode` returns while [`Self::mode_downgrade_until`]
+    /// is in the future. Set alongside the deadline so the
+    /// reader does not need to know which family the configured mode
+    /// belongs to (`WsH3` → `WsH2`, `XhttpH3` → `XhttpH2`,
+    /// `XhttpH2` → `XhttpH1`, `Quic` → `WsH2`). Updates monotonically
+    /// downward inside an active window: a second failure on the
+    /// already-capped carrier (e.g. `XhttpH2` after a previous
+    /// `XhttpH3` → `XhttpH2` cap) lowers the ceiling but never
+    /// raises it, so multi-step downgrades preserve the deepest
+    /// failure observed during the window.
+    pub(crate) mode_downgrade_capped_to: Option<TransportMode>,
     /// Timestamp of the most recent real data transfer on this transport.
     /// Used to skip probe cycles when the uplink is actively carrying traffic.
     pub(crate) last_active: Option<Instant>,

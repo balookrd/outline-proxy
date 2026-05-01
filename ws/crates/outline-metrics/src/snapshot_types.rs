@@ -74,6 +74,14 @@ pub struct UplinkSnapshot {
     pub udp_consecutive_failures: u32,
     pub h3_tcp_downgrade_until_ms: Option<u128>,
     pub h3_udp_downgrade_until_ms: Option<u128>,
+    /// Family-aware ceiling carrier the dispatcher returns from
+    /// `effective_tcp_mode` while the per-uplink downgrade window is
+    /// active (see `h3_tcp_downgrade_until_ms`). `Some` only when the
+    /// window is set; `None` clears to whatever `tcp_mode` carries.
+    /// Stringified `TransportMode` (`ws_h2`, `xhttp_h2`, `xhttp_h1`).
+    pub tcp_mode_capped_to: Option<String>,
+    /// UDP counterpart to [`Self::tcp_mode_capped_to`].
+    pub udp_mode_capped_to: Option<String>,
     pub last_active_tcp_ago_ms: Option<u128>,
     pub last_active_udp_ago_ms: Option<u128>,
 }
