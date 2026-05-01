@@ -4,9 +4,27 @@ listen = "0.0.0.0:3000"
 # IPv6 example:
 # listen = "[::]:3000"
 # Optional TLS for the TCP listener (HTTP/1.1 + HTTP/2 / RFC 8441).
-# If set, clients should use `wss://` for the TCP listener.
-# tls_cert_path = "./cert.pem"
-# tls_key_path = "./key.pem"
+# If set, clients should use `wss://` for the TCP listener. The keys
+# `cert_path` / `key_path` are the canonical names; the legacy
+# `tls_cert_path` / `tls_key_path` aliases still parse for backward
+# compat with older configs.
+# cert_path = "./cert.pem"
+# key_path  = "./key.pem"
+
+# Optional additional TLS certs selected by SNI on the TCP listener.
+# Each entry's `sni` is matched exactly (case-insensitive) against the
+# inbound ClientHello SNI; an unmatched SNI (or one with no SNI at all)
+# falls back to `cert_path`/`key_path` above. Omit `sni` to derive
+# names from the cert's SAN (and Subject CN as a last-resort fallback).
+# [[server.certs]]
+# cert_path = "./api.pem"
+# key_path  = "./api.key"
+# sni = ["api.example.com", "api2.example.com"]
+#
+# [[server.certs]]
+# cert_path = "./shop.pem"
+# key_path  = "./shop.key"
+# # `sni` omitted → derive from SAN/CN
 
 # Optional plain Shadowsocks listener.
 # This starts a separate TCP+UDP service on the same address for classic `ss://` clients.
@@ -17,10 +35,20 @@ listen = "0.0.0.0:3000"
 # Optional HTTP/3 / QUIC listener for RFC 9220.
 # `listen` may reuse the same ip:port as [server] listen, because H3 binds UDP
 # while [server] listen binds TCP.
+# `cert_path` / `key_path` and the `[[server.h3.certs]]` array work
+# exactly like their TCP counterparts above. Both are optional: when
+# the QUIC table omits them entirely, the listener inherits the TCP
+# listener's defaults (and its `[[server.certs]]` array), so a single
+# cert block covers both transports.
 # [server.h3]
 # listen = "0.0.0.0:3000"
 # cert_path = "./cert.pem"
-# key_path = "./key.pem"
+# key_path  = "./key.pem"
+#
+# [[server.h3.certs]]
+# cert_path = "./api.pem"
+# key_path  = "./api.key"
+# sni = ["api.example.com"]
 
 # Optional Prometheus listener. Prefer binding this to loopback or a private network.
 [metrics]
@@ -113,8 +141,9 @@ ws_path_udp = "/udp"
 # the SNI is in `match_sni` (or missing and `allow_no_sni = true`) the
 # connection is handled locally. Otherwise the raw TCP stream is spliced
 # to a backend chosen by SNI, which must present its own cert. Sister of
-# [http_fallback] one OSI layer below. Requires built-in TLS
-# (tls_cert_path + tls_key_path) on the main listener.
+# [http_fallback] one OSI layer below. Requires built-in TLS on the
+# main listener (`[server].cert_path` / `[server].key_path`, or at
+# least one `[[server.certs]]` entry).
 #
 # Single-backend mode — all foreign SNIs go to one upstream:
 # [sni_fallback]

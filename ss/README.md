@@ -225,9 +225,11 @@ Legacy MIPS note: `mips` and `mipsel` are no longer available through the curren
 | --- | --- |
 | `listen` | Optional main TCP listener for HTTP/1.1 and HTTP/2 |
 | `ss_listen` | Optional plain Shadowsocks TCP+UDP listener for classic `ss://` clients |
-| `tls_cert_path` / `tls_key_path` | Optional built-in TLS for the main listener |
+| `[server].cert_path` / `[server].key_path` | Optional built-in TLS for the main listener (default cert when no SNI matches). The legacy keys `tls_cert_path` / `tls_key_path` still parse as aliases for backward compat |
+| `[[server.certs]]` | Optional list of additional cert/key pairs selected by SNI on the main listener. Each entry: `cert_path`, `key_path`, optional `sni = [...]`. When `sni` is omitted, names are derived from the certificate's SAN (and Subject CN as a last-resort fallback). Wildcards in SAN are skipped (the resolver matches SNIs exactly) — list each hostname explicitly when needed |
 | `h3_listen` | Optional QUIC listener address for HTTP/3 (and, when ALPN list extends, raw VLESS/SS over QUIC); must be set explicitly when HTTP/3 is enabled |
-| `h3_cert_path` / `h3_key_path` | Required to enable the QUIC endpoint |
+| `[server.h3].cert_path` / `[server.h3].key_path` | Default cert for the QUIC listener. When the `[server.h3]` table omits them, the QUIC listener inherits the cert/key from `[server]` so a single cert block can cover both transports |
+| `[[server.h3.certs]]` | SNI-selected cert array for the QUIC listener; same shape as `[[server.certs]]`. When the `[server.h3]` table omits this array entirely, it inherits `[[server.certs]]` |
 | `[server.h3].alpn` | List of ALPN protocols advertised on the QUIC endpoint. Allowed values: `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS framed on QUIC streams), `"ss"` (raw Shadowsocks AEAD framed on QUIC streams). Defaults to `["h3"]` |
 | `metrics_listen` | Optional Prometheus listener |
 | `metrics_path` | Prometheus endpoint path |
@@ -297,10 +299,12 @@ For `2022-blake3-aes-128-gcm`, `2022-blake3-aes-256-gcm`, and `2022-blake3-chach
 For deployments behind a CDN that blocks WebSocket upgrades, configure VLESS over XHTTP alongside (or instead of) the WS path. The server registers `<xhttp_path_vless>/{id}` for every base; `{id}` is an opaque per-session token chosen by the client. The same `vless_id` works on both carriers — pick whichever has the better path on a given network.
 
 ```toml
+[server]
 listen = "0.0.0.0:443"
-tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
-tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
+[websocket]
 # Optional: keep the WS path for clients on direct connections.
 ws_path_vless = "/vless"
 # Required for XHTTP. Distinct from `ws_path_vless`.
@@ -324,13 +328,15 @@ The dynamic access-key generator emits two `vless://...?type=xhttp&path=...` URI
 
 ### VLESS over WebSocket/TLS
 
-The VLESS inbound accepts VLESS over WebSocket on the main HTTP/1.1 or HTTP/2 listener and, when configured, on the QUIC HTTP/3 listener (`h3_listen`). Use TLS (`tls_cert_path` / `tls_key_path`) for public deployments; the VLESS layer itself is stateless UUID authentication and does not add encryption. Supported commands: TCP CONNECT, UDP (length-prefixed datagrams), and mux.cool with XUDP per-packet addressing (xray-style multiplexing, up to 8 concurrent sub-connections per session; XUDP `GlobalID` is accepted but not yet reused across reconnects). REALITY, XTLS, Vision, flow, fallback, and sniffing are intentionally not implemented.
+The VLESS inbound accepts VLESS over WebSocket on the main HTTP/1.1 or HTTP/2 listener and, when configured, on the QUIC HTTP/3 listener (`h3_listen`). Use TLS (`[server].cert_path` / `[server].key_path`) for public deployments; the VLESS layer itself is stateless UUID authentication and does not add encryption. Supported commands: TCP CONNECT, UDP (length-prefixed datagrams), and mux.cool with XUDP per-packet addressing (xray-style multiplexing, up to 8 concurrent sub-connections per session; XUDP `GlobalID` is accepted but not yet reused across reconnects). REALITY, XTLS, Vision, flow, fallback, and sniffing are intentionally not implemented.
 
 ```toml
+[server]
 listen = "0.0.0.0:443"
-tls_cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
-tls_key_path = "/etc/letsencrypt/live/example/privkey.pem"
+cert_path = "/etc/letsencrypt/live/example/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/example/privkey.pem"
 
+[websocket]
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
 ws_path_vless = "/vless"
@@ -465,14 +471,39 @@ method = "chacha20-ietf-poly1305"
 ### 2. Built-In TLS for HTTP/1.1 and HTTP/2
 
 ```toml
+[server]
 listen = "0.0.0.0:5443"
-tls_cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
-tls_key_path = "/etc/outline-ss-rust/tls/privkey.pem"
+cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
+key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
+
+[websocket]
 ws_path_tcp = "/tcp"
 ws_path_udp = "/udp"
 ```
 
 This serves `wss://` on the main TCP listener and supports RFC 8441 on the same socket.
+
+To serve **multiple domains** off the same listener, list additional cert/key pairs in `[[server.certs]]`. The default `cert_path`/`key_path` above is returned when the inbound SNI matches none of the array entries (or when the client did not send an SNI at all):
+
+```toml
+[server]
+listen = "0.0.0.0:5443"
+cert_path = "/etc/letsencrypt/live/default.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/default.example.com/privkey.pem"
+
+[[server.certs]]
+cert_path = "/etc/letsencrypt/live/api.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/api.example.com/privkey.pem"
+sni = ["api.example.com", "api2.example.com"]   # explicit list
+
+[[server.certs]]
+cert_path = "/etc/letsencrypt/live/shop.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/shop.example.com/privkey.pem"
+# `sni` omitted — names are derived from the cert's SAN (and Subject CN
+# as a last-resort fallback). Wildcard SAN entries are skipped.
+```
+
+The same shape applies to the QUIC listener via `[[server.h3.certs]]`. When the `[server.h3]` table omits both `cert_path`/`key_path` and the `certs` array, the QUIC listener inherits the TCP listener's cert configuration as-is, so a single block typically covers both transports.
 
 ### 3. Plain Shadowsocks Socket Service
 
@@ -489,10 +520,16 @@ This keeps the existing WebSocket ingress and additionally exposes a native Shad
 ### 4. Built-In HTTP/3
 
 ```toml
+[server]
 listen = "0.0.0.0:5443"
-h3_listen = "0.0.0.0:5443"
-h3_cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
-h3_key_path = "/etc/outline-ss-rust/tls/privkey.pem"
+cert_path = "/etc/outline-ss-rust/tls/fullchain.pem"
+key_path  = "/etc/outline-ss-rust/tls/privkey.pem"
+
+[server.h3]
+listen = "0.0.0.0:5443"
+# `cert_path` / `key_path` (and any `[[server.h3.certs]]` array) are
+# inherited from `[server]` when omitted, so a typical deployment
+# only configures the cert once.
 ```
 
 HTTP/3 always requires TLS and UDP reachability on the selected port.
@@ -533,29 +570,58 @@ Limitations:
 
 The HTTP fallback above kicks in *after* TLS terminates on us — useful when the SNI is ours but the path/Host doesn't match a route. The `[sni_fallback]` block adds the layer below: peek the ClientHello *before* handshake and, when the SNI doesn't belong to us, splice the raw TCP stream (including the captured ClientHello) to a backend that handles foreign SNIs with its own cert. From a passive observer the listener now looks like an SNI-routed haproxy frontend.
 
-Requires built-in TLS (`tls_cert_path` + `tls_key_path`) on the main TCP listener.
+Requires built-in TLS on the main TCP listener (`[server].cert_path` + `[server].key_path`, or at least one `[[server.certs]]` entry).
+
+`match_sni` is **the whitelist of SNIs we terminate locally**. Anything in it is replayed into our own TLS stack (where the multi-cert resolver from §7 picks the cert); anything else is spliced to a backend. Whenever you add a domain to `[[server.certs]]`, mirror it into `match_sni` — otherwise its inbound traffic is redirected to the foreign-SNI backend even though we hold a cert for it.
+
+There are two backend formats. They are mutually exclusive.
+
+**Single-backend** — every foreign SNI goes to one upstream. Compact, perfect for "ours vs the world":
 
 ```toml
 [server]
 listen = "0.0.0.0:443"
-tls_cert_path = "/etc/letsencrypt/live/your-host/fullchain.pem"
-tls_key_path  = "/etc/letsencrypt/live/your-host/privkey.pem"
+cert_path = "/etc/letsencrypt/live/your-host/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/your-host/privkey.pem"
 
 [sni_fallback]
 backend = "127.0.0.1:8443"               # haproxy / nginx / caddy
-match_sni = ["our.example.com",
-             "*.api.our.example.com"]    # required, nginx-style wildcards
+match_sni = ["vpn.example.com",
+             "*.api.example.com"]        # required, nginx-style wildcards
 # allow_no_sni = false                   # SNI-less connections → backend
 # proxy_protocol = "v2"                  # v1 / v2 / omit. STRONGLY recommended
                                          # so the backend logs the real client IP
 # max_client_hello_bytes = 8192          # close conn if ClientHello exceeds this
 ```
 
+**Multi-backend** — different foreign SNIs go to different upstreams. Replace `backend = "..."` with one or more `[[sni_fallback.backends]]` tables. First match wins; an entry with no `match_sni` is a catch-all and must be the last one. `proxy_protocol` is set per-entry in this mode (the top-level key is rejected):
+
+```toml
+[sni_fallback]
+match_sni = ["vpn.example.com"]          # stays on local TLS terminator
+allow_no_sni = false
+# max_client_hello_bytes = 8192
+
+[[sni_fallback.backends]]
+backend = "127.0.0.1:8443"
+match_sni = ["nginx.example.com", "*.nginx.example.com"]
+proxy_protocol = "v2"
+
+[[sni_fallback.backends]]
+backend = "127.0.0.1:9443"
+match_sni = ["caddy.example.com"]
+
+[[sni_fallback.backends]]
+backend = "127.0.0.1:10443"
+# no `match_sni` → catch-all; must be the last entry
+```
+
 How dispatch decides:
 
-1. Read just enough bytes off the inbound socket to feed `rustls::server::Acceptor` a full ClientHello. Anything larger than `max_client_hello_bytes` is treated as malformed and the connection is closed (intentionally — junk does not get forwarded to the backend so it can't poison its logs).
-2. If the SNI matches any entry in `match_sni` (case-insensitive; `*.foo.bar` matches one label to the left), the captured bytes are replayed back into our TLS terminator via a `PrependStream` wrapper and the rest behaves exactly like before — including `[http_fallback]` if enabled.
-3. Otherwise (or when no SNI was present and `allow_no_sni = false`), open a fresh TCP connection to `backend`, optionally prepend a HAProxy PROXY-protocol header, write the captured ClientHello, then `tokio::io::copy_bidirectional` until either side closes.
+1. Read just enough bytes off the inbound socket to feed `rustls::server::Acceptor` a full ClientHello. Anything larger than `max_client_hello_bytes` is treated as malformed and the connection is closed (intentionally — junk does not get forwarded so it can't poison backend logs).
+2. If the SNI matches any entry in `match_sni` (case-insensitive; `*.foo.bar` matches one label to the left), the captured bytes are replayed into our TLS terminator via a `PrependStream` wrapper. The multi-cert resolver from §7 selects the cert; everything downstream — `[http_fallback]`, websocket / xhttp routes, etc. — runs exactly as on a non-spliced connection.
+3. Otherwise (or when no SNI was present and `allow_no_sni = false`), pick a backend. Single-backend mode always picks `backend`. Multi-backend mode walks `backends` top-down, picks the first whose `match_sni` matches (or the catch-all), and gives up with a `WARN` log if nothing matches.
+4. Open a fresh TCP connection to the chosen backend, optionally prepend a HAProxy PROXY-protocol header, write the captured ClientHello, then `tokio::io::copy_bidirectional` until either side closes.
 
 PROXY-protocol on this layer is much more useful than on `[http_fallback]`: we forward raw TCP bytes, so without it the backend sees `127.0.0.1` as the peer for every spliced connection — log/ACL/rate-limit blind. As with `[http_fallback]`, the destination address in the header is the inbound listener's bind address (degrades to UNKNOWN / UNSPEC for `0.0.0.0` / `[::]`).
 
@@ -563,8 +629,45 @@ Limitations:
 
 - TLS only. Plain (non-TLS) `[server] listen` cannot dispatch on SNI because there is no SNI to dispatch on. Validation rejects this configuration.
 - The destination port in the PROXY header is the listener bind port, not the per-connection local port.
-- Wildcard matching is one-label-left only (nginx-style). No mid-segment wildcards, no full regex.
+- Wildcard matching in `match_sni` is one-label-left only (nginx-style). No mid-segment wildcards, no full regex. (The §7 cert resolver matches SNIs exactly — wildcard SAN entries are skipped there.)
 - The HTTP/3 listener is not affected — h3 SNI is parsed by quinn before our code sees it; routing it would need separate plumbing.
+
+### 7. Multiple Certificates per Listener (SNI-Based Cert Selection)
+
+`[sni_fallback]` decides whether a connection is *ours* or belongs to a foreign backend. A complementary problem is hosting **several of our own domains** on a single listener — for example `vpn.example.com` and `api.example.com` on the same `:443` socket, each presenting its own Let's Encrypt cert. The `[[server.certs]]` and `[[server.h3.certs]]` arrays cover this case directly, with the same shape on both transports:
+
+```toml
+[server]
+listen = "0.0.0.0:443"
+# Default cert returned when the inbound SNI matches no entry below
+# (and when the client did not send an SNI at all).
+cert_path = "/etc/letsencrypt/live/default.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/default.example.com/privkey.pem"
+
+[[server.certs]]
+cert_path = "/etc/letsencrypt/live/vpn.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/vpn.example.com/privkey.pem"
+sni = ["vpn.example.com"]                       # explicit list
+
+[[server.certs]]
+cert_path = "/etc/letsencrypt/live/api.example.com/fullchain.pem"
+key_path  = "/etc/letsencrypt/live/api.example.com/privkey.pem"
+# `sni` omitted — derived from the cert's SAN
+
+[server.h3]
+listen = "0.0.0.0:443"
+# `cert_path` / `key_path` and `[[server.h3.certs]]` are inherited
+# from `[server]` when the table omits them, so the QUIC listener
+# automatically gets the same domain set as the TCP listener.
+```
+
+How it works:
+
+- The listener installs a custom rustls `ResolvesServerCert`. At handshake time the server reads the inbound SNI from the ClientHello, lowercases it, and looks up the per-SNI `CertifiedKey`. Matching is **exact, case-insensitive** — wildcard SAN entries like `*.example.com` are skipped during loading (`rustls`'s resolver does not match wildcards) and surfaced as a `WARN` log; list each hostname explicitly in `sni = [...]` if you need a wildcard cert to apply to specific names.
+- When `sni = [...]` is present, those names alone are registered (the cert's SAN is **not** auto-merged in). When `sni` is omitted, names are derived from the certificate's `subjectAltName` DNS entries (and Subject CN as a last-resort fallback, only if no DNS SAN is present).
+- A SNI that matches no array entry — or a ClientHello with no SNI extension at all — returns the default `cert_path` / `key_path`. If no default is configured, the handshake fails (`unrecognized_name`).
+- The QUIC listener inherits the TCP listener's array when `[server.h3]` omits `certs` entirely. An explicit empty `certs = []` on the H3 side opts out of inheritance.
+- This is **layer-7** cert selection — different certs, same listener, same process. It is independent of `[sni_fallback]` (which forwards foreign SNIs **without** terminating TLS at all). Both can be on at once: foreign SNIs go to the spliced backend, while every SNI listed in `match_sni` (or absent and `allow_no_sni = true`) is terminated locally with the cert chosen by the SNI resolver.
 
 ## Client Config Generation
 

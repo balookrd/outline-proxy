@@ -16,7 +16,7 @@ use clap::Parser;
 use cli::ConfigArgs;
 use file::{
     FileConfig, HttpFallbackSection, SessionResumptionSection, SniBackendSection,
-    SniFallbackSection, default_config_path_if_exists, load_file_config,
+    SniFallbackSection, TlsCertSection, default_config_path_if_exists, load_file_config,
 };
 
 pub use tuning::{TuningOverrides, TuningPreset, TuningProfile};
@@ -95,11 +95,24 @@ pub struct Config {
     pub dashboard: Option<DashboardConfig>,
     pub listen: Option<SocketAddr>,
     pub ss_listen: Option<SocketAddr>,
+    /// Default TLS cert/key for the TCP listener, used when no entry in
+    /// [`Self::tls_certs`] matches the inbound SNI (or the client did
+    /// not send one). Either both are set or neither.
     pub tls_cert_path: Option<PathBuf>,
     pub tls_key_path: Option<PathBuf>,
+    /// Additional cert/key pairs for the TCP listener, dispatched by
+    /// SNI at handshake time. Empty means "single-cert mode".
+    pub tls_certs: Vec<TlsCertEntry>,
     pub h3_listen: Option<SocketAddr>,
+    /// Default TLS cert/key for the QUIC listener; analogous to
+    /// [`Self::tls_cert_path`]. When unset, the resolver inherits from
+    /// the TCP listener's default cert (see config-loader fallback).
     pub h3_cert_path: Option<PathBuf>,
     pub h3_key_path: Option<PathBuf>,
+    /// Additional cert/key pairs for the QUIC listener. Falls back to
+    /// [`Self::tls_certs`] when no `[[server.h3.certs]]` table is given
+    /// at all.
+    pub h3_certs: Vec<TlsCertEntry>,
     /// ALPN protocols advertised on the HTTP/3 QUIC endpoint. Each entry
     /// selects a different transport multiplexed on the same UDP port:
     /// `"h3"` for HTTP/3 + WebSocket-over-HTTP/3 (the default), `"vless"`
@@ -197,6 +210,58 @@ pub struct HttpFallbackConfig {
 pub enum ProxyProtocolVersion {
     V1,
     V2,
+}
+
+/// One additional cert/key pair selected by SNI on a TLS listener.
+/// Names are resolved at TLS-config build time: if `sni` is non-empty
+/// it wins as-is; otherwise the loader extracts SANs (and CN as a
+/// last-resort fallback) from the certificate. See
+/// `crate::server::bootstrap::tls`.
+#[derive(Debug, Clone)]
+pub struct TlsCertEntry {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    /// Explicit SNI override. Empty = derive from the cert.
+    pub sni: Vec<String>,
+}
+
+impl TlsCertEntry {
+    fn from_section(raw: TlsCertSection, label: &str) -> Result<Self> {
+        let sni = match raw.sni {
+            None => Vec::new(),
+            Some(list) => {
+                let mut out = Vec::with_capacity(list.len());
+                for entry in list {
+                    let trimmed = entry.trim();
+                    if trimmed.is_empty() {
+                        anyhow::bail!("{label}.sni entries must be non-empty");
+                    }
+                    if trimmed.contains('*') {
+                        anyhow::bail!(
+                            "{label}.sni {entry:?} contains `*`; wildcards are not supported \
+                             in the resolver — list each hostname explicitly or omit `sni` \
+                             to derive names from the certificate's SAN"
+                        );
+                    }
+                    out.push(trimmed.to_ascii_lowercase());
+                }
+                out
+            },
+        };
+        Ok(Self { cert_path: raw.cert_path, key_path: raw.key_path, sni })
+    }
+}
+
+fn parse_tls_cert_array(
+    raw: Option<Vec<TlsCertSection>>,
+    label: &str,
+) -> Result<Option<Vec<TlsCertEntry>>> {
+    let Some(list) = raw else { return Ok(None) };
+    let mut out = Vec::with_capacity(list.len());
+    for (idx, entry) in list.into_iter().enumerate() {
+        out.push(TlsCertEntry::from_section(entry, &format!("{label}[{idx}]"))?);
+    }
+    Ok(Some(out))
 }
 
 /// HTTP wire-version the fallback uses when talking to the upstream
@@ -637,17 +702,43 @@ impl AppMode {
         };
         access_key.validate()?;
 
+        // Multi-cert arrays. The h3 array only inherits from the TCP
+        // listener's array when the h3 table omits `certs` entirely —
+        // an explicitly empty `certs = []` opts out of inheritance.
+        let tls_certs =
+            parse_tls_cert_array(server.certs, "server.certs")?.unwrap_or_default();
+        let h3_certs = match parse_tls_cert_array(server_h3.certs, "server.h3.certs")? {
+            Some(list) => list,
+            None => tls_certs.clone(),
+        };
+
+        // Default cert pair. CLI flag wins over file; on the h3 side, an
+        // unset h3 cert/key inherits the TCP listener's pair (via either
+        // `[server].cert_path`/`tls_cert_path` or `--tls-cert-path`).
+        let tls_cert_path = args.tls_cert_path.clone().or(server.cert_path);
+        let tls_key_path = args.tls_key_path.clone().or(server.key_path);
+        let h3_cert_path = args
+            .h3_cert_path
+            .or(server_h3.cert_path)
+            .or_else(|| tls_cert_path.clone());
+        let h3_key_path = args
+            .h3_key_path
+            .or(server_h3.key_path)
+            .or_else(|| tls_key_path.clone());
+
         let config = Config {
             config_path: config_path.clone(),
             control,
             dashboard,
             listen: args.listen.or(server.listen),
             ss_listen: args.ss_listen.or(server_ss.listen),
-            tls_cert_path: args.tls_cert_path.or(server.tls_cert_path),
-            tls_key_path: args.tls_key_path.or(server.tls_key_path),
+            tls_cert_path,
+            tls_key_path,
+            tls_certs,
             h3_listen: args.h3_listen.or(server_h3.listen),
-            h3_cert_path: args.h3_cert_path.or(server_h3.cert_path),
-            h3_key_path: args.h3_key_path.or(server_h3.key_path),
+            h3_cert_path,
+            h3_key_path,
+            h3_certs,
             h3_alpn: resolve_h3_alpn(server_h3.alpn.as_deref())?,
             metrics_listen: args.metrics_listen.or(metrics.listen),
             metrics_path: args
@@ -755,11 +846,19 @@ impl Config {
     }
 
     pub fn h3_enabled(&self) -> bool {
-        self.h3_cert_path.is_some() && self.h3_key_path.is_some()
+        self.h3_default_cert_pair_set() || !self.h3_certs.is_empty()
     }
 
     pub fn tcp_tls_enabled(&self) -> bool {
+        self.tcp_default_cert_pair_set() || !self.tls_certs.is_empty()
+    }
+
+    pub(super) fn tcp_default_cert_pair_set(&self) -> bool {
         self.tls_cert_path.is_some() && self.tls_key_path.is_some()
+    }
+
+    pub(super) fn h3_default_cert_pair_set(&self) -> bool {
+        self.h3_cert_path.is_some() && self.h3_key_path.is_some()
     }
 
     pub fn metrics_enabled(&self) -> bool {

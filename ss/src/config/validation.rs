@@ -13,13 +13,19 @@ impl Config {
             bail!("configure at least one data-plane listener: listen, h3_listen, or ss_listen");
         }
         Self::validate_cert_pair(&self.tls_cert_path, &self.tls_key_path, "tls")?;
-        let h3_certs_present =
-            Self::validate_cert_pair(&self.h3_cert_path, &self.h3_key_path, "h3")?;
-        if h3_certs_present && self.h3_listen.is_none() {
+        Self::validate_cert_pair(&self.h3_cert_path, &self.h3_key_path, "h3")?;
+        Self::validate_cert_array(&self.tls_certs, "server.certs")?;
+        Self::validate_cert_array(&self.h3_certs, "server.h3.certs")?;
+        let h3_active = self.h3_enabled();
+        if h3_active && self.h3_listen.is_none() {
             bail!("h3_listen must be configured explicitly when HTTP/3 is enabled");
         }
-        if !h3_certs_present && self.h3_listen.is_some() {
-            bail!("h3_listen requires both h3_cert_path and h3_key_path");
+        if !h3_active && self.h3_listen.is_some() {
+            bail!(
+                "h3_listen requires either an h3 cert/key pair (h3_cert_path + \
+                 h3_key_path, optionally inherited from [server]) or at least one \
+                 [[server.h3.certs]] entry"
+            );
         }
         if !self.metrics_path.starts_with('/') {
             bail!("metrics_path must start with '/'");
@@ -206,7 +212,8 @@ impl Config {
             }
             if !self.tcp_tls_enabled() {
                 bail!(
-                    "sni_fallback requires built-in TLS: set tls_cert_path and tls_key_path"
+                    "sni_fallback requires built-in TLS: set [server].cert_path / \
+                     [server].key_path or at least one [[server.certs]] entry"
                 );
             }
         }
@@ -224,6 +231,20 @@ impl Config {
             (None, None) => Ok(false),
             _ => bail!("{prefix}_cert_path and {prefix}_key_path must be configured together"),
         }
+    }
+
+    fn validate_cert_array(entries: &[super::TlsCertEntry], label: &str) -> Result<()> {
+        let mut seen = HashSet::new();
+        for (idx, entry) in entries.iter().enumerate() {
+            for sni in &entry.sni {
+                if !seen.insert(sni.clone()) {
+                    bail!(
+                        "{label}[{idx}].sni {sni:?} is already claimed by an earlier entry"
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 

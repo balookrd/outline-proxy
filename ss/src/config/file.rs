@@ -47,8 +47,18 @@ pub(super) struct FileConfig {
 #[serde(deny_unknown_fields)]
 pub(super) struct ServerSection {
     pub listen: Option<SocketAddr>,
-    pub tls_cert_path: Option<PathBuf>,
-    pub tls_key_path: Option<PathBuf>,
+    /// Default TLS cert for the TCP listener. Legacy alias `tls_cert_path`
+    /// is accepted for backward compat with older configs.
+    #[serde(default, alias = "tls_cert_path")]
+    pub cert_path: Option<PathBuf>,
+    #[serde(default, alias = "tls_key_path")]
+    pub key_path: Option<PathBuf>,
+    /// Optional list of additional cert/key pairs selected by SNI on the
+    /// TCP listener. When present, the listener uses an SNI resolver
+    /// instead of `with_single_cert`; `cert_path`/`key_path` (if any)
+    /// becomes the default returned when SNI matches none of the entries.
+    #[serde(default)]
+    pub certs: Option<Vec<TlsCertSection>>,
     #[serde(default)]
     pub ss: Option<ServerSsSection>,
     #[serde(default)]
@@ -65,14 +75,38 @@ pub(super) struct ServerSsSection {
 #[serde(deny_unknown_fields)]
 pub(super) struct ServerH3Section {
     pub listen: Option<SocketAddr>,
+    /// Default TLS cert for the QUIC/HTTP-3 listener. When unset, falls
+    /// back to `[server].cert_path` so a single config block can serve
+    /// both transports off the same cert.
     pub cert_path: Option<PathBuf>,
     pub key_path: Option<PathBuf>,
+    /// Optional list of additional cert/key pairs selected by SNI on the
+    /// QUIC listener. When unset (i.e. no `[[server.h3.certs]]` table at
+    /// all), inherits the array from `[server].certs`.
+    #[serde(default)]
+    pub certs: Option<Vec<TlsCertSection>>,
     /// ALPN protocols to advertise on the HTTP/3 QUIC endpoint. Allowed values
     /// are `"h3"` (HTTP/3 + WebSocket-over-HTTP/3), `"vless"` (raw VLESS over
     /// QUIC streams) and `"ss"` (raw Shadowsocks over QUIC streams). Defaults
     /// to `["h3"]` when unset.
     #[serde(default)]
     pub alpn: Option<Vec<String>>,
+}
+
+/// One entry in `[[server.certs]]` / `[[server.h3.certs]]`. Each maps
+/// to one `CertifiedKey` selected at TLS handshake time by SNI.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TlsCertSection {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+    /// Explicit list of SNIs this cert serves. Each entry must be an
+    /// exact DNS name (no wildcards in the resolver — wildcard certs
+    /// still match through their SAN, but the matching is exact at
+    /// the resolver level). When omitted, names are extracted from
+    /// the certificate's SAN (and CN as a last-resort fallback).
+    #[serde(default)]
+    pub sni: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
