@@ -122,6 +122,17 @@ impl XhttpMode {
             Self::StreamOne => "-stream-one",
         }
     }
+
+    /// ALPN-list flavour to advertise on this mode's URI. Per-mode
+    /// because `packet-up` works on h1 (each packet is its own
+    /// request/response — no full-duplex needed) while `stream-one`
+    /// returns 505 on h1, so the two modes pin different trailers.
+    fn alpn_carrier(self) -> AlpnCarrier {
+        match self {
+            Self::PacketUp => AlpnCarrier::XhttpPacketUp,
+            Self::StreamOne => AlpnCarrier::XhttpStreamOne,
+        }
+    }
 }
 
 #[cfg_attr(not(feature = "control"), allow(dead_code))]
@@ -319,7 +330,7 @@ fn build_vless_xhttp_user_artifact(
         .as_deref()
         .map(|base| join_url(base, &config_filename))
         .transpose()?;
-    let alpn = preferred_alpn_list(config, &ak.public_scheme, AlpnCarrier::Xhttp);
+    let alpn = preferred_alpn_list(config, &ak.public_scheme, mode.alpn_carrier());
     let vless_url = vless_xhttp_uri(
         vless_id,
         public_host,
@@ -371,7 +382,11 @@ fn websocket_url(scheme: &str, host: &str, path: &str) -> String {
 }
 
 /// Carrier flavour for `preferred_alpn_list`. Controls whether
-/// `http/1.1` is appended as the last-resort fallback.
+/// `http/1.1` is appended as the last-resort fallback. XHTTP is
+/// split per wire-mode because `packet-up` and `stream-one`
+/// disagree on h1 viability, and the access-key generator emits a
+/// distinct URI per mode — each can carry the ALPN list that
+/// matches what its server-side handler accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AlpnCarrier {
     /// WS-VLESS URI. Classic WebSocket Upgrade works over h1 too,
@@ -379,13 +394,19 @@ enum AlpnCarrier {
     /// clients that cannot speak h2 Extended CONNECT (RFC 8441) or
     /// h3 Extended CONNECT (RFC 9220).
     Ws,
-    /// XHTTP URI. `stream-one` mode needs h2 frame interleaving
-    /// (or h3) and the server returns 505 for it on HTTP/1.1, so
-    /// listing `http/1.1` here would invite the client to pick a
-    /// transport that immediately bounces the dial. `packet-up`
-    /// mode does work on h1, but the URI is not mode-aware; keep
-    /// the safer subset for both XHTTP modes.
-    Xhttp,
+    /// XHTTP `mode=packet-up` URI. Each packet is its own short
+    /// POST (or the long-lived downlink GET), so h1 is fine — the
+    /// carrier never needs to interleave request and response
+    /// bodies on a single stream. Same trailer as WS so a client
+    /// behind a CDN that strips h2 ALPN still has a working path.
+    XhttpPacketUp,
+    /// XHTTP `mode=stream-one` URI. Stream-one is a single bidi
+    /// POST whose request body is the uplink and response body is
+    /// the downlink, which needs h2 frame interleaving (or h3
+    /// streams) — the server returns 505 on HTTP/1.1. Listing
+    /// `http/1.1` here would invite the client to pick a transport
+    /// that immediately bounces the dial.
+    XhttpStreamOne,
 }
 
 /// Comma-separated ALPN preference list to advertise on a TLS-
@@ -412,7 +433,7 @@ fn preferred_alpn_list(
         entries.push("h3");
     }
     entries.push("h2");
-    if carrier == AlpnCarrier::Ws {
+    if matches!(carrier, AlpnCarrier::Ws | AlpnCarrier::XhttpPacketUp) {
         entries.push("http/1.1");
     }
     Some(entries.join(","))
