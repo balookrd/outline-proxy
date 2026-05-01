@@ -23,6 +23,30 @@ fn routing_scope_name(scope: RoutingScope) -> &'static str {
     }
 }
 
+/// Snapshot pair `(configured_submode, block_remaining_ms)` for the
+/// XHTTP submode axis on a given dial direction. Returns `(None, None)`
+/// when the uplink is not VLESS or has no dial URL — the submode
+/// concept does not apply outside the XHTTP carriers, but VLESS uplinks
+/// configured for `ws_*` carriers also fall through to `(None, None)`
+/// because they never visit the XHTTP submode cache. The configured
+/// half always reflects the URL exactly (including `packet-up` when no
+/// `?mode=` is set), so dashboards can show the user's chosen shape
+/// independent of the cache state.
+async fn xhttp_submode_view(
+    dial_url: Option<&url::Url>,
+    transport: UplinkTransport,
+) -> (Option<String>, Option<u128>) {
+    let Some(url) = dial_url else { return (None, None) };
+    if !matches!(transport, UplinkTransport::Vless) {
+        return (None, None);
+    }
+    let configured = outline_transport::XhttpSubmode::from_url(url).to_string();
+    let remaining = outline_transport::xhttp_stream_one_block_remaining(url)
+        .await
+        .map(|d| d.as_millis());
+    (Some(configured), remaining)
+}
+
 impl UplinkManager {
     pub async fn snapshot(&self) -> UplinkManagerSnapshot {
         let now = Instant::now();
@@ -63,6 +87,16 @@ impl UplinkManager {
                 &self.inner.load_balancing,
                 self.inner.load_balancing.routing_scope,
             );
+            // XHTTP submode visibility: configured shape comes from the
+            // `?mode=` query on the dial URL; the per-host stream-one
+            // block lives in the transport-crate cache. We expose both
+            // halves so the dashboard can render the configured carrier
+            // and signal when a stream-one URL is being silently served
+            // by packet-up because of a recent failure.
+            let (tcp_xhttp_submode, tcp_xhttp_submode_block_remaining_ms) =
+                xhttp_submode_view(uplink.tcp_dial_url(), uplink.transport).await;
+            let (udp_xhttp_submode, udp_xhttp_submode_block_remaining_ms) =
+                xhttp_submode_view(uplink.udp_dial_url(), uplink.transport).await;
             uplinks.push(UplinkSnapshot {
                 index,
                 name: uplink.name.clone(),
@@ -135,6 +169,10 @@ impl UplinkManager {
                     .udp
                     .mode_downgrade_capped_to
                     .map(|m| m.to_string()),
+                tcp_xhttp_submode,
+                udp_xhttp_submode,
+                tcp_xhttp_submode_block_remaining_ms,
+                udp_xhttp_submode_block_remaining_ms,
                 last_active_tcp_ago_ms: status
                     .tcp
                     .last_active
