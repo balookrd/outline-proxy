@@ -136,6 +136,66 @@ fn user_counters_cache_returns_same_handles() {
 }
 
 #[test]
+fn no_cert_chain_metric_records_sni_label() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_tls_handshake_no_cert_chain(Some("foo.example"));
+    metrics.record_tls_handshake_no_cert_chain(Some("FOO.example")); // case-insensitive
+    metrics.record_tls_handshake_no_cert_chain(Some("bar.example"));
+    metrics.record_tls_handshake_no_cert_chain(None);
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"foo.example\"} 2"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"bar.example\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<none>\"} 1"
+    ));
+}
+
+#[test]
+fn no_cert_chain_metric_sanitizes_invalid_input() {
+    let metrics = Metrics::new(&test_config());
+    metrics.record_tls_handshake_no_cert_chain(Some("evil\nname")); // control byte
+    metrics.record_tls_handshake_no_cert_chain(Some(&"a".repeat(300))); // too long
+
+    let rendered = metrics.render_prometheus();
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<invalid>\"} 1"
+    ));
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<long>\"} 1"
+    ));
+}
+
+#[test]
+fn no_cert_chain_metric_caps_cardinality() {
+    let metrics = Metrics::new(&test_config());
+    // Generate well past the cap. Numerical SNIs differ on every
+    // record so each one tries to claim a fresh label.
+    for i in 0..200 {
+        metrics.record_tls_handshake_no_cert_chain(Some(&format!("scan-{i:03}.example")));
+    }
+    let rendered = metrics.render_prometheus();
+    // The overflow bucket must be present, and the number of distinct
+    // SNI labels must not exceed the cap by more than the racy slack.
+    assert!(rendered.contains(
+        "outline_ss_tls_handshake_no_cert_chain_total{sni=\"<overflow>\"}"
+    ));
+    let distinct_snis = rendered
+        .lines()
+        .filter(|l| l.starts_with("outline_ss_tls_handshake_no_cert_chain_total{sni="))
+        .count();
+    // Cap is 64; allow a small margin for the racy size check.
+    assert!(
+        distinct_snis <= 70,
+        "cardinality cap not respected: {distinct_snis} distinct SNI labels"
+    );
+}
+
+#[test]
 fn user_counters_increments_visible_in_render() {
     let metrics = Metrics::new(&test_config());
     let user: Arc<str> = Arc::from("alice");
