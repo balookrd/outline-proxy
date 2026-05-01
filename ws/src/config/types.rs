@@ -46,6 +46,12 @@ pub struct AppConfig {
     pub state_path: Option<PathBuf>,
     /// TCP session timeouts (SOCKS CONNECT and direct sessions).
     pub tcp_timeouts: TcpTimeouts,
+    /// Browser fingerprint diversification strategy. Default
+    /// [`outline_transport::FingerprintProfileStrategy::None`] leaves
+    /// the wire shape unchanged; opt-in via the `fingerprint_profile`
+    /// config key applies per-host-stable or random browser headers
+    /// to WS / XHTTP dials. See `docs/UPLINK-CONFIGURATIONS.md`.
+    pub fingerprint_profile: outline_transport::FingerprintProfileStrategy,
 }
 
 /// HTTP/2 flow-control window sizes for WebSocket transports.

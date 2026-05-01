@@ -62,6 +62,11 @@ pub async fn run_with_config(config: AppConfig, args: Args) -> Result<()> {
         outline_transport::init_downgrade_ttl(max_ttl);
     }
 
+    // Wire the browser fingerprint profile strategy. Default is
+    // `None`, so the call is a no-op for deployments that did not opt
+    // in via the top-level `fingerprint_profile` config key.
+    outline_transport::init_fingerprint_profile_strategy(config.fingerprint_profile);
+
     // Hold a clone so `/control/apply` can rebuild the registry against
     // the same on-disk persistence layer.
     #[cfg(feature = "control")]

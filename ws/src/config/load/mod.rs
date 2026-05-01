@@ -111,6 +111,14 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
     }
 
     let direct_fwmark = file.as_ref().and_then(|f| f.direct_fwmark);
+    // Default = `Strategy::None`, which keeps WS / XHTTP wire shape
+    // byte-identical to pre-knob builds. Opt-in via `fingerprint_profile`
+    // in the top-level config; serde already turns the string aliases
+    // ("stable", "random", "off", …) into the right enum variant.
+    let fingerprint_profile = file
+        .as_ref()
+        .and_then(|f| f.fingerprint_profile)
+        .unwrap_or_default();
 
     // State file path priority: CLI flag > config key > default (config
     // path with extension replaced by ".state.toml"). Relative paths in
@@ -140,6 +148,7 @@ pub async fn load_config(path: &Path, args: &Args) -> Result<AppConfig> {
         direct_fwmark,
         state_path,
         tcp_timeouts,
+        fingerprint_profile,
     })
 }
 

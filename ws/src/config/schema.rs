@@ -60,6 +60,13 @@ pub(crate) struct ConfigFile {
     /// TCP session timeouts applied to SOCKS CONNECT and direct sessions.
     /// All fields optional; unset ones inherit compile-time defaults.
     pub(super) tcp_timeouts: Option<TcpTimeoutsSection>,
+    /// Browser fingerprint diversification strategy applied to WS / XHTTP
+    /// dials. Accepts `"off"` / `"none"` / `"disabled"` (default — wire
+    /// shape unchanged), `"stable"` / `"per_host_stable"` /
+    /// `"per-host-stable"` / `"per-host"` (one identity per
+    /// `(host, port)` for the lifetime of the process), or `"random"`
+    /// (fresh profile per dial). See docs for the trade-offs.
+    pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 #[derive(Debug, Deserialize)]
