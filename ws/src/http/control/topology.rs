@@ -43,6 +43,22 @@ struct ControlUplinkTopology {
     udp_mode_effective: Option<String>,
     tcp_downgrade_active: bool,
     udp_downgrade_active: bool,
+    /// XHTTP submode the dial URL configures (`packet-up` /
+    /// `stream-one`). `None` for non-VLESS uplinks. Mirrors
+    /// `tcp_mode` / `udp_mode` but on the orthogonal submode axis.
+    tcp_xhttp_submode: Option<String>,
+    udp_xhttp_submode: Option<String>,
+    /// Effective XHTTP submode after applying the per-host stream-one
+    /// block. Equals the configured submode unless the cache holds a
+    /// fresh stream-one failure for this host, in which case it
+    /// degrades to `packet-up`. `None` outside the XHTTP family.
+    tcp_xhttp_submode_effective: Option<String>,
+    udp_xhttp_submode_effective: Option<String>,
+    /// True while a recent stream-one failure has clamped this dial URL
+    /// to `packet-up` in the per-host cache. Mirrors `tcp_downgrade_active`
+    /// / `udp_downgrade_active` but on the submode axis.
+    tcp_xhttp_submode_downgrade_active: bool,
+    udp_xhttp_submode_downgrade_active: bool,
     weight: f64,
     tcp_healthy: Option<bool>,
     udp_healthy: Option<bool>,
@@ -53,6 +69,24 @@ struct ControlUplinkTopology {
     active_tcp_reason: Option<String>,
     active_udp: bool,
     active_udp_reason: Option<String>,
+}
+
+/// Resolve the effective submode for one direction. Returns the
+/// configured shape unchanged unless a stream-one block is live in the
+/// per-host cache, in which case stream-one degrades to packet-up.
+/// `None` when the uplink is not XHTTP (the configured field is also
+/// `None` in that case, so the dashboard shows nothing on the submode
+/// pill).
+fn effective_submode(
+    configured: Option<&str>,
+    block_active: bool,
+) -> Option<String> {
+    let cfg = configured?;
+    if block_active && cfg == "stream-one" {
+        Some("packet-up".to_string())
+    } else {
+        Some(cfg.to_string())
+    }
 }
 
 fn effective_mode(
@@ -137,6 +171,18 @@ fn build_uplink_topology(
         udp_downgrade_active,
         uplink.udp_mode_capped_to.as_deref(),
     );
+    let tcp_xhttp_submode_downgrade_active =
+        uplink.tcp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
+    let udp_xhttp_submode_downgrade_active =
+        uplink.udp_xhttp_submode_block_remaining_ms.is_some_and(|ms| ms > 0);
+    let tcp_xhttp_submode_effective = effective_submode(
+        uplink.tcp_xhttp_submode.as_deref(),
+        tcp_xhttp_submode_downgrade_active,
+    );
+    let udp_xhttp_submode_effective = effective_submode(
+        uplink.udp_xhttp_submode.as_deref(),
+        udp_xhttp_submode_downgrade_active,
+    );
     ControlUplinkTopology {
         index: uplink.index,
         name: uplink.name.clone(),
@@ -147,6 +193,12 @@ fn build_uplink_topology(
         udp_mode_effective,
         tcp_downgrade_active,
         udp_downgrade_active,
+        tcp_xhttp_submode: uplink.tcp_xhttp_submode.clone(),
+        udp_xhttp_submode: uplink.udp_xhttp_submode.clone(),
+        tcp_xhttp_submode_effective,
+        udp_xhttp_submode_effective,
+        tcp_xhttp_submode_downgrade_active,
+        udp_xhttp_submode_downgrade_active,
         weight: uplink.weight,
         tcp_healthy: uplink.tcp_healthy,
         udp_healthy: uplink.udp_healthy,
