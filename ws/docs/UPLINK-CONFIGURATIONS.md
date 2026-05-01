@@ -218,10 +218,14 @@ CDN / proxy intermediaries to rely on. As a result:
 - A single POST failure tears the uplink socket down and the driver
   exits, so the upstream sees a clean session drop rather than
   partial corruption. The next dial reattaches via the resume token.
-- Stream-one submode is **not** supported on h1 — `?mode=stream-one`
-  with `vless_mode = xhttp_h1` (or a chain that falls through to h1)
-  bails at dial time with a clear error. Use `xhttp_h2` / `xhttp_h3`
-  for stream-one.
+- Stream-one submode is **not** carried on h1 — h1 cannot multiplex
+  a streaming GET against a streaming POST on a single connection,
+  so `?mode=stream-one` with `vless_mode = xhttp_h1` (or a chain that
+  falls through to h1) is silently coerced to packet-up at dial time.
+  The carrier shape switches to packet-up; the wire URL stays
+  identical (`<base>/<session>/<seq>`). The defensive `packet-up only`
+  bail in the inner h1 driver is preserved for direct callers that
+  bypass the public `connect_xhttp` entry point.
 
 ## 7. VLESS share-link URIs
 
@@ -309,14 +313,42 @@ is read on every dial, so flipping the URL is enough.
   `xhttp_h3` and a path that does not buffer POST bodies — proxies
   that wait for end-of-request before forwarding will stall the first
   byte. On h3 the `RequestStream` is split so uplink and downlink
-  halves run on dedicated tasks. **Not supported on `xhttp_h1`** —
-  the h1 carrier intentionally bails on `?mode=stream-one` instead
-  of silently downgrading to packet-up.
+  halves run on dedicated tasks. On `xhttp_h1` the carrier silently
+  uses packet-up (h1 has no equivalent shape).
 
 Both submodes share the same `connect_xhttp` driver, so resume
-behaviour, fallback chain (`xhttp_h3 → xhttp_h2 → xhttp_h1` for
-packet-up, `xhttp_h3 → xhttp_h2` for stream-one), and
-downgrade-window mechanics are identical.
+behaviour, the h-version fallback chain
+(`xhttp_h3 → xhttp_h2 → xhttp_h1`), and downgrade-window mechanics
+are identical. The submode itself has its own one-step fallback —
+see below.
+
+#### `stream-one → packet-up` fallback
+
+Stream-one's single long-lived POST is sensitive to middleboxes that
+buffer or close streaming request bodies (CDNs, corporate proxies,
+some mobile NATs). When the dial-time stream-one open fails on
+`xhttp_h2` / `xhttp_h3`, the carrier retries packet-up on the **same**
+TCP/TLS/h2 (or QUIC/h3) connection and records the failure in the
+per-host XHTTP submode cache. Subsequent dials skip stream-one
+upfront for `mode_downgrade_secs` and go straight to packet-up,
+avoiding the doomed handshake on every connect. A successful
+stream-one dial clears the block early.
+
+The submode and h-version axes are independent: a stream-one block
+on a host does not lower the h-version cap, and an h-version
+downgrade does not refresh the stream-one block.
+
+The dashboard surfaces the effective submode on the protocol pill —
+configured `stream-one` displays as `/S`, packet-up adds no suffix,
+and a live block renders as `/S↘P` to show the silent downgrade.
+Snapshot fields:
+
+- `tcp_xhttp_submode` / `udp_xhttp_submode` — submode parsed from
+  the dial URL (`packet-up` / `stream-one`); `None` outside VLESS.
+- `tcp_xhttp_submode_block_remaining_ms` /
+  `udp_xhttp_submode_block_remaining_ms` — remaining TTL on the
+  per-host stream-one block; `None` when the block has expired or
+  was never set.
 
 ---
 
@@ -335,22 +367,28 @@ downgrade-window mechanics are identical.
 
 Recorded in two layers:
 
-1. **Per-host caches** (short TTL, one per family).
+1. **Per-host caches** (short TTL, one per axis).
    - `ws_mode_cache` — set when an h3/h2 WS handshake fails. Caps
      subsequent dials to the same host at the recorded ceiling
      (`WsH2` after a `WsH3` failure, `WsH1` after a `WsH2` failure).
-   - `xhttp_mode_cache` — sibling cache for the XHTTP chain. Set
-     when an `xhttp_h3` or `xhttp_h2` dial fails; caps subsequent
-     dials at `XhttpH2` / `XhttpH1` respectively. Independent from
-     the WS cache so a `record_failure` on one chain cannot clobber
-     the other's cap when several uplinks share a `(host, port)`
-     but use different transports.
+   - `xhttp_mode_cache` — sibling cache for the XHTTP h-version
+     chain. Set when an `xhttp_h3` or `xhttp_h2` dial fails; caps
+     subsequent dials at `XhttpH2` / `XhttpH1` respectively.
+     Independent from the WS cache so a `record_failure` on one
+     chain cannot clobber the other's cap when several uplinks
+     share a `(host, port)` but use different transports.
+   - `xhttp_submode_cache` — orthogonal axis: tracks per-host
+     stream-one failures. Set when a `?mode=stream-one` dial fails
+     on `xhttp_h2` / `xhttp_h3`; clamps subsequent submode
+     selections to `packet-up` for the TTL window. Independent from
+     the h-version cache so a stream-one failure does not refresh
+     the h-version cap and vice versa.
 
-   Both caches are keyed by **destination** `host:port` (the dial
-   URL, not the local interface), so they survive across uplinks
-   pointing at the same upstream and across changes in the local
-   route / `fwmark`. The shared `mode_downgrade_secs` knob governs
-   the TTL for both.
+   All three caches are keyed by **destination** `host:port` (the
+   dial URL, not the local interface), so they survive across
+   uplinks pointing at the same upstream and across changes in the
+   local route / `fwmark`. The shared `mode_downgrade_secs` knob
+   governs the TTL for all three.
 
 2. **Per-uplink `mode_downgrade_until`** + family-aware
    `mode_downgrade_capped_to`. Set when `note_advanced_mode_dial_failure`
