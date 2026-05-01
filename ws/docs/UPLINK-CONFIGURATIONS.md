@@ -335,10 +335,22 @@ downgrade-window mechanics are identical.
 
 Recorded in two layers:
 
-1. **Per-host `ws_mode_cache`** (short TTL). Set when an h3/h2 WS
-   handshake fails. Subsequent dials to the same host clamp the
-   requested mode down to the recorded ceiling. Survives across uplinks
-   that share the same host.
+1. **Per-host caches** (short TTL, one per family).
+   - `ws_mode_cache` — set when an h3/h2 WS handshake fails. Caps
+     subsequent dials to the same host at the recorded ceiling
+     (`WsH2` after a `WsH3` failure, `WsH1` after a `WsH2` failure).
+   - `xhttp_mode_cache` — sibling cache for the XHTTP chain. Set
+     when an `xhttp_h3` or `xhttp_h2` dial fails; caps subsequent
+     dials at `XhttpH2` / `XhttpH1` respectively. Independent from
+     the WS cache so a `record_failure` on one chain cannot clobber
+     the other's cap when several uplinks share a `(host, port)`
+     but use different transports.
+
+   Both caches are keyed by **destination** `host:port` (the dial
+   URL, not the local interface), so they survive across uplinks
+   pointing at the same upstream and across changes in the local
+   route / `fwmark`. The shared `mode_downgrade_secs` knob governs
+   the TTL for both.
 
 2. **Per-uplink `mode_downgrade_until`** + family-aware
    `mode_downgrade_capped_to`. Set when `note_advanced_mode_dial_failure`

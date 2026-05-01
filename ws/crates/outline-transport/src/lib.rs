@@ -131,6 +131,7 @@ mod url_utils;
 mod ws_mode_cache;
 mod ws_stream;
 mod xhttp;
+mod xhttp_mode_cache;
 
 use dns::resolve_server_addr;
 use h2::connect_websocket_h2;
@@ -219,9 +220,15 @@ pub use error_classify::{contains_any, find_io_error_kind, is_transport_level_di
 // HTTP/2 window-size tuning: called once during startup from the main binary.
 pub use h2::init_h2_window_sizes;
 
-// Per-host ws-mode downgrade cache TTL: called once during startup from the
-// main binary, fed from the `mode_downgrade_secs` config knob.
-pub use ws_mode_cache::init_downgrade_ttl;
+// Per-host downgrade cache TTL: called once during startup from the
+// main binary, fed from the `mode_downgrade_secs` config knob. The
+// WS and XHTTP caches share the same knob — both families decay on
+// the same cadence, but the slots are independent so a `record_failure`
+// on one chain cannot clobber the other's cap.
+pub fn init_downgrade_ttl(ttl: std::time::Duration) {
+    ws_mode_cache::init_downgrade_ttl(ttl);
+    xhttp_mode_cache::init_downgrade_ttl(ttl);
+}
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.
@@ -239,6 +246,7 @@ pub async fn gc_shared_connections() {
     #[cfg(feature = "quic")]
     crate::quic::gc_shared_quic_connections().await;
     ws_mode_cache::gc().await;
+    xhttp_mode_cache::gc().await;
 }
 
 pub async fn connect_websocket_with_source(
@@ -268,13 +276,20 @@ pub async fn connect_websocket_with_resume(
     resume_request: Option<SessionId>,
 ) -> Result<TransportStream> {
     let requested = mode;
+    // Two independent per-host caches are queried here: the WS one
+    // governs `WsH3 → WsH2 → WsH1`, the XHTTP one governs
+    // `XhttpH3 → XhttpH2 → XhttpH1`. Each is a no-op for modes
+    // outside its family, so the order does not matter and the
+    // common case (one of them clamps, the other passes through)
+    // costs one extra `RwLock::read` per dial.
     let mode = ws_mode_cache::effective_mode(url, mode).await;
+    let mode = xhttp_mode_cache::effective_mode(url, mode).await;
     if mode != requested {
         debug!(
             url = %url,
             requested_mode = %requested,
             selected_mode = %mode,
-            "ws transport mode clamped by downgrade cache"
+            "transport mode clamped by per-host downgrade cache"
         );
     }
     // Stamp the originally-requested mode when the dial path ended up at a
@@ -404,7 +419,7 @@ pub async fn connect_websocket_with_resume(
             {
                 Ok((stream, issued)) => {
                     debug!(url = %url, selected_mode = "xhttp_h3", ?issued, "xhttp h3 connected");
-                    ws_mode_cache::record_success(url, mode).await;
+                    xhttp_mode_cache::record_success(url, mode).await;
                     Ok(TransportStream::new_xhttp(stream, issued)
                         .with_downgraded_from(downgrade_marker(mode)))
                 },
@@ -415,7 +430,7 @@ pub async fn connect_websocket_with_resume(
                         fallback = "xhttp_h2",
                         "xhttp h3 dial failed, falling back"
                     );
-                    ws_mode_cache::record_failure(url, TransportMode::XhttpH3).await;
+                    xhttp_mode_cache::record_failure(url, TransportMode::XhttpH3).await;
                     connect_xhttp_h2_with_h1_fallback(
                         cache,
                         url,
@@ -444,7 +459,7 @@ pub async fn connect_websocket_with_resume(
                 crate::xhttp::connect_xhttp(cache, url, mode, fwmark, ipv6_first, resume_request)
                     .await?;
             debug!(url = %url, selected_mode = "xhttp_h1", ?issued, "xhttp h1 connected");
-            ws_mode_cache::record_success(url, mode).await;
+            xhttp_mode_cache::record_success(url, mode).await;
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgrade_marker(mode)))
         },
@@ -491,7 +506,7 @@ async fn connect_xhttp_h2_with_h1_fallback(
             // and burn the doomed handshake again. Same rationale as
             // the WS h3→h2 success branch.
             if requested == TransportMode::XhttpH2 {
-                ws_mode_cache::record_success(url, TransportMode::XhttpH2).await;
+                xhttp_mode_cache::record_success(url, TransportMode::XhttpH2).await;
             }
             Ok(TransportStream::new_xhttp(stream, issued)
                 .with_downgraded_from(downgraded_from(TransportMode::XhttpH2)))
@@ -504,7 +519,7 @@ async fn connect_xhttp_h2_with_h1_fallback(
                 requested_mode = %requested,
                 "xhttp h2 dial failed, falling back"
             );
-            ws_mode_cache::record_failure(url, TransportMode::XhttpH2).await;
+            xhttp_mode_cache::record_failure(url, TransportMode::XhttpH2).await;
             let (stream, issued) = crate::xhttp::connect_xhttp(
                 cache,
                 url,
