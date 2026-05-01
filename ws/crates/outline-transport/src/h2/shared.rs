@@ -224,8 +224,9 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
-        match self.open_websocket_inner(target_uri, resume_request).await {
+        match self.open_websocket_inner(target_uri, resume_request, profile).await {
             Ok(ws) => Ok(ws),
             Err(error) => {
                 // Any failure opening a new CONNECT stream on an already-cached
@@ -245,6 +246,7 @@ impl SharedH2Connection {
         self: &Arc<Self>,
         target_uri: &str,
         resume_request: Option<crate::resumption::SessionId>,
+        profile: Option<&'static crate::fingerprint_profile::Profile>,
     ) -> Result<TransportStream> {
         if !self.is_open() {
             bail!("shared h2 connection is already closed");
@@ -264,9 +266,16 @@ impl SharedH2Connection {
             request_builder =
                 request_builder.header(crate::resumption::RESUME_REQUEST_HEADER, id.to_hex());
         }
-        let request: Request<Empty<Bytes>> = request_builder
+        let mut request: Request<Empty<Bytes>> = request_builder
             .body(Empty::new())
             .expect("request builder never fails");
+        if let Some(profile) = profile {
+            crate::fingerprint_profile::apply(
+                profile,
+                request.headers_mut(),
+                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
+            );
+        }
 
         // Clone the SendRequest handle so each concurrent open_websocket call
         // proceeds independently.  hyper's http2::SendRequest is Send+Sync+Clone
@@ -375,6 +384,11 @@ struct H2Dialer {
     /// signature-stable while threading the request through to
     /// `SharedH2Connection::open_websocket`.
     resume_request: Option<crate::resumption::SessionId>,
+    /// Browser identity to mix into the CONNECT request headers,
+    /// or `None` when fingerprint diversification is disabled. Same
+    /// rationale as `resume_request` above — captured at dialer
+    /// construction so `open_on`'s trait signature is unaffected.
+    profile: Option<&'static crate::fingerprint_profile::Profile>,
 }
 
 impl crate::shared_dial::WsDialer for H2Dialer {
@@ -425,7 +439,7 @@ impl crate::shared_dial::WsDialer for H2Dialer {
             "{scheme}://{}{path}",
             format_authority(server_name, Some(server_port)),
         );
-        conn.open_websocket(&target_uri, self.resume_request).await
+        conn.open_websocket(&target_uri, self.resume_request, self.profile).await
     }
 }
 
@@ -449,7 +463,8 @@ pub(crate) async fn connect_websocket_h2(
         scheme => bail!("unsupported scheme for h2 websocket: {scheme}"),
     };
     let path = websocket_path(url);
-    let dialer = H2Dialer { use_tls, resume_request };
+    let profile = crate::fingerprint_profile::select(url);
+    let dialer = H2Dialer { use_tls, resume_request, profile };
 
     if crate::shared_cache::should_reuse_connection(source) {
         // DNS resolution is deferred to the slow path inside connect_ws_reused

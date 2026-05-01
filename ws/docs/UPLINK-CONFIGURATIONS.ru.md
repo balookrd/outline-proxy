@@ -404,3 +404,46 @@ UDP-слот отдельный: TCP-реконнект не должен под
 ID и наоборот. В конфигурациях, где UDP едет по TCP-carrier'у
 (VLESS/WS, VLESS/XHTTP), отдельный UDP-слот не поддерживается — UDP
 следует за жизненным циклом TCP.
+
+## Диверсификация браузерного фингерпринта
+
+WS / XHTTP-дозвоны могут подмешивать браузерные заголовки
+идентификации (`User-Agent`, `Accept-*`, семейство Sec-CH-UA,
+Sec-Fetch-*), чтобы простое DPI-правило вида «WS-upgrade без
+User-Agent» больше не отделяло клиент от реального браузерного
+трафика. В пул входит шесть профилей: Chrome 130 (Windows + macOS),
+Firefox 130 (Windows + macOS), Safari 17 (macOS), Edge 130 (Windows).
+Под стратегией PerHostStable выбор детерминирован по `(host, port)`,
+поэтому один пир видит одну идентичность через все реконнекты.
+
+Тумблер opt-in. По умолчанию форма провода полностью совпадает с тем,
+что было до этого изменения — никаких новых заголовков, кроме
+`X-Outline-Resume-*`. Чтобы включить, нужно один раз при старте:
+
+```rust
+use outline_transport::{
+    init_fingerprint_profile_strategy, FingerprintProfileStrategy,
+};
+
+init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
+```
+
+`Strategy` принимает `None` (по умолчанию), `PerHostStable` и
+`Random`. Строковые алиасы — `"off"`, `"none"`, `"disabled"`,
+`"stable"`, `"per_host_stable"`, `"per-host-stable"`, `"per-host"`,
+`"random"` — корректно проходят через `serde::Deserialize`, так что
+значение можно читать прямо из конфига.
+
+Что **не** покрыто (отдельная и дороже задача):
+
+- TLS ClientHello / JA3 / JA4 — rustls не даёт настраивать порядок
+  cipher suites / extensions / supported_groups, значит для реальной
+  диверсификации нужен uTLS-подобный стек (например, `boring` /
+  BoringSSL).
+- Порядок ALPN — сейчас зафиксирован для каждого carrier'а
+  (`h2`, `http/1.1`, `h3`, `vless`, `ss`). TLS-конфиги кэшируются
+  по списку ALPN, поэтому per-host рандомизация потребует нового
+  ключа кеша.
+- Фингерпринт HTTP/2 `SETTINGS` (Akamai/JA4H2) — принадлежит крейту
+  `h2` и почти закрыт для клиентской подстройки.
+- Порядок transport-параметров QUIC — принадлежит `quinn`.

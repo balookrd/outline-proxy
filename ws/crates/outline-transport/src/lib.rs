@@ -103,6 +103,7 @@ mod config;
 mod dns;
 mod dns_cache;
 mod error_classify;
+pub mod fingerprint_profile;
 mod guards;
 mod h2;
 #[cfg(feature = "h3")]
@@ -229,6 +230,14 @@ pub fn init_downgrade_ttl(ttl: std::time::Duration) {
     ws_mode_cache::init_downgrade_ttl(ttl);
     xhttp_mode_cache::init_downgrade_ttl(ttl);
 }
+
+// Browser fingerprint profile strategy: called once at startup when a
+// deployment wants WS / XHTTP dials to mix in browser-style headers
+// (User-Agent, Accept-*, Sec-Fetch-*). Default (knob unset) leaves the
+// wire shape byte-identical to pre-profile builds.
+pub use fingerprint_profile::{
+    Strategy as FingerprintProfileStrategy, init_strategy as init_fingerprint_profile_strategy,
+};
 
 // Transport lifetime guards — published because the uplink crate pairs a
 // `UpstreamTransportGuard` to every connection it hands out.
@@ -618,11 +627,25 @@ async fn connect_websocket_http1(
             .as_str()
             .into_client_request()
             .context("HTTP/1 websocket request builder failed")?;
-        request
-            .headers_mut()
-            .insert(crate::resumption::RESUME_CAPABLE_HEADER, "1".parse().expect("static header value"));
+        let headers = request.headers_mut();
+        if let Some(profile) = crate::fingerprint_profile::select(url) {
+            // Insert the browser-style identification headers BEFORE the
+            // X-Outline-Resume-* pair so a passive observer reads the
+            // request as "browser headers, then a couple of custom
+            // app-specific ones" — the same shape an XHR-flavoured WS
+            // upgrade from a real page produces.
+            crate::fingerprint_profile::apply(
+                profile,
+                headers,
+                crate::fingerprint_profile::SecFetchPreset::WebsocketUpgrade,
+            );
+        }
+        headers.insert(
+            crate::resumption::RESUME_CAPABLE_HEADER,
+            "1".parse().expect("static header value"),
+        );
         if let Some(id) = resume_request {
-            request.headers_mut().insert(
+            headers.insert(
                 crate::resumption::RESUME_REQUEST_HEADER,
                 id.to_hex().parse().expect("hex Session ID is a valid header value"),
             );

@@ -400,3 +400,44 @@ UDP slots are separate so a TCP reconnect cannot pick up a UDP-side
 Session ID by accident, and vice versa. Configurations where UDP rides
 the TCP carrier (VLESS/WS, VLESS/XHTTP) do not maintain a separate
 UDP slot — UDP follows TCP's lifetime.
+
+## Browser fingerprint diversification
+
+WS / XHTTP dials can mix in browser-style identification headers
+(`User-Agent`, `Accept-*`, Sec-CH-UA family, Sec-Fetch-*) so a passive
+DPI rule keying on "WS upgrade missing User-Agent" stops separating
+this client from real browser traffic. The pool ships six profiles:
+Chrome 130 (Windows + macOS), Firefox 130 (Windows + macOS),
+Safari 17 (macOS), Edge 130 (Windows). Selection is per `(host, port)`
+under the stable strategy, so a single peer keeps a single identity
+across reconnects.
+
+The knob is opt-in. Default behaviour leaves the wire shape exactly
+as in pre-fingerprint builds — no headers added beyond
+`X-Outline-Resume-*`. To enable, call once at startup:
+
+```rust
+use outline_transport::{
+    init_fingerprint_profile_strategy, FingerprintProfileStrategy,
+};
+
+init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
+```
+
+`Strategy` accepts `None` (default), `PerHostStable`, and `Random`.
+The string aliases — `"off"`, `"none"`, `"disabled"`, `"stable"`,
+`"per_host_stable"`, `"per-host-stable"`, `"per-host"`, `"random"`
+— round-trip through `serde::Deserialize` so the value can come
+straight from a config file.
+
+What this does **not** cover (separate, costlier work):
+
+- TLS ClientHello / JA3 / JA4 fingerprint — rustls does not expose
+  cipher / extension / curve order, so meaningful diversification
+  here needs a uTLS-style stack (e.g. `boring`/BoringSSL).
+- ALPN ordering — currently fixed per carrier (`h2`, `http/1.1`,
+  `h3`, `vless`, `ss`). The TLS configs are cached per ALPN list,
+  so per-host ALPN reshuffling needs a new caching key.
+- HTTP/2 `SETTINGS` frame fingerprint (Akamai/JA4H2) — owned by
+  the `h2` crate and largely closed to client-side tweaks.
+- QUIC transport-parameter ordering — owned by `quinn`.
