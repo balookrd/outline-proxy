@@ -64,15 +64,18 @@ pub(super) async fn connect_probe_tcp(
                     .vless_id
                     .as_ref()
                     .ok_or_else(|| anyhow!("uplink {} missing vless_id", uplink.name))?;
-                let (w, r) = outline_transport::connect_vless_tcp_quic(
-                    cache,
-                    url,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
-                    uuid,
-                    target,
-                    lifetime,
+                let (w, r) = crate::dial::dial_in_uplink_scope(
+                    uplink,
+                    outline_transport::connect_vless_tcp_quic(
+                        cache,
+                        url,
+                        uplink.fwmark,
+                        uplink.ipv6_first,
+                        source,
+                        uuid,
+                        target,
+                        lifetime,
+                    ),
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
@@ -83,15 +86,18 @@ pub(super) async fn connect_probe_tcp(
                 Ok((TcpWriter::Vless(w), TcpReader::Vless(r), None))
             }
             UplinkTransport::Ws => {
-                let (w, r) = outline_transport::connect_ss_tcp_quic(
-                    cache,
-                    url,
-                    uplink.fwmark,
-                    uplink.ipv6_first,
-                    source,
-                    uplink.cipher,
-                    &master_key,
-                    Arc::clone(&lifetime),
+                let (w, r) = crate::dial::dial_in_uplink_scope(
+                    uplink,
+                    outline_transport::connect_ss_tcp_quic(
+                        cache,
+                        url,
+                        uplink.fwmark,
+                        uplink.ipv6_first,
+                        source,
+                        uplink.cipher,
+                        &master_key,
+                        Arc::clone(&lifetime),
+                    ),
                 )
                 .await
                 .with_context(|| TransportOperation::Connect {
@@ -107,16 +113,19 @@ pub(super) async fn connect_probe_tcp(
 
     match uplink.transport {
         UplinkTransport::Ws => {
-            let ws_stream = connect_websocket_with_source(
-                cache,
-                uplink
-                    .tcp_ws_url
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
-                effective_tcp_mode,
-                uplink.fwmark,
-                uplink.ipv6_first,
-                source,
+            let ws_stream = crate::dial::dial_in_uplink_scope(
+                uplink,
+                connect_websocket_with_source(
+                    cache,
+                    uplink
+                        .tcp_ws_url
+                        .as_ref()
+                        .ok_or_else(|| anyhow!("uplink {} missing tcp_ws_url", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                ),
             )
             .await
             .with_context(|| TransportOperation::Connect {
@@ -151,15 +160,18 @@ pub(super) async fn connect_probe_tcp(
             Ok((TcpWriter::Ws(writer), TcpReader::Ws(reader), downgraded_from))
         },
         UplinkTransport::Vless => {
-            let ws_stream = connect_websocket_with_source(
-                cache,
-                uplink
-                    .tcp_dial_url()
-                    .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
-                effective_tcp_mode,
-                uplink.fwmark,
-                uplink.ipv6_first,
-                source,
+            let ws_stream = crate::dial::dial_in_uplink_scope(
+                uplink,
+                connect_websocket_with_source(
+                    cache,
+                    uplink
+                        .tcp_dial_url()
+                        .ok_or_else(|| anyhow!("uplink {} missing vless dial URL", uplink.name))?,
+                    effective_tcp_mode,
+                    uplink.fwmark,
+                    uplink.ipv6_first,
+                    source,
+                ),
             )
             .await
             .with_context(|| TransportOperation::Connect {

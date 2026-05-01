@@ -193,7 +193,9 @@ fn test_uplink(name: &str, addr: SocketAddr) -> UplinkConfig {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
-        vless_id: None,        }
+        vless_id: None,
+        fingerprint_profile: None,
+        }
 }
 
 fn lb() -> LoadBalancingConfig {

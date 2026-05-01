@@ -33,7 +33,9 @@ async fn classify_decision_unknown_group_falls_back_to_default() {
         weight: 1.0,
         fwmark: None,
         ipv6_first: false,
-        vless_id: None,        };
+        vless_id: None,
+        fingerprint_profile: None,
+        };
     let probe = ProbeConfig {
         interval: Duration::from_secs(120),
         timeout: Duration::from_secs(10),

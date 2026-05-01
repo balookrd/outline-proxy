@@ -31,6 +31,10 @@ pub(super) struct ResolvedUplinkInput {
     /// `TryFrom<ResolvedUplinkInput>` into the matching VLESS fields and
     /// fails if any of them is already populated.
     pub(super) link: Option<String>,
+    /// Per-uplink fingerprint-profile strategy override; `None` means
+    /// inherit the top-level config knob. Threaded all the way to the
+    /// `UplinkConfig.fingerprint_profile` field.
+    pub(super) fingerprint_profile: Option<outline_transport::FingerprintProfileStrategy>,
 }
 
 impl ResolvedUplinkInput {
@@ -88,6 +92,11 @@ impl ResolvedUplinkInput {
                 .vless_link
                 .clone()
                 .or_else(|| outline.and_then(|section| section.link.clone())),
+            // CLI surface does not carry per-uplink fingerprint overrides
+            // — operators reach for that knob via `[[outline.uplinks]]` in
+            // the TOML, where multiple uplinks coexist. CLI builds a single
+            // anonymous uplink, so inheriting the top-level value is fine.
+            fingerprint_profile: None,
         }
     }
 
@@ -111,6 +120,7 @@ impl ResolvedUplinkInput {
             ipv6_first: uplink.ipv6_first,
             vless_id: uplink.vless_id.clone(),
             link: uplink.link.clone(),
+            fingerprint_profile: uplink.fingerprint_profile,
         }
     }
 
@@ -139,6 +149,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             ipv6_first,
             mut vless_id,
             link,
+            fingerprint_profile,
         } = input;
 
         // `link = "vless://..."` populates the VLESS fields from a single
@@ -374,6 +385,7 @@ impl TryFrom<ResolvedUplinkInput> for UplinkConfig {
             fwmark,
             ipv6_first: ipv6_first.unwrap_or(false),
             vless_id,
+            fingerprint_profile,
         })
     }
 }

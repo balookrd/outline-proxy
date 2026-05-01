@@ -115,6 +115,7 @@ fn make_uplink(name: &str, url: &str) -> UplinkConfig {
         fwmark: None,
         ipv6_first: false,
         vless_id: None,
+        fingerprint_profile: None,
     }
 }
 
@@ -1340,6 +1341,7 @@ fn make_ws_uplink_with_modes(
         fwmark: None,
         ipv6_first: false,
         vless_id: None,
+        fingerprint_profile: None,
     }
 }
 
@@ -1362,6 +1364,7 @@ fn make_vless_h3_uplink(name: &str, url: &str) -> UplinkConfig {
         fwmark: None,
         ipv6_first: false,
         vless_id: Some([0u8; 16]),
+        fingerprint_profile: None,
     }
 }
 
@@ -1384,6 +1387,7 @@ fn make_shadowsocks_uplink(name: &str) -> UplinkConfig {
         fwmark: None,
         ipv6_first: false,
         vless_id: None,
+        fingerprint_profile: None,
     }
 }
 
@@ -1524,6 +1528,7 @@ fn make_vless_xhttp_uplink_with_mode(
         fwmark: None,
         ipv6_first: false,
         vless_id: Some([0u8; 16]),
+        fingerprint_profile: None,
     }
 }
 

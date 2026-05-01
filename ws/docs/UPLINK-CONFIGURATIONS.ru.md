@@ -483,6 +483,37 @@ use outline_transport::{
 init_fingerprint_profile_strategy(FingerprintProfileStrategy::PerHostStable);
 ```
 
+### Per-uplink override
+
+Каждый блок `[[outline.uplinks]]` может переопределить top-level
+значение собственным ключом `fingerprint_profile`. Полезно, когда
+один uplink должен оставаться байт-в-байт совместимым с xray-формой,
+а соседи на тот же хост хотят PerHostStable-идентичность:
+
+```toml
+fingerprint_profile = "stable"  # по умолчанию для всех аплинков ниже
+
+[[outline.uplinks]]
+name = "cdn-fronted"
+group = "main"
+tcp_ws_url = "wss://cdn.example.com/secret/tcp"
+# наследует "stable" с верхнего уровня
+
+[[outline.uplinks]]
+name = "xray-shaped"
+group = "main"
+tcp_ws_url = "wss://xray.example.com/secret/tcp"
+fingerprint_profile = "off"      # явный opt-out ради byte-identity
+```
+
+Override прокидывается через per-dial task-local scope в
+`outline-uplink::dial::dial_in_uplink_scope`, поэтому пробы,
+прогревание warm-standby и live-диспетчер используют одно и то же
+значение для конкретного аплинка. Scope снимается на возврате из
+dial-future'а; спавненные post-handshake таски (драйверы, body-drain
+loops) ничего не наследуют — это нормально, потому что единственный
+`select` живёт в dial-entry-point.
+
 Что **не** покрыто (отдельная и дороже задача):
 
 - TLS ClientHello / JA3 / JA4 — rustls не даёт настраивать порядок

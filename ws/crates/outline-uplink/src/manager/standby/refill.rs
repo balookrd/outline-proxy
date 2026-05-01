@@ -145,13 +145,16 @@ impl<'a> StandbyCtx<'a> {
                 break;
             }
 
-            let ws = connect_websocket_with_source(
-                cache,
-                url,
-                self.mode,
-                self.uplink.fwmark,
-                self.uplink.ipv6_first,
-                self.refill_source,
+            let ws = crate::dial::dial_in_uplink_scope(
+                &self.uplink,
+                connect_websocket_with_source(
+                    cache,
+                    url,
+                    self.mode,
+                    self.uplink.fwmark,
+                    self.uplink.ipv6_first,
+                    self.refill_source,
+                ),
             )
             .await
             .with_context(|| format!("failed to preconnect to {}", url));

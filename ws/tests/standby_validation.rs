@@ -87,6 +87,7 @@ async fn build_manager(
             fwmark: None,
             ipv6_first: false,
             vless_id: None,
+            fingerprint_profile: None,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

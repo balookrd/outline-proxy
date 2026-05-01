@@ -1149,6 +1149,7 @@ pub(in crate::tcp) async fn build_test_manager(tcp_ws_url: Url) -> UplinkManager
             fwmark: None,
             ipv6_first: false,
             vless_id: None,
+            fingerprint_profile: None,
         }],
         ProbeConfig {
             interval: Duration::from_secs(30),

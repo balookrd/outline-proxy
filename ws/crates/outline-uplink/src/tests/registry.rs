@@ -28,6 +28,7 @@ fn make_uplink(name: &str) -> UplinkConfig {
         fwmark: None,
         ipv6_first: false,
         vless_id: None,
+        fingerprint_profile: None,
     }
 }
 

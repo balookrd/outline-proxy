@@ -1238,3 +1238,64 @@ async fn load_config_defaults_fingerprint_profile_to_none_when_missing() {
     let config = load_config(&path, &args).await.unwrap();
     assert_eq!(config.fingerprint_profile, Fp::None);
 }
+
+#[tokio::test]
+async fn load_config_threads_per_uplink_fingerprint_profile_override() {
+    use outline_transport::FingerprintProfileStrategy as Fp;
+
+    // Two uplinks share the same `host:port` but want different
+    // identities — one stable, one explicitly disabled. The
+    // top-level value applies to anyone who omits the per-uplink
+    // override; here we leave it unset so each uplink's choice is
+    // exercised in isolation.
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("config.toml");
+    std::fs::write(
+        &path,
+        r#"
+        [socks5]
+        listen = "127.0.0.1:1080"
+
+        [[outline.uplinks]]
+        name = "primary"
+        group = "main"
+        tcp_ws_url = "wss://primary.example.com/secret/tcp"
+        tcp_mode = "h2"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        fingerprint_profile = "stable"
+
+        [[outline.uplinks]]
+        name = "xray-shaped"
+        group = "main"
+        tcp_ws_url = "wss://xray.example.com/secret/tcp"
+        tcp_mode = "h2"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+        fingerprint_profile = "off"
+
+        [[outline.uplinks]]
+        name = "inheriting"
+        group = "main"
+        tcp_ws_url = "wss://inherit.example.com/secret/tcp"
+        tcp_mode = "h2"
+        method = "chacha20-ietf-poly1305"
+        password = "Secret0"
+
+        [[uplink_group]]
+        name = "main"
+        "#,
+    )
+    .unwrap();
+
+    let args = super::Args::parse_from(["test"]);
+    let config = load_config(&path, &args).await.unwrap();
+    let uplinks = &config.groups[0].uplinks;
+    assert_eq!(uplinks.len(), 3);
+    assert_eq!(uplinks[0].fingerprint_profile, Some(Fp::PerHostStable));
+    assert_eq!(uplinks[1].fingerprint_profile, Some(Fp::None));
+    assert_eq!(
+        uplinks[2].fingerprint_profile, None,
+        "uplink without explicit override must inherit (not synthesise) the field"
+    );
+}

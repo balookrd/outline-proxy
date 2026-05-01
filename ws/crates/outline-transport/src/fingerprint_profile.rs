@@ -196,6 +196,42 @@ fn current_strategy() -> Strategy {
     STRATEGY.get().copied().unwrap_or_default()
 }
 
+tokio::task_local! {
+    /// Per-call strategy override. When the dial path runs inside a
+    /// task whose parent established this scope, [`select`] reads
+    /// the override instead of the global [`init_strategy`] value —
+    /// callers like the uplink manager use this to pin one uplink
+    /// to a specific profile (or to none) without flipping the
+    /// process-wide knob. Inheritance is the standard tokio
+    /// `task_local` behaviour: scopes propagate into the future
+    /// awaited inside [`with_strategy_override`], but not into
+    /// freshly-spawned `tokio::spawn` children — which is exactly
+    /// what we want, because the dial entry-point is the only place
+    /// that calls [`select`].
+    static STRATEGY_OVERRIDE: Strategy;
+}
+
+/// Run `f` with [`select`] honouring `strategy` instead of the
+/// process-wide [`init_strategy`] value. Designed for the uplink
+/// manager: per-uplink dial calls wrap their `connect_*` await in
+/// this scope so a single uplink can pin its own profile without
+/// affecting siblings on the same `host:port`.
+pub async fn with_strategy_override<F>(strategy: Strategy, f: F) -> F::Output
+where
+    F: std::future::Future,
+{
+    STRATEGY_OVERRIDE.scope(strategy, f).await
+}
+
+/// Strategy [`select`] should consult: the task-local override when
+/// one is in scope, otherwise the global `init_strategy` value (or
+/// the default if neither was set).
+fn current_effective_strategy() -> Strategy {
+    STRATEGY_OVERRIDE
+        .try_with(|s| *s)
+        .unwrap_or_else(|_| current_strategy())
+}
+
 /// Returns the profile selected for `url` under the active strategy,
 /// or `None` when fingerprint diversification is disabled. Logs the
 /// (host, port, profile.name) triple at `info` the first time each
@@ -203,7 +239,7 @@ fn current_strategy() -> Strategy {
 /// for operators verifying that the strategy actually engaged and for
 /// correlating dial failures with a specific profile choice.
 pub fn select(url: &Url) -> Option<&'static Profile> {
-    let profile = select_with_strategy(url, current_strategy())?;
+    let profile = select_with_strategy(url, current_effective_strategy())?;
     note_first_use(url, profile);
     Some(profile)
 }
