@@ -35,7 +35,7 @@ use tokio::{
 };
 use tracing::{debug, warn};
 
-use crate::config::SniFallbackConfig;
+use crate::config::{SniBackend, SniFallbackConfig};
 
 use super::proxy_protocol::{PpTransport, encode_proxy_protocol};
 
@@ -126,40 +126,58 @@ pub(in crate::server) fn sni_matches_ours(
     }
 }
 
+/// Returns the first backend whose `match_sni` matches `sni`, or the
+/// first catch-all backend (empty `match_sni`). Returns `None` when no
+/// backend matches.
+pub(in crate::server) fn find_backend<'a>(
+    backends: &'a [SniBackend],
+    sni: Option<&str>,
+) -> Option<&'a SniBackend> {
+    for b in backends {
+        if b.match_sni.is_empty() {
+            return Some(b); // catch-all
+        }
+        if let Some(name) = sni {
+            if b.match_sni.iter().any(|m| m.matches(name)) {
+                return Some(b);
+            }
+        }
+    }
+    None
+}
+
 /// Splice the inbound TCP stream to `backend`, prepending the
 /// already-buffered ClientHello bytes (so the backend sees a complete
 /// TLS handshake) and optionally a HAProxy PROXY-protocol header.
 pub(in crate::server) async fn splice_to_backend(
-    ctx: &SniFallbackContext,
+    backend: &SniBackend,
+    inbound_listen: SocketAddr,
     mut inbound: TcpStream,
     peer_addr: SocketAddr,
     buffered: Vec<u8>,
 ) -> Result<()> {
-    let mut backend = TcpStream::connect(ctx.config.backend_authority.as_str())
+    let mut upstream = TcpStream::connect(backend.authority.as_str())
         .await
         .with_context(|| {
-            format!(
-                "failed to connect to sni_fallback backend {}",
-                ctx.config.backend_authority,
-            )
+            format!("failed to connect to sni_fallback backend {}", backend.authority)
         })?;
 
-    if let Some(version) = ctx.config.proxy_protocol {
+    if let Some(version) = backend.proxy_protocol {
         let mut header = Vec::with_capacity(64);
         encode_proxy_protocol(
             &mut header,
             version,
             peer_addr,
-            ctx.inbound_listen,
+            inbound_listen,
             PpTransport::Stream,
         );
-        backend
+        upstream
             .write_all(&header)
             .await
             .context("failed to write PROXY-protocol header to sni_fallback backend")?;
     }
 
-    backend
+    upstream
         .write_all(&buffered)
         .await
         .context("failed to forward ClientHello to sni_fallback backend")?;
@@ -168,7 +186,7 @@ pub(in crate::server) async fn splice_to_backend(
     // which is exactly what we want for a TLS pass-through. Errors
     // are demoted to debug — the inbound peer may walk away mid-flight
     // (e.g. probe scanners) and that is not noteworthy.
-    match tokio::io::copy_bidirectional(&mut inbound, &mut backend).await {
+    match tokio::io::copy_bidirectional(&mut inbound, &mut upstream).await {
         Ok((bytes_in, bytes_out)) => {
             debug!(
                 ?peer_addr,
@@ -265,7 +283,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for PrependStream<S> {
 /// Top-level dispatch helper. Called by the TLS listener for every
 /// accepted stream when `[sni_fallback]` is configured. Returns
 /// `Ok(Some(stream))` to continue with the local TLS terminator, or
-/// `Ok(None)` if the stream was spliced to the backend (caller stops
+/// `Ok(None)` if the stream was spliced to a backend (caller stops
 /// processing it). Errors are fatal for this stream only.
 pub(in crate::server) async fn dispatch_sni(
     ctx: &SniFallbackContext,
@@ -281,10 +299,27 @@ pub(in crate::server) async fn dispatch_sni(
     };
 
     if sni_matches_ours(&ctx.config, peeked.sni.as_deref()) {
-        Ok(Some(PrependStream::new(peeked.buffered, inbound)))
-    } else {
-        debug!(?peer_addr, sni = ?peeked.sni, "splicing foreign SNI to backend");
-        splice_to_backend(ctx, inbound, peer_addr, peeked.buffered).await?;
-        Ok(None)
+        return Ok(Some(PrependStream::new(peeked.buffered, inbound)));
     }
+
+    match find_backend(&ctx.config.backends, peeked.sni.as_deref()) {
+        Some(backend) => {
+            debug!(
+                ?peer_addr,
+                sni = ?peeked.sni,
+                backend = %backend.authority,
+                "splicing foreign SNI to backend",
+            );
+            splice_to_backend(backend, ctx.inbound_listen, inbound, peer_addr, peeked.buffered)
+                .await?;
+        },
+        None => {
+            warn!(
+                ?peer_addr,
+                sni = ?peeked.sni,
+                "sni_fallback: no backend matched, dropping connection",
+            );
+        },
+    }
+    Ok(None)
 }
