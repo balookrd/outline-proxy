@@ -280,14 +280,17 @@ impl Stream for XhttpStream {
 impl Sink<Message> for XhttpStream {
     type Error = WsError;
 
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if self.closed || self.outgoing.is_closed() {
             return Poll::Ready(Err(io_ws_err("xhttp outgoing closed")));
         }
         // tokio mpsc has no public `poll_reserve` on stable; the
         // capacity is small and we expect bursty sends, so reporting
         // ready unconditionally is fine — `start_send` falls back to
-        // try_send and propagates the rare-case Full as an error.
+        // try_send and propagates the rare-case Full as an error. The
+        // waker is intentionally not stashed: there is no event we
+        // could wake on, so prefixing `cx` with `_` documents the
+        // contract instead of silencing a real omission.
         Poll::Ready(Ok(()))
     }
 
