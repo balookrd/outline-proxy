@@ -386,12 +386,12 @@ function submodeSuffix(submode, effective, downgraded) {
   if (submode === "packet-up" && !downgraded) return ["", ""];
   if (downgraded) {
     return [
-      "<span class=\"proto-submode proto-downgraded\">/S<span class=\"proto-dg\">↘</span>P</span>",
+      "<span class=\"proto-submode proto-downgraded\">(S)<span class=\"proto-dg\">↘</span>(P)</span>",
       `submode auto-downgraded stream-one → packet-up (recent stream-one failure cached)`,
     ];
   }
-  if (submode === "stream-one") return ["<span class=\"proto-submode\">/S</span>", "submode: stream-one"];
-  return ["<span class=\"proto-submode\">/P</span>", "submode: packet-up"];
+  if (submode === "stream-one") return ["<span class=\"proto-submode\">(S)</span>", "submode: stream-one"];
+  return ["<span class=\"proto-submode\">(P)</span>", "submode: packet-up"];
 }
 function legPill(t, cls, leg, configured, effective, downgraded, submode, submodeEff, submodeDg) {
   const dg = downgraded ? " proto-downgraded" : "";
