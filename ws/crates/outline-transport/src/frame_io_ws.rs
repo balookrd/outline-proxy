@@ -24,7 +24,15 @@ use futures_util::{SinkExt, StreamExt, stream::SplitStream};
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::protocol::{Message, frame::coding::CloseCode};
-use tracing::debug;
+use tracing::{debug, warn};
+
+/// Sized to match the SS TCP writer's WS data buffer so VLESS
+/// frame pipes get the same burst window. Real upper bound is the
+/// underlying transport's flow control.
+const WS_DATA_CHANNEL_CAPACITY: usize = 256;
+/// Pings/Pongs/Close are tiny and rare; a deeper queue would only
+/// delay close propagation.
+const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 
 use crate::frame_io::{DatagramChannel, FrameSink, FrameSource};
 use crate::{AbortOnDrop, TransportOperation, WsClosed, TransportStream};
@@ -46,8 +54,8 @@ fn spawn_ws_writer(
     ws_stream: TransportStream,
 ) -> (AbortOnDrop, mpsc::Sender<Message>, mpsc::Sender<Message>, SplitStream<TransportStream>) {
     let (sink, stream) = ws_stream.split();
-    let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
-    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+    let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
+    let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
     let task = tokio::spawn(async move {
         let mut ws_sink = sink;
         let mut ctrl_open = true;
@@ -56,7 +64,12 @@ fn spawn_ws_writer(
                 tokio::select! {
                     biased;
                     msg = ctrl_rx.recv() => match msg {
-                        Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
+                        Some(m) => {
+                            if let Err(error) = ws_sink.send(m).await {
+                                warn!(%error, "ws frame writer ctrl send failed, terminating writer task");
+                                return;
+                            }
+                        }
                         None => ctrl_open = false,
                     },
                     msg = data_rx.recv() => match msg {
@@ -64,7 +77,12 @@ fn spawn_ws_writer(
                             let _ = ws_sink.close().await;
                             return;
                         }
-                        Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
+                        Some(m) => {
+                            if let Err(error) = ws_sink.send(m).await {
+                                warn!(%error, "ws frame writer data send failed, terminating writer task");
+                                return;
+                            }
+                        }
                         None => { let _ = ws_sink.close().await; return; }
                     },
                 }
@@ -74,7 +92,12 @@ fn spawn_ws_writer(
                         let _ = ws_sink.close().await;
                         return;
                     }
-                    Some(m) => { if ws_sink.send(m).await.is_err() { return; } }
+                    Some(m) => {
+                        if let Err(error) = ws_sink.send(m).await {
+                            warn!(%error, "ws frame writer data send failed, terminating writer task");
+                            return;
+                        }
+                    }
                     None => { let _ = ws_sink.close().await; return; }
                 }
             }

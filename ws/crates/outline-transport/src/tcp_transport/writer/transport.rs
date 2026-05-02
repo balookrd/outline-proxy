@@ -6,7 +6,17 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tracing::warn;
 use crate::{AbortOnDrop, TransportStream};
+
+/// Buffer size for the WS writer's data channel. Sized to absorb
+/// bursts up to ~4 MB at the 16 KB SS2022 chunk boundary so a long
+/// upload doesn't stall on the per-channel cap; the underlying
+/// transport (h2/h3 flow control or native WS) is the real bound.
+const WS_DATA_CHANNEL_CAPACITY: usize = 256;
+/// Control frames are tiny and rare (Ping/Pong/Close); a deeper
+/// queue would only delay close propagation.
+const WS_CTRL_CHANNEL_CAPACITY: usize = 8;
 
 pub(super) type WsSink = SplitSink<TransportStream, Message>;
 
@@ -30,8 +40,8 @@ impl WsWriteTransport {
     /// must be passed to the paired reader so that Pong responses go through
     /// the priority channel.
     pub(super) fn spawn(sink: WsSink) -> (Self, mpsc::Sender<Message>) {
-        let (data_tx, mut data_rx) = mpsc::channel::<Message>(64);
-        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(8);
+        let (data_tx, mut data_rx) = mpsc::channel::<Message>(WS_DATA_CHANNEL_CAPACITY);
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel::<Message>(WS_CTRL_CHANNEL_CAPACITY);
         // Note: an earlier iteration of this writer task fired a periodic
         // WebSocket Ping (intended as an idle keepalive against HAProxy /
         // nginx `proxy_*_timeout`).  In real deployments — HAProxy →
@@ -51,13 +61,19 @@ impl WsWriteTransport {
                         biased;
                         msg = ctrl_rx.recv() => match msg {
                             Some(m) => {
-                                if ws_sink.send(m).await.is_err() { return; }
+                                if let Err(error) = ws_sink.send(m).await {
+                                    warn!(%error, "ws writer ctrl send failed, terminating writer task");
+                                    return;
+                                }
                             }
                             None => ctrl_open = false,
                         },
                         msg = data_rx.recv() => match msg {
                             Some(m) => {
-                                if ws_sink.send(m).await.is_err() { return; }
+                                if let Err(error) = ws_sink.send(m).await {
+                                    warn!(%error, "ws writer data send failed, terminating writer task");
+                                    return;
+                                }
                             }
                             None => { let _ = ws_sink.close().await; return; }
                         },
@@ -65,7 +81,8 @@ impl WsWriteTransport {
                 } else {
                     match data_rx.recv().await {
                         Some(m) => {
-                            if ws_sink.send(m).await.is_err() {
+                            if let Err(error) = ws_sink.send(m).await {
+                                warn!(%error, "ws writer data send failed, terminating writer task");
                                 return;
                             }
                         },
