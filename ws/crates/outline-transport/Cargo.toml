@@ -38,6 +38,7 @@ socks5-proto = { path = "../socks5-proto" }
 sockudo-ws = { path = "../../vendor/sockudo-ws", package = "sockudo-ws", default-features = false, features = ["rustls-webpki-roots", "ring", "fastrand"] }
 tokio = { version = "1.44", features = ["io-util", "macros", "net", "rt", "sync", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-util = { version = "0.7", default-features = false }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 thiserror = "2.0"
 tracing = "0.1"

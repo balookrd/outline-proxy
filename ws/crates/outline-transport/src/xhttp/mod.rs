@@ -50,6 +50,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_rustls::TlsConnector;
 use tokio_tungstenite::tungstenite::{Error as WsError, protocol::Message};
+use tokio_util::sync::PollSender;
 use tracing::{debug, warn};
 use url::Url;
 
@@ -71,6 +72,10 @@ mod tests_packet_up;
 #[cfg(test)]
 #[path = "tests/packet_up_h1.rs"]
 mod tests_packet_up_h1;
+
+#[cfg(test)]
+#[path = "tests/sink_backpressure.rs"]
+mod tests_sink_backpressure;
 
 /// Cross-transport session resumption: client → server. Mirrors the
 /// header used by the WS-upgrade path so a single token works for
@@ -189,16 +194,19 @@ const SESSION_ID_BYTES: usize = 16;
 
 /// Cap for the per-session inbound (downlink) channel. Frames in
 /// flight are already capped by h2 flow control on the wire; this
-/// is a small in-memory buffer that smooths the gap between the
-/// driver task drain and `Stream::poll_next`. `pub(super)` so the
-/// h3 sibling module reuses the same sizing.
-pub(super) const INBOUND_CHANNEL_CAPACITY: usize = 32;
+/// in-memory buffer smooths the gap between the driver task drain
+/// and `Stream::poll_next`. Sized for ~4 MB inflight at the 16 KB
+/// SS2022 chunk size — enough to cover BDP on a 1 Gbps × 30 ms link
+/// without forcing the reader to round-trip after every chunk.
+/// `pub(super)` so the h3 sibling module reuses the same sizing.
+pub(super) const INBOUND_CHANNEL_CAPACITY: usize = 256;
 
-/// Cap for the per-session outbound (uplink) channel. Sized small —
-/// `start_send` simply queues into here, the driver task spawns a
-/// POST per item and h2 enforces flow control end-to-end.
-/// `pub(super)` for the same reason as the inbound cap.
-pub(super) const OUTBOUND_CHANNEL_CAPACITY: usize = 32;
+/// Cap for the per-session outbound (uplink) channel. Same sizing
+/// rationale as the inbound cap. With the `PollSender`-based Sink
+/// the channel applies real back-pressure to bulk uploads, so the
+/// larger window only widens the burst tolerance — it does not
+/// cause unbounded memory growth.
+pub(super) const OUTBOUND_CHANNEL_CAPACITY: usize = 256;
 
 /// Time budget for the initial dial: TCP + TLS + h2 handshake +
 /// first POST/GET ack. Matches the bound used by the WS h2 dial
@@ -222,7 +230,12 @@ fn h2_tls_config() -> Arc<rustls::ClientConfig> {
 /// dispatch without bespoke handling.
 pub(crate) struct XhttpStream {
     incoming: mpsc::Receiver<Result<Message, WsError>>,
-    outgoing: mpsc::Sender<Message>,
+    /// Wraps the raw `mpsc::Sender` so `Sink::poll_ready` can honor
+    /// the channel's capacity instead of always reporting ready.
+    /// `PollSender` reserves a permit asynchronously and stashes the
+    /// waker, which is what gives bulk uploads real back-pressure
+    /// rather than a `start_send` that fails-fast on `Full`.
+    outgoing: PollSender<Message>,
     closed: bool,
     /// Submode the dialer landed on. Differs from the URL-requested
     /// submode when the inline stream-one→packet-up retry kicked in,
@@ -265,7 +278,13 @@ impl XhttpStream {
         driver: AbortOnDrop,
         active_submode: XhttpSubmode,
     ) -> Self {
-        Self { incoming, outgoing, closed: false, active_submode, _driver: driver }
+        Self {
+            incoming,
+            outgoing: PollSender::new(outgoing),
+            closed: false,
+            active_submode,
+            _driver: driver,
+        }
     }
 }
 
@@ -280,54 +299,50 @@ impl Stream for XhttpStream {
 impl Sink<Message> for XhttpStream {
     type Error = WsError;
 
-    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.closed || self.outgoing.is_closed() {
+    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        if self.closed {
             return Poll::Ready(Err(io_ws_err("xhttp outgoing closed")));
         }
-        // tokio mpsc has no public `poll_reserve` on stable; the
-        // capacity is small and we expect bursty sends, so reporting
-        // ready unconditionally is fine — `start_send` falls back to
-        // try_send and propagates the rare-case Full as an error. The
-        // waker is intentionally not stashed: there is no event we
-        // could wake on, so prefixing `cx` with `_` documents the
-        // contract instead of silencing a real omission.
-        Poll::Ready(Ok(()))
+        // Reserve a permit — pending until the driver drains the
+        // outbound channel. This is the back-pressure signal that
+        // bulk uploads need: without it the writer above us treats
+        // a full channel as a fatal Sink error and aborts.
+        match self.outgoing.poll_reserve(cx) {
+            Poll::Ready(Ok(())) => Poll::Ready(Ok(())),
+            Poll::Ready(Err(_)) => {
+                self.closed = true;
+                Poll::Ready(Err(io_ws_err("xhttp outgoing closed")))
+            },
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Message) -> Result<(), Self::Error> {
         if self.closed {
             return Err(io_ws_err("xhttp stream already closed"));
         }
-        match self.outgoing.try_send(item) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                self.closed = true;
-                Err(io_ws_err("xhttp outgoing closed"))
-            },
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // The driver task is behind. Treat this as a
-                // transient health failure rather than a hard error
-                // — caller will retry on the next select tick.
-                Err(io_ws_err("xhttp outgoing buffer full"))
-            },
-        }
+        // Caller must have observed `Ready` from `poll_ready`, so a
+        // permit is already reserved; `send_item` only fails if the
+        // receiver was dropped between then and now.
+        self.outgoing.send_item(item).map_err(|_| {
+            self.closed = true;
+            io_ws_err("xhttp outgoing closed")
+        })
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // We have no application-level buffer; h2 flow control and
-        // the channel itself are the only flushing layers and they
-        // self-drain.
+        // No application-level buffer beyond the reserved permit.
+        // h2 flow control + the bounded channel itself are the
+        // flushing layers and they self-drain.
         Poll::Ready(Ok(()))
     }
 
     fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.closed = true;
-        // Drop the sender by replacing it with a closed one. The
-        // driver task observes this through `outbound.recv()`
-        // returning None and exits, which aborts the GET sub-task.
-        let (closed_tx, closed_rx) = mpsc::channel(1);
-        drop(closed_rx);
-        self.outgoing = closed_tx;
+        // Closes our half of the channel. The driver task observes
+        // this through `outbound.recv()` returning None and exits,
+        // which aborts the GET sub-task.
+        self.outgoing.close();
         Poll::Ready(Ok(()))
     }
 }
@@ -484,7 +499,7 @@ pub(crate) async fn connect_xhttp(
         Ok::<_, anyhow::Error>((
             XhttpStream {
                 incoming: in_rx,
-                outgoing: out_tx,
+                outgoing: PollSender::new(out_tx),
                 closed: false,
                 active_submode,
                 _driver: AbortOnDrop::new(driver),
@@ -557,7 +572,10 @@ async fn open_h2_stream_one(
     hyper::body::Incoming,
     mpsc::Sender<hyper::body::Frame<Bytes>>,
 )> {
-    let (frame_tx, frame_rx) = mpsc::channel::<hyper::body::Frame<Bytes>>(8);
+    // Sized to match `OUTBOUND_CHANNEL_CAPACITY` so a long-lived
+    // stream-one POST has the same burst window as packet-up; h2
+    // flow control on the wire still bounds real memory.
+    let (frame_tx, frame_rx) = mpsc::channel::<hyper::body::Frame<Bytes>>(OUTBOUND_CHANNEL_CAPACITY);
     let body_stream = futures_util::stream::unfold(frame_rx, |mut rx| async move {
         rx.recv().await.map(|frame| (Ok::<_, Infallible>(frame), rx))
     });
