@@ -13,7 +13,6 @@ use anyhow::{Result, anyhow};
 use bytes::Bytes;
 use futures_util::future::BoxFuture;
 use tokio::sync::mpsc;
-use tracing::warn;
 
 use crate::{
     metrics::{AppProtocol, Protocol},
@@ -81,20 +80,9 @@ impl WsSocket for XhttpDuplex {
 
     async fn send(writer: &mut Self::Writer, msg: XhttpMsg) -> Result<()> {
         match msg {
-            XhttpMsg::Binary(data) => match writer.session.push_downlink(data) {
+            XhttpMsg::Binary(data) => match writer.session.push_downlink(data).await {
                 Ok(()) => Ok(()),
                 Err(DownlinkPushError::Closed) => Err(anyhow!("xhttp session closed")),
-                Err(DownlinkPushError::Backpressure) => {
-                    // Backpressure on the downlink ring means the GET
-                    // consumer cannot keep up (or has gone away long
-                    // enough for the buffer to fill). Blocking the
-                    // relay here would stall every other multiplexed
-                    // VLESS sub-conn on the same session, so the
-                    // contract is to tear down instead.
-                    warn!(session = %writer.session.id, "xhttp downlink ring full, closing session");
-                    writer.session.close();
-                    Err(anyhow!("xhttp downlink backpressure"))
-                },
             },
             XhttpMsg::Close => {
                 writer.session.close();

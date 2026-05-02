@@ -97,13 +97,16 @@ pub(in crate::server) const PADDING_HEADER: &str = "x-padding";
 /// Optional — its absence does not change correctness.
 pub(in crate::server) const FIN_HEADER: &str = "x-xhttp-fin";
 
-/// Cap on the bytes the per-session downlink ring may hold while
-/// no GET consumer is attached. Sized so a couple of hundred TCP
-/// segments fit (BDP for a typical mobile link) without making
-/// each idle session expensive. When exceeded the relay sees a
-/// backpressure error and tears the session down — the alternative
-/// (blocking the relay) would let one stuck client stall the
-/// whole connection.
+/// Soft cap on the bytes the per-session downlink ring may hold.
+/// The relay's `push_downlink` parks (awaits) once the ring sits
+/// at or above this watermark, propagating the GET consumer's
+/// throughput back to the upstream reader through the natural TCP
+/// receive window. Sized to a few hundred TCP segments — large
+/// enough to absorb burstiness on a healthy connection, small
+/// enough that a stuck consumer doesn't pin tens of MiB per idle
+/// session. Resumption-safe: the ring keeps holding bytes across
+/// a GET reattach, the cap just stops the writer from racing past
+/// the reader between attaches.
 const DOWNLINK_BUFFER_BYTES_CAP: usize = 256 * 1024;
 /// Cap on bytes parked in the uplink reorder buffer. POSTs whose
 /// seq is too far ahead of the expected one push us past this cap
@@ -164,13 +167,21 @@ impl XhttpRegistry {
     }
 
     /// Sweep idle/closed entries. Cheap to call on a 30 s tick.
+    /// Closing on idle (rather than just unmapping) is what wakes
+    /// any `push_downlink` waiter that was parked on a full ring
+    /// without a GET consumer attached, so the relay task can
+    /// finish instead of holding the upstream open indefinitely.
     pub(in crate::server) fn evict_idle(&self) {
         let cutoff = Instant::now() - SESSION_IDLE_EVICTION;
         self.sessions.retain(|_, session| {
             if session.is_closed() {
                 return false;
             }
-            !session.is_idle_since(cutoff)
+            if session.is_idle_since(cutoff) {
+                session.close();
+                return false;
+            }
+            true
         });
     }
 
@@ -198,6 +209,13 @@ pub(in crate::server) struct XhttpSession {
     pub(in crate::server) uplink_notify: Notify,
     pub(in crate::server) downlink: Mutex<DownlinkState>,
     pub(in crate::server) downlink_notify: Notify,
+    /// Wakes any [`push_downlink`](XhttpSession::push_downlink) task
+    /// that is parked because the ring is at or above
+    /// [`DOWNLINK_BUFFER_BYTES_CAP`]. Fired by `drain_downlink`
+    /// after it pulls bytes out of the ring, and by
+    /// [`close`](XhttpSession::close) so a parked writer wakes up
+    /// and observes the closed state.
+    pub(in crate::server) downlink_drain_notify: Notify,
     closed: AtomicBool,
     last_activity_nanos: AtomicI64,
     created_at: Instant,
@@ -246,6 +264,7 @@ impl XhttpSession {
                 get_attached: false,
             }),
             downlink_notify: Notify::new(),
+            downlink_drain_notify: Notify::new(),
             closed: AtomicBool::new(false),
             last_activity_nanos: AtomicI64::new(0),
             created_at: Instant::now(),
@@ -265,15 +284,16 @@ impl XhttpSession {
         last < cutoff
     }
 
-    /// Marks the session torn down. Idempotent. Wakes both notifiers
-    /// so any pending POST/GET handler and the relay task observe
-    /// the close and exit.
+    /// Marks the session torn down. Idempotent. Wakes every notifier
+    /// so any pending POST/GET handler, the relay task, and any
+    /// `push_downlink` waiter observe the close and exit.
     pub(in crate::server) fn close(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             self.uplink.lock().closed = true;
             self.downlink.lock().closed = true;
             self.uplink_notify.notify_waiters();
             self.downlink_notify.notify_waiters();
+            self.downlink_drain_notify.notify_waiters();
         }
     }
 
@@ -399,11 +419,12 @@ impl XhttpSession {
 
     /// Drains all pending downlink chunks into `dst`. Returns
     /// `true` once the session is closed (so the GET handler ends
-    /// the response body after writing). The caller must release
-    /// the held lock by virtue of this method returning, and is
-    /// expected to follow up with an HTTP write.
+    /// the response body after writing). Wakes any `push_downlink`
+    /// waiter that was parked on the ring being full so it can
+    /// retry now that bytes have been freed.
     pub(in crate::server) fn drain_downlink(&self, dst: &mut Vec<Bytes>) -> bool {
         let mut state = self.downlink.lock();
+        let drained_any = !state.pending.is_empty();
         while let Some(chunk) = state.pending.pop_front() {
             state.pending_bytes = state.pending_bytes.saturating_sub(chunk.len());
             dst.push(chunk);
@@ -413,32 +434,61 @@ impl XhttpSession {
         if !dst.is_empty() {
             self.touch();
         }
+        if drained_any {
+            // The relay is the only writer (one VLESS pipe per XHTTP
+            // session, even when VLESS-mux multiplexes sub-conns above
+            // it), so a single permit is sufficient. `notify_one`
+            // stores a permit if no waiter is parked yet, so a push
+            // that arrives between drain and its own subscribe still
+            // wakes up.
+            self.downlink_drain_notify.notify_one();
+        }
         closed
     }
 
-    /// Relay-side enqueue. Returns `Backpressure` when the ring is
-    /// over budget — the caller (relay) should treat this as a
-    /// fatal error for the session, since blocking the relay would
-    /// stall every other multiplexed VLESS sub-conn on the same
-    /// session.
-    pub(in crate::server) fn push_downlink(&self, data: Bytes) -> Result<(), DownlinkPushError> {
+    /// Relay-side enqueue. Awaits if the ring is at or above the
+    /// soft cap until either (a) `drain_downlink` pulls bytes out
+    /// and frees room, or (b) the session is closed. Returns
+    /// `Closed` only on case (b); the caller can treat any other
+    /// outcome as a successful enqueue.
+    ///
+    /// Blocking the relay here is intentional: it lets the GET
+    /// consumer's pace propagate back through the upstream TCP
+    /// receive window instead of pinning ever more pending bytes
+    /// in memory. VLESS-mux sub-conns share one ring, so a slow
+    /// downlink does throttle the whole pipe — that is strictly
+    /// better than the previous behaviour of severing the session
+    /// (which killed every sub-conn at once).
+    pub(in crate::server) async fn push_downlink(
+        &self,
+        data: Bytes,
+    ) -> Result<(), DownlinkPushError> {
         if data.is_empty() {
             return Ok(());
         }
         let len = data.len();
-        let mut state = self.downlink.lock();
-        if state.closed {
-            return Err(DownlinkPushError::Closed);
+        let mut data = Some(data);
+        loop {
+            // Subscribe before checking so a drain that happens between
+            // the room-check and the await cannot lose its wake-up.
+            let notified = self.downlink_drain_notify.notified();
+            {
+                let mut state = self.downlink.lock();
+                if state.closed {
+                    return Err(DownlinkPushError::Closed);
+                }
+                if state.pending_bytes.saturating_add(len) <= DOWNLINK_BUFFER_BYTES_CAP {
+                    let bytes = data.take().expect("push_downlink: data taken twice");
+                    state.pending.push_back(bytes);
+                    state.pending_bytes = state.pending_bytes.saturating_add(len);
+                    drop(state);
+                    self.downlink_notify.notify_one();
+                    self.touch();
+                    return Ok(());
+                }
+            }
+            notified.await;
         }
-        if state.pending_bytes.saturating_add(len) > DOWNLINK_BUFFER_BYTES_CAP {
-            return Err(DownlinkPushError::Backpressure);
-        }
-        state.pending.push_back(data);
-        state.pending_bytes = state.pending_bytes.saturating_add(len);
-        drop(state);
-        self.downlink_notify.notify_one();
-        self.touch();
-        Ok(())
     }
 }
 
@@ -462,7 +512,6 @@ pub(in crate::server) enum UplinkIngestError {
 #[derive(Debug)]
 pub(in crate::server) enum DownlinkPushError {
     Closed,
-    Backpressure,
 }
 
 /// URL-captured `{id}` sanity check shared between the axum
