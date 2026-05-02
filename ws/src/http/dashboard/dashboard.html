@@ -173,7 +173,7 @@ h1 { margin: 0; font-size: 18px; line-height: 1.15; font-weight: 700; letter-spa
 .cfg-chip.fb-off { background: var(--gray-soft); color: var(--muted); border-color: var(--line); }
 .cfg-active { color: var(--green-strong); font-weight: 600; white-space: nowrap; }
 .rows { width: 100%; }
-.rows-head,.row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(90px, .9fr) minmax(90px, .8fr) minmax(90px, .8fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
+.rows-head,.row { display: grid; grid-template-columns: minmax(120px, 1.3fr) minmax(90px, .9fr) minmax(90px, .8fr) minmax(90px, .8fr) minmax(80px, .7fr) minmax(80px, .7fr) minmax(120px, 1fr) 100px; gap: 12px; align-items: center; padding: 13px 18px; }
 .proto-pill { min-height: 24px; display: inline-flex; align-items: center; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 760; letter-spacing: .02em; text-transform: uppercase; background: var(--soft); color: var(--text); border: 1px solid var(--line); }
 .proto-pill.proto-vless { background: var(--blue-soft); color: var(--chip-mode-text); border-color: var(--chip-mode-border); }
 .proto-pill.proto-shadowsocks { background: var(--chip-scope-bg); color: var(--chip-scope-text); border-color: var(--chip-scope-border); }
@@ -475,6 +475,16 @@ function switchReasons(u) {
   if (u.active_udp && u.active_udp_reason) reasons.push(`udp: ${u.active_udp_reason}`);
   return [...new Set(reasons)];
 }
+function weightCell(u) {
+  const w = typeof u.weight === 'number' ? u.weight : '—';
+  const parts = [];
+  if (u.tcp_score_ms != null) parts.push(`tcp: ${u.tcp_score_ms}ms`);
+  if (u.udp_score_ms != null) parts.push(`udp: ${u.udp_score_ms}ms`);
+  const score = parts.length
+    ? `<span class="switch-reason">${escapeHtml(parts.join(' · '))}</span>`
+    : '';
+  return `<div class="role-cell"><span>${escapeHtml(String(w))}</span>${score}</div>`;
+}
 function uplinkRoleCell(u) {
   const reasons = switchReasons(u);
   const detail = reasons.length
@@ -595,6 +605,7 @@ function renderInstanceBody(panel, instance, groups) {
             <div>Status</div>
             <div>TCP</div>
             <div>UDP</div>
+            <div>Weight</div>
             <div>Role</div>
             <div>Action</div>
           </div>
@@ -613,6 +624,7 @@ function renderInstanceBody(panel, instance, groups) {
           <div><span class="status-pill ${rowTone}">${label}</span></div>
           <div class="${uplink.tcp_healthy === false ? "muted-cell" : ""}">${uplink.tcp_healthy === false ? "down" : "ok"}</div>
           <div class="${uplink.udp_healthy === false ? "muted-cell" : ""}">${uplink.udp_healthy === false ? "down" : "ok"}</div>
+          <div class="muted-cell">${weightCell(uplink)}</div>
           <div class="muted-cell">${uplinkRoleCell(uplink)}</div>
           <div>${rowTone === "good" ? `<button class="action-btn" type="button" disabled>Active</button>` : `<button class="action-btn primary" type="button">▶ Activate</button>`}</div>`;
         if (rowTone !== "good") {
