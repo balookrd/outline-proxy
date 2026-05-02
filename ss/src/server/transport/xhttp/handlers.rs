@@ -7,6 +7,7 @@
 //! carries the per-process registry plus the VLESS server/route
 //! context needed to spawn the relay task on first contact.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use axum::{
@@ -18,7 +19,6 @@ use axum::{
 use bytes::Bytes;
 use futures_util::stream::unfold;
 use std::net::SocketAddr;
-use tokio::sync::mpsc;
 use tracing::{debug, warn};
 
 use crate::metrics::{AppProtocol, Protocol, Transport};
@@ -499,45 +499,67 @@ async fn xhttp_stream_one(
 }
 
 fn build_downlink_body(session: Arc<XhttpSession>) -> Body {
-    // Bridge the session ring to axum's Body via a bounded channel:
-    // an internal task drains the ring on `downlink_notify` and
-    // pushes chunks to the channel. axum drives the receiver until
-    // either the session closes (drain task exits, channel closes)
-    // or the client disconnects (channel send fails, drain task
-    // detaches the GET slot so a future GET can reattach without
-    // waiting for the idle eviction).
-    let (chunk_tx, chunk_rx) = mpsc::channel::<Bytes>(8);
-    let session_for_task = Arc::clone(&session);
-    tokio::spawn(async move {
-        let mut buf: Vec<Bytes> = Vec::new();
-        let session = session_for_task;
-        loop {
-            buf.clear();
-            let closed = session.drain_downlink(&mut buf);
-            for chunk in buf.drain(..) {
-                if chunk_tx.send(chunk).await.is_err() {
-                    session.detach_get();
-                    return;
+    // Stream straight from the session ring with no intermediate
+    // mpsc: a chunk produced by `push_downlink` is drained here on
+    // the next `poll_next`, which gives the h2 layer a direct line
+    // of sight into the writer. When axum stops polling (slow or
+    // disconnected client), `drain_downlink` is not called, the
+    // ring fills, `push_downlink` parks, and the upstream TCP read
+    // window collapses naturally. When the client disconnects, the
+    // body future is dropped, so is `DownlinkStreamState`, and its
+    // `Drop` releases the GET slot for a resumption-style reattach.
+    let stream = unfold(
+        DownlinkStreamState { session, queue: VecDeque::new() },
+        |mut state| async move {
+            loop {
+                if let Some(chunk) = state.queue.pop_front() {
+                    return Some((Ok::<_, std::io::Error>(chunk), state));
                 }
+                let mut buf: Vec<Bytes> = Vec::new();
+                let closed = state.session.drain_downlink(&mut buf);
+                state.queue.extend(buf);
+                if let Some(chunk) = state.queue.pop_front() {
+                    return Some((Ok(chunk), state));
+                }
+                if closed {
+                    return None;
+                }
+                // Subscribe before re-checking so a chunk that lands
+                // between the empty drain above and the await below
+                // cannot lose its wake-up.
+                let notified = state.session.downlink_notify.notified();
+                let mut recheck: Vec<Bytes> = Vec::new();
+                let closed_recheck = state.session.drain_downlink(&mut recheck);
+                state.queue.extend(recheck);
+                if !state.queue.is_empty() {
+                    continue;
+                }
+                if closed_recheck {
+                    return None;
+                }
+                notified.await;
             }
-            if closed {
-                break;
-            }
-            let notified = session.downlink_notify.notified();
-            if chunk_tx.is_closed() {
-                session.detach_get();
-                return;
-            }
-            tokio::pin!(notified);
-            notified.await;
-        }
-        session.detach_get();
-    });
-
-    let stream = unfold(chunk_rx, |mut rx| async move {
-        rx.recv().await.map(|chunk| (Ok::<_, std::io::Error>(chunk), rx))
-    });
+        },
+    );
     Body::from_stream(stream)
+}
+
+/// Holds the GET-side reader state for the duration of a single
+/// downlink HTTP body. Dropping it releases the GET slot — either
+/// because the session closed and the stream ended naturally, or
+/// because the client went away and axum dropped the body future
+/// mid-stream. The latter case is the resumption hook: a fresh GET
+/// on the same session id can reattach without waiting for the
+/// idle eviction tick.
+struct DownlinkStreamState {
+    session: Arc<XhttpSession>,
+    queue: VecDeque<Bytes>,
+}
+
+impl Drop for DownlinkStreamState {
+    fn drop(&mut self) {
+        self.session.detach_get();
+    }
 }
 
 fn spawn_relay(

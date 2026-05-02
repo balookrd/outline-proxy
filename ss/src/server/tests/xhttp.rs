@@ -1081,15 +1081,17 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
 
     session
         .push_downlink(Bytes::from_static(b"alpha"))
+        .await
         .map_err(|e| anyhow!("push_downlink alpha: {e:?}"))?;
     let downlink_a = tokio::time::timeout(Duration::from_secs(5), get_a).await???;
     assert_eq!(&downlink_a[..], b"alpha", "GET-A should observe the first chunk");
 
-    // After the body drop the drain task is parked on
-    // `downlink_notify` — channel-close alone cannot wake it. A
-    // notify with no fresh bytes lets it observe `chunk_tx.is_closed()`
-    // and detach the GET slot without spilling any pending chunks.
-    session.downlink_notify.notify_waiters();
+    // The downlink body now streams straight from the ring with a
+    // `Drop` hook that releases the GET slot — no extra wake-up is
+    // needed when axum drops the body. A reattach window of a few
+    // ms still exists between the body drop and the future actually
+    // running its destructor, which is what the GET-B retry loop
+    // below absorbs.
 
     // ── GET-B: reattach on the same path id and pick up bytes
     //    that arrived after GET-A's disconnect ───────────────────
@@ -1121,6 +1123,7 @@ async fn xhttp_get_drop_then_reconnect_resumes_downlink_ring() -> Result<()> {
     // assertion below trivially attributable to the new GET.
     session
         .push_downlink(Bytes::from_static(b"beta"))
+        .await
         .map_err(|e| anyhow!("push_downlink beta: {e:?}"))?;
 
     let mut body_b = resp_b.into_body();
