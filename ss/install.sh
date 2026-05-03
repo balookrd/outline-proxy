@@ -388,7 +388,31 @@ install_binary() {
   log "Устанавливаю бинарь в ${INSTALL_BIN_PATH}"
   install -m 0755 "$tmp_bin" "${INSTALL_BIN_PATH}.tmp"
   mv -f "${INSTALL_BIN_PATH}.tmp" "$INSTALL_BIN_PATH"
+  prune_old_backups
   save_release_commit
+}
+
+prune_old_backups() {
+  local keep=3
+  local -a backups=()
+
+  while IFS= read -r -d '' f; do
+    backups+=("$f")
+  done < <(find "$INSTALL_BIN_DIR" -maxdepth 1 -type f \
+    -name "$(basename "$INSTALL_BIN_PATH").bak.*" -print0 \
+    | sort -z)
+
+  local total="${#backups[@]}"
+  if (( total <= keep )); then
+    return
+  fi
+
+  local remove_count=$((total - keep))
+  local i
+  for ((i = 0; i < remove_count; i++)); do
+    log "Удаляю старый backup: ${backups[i]}"
+    rm -f "${backups[i]}"
+  done
 }
 
 get_installed_version() {
